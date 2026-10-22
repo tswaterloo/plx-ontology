@@ -15,6 +15,14 @@ Must keep working:
 Known gaps:
 ```
 
+## v0.3 (2026-10-22)
+
+Added:
+- `use-cases/`: one page per use case with its questions, what a good answer looks like, open questions, needs and scope.
+
+Must keep working:
+- Everything in v0.2.
+
 ## v0.2 (2026-10-22)
 
 Added:

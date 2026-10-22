@@ -16,6 +16,7 @@ Full guide: [`context/HOW-TO-USE.md`](context/HOW-TO-USE.md).
 
 ## What's new
 
+- **v0.3:** a full page for every use case in [`use-cases/`](use-cases/).
 - **v0.2:** this page, a simple how-to guide, release notes and one feedback log.
 - **v0.1:** first version: the business model, the console and the use cases below.
 
@@ -257,7 +258,8 @@ What it needs:
 - A customer complaint traced to resolution and the stock posting (Dandylion P-02289 / PO-00269)
 - Receiving, QC and release linked: inspection result, accept/reject/rework, signer
 
-## Where the use cases live
+## Full use cases
 
-Each use case has its own folder in [`evals/dev/`](evals/dev/) with its full detail
-and sources.
+Every use case has its own page in [`use-cases/`](use-cases/): the questions it must
+answer and what a good answer looks like, open questions, what it still needs, and
+what is out of scope.
