@@ -1,0 +1,1119 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FIXTURE, not a live capture: BC API v2.0 $metadata shape (entity, key, property and navigation names from the Microsoft Learn BC API v2.0 resource reference), a subset of the entity sets. Aligned with the live document the committed pin is read from (sha256 09a82605, 2026-10-13) where the schema binds it: the container lists each company collection again at top level, no property carries Core.Computed (BC declares none), purchaseInvoice has no remainingAmount and purchaseReceiptLine no locationId. Tests only: the pin is the live document written by the live check schema.bc_metadata_drift and pinned by python3 -m ontology.generator.bc pin FILE. -->
+<edmx:Edmx Version="4.0" xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx">
+ <edmx:DataServices>
+  <Schema Namespace="Microsoft.NAV" xmlns="http://docs.oasis-open.org/odata/ns/edm">
+   <EnumType Name="salesQuoteEntityBufferStatus">
+    <Member Name="Draft" Value="0" />
+    <Member Name="Sent" Value="1" />
+    <Member Name="Accepted" Value="2" />
+    <Member Name="Expired" Value="3" />
+   </EnumType>
+   <EnumType Name="invoiceLineAggLineType">
+    <Member Name="Comment" Value="0" />
+    <Member Name="Account" Value="1" />
+    <Member Name="Item" Value="2" />
+    <Member Name="Resource" Value="3" />
+    <Member Name="Value" Value="4" />
+    <Member Name="Charge" Value="5" />
+    <Member Name="Fixed_x0020_Asset" Value="6" />
+   </EnumType>
+   <EntityType Name="company">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="systemVersion" Type="Edm.String" />
+    <Property Name="timestamp" Type="Edm.Int32" />
+    <Property Name="name" Type="Edm.String" />
+    <Property Name="displayName" Type="Edm.String" />
+    <Property Name="businessProfileId" Type="Edm.String" />
+    <Property Name="systemCreatedAt" Type="Edm.DateTimeOffset" />
+    <Property Name="systemCreatedBy" Type="Edm.Guid" />
+    <Property Name="systemModifiedAt" Type="Edm.DateTimeOffset" />
+    <Property Name="systemModifiedBy" Type="Edm.Guid" />
+    <NavigationProperty Name="companyInformation" Type="Collection(Microsoft.NAV.companyInformation)" ContainsTarget="true" />
+    <NavigationProperty Name="locations" Type="Collection(Microsoft.NAV.location)" ContainsTarget="true" />
+    <NavigationProperty Name="unitsOfMeasure" Type="Collection(Microsoft.NAV.unitOfMeasure)" ContainsTarget="true" />
+    <NavigationProperty Name="itemCategories" Type="Collection(Microsoft.NAV.itemCategory)" ContainsTarget="true" />
+    <NavigationProperty Name="currencies" Type="Collection(Microsoft.NAV.currency)" ContainsTarget="true" />
+    <NavigationProperty Name="currencyExchangeRates" Type="Collection(Microsoft.NAV.currencyExchangeRate)" ContainsTarget="true" />
+    <NavigationProperty Name="paymentTerms" Type="Collection(Microsoft.NAV.paymentTerm)" ContainsTarget="true" />
+    <NavigationProperty Name="shipmentMethods" Type="Collection(Microsoft.NAV.shipmentMethod)" ContainsTarget="true" />
+    <NavigationProperty Name="employees" Type="Collection(Microsoft.NAV.employee)" ContainsTarget="true" />
+    <NavigationProperty Name="customers" Type="Collection(Microsoft.NAV.customer)" ContainsTarget="true" />
+    <NavigationProperty Name="vendors" Type="Collection(Microsoft.NAV.vendor)" ContainsTarget="true" />
+    <NavigationProperty Name="contacts" Type="Collection(Microsoft.NAV.contact)" ContainsTarget="true" />
+    <NavigationProperty Name="items" Type="Collection(Microsoft.NAV.item)" ContainsTarget="true" />
+    <NavigationProperty Name="salesQuotes" Type="Collection(Microsoft.NAV.salesQuote)" ContainsTarget="true" />
+    <NavigationProperty Name="salesQuoteLines" Type="Collection(Microsoft.NAV.salesQuoteLine)" ContainsTarget="true" />
+    <NavigationProperty Name="salesOrders" Type="Collection(Microsoft.NAV.salesOrder)" ContainsTarget="true" />
+    <NavigationProperty Name="salesOrderLines" Type="Collection(Microsoft.NAV.salesOrderLine)" ContainsTarget="true" />
+    <NavigationProperty Name="salesInvoices" Type="Collection(Microsoft.NAV.salesInvoice)" ContainsTarget="true" />
+    <NavigationProperty Name="salesInvoiceLines" Type="Collection(Microsoft.NAV.salesInvoiceLine)" ContainsTarget="true" />
+    <NavigationProperty Name="salesShipments" Type="Collection(Microsoft.NAV.salesShipment)" ContainsTarget="true" />
+    <NavigationProperty Name="salesShipmentLines" Type="Collection(Microsoft.NAV.salesShipmentLine)" ContainsTarget="true" />
+    <NavigationProperty Name="salesCreditMemos" Type="Collection(Microsoft.NAV.salesCreditMemo)" ContainsTarget="true" />
+    <NavigationProperty Name="salesCreditMemoLines" Type="Collection(Microsoft.NAV.salesCreditMemoLine)" ContainsTarget="true" />
+    <NavigationProperty Name="purchaseOrders" Type="Collection(Microsoft.NAV.purchaseOrder)" ContainsTarget="true" />
+    <NavigationProperty Name="purchaseOrderLines" Type="Collection(Microsoft.NAV.purchaseOrderLine)" ContainsTarget="true" />
+    <NavigationProperty Name="purchaseReceipts" Type="Collection(Microsoft.NAV.purchaseReceipt)" ContainsTarget="true" />
+    <NavigationProperty Name="purchaseReceiptLines" Type="Collection(Microsoft.NAV.purchaseReceiptLine)" ContainsTarget="true" />
+    <NavigationProperty Name="purchaseInvoices" Type="Collection(Microsoft.NAV.purchaseInvoice)" ContainsTarget="true" />
+    <NavigationProperty Name="purchaseInvoiceLines" Type="Collection(Microsoft.NAV.purchaseInvoiceLine)" ContainsTarget="true" />
+    <NavigationProperty Name="purchaseCreditMemos" Type="Collection(Microsoft.NAV.purchaseCreditMemo)" ContainsTarget="true" />
+    <NavigationProperty Name="purchaseCreditMemoLines" Type="Collection(Microsoft.NAV.purchaseCreditMemoLine)" ContainsTarget="true" />
+    <NavigationProperty Name="itemLedgerEntries" Type="Collection(Microsoft.NAV.itemLedgerEntry)" ContainsTarget="true" />
+    <NavigationProperty Name="generalLedgerEntries" Type="Collection(Microsoft.NAV.generalLedgerEntry)" ContainsTarget="true" />
+    <NavigationProperty Name="accounts" Type="Collection(Microsoft.NAV.account)" ContainsTarget="true" />
+    <NavigationProperty Name="agedAccountsReceivables" Type="Collection(Microsoft.NAV.agedAccountsReceivable)" ContainsTarget="true" />
+    <NavigationProperty Name="agedAccountsPayables" Type="Collection(Microsoft.NAV.agedAccountsPayable)" ContainsTarget="true" />
+    <NavigationProperty Name="customerPaymentJournals" Type="Collection(Microsoft.NAV.customerPaymentJournal)" ContainsTarget="true" />
+    <NavigationProperty Name="vendorPaymentJournals" Type="Collection(Microsoft.NAV.vendorPaymentJournal)" ContainsTarget="true" />
+   </EntityType>
+   <EntityType Name="companyInformation">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="displayName" Type="Edm.String" />
+    <Property Name="addressLine1" Type="Edm.String" />
+    <Property Name="addressLine2" Type="Edm.String" />
+    <Property Name="city" Type="Edm.String" />
+    <Property Name="state" Type="Edm.String" />
+    <Property Name="country" Type="Edm.String" />
+    <Property Name="postalCode" Type="Edm.String" />
+    <Property Name="phoneNumber" Type="Edm.String" />
+    <Property Name="faxNumber" Type="Edm.String" />
+    <Property Name="email" Type="Edm.String" />
+    <Property Name="website" Type="Edm.String" />
+    <Property Name="taxRegistrationNumber" Type="Edm.String" />
+    <Property Name="currencyCode" Type="Edm.String" />
+    <Property Name="currentFiscalYearStartDate" Type="Edm.Date" />
+    <Property Name="industry" Type="Edm.String" />
+    <Property Name="experience" Type="Edm.String" />
+    <Property Name="picture" Type="Edm.Stream" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+   </EntityType>
+   <EntityType Name="location">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="code" Type="Edm.String" />
+    <Property Name="displayName" Type="Edm.String" />
+    <Property Name="contact" Type="Edm.String" />
+    <Property Name="addressLine1" Type="Edm.String" />
+    <Property Name="addressLine2" Type="Edm.String" />
+    <Property Name="city" Type="Edm.String" />
+    <Property Name="state" Type="Edm.String" />
+    <Property Name="country" Type="Edm.String" />
+    <Property Name="postalCode" Type="Edm.String" />
+    <Property Name="phoneNumber" Type="Edm.String" />
+    <Property Name="email" Type="Edm.String" />
+    <Property Name="website" Type="Edm.String" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+   </EntityType>
+   <EntityType Name="unitOfMeasure">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="code" Type="Edm.String" />
+    <Property Name="displayName" Type="Edm.String" />
+    <Property Name="internationalStandardCode" Type="Edm.String" />
+    <Property Name="symbol" Type="Edm.String" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+   </EntityType>
+   <EntityType Name="itemCategory">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="code" Type="Edm.String" />
+    <Property Name="displayName" Type="Edm.String" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+   </EntityType>
+   <EntityType Name="currency">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="code" Type="Edm.String" />
+    <Property Name="displayName" Type="Edm.String" />
+    <Property Name="symbol" Type="Edm.String" />
+    <Property Name="amountDecimalPlaces" Type="Edm.String" />
+    <Property Name="amountRoundingPrecision" Type="Edm.Decimal" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+   </EntityType>
+   <EntityType Name="currencyExchangeRate">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="currencyCode" Type="Edm.String" />
+    <Property Name="startingDate" Type="Edm.Date" />
+    <Property Name="exchangeRateAmount" Type="Edm.Decimal" />
+    <Property Name="relationalCurrencyCode" Type="Edm.String" />
+    <Property Name="relationalExchangeRateAmount" Type="Edm.Decimal" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+   </EntityType>
+   <EntityType Name="paymentTerm">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="code" Type="Edm.String" />
+    <Property Name="displayName" Type="Edm.String" />
+    <Property Name="dueDateCalculation" Type="Edm.String" />
+    <Property Name="discountDateCalculation" Type="Edm.String" />
+    <Property Name="discountPercent" Type="Edm.Decimal" />
+    <Property Name="calculateDiscountOnCreditMemos" Type="Edm.Boolean" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+   </EntityType>
+   <EntityType Name="shipmentMethod">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="code" Type="Edm.String" />
+    <Property Name="displayName" Type="Edm.String" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+   </EntityType>
+   <EntityType Name="employee">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="number" Type="Edm.String" />
+    <Property Name="displayName" Type="Edm.String" />
+    <Property Name="givenName" Type="Edm.String" />
+    <Property Name="surname" Type="Edm.String" />
+    <Property Name="jobTitle" Type="Edm.String" />
+    <Property Name="addressLine1" Type="Edm.String" />
+    <Property Name="addressLine2" Type="Edm.String" />
+    <Property Name="city" Type="Edm.String" />
+    <Property Name="state" Type="Edm.String" />
+    <Property Name="country" Type="Edm.String" />
+    <Property Name="postalCode" Type="Edm.String" />
+    <Property Name="phoneNumber" Type="Edm.String" />
+    <Property Name="email" Type="Edm.String" />
+    <Property Name="employmentDate" Type="Edm.Date" />
+    <Property Name="status" Type="Edm.String" />
+    <Property Name="birthDate" Type="Edm.Date" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+   </EntityType>
+   <EntityType Name="customer">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="number" Type="Edm.String" />
+    <Property Name="displayName" Type="Edm.String" />
+    <Property Name="type" Type="Edm.String" />
+    <Property Name="addressLine1" Type="Edm.String" />
+    <Property Name="addressLine2" Type="Edm.String" />
+    <Property Name="city" Type="Edm.String" />
+    <Property Name="state" Type="Edm.String" />
+    <Property Name="country" Type="Edm.String" />
+    <Property Name="postalCode" Type="Edm.String" />
+    <Property Name="phoneNumber" Type="Edm.String" />
+    <Property Name="email" Type="Edm.String" />
+    <Property Name="website" Type="Edm.String" />
+    <Property Name="salespersonCode" Type="Edm.String" />
+    <Property Name="balanceDue" Type="Edm.Decimal" />
+    <Property Name="creditLimit" Type="Edm.Decimal" />
+    <Property Name="taxLiable" Type="Edm.Boolean" />
+    <Property Name="taxAreaId" Type="Edm.Guid" />
+    <Property Name="taxAreaDisplayName" Type="Edm.String" />
+    <Property Name="taxRegistrationNumber" Type="Edm.String" />
+    <Property Name="currencyId" Type="Edm.Guid" />
+    <Property Name="currencyCode" Type="Edm.String" />
+    <Property Name="paymentTermsId" Type="Edm.Guid" />
+    <Property Name="shipmentMethodId" Type="Edm.Guid" />
+    <Property Name="paymentMethodId" Type="Edm.Guid" />
+    <Property Name="blocked" Type="Edm.String" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+    <NavigationProperty Name="currency" Type="Microsoft.NAV.currency">
+     <ReferentialConstraint Property="currencyId" ReferencedProperty="id" />
+    </NavigationProperty>
+    <NavigationProperty Name="paymentTerm" Type="Microsoft.NAV.paymentTerm" />
+    <NavigationProperty Name="shipmentMethod" Type="Microsoft.NAV.shipmentMethod" />
+   </EntityType>
+   <EntityType Name="vendor">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="number" Type="Edm.String" />
+    <Property Name="displayName" Type="Edm.String" />
+    <Property Name="addressLine1" Type="Edm.String" />
+    <Property Name="addressLine2" Type="Edm.String" />
+    <Property Name="city" Type="Edm.String" />
+    <Property Name="state" Type="Edm.String" />
+    <Property Name="country" Type="Edm.String" />
+    <Property Name="postalCode" Type="Edm.String" />
+    <Property Name="phoneNumber" Type="Edm.String" />
+    <Property Name="email" Type="Edm.String" />
+    <Property Name="website" Type="Edm.String" />
+    <Property Name="taxRegistrationNumber" Type="Edm.String" />
+    <Property Name="currencyId" Type="Edm.Guid" />
+    <Property Name="currencyCode" Type="Edm.String" />
+    <Property Name="irs1099Code" Type="Edm.String" />
+    <Property Name="paymentTermsId" Type="Edm.Guid" />
+    <Property Name="paymentMethodId" Type="Edm.Guid" />
+    <Property Name="taxLiable" Type="Edm.Boolean" />
+    <Property Name="blocked" Type="Edm.String" />
+    <Property Name="balance" Type="Edm.Decimal" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+    <NavigationProperty Name="currency" Type="Microsoft.NAV.currency">
+     <ReferentialConstraint Property="currencyId" ReferencedProperty="id" />
+    </NavigationProperty>
+    <NavigationProperty Name="paymentTerm" Type="Microsoft.NAV.paymentTerm" />
+   </EntityType>
+   <EntityType Name="contact">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="number" Type="Edm.String" />
+    <Property Name="type" Type="Edm.String" />
+    <Property Name="displayName" Type="Edm.String" />
+    <Property Name="companyNumber" Type="Edm.String" />
+    <Property Name="companyName" Type="Edm.String" />
+    <Property Name="businessRelation" Type="Edm.String" />
+    <Property Name="addressLine1" Type="Edm.String" />
+    <Property Name="addressLine2" Type="Edm.String" />
+    <Property Name="city" Type="Edm.String" />
+    <Property Name="state" Type="Edm.String" />
+    <Property Name="country" Type="Edm.String" />
+    <Property Name="postalCode" Type="Edm.String" />
+    <Property Name="phoneNumber" Type="Edm.String" />
+    <Property Name="mobilePhoneNumber" Type="Edm.String" />
+    <Property Name="email" Type="Edm.String" />
+    <Property Name="website" Type="Edm.String" />
+    <Property Name="searchName" Type="Edm.String" />
+    <Property Name="privacyBlocked" Type="Edm.Boolean" />
+    <Property Name="lastInteractionDate" Type="Edm.DateTimeOffset" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+   </EntityType>
+   <EntityType Name="item">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="number" Type="Edm.String" />
+    <Property Name="displayName" Type="Edm.String" />
+    <Property Name="displayName2" Type="Edm.String" />
+    <Property Name="type" Type="Edm.String" />
+    <Property Name="itemCategoryId" Type="Edm.Guid" />
+    <Property Name="itemCategoryCode" Type="Edm.String" />
+    <Property Name="blocked" Type="Edm.Boolean" />
+    <Property Name="gtin" Type="Edm.String" />
+    <Property Name="inventory" Type="Edm.Decimal" />
+    <Property Name="unitPrice" Type="Edm.Decimal" />
+    <Property Name="priceIncludesTax" Type="Edm.Boolean" />
+    <Property Name="unitCost" Type="Edm.Decimal" />
+    <Property Name="taxGroupId" Type="Edm.Guid" />
+    <Property Name="taxGroupCode" Type="Edm.String" />
+    <Property Name="baseUnitOfMeasureId" Type="Edm.Guid" />
+    <Property Name="baseUnitOfMeasureCode" Type="Edm.String" />
+    <Property Name="generalProductPostingGroupId" Type="Edm.Guid" />
+    <Property Name="generalProductPostingGroupCode" Type="Edm.String" />
+    <Property Name="inventoryPostingGroupId" Type="Edm.Guid" />
+    <Property Name="inventoryPostingGroupCode" Type="Edm.String" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+    <NavigationProperty Name="itemCategory" Type="Microsoft.NAV.itemCategory">
+     <ReferentialConstraint Property="itemCategoryId" ReferencedProperty="id" />
+    </NavigationProperty>
+    <NavigationProperty Name="unitOfMeasure" Type="Microsoft.NAV.unitOfMeasure">
+     <ReferentialConstraint Property="baseUnitOfMeasureId" ReferencedProperty="id" />
+    </NavigationProperty>
+   </EntityType>
+   <EntityType Name="salesQuote">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="number" Type="Edm.String" />
+    <Property Name="externalDocumentNumber" Type="Edm.String" />
+    <Property Name="documentDate" Type="Edm.Date" />
+    <Property Name="postingDate" Type="Edm.Date" />
+    <Property Name="dueDate" Type="Edm.Date" />
+    <Property Name="customerId" Type="Edm.Guid" />
+    <Property Name="customerNumber" Type="Edm.String" />
+    <Property Name="customerName" Type="Edm.String" />
+    <Property Name="billToName" Type="Edm.String" />
+    <Property Name="billToCustomerId" Type="Edm.Guid" />
+    <Property Name="billToCustomerNumber" Type="Edm.String" />
+    <Property Name="shipToName" Type="Edm.String" />
+    <Property Name="shipToContact" Type="Edm.String" />
+    <Property Name="sellToAddressLine1" Type="Edm.String" />
+    <Property Name="sellToAddressLine2" Type="Edm.String" />
+    <Property Name="sellToCity" Type="Edm.String" />
+    <Property Name="sellToCountry" Type="Edm.String" />
+    <Property Name="sellToState" Type="Edm.String" />
+    <Property Name="sellToPostCode" Type="Edm.String" />
+    <Property Name="billToAddressLine1" Type="Edm.String" />
+    <Property Name="billToAddressLine2" Type="Edm.String" />
+    <Property Name="billToCity" Type="Edm.String" />
+    <Property Name="billToCountry" Type="Edm.String" />
+    <Property Name="billToPostCode" Type="Edm.String" />
+    <Property Name="billToState" Type="Edm.String" />
+    <Property Name="shipToAddressLine1" Type="Edm.String" />
+    <Property Name="shipToAddressLine2" Type="Edm.String" />
+    <Property Name="shipToCity" Type="Edm.String" />
+    <Property Name="shipToCountry" Type="Edm.String" />
+    <Property Name="shipToPostCode" Type="Edm.String" />
+    <Property Name="shipToState" Type="Edm.String" />
+    <Property Name="shortcutDimension1Code" Type="Edm.String" />
+    <Property Name="shortcutDimension2Code" Type="Edm.String" />
+    <Property Name="currencyId" Type="Edm.Guid" />
+    <Property Name="currencyCode" Type="Edm.String" />
+    <Property Name="paymentTermsId" Type="Edm.Guid" />
+    <Property Name="shipmentMethodId" Type="Edm.Guid" />
+    <Property Name="salesperson" Type="Edm.String" />
+    <Property Name="discountAmount" Type="Edm.Decimal" />
+    <Property Name="totalAmountExcludingTax" Type="Edm.Decimal" />
+    <Property Name="totalTaxAmount" Type="Edm.Decimal" />
+    <Property Name="totalAmountIncludingTax" Type="Edm.Decimal" />
+    <Property Name="status" Type="Microsoft.NAV.salesQuoteEntityBufferStatus" />
+    <Property Name="sentDate" Type="Edm.DateTimeOffset" />
+    <Property Name="validUntilDate" Type="Edm.Date" />
+    <Property Name="acceptedDate" Type="Edm.Date" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+    <Property Name="phoneNumber" Type="Edm.String" />
+    <Property Name="email" Type="Edm.String" />
+    <NavigationProperty Name="customer" Type="Microsoft.NAV.customer">
+     <ReferentialConstraint Property="customerId" ReferencedProperty="id" />
+    </NavigationProperty>
+    <NavigationProperty Name="currency" Type="Microsoft.NAV.currency">
+     <ReferentialConstraint Property="currencyId" ReferencedProperty="id" />
+    </NavigationProperty>
+    <NavigationProperty Name="paymentTerm" Type="Microsoft.NAV.paymentTerm" />
+    <NavigationProperty Name="shipmentMethod" Type="Microsoft.NAV.shipmentMethod" />
+    <NavigationProperty Name="salesQuoteLines" Type="Collection(Microsoft.NAV.salesQuoteLine)" ContainsTarget="true" />
+   </EntityType>
+   <EntityType Name="salesQuoteLine">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="documentId" Type="Edm.Guid" />
+    <Property Name="sequence" Type="Edm.Int32" />
+    <Property Name="itemId" Type="Edm.Guid" />
+    <Property Name="accountId" Type="Edm.Guid" />
+    <Property Name="lineType" Type="Microsoft.NAV.invoiceLineAggLineType" />
+    <Property Name="lineObjectNumber" Type="Edm.String" />
+    <Property Name="description" Type="Edm.String" />
+    <Property Name="description2" Type="Edm.String" />
+    <Property Name="unitOfMeasureId" Type="Edm.Guid" />
+    <Property Name="unitOfMeasureCode" Type="Edm.String" />
+    <Property Name="unitPrice" Type="Edm.Decimal" />
+    <Property Name="quantity" Type="Edm.Decimal" />
+    <Property Name="discountAmount" Type="Edm.Decimal" />
+    <Property Name="discountPercent" Type="Edm.Decimal" />
+    <Property Name="discountAppliedBeforeTax" Type="Edm.Boolean" />
+    <Property Name="amountExcludingTax" Type="Edm.Decimal" />
+    <Property Name="taxCode" Type="Edm.String" />
+    <Property Name="taxPercent" Type="Edm.Decimal" />
+    <Property Name="totalTaxAmount" Type="Edm.Decimal" />
+    <Property Name="amountIncludingTax" Type="Edm.Decimal" />
+    <Property Name="netAmount" Type="Edm.Decimal" />
+    <Property Name="netTaxAmount" Type="Edm.Decimal" />
+    <Property Name="netAmountIncludingTax" Type="Edm.Decimal" />
+    <Property Name="itemVariantId" Type="Edm.Guid" />
+    <Property Name="locationId" Type="Edm.Guid" />
+    <NavigationProperty Name="item" Type="Microsoft.NAV.item" />
+    <NavigationProperty Name="account" Type="Microsoft.NAV.account" />
+    <NavigationProperty Name="unitOfMeasure" Type="Microsoft.NAV.unitOfMeasure" />
+    <NavigationProperty Name="location" Type="Microsoft.NAV.location" />
+   </EntityType>
+   <EntityType Name="salesOrder">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="number" Type="Edm.String" />
+    <Property Name="externalDocumentNumber" Type="Edm.String" />
+    <Property Name="orderDate" Type="Edm.Date" />
+    <Property Name="postingDate" Type="Edm.Date" />
+    <Property Name="customerId" Type="Edm.Guid" />
+    <Property Name="customerNumber" Type="Edm.String" />
+    <Property Name="customerName" Type="Edm.String" />
+    <Property Name="billToName" Type="Edm.String" />
+    <Property Name="billToCustomerId" Type="Edm.Guid" />
+    <Property Name="billToCustomerNumber" Type="Edm.String" />
+    <Property Name="shipToName" Type="Edm.String" />
+    <Property Name="shipToContact" Type="Edm.String" />
+    <Property Name="currencyId" Type="Edm.Guid" />
+    <Property Name="currencyCode" Type="Edm.String" />
+    <Property Name="pricesIncludeTax" Type="Edm.Boolean" />
+    <Property Name="paymentTermsId" Type="Edm.Guid" />
+    <Property Name="shipmentMethodId" Type="Edm.Guid" />
+    <Property Name="salesperson" Type="Edm.String" />
+    <Property Name="partialShipping" Type="Edm.Boolean" />
+    <Property Name="requestedDeliveryDate" Type="Edm.Date" />
+    <Property Name="discountAmount" Type="Edm.Decimal" />
+    <Property Name="discountAppliedBeforeTax" Type="Edm.Boolean" />
+    <Property Name="totalAmountExcludingTax" Type="Edm.Decimal" />
+    <Property Name="totalTaxAmount" Type="Edm.Decimal" />
+    <Property Name="totalAmountIncludingTax" Type="Edm.Decimal" />
+    <Property Name="fullyShipped" Type="Edm.Boolean" />
+    <Property Name="status" Type="Edm.String" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+    <Property Name="phoneNumber" Type="Edm.String" />
+    <Property Name="email" Type="Edm.String" />
+    <NavigationProperty Name="customer" Type="Microsoft.NAV.customer">
+     <ReferentialConstraint Property="customerId" ReferencedProperty="id" />
+    </NavigationProperty>
+    <NavigationProperty Name="currency" Type="Microsoft.NAV.currency">
+     <ReferentialConstraint Property="currencyId" ReferencedProperty="id" />
+    </NavigationProperty>
+    <NavigationProperty Name="salesOrderLines" Type="Collection(Microsoft.NAV.salesOrderLine)" ContainsTarget="true" />
+   </EntityType>
+   <EntityType Name="salesOrderLine">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="documentId" Type="Edm.Guid" />
+    <Property Name="sequence" Type="Edm.Int32" />
+    <Property Name="itemId" Type="Edm.Guid" />
+    <Property Name="accountId" Type="Edm.Guid" />
+    <Property Name="lineType" Type="Edm.String" />
+    <Property Name="lineObjectNumber" Type="Edm.String" />
+    <Property Name="description" Type="Edm.String" />
+    <Property Name="description2" Type="Edm.String" />
+    <Property Name="unitOfMeasureId" Type="Edm.Guid" />
+    <Property Name="unitOfMeasureCode" Type="Edm.String" />
+    <Property Name="quantity" Type="Edm.Decimal" />
+    <Property Name="discountAmount" Type="Edm.Decimal" />
+    <Property Name="discountPercent" Type="Edm.Decimal" />
+    <Property Name="discountAppliedBeforeTax" Type="Edm.Boolean" />
+    <Property Name="amountExcludingTax" Type="Edm.Decimal" />
+    <Property Name="taxCode" Type="Edm.String" />
+    <Property Name="taxPercent" Type="Edm.Decimal" />
+    <Property Name="totalTaxAmount" Type="Edm.Decimal" />
+    <Property Name="amountIncludingTax" Type="Edm.Decimal" />
+    <Property Name="invoiceDiscountAllocation" Type="Edm.Decimal" />
+    <Property Name="netAmount" Type="Edm.Decimal" />
+    <Property Name="netTaxAmount" Type="Edm.Decimal" />
+    <Property Name="netAmountIncludingTax" Type="Edm.Decimal" />
+    <Property Name="itemVariantId" Type="Edm.Guid" />
+    <Property Name="locationId" Type="Edm.Guid" />
+    <Property Name="unitPrice" Type="Edm.Decimal" />
+    <Property Name="shipmentDate" Type="Edm.Date" />
+    <Property Name="shippedQuantity" Type="Edm.Decimal" />
+    <Property Name="invoicedQuantity" Type="Edm.Decimal" />
+    <Property Name="invoiceQuantity" Type="Edm.Decimal" />
+    <Property Name="shipQuantity" Type="Edm.Decimal" />
+    <NavigationProperty Name="item" Type="Microsoft.NAV.item" />
+    <NavigationProperty Name="account" Type="Microsoft.NAV.account" />
+    <NavigationProperty Name="unitOfMeasure" Type="Microsoft.NAV.unitOfMeasure" />
+    <NavigationProperty Name="location" Type="Microsoft.NAV.location" />
+   </EntityType>
+   <EntityType Name="salesInvoice">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="number" Type="Edm.String" />
+    <Property Name="externalDocumentNumber" Type="Edm.String" />
+    <Property Name="invoiceDate" Type="Edm.Date" />
+    <Property Name="postingDate" Type="Edm.Date" />
+    <Property Name="dueDate" Type="Edm.Date" />
+    <Property Name="customerPurchaseOrderReference" Type="Edm.String" />
+    <Property Name="customerId" Type="Edm.Guid" />
+    <Property Name="customerNumber" Type="Edm.String" />
+    <Property Name="customerName" Type="Edm.String" />
+    <Property Name="billToName" Type="Edm.String" />
+    <Property Name="billToCustomerId" Type="Edm.Guid" />
+    <Property Name="billToCustomerNumber" Type="Edm.String" />
+    <Property Name="shipToName" Type="Edm.String" />
+    <Property Name="shipToContact" Type="Edm.String" />
+    <Property Name="currencyId" Type="Edm.Guid" />
+    <Property Name="currencyCode" Type="Edm.String" />
+    <Property Name="orderId" Type="Edm.Guid" />
+    <Property Name="orderNumber" Type="Edm.String" />
+    <Property Name="paymentTermsId" Type="Edm.Guid" />
+    <Property Name="shipmentMethodId" Type="Edm.Guid" />
+    <Property Name="salesperson" Type="Edm.String" />
+    <Property Name="pricesIncludeTax" Type="Edm.Boolean" />
+    <Property Name="remainingAmount" Type="Edm.Decimal" />
+    <Property Name="discountAmount" Type="Edm.Decimal" />
+    <Property Name="discountAppliedBeforeTax" Type="Edm.Boolean" />
+    <Property Name="totalAmountExcludingTax" Type="Edm.Decimal" />
+    <Property Name="totalTaxAmount" Type="Edm.Decimal" />
+    <Property Name="totalAmountIncludingTax" Type="Edm.Decimal" />
+    <Property Name="status" Type="Edm.String" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+    <Property Name="phoneNumber" Type="Edm.String" />
+    <Property Name="email" Type="Edm.String" />
+    <NavigationProperty Name="customer" Type="Microsoft.NAV.customer">
+     <ReferentialConstraint Property="customerId" ReferencedProperty="id" />
+    </NavigationProperty>
+    <NavigationProperty Name="currency" Type="Microsoft.NAV.currency">
+     <ReferentialConstraint Property="currencyId" ReferencedProperty="id" />
+    </NavigationProperty>
+    <NavigationProperty Name="salesInvoiceLines" Type="Collection(Microsoft.NAV.salesInvoiceLine)" ContainsTarget="true" />
+   </EntityType>
+   <EntityType Name="salesInvoiceLine">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="documentId" Type="Edm.Guid" />
+    <Property Name="sequence" Type="Edm.Int32" />
+    <Property Name="itemId" Type="Edm.Guid" />
+    <Property Name="accountId" Type="Edm.Guid" />
+    <Property Name="lineType" Type="Edm.String" />
+    <Property Name="lineObjectNumber" Type="Edm.String" />
+    <Property Name="description" Type="Edm.String" />
+    <Property Name="description2" Type="Edm.String" />
+    <Property Name="unitOfMeasureId" Type="Edm.Guid" />
+    <Property Name="unitOfMeasureCode" Type="Edm.String" />
+    <Property Name="quantity" Type="Edm.Decimal" />
+    <Property Name="discountAmount" Type="Edm.Decimal" />
+    <Property Name="discountPercent" Type="Edm.Decimal" />
+    <Property Name="discountAppliedBeforeTax" Type="Edm.Boolean" />
+    <Property Name="amountExcludingTax" Type="Edm.Decimal" />
+    <Property Name="taxCode" Type="Edm.String" />
+    <Property Name="taxPercent" Type="Edm.Decimal" />
+    <Property Name="totalTaxAmount" Type="Edm.Decimal" />
+    <Property Name="amountIncludingTax" Type="Edm.Decimal" />
+    <Property Name="invoiceDiscountAllocation" Type="Edm.Decimal" />
+    <Property Name="netAmount" Type="Edm.Decimal" />
+    <Property Name="netTaxAmount" Type="Edm.Decimal" />
+    <Property Name="netAmountIncludingTax" Type="Edm.Decimal" />
+    <Property Name="itemVariantId" Type="Edm.Guid" />
+    <Property Name="locationId" Type="Edm.Guid" />
+    <Property Name="unitPrice" Type="Edm.Decimal" />
+    <Property Name="shipmentDate" Type="Edm.Date" />
+    <NavigationProperty Name="item" Type="Microsoft.NAV.item" />
+    <NavigationProperty Name="account" Type="Microsoft.NAV.account" />
+    <NavigationProperty Name="unitOfMeasure" Type="Microsoft.NAV.unitOfMeasure" />
+    <NavigationProperty Name="location" Type="Microsoft.NAV.location" />
+   </EntityType>
+   <EntityType Name="salesShipment">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="number" Type="Edm.String" />
+    <Property Name="externalDocumentNumber" Type="Edm.String" />
+    <Property Name="documentDate" Type="Edm.Date" />
+    <Property Name="postingDate" Type="Edm.Date" />
+    <Property Name="dueDate" Type="Edm.Date" />
+    <Property Name="customerNumber" Type="Edm.String" />
+    <Property Name="customerName" Type="Edm.String" />
+    <Property Name="billToName" Type="Edm.String" />
+    <Property Name="billToCustomerNumber" Type="Edm.String" />
+    <Property Name="shipToName" Type="Edm.String" />
+    <Property Name="shipToContact" Type="Edm.String" />
+    <Property Name="currencyCode" Type="Edm.String" />
+    <Property Name="orderNumber" Type="Edm.String" />
+    <Property Name="paymentTermsCode" Type="Edm.String" />
+    <Property Name="shipmentMethodCode" Type="Edm.String" />
+    <Property Name="salesperson" Type="Edm.String" />
+    <Property Name="pricesIncludeTax" Type="Edm.Boolean" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+    <Property Name="phoneNumber" Type="Edm.String" />
+    <Property Name="email" Type="Edm.String" />
+    <NavigationProperty Name="salesShipmentLines" Type="Collection(Microsoft.NAV.salesShipmentLine)" ContainsTarget="true" />
+   </EntityType>
+   <EntityType Name="salesShipmentLine">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="documentId" Type="Edm.Guid" />
+    <Property Name="documentNo" Type="Edm.String" />
+    <Property Name="sequence" Type="Edm.Int32" />
+    <Property Name="lineType" Type="Edm.String" />
+    <Property Name="lineObjectNumber" Type="Edm.String" />
+    <Property Name="description" Type="Edm.String" />
+    <Property Name="description2" Type="Edm.String" />
+    <Property Name="unitOfMeasureCode" Type="Edm.String" />
+    <Property Name="unitPrice" Type="Edm.Decimal" />
+    <Property Name="quantity" Type="Edm.Decimal" />
+    <Property Name="discountPercent" Type="Edm.Decimal" />
+    <Property Name="taxPercent" Type="Edm.Decimal" />
+    <Property Name="shipmentDate" Type="Edm.Date" />
+   </EntityType>
+   <EntityType Name="salesCreditMemo">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="number" Type="Edm.String" />
+    <Property Name="externalDocumentNumber" Type="Edm.String" />
+    <Property Name="creditMemoDate" Type="Edm.Date" />
+    <Property Name="postingDate" Type="Edm.Date" />
+    <Property Name="dueDate" Type="Edm.Date" />
+    <Property Name="customerId" Type="Edm.Guid" />
+    <Property Name="customerNumber" Type="Edm.String" />
+    <Property Name="customerName" Type="Edm.String" />
+    <Property Name="billToName" Type="Edm.String" />
+    <Property Name="billToCustomerId" Type="Edm.Guid" />
+    <Property Name="billToCustomerNumber" Type="Edm.String" />
+    <Property Name="currencyId" Type="Edm.Guid" />
+    <Property Name="currencyCode" Type="Edm.String" />
+    <Property Name="paymentTermsId" Type="Edm.Guid" />
+    <Property Name="shipmentMethodId" Type="Edm.Guid" />
+    <Property Name="salesperson" Type="Edm.String" />
+    <Property Name="pricesIncludeTax" Type="Edm.Boolean" />
+    <Property Name="discountAmount" Type="Edm.Decimal" />
+    <Property Name="discountAppliedBeforeTax" Type="Edm.Boolean" />
+    <Property Name="totalAmountExcludingTax" Type="Edm.Decimal" />
+    <Property Name="totalTaxAmount" Type="Edm.Decimal" />
+    <Property Name="totalAmountIncludingTax" Type="Edm.Decimal" />
+    <Property Name="status" Type="Edm.String" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+    <Property Name="invoiceId" Type="Edm.Guid" />
+    <Property Name="invoiceNumber" Type="Edm.String" />
+    <Property Name="phoneNumber" Type="Edm.String" />
+    <Property Name="email" Type="Edm.String" />
+    <Property Name="customerReturnReasonId" Type="Edm.Guid" />
+    <NavigationProperty Name="customer" Type="Microsoft.NAV.customer">
+     <ReferentialConstraint Property="customerId" ReferencedProperty="id" />
+    </NavigationProperty>
+    <NavigationProperty Name="salesCreditMemoLines" Type="Collection(Microsoft.NAV.salesCreditMemoLine)" ContainsTarget="true" />
+   </EntityType>
+   <EntityType Name="salesCreditMemoLine">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="documentId" Type="Edm.Guid" />
+    <Property Name="sequence" Type="Edm.Int32" />
+    <Property Name="itemId" Type="Edm.Guid" />
+    <Property Name="accountId" Type="Edm.Guid" />
+    <Property Name="lineType" Type="Edm.String" />
+    <Property Name="lineObjectNumber" Type="Edm.String" />
+    <Property Name="description" Type="Edm.String" />
+    <Property Name="description2" Type="Edm.String" />
+    <Property Name="unitOfMeasureId" Type="Edm.Guid" />
+    <Property Name="unitOfMeasureCode" Type="Edm.String" />
+    <Property Name="quantity" Type="Edm.Decimal" />
+    <Property Name="discountAmount" Type="Edm.Decimal" />
+    <Property Name="discountPercent" Type="Edm.Decimal" />
+    <Property Name="discountAppliedBeforeTax" Type="Edm.Boolean" />
+    <Property Name="amountExcludingTax" Type="Edm.Decimal" />
+    <Property Name="taxCode" Type="Edm.String" />
+    <Property Name="taxPercent" Type="Edm.Decimal" />
+    <Property Name="totalTaxAmount" Type="Edm.Decimal" />
+    <Property Name="amountIncludingTax" Type="Edm.Decimal" />
+    <Property Name="invoiceDiscountAllocation" Type="Edm.Decimal" />
+    <Property Name="netAmount" Type="Edm.Decimal" />
+    <Property Name="netTaxAmount" Type="Edm.Decimal" />
+    <Property Name="netAmountIncludingTax" Type="Edm.Decimal" />
+    <Property Name="itemVariantId" Type="Edm.Guid" />
+    <Property Name="locationId" Type="Edm.Guid" />
+    <Property Name="unitPrice" Type="Edm.Decimal" />
+    <Property Name="shipmentDate" Type="Edm.Date" />
+    <NavigationProperty Name="item" Type="Microsoft.NAV.item" />
+    <NavigationProperty Name="account" Type="Microsoft.NAV.account" />
+    <NavigationProperty Name="unitOfMeasure" Type="Microsoft.NAV.unitOfMeasure" />
+    <NavigationProperty Name="location" Type="Microsoft.NAV.location" />
+   </EntityType>
+   <EntityType Name="purchaseOrder">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="number" Type="Edm.String" />
+    <Property Name="orderDate" Type="Edm.Date" />
+    <Property Name="postingDate" Type="Edm.Date" />
+    <Property Name="vendorId" Type="Edm.Guid" />
+    <Property Name="vendorNumber" Type="Edm.String" />
+    <Property Name="vendorName" Type="Edm.String" />
+    <Property Name="payToName" Type="Edm.String" />
+    <Property Name="payToVendorId" Type="Edm.Guid" />
+    <Property Name="payToVendorNumber" Type="Edm.String" />
+    <Property Name="shipToName" Type="Edm.String" />
+    <Property Name="shipToContact" Type="Edm.String" />
+    <Property Name="currencyId" Type="Edm.Guid" />
+    <Property Name="currencyCode" Type="Edm.String" />
+    <Property Name="pricesIncludeTax" Type="Edm.Boolean" />
+    <Property Name="paymentTermsId" Type="Edm.Guid" />
+    <Property Name="shipmentMethodId" Type="Edm.Guid" />
+    <Property Name="purchaser" Type="Edm.String" />
+    <Property Name="requestedReceiptDate" Type="Edm.Date" />
+    <Property Name="discountAmount" Type="Edm.Decimal" />
+    <Property Name="discountAppliedBeforeTax" Type="Edm.Boolean" />
+    <Property Name="totalAmountExcludingTax" Type="Edm.Decimal" />
+    <Property Name="totalTaxAmount" Type="Edm.Decimal" />
+    <Property Name="totalAmountIncludingTax" Type="Edm.Decimal" />
+    <Property Name="fullyReceived" Type="Edm.Boolean" />
+    <Property Name="status" Type="Edm.String" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+    <NavigationProperty Name="vendor" Type="Microsoft.NAV.vendor">
+     <ReferentialConstraint Property="vendorId" ReferencedProperty="id" />
+    </NavigationProperty>
+    <NavigationProperty Name="currency" Type="Microsoft.NAV.currency">
+     <ReferentialConstraint Property="currencyId" ReferencedProperty="id" />
+    </NavigationProperty>
+    <NavigationProperty Name="purchaseOrderLines" Type="Collection(Microsoft.NAV.purchaseOrderLine)" ContainsTarget="true" />
+   </EntityType>
+   <EntityType Name="purchaseOrderLine">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="documentId" Type="Edm.Guid" />
+    <Property Name="sequence" Type="Edm.Int32" />
+    <Property Name="itemId" Type="Edm.Guid" />
+    <Property Name="accountId" Type="Edm.Guid" />
+    <Property Name="lineType" Type="Edm.String" />
+    <Property Name="lineObjectNumber" Type="Edm.String" />
+    <Property Name="description" Type="Edm.String" />
+    <Property Name="description2" Type="Edm.String" />
+    <Property Name="unitOfMeasureId" Type="Edm.Guid" />
+    <Property Name="unitOfMeasureCode" Type="Edm.String" />
+    <Property Name="quantity" Type="Edm.Decimal" />
+    <Property Name="discountAmount" Type="Edm.Decimal" />
+    <Property Name="discountPercent" Type="Edm.Decimal" />
+    <Property Name="discountAppliedBeforeTax" Type="Edm.Boolean" />
+    <Property Name="amountExcludingTax" Type="Edm.Decimal" />
+    <Property Name="taxCode" Type="Edm.String" />
+    <Property Name="taxPercent" Type="Edm.Decimal" />
+    <Property Name="totalTaxAmount" Type="Edm.Decimal" />
+    <Property Name="amountIncludingTax" Type="Edm.Decimal" />
+    <Property Name="invoiceDiscountAllocation" Type="Edm.Decimal" />
+    <Property Name="netAmount" Type="Edm.Decimal" />
+    <Property Name="netTaxAmount" Type="Edm.Decimal" />
+    <Property Name="netAmountIncludingTax" Type="Edm.Decimal" />
+    <Property Name="itemVariantId" Type="Edm.Guid" />
+    <Property Name="locationId" Type="Edm.Guid" />
+    <Property Name="directUnitCost" Type="Edm.Decimal" />
+    <Property Name="expectedReceiptDate" Type="Edm.Date" />
+    <Property Name="receivedQuantity" Type="Edm.Decimal" />
+    <Property Name="invoicedQuantity" Type="Edm.Decimal" />
+    <Property Name="invoiceQuantity" Type="Edm.Decimal" />
+    <Property Name="receiveQuantity" Type="Edm.Decimal" />
+    <NavigationProperty Name="item" Type="Microsoft.NAV.item" />
+    <NavigationProperty Name="account" Type="Microsoft.NAV.account" />
+    <NavigationProperty Name="unitOfMeasure" Type="Microsoft.NAV.unitOfMeasure" />
+    <NavigationProperty Name="location" Type="Microsoft.NAV.location" />
+   </EntityType>
+   <EntityType Name="purchaseReceipt">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="number" Type="Edm.String" />
+    <Property Name="invoiceDate" Type="Edm.Date" />
+    <Property Name="postingDate" Type="Edm.Date" />
+    <Property Name="dueDate" Type="Edm.Date" />
+    <Property Name="vendorNumber" Type="Edm.String" />
+    <Property Name="vendorName" Type="Edm.String" />
+    <Property Name="payToName" Type="Edm.String" />
+    <Property Name="payToContact" Type="Edm.String" />
+    <Property Name="payToVendorNumber" Type="Edm.String" />
+    <Property Name="shipToName" Type="Edm.String" />
+    <Property Name="shipToContact" Type="Edm.String" />
+    <Property Name="currencyCode" Type="Edm.String" />
+    <Property Name="orderNumber" Type="Edm.String" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+    <NavigationProperty Name="purchaseReceiptLines" Type="Collection(Microsoft.NAV.purchaseReceiptLine)" ContainsTarget="true" />
+   </EntityType>
+   <EntityType Name="purchaseReceiptLine">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="documentId" Type="Edm.Guid" />
+    <Property Name="sequence" Type="Edm.Int32" />
+    <Property Name="lineType" Type="Edm.String" />
+    <Property Name="lineObjectNumber" Type="Edm.String" />
+    <Property Name="description" Type="Edm.String" />
+    <Property Name="description2" Type="Edm.String" />
+    <Property Name="unitOfMeasureCode" Type="Edm.String" />
+    <Property Name="unitCost" Type="Edm.Decimal" />
+    <Property Name="quantity" Type="Edm.Decimal" />
+    <Property Name="discountPercent" Type="Edm.Decimal" />
+    <Property Name="taxPercent" Type="Edm.Decimal" />
+    <Property Name="expectedReceiptDate" Type="Edm.Date" />
+   </EntityType>
+   <EntityType Name="purchaseInvoice">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="number" Type="Edm.String" />
+    <Property Name="invoiceDate" Type="Edm.Date" />
+    <Property Name="postingDate" Type="Edm.Date" />
+    <Property Name="dueDate" Type="Edm.Date" />
+    <Property Name="vendorInvoiceNumber" Type="Edm.String" />
+    <Property Name="vendorId" Type="Edm.Guid" />
+    <Property Name="vendorNumber" Type="Edm.String" />
+    <Property Name="vendorName" Type="Edm.String" />
+    <Property Name="payToName" Type="Edm.String" />
+    <Property Name="payToContact" Type="Edm.String" />
+    <Property Name="payToVendorId" Type="Edm.Guid" />
+    <Property Name="payToVendorNumber" Type="Edm.String" />
+    <Property Name="shipToName" Type="Edm.String" />
+    <Property Name="shipToContact" Type="Edm.String" />
+    <Property Name="currencyId" Type="Edm.Guid" />
+    <Property Name="currencyCode" Type="Edm.String" />
+    <Property Name="orderId" Type="Edm.Guid" />
+    <Property Name="orderNumber" Type="Edm.String" />
+    <Property Name="pricesIncludeTax" Type="Edm.Boolean" />
+    <Property Name="discountAmount" Type="Edm.Decimal" />
+    <Property Name="discountAppliedBeforeTax" Type="Edm.Boolean" />
+    <Property Name="totalAmountExcludingTax" Type="Edm.Decimal" />
+    <Property Name="totalTaxAmount" Type="Edm.Decimal" />
+    <Property Name="totalAmountIncludingTax" Type="Edm.Decimal" />
+    <Property Name="status" Type="Edm.String" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+    <NavigationProperty Name="vendor" Type="Microsoft.NAV.vendor">
+     <ReferentialConstraint Property="vendorId" ReferencedProperty="id" />
+    </NavigationProperty>
+    <NavigationProperty Name="currency" Type="Microsoft.NAV.currency">
+     <ReferentialConstraint Property="currencyId" ReferencedProperty="id" />
+    </NavigationProperty>
+    <NavigationProperty Name="purchaseInvoiceLines" Type="Collection(Microsoft.NAV.purchaseInvoiceLine)" ContainsTarget="true" />
+   </EntityType>
+   <EntityType Name="purchaseInvoiceLine">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="documentId" Type="Edm.Guid" />
+    <Property Name="sequence" Type="Edm.Int32" />
+    <Property Name="itemId" Type="Edm.Guid" />
+    <Property Name="accountId" Type="Edm.Guid" />
+    <Property Name="lineType" Type="Edm.String" />
+    <Property Name="lineObjectNumber" Type="Edm.String" />
+    <Property Name="description" Type="Edm.String" />
+    <Property Name="description2" Type="Edm.String" />
+    <Property Name="unitOfMeasureId" Type="Edm.Guid" />
+    <Property Name="unitOfMeasureCode" Type="Edm.String" />
+    <Property Name="quantity" Type="Edm.Decimal" />
+    <Property Name="discountAmount" Type="Edm.Decimal" />
+    <Property Name="discountPercent" Type="Edm.Decimal" />
+    <Property Name="discountAppliedBeforeTax" Type="Edm.Boolean" />
+    <Property Name="amountExcludingTax" Type="Edm.Decimal" />
+    <Property Name="taxCode" Type="Edm.String" />
+    <Property Name="taxPercent" Type="Edm.Decimal" />
+    <Property Name="totalTaxAmount" Type="Edm.Decimal" />
+    <Property Name="amountIncludingTax" Type="Edm.Decimal" />
+    <Property Name="invoiceDiscountAllocation" Type="Edm.Decimal" />
+    <Property Name="netAmount" Type="Edm.Decimal" />
+    <Property Name="netTaxAmount" Type="Edm.Decimal" />
+    <Property Name="netAmountIncludingTax" Type="Edm.Decimal" />
+    <Property Name="itemVariantId" Type="Edm.Guid" />
+    <Property Name="locationId" Type="Edm.Guid" />
+    <Property Name="unitCost" Type="Edm.Decimal" />
+    <Property Name="directUnitCost" Type="Edm.Decimal" />
+    <Property Name="expectedReceiptDate" Type="Edm.Date" />
+    <NavigationProperty Name="item" Type="Microsoft.NAV.item" />
+    <NavigationProperty Name="account" Type="Microsoft.NAV.account" />
+    <NavigationProperty Name="unitOfMeasure" Type="Microsoft.NAV.unitOfMeasure" />
+    <NavigationProperty Name="location" Type="Microsoft.NAV.location" />
+   </EntityType>
+   <EntityType Name="purchaseCreditMemo">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="number" Type="Edm.String" />
+    <Property Name="creditMemoDate" Type="Edm.Date" />
+    <Property Name="postingDate" Type="Edm.Date" />
+    <Property Name="dueDate" Type="Edm.Date" />
+    <Property Name="vendorId" Type="Edm.Guid" />
+    <Property Name="vendorNumber" Type="Edm.String" />
+    <Property Name="vendorName" Type="Edm.String" />
+    <Property Name="payToName" Type="Edm.String" />
+    <Property Name="payToVendorId" Type="Edm.Guid" />
+    <Property Name="payToVendorNumber" Type="Edm.String" />
+    <Property Name="currencyId" Type="Edm.Guid" />
+    <Property Name="currencyCode" Type="Edm.String" />
+    <Property Name="paymentTermsId" Type="Edm.Guid" />
+    <Property Name="shipmentMethodId" Type="Edm.Guid" />
+    <Property Name="purchaser" Type="Edm.String" />
+    <Property Name="pricesIncludeTax" Type="Edm.Boolean" />
+    <Property Name="discountAmount" Type="Edm.Decimal" />
+    <Property Name="discountAppliedBeforeTax" Type="Edm.Boolean" />
+    <Property Name="totalAmountExcludingTax" Type="Edm.Decimal" />
+    <Property Name="totalTaxAmount" Type="Edm.Decimal" />
+    <Property Name="totalAmountIncludingTax" Type="Edm.Decimal" />
+    <Property Name="status" Type="Edm.String" />
+    <Property Name="invoiceId" Type="Edm.Guid" />
+    <Property Name="invoiceNumber" Type="Edm.String" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+    <NavigationProperty Name="vendor" Type="Microsoft.NAV.vendor">
+     <ReferentialConstraint Property="vendorId" ReferencedProperty="id" />
+    </NavigationProperty>
+    <NavigationProperty Name="purchaseCreditMemoLines" Type="Collection(Microsoft.NAV.purchaseCreditMemoLine)" ContainsTarget="true" />
+   </EntityType>
+   <EntityType Name="purchaseCreditMemoLine">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="documentId" Type="Edm.Guid" />
+    <Property Name="sequence" Type="Edm.Int32" />
+    <Property Name="itemId" Type="Edm.Guid" />
+    <Property Name="accountId" Type="Edm.Guid" />
+    <Property Name="lineType" Type="Edm.String" />
+    <Property Name="lineObjectNumber" Type="Edm.String" />
+    <Property Name="description" Type="Edm.String" />
+    <Property Name="description2" Type="Edm.String" />
+    <Property Name="unitOfMeasureId" Type="Edm.Guid" />
+    <Property Name="unitOfMeasureCode" Type="Edm.String" />
+    <Property Name="quantity" Type="Edm.Decimal" />
+    <Property Name="discountAmount" Type="Edm.Decimal" />
+    <Property Name="discountPercent" Type="Edm.Decimal" />
+    <Property Name="discountAppliedBeforeTax" Type="Edm.Boolean" />
+    <Property Name="amountExcludingTax" Type="Edm.Decimal" />
+    <Property Name="taxCode" Type="Edm.String" />
+    <Property Name="taxPercent" Type="Edm.Decimal" />
+    <Property Name="totalTaxAmount" Type="Edm.Decimal" />
+    <Property Name="amountIncludingTax" Type="Edm.Decimal" />
+    <Property Name="invoiceDiscountAllocation" Type="Edm.Decimal" />
+    <Property Name="netAmount" Type="Edm.Decimal" />
+    <Property Name="netTaxAmount" Type="Edm.Decimal" />
+    <Property Name="netAmountIncludingTax" Type="Edm.Decimal" />
+    <Property Name="itemVariantId" Type="Edm.Guid" />
+    <Property Name="locationId" Type="Edm.Guid" />
+    <Property Name="unitCost" Type="Edm.Decimal" />
+    <Property Name="directUnitCost" Type="Edm.Decimal" />
+    <NavigationProperty Name="item" Type="Microsoft.NAV.item" />
+    <NavigationProperty Name="account" Type="Microsoft.NAV.account" />
+    <NavigationProperty Name="unitOfMeasure" Type="Microsoft.NAV.unitOfMeasure" />
+    <NavigationProperty Name="location" Type="Microsoft.NAV.location" />
+   </EntityType>
+   <EntityType Name="itemLedgerEntry">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="entryNumber" Type="Edm.Int32" />
+    <Property Name="itemNumber" Type="Edm.String" />
+    <Property Name="postingDate" Type="Edm.Date" />
+    <Property Name="entryType" Type="Edm.String" />
+    <Property Name="sourceNumber" Type="Edm.String" />
+    <Property Name="sourceType" Type="Edm.String" />
+    <Property Name="documentNumber" Type="Edm.String" />
+    <Property Name="documentType" Type="Edm.String" />
+    <Property Name="description" Type="Edm.String" />
+    <Property Name="quantity" Type="Edm.Decimal" />
+    <Property Name="salesAmountActual" Type="Edm.Decimal" />
+    <Property Name="costAmountActual" Type="Edm.Decimal" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+   </EntityType>
+   <EntityType Name="generalLedgerEntry">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="entryNumber" Type="Edm.Int32" />
+    <Property Name="postingDate" Type="Edm.Date" />
+    <Property Name="documentNumber" Type="Edm.String" />
+    <Property Name="documentType" Type="Edm.String" />
+    <Property Name="accountId" Type="Edm.Guid" />
+    <Property Name="accountNumber" Type="Edm.String" />
+    <Property Name="description" Type="Edm.String" />
+    <Property Name="debitAmount" Type="Edm.Decimal" />
+    <Property Name="creditAmount" Type="Edm.Decimal" />
+    <Property Name="additionalCurrencyDebitAmount" Type="Edm.Decimal" />
+    <Property Name="additionalCurrencyCreditAmount" Type="Edm.Decimal" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+    <NavigationProperty Name="account" Type="Microsoft.NAV.account">
+     <ReferentialConstraint Property="accountId" ReferencedProperty="id" />
+    </NavigationProperty>
+   </EntityType>
+   <EntityType Name="account">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="number" Type="Edm.String" />
+    <Property Name="displayName" Type="Edm.String" />
+    <Property Name="category" Type="Edm.String" />
+    <Property Name="subCategory" Type="Edm.String" />
+    <Property Name="blocked" Type="Edm.Boolean" />
+    <Property Name="accountType" Type="Edm.String" />
+    <Property Name="directPosting" Type="Edm.Boolean" />
+    <Property Name="netChange" Type="Edm.Decimal" />
+    <Property Name="consolidationTranslationMethod" Type="Edm.String" />
+    <Property Name="consolidationDebitAccount" Type="Edm.String" />
+    <Property Name="consolidationCreditAccount" Type="Edm.String" />
+    <Property Name="excludeFromConsolidation" Type="Edm.Boolean" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+   </EntityType>
+   <EntityType Name="agedAccountsReceivable">
+    <Key><PropertyRef Name="customerId" /></Key>
+    <Property Name="customerId" Type="Edm.Guid" Nullable="false" />
+    <Property Name="customerNumber" Type="Edm.String" />
+    <Property Name="name" Type="Edm.String" />
+    <Property Name="currencyCode" Type="Edm.String" />
+    <Property Name="balanceDue" Type="Edm.Decimal" />
+    <Property Name="currentAmount" Type="Edm.Decimal" />
+    <Property Name="period1Amount" Type="Edm.Decimal" />
+    <Property Name="period2Amount" Type="Edm.Decimal" />
+    <Property Name="period3Amount" Type="Edm.Decimal" />
+    <Property Name="agedAsOfDate" Type="Edm.Date" />
+    <Property Name="periodLengthFilter" Type="Edm.String" />
+   </EntityType>
+   <EntityType Name="agedAccountsPayable">
+    <Key><PropertyRef Name="vendorId" /></Key>
+    <Property Name="vendorId" Type="Edm.Guid" Nullable="false" />
+    <Property Name="vendorNumber" Type="Edm.String" />
+    <Property Name="name" Type="Edm.String" />
+    <Property Name="currencyCode" Type="Edm.String" />
+    <Property Name="balanceDue" Type="Edm.Decimal" />
+    <Property Name="currentAmount" Type="Edm.Decimal" />
+    <Property Name="period1Amount" Type="Edm.Decimal" />
+    <Property Name="period2Amount" Type="Edm.Decimal" />
+    <Property Name="period3Amount" Type="Edm.Decimal" />
+    <Property Name="agedAsOfDate" Type="Edm.Date" />
+    <Property Name="periodLengthFilter" Type="Edm.String" />
+   </EntityType>
+   <EntityType Name="customerPaymentJournal">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="code" Type="Edm.String" />
+    <Property Name="displayName" Type="Edm.String" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+    <Property Name="balancingAccountId" Type="Edm.Guid" />
+    <Property Name="balancingAccountNumber" Type="Edm.String" />
+    <NavigationProperty Name="account" Type="Microsoft.NAV.account">
+     <ReferentialConstraint Property="balancingAccountId" ReferencedProperty="id" />
+    </NavigationProperty>
+    <NavigationProperty Name="customerPayments" Type="Collection(Microsoft.NAV.customerPayment)" ContainsTarget="true" />
+   </EntityType>
+   <EntityType Name="customerPayment">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="journalId" Type="Edm.Guid" />
+    <Property Name="journalDisplayName" Type="Edm.String" />
+    <Property Name="lineNumber" Type="Edm.Int32" />
+    <Property Name="customerId" Type="Edm.Guid" />
+    <Property Name="customerNumber" Type="Edm.String" />
+    <Property Name="contactId" Type="Edm.Guid" />
+    <Property Name="postingDate" Type="Edm.Date" />
+    <Property Name="documentNumber" Type="Edm.String" />
+    <Property Name="externalDocumentNumber" Type="Edm.String" />
+    <Property Name="amount" Type="Edm.Decimal" />
+    <Property Name="appliesToInvoiceId" Type="Edm.Guid" />
+    <Property Name="appliesToInvoiceNumber" Type="Edm.String" />
+    <Property Name="description" Type="Edm.String" />
+    <Property Name="comment" Type="Edm.String" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+    <NavigationProperty Name="customer" Type="Microsoft.NAV.customer">
+     <ReferentialConstraint Property="customerId" ReferencedProperty="id" />
+    </NavigationProperty>
+   </EntityType>
+   <EntityType Name="vendorPaymentJournal">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="code" Type="Edm.String" />
+    <Property Name="displayName" Type="Edm.String" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+    <Property Name="balancingAccountId" Type="Edm.Guid" />
+    <Property Name="balancingAccountNumber" Type="Edm.String" />
+    <NavigationProperty Name="account" Type="Microsoft.NAV.account">
+     <ReferentialConstraint Property="balancingAccountId" ReferencedProperty="id" />
+    </NavigationProperty>
+    <NavigationProperty Name="vendorPayments" Type="Collection(Microsoft.NAV.vendorPayment)" ContainsTarget="true" />
+   </EntityType>
+   <EntityType Name="vendorPayment">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="journalId" Type="Edm.Guid" />
+    <Property Name="journalDisplayName" Type="Edm.String" />
+    <Property Name="lineNumber" Type="Edm.Int32" />
+    <Property Name="vendorId" Type="Edm.Guid" />
+    <Property Name="vendorNumber" Type="Edm.String" />
+    <Property Name="postingDate" Type="Edm.Date" />
+    <Property Name="documentNumber" Type="Edm.String" />
+    <Property Name="externalDocumentNumber" Type="Edm.String" />
+    <Property Name="amount" Type="Edm.Decimal" />
+    <Property Name="appliesToInvoiceId" Type="Edm.Guid" />
+    <Property Name="appliesToInvoiceNumber" Type="Edm.String" />
+    <Property Name="description" Type="Edm.String" />
+    <Property Name="comment" Type="Edm.String" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+    <NavigationProperty Name="vendor" Type="Microsoft.NAV.vendor">
+     <ReferentialConstraint Property="vendorId" ReferencedProperty="id" />
+    </NavigationProperty>
+   </EntityType>
+   <EntityContainer Name="default">
+    <EntitySet Name="companies" EntityType="Microsoft.NAV.company" />
+    <EntitySet Name="companyInformation" EntityType="Microsoft.NAV.companyInformation" />
+    <EntitySet Name="locations" EntityType="Microsoft.NAV.location" />
+    <EntitySet Name="unitsOfMeasure" EntityType="Microsoft.NAV.unitOfMeasure" />
+    <EntitySet Name="itemCategories" EntityType="Microsoft.NAV.itemCategory" />
+    <EntitySet Name="currencies" EntityType="Microsoft.NAV.currency" />
+    <EntitySet Name="currencyExchangeRates" EntityType="Microsoft.NAV.currencyExchangeRate" />
+    <EntitySet Name="paymentTerms" EntityType="Microsoft.NAV.paymentTerm" />
+    <EntitySet Name="shipmentMethods" EntityType="Microsoft.NAV.shipmentMethod" />
+    <EntitySet Name="employees" EntityType="Microsoft.NAV.employee" />
+    <EntitySet Name="customers" EntityType="Microsoft.NAV.customer" />
+    <EntitySet Name="vendors" EntityType="Microsoft.NAV.vendor" />
+    <EntitySet Name="contacts" EntityType="Microsoft.NAV.contact" />
+    <EntitySet Name="items" EntityType="Microsoft.NAV.item" />
+    <EntitySet Name="salesQuotes" EntityType="Microsoft.NAV.salesQuote" />
+    <EntitySet Name="salesQuoteLines" EntityType="Microsoft.NAV.salesQuoteLine" />
+    <EntitySet Name="salesOrders" EntityType="Microsoft.NAV.salesOrder" />
+    <EntitySet Name="salesOrderLines" EntityType="Microsoft.NAV.salesOrderLine" />
+    <EntitySet Name="salesInvoices" EntityType="Microsoft.NAV.salesInvoice" />
+    <EntitySet Name="salesInvoiceLines" EntityType="Microsoft.NAV.salesInvoiceLine" />
+    <EntitySet Name="salesShipments" EntityType="Microsoft.NAV.salesShipment" />
+    <EntitySet Name="salesShipmentLines" EntityType="Microsoft.NAV.salesShipmentLine" />
+    <EntitySet Name="salesCreditMemos" EntityType="Microsoft.NAV.salesCreditMemo" />
+    <EntitySet Name="salesCreditMemoLines" EntityType="Microsoft.NAV.salesCreditMemoLine" />
+    <EntitySet Name="purchaseOrders" EntityType="Microsoft.NAV.purchaseOrder" />
+    <EntitySet Name="purchaseOrderLines" EntityType="Microsoft.NAV.purchaseOrderLine" />
+    <EntitySet Name="purchaseReceipts" EntityType="Microsoft.NAV.purchaseReceipt" />
+    <EntitySet Name="purchaseReceiptLines" EntityType="Microsoft.NAV.purchaseReceiptLine" />
+    <EntitySet Name="purchaseInvoices" EntityType="Microsoft.NAV.purchaseInvoice" />
+    <EntitySet Name="purchaseInvoiceLines" EntityType="Microsoft.NAV.purchaseInvoiceLine" />
+    <EntitySet Name="purchaseCreditMemos" EntityType="Microsoft.NAV.purchaseCreditMemo" />
+    <EntitySet Name="purchaseCreditMemoLines" EntityType="Microsoft.NAV.purchaseCreditMemoLine" />
+    <EntitySet Name="itemLedgerEntries" EntityType="Microsoft.NAV.itemLedgerEntry" />
+    <EntitySet Name="generalLedgerEntries" EntityType="Microsoft.NAV.generalLedgerEntry" />
+    <EntitySet Name="accounts" EntityType="Microsoft.NAV.account" />
+    <EntitySet Name="agedAccountsReceivables" EntityType="Microsoft.NAV.agedAccountsReceivable" />
+    <EntitySet Name="agedAccountsPayables" EntityType="Microsoft.NAV.agedAccountsPayable" />
+    <EntitySet Name="customerPaymentJournals" EntityType="Microsoft.NAV.customerPaymentJournal" />
+    <EntitySet Name="vendorPaymentJournals" EntityType="Microsoft.NAV.vendorPaymentJournal" />
+    <EntitySet Name="customerPayments" EntityType="Microsoft.NAV.customerPayment" />
+    <EntitySet Name="vendorPayments" EntityType="Microsoft.NAV.vendorPayment" />
+   </EntityContainer>
+  </Schema>
+ </edmx:DataServices>
+</edmx:Edmx>

@@ -1,0 +1,732 @@
+{
+ "$schema": "_process.schema.json",
+ "format": "plx-process-graph/v1",
+ "id": "sales_order_lifecycle",
+ "description": "Gold sales-order lifecycle as Portal's rail builds it (buildOrderLifecycle; for a FileMaker order with no gold twin, synthesizeFmOrderLifecycle from the OE header status): sales order, then for MAKE manufacturing order and release order, then pick list; DISTRIBUTE skips the manufacturing and release steps (MRP-M-154). Pick gate: MAKE needs a RELEASED or FULFILLED ship release, DISTRIBUTE needs the order confirmed. Shipment confirmation is gated per line, not per header (confirm/route.ts shipmentSkipsShipRelease): a DISTRIBUTE order with any MAKE line still needs a ship release to ship, although buildOrderLifecycle still says DISTRIBUTE skips release (see the shipment stage and condition order_has_make_line). Shipment and customer invoice follow the rail (O2C steps 4-6 of the BC transaction mapping brief); they are Workbench stages evidenced by declared ontology links, not Portal rail steps. Quantities: ordered vs shipped vs invoiced per item (order_fulfilment_match). The quote head step is omitted: its evidence (customFields.sourceQuoteId) is not a declared property. Re-read at staging 38cd3f3: the rail ends with Shipment and Complete steps read from the order status (SHIPPED or COMPLETE), which only the Portal close-out sets (999dac8 TASK-2396; it can also restate a made line to its realized yield and short-close a remainder in custom_fields.closeout, which this graph does not read, so a short-closed remainder still reads as a shortfall); the shipment stage stays evidence-based. Authority: a Portal MAKE order confirmed from then on has no FileMaker order_entry (898e084 TASK-2638) and its releases and shipments key on portal ids (8665d4d TASK-2641: ShipRelease.sales_order_id canonical, order_ref a compatibility ref); the FileMaker root and the same_record_as paths serve only legacy orders the Portal still reads.",
+ "root_type": "SalesOrder",
+ "tier_floor": "stored_by_text_join",
+ "variant_by": {
+  "property": "fulfillment_mode",
+  "compare": "exact",
+  "values": {
+   "MAKE": "make",
+   "DISTRIBUTE": "distribute"
+  },
+  "default": "make",
+  "note": "load-order-lifecycle.ts: fulfillmentMode === 'DISTRIBUTE' ? 'DISTRIBUTE' : 'MAKE'."
+ },
+ "variants": [
+  {
+   "id": "make",
+   "label": "Made to ship",
+   "skips": []
+  },
+  {
+   "id": "distribute",
+   "label": "Distribution (rail: no release step; shipping with a MAKE line still needs one)",
+   "skips": [
+    "manufacturing_order",
+    "release_order"
+   ]
+  }
+ ],
+ "conditions": [
+  {
+   "id": "release_clears_pick",
+   "description": "A RELEASED or FULFILLED ship release authorises the warehouse to pick (RELEASE_CLEARS_PICK, some()).",
+   "evidence": [
+    {
+     "object_type": "ShipRelease",
+     "bindings": [
+      "portal.app_ship_release"
+     ],
+     "paths": [
+      [
+       {
+        "link": "ShipRelease.for_sales_order",
+        "direction": "reverse"
+       }
+      ],
+      [
+       {
+        "link": "SalesOrder.same_record_as",
+        "direction": "forward"
+       },
+       {
+        "link": "ShipRelease.for_sales_order",
+        "direction": "reverse"
+       }
+      ],
+      [
+       {
+        "link": "SalesOrder.same_record_as",
+        "direction": "reverse"
+       },
+       {
+        "link": "ShipRelease.for_sales_order",
+        "direction": "reverse"
+       }
+      ]
+     ],
+     "predicate": {
+      "kind": "status",
+      "property": "status",
+      "compare": "upper",
+      "done": [
+       "RELEASED",
+       "FULFILLED"
+      ],
+      "ignore": [
+       "CANCELLED"
+      ],
+      "quantifier": "any"
+     },
+     "events": [
+      "ShipRelease.released"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "order_has_make_line",
+   "description": "The order has at least one Produce (MAKE) line. Portal's confirm route skips the ship-release gate only when the header is DISTRIBUTE and no allocated line is MAKE (shipmentSkipsShipRelease), so a DISTRIBUTE order with a MAKE line needs a ship release to ship. Portal reads the allocated lines of the shipment; the order's lines are the closest declared evidence.",
+   "evidence": [
+    {
+     "object_type": "SalesOrderLine",
+     "bindings": [
+      "portal.app_sales_order_line"
+     ],
+     "paths": [
+      [
+       {
+        "link": "SalesOrderLine.line_of",
+        "direction": "reverse"
+       }
+      ]
+     ],
+     "predicate": {
+      "kind": "status",
+      "property": "line_source",
+      "compare": "upper",
+      "done": [
+       "MAKE"
+      ],
+      "quantifier": "any"
+     }
+    }
+   ]
+  }
+ ],
+ "stages": [
+  {
+   "id": "sales_order",
+   "label": "Sales order",
+   "description": "The order is confirmed: status in SO_CONFIRMED, its legacy alias Open, or COMPLETE (CANCELLED ignored); a FileMaker order is read by its own OE header status.",
+   "owner_role": "SALES",
+   "evidence": [
+    {
+     "object_type": "SalesOrder",
+     "bindings": [
+      "portal.app_sales_order"
+     ],
+     "paths": [
+      []
+     ],
+     "predicate": {
+      "kind": "status",
+      "property": "status",
+      "compare": "upper",
+      "done": [
+       "CONFIRMED",
+       "IN_PRODUCTION",
+       "READY",
+       "READY_TO_SHIP",
+       "PARTIALLY_SHIPPED",
+       "SHIPPED",
+       "COMPLETE",
+       "OPEN"
+      ],
+      "ignore": [
+       "CANCELLED"
+      ],
+      "quantifier": "all"
+     },
+     "events": [
+      "SalesOrder.created"
+     ],
+     "note": "SO_CONFIRMED plus OPEN and COMPLETE. Open is the legacy FileMaker-import status the Portal reads as CONFIRMED (portal/src/lib/sales-order/status.ts normalizeSalesOrderStatus; evals/oracle/keys.py SO_STATUS_ALIASES). SO_CONFIRMED holds COMPLETE since 999dac8 (order-lifecycle.ts@38cd3f3); a completed order is a commitment, not a draft: reading either as one would leave its quantities uncompared and hide a shortfall. CANCELLED is ignored (no live order: missing with no_live_record, never a draft)."
+    },
+    {
+     "object_type": "SalesOrder",
+     "bindings": [
+      "portal.fm_order_entry"
+     ],
+     "paths": [
+      []
+     ],
+     "predicate": {
+      "kind": "status",
+      "property": "fm_status",
+      "compare": "upper",
+      "done": [
+       "CONFIRMED",
+       "IN_PRODUCTION",
+       "READY",
+       "READY_TO_SHIP",
+       "PARTIALLY_SHIPPED",
+       "SHIPPED",
+       "COMPLETE",
+       "OPEN",
+       "CLOSED"
+      ],
+      "ignore": [
+       "CANCELLED"
+      ],
+      "quantifier": "all"
+     },
+     "note": "FM order as root: Portal's rail synthesizes its lane from the OE header status when no gold order bridges it (synthesizeFmOrderLifecycle@790256c; blank reads DRAFT). The rail tests it against SO_CONFIRMED, which holds no FM status text; the Workbench reads Open and Closed as committed (see the gold note) and Cancelled as no order. A gold root never reads this spec. Portal assumes MAKE; FM carries no mode, so the variant stays unknown. Legacy only since 898e084 TASK-2638 (38cd3f3): a newly confirmed Portal MAKE order has no FileMaker twin."
+    }
+   ]
+  },
+  {
+   "id": "manufacturing_order",
+   "label": "Manufacturing order",
+   "description": "Every live manufacturing order of the order's lines is done (MO_DONE, every(); CANCELLED ignored).",
+   "owner_role": "PROD",
+   "prerequisites": [
+    {
+     "process": "manufacturing_order",
+     "stage": "assembly_realized",
+     "object_type": "AssemblyOrder",
+     "applies_from": "assembly_order",
+     "paths": [
+      [
+       {
+        "link": "SalesOrderLine.line_of",
+        "direction": "reverse"
+       },
+       {
+        "link": "AssemblyOrder.for_order_line",
+        "direction": "reverse"
+       }
+      ],
+      [
+       {
+        "link": "SalesOrderLine.line_of",
+        "direction": "reverse"
+       },
+       {
+        "link": "AssemblyOrderAllocation.for_order_line",
+        "direction": "reverse"
+       },
+       {
+        "link": "AssemblyOrderAllocation.allocates",
+        "direction": "forward"
+       }
+      ]
+     ],
+     "note": "The order's manufacturing step waits on each live manufacturing order of its lines being realized (MO_DONE) in the manufacturing department's own process, whose blockers (materials) it inherits.",
+     "pegged_by": [
+      "AssemblyOrder.for_order_line",
+      "AssemblyOrderAllocation.for_order_line"
+     ]
+    }
+   ],
+   "evidence": [
+    {
+     "object_type": "AssemblyOrder",
+     "bindings": [
+      "portal.app_manufacturing_order"
+     ],
+     "paths": [
+      [
+       {
+        "link": "SalesOrderLine.line_of",
+        "direction": "reverse"
+       },
+       {
+        "link": "AssemblyOrder.for_order_line",
+        "direction": "reverse"
+       }
+      ]
+     ],
+     "predicate": {
+      "kind": "status",
+      "property": "status",
+      "compare": "upper",
+      "done": [
+       "COMPLETED",
+       "REALIZED",
+       "CLOSED"
+      ],
+      "ignore": [
+       "CANCELLED"
+      ],
+      "quantifier": "all"
+     },
+     "events": [
+      "AssemblyOrder.portal_completed"
+     ],
+     "note": "Soft-deleted MOs (deleted_at set) are dropped as Portal's loader does.",
+     "exclude_present": {
+      "property": "deleted_at",
+      "evidence": "plx-customer-portal:portal/src/lib/sales-order/load-order-lifecycle.ts@59b0548 manufacturingOrders where: { deletedAt: null }"
+     }
+    }
+   ]
+  },
+  {
+   "id": "release_order",
+   "label": "Release order",
+   "description": "Every live ship release is FULFILLED (RELEASE_DONE, every(); CANCELLED ignored).",
+   "owner_role": "SALES",
+   "evidence": [
+    {
+     "object_type": "ShipRelease",
+     "bindings": [
+      "portal.app_ship_release"
+     ],
+     "paths": [
+      [
+       {
+        "link": "ShipRelease.for_sales_order",
+        "direction": "reverse"
+       }
+      ],
+      [
+       {
+        "link": "SalesOrder.same_record_as",
+        "direction": "forward"
+       },
+       {
+        "link": "ShipRelease.for_sales_order",
+        "direction": "reverse"
+       }
+      ],
+      [
+       {
+        "link": "SalesOrder.same_record_as",
+        "direction": "reverse"
+       },
+       {
+        "link": "ShipRelease.for_sales_order",
+        "direction": "reverse"
+       }
+      ]
+     ],
+     "predicate": {
+      "kind": "status",
+      "property": "status",
+      "compare": "upper",
+      "done": [
+       "FULFILLED"
+      ],
+      "ignore": [
+       "CANCELLED"
+      ],
+      "quantifier": "all"
+     },
+     "events": [
+      "ShipRelease.released",
+      "ShipRelease.fulfilled"
+     ],
+     "note": "The single-order loader reads releases by salesOrderId and adds those whose orderRef is the order's FM id only when none carries that orderRef; the list loader (attachListLifecycles) always unions both, deduplicated by id; here both paths are a union (deduplicated by record), so a release found only through the FM id counts even then. Ship releases exist only as Portal-native rows (lineage gold_native_staging under fulfillment.json), so on today's data a release is a lead: this stage and the release_clears_pick gate are unknown until such rows are confirmed."
+    }
+   ]
+  },
+  {
+   "id": "pick_list",
+   "label": "Pick list",
+   "description": "Every live pick list is COMPLETED (PICK_DONE, every(); CANCELLED ignored).",
+   "owner_role": "WH",
+   "evidence": [
+    {
+     "object_type": "PickList",
+     "predicate": {
+      "kind": "status",
+      "property": "status",
+      "compare": "upper",
+      "done": [
+       "COMPLETED"
+      ],
+      "ignore": [
+       "CANCELLED"
+      ],
+      "quantifier": "all"
+     },
+     "note": "app_pick_list is not served by the reporting API, so this stage is unknown, never missing."
+    }
+   ],
+   "requires": {
+    "make": [
+     "condition:release_clears_pick"
+    ],
+    "distribute": [
+     "stage:sales_order"
+    ]
+   },
+   "source_note": "pickGate: MAKE clears on a RELEASED/FULFILLED release; DISTRIBUTE clears once the order is confirmed."
+  },
+  {
+   "id": "shipment",
+   "label": "Shipment",
+   "description": "A shipment of the order went out: a gold shipment SHIPPED or DELIVERED, or a posted Sage/BC shipment record. An FM-kept order proves no absence (absence_unproven): unknown, never missing.",
+   "owner_role": "SHIP",
+   "evidence": [
+    {
+     "object_type": "Shipment",
+     "bindings": [
+      "portal.app_shipment"
+     ],
+     "paths": [
+      [
+       {
+        "link": "Shipment.ships",
+        "direction": "reverse"
+       }
+      ]
+     ],
+     "predicate": {
+      "kind": "status",
+      "property": "status",
+      "compare": "upper",
+      "done": [
+       "SHIPPED",
+       "DELIVERED"
+      ],
+      "ignore": [
+       "CANCELLED"
+      ],
+      "quantifier": "any"
+     },
+     "events": [
+      "Shipment.shipped"
+     ],
+     "note": "ShipmentStatus (portal/prisma/schema.prisma): DRAFT, CONFIRMED, PICKING, PACKED, SHIPPED, DELIVERED, CANCELLED."
+    },
+    {
+     "object_type": "Shipment",
+     "bindings": [
+      "portal.sage_oe_shipment_header",
+      "bc.sales_shipments"
+     ],
+     "paths": [
+      [
+       {
+        "link": "Shipment.ships",
+        "direction": "reverse"
+       }
+      ]
+     ],
+     "fallback_paths": [
+      [
+       {
+        "link": "SalesOrder.same_record_as",
+        "direction": "forward"
+       },
+       {
+        "link": "Shipment.ships",
+        "direction": "reverse"
+       }
+      ]
+     ],
+     "predicate": {
+      "kind": "exists"
+     },
+     "events": [
+      "Shipment.sage_shipped"
+     ],
+     "note": "A Sage OE shipment or a BC posted sales shipment exists only once shipped."
+    }
+   ],
+   "absence_unproven": {
+    "bindings": [
+     "portal.fm_order_entry"
+    ],
+    "lineages": [
+     "gold_etl_from_fm"
+    ],
+    "note": "an order kept in FM: FM shipments reach the Portal as app_shipment rows with no sales_order_id, so no shipment record links to the order and its absence proves nothing",
+    "evidence": "plx-customer-portal:portal/scripts/etl-silver-to-gold.ts@12db891 etlShipments (lines 1066-1110: silver.shipments -> app_shipment sets no sales_order_id)"
+   },
+   "source_note": "Confirm gate (confirm/route.ts, MRP-M-133): a shipment needs a RELEASED ship release unless shipmentSkipsShipRelease (header DISTRIBUTE and no allocated line is MAKE). A MAKE header always needs one; a DISTRIBUTE header with a MAKE line too (condition order_has_make_line). Not enforced as `requires`: it is per variant and the graph cannot express 'only when a MAKE line exists'. Since fe53eec TASK-2701 the gate also reads a builder line's own source; it never reads the order's releaseRequired (1e40b64 TASK-2400)."
+  },
+  {
+   "id": "customer_invoice",
+   "label": "Customer invoice",
+   "description": "A customer invoice bills the order (BC posts it; Sage history). Draft and cancelled invoices do not count (document-finance.ts classifyInvoice).",
+   "owner_role": "FIN",
+   "evidence": [
+    {
+     "object_type": "SalesInvoice",
+     "paths": [
+      [
+       {
+        "link": "SalesInvoice.bills",
+        "direction": "reverse"
+       }
+      ]
+     ],
+     "fallback_paths": [
+      [
+       {
+        "link": "SalesOrder.same_record_as",
+        "direction": "forward"
+       },
+       {
+        "link": "SalesInvoice.bills",
+        "direction": "reverse"
+       }
+      ]
+     ],
+     "predicate": {
+      "kind": "status",
+      "property": "status",
+      "compare": "upper",
+      "not_done": [
+       "DRAFT"
+      ],
+      "ignore": [
+       "CANCELED",
+       "CANCELLED"
+      ],
+      "quantifier": "any"
+     },
+     "events": [
+      "SalesInvoice.posted"
+     ],
+     "note": "BC invoices reach a gold order only through a lead (externalDocumentNumber text match) or through the order's verified BC twin; leads never count as evidence.",
+     "bindings": [
+      "bc.sales_invoices"
+     ]
+    },
+    {
+     "object_type": "SalesInvoice",
+     "bindings": [
+      "portal.sage_oe_invoice_header"
+     ],
+     "paths": [
+      [
+       {
+        "link": "SalesInvoice.bills",
+        "direction": "reverse"
+       }
+      ]
+     ],
+     "fallback_paths": [
+      [
+       {
+        "link": "SalesOrder.same_record_as",
+        "direction": "forward"
+       },
+       {
+        "link": "SalesInvoice.bills",
+        "direction": "reverse"
+       }
+      ]
+     ],
+     "predicate": {
+      "kind": "exists"
+     },
+     "events": [
+      "SalesInvoice.invoiced"
+     ],
+     "note": "A Sage OE invoice header is a posted invoice (historic books)."
+    }
+   ]
+  }
+ ],
+ "evidence": [
+  "plx-customer-portal:portal/src/lib/sales-order/order-lifecycle.ts@c3ffda3 (buildOrderLifecycle, SO_CONFIRMED, MO_DONE, RELEASE_DONE, RELEASE_CLEARS_PICK, PICK_DONE, laneKindsAfterSalesOrder)",
+  "plx-customer-portal:portal/src/lib/sales-order/load-order-lifecycle.ts@59b0548 (loadOrderLifecycle, attachListLifecycles)",
+  "plx-customer-portal:portal/src/lib/sales-order/load-order-lifecycle.ts@790256c (loadFmOrderLifecycle: the gold rail when bridged, else order-lifecycle.ts@790256c synthesizeFmOrderLifecycle: MAKE lane, OE header status or DRAFT, releases by orderRef; f4437e8)",
+  "plx-customer-portal:portal/src/app/api/mrp/wms/shipments/[id]/confirm/route.ts@59b0548 (skipShipRelease via shipmentSkipsShipRelease, per-line gate, 3d4da65 TASK-2257)",
+  "plx-customer-portal:portal/src/lib/mrp/distribution-sage-map.ts@59b0548 (shipmentSkipsShipRelease: DISTRIBUTE header and no MAKE line)",
+  "plx-customer-portal:portal/src/lib/business-central/document-finance.ts@c3ffda3 (classifyInvoice)",
+  "plx-customer-portal:docs/projects/business-central-erp-modernization/Manufacturing-BC-Transaction-Mapping-Brief.md@c3ffda3 (section 3, O2C)",
+  "plx-customer-portal:portal/prisma/schema.prisma@59b0548 (ShipmentStatus, ShipReleaseStatus, PickListStatus, ManufacturingOrderStatus)",
+  "plx-customer-portal:portal/src/lib/ship-release/index.ts@c3ffda3 (getLineOpenQuantities, recomputeReleaseFulfillment: shipped quantity per order line, no epsilon on open quantity)",
+  "plx-customer-portal:portal/scripts/etl-silver-to-gold.ts@12db891 (etlShipments, lines 1066-1110: FM shipments copied to app_shipment without sales_order_id)",
+  "plx-customer-portal:portal/src/lib/policies/seed-rules.ts@48d76e835 (ROUTING_DEPARTMENTS: owner_role is a Portal Department code, what a rule's PolicyApprovalTypeDepartment rows route a WorkItem to, portal/prisma/schema.prisma@48d76e835 :1099, :8467)",
+  "plx-customer-portal:portal/src/lib/sales-order/order-lifecycle.ts@38cd3f3 and closeout.ts@38cd3f3 (999dac8 TASK-2396: Shipment and Complete steps, SO_CONFIRMED holds COMPLETE; evaluateSalesOrderFulfillment, restate at yield, short-close)",
+  "plx-customer-portal:portal/src/lib/sales-order/service.ts@38cd3f3 and ship-release/index.ts@38cd3f3 (898e084 TASK-2638 no FileMaker order_entry at confirm; 8665d4d TASK-2641 releases keyed by portal SalesOrder/SalesOrderLine ids; 1e40b64 TASK-2400 auto release)",
+  "plx-customer-portal:portal/src/app/api/mrp/wms/shipments/[id]/confirm/route.ts@38cd3f3 (fe53eec TASK-2701 line's own lineSource; shippingReleaseWhere; picks attributed per shipment line, 18c00b8 TASK-2675)",
+  "Every other stage owner is this graph's declaration pending PLX review."
+ ],
+ "quantity_checks": [
+  {
+   "id": "order_fulfilment_match",
+   "description": "Per item (records joined only by verified/reviewed Product.same_record_as): ordered vs shipped quantity (one-sided, exact, as Portal's open quantity), shipped vs invoiced quantity, order unit price vs invoice unit price. Only SHIPPED/DELIVERED shipments' lines are shipped (in-progress: reported, never summed); draft and cancelled invoices do not count. The order's own system of record first; its twins' only when it has none, and one system per item (several twins' lines are a conflict, never a sum). Lead (text) links are never counted. Units and currencies must agree; nothing is converted.",
+   "group_by": {
+    "object_type": "Product",
+    "identity_link": "Product.same_record_as"
+   },
+   "sides": [
+    {
+     "role": "ordered",
+     "stage": "sales_order",
+     "object_type": "SalesOrderLine",
+     "paths": [
+      [
+       {
+        "link": "SalesOrderLine.line_of",
+        "direction": "reverse"
+       }
+      ]
+     ],
+     "group_link": "SalesOrderLine.for_item",
+     "quantity": "ordered_quantity",
+     "price": [
+      "unit_price"
+     ]
+    },
+    {
+     "role": "shipped",
+     "stage": "shipment",
+     "object_type": "ShipmentLine",
+     "paths": [
+      [
+       {
+        "link": "Shipment.ships",
+        "direction": "reverse"
+       },
+       {
+        "link": "ShipmentLine.line_of",
+        "direction": "reverse"
+       }
+      ]
+     ],
+     "fallback_paths": [
+      [
+       {
+        "link": "SalesOrder.same_record_as",
+        "direction": "forward"
+       },
+       {
+        "link": "Shipment.ships",
+        "direction": "reverse"
+       },
+       {
+        "link": "ShipmentLine.line_of",
+        "direction": "reverse"
+       }
+      ]
+     ],
+     "group_link": "ShipmentLine.for_item",
+     "quantity": "shipped_quantity",
+     "ignore_through": [
+      {
+       "object_type": "Shipment",
+       "property": "status",
+       "compare": "upper",
+       "values": [
+        "CANCELLED"
+       ],
+       "evidence": "plx-customer-portal:portal/src/lib/ship-release/index.ts@c3ffda3 getLineOpenQuantities and recomputeReleaseFulfillment: lines of CANCELLED shipments never count"
+      },
+      {
+       "object_type": "Shipment",
+       "property": "status",
+       "compare": "upper",
+       "values": [
+        "SHIPPED",
+        "DELIVERED"
+       ],
+       "count_only": true,
+       "evidence": "plx-customer-portal@c3ffda3: shipped = SHIPPED/DELIVERED (assembly-bom/pack-out-history.ts:274, this graph's shipment stage); ShipmentStatus DRAFT..PACKED (prisma/schema.prisma) count in ship-release/index.ts:171 only as commitments"
+      }
+     ]
+    },
+    {
+     "role": "invoiced",
+     "stage": "customer_invoice",
+     "object_type": "SalesInvoiceLine",
+     "paths": [
+      [
+       {
+        "link": "SalesInvoice.bills",
+        "direction": "reverse"
+       },
+       {
+        "link": "SalesInvoiceLine.line_of",
+        "direction": "reverse"
+       }
+      ]
+     ],
+     "group_link": "SalesInvoiceLine.for_item",
+     "quantity": "invoiced_quantity",
+     "price": [
+      "unit_price"
+     ],
+     "ignore_through": [
+      {
+       "object_type": "SalesInvoice",
+       "property": "status",
+       "compare": "upper",
+       "values": [
+        "DRAFT"
+       ],
+       "evidence": "plx-customer-portal:portal/src/lib/business-central/document-finance.ts@c3ffda3 summarizeDocumentFinance/classifyInvoice: status 'draft' (lower-cased) and any status containing 'cancel' are not invoiced"
+      },
+      {
+       "object_type": "SalesInvoice",
+       "property": "status",
+       "match": "contains_ci",
+       "values": [
+        "cancel"
+       ],
+       "evidence": "plx-customer-portal:portal/src/lib/business-central/document-finance.ts@c3ffda3 summarizeDocumentFinance/classifyInvoice: status 'draft' (lower-cased) and any status containing 'cancel' are not invoiced"
+      }
+     ],
+     "fallback_paths": [
+      [
+       {
+        "link": "SalesOrder.same_record_as",
+        "direction": "forward"
+       },
+       {
+        "link": "SalesInvoice.bills",
+        "direction": "reverse"
+       },
+       {
+        "link": "SalesInvoiceLine.line_of",
+        "direction": "reverse"
+       }
+      ]
+     ],
+     "lead_note": "Portal itself matches BC invoices to a gold order by number text (resolveSalesOrderFinanceMatchKeys, document-finance-queries.ts@c3ffda3); the Workbench does not count such a match in a sum"
+    }
+   ],
+   "compare": [
+    {
+     "roles": [
+      "ordered",
+      "shipped"
+     ],
+     "measure": "quantity",
+     "tolerance": "0",
+     "rule": "covers",
+     "tolerance_evidence": "Exact. Portal's open quantity is max(ordered - shipped - authorized, 0) with no epsilon (ship-release/index.ts@c3ffda3 getLineOpenQuantities); one-sided: an excess is reported, not a mismatch"
+    },
+    {
+     "roles": [
+      "shipped",
+      "invoiced"
+     ],
+     "measure": "quantity",
+     "tolerance": "0",
+     "tolerance_evidence": "No shipment-vs-invoice tolerance in Portal or BC code read at c3ffda3: exact."
+    },
+    {
+     "roles": [
+      "ordered",
+      "invoiced"
+     ],
+     "measure": "price",
+     "tolerance": "0",
+     "tolerance_evidence": "No sales price tolerance in Portal or BC code read at c3ffda3: exact."
+    }
+   ]
+  }
+ ]
+}

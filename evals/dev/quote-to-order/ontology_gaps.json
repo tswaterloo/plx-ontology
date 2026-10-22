@@ -1,0 +1,397 @@
+{
+ "format": "plx-case-ontology-gaps/v1",
+ "case": "quote-to-order",
+ "status": "What the ontology lacks to answer evals/dev/quote-to-order/proposed_items.json: one entry per ranked gap of the Quote-to-Order Map (map_rank 1-16, the map's order). Sources are named, never read here; Portal refs are at the repo pin d4d1bb247708 (verify/upstream-pins.json), not the map's unstated staging commit. 'source unknown' carries the question that would find one. OntologyProject refs on context/ paths are source records.",
+ "advisory": "advisory:72bf7b7ae3f6",
+ "gaps": [
+  {
+   "id": "QTO-GAP-01",
+   "map_rank": 1,
+   "map_gap": "Bring every cost input into the portal",
+   "map_stages": "5-7",
+   "kind": "object",
+   "name": "QuoteCostInput (one cost input of a quote: kind, source record, as-of date, owner)",
+   "ontology_today": "Quote and QuoteLine exist; a line's standard cost is a soft custom_fields value with unknown currency and denominator, and no cost input carries its source.",
+   "needed_by": [
+    "QO-A2",
+    "QO-C2",
+    "QO-E2",
+    "CJ-02"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "raw material price at quote: FM average cost, else supplier card, else zero",
+     "ref": "plx-customer-portal:portal/src/lib/costing/raw-cost.ts@d4d1bb247708:1-13"
+    },
+    {
+     "system": "portal",
+     "relation": "ready-to-quote census (blockers and warnings derived, not stored)",
+     "ref": "plx-customer-portal:portal/src/lib/costing/ready-to-quote.ts@d4d1bb247708:354-497"
+    }
+   ]
+  },
+  {
+   "id": "QTO-GAP-02",
+   "map_rank": 2,
+   "map_gap": "Stop sending quotes to BC; send the order with its quote reference (ERP-D-014)",
+   "map_stages": "15-17",
+   "kind": "link",
+   "name": "BC salesOrder -> Portal quote (the quote reference carried on the BC order)",
+   "ontology_today": "Quote.converted_to links a Portal quote to a Portal sales order through custom_fields; SalesOrder.same_record_as reaches BC, but nothing links a BC order back to a quote, and BC salesQuotes are unbound.",
+   "needed_by": [
+    "QO-A1",
+    "QO-B1",
+    "QO-C1",
+    "QO-D1",
+    "QO-E1"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "won quote posted to BC as a salesQuotes document on acceptance",
+     "ref": "plx-customer-portal:portal/src/lib/business-central/serializers.ts@d4d1bb247708:1235-1245"
+    },
+    {
+     "system": "ontology",
+     "relation": "Quote.converted_to (Portal-only link)",
+     "ref": "OntologyProject:ontology/schema/domains/quotes.json@4a5b5fe16a2e:749-770"
+    }
+   ]
+  },
+  {
+   "id": "QTO-GAP-03",
+   "map_rank": 3,
+   "map_gap": "Keep quoted tier prices as the customer's price agreement",
+   "map_stages": "19",
+   "kind": "object",
+   "name": "CustomerPriceAgreement (won tier per SKU, currency, validity, source quote)",
+   "ontology_today": "No price agreement type; asked volumes (app_quote_volume) are not served and nothing keeps a won tier after the first order.",
+   "needed_by": [
+    "QO-B1",
+    "QO-03"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "public.app_quote_volume (asked volumes per quote)",
+     "ref": "plx-customer-portal:portal/prisma/schema.prisma@d4d1bb247708:5657-5677"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Where are a customer's agreed per-SKU tier prices kept after a quote is won (BC price list, Sage price code or the quote workbook), and who updates them on a reorder?"
+  },
+  {
+   "id": "QTO-GAP-04",
+   "map_rank": 4,
+   "map_gap": "Hold supply agreements and carry terms to the order",
+   "map_stages": "14, 16, 18",
+   "kind": "object",
+   "name": "SupplyAgreement (MSA or supply agreement: price period, deposit rule, payment terms, notice period)",
+   "ontology_today": "No agreement type; customer and order carry no agreement reference.",
+   "needed_by": [
+    "QO-B1",
+    "QO-B2",
+    "QO-D1"
+   ],
+   "sources": [
+    {
+     "system": "advisory",
+     "relation": "Quote-to-Order Map, examples B and D (agreements override quote terms)",
+     "ref": "OntologyProject:context/72bf7b7ae3f6226fd904bef64a683147f878c16ac45f2549432089d975ed5827.json@1cbde9b7abde"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Where are signed MSAs and supply agreements stored, and who records their payment terms and deposit rules against the customer?"
+  },
+  {
+   "id": "QTO-GAP-05",
+   "map_rank": 5,
+   "map_gap": "Never quote a PLX-supplied component without a vendor price",
+   "map_stages": "6, 11",
+   "kind": "reader",
+   "name": "Reader of vendor tier prices (app_supplier_product_tier) at quote time",
+   "ontology_today": "RelPublicAppSupplierProductTier is generated as not served; no reader returns the vendor price a quote used.",
+   "needed_by": [
+    "QO-C2",
+    "QO-D2"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "public.app_supplier_product_tier",
+     "ref": "plx-customer-portal:portal/prisma/schema.prisma@d4d1bb247708:1756-1772"
+    },
+    {
+     "system": "portal",
+     "relation": "a raw with no FM cost and no supplier card prices at zero",
+     "ref": "plx-customer-portal:portal/src/lib/costing/raw-cost.ts@d4d1bb247708:1-13"
+    }
+   ]
+  },
+  {
+   "id": "QTO-GAP-06",
+   "map_rank": 6,
+   "map_gap": "Build workbacks in the portal",
+   "map_stages": "22",
+   "kind": "object",
+   "name": "WorkbackSchedule (dated steps back from the ship date for one quote or project)",
+   "ontology_today": "No workback type; ProjectTask is generated as not served and carries no quote link.",
+   "needed_by": [
+    "QW-01"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "public.app_project_task",
+     "ref": "plx-customer-portal:portal/prisma/schema.prisma@d4d1bb247708:4900-4930"
+    },
+    {
+     "system": "advisory",
+     "relation": "workbook manifest lists a WORKBACK SCHEDULE sheet in the G2 template",
+     "ref": "OntologyProject:context/bb494ac6ba9df883cd6afdbe39ff7731793355041ee7d077bf68094827f704b1.json@8469459ed58d"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Who builds the workback schedule today, from which workbook sheet, and is it saved anywhere outside the quote workbook?"
+  },
+  {
+   "id": "QTO-GAP-07",
+   "map_rank": 7,
+   "map_gap": "Excel round-trip covers the whole quote with evidence",
+   "map_stages": "20",
+   "kind": "link",
+   "name": "Quote workbook revision (name, item id, SHA-256) -> Portal quote revision",
+   "ontology_today": "No link from a quote to the workbook it was priced in; the Portal round-trip covers the volume matrix only.",
+   "needed_by": [
+    "QW-01",
+    "QO-E2"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "revision-stamped Excel round-trip of the volume matrix",
+     "ref": "plx-customer-portal:portal/src/lib/quote/workbook.ts@d4d1bb247708:1-28"
+    },
+    {
+     "system": "advisory",
+     "relation": "pinned quote workbooks",
+     "ref": "OntologyProject:context/bb494ac6ba9df883cd6afdbe39ff7731793355041ee7d077bf68094827f704b1.json@8469459ed58d"
+    }
+   ]
+  },
+  {
+   "id": "QTO-GAP-08",
+   "map_rank": 8,
+   "map_gap": "Agent turns emails into proposed portal updates",
+   "map_stages": "21",
+   "kind": "reader",
+   "name": "Reader of quote emails (sent date, sender role, attachment SHA-256) into proposed quote updates",
+   "ontology_today": "No quote email reader; the pinned emails are hashed but their bodies are not assessed.",
+   "needed_by": [
+    "QW-02"
+   ],
+   "sources": [
+    {
+     "system": "advisory",
+     "relation": "manifest of the 14 quote emails and 3 folder summaries",
+     "ref": "OntologyProject:context/0dc11f49aceec6d8a22c5a9e8070936bd6f15097d36a9648f41b0566ede0fbe4.json@3d84813974f0"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Which mailbox and folder hold the quote send and reply emails for each customer, and may an agent read them?"
+  },
+  {
+   "id": "QTO-GAP-09",
+   "map_rank": 9,
+   "map_gap": "Petra standard labour and overhead (ERP-D-022 vs OD-14)",
+   "map_stages": "7",
+   "kind": "object",
+   "name": "Standard labour and overhead rate version used by one quote line",
+   "ontology_today": "QuoteLine planned conversion per unit exists in the schema but is not a served column; no rate version is linked.",
+   "needed_by": [
+    "CJ-02",
+    "QO-A2"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "QuoteLine.plannedConversionPerUnit",
+     "ref": "plx-customer-portal:portal/prisma/schema.prisma@d4d1bb247708:5704"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Which overhead standard is in force for quotes issued now, ERP-D-022 or OD-14, and who decides?"
+  },
+  {
+   "id": "QTO-GAP-10",
+   "map_rank": 10,
+   "map_gap": "Convert only the won tier, in the quote's currency",
+   "map_stages": "14, 16",
+   "kind": "link",
+   "name": "Won QuoteVolume -> SalesOrderLine",
+   "ontology_today": "Quote.converted_to links the whole quote to one order; conversion copies every quote line.",
+   "needed_by": [
+    "QO-03",
+    "QO-B1"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "conversion copies every quote line",
+     "ref": "plx-customer-portal:portal/src/lib/sales-order/convert.ts@d4d1bb247708:45-97"
+    }
+   ]
+  },
+  {
+   "id": "QTO-GAP-11",
+   "map_rank": 11,
+   "map_gap": "New customers and FG items reach BC (Sage code)",
+   "map_stages": "17",
+   "kind": "link",
+   "name": "Customer and finished-good item -> BC customer and item (same record) at conversion",
+   "ontology_today": "SalesOrder.same_record_as reaches BC; app_bc_entity_map is not served, so a customer or item never pushed to BC is not visible as missing.",
+   "needed_by": [
+    "QO-B1",
+    "QO-D1"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "BC entity types pushed by the outbox (customer, item, salesQuote, salesOrder)",
+     "ref": "plx-customer-portal:portal/src/lib/business-central/serializers.ts@d4d1bb247708:22-33"
+    }
+   ]
+  },
+  {
+   "id": "QTO-GAP-12",
+   "map_rank": 12,
+   "map_gap": "Record lost quotes properly",
+   "map_stages": "13",
+   "kind": "object",
+   "name": "LostQuote outcome (reason from a set list, competitor, note, date; or automatic expiry)",
+   "ontology_today": "Quote has status REJECTED or EXPIRED and a free-text rejection_reason; no reason list, no expiry event.",
+   "needed_by": [
+    "QO-A1",
+    "QO-C1",
+    "QO-E1",
+    "QO-02"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "QuoteStatus enum",
+     "ref": "plx-customer-portal:portal/prisma/schema.prisma@d4d1bb247708:697-704"
+    },
+    {
+     "system": "portal",
+     "relation": "Quote.rejectionReason (free text)",
+     "ref": "plx-customer-portal:portal/prisma/schema.prisma@d4d1bb247708:5633"
+    },
+    {
+     "system": "portal",
+     "relation": "default validity window",
+     "ref": "plx-customer-portal:portal/src/lib/quote/terms.ts@d4d1bb247708:16"
+    }
+   ]
+  },
+  {
+   "id": "QTO-GAP-13",
+   "map_rank": 13,
+   "map_gap": "Payment terms, deposit % and incoterms as fields (OD-3)",
+   "map_stages": "8, 18",
+   "kind": "object",
+   "name": "Quote commercial terms as fields (payment term, deposit percentage, incoterm)",
+   "ontology_today": "Quote.terms is free text; deposits received are app_order_prepayment rows, not served and tied to orders, not quotes.",
+   "needed_by": [
+    "QO-A2",
+    "QO-B2",
+    "QO-C2"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "payment-term labels",
+     "ref": "plx-customer-portal:portal/src/lib/quote/payment-terms.ts@d4d1bb247708:1-11"
+    },
+    {
+     "system": "portal",
+     "relation": "default terms block",
+     "ref": "plx-customer-portal:portal/src/lib/quote/terms.ts@d4d1bb247708:1-25"
+    },
+    {
+     "system": "portal",
+     "relation": "public.app_order_prepayment",
+     "ref": "plx-customer-portal:portal/prisma/schema.prisma@d4d1bb247708:4069-4096"
+    }
+   ]
+  },
+  {
+   "id": "QTO-GAP-14",
+   "map_rank": 14,
+   "map_gap": "Sending, versions and approval gate",
+   "map_stages": "10-12",
+   "kind": "object",
+   "name": "QuoteRevision with its send event and approval (who, when, at what margin)",
+   "ontology_today": "Quote has one status and no revision, sent-at or approver.",
+   "needed_by": [
+    "QO-E1",
+    "QW-02"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "QuoteStatus enum (DRAFT, SENT, NEGOTIATION, ...)",
+     "ref": "plx-customer-portal:portal/prisma/schema.prisma@d4d1bb247708:697-704"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Who approves a quote before it is sent, and where is that approval recorded today?"
+  },
+  {
+   "id": "QTO-GAP-15",
+   "map_rank": 15,
+   "map_gap": "Quote on recorded assumptions and fix costing inputs",
+   "map_stages": "7",
+   "kind": "object",
+   "name": "QuoteAssumption (input missing or assumed at quote time, its kind and owner): the slot for the quoting-with-incomplete-information case",
+   "ontology_today": "The ready-to-quote census derives blockers and warnings at read time; no assumption is stored with the quote.",
+   "needed_by": [
+    "QO-A2",
+    "QO-B2",
+    "QO-C2",
+    "QO-D2",
+    "QO-E2"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "ready-to-quote census",
+     "ref": "plx-customer-portal:portal/src/lib/costing/ready-to-quote.ts@d4d1bb247708:354-497"
+    }
+   ]
+  },
+  {
+   "id": "QTO-GAP-16",
+   "map_rank": 16,
+   "map_gap": "Take quoting off FileMaker and Sage",
+   "map_stages": "2, 5-8, 16-17",
+   "kind": "reader",
+   "name": "Reader of FileMaker quote layouts and Sage order entry for these customers",
+   "ontology_today": "The ontology states quotes exist only in the Portal (no FM, Sage or BC writer); Sage orders keyed by hand are not reachable.",
+   "needed_by": [
+    "QO-B1",
+    "QO-B2"
+   ],
+   "sources": [
+    {
+     "system": "ontology",
+     "relation": "Quote object description",
+     "ref": "OntologyProject:ontology/schema/domains/quotes.json@4a5b5fe16a2e:13"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Which FileMaker layouts and Sage screens are still used to price quotes or enter orders for Sahajan, G2 Beauty and Soapbox?"
+  }
+ ]
+}

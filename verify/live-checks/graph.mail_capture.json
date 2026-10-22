@@ -1,0 +1,111 @@
+{
+ "id": "graph.mail_capture",
+ "description": "Versioned mail capture through the GET-only Graph client: message delta paging of the six operational mailboxes the owner named (inbox and sent items, 12 folders) over a 90-day window with no page cap, bodies and file attachments (sha256-pinned) kept in the host's persistent Workbench state (PLX_WORKBENCH_STATE_DIR/mail-capture-check, outside the git tree), so a folder the time budget or an error cut resumes from its stored cursor on the next daily run. Run 1 is the initial round to @odata.deltaLink (or, on a later day, the delta), run 2 resumes from the stored deltaLink. Then the store is read back offline: every captured handle resolves, every captured attachment re-hashes, and an actor without a grant sees 0 mailboxes, 0 rows, 0 counts. Counts, booleans and completeness only; no subjects, addresses, bodies, names or ids.",
+ "source": "microsoft-graph",
+ "cadence": "daily",
+ "command": [
+  "python3",
+  "-m",
+  "integrations.graph_read",
+  "mail-capture",
+  "--scope",
+  "examples/mail_capture_scope.live-check.json",
+  "--live-audience",
+  "examples/mail_capture_audience.live-check.json",
+  "--runs",
+  "2",
+  "--budget-seconds",
+  "1500"
+ ],
+ "timeout_seconds": 1800,
+ "requires_env": [
+  "MICROSOFT_GRAPH_TENANT_ID",
+  "MICROSOFT_GRAPH_CLIENT_ID",
+  "MICROSOFT_GRAPH_CLIENT_SECRET"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "summary.messages_current",
+   "summary.versions",
+   "summary.attachments_captured",
+   "resolve_check.resolved_offline",
+   "runs[*].mailboxes[*].folders[*].counts.pages"
+  ],
+  "json_equals": {
+   "ok": true,
+   "storage.outside_git_tree": true,
+   "storage.under_state_dir": true,
+   "runs[*].mailboxes[*].status": "complete",
+   "runs[*].mailboxes[*].folders[*].complete": true,
+   "leak_check.withheld_actor_mailboxes": 0,
+   "leak_check.withheld_actor_rows": 0,
+   "leak_check.withheld_actor_counts": 0,
+   "leak_check.withheld_actor_resolved": 0
+  },
+  "json_min": {
+   "summary.mailboxes_complete": 1,
+   "summary.folders_complete": 10,
+   "summary.delta_resumes": 1,
+   "summary.messages_current": 1
+  }
+ },
+ "expect_blocked": {
+  "exit_code": 1,
+  "json_fields": [
+   "blocked_upstream"
+  ],
+  "json_equals": {
+   "storage.outside_git_tree": true,
+   "storage.under_state_dir": true,
+   "leak_check.withheld_actor_mailboxes": 0,
+   "leak_check.withheld_actor_rows": 0,
+   "leak_check.withheld_actor_counts": 0,
+   "leak_check.withheld_actor_resolved": 0
+  }
+ },
+ "complete_when": {
+  "runs[*].complete": true
+ },
+ "record": [
+  "ok",
+  "storage",
+  "summary",
+  "resolve_check",
+  "leak_check",
+  "runs[*].complete",
+  "runs[*].mailboxes[*].status",
+  "runs[*].mailboxes[*].folders[*].folder",
+  "runs[*].mailboxes[*].folders[*].status",
+  "runs[*].mailboxes[*].folders[*].reason",
+  "runs[*].mailboxes[*].folders[*].round",
+  "runs[*].mailboxes[*].folders[*].resumed_from",
+  "runs[*].mailboxes[*].folders[*].counts",
+  "relations",
+  "requests_sent",
+  "operations_read"
+ ],
+ "record_keys": [
+  "storage",
+  "summary",
+  "resolve_check",
+  "leak_check",
+  "runs[*].mailboxes[*].folders[*].counts",
+  "relations"
+ ],
+ "record_enums": [
+  "runs[*].mailboxes[*].status",
+  "runs[*].mailboxes[*].folders[*].folder",
+  "runs[*].mailboxes[*].folders[*].status",
+  "runs[*].mailboxes[*].folders[*].reason",
+  "runs[*].mailboxes[*].folders[*].round",
+  "runs[*].mailboxes[*].folders[*].resumed_from",
+  "operations_read"
+ ],
+ "notes": "Live-unverified until the live check runs it (evidence label of injected-transport tests: integrations/tests/test_capture_mail.py). Captured mail lives in the host state directory (storage.host_state, storage.carried, storage.state_base workbench_state_dir; without PLX_WORKBENCH_STATE_DIR the store falls back to XDG_STATE_HOME or HOME, which a daily run may not keep) and is never printed. Daily cadence (owed re-run cf7f259de9ac): the 12-folder first round may exceed one 1500 s budget, so a cut folder ends incomplete with reason time_budget and the next day resumes from its cursor; a folder whose round raised ends incomplete with reason folder_error:<code or class> and the next folder is still captured (integrations/tests/test_capture_mail_resume.py). Both leave the check red (runs[*].complete) until every folder is current; neither is a pass. Expected: run 1 round initial, run 2 round incremental with resumed_from delta_url; reason null on every folder. A folder that stops with reason throttled or source_error:<detail> fails the check (completeness is complete only at @odata.deltaLink). Unverified live assumptions: Graph accepts $select and the receivedDateTime ge $filter on messages/delta, and its nextLink/deltaLink name the folder by the same immutable id the folder lookup returned. Scope: examples/mail_capture_scope.live-check.json, the six mailboxes (order-confirmation@, ship@, torontowh@, ap@, receiving@, qclabresults@), inbox and sent items, and its audience grants the capture principal those six (decision 2026-10-20-mail-capture-folder-scope, option 1 now that the owner named them). Live 2026-10-05 on ff2879cb failed with complete_bound 2/22: the check still named integrations/mail_capture_scope.json after it was widened to every allowlisted mailbox, inbox and sent items (11 mailboxes, 22 bound folders), while this check's audience grants the capture principal the purchase-order mailbox alone, so 10 mailboxes were not_visible and every run incomplete. The capture was right to call them incomplete; the wide scope -- since ING-06 every mailbox of the tenant directory minus the exclusion list, with forbidden mailboxes as gaps -- is measured by capture.breadth with its own audience (mail:*). registry_names: the source registry credits a Graph endpoint template only through operations_read, the grammar operations (integrations/live_source_grammar.py) this run's GETs were answered for; an endpoint no operation folds to is never credited by this check. Blocked: when Graph refused every bound mailbox in every run under the one Graph rule (plx_hub_guard.upstream_blocks: HTTP 403 or 401; integrations/capture_mail.refused_parts and graph_block, the part shape the Teams and list captures share), blocked_upstream names the refused call (mail.mailbox_lookup: the graph.user directory lookup; mail.folder_read: the mail folder and delta reads) with error_code missing_permission and the application permission it needs (User.Read.All; Mail.Read, which an Exchange application access policy may also scope out) on 403, or error_code unauthorized (a rejected token, no permission) on 401, cause host_misconfiguration; the command exits 1 (ok false) and expect_blocked then requires only the storage and leak checks, so the check is blocked, never measured: nothing was read. A partial refusal stays a fail (runs[*].mailboxes[*].status forbidden): Mail.Read is scoped per mailbox, so some mailboxes refused while others read is a scope gap, not a missing grant (docs/reference/source-notes.md, Graph refusals). Expected on the next run while the host app lacks Mail.Read: blocked_upstream [{part mail.folder_read, http_status 403, error_code missing_permission, permission Mail.Read}] (before that the error_code was Graph's own token, e.g. authorization_request_denied, and the folder permission read Mail.Read/ApplicationAccessPolicy); while the directory lookup is refused (as live 2026-10-17) it is mail.mailbox_lookup with permission User.Read.All instead. A1 claims 10/10 folders: summary.folders_complete >= 10, so the one-folder live-check scope (examples/mail_capture_scope.live-check.json, the purchase-order inbox) reads red until the scope and its audience name the ten folders A1 means (docs/decisions/2026-10-20-mail-capture-folder-scope.md). Live live-2026-10-20T22:59:46Z (results/latest.json): ok true, both runs complete, 1 folder complete, 2 messages current, the only failed assertion summary.folders_complete < 10; the fields report ok because they measure the one-folder scope, the claim they are held to is A1 (decided record above: red until the owner names the mailboxes and grants Mail.Read, later_ask graph-mail-directory-consent). People exclusion (integrations/people_exclusion.py, access record 64fca27acc88): excluded people's mailboxes and sent messages are refused by Entra object ID before any request; with the ID list (later_ask excluded-people-oids) absent, or the directory listing refused, every run is blocked: blocked_upstream names part mail.people_exclusion (source people-exclusion, error_code excluded_people_oids_absent, cause later_ask) or the refused graph.users listing (permission User.Read.All), a typed block, never a pass.",
+ "registry_names": {
+  "pass": [
+   "operations_read"
+  ]
+ }
+}

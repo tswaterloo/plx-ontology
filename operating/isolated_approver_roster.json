@@ -1,0 +1,31 @@
+{
+ "schema": "plx-approver-roster/v1",
+ "note": "The approver roster of the isolated goal-2 fixture world and its test-mode twin (operating/goal2_exec.py Lifecycle, twin/world.py TwinWorld), read through operating/goal2_mc_approval.load_approver_roster like the committed default roster (operating/approver_roster.json). Placeholder identities and fixture GUIDs: no PLX person, mailbox or Entra object. The call approver approves every catalog type per call; the MC admin approves every type too and, as an admin, decides their MC gates (action_types scope a per-call approver and a gate decider alike); the MC member is named for its MC role only (an empty list approves no call and decides no gate).",
+ "source_ref": "isolated fixture MC users (not PLX)",
+ "approvers": {
+  "call.approver@isolated-fixture.example": {
+   "name": "Isolated fixture call approver",
+   "mc_role": "member",
+   "mc_role_source": "isolated fixture MC users (not PLX)",
+   "oid": "0000a000-0000-4000-8000-00000000ad03",
+   "oid_source": "isolated fixture GUID (not an Entra object)",
+   "action_types": "all"
+  },
+  "mc.admin@isolated-fixture.example": {
+   "name": "Isolated fixture MC admin",
+   "mc_role": "admin",
+   "mc_role_source": "isolated fixture MC users (not PLX)",
+   "oid": "0000a000-0000-4000-8000-00000000ad01",
+   "oid_source": "isolated fixture GUID (not an Entra object)",
+   "action_types": "all"
+  },
+  "mc.member@isolated-fixture.example": {
+   "name": "Isolated fixture MC member",
+   "mc_role": "member",
+   "mc_role_source": "isolated fixture MC users (not PLX)",
+   "oid": "0000a000-0000-4000-8000-00000000ad02",
+   "oid_source": "isolated fixture GUID (not an Entra object)",
+   "action_types": []
+  }
+ }
+}

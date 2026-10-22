@@ -1,0 +1,112 @@
+{
+ "id": "eval.bc_three_way",
+ "description": "BC-only unfamiliar three-way eval: per run up to 15 Business Central purchase-order roots (company, PO number) drawn by a seed (the run id, live-<UTC hour>) from one page per company of purchase orders, posted receipts (newest first) and purchase invoices (Production, GET only). The oracle reads each PO, its receipts and invoices by orderNumber through its own cached exact reads (whole records, no $select) and decides the aspects of evals/oracle/three_way.py (stages purchase_order, receipt, vendor_invoice; sides ordered vs received, received vs invoiced; receipt / vendor_invoice absent_in_bc only from a complete read of every item line's zero receivedQuantity / invoicedQuantity beside a complete posted-document query, with the read time). The product reads the same PO through integrations.bc_purchase (plus the item masters of its lines), projects those cited records into a throwaway store in {tmp} and answers with plx.process purchase_to_invoice from the case host's tool table. A product listing equal to an oracle listing but for its $select is answered from the oracle's whole records, trimmed to that $select; the oracle never reads a product-shaped response. No Portal read: it runs while the Portal reporting API fails. Reports sampled / blocked_upstream / not_held / excluded / scored / correct / wrong / abstain_ok, coverage beside accuracy, agreement per aspect, and root lookup (plx.find on the PO number) apart from three-way success. Counts, enums and 16-hex hashes only.",
+ "source": "business-central",
+ "command": [
+  "python3",
+  "-m",
+  "scripts.eval_bc_three_way",
+  "live",
+  "--work-dir",
+  "{tmp}/product",
+  "--run-id",
+  "auto",
+  "--count",
+  "15",
+  "--min-scored",
+  "5",
+  "--max-wrong-rate",
+  "0.10",
+  "--total-budget-seconds",
+  "600"
+ ],
+ "timeout_seconds": 720,
+ "requires_env": [
+  "BC_TENANT_ID",
+  "BC_CLIENT_ID",
+  "BC_CLIENT_SECRET",
+  "BC_ENVIRONMENT"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "run_id",
+   "items_digest",
+   "eval.sampled",
+   "eval.blocked_upstream",
+   "eval.not_held",
+   "eval.excluded",
+   "eval.product_error",
+   "eval.scored",
+   "eval.correct",
+   "eval.wrong",
+   "eval.abstain_ok",
+   "eval.coverage",
+   "eval.accuracy",
+   "eval.answered",
+   "eval.wrong_rate",
+   "eval.wrong_max",
+   "eval.by_aspect",
+   "eval.root_lookup",
+   "eval.fail_reasons",
+   "cost.elapsed_seconds",
+   "cost.phases.sampling.seconds",
+   "cost.phases.oracle.seconds",
+   "cost.phases.oracle_excluded.seconds",
+   "cost.phases.product.seconds",
+   "cost.phases.projection.seconds",
+   "cost.retries.total",
+   "cost.retries.by_cause",
+   "cost.held_not_sent",
+   "cost.retries.slowest_failed_attempt_seconds",
+   "cost.retries.failed_attempts_over_bound",
+   "cost.retries.transport_by_class"
+  ],
+  "json_equals": {
+   "adapter_status": "live-unverified",
+   "evidence_label": "live-read",
+   "values_published": false,
+   "environment_is_production": true,
+   "row_data_check.leaked": 0,
+   "eval.complete": true,
+   "eval.wrong_within_bound": true,
+   "eval.pass": true
+  },
+  "json_min": {
+   "eval.sampled": 5,
+   "eval.scored": 5
+  },
+  "json_max": {
+   "eval.blocked_upstream": 2,
+   "cost.retries.failed_attempts_over_bound": 0
+  },
+  "json_empty": [
+   "eval.fail_reasons"
+  ]
+ },
+ "record": [
+  "eval",
+  "sample",
+  "product",
+  "row_data_check",
+  "reads",
+  "requests_sent",
+  "items_digest",
+  "cost"
+ ],
+ "record_keys": [
+  "eval",
+  "sample",
+  "product",
+  "row_data_check",
+  "reads",
+  "cost"
+ ],
+ "record_enums": [
+  "eval",
+  "sample",
+  "product",
+  "items_digest"
+ ],
+ "notes": "live-unverified until a passing live-check result; module tests are injected-transport (tests/test_eval_bc_three_way.py: FakeSender BC API v2.0 shapes through the real bc_read reader, bc_purchase, projector and plx.process). Deliberately no requires: the check reads BC only, so a Portal outage (portal.health_catalog failing) never skips it. Fails (exit 3, eval.fail_reasons) when fewer than --min-scored (5) items were scored (below_min_scored; with none, no_scored_items and eval.zero_scored_cause names the largest unscored bucket: blocked_upstream, not_held, excluded, nothing_sampled or run_blocked_upstream when the company listing failed), when wrong > floor(0.10 x scored) (wrong_above_bound), when no aspect beyond the root stage was answered correctly (no_correct_answer: coverage without one right answer never passes), when any plx.process call returned a tool error (product_error: counted apart, never abstain_ok), when the 600 s budget cut the run (incomplete), when more than 2 items were blocked_upstream (json_max eval.blocked_upstream 2, the live criterion) or any failed attempt ran past the connect bound of integrations/live_source_guard.py urllib_sender (CONNECT_TIMEOUT_SECONDS, read from the guard, never copied; a connect timeout also gets ATTEMPT_SLACK_SECONDS 0.5 s of scheduling, any other failed attempt, a 429/503 included, none) (json_max cost.retries.failed_attempts_over_bound 0; cost.retries.failed_attempt_bound_seconds and connect_timeout_slack_seconds name the bound) or on any leak. It bounded cost.retries.slowest_failed_attempt_seconds at 10 until (live 8e61f782: accuracy 9/9, answered 22/22, failed only on 4 transport connect timeouts at 10.07-10.10 s, the bound itself plus scheduling); the slowest stays recorded. Failed transport attempts are recorded by class (cost.retries.transport_by_class: connect_timeout, a URLError attempt lasting the connect bound; connect_error, one sooner; read_timeout; read_error; unclassified) and per entity set (cost.transport_failed_by_set), so the next run shows which BC calls time out; each GET attempt, every page of a paged read and the $metadata document included, is timed from its own send, never the token POST before it, and the slowest answered attempt of a read is over all its pages. eval.answered = oracle-held aspects beyond the root stage the product decided / held, beside coverage and accuracy. Wrong counts a decided product aspect that differs from the oracle and a product decision where the oracle found the read incomplete (unsupported): confident unsupported answers stay visible as wrong. abstain_ok is a scored item with no wrong aspect and at least one the product left undecided. Excluded items (PO no longer in BC: BC deletes fully received and invoiced orders; oracle decided nothing beyond the root) and not_held items (unpinned company, root not projected, a product or oracle read not permitted) never count as wrong; coverage = scored/sampled. Root lookup (found_exact / ambiguous / wrong / not_found / error) is measured apart and never counts as three-way success: plx.process is asked from the sampled root. Live 2026-10-05 (ff2879cb, before t1b-root-complete landed): side:ordered_received undecided 8/8 and received_invoiced 2/2 with every stage agreed, 2 items reads blocked with no HTTP status, coverage 8/15 at the 480 s budget. Now: a side is decided from the per-PO read's scoped completeness claims (decision 2026-10-04-bc-threeway-side-completeness, 2026-10-05-bc-only-portal-hops); a BC line whose lineType is Comment, Account or Charge names no item and is neither looked up as an item nor counted on a side (purchase_to_invoice ignore_through on line_type; Portal posts freight G/L lines as Account lines), so live invoices with freight lines no longer keep received_invoiced undecided; a PO line's own receivedQuantity that disagrees with its posted receipt lines stays undecided (recorded_measure_conflict). A blocked read names its fixed-vocabulary cause (eval.blocked.by_detail, e.g. record_invalid or a transport class) when it has no HTTP status. An item the oracle decides nothing for beyond the root is excluded before the product read, so it spends no product GETs on the budget. If no sampled PO is decidable the run still fails no_correct_answer rather than passing on abstentions. Budget (2026-10-05: the oracle and the product sent the same reads twice; since then a product listing equal to an oracle listing but for its $select is answered from the oracle's whole records, SharedPages, reads.sent / reads.shared; the oracle keeps its own whole-record reads, so a field the product's $select omits still fails the eval). Regression: 32 s at 05:00Z to 483 s at 10:33Z on 2026-10-08 (run_budget_exhausted, 8 of 14 scored) with the same ~128 GETs: over 17 runs the duration fits ~0.4 s per GET plus ~16 s per retried failed attempt (requests_sent - reads.sent - 1, 0 rising to 24 per run), and every BC check slowed alike in those hours (bc.purchase_reader 4 s/0 retries to 96 s/6), so the growth is BC failing attempts (outright ones retried.urlerror: before any HTTP status), not the eval's reads. Now: per-phase cost in the output (cost: seconds, GETs, retries, failed attempts and their seconds per phase sampling / oracle / oracle_excluded / product / projection, retries and failed-attempt seconds by cause, slowest answered attempt, GETs not sent per held entity set), so the next run measures the failed attempts directly; an item the oracle cannot decide (no posted receipt) reads no lines (3 header GETs, was 4); an entity set throttled with a Retry-After beyond the 4 s backoff cap is not retried and is held until then, and SET_FAILURE_BOUND (2) availability failures in a row hold it for the run: its items are blocked_upstream (detail held.<cause>) and never spend the budget. The budget is set from the measured cost: injected-transport replay of the 10:33Z counts (tests/test_eval_bc_three_way.py: 15 items over 3 companies, one attempt in 6 failing after 16 s, 0.77 s per answered GET) takes 486 s and exhausts 480 s on the old code at 14 items, 468 s for all 15 when excluded items read no lines; since decision 2026-10-14-three-way-absence-proven every PO's lines are read (a complete zero read of receivedQuantity / invoicedQuantity decides receipt / vendor_invoice absent_in_bc, any incomplete read or partly received line stays undecided), the replay takes 549 s for all 15 items and 600 s leaves about one failed GET of margin; timeout_seconds 720 keeps the 120 s for start-up and projection. A Retry-After wait (decision 2026-10-10-followup-decisions 15) is slept only when the time left after it still covers the unread items: per item the prior 9.5 GETs of 483/128 s (the 10:33Z hour) weighted as 3 items read beside the seconds of the items read, less what the item being read has spent, plus the slowest failed attempt (decision 15 amendment: the first items read, often all with receipts, are no measure of the rest); otherwise the set is held and its items are blocked_upstream (held.<cause>), never incomplete: one 429 naming 480 s used to sleep 480 s and end the run incomplete at 5 of 15 sampled. Live-unverified until the next run."
+}

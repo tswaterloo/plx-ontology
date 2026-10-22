@@ -1,0 +1,113 @@
+{
+ "id": "capture.qcqa_library",
+ "description": "The QCQA library as a served, incremental host capture (QA-01): the product host (operating/host.py check --sources sharepoint) runs three capture cycles of the SharePoint scope its host config names (examples/host.qcqa_library.live-check.json: the SharePoint scope and audiences of examples/host.live-check.json, the config host.cycles serves, with a budget_seconds of 400 s) into the check's named persistent state directory ($PLX_WORKBENCH_STATE_DIR/host-check-qcqa-library/live, --state-name, kept across the check's runs), each by a new host process object (a restart between cycles), through the GET-only Graph client: the first cycle walks every folder under the scope root, later cycles follow the drive's change feed and read only new and changed files (a walk the source's budget_seconds cuts resumes from its stored walk position in the next cycle: cycles[*].sources.sharepoint.resumed_from counts roots by where each cycle started them, and checks.sharepoint_roots_restarted, the roots a cycle held a walk position for that the next cycle neither resumed nor kept deferred, must be 0), and every cycle rebuilds the projection the host serves. Then sharepoint_coverage measures files seen versus captured across every folder under the scope root: a GET-only listing of every folder under it (by folder id, within the target's depth bound; no content read), a census the host keeps across calls: a call cut by max_folders (per call) or census_budget_seconds keeps its folder frontier and listing cursor and the next call carries on (sharepoint_coverage.census: carried, calls, folders_listed_before, folders_pending), a finished one is consumed and one older than the scope's census_max_age_hours (default full_walk_hours) restarts against the current versions the capture store holds there for the capture principal. Asserted: every cycle ran without a failed source, the listing reached every folder (census_complete), no file the store serves is gone from the source (files_current_not_seen 0), no file of a root whose capture ended complete was left uncaptured (files_missed 0), the root holds files, and the projection read as a principal without any grant shows 0 objects and leaks nothing. Complete when every listed file's listed version is captured (sharepoint_coverage.complete: files_seen == files_current). Counts, states and codes only; never a name, path, id or content.",
+ "source": "microsoft-graph",
+ "cadence": "weekly",
+ "tier": "capture",
+ "command": [
+  "python3",
+  "-m",
+  "operating.host",
+  "check",
+  "--state-name",
+  "qcqa-library",
+  "--config",
+  "examples/host.qcqa_library.live-check.json",
+  "--sources",
+  "sharepoint",
+  "--cycles",
+  "3"
+ ],
+ "timeout_seconds": 5400,
+ "requires_env": [
+  "MICROSOFT_GRAPH_TENANT_ID",
+  "MICROSOFT_GRAPH_CLIENT_ID",
+  "MICROSOFT_GRAPH_CLIENT_SECRET",
+  "SHAREPOINT_SITE_ID"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "sharepoint_coverage.files_seen",
+   "sharepoint_coverage.files_current",
+   "sharepoint_coverage.files_not_captured",
+   "cycles[*].sources.sharepoint.rounds",
+   "cycles[*].sources.sharepoint.counts.versions_new"
+  ],
+  "json_equals": {
+   "checks.cycles_run": 3,
+   "checks.cycles_interrupted": 0,
+   "checks.sources_configured": 1,
+   "checks.sources_not_run": 0,
+   "cycles[*].state": "complete",
+   "sharepoint_coverage.census_complete": true,
+   "sharepoint_coverage.files_missed": 0,
+   "sharepoint_coverage.files_current_not_seen": 0,
+   "trim.state": "checked",
+   "trim.withheld_principal_objects": 0,
+   "trim.withheld_leaks": 0,
+   "row_data_check.leaked": 0,
+   "checks.sharepoint_roots_restarted": 0
+  },
+  "json_min": {
+   "sharepoint_coverage.roots": 1,
+   "sharepoint_coverage.folders_listed": 1,
+   "sharepoint_coverage.files_seen": 1,
+   "trim.capture_principal_objects": 1
+  },
+  "json_empty": [
+   "sharepoint_coverage.reasons",
+   "sharepoint_coverage.capture_incomplete"
+  ]
+ },
+ "complete_when": {
+  "sharepoint_coverage.complete": true
+ },
+ "record": [
+  "checks",
+  "sharepoint_coverage",
+  "sharepoint_coverage.reasons",
+  "sharepoint_coverage.census",
+  "trim.state",
+  "trim.capture_principal_objects",
+  "trim.withheld_principal_objects",
+  "trim.withheld_leaks",
+  "row_data_check",
+  "blocked_upstream",
+  "cycles[*].state",
+  "cycles[*].sources.sharepoint.state",
+  "cycles[*].sources.sharepoint.reasons",
+  "cycles[*].sources.sharepoint.rounds",
+  "cycles[*].sources.sharepoint.counts.folders_listed",
+  "cycles[*].sources.sharepoint.counts.files_seen",
+  "cycles[*].sources.sharepoint.counts.feed_changes",
+  "cycles[*].sources.sharepoint.counts.versions_new",
+  "cycles[*].sources.sharepoint.counts.contents_captured",
+  "cycles[*].sources.sharepoint.counts.contents_exceeds_cap",
+  "cycles[*].sources.sharepoint.counts.contents_unavailable",
+  "cycles[*].sources.sharepoint.counts.texts_ocr",
+  "cycles[*].sources.sharepoint.counts.texts_ocr_unavailable",
+  "cycles[*].projection.state",
+  "cycles[*].projection.objects",
+  "cycles[*].sources.sharepoint.resumed_from",
+  "cycles[*].sources.sharepoint.walk_positions_held",
+  "sharepoint_coverage.capture_incomplete"
+ ],
+ "record_keys": [
+  "checks",
+  "sharepoint_coverage",
+  "row_data_check",
+  "cycles[*].sources.sharepoint.rounds"
+ ],
+ "record_enums": [
+  "trim.state",
+  "blocked_upstream",
+  "sharepoint_coverage.reasons",
+  "cycles[*].state",
+  "cycles[*].sources.sharepoint.state",
+  "cycles[*].sources.sharepoint.reasons",
+  "cycles[*].projection.state",
+  "sharepoint_coverage.capture_incomplete"
+ ],
+ "notes": "Live-unverified until the live check records its first result (evidence label of its test: injected-transport, operating/tests/test_host.py QcqaLibraryTests). The scope is the SharePoint scope examples/host.live-check.json names (its config examples/host.qcqa_library.live-check.json holds only that part): examples/sharepoint_capture_scope.qcqa_library.json is the QCQA library from its root (max_depth 8, max_folders 5000, the census's folders listed per call). Never a fixed file count: files_seen is whatever the listing finds under the root that day and files_current what the store serves there. Decision 2026-10-21-sharepoint-census-across-runs: the state directory is named (--state-name qcqa-library) and kept, no longer a fresh {tmp}/state, so the capture's walk positions and the coverage census carry on from run to run. The census restarted from scratch on every call and was cut by folder_bound or its time budget on every live run (last verdict 3,349 folders listed, 32,530 files seen, census_complete false); now it resumes from its kept frontier, so sharepoint_coverage.census.folders_listed_before rises run over run (folders_listed above the previous run) and the check passes once the census reaches every folder; until then it fails census_complete false with the reason of this call's cut (time_budget or folder_bound), never blocked: both are the repo's own bounds. A cut census reports the files it listed so far, never the library's count; coverage that was not measured is never a pass. A permanent gap (depth_bound, withheld_from_capture, not_visible, source_error:<detail>, listing_truncated) is recorded in the kept census, which keeps listing to the end of its queue; the check fails census_complete false until a later census lists the library without one. The capture's own walk bound (max_folders 5000, cumulative over its folders) is a separate stop: when it leaves files uncaptured the check names it (sharepoint_coverage.capture_incomplete: capture_folder_bound) and fails; the bound is never raised to pass. A carried census counts the library as it stood across the window, not at one instant: a file added to a folder after an earlier call listed it is first seen by the next census (bounded by census_max_age_hours); changed or deleted files fail closed. Time, measured 2026-10-13 (main 3fe1e6a, 1688 s, failed census_complete): four 400 s budgets (three capture cycles, the census then bounded by the capture's budget) took 1688 s, so the projections, the trim and the OCR overruns added 88 s; the census listed 293 folders and 12,220 files in its 400 s and was cut (roots_listed 0), about 0.73 folders and 30 files a second, the library's total unknown. Census budget decided from that record: the scope's own bound (max_folders 5000) would take about 6,800 s at that rate, more than a daily command (killed at 7200 s) holds beside the capture, so no single budget is known to fit; a census resumed across the check's cycles lists no more than one census of the same total, because the check's state directory is fresh each run (resuming across runs needs a persistent host state, later_ask live-host-persistent-state-dir). So the census gets the most the 5400 s envelope host.cycles already runs in allows: three cycles of at most 400 s capture each and the listing at most 3600 s (4800 s, about 2,600 folders at the measured rate, nine times the 293 reached), plus three SharePoint-only projections, the trim and up to one OCR overrun per cycle (a file's OCR started before the budget ends may run past it), inside the 5400 s timeout. host.cycles' 887 s (two cycles of four sources) was measured before its scope became the whole library, so it does not bound this check. A library larger than 1200 s of capture stays partial and is recorded incomplete with its counts (files_seen, files_current, files_not_captured), never complete; it completes across runs in the kept state (--state-name). Once measured, 1.5 x its duration decides when it runs. A deployed host (operating.host serve over a persistent state directory) keeps the store between cycles, so only new and changed files are read after the first walk (cycles[*].sources.sharepoint.rounds: incremental). A file uploaded between the last cycle and the listing counts in files_not_captured and, when its root ended complete, in files_missed: a rare race the next run settles. Failure reasons: census not complete (sharepoint_coverage.reasons: site_unresolved, not_visible, source_error:<detail>, listing_truncated, withheld_from_capture, depth_bound, folder_bound, time_budget, index_truncated), a cycle failed (a SharePoint read error; blocked_upstream names an outage), files_missed or files_current_not_seen > 0, an empty root, or a reader without grant seeing anything. Unverified live assumptions: the shared app reads the QCQA drive by id and every item's permissions; the runner host has poppler and tesseract for the scanned AOs; three of the host config's sharepoint budget_seconds and its census_budget_seconds plus the projections fit the timeout; a listing the 3600 s cuts fails the check (census_complete false) and records how far it reached (folders_listed, files_seen): the next run carries on from the kept frontier. "
+}

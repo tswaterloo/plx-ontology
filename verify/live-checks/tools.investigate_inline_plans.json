@@ -1,0 +1,130 @@
+{
+ "id": "tools.investigate_inline_plans",
+ "description": "plx.investigate with inline plans (the plan argument, format plx-investigate-plan/v1) on fresh BC roots for an authorized MANAGER: the five worked examples of ontology/plans/_inline_examples.json, three a planner writes for questions no stored family answers (a supplier's open orders past due, the items on an order with nothing received, the documents linked to a shipment) and two it gets wrong (a link type the schema does not declare, a property the type does not have). operating.host cycles (Host.cycle: a GET-only BC capture of the named entity sets into a throwaway host state in {tmp}, then the projection build) on the BC-only host configuration scripts.live_employee_tools writes beside that state (no Portal, mail or SharePoint configured), then the host's served tools as the reader staff:manager with the example MANAGER clearance (clearance_source names examples/employee_permission_policy.example.json, never a production clearance). Each plan runs on up to 3 projected roots of its root types (the investigate check's sampling, never an eval item) and records the investigate family stats under plans.<id> plus outcomes per root: answered_cited, answered_uncited (no claim: a filter nothing matched, a stage on a source not configured) or refused:<error code>. An outcome other than the example's expect (answered, or the typed refusal plan_undeclared_link / plan_unknown_property it names) counts in plans_unexpected. Every checked claim passes (claim_uncited 0, roots_failed 0), the outsider with no grant gets no value and no claim (outsider_leaks 0), every plan reaches a root and the shipment plan checks a claim; with no BC record projected, or a plan whose root sets BC answered empty, the check names sources_blocked. Every answer is validated against its frozen contract. Output is counts, booleans, codes and states only; never a value, number, name, identifier or citation.",
+ "source": "business-central",
+ "cadence": "daily",
+ "tier": "deterministic_tools",
+ "command": [
+  "python3",
+  "-m",
+  "scripts.live_employee_tools",
+  "inline",
+  "--state-dir",
+  "{tmp}/state",
+  "--cycle",
+  "salesOrders,salesShipments",
+  "--cycle",
+  "vendors,purchaseOrders,purchaseReceipts",
+  "--budget-seconds",
+  "600",
+  "--sample",
+  "3"
+ ],
+ "timeout_seconds": 780,
+ "requires_env": [
+  "BC_TENANT_ID",
+  "BC_CLIENT_ID",
+  "BC_CLIENT_SECRET",
+  "BC_ENVIRONMENT"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "plans",
+   "plans_run",
+   "bc_capture",
+   "blocked_upstream"
+  ],
+  "json_equals": {
+   "contract_failures": 0,
+   "capture_errors": 0,
+   "projection_failed": 0,
+   "budget_exhausted": false,
+   "portal_state": "not_configured",
+   "claim_uncited": 0,
+   "roots_failed": 0,
+   "outsider_leaks": 0,
+   "plans_unexpected": 0
+  },
+  "json_min": {
+   "plans.supplier_orders_past_due.roots": 1,
+   "plans.order_lines_not_received.roots": 1,
+   "plans.shipment_documents.roots": 1,
+   "plans.shipment_documents.claims": 1,
+   "plans.order_carrier.roots": 1,
+   "plans.order_due_date.roots": 1,
+   "outsider_probed": 3
+  }
+ },
+ "expect_blocked": {
+  "exit_code": 0,
+  "json_fields": [
+   "plans",
+   "blocked_upstream"
+  ],
+  "json_equals": {
+   "contract_failures": 0,
+   "capture_errors": 0,
+   "projection_failed": 0,
+   "budget_exhausted": false,
+   "portal_state": "not_configured",
+   "claim_uncited": 0,
+   "roots_failed": 0,
+   "outsider_leaks": 0,
+   "plans_unexpected": 0
+  }
+ },
+ "blocked_when": "sources_blocked",
+ "record": [
+  "plans_run",
+  "plans_unexpected",
+  "plans.supplier_orders_past_due",
+  "plans.order_lines_not_received",
+  "plans.shipment_documents",
+  "plans.order_carrier.outcomes",
+  "plans.order_due_date.outcomes",
+  "claim_uncited",
+  "roots_failed",
+  "roots_investigated",
+  "outsider_probed",
+  "outsider_leaks",
+  "outsider_states",
+  "sources_blocked",
+  "bc_companies_unread",
+  "objects",
+  "object_types_held",
+  "bc_capture",
+  "bc_capture.reasons",
+  "blocked_upstream",
+  "upstream_throttled",
+  "portal_state",
+  "reader_clearance",
+  "clearance_source",
+  "role",
+  "calls",
+  "contract_failures",
+  "error_codes",
+  "capture_errors",
+  "projection_failed",
+  "budget_exhausted",
+  "seconds"
+ ],
+ "record_keys": [
+  "plans",
+  "outsider_states",
+  "bc_capture",
+  "error_codes"
+ ],
+ "record_enums": [
+  "portal_state",
+  "reader_clearance",
+  "clearance_source",
+  "role",
+  "bc_capture.reasons",
+  "sources_blocked",
+  "bc_companies_unread",
+  "upstream_throttled",
+  "plans_run"
+ ],
+ "notes": "Evidence: injected-transport tests (tests/test_live_employee_tools.py, the BC fake of integrations/tests/test_bc_capture.py); live-unverified until the live check records a result on the real BC captures. The inline plans are data (ontology/plans/_inline_examples.json): a new example runs with no script edit, but its plans.<id> floors are this spec's."
+}

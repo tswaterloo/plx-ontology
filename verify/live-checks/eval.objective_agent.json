@@ -1,0 +1,122 @@
+{
+ "id": "eval.objective_agent",
+ "description": "Objective-investigation eval (B4; tier real_agent): a free-form business objective (a root and an employee's goal, no family, no plan) investigated by one headless Claude Code session at k=1 as plx.agent.investigate (evals.runner.ClaudeCodeAgent, the operator's Claude Code login) behind the objective gate: read-only tools, the case-store writers and plx.case_propose (recorded only); plx.act, every other action tool and every MC tool refused and counted. The agent opens one case, records cited facts and typed gaps, and ends with mc.task.create_follow_up proposals; a second session resumes the case (claim with lease, read, release with a handoff). The harness post-check, as the reader: the case chain is intact, every fact re-resolves and cites only rows a non-case tool returned in session, each proposal traces to a recorded gap (ActionCatalog.registration_refusal), cites only rows read, builds an MC call operating.action_path.mc_call_refusal admits and the MC twin's pin accepts, and nothing is sent (mc_sent 0). Discovery is scored against the independent oracle (evals/oracle/families.py F1-F4) around the root. Parts: fixture (evals/objectives/fixture.json on the fixture world, scored on every run) and live_bc (oracle-sampled BC roots on the persistent host as the reader in PLX_EVAL_READER; blocked no_employee_identity before any read until it is set). Fields per part and total: discovery_recall, false_gap_rate, confident_unsupported, grounded_proposal_share, action_calls, resume_duplicates. Counts, rates and enums only; transcripts stay in {tmp}.",
+ "source": "claude-code",
+ "tier": "real_agent",
+ "cadence": "daily",
+ "command": [
+  "python3",
+  "-m",
+  "scripts.eval_objective_agent",
+  "run",
+  "--work-dir",
+  "{tmp}/work",
+  "--session-timeout",
+  "200",
+  "--max-turns",
+  "30",
+  "--live",
+  "--live-count",
+  "6",
+  "--min-live-items",
+  "5",
+  "--root-probe-seconds",
+  "300",
+  "--live-read-seconds",
+  "900"
+ ],
+ "timeout_seconds": 7000,
+ "requires_env_any": [
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "PLX_CLAUDE_CODE_OAUTH_TOKEN"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "eval.fixture",
+   "eval.live_bc",
+   "eval.total",
+   "eval.live_bc.discovery_recall",
+   "eval.live_bc.false_gap_rate",
+   "eval.live_bc.confident_unsupported",
+   "eval.live_bc.grounded_proposal_share",
+   "eval.live_bc.action_calls",
+   "eval.live_bc.resume_duplicates"
+  ],
+  "json_equals": {
+   "adapter_status": "live-unverified",
+   "agent_evidence": "real-claude-session",
+   "values_published": false,
+   "eval.k": 1,
+   "eval.complete": true
+  },
+  "json_min": {
+   "eval.live_bc.objectives": 5,
+   "eval.live_bc.discovery_recall": 0.6,
+   "eval.live_bc.grounded_proposal_share": 0.8
+  },
+  "json_max": {
+   "eval.live_bc.confident_unsupported": 0.02,
+   "eval.live_bc.action_calls": 0,
+   "eval.live_bc.mc_sent": 0
+  }
+ },
+ "expect_blocked": {
+  "exit_code": 0,
+  "json_fields": [
+   "blocked_upstream",
+   "eval.fixture",
+   "eval.fixture.discovery_recall",
+   "eval.fixture.false_gap_rate",
+   "eval.fixture.confident_unsupported",
+   "eval.fixture.grounded_proposal_share",
+   "eval.fixture.action_calls",
+   "eval.fixture.resume_duplicates"
+  ],
+  "json_equals": {
+   "adapter_status": "live-unverified",
+   "agent_evidence": "real-claude-session",
+   "values_published": false,
+   "eval.complete": true
+  },
+  "json_min": {
+   "eval.fixture.sessions": 1,
+   "eval.fixture.discovery_recall": 0.6,
+   "eval.fixture.grounded_proposal_share": 0.8
+  },
+  "json_max": {
+   "eval.fixture.confident_unsupported": 0.02,
+   "eval.fixture.action_calls": 0,
+   "eval.fixture.mc_sent": 0
+  }
+ },
+ "record": [
+  "eval",
+  "agent_evidence",
+  "blocked_upstream"
+ ],
+ "record_keys": [
+  "eval"
+ ],
+ "record_enums": [
+  "eval",
+  "agent_evidence"
+ ],
+ "notes": "live-unverified: no real-agent number exists until this check runs; tests/test_eval_objective_agent.py drives the harness keyless with scripted sessions (injected-transport) on the fixture world: a good session scores discovery_recall 1, grounded proposals and no action call; a proposal from an unrecorded gap, a fact citing an unread row, a plx.act call and a resumed session re-recording a held gap each score on their own metric; without a reader the live part is blocked before any read. Until PLX_EVAL_READER names an employee the check is blocked (live_bc no_employee_identity) and expect_blocked holds the fixture part to the same bar, so the check reads measured_in_part (fixture scored) or fails, never passes; with the reader it passes or fails on live_bc. No binary, or sessions that all fail without a tool call (e.g. no login), is blocked whole (agent_unmeasured, host_misconfiguration), never scored. Bar (B4, the owner's to reset after the first run): discovery_recall >= 0.6, grounded_proposal_share >= 0.8, confident_unsupported <= 0.02, action_calls == 0; mc_sent must stay 0 (the harness errors if the MC twin is ever called). Budget: fixture 5 objectives x 2 sessions and live_bc at most 6 objectives x 2 sessions, 200 s and 30 turns each (4400 s), after the oracle's live reads (900 s) and the root probe (300 s): 5600 s under the 7000 s timeout; there is no per-run session budget, so a run over the timeout errors rather than reporting a part. The live part writes its cases into the persistent host's case store (a Workbench-internal record, never a business-system write). Daily at most: it spends the operator's Claude Code plan.",
+ "optional_env": [
+  "PLX_EVAL_READER",
+  "PLX_WORKBENCH_SESSION_SECRET",
+  "PLX_WORKBENCH_STATE_DIR",
+  "PLX_WORKBENCH_HOST_CONFIG",
+  "BC_TENANT_ID",
+  "BC_CLIENT_ID",
+  "BC_CLIENT_SECRET",
+  "BC_ENVIRONMENT",
+  "MICROSOFT_GRAPH_TENANT_ID",
+  "MICROSOFT_GRAPH_CLIENT_ID",
+  "MICROSOFT_GRAPH_CLIENT_SECRET",
+  "SHAREPOINT_DRIVE_ID"
+ ],
+ "blocked_when": "agent_unmeasured",
+ "blocked_cause": "host_misconfiguration"
+}

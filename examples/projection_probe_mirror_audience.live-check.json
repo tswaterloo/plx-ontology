@@ -1,0 +1,23 @@
+{
+ "schema": "plx-source-mirror-audience/v1",
+ "tenant": "plx",
+ "note": "EXAMPLE ONLY, not a PLX-confirmed grant: the narrowed Portal audience of the ontology.projection, ontology.traverse and ontology.mentions live checks (scripts/ontology_projection_probe.py --mirror-audience). Their reader (svc:mail-capture, the probe's --capture-principal) and the mention check's mail-withheld reader (probe:mail-withheld-reader, granted the records but never the mail) are granted the public and sage families but not silver (default deny), and not the customer and supplier master relations inside them (exact entries with no principals: the most specific pattern wins), so each check measures on real data that the served host trims what a restricted reader is not granted (reader_denied_objects_probed, reader_denied_probed). Default deny.",
+ "default_classification": "internal",
+ "audiences": {
+  "public.*": [
+   "svc:mail-capture",
+   "probe:mail-withheld-reader"
+  ],
+  "sage.*": [
+   "svc:mail-capture",
+   "probe:mail-withheld-reader"
+  ],
+  "public.app_customer": [],
+  "public.app_customer_location": [],
+  "public.customer": [],
+  "public.app_supplier": [],
+  "public.supplier": [],
+  "sage.ar_customer": [],
+  "sage.ar_ship_to": []
+ }
+}

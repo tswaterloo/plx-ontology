@@ -1,0 +1,29 @@
+{
+ "schema": "plx-live-source-audience/v1",
+ "tenant": "plx",
+ "note": "EXAMPLE ONLY, not a PLX-confirmed grant: the mail capture service principal of the graph.mail_capture live check, narrowed to the six mailboxes the check's capture scope names (examples/mail_capture_scope.live-check.json). Default deny. The withheld principal of the check has no grant, so reading the capture store as it must return 0 rows and 0 counts.",
+ "default_classification": "confidential",
+ "audiences": {
+  "mail:order-confirmation@petrasoap.com": [
+   "svc:mail-capture"
+  ],
+  "mail:ship@petrasoap.com": [
+   "svc:mail-capture"
+  ],
+  "mail:torontowh@petrasoap.com": [
+   "svc:mail-capture"
+  ],
+  "mail:ap@petrasoap.com": [
+   "svc:mail-capture"
+  ],
+  "mail:receiving@petrasoap.com": [
+   "svc:mail-capture"
+  ],
+  "mail:qclabresults@petrasoap.com": [
+   "svc:mail-capture"
+  ]
+ },
+ "classifications": {
+  "mail:*": "restricted"
+ }
+}

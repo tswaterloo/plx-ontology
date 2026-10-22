@@ -1,0 +1,605 @@
+{
+ "$schema": "_plan.schema.json",
+ "format": "plx-investigate-plan/v1",
+ "id": "impact_chain",
+ "families": [
+  "F16"
+ ],
+ "title": "Which customer orders a late purchase order puts at risk, by how many days and for how much",
+ "description": "From a late or slipping PO (plx.process po_delivery_window's own verdict), or every PO of one supplier, walk only recorded links: PO line, item and its twins, FileMaker assembly order components, the assembly order and its Portal MO, the order line it is made or allocated for, the customer order. Per order, worst first: days at risk against its required date and, for a reader shown it, its cited value. A missing link is a typed gap naming the source that would hold it; nothing is joined by shared codes or dates.",
+ "root": {
+  "object_types": [
+   "PurchaseOrder",
+   "Supplier"
+  ],
+  "fallback_filters": [
+   {
+    "object_type": "PurchaseOrder",
+    "property": "po_number"
+   }
+  ]
+ },
+ "step_budget": 128,
+ "max_each": 50,
+ "steps": [
+  {
+   "id": "supplier_pos",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrder.ordered_from",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 15
+   },
+   "description": "A supplier root: its purchase orders (a PO root skips this step)."
+  },
+  {
+   "id": "lateness",
+   "tool": "plx.process",
+   "from": [
+    "root",
+    "supplier_pos"
+   ],
+   "bind": "from",
+   "object_types": [
+    "PurchaseOrder"
+   ],
+   "args": {
+    "process": "po_delivery_window"
+   },
+   "description": "One call per PO: the declared delivery-window graph's own lateness verdict and its cited dates.",
+   "required": true
+  },
+  {
+   "id": "po_read",
+   "tool": "plx.object",
+   "from": [
+    "root",
+    "supplier_pos"
+   ],
+   "bind": "object_id",
+   "object_types": [
+    "PurchaseOrder"
+   ]
+  },
+  {
+   "id": "po_twins",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "supplier_pos"
+   ],
+   "bind": "from",
+   "object_types": [
+    "PurchaseOrder"
+   ],
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrder.same_record_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The PO's records in other systems, where its lines may hang."
+  },
+  {
+   "id": "po_twins_named",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "supplier_pos"
+   ],
+   "bind": "from",
+   "object_types": [
+    "PurchaseOrder"
+   ],
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrder.same_record_as",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The same, where the other record holds the link."
+  },
+  {
+   "id": "lines",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "supplier_pos",
+    "po_twins",
+    "po_twins_named"
+   ],
+   "bind": "from",
+   "object_types": [
+    "PurchaseOrder"
+   ],
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrderLine.line_of",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The PO's lines."
+  },
+  {
+   "id": "items",
+   "tool": "plx.around",
+   "from": "lines",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrderLine.for_item",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The item each line orders."
+  },
+  {
+   "id": "item_twins",
+   "tool": "plx.around",
+   "from": "items",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Product.same_record_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The item's records in other systems (FileMaker packaging or raw material, BC item)."
+  },
+  {
+   "id": "item_twins_named",
+   "tool": "plx.around",
+   "from": "items",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Product.same_record_as",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The same, where the other record holds the link."
+  },
+  {
+   "id": "item_twins2",
+   "tool": "plx.around",
+   "from": [
+    "item_twins",
+    "item_twins_named"
+   ],
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Product.same_record_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "A twin's twins: a BC item reaches FileMaker packaging through the Portal product."
+  },
+  {
+   "id": "item_twins2_named",
+   "tool": "plx.around",
+   "from": [
+    "item_twins",
+    "item_twins_named"
+   ],
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Product.same_record_as",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The same, where the other record holds the link."
+  },
+  {
+   "id": "components",
+   "tool": "plx.around",
+   "from": [
+    "items",
+    "item_twins",
+    "item_twins_named",
+    "item_twins2",
+    "item_twins2_named"
+   ],
+   "bind": "from",
+   "object_types": [
+    "Product"
+   ],
+   "args": {
+    "path": [
+     {
+      "link_type": "AssemblyOrderComponent.uses_item",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "FileMaker assembly order component rows that consume the item."
+  },
+  {
+   "id": "assembly",
+   "tool": "plx.around",
+   "from": "components",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "AssemblyOrderComponent.component_of",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The assembly order each component row belongs to."
+  },
+  {
+   "id": "ao_twins",
+   "tool": "plx.around",
+   "from": "assembly",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "AssemblyOrder.same_record_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The Portal manufacturing order of the FileMaker assembly order and back."
+  },
+  {
+   "id": "ao_twins_named",
+   "tool": "plx.around",
+   "from": "assembly",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "AssemblyOrder.same_record_as",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The same, where the other record holds the link."
+  },
+  {
+   "id": "ao_read",
+   "tool": "plx.object",
+   "from": [
+    "assembly",
+    "ao_twins",
+    "ao_twins_named"
+   ],
+   "bind": "object_id",
+   "object_types": [
+    "AssemblyOrder"
+   ],
+   "description": "Each assembly order's status: a realized or cancelled one puts no order at risk."
+  },
+  {
+   "id": "ao_lines",
+   "tool": "plx.around",
+   "from": [
+    "assembly",
+    "ao_twins",
+    "ao_twins_named"
+   ],
+   "bind": "from",
+   "object_types": [
+    "AssemblyOrder"
+   ],
+   "args": {
+    "path": [
+     {
+      "link_type": "AssemblyOrder.for_order_line",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The sales order line a manufacturing order is made for."
+  },
+  {
+   "id": "allocations",
+   "tool": "plx.around",
+   "from": [
+    "assembly",
+    "ao_twins",
+    "ao_twins_named"
+   ],
+   "bind": "from",
+   "object_types": [
+    "AssemblyOrder"
+   ],
+   "args": {
+    "path": [
+     {
+      "link_type": "AssemblyOrderAllocation.allocates",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "FileMaker order-entry assembly allocations of the assembly order."
+  },
+  {
+   "id": "alloc_lines",
+   "tool": "plx.around",
+   "from": "allocations",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "AssemblyOrderAllocation.for_order_line",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The order line each allocation is for."
+  },
+  {
+   "id": "orders",
+   "tool": "plx.around",
+   "from": [
+    "ao_lines",
+    "alloc_lines"
+   ],
+   "bind": "from",
+   "object_types": [
+    "SalesOrderLine"
+   ],
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrderLine.line_of",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The customer order each order line belongs to."
+  },
+  {
+   "id": "order_twins",
+   "tool": "plx.around",
+   "from": "orders",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrder.same_record_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The order's records in other systems."
+  },
+  {
+   "id": "order_twins_named",
+   "tool": "plx.around",
+   "from": "orders",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrder.same_record_as",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The same, where the other record holds the link."
+  },
+  {
+   "id": "order_read",
+   "tool": "plx.object",
+   "from": [
+    "orders",
+    "order_twins",
+    "order_twins_named"
+   ],
+   "bind": "object_id",
+   "object_types": [
+    "SalesOrder"
+   ],
+   "description": "Each order's required date, status and (for a reader allowed finance values) total."
+  }
+ ],
+ "evidence": [
+  {
+   "name": "po",
+   "kind": "property",
+   "object_type": "PurchaseOrder",
+   "properties": [
+    "po_number"
+   ],
+   "numbering": "value"
+  },
+  {
+   "name": "late_po",
+   "kind": "select",
+   "required": true,
+   "description": "Per PO: the purchase order the verdict is about.",
+   "step": "lateness",
+   "path": "lateness.*.root",
+   "reduce": "first",
+   "per": "root",
+   "number_as": "po"
+  },
+  {
+   "name": "late_state",
+   "kind": "select",
+   "description": "Per PO: the verdict (late, on_time, not_due, undetermined, not_applicable).",
+   "step": "lateness",
+   "path": "lateness.*.state",
+   "reduce": "first",
+   "per": "root",
+   "number_as": "po"
+  },
+  {
+   "name": "late_governing",
+   "kind": "select",
+   "description": "Per PO: the governing planned arrival.",
+   "step": "lateness",
+   "path": "lateness.*.governing_date",
+   "reduce": "first",
+   "per": "root",
+   "number_as": "po"
+  },
+  {
+   "name": "late_measured",
+   "kind": "select",
+   "description": "Per PO: the date the verdict was measured on (today or the received date).",
+   "step": "lateness",
+   "path": "lateness.*.measured_on",
+   "reduce": "first",
+   "per": "root",
+   "number_as": "po"
+  },
+  {
+   "name": "late_revised",
+   "kind": "select",
+   "description": "Per PO: the supplier's revised promise.",
+   "step": "lateness",
+   "path": "lateness.*.revised_date",
+   "reduce": "first",
+   "per": "root",
+   "number_as": "po"
+  },
+  {
+   "name": "late_received",
+   "kind": "select",
+   "description": "Per PO: the received date (fully received only).",
+   "step": "lateness",
+   "path": "lateness.*.received_date",
+   "reduce": "first",
+   "per": "root",
+   "number_as": "po"
+  },
+  {
+   "name": "late_at_risk",
+   "kind": "select",
+   "description": "Per PO: whether the shared po-status rule calls it at risk (open, not yet late, the supplier's latest promise after the requested-by date).",
+   "step": "lateness",
+   "path": "lateness.*.at_risk",
+   "reduce": "first",
+   "per": "root",
+   "number_as": "po"
+  },
+  {
+   "name": "late_promised",
+   "kind": "select",
+   "description": "Per PO: the supplier's first promise (the at-risk date when it was never revised).",
+   "step": "lateness",
+   "path": "lateness.*.promised_date",
+   "reduce": "first",
+   "per": "root",
+   "number_as": "po"
+  },
+  {
+   "name": "ao_status",
+   "kind": "property",
+   "object_type": "AssemblyOrder",
+   "properties": [
+    "status"
+   ],
+   "description": "Each assembly order's status."
+  },
+  {
+   "name": "order_required",
+   "kind": "property",
+   "object_type": "SalesOrder",
+   "properties": [
+    "required_date"
+   ],
+   "description": "Each order's required (promised) date."
+  },
+  {
+   "name": "order_status",
+   "kind": "property",
+   "object_type": "SalesOrder",
+   "properties": [
+    "status",
+    "fm_status",
+    "bc_status"
+   ],
+   "description": "Each order's status."
+  },
+  {
+   "name": "order_value",
+   "kind": "property",
+   "object_type": "SalesOrder",
+   "properties": [
+    "total_amount"
+   ],
+   "description": "Each order's cited total (finance values: shown only to readers allowed them)."
+  },
+  {
+   "name": "order_currency",
+   "kind": "property",
+   "object_type": "SalesOrder",
+   "properties": [
+    "currency"
+   ],
+   "description": "Each order's currency."
+  },
+  {
+   "name": "impact",
+   "kind": "compute",
+   "engine": "impact_chain",
+   "required": true,
+   "description": "Per affected order, worst first: days at risk (material date + recorded lead time - required date; no assembly lead time is recorded, so 0 days are counted and days at risk is a lower bound) with the cited chain of links, the value at risk when shown, and a typed gap where a link is missing.",
+   "engine_args": {
+    "lateness": {
+     "po": "late_po",
+     "state": "late_state",
+     "governing": "late_governing",
+     "measured": "late_measured",
+     "revised": "late_revised",
+     "received": "late_received",
+     "at_risk": "late_at_risk",
+     "promised": "late_promised"
+    },
+    "required": "order_required",
+    "order_status": "order_status",
+    "value": "order_value",
+    "currency": "order_currency",
+    "assembly_status": "ao_status"
+   }
+  }
+ ]
+}

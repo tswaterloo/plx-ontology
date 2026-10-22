@@ -1,0 +1,144 @@
+{
+ "id": "eval.unfamiliar_sample",
+ "description": "Unfamiliar-transaction find eval: per run >= 25 real transactions sampled across sales order / purchase order / assembly order / receipt / BC invoice / purchase-order three-way (po_three_way) / mail / SharePoint document, seeded by the run id (live-<UTC hour>), by the evaluation oracle (evals/oracle/cross_sample.py, under the oracle import ban, GET-only Portal API + BC + Graph reads). Each question's identifier is taken from a record of another system than the root's (a BC document, an FM row, a Portal row, a mail subject/preview or a SharePoint file name) and the oracle confirms it names exactly that root. The identifier alone is then answered through the product path: plx.find (plx.object when a candidate carries no citation) from the case host's tool table over the runner session's committed projection when this session committed it (--session-projection {session_state}/projection, ontology.session_projection: opened read-only through the dev baseline's session path, eval_dev_baseline.session_product, the producer's mirror read in place; the run then neither syncs, captures nor projects, so the build's share of the budget goes to sampling; live 2026-10-14 13:22Z: the build took 736 s of 1500 and sales_order and sharepoint were cut by the budget before), else (no session projection committed: eval.product.session not_committed, fail reason session_not_committed, and the spec pins eval.product.source session_projection, so a fallback build never passes unnoticed) over a projection generation built in {tmp} from a GET-only Portal mirror sync of only the relations the curated schema binds for the sampled root kinds and the product's own GET-only BC capture of the entity sets the schema binds for the BC roots and the three-way graph (scripts/eval_unfamiliar_sample.py capture_bc; it runs after the Portal sync on the rest of the build share, at least 1/4 of it), so the product holds BC while the Portal is down. The whole run (oracle reads, mirror sync, projection, finds) shares one 1500 s budget (daily cadence: an hourly run of ~720 s left bc_invoice, mail and SharePoint blocked by the budget) and stops cleanly, labelled incomplete, when it is spent: the build takes its --build-share (0.55) including the projection (--projection-reserve-seconds is kept back from the sync for it), the finds keep --find-reserve-seconds (60), and the sampling time between is sliced per kind (each kind that draws gets its fair share, an even share of what is left but never more than an even share of the time sampling started with, in the order bc_invoice, sales/purchase/assembly order, receipt, po_three_way, mail, SharePoint; a slice bounds the kind's source reads, never its checks over the rows already read; every kind its slice cut gets a second slice of what is left: a record kind resumes on its untried roots, a document kind left without a reference reads again; live 37e539e: the documents' further reads took what the sales-order slice left), so one slow kind never starves the others (live 1303d122: the build overran into sampling, the sales-order BC probes spent the rest and bc_invoice, mail and SharePoint were blocked by the budget). Scored on the root's own relation: found_exact / ambiguous / wrong / not_found. po_three_way roots are Portal purchase orders with a Portal receipt or a sampled BC purchase invoice; the product resolves the identifier with plx.find and then asks plx.process (purchase_to_invoice) from the same case host tool table, and every stage (purchase_order, receipt, vendor_invoice) and side (ordered vs received, received vs invoiced) the oracle's independent reading (evals/oracle/three_way.py) decides and the product holds the sources of is compared: three_way_correct / three_way_undecided / three_way_wrong / root_not_resolved; items the oracle cannot read or decide are excluded (oracle_blocked, oracle_undecided), never counted wrong. Pass rule every_kind (the Portal answered the sync): the check passes only when each of the eight kinds has at least one scored passing item (found_exact; three_way_correct for po_three_way) through the product path (eval.by_kind.<kind>.status == passed for all eight, eval.kinds_missing names the rest); items whose root relation the product never captured are excluded from the rate and counted (product_not_holding_root). Publishes kinds, edge names, outcomes, reason codes, counts and 16-hex hashes; never an identifier, key, citation or row value (row_data_check.leaked must be 0). The product build runs first on its reserved share of the run budget (--build-share); sampling then draws only root kinds the built product holds (kinds it does not hold are one coverage gap, eval.kinds_not_held, not scored-excluded items), the BC probe budget is shared across kinds, and a build that never ran reports product.status not_built. Pass rule portal_outage (the Portal failed the product's whole mirror sync, eval.pass_rule): the run is still measured; the Portal-rooted strata (sales/purchase/assembly order, receipt, po_three_way) are blocked: upstream with HTTP status and error code, each counting its even share of --count as sampled and blocked_upstream (cause upstream_outage) in eval.find_root / eval.answer (eval.blocked.kinds_quota sums them), never 0 and never dropped; their by_kind entries stay compact (no zero counts, no eval.sources_tried: the Portal failure is named in eval.product and each block) so the record keeps every field under the runner's cap; BC-rooted items (bc_invoice roots, also when a mail or SharePoint document names them) are answered through the same product path, and the run meets that rule only when at least one is scored (eval.bc_rooted: sampled / blocked_upstream / scored = correct + wrong + abstain_ok + missed: accuracy correct/scored beside coverage scored/sampled) and every kind that was asked (items drawn, not blocked) passes; even then it never passes: it exits 0 with eval.blocked_cause upstream_outage and this check reads blocked (blocked_when, cause upstream_outage by blocked_causes). Green is pass rule every_kind only: the spec pins eval.pass_rule every_kind and eval.kinds_found_exact >= 7, so an outage run that lost its blocked cause still fails. eval.fail_reasons names why a run fails under either rule (empty: pass; kinds_failing when a kind of eval.kinds_missing fails the rule).",
+ "source": "portal-workbench-api+business-central+microsoft-graph",
+ "requires": [
+  "ontology.session_projection"
+ ],
+ "answer_source": true,
+ "cadence": "daily",
+ "metric": true,
+ "command": [
+  "python3",
+  "-m",
+  "scripts.eval_unfamiliar_sample",
+  "live",
+  "--build-store",
+  "{tmp}/product",
+  "--session-projection",
+  "{session_state}/projection",
+  "--total-budget-seconds",
+  "1500",
+  "--projection-reserve-seconds",
+  "120",
+  "--find-reserve-seconds",
+  "60",
+  "--build-share",
+  "0.55",
+  "--run-id",
+  "auto",
+  "--count",
+  "28",
+  "--min-scored",
+  "20",
+  "--mail-scope",
+  "examples/mail_capture_scope.unfamiliar_sample.live-check.json",
+  "--sharepoint-scope",
+  "examples/sharepoint_capture_scope.qcqa_aos.live-check.json",
+  "--previous-report={daily_report}"
+ ],
+ "timeout_seconds": 1800,
+ "requires_env": [
+  "BC_TENANT_ID",
+  "BC_CLIENT_ID",
+  "BC_CLIENT_SECRET",
+  "BC_ENVIRONMENT",
+  "MICROSOFT_GRAPH_TENANT_ID",
+  "MICROSOFT_GRAPH_CLIENT_ID",
+  "MICROSOFT_GRAPH_CLIENT_SECRET"
+ ],
+ "optional_env": [
+  "PLX_WORKBENCH_API_URL",
+  "PLX_WORKBENCH_API_KEY"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "run_id",
+   "eval.pass",
+   "eval.pass_rule",
+   "eval.fail_reasons",
+   "eval.by_kind",
+   "eval.by_bucket",
+   "eval.excluded",
+   "eval.complete",
+   "eval.product",
+   "counts.items",
+   "kinds",
+   "items_digest",
+   "eval.scored_kinds",
+   "eval.kinds_missing",
+   "eval.kinds_found_exact",
+   "eval.answer",
+   "eval.find_root",
+   "eval.bc_rooted",
+   "eval.wrong_within_bound"
+  ],
+  "json_equals": {
+   "adapter_status": "live-unverified",
+   "evidence_label": "live-read",
+   "values_published": false,
+   "row_data_check.leaked": 0,
+   "eval.product.available": true,
+   "eval.product.source": "session_projection",
+   "eval.wrong_within_bound": true,
+   "eval.pass_rule": "every_kind"
+  },
+  "json_min": {
+   "eval.product.object_count": 1,
+   "eval.bc_rooted.scored": 1,
+   "row_data_check.values_checked": 1,
+   "eval.kinds_found_exact": 7
+  },
+  "json_empty": [
+   "eval.fail_reasons"
+  ]
+ },
+ "record": [
+  "eval",
+  "row_data_check",
+  "sources",
+  "read_failures",
+  "items_digest"
+ ],
+ "record_keys": [
+  "eval",
+  "row_data_check"
+ ],
+ "record_enums": [
+  "eval",
+  "sources",
+  "read_failures",
+  "items_digest"
+ ],
+ "notes": "live-unverified until a passing live-check result; module tests are injected-transport (tests/test_eval_unfamiliar_sample.py and tests/test_eval_three_way.py over evals/oracle/fixture_world.py and a projection built from it through the real mirror, projector and plx.find). The runner lifts the recorded 'eval' block into a top-level 'eval' map of results/latest.json keyed by check id (verify/live_verify.py eval_blocks), the place of the hand-written 'unfamiliar_eval'. Pass rates are measured, never asserted. The check fails (exit 3, eval.fail_reasons names each cause, the spec requires it empty) when the product is unavailable (budget spent before the mirror sync, store unreadable, no plx.find) or its projection holds no object, under pass rule every_kind when fewer than 25 items were sampled or fewer than --min-scored (20) items were scored, under portal_outage when no BC-rooted item was scored (a rate over a handful of items is not a measurement), when the budget cut the run (eval.incomplete holds run_budget_exhausted), or on any leak. Per-item rows stay in stdout only; the record keeps the eval block (eval.by_kind carries each kind's candidates and status; eval.sources_tried names, per kind without items whose source was read, the relation columns, BC entity sets, 'mail' or SharePoint paths it read, as names the runner keeps, never a mailbox address) and items_digest (a 16-hex fingerprint of the sorted item hashes) so the detail fits the runner's cap; the sampler's per-kind diagnostics (top-level kinds: skip codes, BC probes, reference edges) stay in stdout. eval.complete=false with eval.incomplete reasons (run_budget_exhausted, mirror_incomplete, source_read_failures) labels a partial run; its rate covers only scored items (eval.scored; eval.excluded counts the rest by reason). Buckets name the path that answered: every item is answered by the generic plx.find today, so all scored items are untemplated and plan-family / scripted stay 0/0 until plx.investigate plans or case scripts answer. The mirrored relations are derived from the curated schema (scripts/eval_unfamiliar_sample.py required_relations: every portal_api binding of the object types bound to a sampled root relation plus their via_link lineage hops), never a hardcoded list; --store FILE reuses a maintained projection instead of building one. Every-kind rule (replaces the earlier eval.scored_kinds >= 2; eight kinds since po_three_way): eval.by_kind carries per kind candidates (roots or documents read; for po_three_way the purchase orders with a receipt or invoice to match), references, items, scored, its outcomes (found_exact/found_lead/ambiguous/wrong/not_found, or three_way_correct/three_way_undecided/three_way_wrong/root_not_resolved)/excluded and a status: passed (>= 1 scored found_exact or three_way_correct), no_found_exact (po_three_way: no_correct_answer), unscored (all items excluded, with the reason), and for a kind without items empty (its stratum yielded no question), not_held, not_configured or blocked (blocked: upstream when its source read failed, e.g. a Portal non-2xx, with http_status and error_code; budget; unreadable); a kind whose items are all blocked is blocked too. Only passed passes; every kind in eval.kinds_missing fails the run (fail reason kinds_failing; under portal_outage a kind blocked upstream or without items is excused, as its eval.by_kind entry shows) and the spec requires eval.fail_reasons empty, so the runner's failure says eval.fail_reasons not empty and the recorded eval block names the kinds; the exit code is 3 too. A Portal outage (non-2xx) does not crash the run: the Portal-rooted kinds report blocked: upstream (their quota in eval.blocked.kinds_quota), product.status is source_unavailable when nothing else was captured (otherwise product.portal says source_unavailable and the BC capture is projected alone) and the report stays valid JSON. The spec no longer requires portal.health_catalog: the outage is measured, not skipped. A Portal failure during the run blocks every item it touched (the whole mirror sync failed, the sync of the item's root relation failed, or the oracle's own read failed): outcome blocked with blocked: upstream, http_status and error_code, never scored and never dropped; a kind whose relation sync failed is still sampled so its items show as blocked, not not_held. A po_three_way aspect whose own source relation failed to sync is blocked alone (aspects.blocked, blocked_aspects) and the item's other aspects are still scored: a wrong one keeps the item three_way_wrong, otherwise the item is blocked (never a pass), and the kind never passes while any of its items has a blocked aspect. eval.blocked counts blocked items, kinds and aspects apart from wrong answers (counts.blocked) and exclusions (eval.excluded), with separate tallies by cause, status and code for items (items_by_cause, items_http_status, items_error_code) and kinds (kinds_*), never one mixed count; eval.incomplete then holds items_blocked_upstream (aspects_blocked_upstream for blocked aspects). Expected honest results: with BC configured the product holds its own BC capture, so bc_invoice roots and the BC-side three-way aspects are held (a BC capture cut by the budget is projected as far as it got, its units labelled incomplete; product.bc_capture says captured / partial / no_budget / failed); plx.find may not index a purchase order by the identifiers the sampler draws (root_not_resolved); a bc_invoice reference edge joins a Portal record, so when the Portal cannot be read (an outage) or holds no such record (BC drained from another Portal database) the invoice's own copy of the other system's identifier is the reference (edge name suffixed .carried: the vendor's invoice number; externalDocumentNumber and orderNumber name an order first and are skipped), still only when the oracle's BC lookup finds exactly that invoice; mail and SharePoint documents that name a sampled BC invoice add BC-rooted items, and a run where none is scored fails as no_bc_rooted_scored; kinds whose identifier the curated schema does not index score not_found and fail as no_found_exact. BC and Graph are required by the spec (requires_env; the eval's --no-bc and an unset variable still work by hand: the bc_invoice/mail/sharepoint kinds then report not_configured and their quota spills to the Portal kinds); the Portal variables are optional_env, and the run needs them set (an unset Portal URL or key is an error, exit 1). The SharePoint paths need SHAREPOINT_DRIVE_ID (else not_configured); a wrong path shows as kinds.sharepoint.status=unavailable. Memory: the projector holds a build in memory (OPEN-DECISIONS projection-memory); the schema-derived subset keeps it to the root object types' relations and BC entity sets (the unbounded ledgers are not captured). eval.product reports projection_seconds and peak_rss_mib (process peak resident memory) as diagnostics, never asserted. Scoring defaults: OPEN-DECISIONS eval-unfamiliar-sample-scoring. Answer correctness: eval.answer (three-way answers) and eval.find_root (root lookup, apart) count sampled / blocked_upstream / not_held / unscored_other / product_error / scored = correct + wrong + abstain_ok + missed (product_error: plx.find or plx.process returned a tool error; never an abstention, and the run fails with exit 3), with accuracy beside coverage; the runner sums them into answer_correctness (answer_source: a blocked run counts as unmeasured with its cause). The check fails when wrong answers exceed 1/10 of the scored items (eval.wrong_within_bound). The top-level counts are not recorded: eval.by_kind, eval.answer and eval.find_root carry them. Read failures (live 1303d122 listed five BC reads with no cause; the same run's bc.case_entities and bc.purchase_reader read those fields, so the cause was the sampling budget): read_failures maps each failed read to its cause, budget (the run or the kind's slice stopped it), not_exposed (BC answered 400 to a field filter: the API v2.0 entity does not expose it, a typed gap), not_queryable (the BC grammar refused the value, no request sent) or upstream; only upstream and not_exposed make eval.incomplete source_read_failures, a budget stop makes it sampling_budget_cut, and a kind its slice cut says budget_cut (blocked budget when it got no reference, never empty). A kind cut with no reference names what the roots or documents it tried lacked (within_read), and a record kind without items names in eval.missing_reference the reference sources (relation.column, names only) it looked its roots' identifiers up in and found no record in (live receipts: FM raw receipts whose one edge reads public.app_receipt.receipt_number), as keys valued no_record beside a typed cause and counts: budget_exhausted when the shared BC probe budget refused any BC probe of the kind (checked first: a probe not made measures no mismatch), else bc_source_mismatch when its BC probes completed, or the kind stopped on cross_sample.BC_MISS_STOP (20) consecutive probes that found no BC record (decision 89aed11571b0: bc_finds probes made, all missed, a measurement; the probes it then did not make count bc_miss_stop and its unspent share goes to the later kinds, so live 444 sales-order roots with 0 hits no longer exhaust the 150 shared probes), and BC held none of the roots' numbers (the live Portal sales orders have no BC copy; a data-source mismatch, not a probe budget), else no_reference; counts roots, bc_finds (probes made), bc_probe_budget (probes refused) and bc_miss_stop. A kind whose roots have no cross-system edge at all says reason no_reference_edge (live receipts: FM raw receipts only, whose one edge joins FileMaker). eval.fail_reasons holds no_bc_rooted_scored under either pass rule when no BC-rooted item was scored. Mail is read over the mailboxes of a capture scope (--mail-scope examples/mail_capture_scope.unfamiliar_sample.live-check.json, parsed by integrations/capture_mail.CaptureScope.from_file as --sharepoint-scope is;): the purchase-order@ inbox and sent items (it held 4 messages in 90 days, graph.mail_capture live-2026-10-02T02:02Z, the one mailbox read before) and the inboxes of the six operational mailboxes. Each mailbox folder is searched, then, when the searches name no root, listed newest first (the _scan_mail listing); every read is reported by scope id (mail:mailbox-<n>/<folder>, eval.sources_tried included), never by address. Only mailboxes the allowlist (operating/case_mail_scope.json) and the people-exclusion guard (integrations/people_exclusion.py, access record 64fca27acc88) allow are read: one outside the allowlist is blocked and never requested (later_ask:mail-scope-grant), one the guard cannot clear (ExclusionUnavailable: excluded_people_oids_absent or unresolved) is blocked from its first read (later_ask:excluded-people-oids); when every mailbox is blocked the kind is blocked=scope with scope_blocked (scope id -> code) and typed blocked by that later_ask, never a pass; some blocked and others read is an incomplete read. A malformed scope, or one that would widen past its named mailboxes (allowlisted_mailboxes, all_mailboxes enabled), fails the command at its argument check (exit 2). The mail and SharePoint kinds take their references the one way eval.oracle_dev's document strata do (evals/oracle/generator.py document_candidates: the documents searched for the numbers of the roots read, a root named only when a span names it and the oracle's lookup of that span finds exactly it;), never a listing of their own, over the same roots: every record root read and, read in the first document slice and searched when the product holds BC, the BC orders and posted receipts (cross_sample.bc_document_roots, root kind bc_document, counted in eval.bc_rooted; the purchasing mail names POs above every Portal PO row read, case.po_mail_links 2026-10-13), a BC order drained under a Portal record's own number being that record (generator.twins); their status says why a kind has none as eval.oracle_dev's does (no_candidate_in_sample, unreadable withheld or search_failed, incomplete root_lookup_failed). Typed blocks (A3): a kind left without items for a declared cause is reported in eval.kinds_typed_blocked with its code. Only receipt (unserved:public.app_receipt) may stay typed blocked and pass (7 of 8 kinds passed); while mail is typed blocked by the tenant's refusal of every mail search (later_ask:graph-mail-directory-consent) the run exits 0 with eval.blocked_cause set and this check reads blocked (blocked_when, cause source_gap), never pass, until the grant lets mail resolve. sales_order is typed blocked (later_ask:workbench-api-replica-target: the reporting API's replica is plx-postgres-staging while BC orders drain from UAT) only when its Portal roots were read, no BC order was a Portal twin, no BC probe was refused by the budget, no reference read failed and no BC root set read failed (skipped.reference_read_gap and skipped.bc_read_failed 0: a partly failing BC measures no mismatch) and it got no reference (missing_reference cause bc_source_mismatch); the run then reads blocked with cause later_ask (blocked_causes). eval.blocked_cause is one enum code (the first typed kind's, in kind order); a second typed kind's code is listed in eval.blocked_also, never joined into it. The threshold is the generator's one rule (evals/oracle/generator.py block_refused_upstream, the same as eval.oracle_dev's blocked: upstream): the tenant refused every query and no search was answered, failed or scanned. Mostly refused with documents found, one answered search, or a refusal by our own grammar or read-only guard is not that cause and fails. SharePoint reads the QCQA '/AOs/2026 - AOs' folder named by --sharepoint-scope (examples/sharepoint_capture_scope.qcqa_aos.live-check.json; its drive id replaces SHAREPOINT_DRIVE_ID for this check; the scope is parsed by the capture's own CaptureScope.from_file, so its max_depth, max_folders and max_content_bytes bound the reads, within the eval's own walk bounds): assembly-order packets only, so the assembly-order kind alone is expected to draw SharePoint candidates; order, PO and receipt documents stay a later_ask (docs/decisions/2026-10-19-unfamiliar-sharepoint-stratum.md).",
+ "session_audience": {
+  "/projection": {
+   "sources": [
+    "business-central",
+    "portal-workbench-api"
+   ],
+   "env": [
+    "BC_CLIENT_ID",
+    "BC_CLIENT_SECRET",
+    "BC_ENVIRONMENT",
+    "BC_TENANT_ID",
+    "PLX_WORKBENCH_API_KEY",
+    "PLX_WORKBENCH_API_URL"
+   ],
+   "reader": "service"
+  }
+ },
+ "session_reads": [
+  "/projection"
+ ],
+ "session_required": true,
+ "blocked_when": "eval.blocked_cause",
+ "blocked_cause": "source_gap",
+ "blocked_causes": {
+  "upstream_outage": "upstream_outage",
+  "later_ask:workbench-api-replica-target": "later_ask",
+  "later_ask:excluded-people-oids": "later_ask",
+  "later_ask:mail-scope-grant": "later_ask"
+ }
+}

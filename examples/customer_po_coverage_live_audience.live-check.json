@@ -1,0 +1,12 @@
+{
+ "schema": "plx-live-source-audience/v1",
+ "tenant": "plx",
+ "note": "EXAMPLE ONLY, not a PLX-confirmed grant: the host capture principal and the operations reader of the case.customer_po_coverage live check, narrowed to what it reads. Default deny. SharePoint: every key, because the PLXCUSTOMERS drive id is resolved by site name at run time and cannot be named here; what is read is bounded by examples/sharepoint_capture_scope.customer_documents.live-check.json.",
+ "default_classification": "confidential",
+ "audiences": {
+  "sharepoint:*": [
+   "staff:operations",
+   "svc:workbench-host"
+  ]
+ }
+}

@@ -1,0 +1,442 @@
+{
+ "format": "plx-eval-case-card-proposals/v1",
+ "status": "PROPOSED dev cards for lead triage, never gold. Vince's Artwork Lifecycle Map v1.0 is a process synthesis, not a verified deployed-system report; its gate strengths, task statuses and QA examples are source-reported and not rechecked. The map body read by the Workbench is not proven (case_originals record_body_status not_verified_in_checked_evidence), so the cards carry no line anchors and no expected values; anchors come after a verified read through scripts.case_originals read.",
+ "case": "vince-artwork",
+ "source": {
+  "advisory": {
+   "id": "advisory:0cd0f444ac49",
+   "ref": "source-records@30a4748003e7de074ef54ab96e05b141c34b9eed",
+   "path": "context/0cd0f444ac491f2282fc2297dff96a65178955d134167da077483cbc4a6b9a0c.json",
+   "record_sha256": "a3aa422665b4e120d07e9a5c2ccd7566cb51eb8ddfe3460d1af703be4e1064c1",
+   "source_revision": "2026-10-12T18:20:41Z",
+   "created_at": "2026-10-12T18:37:44Z"
+  },
+  "originals_registry": {
+   "path": "examples/case_originals.json",
+   "rows": {
+    "co-bbd2a0e1abe4": "the map, Artwork Lifecycle Map.md v1.0 (pinned, 95,266 bytes)",
+    "co-e5063b0591c6": "a supplied label review thread (text), linked from the map",
+    "co-c9eb154db086": "Form 117 label approval form (example), linked from the map",
+    "co-650b6e010de2": "Form 013B label verification accountability sheet (blank), linked from the map",
+    "co-7156a1d46328": "SOP QC-005 label creation, printing, accountability and verification",
+    "co-58f67fe08fa3": "a P-item component approval sheet, linked from the map",
+    "co-9adb53b98f5d": "a packaging purchase order (PDF), linked from the map",
+    "co-231813dce3ae": "the supplier email carrying that purchase order (text)",
+    "co-8c215def3c18": "a supplied label verification thread (text)",
+    "co-9cf79e2def01": "a supplied quality issues pack (text)",
+    "co-cbf1ebf0b7d0": "an AO packet (PDF)",
+    "co-367b91f31a89": "an AO packet (PDF)",
+    "co-5eae033ec53c": "an AO packet (PDF)",
+    "co-cb26ce66c877": "an ingredient list document",
+    "co-e4538ef0d861": "an ingredient list document",
+    "co-648a1bd0c6a6": "an ingredient list document"
+   }
+  },
+  "related_advisories": [
+   {
+    "id": "advisory:f2202e47e709",
+    "role": "Vince's Artwork Missing Evidence handoff: request for full original-case incorporation (originals downloaded and hashed by source intake; read receipt pending, bodies unread here)",
+    "ref": "source-records@d8ea537d6b5aad56647c29ad4671d6689be1b202",
+    "path": "context/f2202e47e709fe4fc17a6c20329304ae409e585162711865203da857a77e1bb9.json",
+    "record_sha256": "6a813ff5ce8f6a5d29a647c28eff3763c4787ff74fb8a8fa47f1273da401c9bc",
+    "source_revision": "quoted-text-sha256:db17616a918bde9a1f6998b032f47d7d2a993388ec7defe3cfaadb78ca7fb63f",
+    "created_at": "2026-10-15T19:16:30Z",
+    "source_artifacts": [
+     {
+      "case_id": "a7bdb9e8",
+      "gap": "gap-b2dacab54041",
+      "name": "Artwork Handoff.html",
+      "bytes": 3360754,
+      "sha256": "9bc825a28e334b25886a29b44a671a29ba209d71e2e677f5b2eea2730102784a",
+      "context_path": "context/a7bdb9e852a2880048db061be0208868bcddb62a1c4dfed9ad128be560a50447.json",
+      "maps_to": {
+       "exact-version approval": [
+        "AL-GAP-01",
+        "AL-GAP-02"
+       ],
+       "re-upload invalidation": [
+        "AL-GAP-01",
+        "AL-GAP-02"
+       ],
+       "lineage": [
+        "AL-GAP-04"
+       ]
+      }
+     },
+     {
+      "case_id": "b98e41f2",
+      "gap": "gap-90f94409c7a6",
+      "name": "Artwork system investigation.zip",
+      "bytes": 6201300,
+      "sha256": "63a92f8f15b4cd2bd64eddb0adfef914632b0263abaa030822edf44eb9278a3b",
+      "context_path": "context/b98e41f2d83d0817821758de2faf51e2e737b9bf352662e0f9e2008b7c239715.json",
+      "contains_identical_copy_of": "a7bdb9e8 (member bundle/Artwork Handoff.html, same sha256: one source)",
+      "maps_to": {
+       "exact-version approval": [
+        "AL-GAP-01",
+        "AL-GAP-02"
+       ],
+       "re-upload invalidation": [
+        "AL-GAP-01",
+        "AL-GAP-02"
+       ],
+       "lineage": [
+        "AL-GAP-04"
+       ]
+      }
+     }
+    ]
+   }
+  ]
+ },
+ "live_sources": [
+  {
+   "id": "portal.app_attachment",
+   "system": "portal",
+   "relation": "public.app_attachment (proof versions, approval_status, approved_by/at)",
+   "reader": "not_served",
+   "evidence": "plx-customer-portal:portal/prisma/schema.prisma@1f2d42d1e832:5858-5904; OntologyProject:ontology/schema/generated/portal_not_served_a_e.json@2003e14a91ee RelPublicAppAttachment"
+  },
+  {
+   "id": "portal.app_artwork_version_decision",
+   "system": "portal",
+   "relation": "public.app_artwork_version_decision (append-only proof-version decisions, qa_approved_at)",
+   "reader": "not_served",
+   "evidence": "plx-customer-portal:portal/prisma/schema.prisma@1f2d42d1e832:9348-9370; OntologyProject:ontology/schema/generated/portal_not_served_a_e.json@2003e14a91ee RelPublicAppArtworkVersionDecision"
+  },
+  {
+   "id": "portal.app_approval_record",
+   "system": "portal",
+   "relation": "public.app_approval_record of type pd.artwork_customer_signoff",
+   "reader": "not_served",
+   "evidence": "plx-customer-portal:portal/prisma/schema.prisma@1f2d42d1e832:1131-1159; plx-customer-portal:portal/src/lib/artwork/customer-signoff.ts@1f2d42d1e832:1-18"
+  },
+  {
+   "id": "portal.app_artwork_version_packaging_item",
+   "system": "portal",
+   "relation": "public.app_artwork_version_packaging_item (proof version -> minted P- item, previous item)",
+   "reader": "not_served",
+   "evidence": "plx-customer-portal:portal/prisma/schema.prisma@1f2d42d1e832:5906-5927; OntologyProject:ontology/schema/generated/portal_not_served_a_e.json@2003e14a91ee RelPublicAppArtworkVersionPackagingItem"
+  },
+  {
+   "id": "portal.artwork_soft_gate",
+   "system": "portal",
+   "relation": "artwork QA approval and AO sign-off soft-gate code paths",
+   "reader": "none",
+   "evidence": "plx-customer-portal:portal/src/lib/artwork/decide-proof.ts@1f2d42d1e832:295; plx-customer-portal:portal/src/lib/artwork/frozen-proof-display.ts@1f2d42d1e832:36; plx-customer-portal:portal/src/lib/artwork/ao-signoff-warning.ts@1f2d42d1e832:2"
+  },
+  {
+   "id": "portal.po_receipt_artwork",
+   "system": "portal",
+   "relation": "public.app_purchase_order_line, public.app_receipt_line (served without their artwork columns), public.app_incoming_qc_record (not served)",
+   "reader": "served",
+   "evidence": "plx-customer-portal:services/workbench-api/manifest/allowlist.json@1f2d42d1e832:560,691; plx-customer-portal:portal/prisma/schema.prisma@1f2d42d1e832:3620-3649,3875-3948"
+  },
+  {
+   "id": "portal.ao_label_control",
+   "system": "portal",
+   "relation": "public.app_ao_label_reconciliation_line, app_ao_label_verification_signoff, app_ao_line_inspection, app_ao_qc_release_ack",
+   "reader": "not_served",
+   "evidence": "plx-customer-portal:portal/prisma/schema.prisma@1f2d42d1e832:9413-9508; OntologyProject:ontology/schema/generated/portal_not_served_a_e.json@2003e14a91ee RelPublicAppAoLabelReconciliationLine"
+  },
+  {
+   "id": "portal.app_artwork_version_basis",
+   "system": "portal",
+   "relation": "public.app_artwork_version_basis (formula / ingredient-list basis of a proof version)",
+   "reader": "not_served",
+   "evidence": "plx-customer-portal:portal/prisma/schema.prisma@1f2d42d1e832:9510-9541; OntologyProject:ontology/schema/generated/portal_not_served_a_e.json@2003e14a91ee RelPublicAppArtworkVersionBasis"
+  },
+  {
+   "id": "portal.app_product",
+   "system": "portal-reporting-api",
+   "relation": "public.app_product",
+   "reader": "served",
+   "evidence": "plx-customer-portal:services/workbench-api/manifest/allowlist.json@1f2d42d1e832:428"
+  },
+  {
+   "id": "fm.assembly_order",
+   "system": "portal-reporting-api",
+   "relation": "public.assembly_order, public.assembly_order_item",
+   "reader": "served",
+   "evidence": "plx-customer-portal:services/workbench-api/manifest/allowlist.json@1f2d42d1e832:915,975"
+  },
+  {
+   "id": "fm.packaging",
+   "system": "portal-reporting-api",
+   "relation": "public.packaging, public.receipt_packaging",
+   "reader": "served",
+   "evidence": "plx-customer-portal:services/workbench-api/manifest/allowlist.json@1f2d42d1e832:1362,1529"
+  },
+  {
+   "id": "bc.items",
+   "system": "business-central",
+   "relation": "items, itemLedgerEntries, purchaseReceipts, purchaseReceiptLines",
+   "reader": "served",
+   "evidence": "OntologyProject:integrations/live_source_grammar.py@2003e14a91ee:72-83"
+  }
+ ],
+ "layers": {
+  "comprehension": "what the map says, attributed, with its qualifiers and its own inconsistencies kept visible",
+  "tracing": "joins across proof versions, customer and QA approvals, printed components, PO/receipt lines and AOs; an unseen join is a gap, never a match",
+  "actual_case_answerability": "UNSCORED until the map and its linked originals are read and the missing readers exist (ontology_gaps.json)"
+ },
+ "open_questions": [
+  "the live strength of the artwork QA gate (soft warning with waiver versus blocking)",
+  "whether accepting artwork for an unreleased formula warns or blocks",
+  "whether TASK-2627 is complete and deployed",
+  "the current code revision behind the map's citations"
+ ],
+ "non_goals": [
+  "Portal or BC writes",
+  "approving, waiving or releasing anything",
+  "choosing between the map's inconsistent statements"
+ ],
+ "real_example": {
+  "batch_id": "artwork-lifecycle-map",
+  "exposure": "dev-exposed",
+  "split": "dev",
+  "as_of": "2026-10-12T18:37:44Z",
+  "cards": [
+   {
+    "id": "AL-01",
+    "layer": "comprehension",
+    "question": "What does Vince's Artwork Lifecycle Map propose for artwork, printed components and AO label control, and what does it call current practice?",
+    "criterion": "Attribute to the map: a Portal + Business Central target where artwork files stay in Portal and BC represents printed items, receipts and AO component consumption; FileMaker and Sage are current practice or a one-time cutover. Call it a process synthesis posted by Vince on 12 Oct 2026, not a verified report of deployed systems.",
+    "originals": [
+     "co-bbd2a0e1abe4"
+    ],
+    "live_sources": [],
+    "cites": [
+     "advisory:0cd0f444ac49",
+     "co-bbd2a0e1abe4"
+    ]
+   },
+   {
+    "id": "AL-02",
+    "layer": "comprehension",
+    "question": "When a customer approves new artwork, does the printed component keep its P-number or get a new one, and what happens to the old stock?",
+    "criterion": "Per the map's target: a new P-item per approved artwork version, old stock held, open POs, receipts and AOs flagged, and the FG number unchanged with revision N+1. Keep the map's own inconsistency visible: its recorded API implementation mints a new part and holds lots while its As-built paragraph says no new part number and no stock flag. Never pick one; screens, backfill and supplier/reorder links are reported absent.",
+    "originals": [
+     "co-bbd2a0e1abe4"
+    ],
+    "live_sources": [
+     "portal.app_artwork_version_packaging_item"
+    ],
+    "cites": [
+     "advisory:0cd0f444ac49",
+     "co-bbd2a0e1abe4"
+    ]
+   },
+   {
+    "id": "AL-03",
+    "layer": "comprehension",
+    "question": "Is QA approval of artwork a blocking gate or a soft warning?",
+    "criterion": "Attribute to the map: QA owns approval, Regulatory records its review within the same version, and approval is a soft warning with a waiver per the Oct 12 owner answer, which supersedes the Oct 1 blocking decision. The rules table still carries the blocking row. The soft-gate code paths are a source pin, not deployed configuration; the live setting is open.",
+    "originals": [
+     "co-bbd2a0e1abe4"
+    ],
+    "live_sources": [
+     "portal.artwork_soft_gate",
+     "portal.app_artwork_version_decision"
+    ],
+    "cites": [
+     "advisory:0cd0f444ac49",
+     "portal.artwork_soft_gate"
+    ]
+   },
+   {
+    "id": "AL-04",
+    "layer": "comprehension",
+    "question": "Does accepting artwork for a formula that is not released warn or block?",
+    "criterion": "The map is internally inconsistent: its stage target says it warns, its weak-link list and gap list say it blocks or allows no QA acceptance. Report both statements, attributed; do not infer either gate.",
+    "originals": [
+     "co-bbd2a0e1abe4"
+    ],
+    "live_sources": [
+     "portal.app_artwork_version_basis"
+    ],
+    "cites": [
+     "advisory:0cd0f444ac49"
+    ]
+   },
+   {
+    "id": "AL-05",
+    "layer": "comprehension",
+    "question": "Is batch release blocked until both label forms are signed?",
+    "criterion": "The map's stage target and final business rule propose a missing-evidence soft warning with acknowledgement and the releasing actor recorded; its gap list still says release is gated on both forms. The SOP requirement for prior QA sign-off is a separate rule. Do not infer a blocking gate.",
+    "originals": [
+     "co-bbd2a0e1abe4",
+     "co-7156a1d46328"
+    ],
+    "live_sources": [
+     "portal.ao_label_control"
+    ],
+    "cites": [
+     "advisory:0cd0f444ac49",
+     "co-7156a1d46328"
+    ]
+   },
+   {
+    "id": "AL-06",
+    "layer": "tracing",
+    "question": "Which proof version did the customer approve for this pack component, through which channel, and who recorded it?",
+    "criterion": "Read the customer sign-off bound to the exact proof attachment and version, with the customer as approver, the channel (email or DocuSign) and the recording staff member kept separate. A sign-off never carries over to a newer proof version, and customer approval is distinct from QA acceptance and Regulatory review. While the sign-off records are unreadable, report a gap, never 'approved'.",
+    "originals": [
+     "co-c9eb154db086",
+     "co-e5063b0591c6"
+    ],
+    "live_sources": [
+     "portal.app_attachment",
+     "portal.app_approval_record"
+    ],
+    "cites": [
+     "advisory:0cd0f444ac49",
+     "portal.app_approval_record"
+    ]
+   },
+   {
+    "id": "AL-07",
+    "layer": "tracing",
+    "question": "Which printed component P-number was minted for this artwork version, and which item did it replace?",
+    "criterion": "Read the proof-version-to-item record (minted item, previous item) and name both items with provenance. Without that record the lineage is a gap: never match a P-item to an artwork version by description, name or date coincidence.",
+    "originals": [
+     "co-58f67fe08fa3"
+    ],
+    "live_sources": [
+     "portal.app_artwork_version_packaging_item",
+     "portal.app_product",
+     "fm.packaging"
+    ],
+    "cites": [
+     "advisory:0cd0f444ac49",
+     "portal.app_artwork_version_packaging_item"
+    ]
+   },
+   {
+    "id": "AL-08",
+    "layer": "tracing",
+    "question": "Which artwork version did this purchase order line order, and which version did the receipt and its incoming QC check against?",
+    "criterion": "The Portal PO line, receipt line and incoming QC record carry artwork version columns, but the reporting API serves the PO and receipt lines without them and does not serve incoming QC. Answer with the keys tried and name the gap. A version named in the PO text or the supplier email is a candidate, never a link.",
+    "originals": [
+     "co-9adb53b98f5d",
+     "co-231813dce3ae"
+    ],
+    "live_sources": [
+     "portal.po_receipt_artwork",
+     "fm.packaging",
+     "bc.items"
+    ],
+    "cites": [
+     "advisory:0cd0f444ac49",
+     "portal.po_receipt_artwork",
+     "co-9adb53b98f5d"
+    ]
+   },
+   {
+    "id": "AL-09",
+    "layer": "tracing",
+    "question": "For this AO, which label lot and artwork version were issued, and does received equal used plus rejected plus returned?",
+    "criterion": "Use the AO's label reconciliation lines (Form #013B), excluding voided lines; quantities are Decimal with their unit, and the balance is computed only from lines read. FileMaker AO items give packaging and lot numbers, not a reconciliation. While the reconciliation lines are unreadable, report the gap; never present a balance from the AO packet alone as reconciled.",
+    "originals": [
+     "co-cbf1ebf0b7d0",
+     "co-650b6e010de2",
+     "co-7156a1d46328"
+    ],
+    "live_sources": [
+     "portal.ao_label_control",
+     "fm.assembly_order"
+    ],
+    "cites": [
+     "advisory:0cd0f444ac49",
+     "co-650b6e010de2",
+     "portal.ao_label_control"
+    ]
+   },
+   {
+    "id": "AL-10",
+    "layer": "tracing",
+    "question": "Did QA sign off the label verification before this AO started, and who released the batch?",
+    "criterion": "Compare the QA sign-off time with the AO start time and name the releasing actor, each with its source. A missing timestamp leaves the order of events open; never infer it. The map's own example of a late QA sign-off is a document claim, not inspected evidence.",
+    "originals": [
+     "co-cbf1ebf0b7d0",
+     "co-367b91f31a89",
+     "co-5eae033ec53c"
+    ],
+    "live_sources": [
+     "portal.ao_label_control",
+     "fm.assembly_order"
+    ],
+    "cites": [
+     "advisory:0cd0f444ac49",
+     "co-cbf1ebf0b7d0"
+    ]
+   },
+   {
+    "id": "AL-11",
+    "layer": "tracing",
+    "question": "Which formula and ingredient list was this artwork version checked against, and is that basis stale?",
+    "criterion": "Read the proof version's pinned formula and ingredient-list basis (source, version, checked-by) and its stale or superseded state. Without that record, say the basis is unknown; never match an ingredient-list document to an artwork version by product name.",
+    "originals": [
+     "co-cb26ce66c877",
+     "co-e4538ef0d861",
+     "co-648a1bd0c6a6"
+    ],
+    "live_sources": [
+     "portal.app_artwork_version_basis"
+    ],
+    "cites": [
+     "advisory:0cd0f444ac49",
+     "portal.app_artwork_version_basis"
+    ]
+   },
+   {
+    "id": "AL-12",
+    "layer": "comprehension",
+    "question": "Which label problems does the map report from QA, and are they verified?",
+    "criterion": "List the map's examples (obsolete labels, mismatched stock, a late QA sign-off, a missing printed-component verification) as document claims, not independently inspected evidence. Point to the supplied originals that would support each only as unread sources.",
+    "originals": [
+     "co-bbd2a0e1abe4",
+     "co-8c215def3c18",
+     "co-9cf79e2def01"
+    ],
+    "live_sources": [],
+    "cites": [
+     "advisory:0cd0f444ac49"
+    ]
+   },
+   {
+    "id": "AL-13",
+    "layer": "tracing",
+    "question": "Can a newly minted P-item flow through receiving, reorder and AO today?",
+    "criterion": "Attribute to the map: Portal-only new P-items cannot flow end to end because receiving, reorder and AO paths still resolve through FileMaker packaging, supplier and AO items; the target is Portal-owned identities and foreign keys. A check names the keys tried in Portal products and FileMaker packaging; an item absent from FileMaker is 'not found under the keys checked'.",
+    "originals": [
+     "co-bbd2a0e1abe4"
+    ],
+    "live_sources": [
+     "portal.app_product",
+     "fm.packaging",
+     "fm.assembly_order"
+    ],
+    "cites": [
+     "advisory:0cd0f444ac49",
+     "fm.packaging"
+    ]
+   },
+   {
+    "id": "AL-14",
+    "layer": "comprehension",
+    "question": "Is the customer-approved artwork version carried on PO, receipt and QC (TASK-2627) done?",
+    "criterion": "The sources conflict: the map marks TASK-2627 in progress, and a COS message the same day reports it complete. Neither status nor the deployed code was checked, and the map's code citations name a staging revision from Oct 11, not a current one. Report the conflict; never present the task as done.",
+    "originals": [
+     "co-bbd2a0e1abe4"
+    ],
+    "live_sources": [
+     "portal.po_receipt_artwork"
+    ],
+    "cites": [
+     "advisory:0cd0f444ac49"
+    ]
+   }
+  ]
+ }
+}

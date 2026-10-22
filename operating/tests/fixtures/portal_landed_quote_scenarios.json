@@ -1,0 +1,3126 @@
+{
+ "comment": "Representative inputs for the Portal landed-cost / quote engine golden (operating/tests/portal_engine/run.mjs). Each scenario's db holds Prisma-shaped records per model (the Portal's own queries select among them, records.mjs) and the quote run quantity; _source handles are fixture citations, ignored by the Portal code. SYNTHETIC: no real record.",
+ "functions": {
+  "landedComponentCost": [
+   {
+    "tierPrice": 0.802,
+    "freight": 0
+   },
+   {
+    "tierPrice": 0.13,
+    "freight": 0.02
+   },
+   {
+    "tierPrice": 1.005,
+    "freight": 0.0342
+   },
+   {
+    "tierPrice": 0,
+    "freight": 0.3
+   },
+   {
+    "tierPrice": -1,
+    "freight": 0.1
+   },
+   {
+    "tierPrice": 12.3456,
+    "freight": 1.2
+   },
+   {
+    "tierPrice": 0.000769,
+    "freight": 5e-05
+   },
+   {
+    "tierPrice": 0.31,
+    "freight": null
+   },
+   {
+    "tierPrice": 2.675,
+    "freight": 0.125
+   },
+   {
+    "tierPrice": 0.5
+   },
+   {
+    "tierPrice": 1,
+    "duty": 0.2,
+    "freight": 0.05
+   },
+   {
+    "tierPrice": 1,
+    "dutyRate": 0.1,
+    "multiplier": 1.2,
+    "freight": 0.05
+   },
+   {
+    "tierPrice": 3.3,
+    "dutyRate": -1,
+    "multiplier": 0,
+    "freight": -2
+   }
+  ],
+  "fillMassKg": [
+   {
+    "fillWeightG": 236.6,
+    "specificGravity": 1.05
+   },
+   {
+    "fillWeightG": 500,
+    "specificGravity": null
+   },
+   {
+    "fillWeightG": null,
+    "specificGravity": 1.2
+   },
+   {
+    "fillWeightG": 30,
+    "specificGravity": -1
+   }
+  ],
+  "estimateUnitCost": [
+   {
+    "fillWeightG": 248.43,
+    "rawMaterials": [
+     {
+      "name": "water",
+      "inclusionPct": 72.5,
+      "costPerKg": 0.02
+     },
+     {
+      "name": "surfactant",
+      "inclusionPct": 20,
+      "costPerKg": 3.1
+     },
+     {
+      "name": "fragrance",
+      "inclusionPct": 7.5,
+      "costPerKg": 41.333
+     }
+    ],
+    "packaging": [
+     {
+      "name": "bottle",
+      "qtyPerUnit": 1,
+      "unitCost": 0.4489
+     },
+     {
+      "name": "cap",
+      "qtyPerUnit": 1,
+      "unitCost": 0.0911
+     },
+     {
+      "name": "case",
+      "qtyPerUnit": 0.0833,
+      "unitCost": 0.92
+     }
+    ],
+    "rawMaterialsAdjustmentPct": 12,
+    "assemblyHoursPerUnit": 0.0042,
+    "compoundingHoursPerUnit": 0.0013,
+    "assemblyRate": 22.5,
+    "batchingRate": 30,
+    "overheadRate": 35,
+    "marginPct": 35
+   },
+   {
+    "fillWeightG": 100,
+    "rawMaterials": [],
+    "packaging": [
+     {
+      "name": "x",
+      "qtyPerUnit": -2,
+      "unitCost": 1
+     }
+    ],
+    "rawMaterialsAdjustmentPct": -5,
+    "assemblyHoursPerUnit": 0.01,
+    "compoundingHoursPerUnit": 0,
+    "assemblyRate": 20.9,
+    "batchingRate": 32,
+    "overheadRate": 31.3,
+    "overheadHoursPerUnit": 0.0025,
+    "marginPct": 100
+   },
+   {
+    "fillWeightG": 0,
+    "rawMaterials": [
+     {
+      "name": "a",
+      "inclusionPct": 100,
+      "costPerKg": 5
+     }
+    ],
+    "packaging": [],
+    "rawMaterialsAdjustmentPct": 10,
+    "assemblyHoursPerUnit": 0,
+    "compoundingHoursPerUnit": 0,
+    "assemblyRate": 20.9,
+    "batchingRate": 32,
+    "overheadRate": 31.3,
+    "overheadHoursPerUnit": null,
+    "marginPct": 30
+   }
+  ],
+  "resolveMarginLadder": [
+   {
+    "settings": null
+   },
+   {
+    "settings": {
+     "marginTiersPct": [
+      40,
+      25,
+      25.004,
+      30,
+      101,
+      -1,
+      33.333
+     ],
+     "marginPercent": 35
+    }
+   },
+   {
+    "settings": {
+     "marginPercent": 120
+    },
+    "quoteOverride": {
+     "tiersPct": [
+      20,
+      33.333
+     ],
+     "targetPct": 33.333
+    }
+   }
+  ],
+  "priceMarginTiers": [
+   {
+    "cost": 1.3459,
+    "ladder": {
+     "settings": null
+    }
+   },
+   {
+    "cost": 0,
+    "ladder": {
+     "settings": {
+      "marginTiersPct": [
+       10,
+       50
+      ]
+     }
+    }
+   },
+   {
+    "cost": 2.675,
+    "ladder": {
+     "settings": {
+      "marginTiersPct": [
+       12.5,
+       33.33,
+       99.99
+      ]
+     }
+    }
+   }
+  ],
+  "deriveUptimeOverhead": [
+   {
+    "hourlyRate": 35,
+    "assemblyHoursPerUnit": 0.0042,
+    "assemblyHoursSource": "routing"
+   },
+   {
+    "hourlyRate": 31.3,
+    "assemblyHoursPerUnit": null,
+    "expectedUnitsPerShift": 4200,
+    "uptimeHours": null
+   },
+   {
+    "hourlyRate": 31.3,
+    "assemblyHoursPerUnit": 0.01,
+    "expectedUnitsPerShift": 3000,
+    "uptimeHours": 7
+   },
+   {
+    "hourlyRate": -4,
+    "assemblyHoursPerUnit": null,
+    "assemblyHoursSource": "missing"
+   }
+  ],
+  "pickRunVolumeTierForQty": [
+   {
+    "qty": null
+   },
+   {
+    "qty": 0
+   },
+   {
+    "qty": 1
+   },
+   {
+    "qty": 4999
+   },
+   {
+    "qty": 9999
+   },
+   {
+    "qty": 9999.5
+   },
+   {
+    "qty": 10000
+   },
+   {
+    "qty": 24999
+   },
+   {
+    "qty": 25000
+   },
+   {
+    "qty": 49999.9
+   },
+   {
+    "qty": 50000
+   },
+   {
+    "qty": 1000000000.0
+   }
+  ],
+  "pickSupplierCardTierPrice": [
+   {
+    "card": {
+     "unitCost": 0.33,
+     "deliveryCost": 0.02,
+     "updatedAt": "2026-08-01T10:00:00Z",
+     "tiers": [
+      {
+       "minQty": 5000,
+       "unitCost": 0.31,
+       "effectiveFrom": "2026-07-01",
+       "updatedAt": null
+      },
+      {
+       "minQty": 20000,
+       "unitCost": 0.27,
+       "effectiveFrom": null,
+       "updatedAt": "2026-07-15T08:30:00Z"
+      }
+     ]
+    },
+    "componentQty": 24000,
+    "runVolumeTierCode": "10k"
+   },
+   {
+    "card": {
+     "unitCost": 0.33,
+     "deliveryCost": null,
+     "updatedAt": "2026-08-01",
+     "tiers": [
+      {
+       "minQty": 5000,
+       "unitCost": 0.31,
+       "effectiveFrom": null,
+       "updatedAt": null
+      }
+     ]
+    },
+    "componentQty": 4999,
+    "runVolumeTierCode": "5k"
+   },
+   {
+    "card": {
+     "unitCost": 0.33,
+     "deliveryCost": null,
+     "updatedAt": null,
+     "tiers": []
+    },
+    "componentQty": null,
+    "runVolumeTierCode": null
+   }
+  ],
+  "allocatePoFreightPerUnit": [
+   {
+    "shippingCost": 1710,
+    "lineId": "a",
+    "poLines": [
+     {
+      "id": "a",
+      "unitPrice": 0.802,
+      "quantityReceived": 12500
+     },
+     {
+      "id": "b",
+      "unitPrice": 0.802,
+      "quantityReceived": 12500
+     },
+     {
+      "id": "c",
+      "unitPrice": 1.13,
+      "quantityReceived": 3000
+     }
+    ]
+   },
+   {
+    "shippingCost": 0,
+    "lineId": "a",
+    "poLines": [
+     {
+      "id": "a",
+      "unitPrice": 1,
+      "quantityReceived": 10
+     }
+    ]
+   },
+   {
+    "shippingCost": 500,
+    "lineId": "a",
+    "poLines": [
+     {
+      "id": "a",
+      "unitPrice": 0,
+      "quantityReceived": 10
+     }
+    ]
+   },
+   {
+    "shippingCost": 500,
+    "lineId": "a",
+    "poLines": [
+     {
+      "id": "a",
+      "unitPrice": 2,
+      "quantityReceived": 0
+     }
+    ]
+   },
+   {
+    "shippingCost": 500,
+    "lineId": "z",
+    "poLines": [
+     {
+      "id": "a",
+      "unitPrice": 2,
+      "quantityReceived": 3
+     }
+    ]
+   },
+   {
+    "shippingCost": 333.33,
+    "lineId": "b",
+    "poLines": [
+     {
+      "id": "a",
+      "unitPrice": -5,
+      "quantityReceived": 7
+     },
+     {
+      "id": "b",
+      "unitPrice": 0.07,
+      "quantityReceived": 3
+     }
+    ]
+   }
+  ],
+  "deriveReadyToQuote": [
+   {
+    "fillWeightG": 236.6,
+    "specificGravity": 1.05,
+    "specificGravityConfirmed": true,
+    "unsourcedLineCount": 0,
+    "linkedLineCount": 3,
+    "missingHsCodeCount": 1,
+    "missingIncotermsCount": 1,
+    "missingOriginCount": 0,
+    "labourIsPlaceholder": false,
+    "sellPricePerUnit": 2.07,
+    "retailPerUnit": 1.85,
+    "provenanceLines": [
+     {
+      "lineName": "bottle",
+      "cardUnitCost": 0.27,
+      "cardUpdatedAt": "2026-07-01T00:00:00.000Z",
+      "lastPoUnitPrice": 0.31,
+      "lastPoReceivedAt": "2026-09-01T00:00:00.000Z"
+     },
+     {
+      "lineName": "cap",
+      "cardUnitCost": 0.05,
+      "cardUpdatedAt": null,
+      "lastPoUnitPrice": 0.05,
+      "lastPoReceivedAt": null
+     }
+    ],
+    "pricedTotalCostPerUnit": 1.3459,
+    "stockFillLines": [
+     {
+      "lineName": "bottle",
+      "qtyPerUnit": 1,
+      "pricedUnitCost": 0.4489,
+      "stockUnitCost": 0.29,
+      "stockQuantityOnHand": 50000,
+      "requiredQty": 12000
+     },
+     {
+      "lineName": "cap",
+      "qtyPerUnit": 1,
+      "pricedUnitCost": 0.0911,
+      "stockUnitCost": null,
+      "stockQuantityOnHand": null,
+      "requiredQty": 12000
+     }
+    ]
+   },
+   {
+    "fillWeightG": null,
+    "specificGravity": null,
+    "specificGravityConfirmed": false,
+    "unsourcedLineCount": 2,
+    "linkedLineCount": 0,
+    "missingHsCodeCount": 0,
+    "missingIncotermsCount": 0,
+    "missingOriginCount": 0,
+    "labourIsPlaceholder": true,
+    "sellPricePerUnit": 0,
+    "retailPerUnit": null
+   },
+   {
+    "fillWeightG": 236.6,
+    "specificGravity": 1.05,
+    "specificGravityConfirmed": true,
+    "unsourcedLineCount": 0,
+    "linkedLineCount": 1,
+    "missingHsCodeCount": 1,
+    "missingIncotermsCount": 1,
+    "missingOriginCount": 0,
+    "labourIsPlaceholder": false,
+    "sellPricePerUnit": 2.07,
+    "retailPerUnit": 1.85,
+    "provenanceLines": [
+     {
+      "lineName": "bottle",
+      "cardUnitCost": 0.27,
+      "cardUpdatedAt": "2026-07-01T00:00:00.000Z",
+      "lastPoUnitPrice": 0.31,
+      "lastPoReceivedAt": "2026-09-01T00:00:00.000Z"
+     },
+     {
+      "lineName": "cap",
+      "cardUnitCost": 0.05,
+      "cardUpdatedAt": null,
+      "lastPoUnitPrice": 0.05,
+      "lastPoReceivedAt": null
+     }
+    ],
+    "pricedTotalCostPerUnit": 1.3459,
+    "stockFillLines": [
+     {
+      "lineName": "bottle",
+      "qtyPerUnit": 1,
+      "pricedUnitCost": 0.4489,
+      "stockUnitCost": 0.29,
+      "stockQuantityOnHand": 50000,
+      "requiredQty": 12000
+     },
+     {
+      "lineName": "cap",
+      "qtyPerUnit": 1,
+      "pricedUnitCost": 0.0911,
+      "stockUnitCost": null,
+      "stockQuantityOnHand": null,
+      "requiredQty": 12000
+     }
+    ],
+    "customerSuppliedLineCount": 2,
+    "customerPendingLineCount": 5,
+    "customerSuppliedRawCount": 1
+   },
+   {
+    "fillWeightG": 236.6,
+    "specificGravity": 1.05,
+    "specificGravityConfirmed": true,
+    "unsourcedLineCount": 0,
+    "linkedLineCount": 0,
+    "missingHsCodeCount": 1,
+    "missingIncotermsCount": 1,
+    "missingOriginCount": 0,
+    "labourIsPlaceholder": false,
+    "sellPricePerUnit": 2.07,
+    "retailPerUnit": 1.85,
+    "provenanceLines": [
+     {
+      "lineName": "bottle",
+      "cardUnitCost": 0.27,
+      "cardUpdatedAt": "2026-07-01T00:00:00.000Z",
+      "lastPoUnitPrice": 0.31,
+      "lastPoReceivedAt": "2026-09-01T00:00:00.000Z"
+     },
+     {
+      "lineName": "cap",
+      "cardUnitCost": 0.05,
+      "cardUpdatedAt": null,
+      "lastPoUnitPrice": 0.05,
+      "lastPoReceivedAt": null
+     }
+    ],
+    "pricedTotalCostPerUnit": 1.3459,
+    "stockFillLines": [
+     {
+      "lineName": "bottle",
+      "qtyPerUnit": 1,
+      "pricedUnitCost": 0.4489,
+      "stockUnitCost": 0.29,
+      "stockQuantityOnHand": 50000,
+      "requiredQty": 12000
+     },
+     {
+      "lineName": "cap",
+      "qtyPerUnit": 1,
+      "pricedUnitCost": 0.0911,
+      "stockUnitCost": null,
+      "stockQuantityOnHand": null,
+      "requiredQty": 12000
+     }
+    ],
+    "customerSuppliedLineCount": 3,
+    "customerPendingLineCount": 0,
+    "customerSuppliedRawCount": 0
+   },
+   {
+    "fillWeightG": 236.6,
+    "specificGravity": 1.05,
+    "specificGravityConfirmed": true,
+    "unsourcedLineCount": 1,
+    "linkedLineCount": 0,
+    "missingHsCodeCount": 1,
+    "missingIncotermsCount": 1,
+    "missingOriginCount": 0,
+    "labourIsPlaceholder": false,
+    "sellPricePerUnit": 2.07,
+    "retailPerUnit": 1.85,
+    "provenanceLines": [
+     {
+      "lineName": "bottle",
+      "cardUnitCost": 0.27,
+      "cardUpdatedAt": "2026-07-01T00:00:00.000Z",
+      "lastPoUnitPrice": 0.31,
+      "lastPoReceivedAt": "2026-09-01T00:00:00.000Z"
+     },
+     {
+      "lineName": "cap",
+      "cardUnitCost": 0.05,
+      "cardUpdatedAt": null,
+      "lastPoUnitPrice": 0.05,
+      "lastPoReceivedAt": null
+     }
+    ],
+    "pricedTotalCostPerUnit": 1.3459,
+    "stockFillLines": [
+     {
+      "lineName": "bottle",
+      "qtyPerUnit": 1,
+      "pricedUnitCost": 0.4489,
+      "stockUnitCost": 0.29,
+      "stockQuantityOnHand": 50000,
+      "requiredQty": 12000
+     },
+     {
+      "lineName": "cap",
+      "qtyPerUnit": 1,
+      "pricedUnitCost": 0.0911,
+      "stockUnitCost": null,
+      "stockQuantityOnHand": null,
+      "requiredQty": 12000
+     }
+    ],
+    "customerSuppliedLineCount": 2.7,
+    "customerPendingLineCount": null,
+    "customerSuppliedRawCount": -1
+   }
+  ],
+  "rollupBomTotal": [
+   {
+    "lines": [
+     {
+      "quantity": 1,
+      "cost": 0.33,
+      "estimatedUnitCost": null
+     },
+     {
+      "quantity": 2,
+      "cost": 0.1,
+      "estimatedUnitCost": 0.07
+     },
+     {
+      "quantity": null,
+      "cost": 5,
+      "estimatedUnitCost": null
+     }
+    ]
+   }
+  ],
+  "computeQuoteTotals": [
+   {
+    "lineTotals": [
+     10350.0,
+     41400.25,
+     0.005,
+     null
+    ],
+    "taxRatePercent": 13
+   },
+   {
+    "lineTotals": [
+     1.005,
+     2.675
+    ],
+    "taxRatePercent": 120
+   },
+   {
+    "lineTotals": [],
+    "taxRatePercent": 0
+   }
+  ],
+  "deriveUnitPrice": [
+   {
+    "stdCost": 1.3459,
+    "marginPercent": 35
+   },
+   {
+    "stdCost": 2.675,
+    "marginPercent": 0
+   },
+   {
+    "stdCost": 1,
+    "marginPercent": 150
+   }
+  ],
+  "resolveUnitPrice": [
+   {
+    "stdCost": 1.3459,
+    "marginPercent": 30,
+    "unitPrice": 5
+   },
+   {
+    "stdCost": 0,
+    "marginPercent": 30,
+    "unitPrice": 1.005
+   },
+   {
+    "stdCost": null,
+    "marginPercent": null,
+    "unitPrice": null
+   }
+  ],
+  "lineTotal": [
+   {
+    "unitPrice": 2.07,
+    "quantity": 5000
+   },
+   {
+    "unitPrice": 1.005,
+    "quantity": 3
+   },
+   {
+    "unitPrice": 0.1,
+    "quantity": null
+   }
+  ],
+  "fallbackMatrixUnitCost": [
+   {
+    "engineUnitCost": 0,
+    "lineStdCost": 1.3459,
+    "theoreticalFgCost": 1.2
+   },
+   {
+    "engineUnitCost": 1.5,
+    "lineStdCost": 1.3
+   },
+   {
+    "engineUnitCost": 0,
+    "lineStdCost": null,
+    "theoreticalFgCost": 1.2
+   },
+   {
+    "engineUnitCost": 0
+   },
+   {
+    "engineUnitCost": 0,
+    "lineStdCost": 1.3459,
+    "theoreticalFgCost": 1.2,
+    "customerSuppliedCount": 2
+   },
+   {
+    "engineUnitCost": 1.5,
+    "lineStdCost": 1.3,
+    "customerSuppliedCount": 1
+   }
+  ],
+  "applyColumnUnitCostFallback": [
+   {
+    "column": {
+     "askedUnits": 5000,
+     "unitCost": 0,
+     "marginTiers": [
+      {
+       "marginPct": 25,
+       "sellPricePerUnit": 0
+      },
+      {
+       "marginPct": 30,
+       "sellPricePerUnit": 0
+      }
+     ]
+    },
+    "lineStdCost": 1.3459,
+    "theoreticalFgCost": null
+   },
+   {
+    "column": {
+     "askedUnits": 5000,
+     "unitCost": 0,
+     "marginTiers": [
+      {
+       "marginPct": 25,
+       "sellPricePerUnit": 0
+      }
+     ],
+     "customerSupplied": [
+      {
+       "kind": "raw",
+       "key": "fixture-raw",
+       "name": "Fixture raw",
+       "qty": 1
+      }
+     ]
+    },
+    "lineStdCost": 1.3459,
+    "theoreticalFgCost": 1.2
+   }
+  ],
+  "buildLandedExpenseLines": [
+   {
+    "productTypes": [
+     "PACKAGING",
+     "PACK",
+     "RAW"
+    ],
+    "freightAmount": 1710.005,
+    "dutyAmount": 2606.5
+   },
+   {
+    "productTypes": [
+     "RETAIL"
+    ],
+    "freightAmount": 0,
+    "dutyAmount": 12.345
+   },
+   {
+    "productTypes": [
+     null,
+     "x"
+    ],
+    "freightAmount": null,
+    "dutyAmount": null
+   }
+  ],
+  "resolvePostedLandedAmounts": [
+   {
+    "receiptFreight": 0,
+    "receiptDuty": 50,
+    "poFreight": 1710,
+    "poDuty": 80
+   },
+   {
+    "receiptFreight": null,
+    "poFreight": null
+   }
+  ],
+  "customerSuppliedRequirements": [
+   {
+    "materials": [
+     {
+      "kind": "raw",
+      "key": "rm-a",
+      "name": "a",
+      "productId": "rm-a",
+      "supplySource": "CUSTOMER",
+      "qtyPerUnit": 1234567890.5,
+      "unit": "kg"
+     },
+     {
+      "kind": "raw",
+      "key": "rm-a",
+      "name": "a",
+      "productId": "rm-a",
+      "supplySource": "CUSTOMER",
+      "qtyPerUnit": null,
+      "unit": "kg"
+     }
+    ],
+    "units": 1
+   },
+   {
+    "materials": [
+     {
+      "kind": "raw",
+      "key": "rm-a",
+      "name": "a",
+      "productId": "rm-a",
+      "supplySource": "CUSTOMER",
+      "qtyPerUnit": 1.5e-07,
+      "unit": "kg"
+     },
+     {
+      "kind": "packaging",
+      "key": "rm-a",
+      "name": "a",
+      "productId": "rm-a",
+      "supplySource": "CUSTOMER_PENDING",
+      "qtyPerUnit": 2,
+      "unit": "each"
+     }
+    ],
+    "units": 3333
+   },
+   {
+    "materials": [
+     {
+      "kind": "raw",
+      "key": "rm-a",
+      "name": "a",
+      "productId": "rm-a",
+      "supplySource": "CUSTOMER",
+      "qtyPerUnit": 0.1,
+      "unit": "kg"
+     }
+    ],
+    "units": 0
+   },
+   {
+    "materials": [
+     {
+      "kind": "raw",
+      "key": "rm-a",
+      "name": "a",
+      "productId": "rm-a",
+      "supplySource": "CUSTOMER",
+      "qtyPerUnit": 0.1,
+      "unit": "kg"
+     }
+    ],
+    "units": null
+   }
+  ]
+ },
+ "engine": [
+  {
+   "name": "linked_cards_routed",
+   "project_ref": "proj-1",
+   "asked_volumes": [
+    24000,
+    {
+     "askedUnits": 60000
+    },
+    5000,
+    -3
+   ],
+   "db": {
+    "project": [
+     {
+      "id": "proj-1",
+      "projectKey": "PK-1",
+      "customerId": "cust-1",
+      "_source": "fixture://portal-landed-quote/project/proj-1"
+     }
+    ],
+    "projectLocal": [
+     {
+      "id": "PK-1",
+      "targetPrice": "$1.85 retail",
+      "customerId": null,
+      "fpId": null,
+      "_source": "fixture://portal-landed-quote/project_local/PK-1",
+      "createdAt": "2026-08-01T00:00:00Z",
+      "updatedAt": "2026-09-01T00:00:00Z"
+     }
+    ],
+    "rateSettings": [
+     {
+      "rawMaterialsAdjustmentRate": 12,
+      "assemblyQuotingLaborRate": 22.5,
+      "batchingQuotingLaborRate": 30,
+      "overheadPerProductionHour": 35,
+      "marginPercent": 35,
+      "marginTiersPct": [
+       25,
+       35,
+       45
+      ],
+      "tariffRate": 0.1,
+      "landedMultiplier": 1.2,
+      "fxRateCadUsd": 1.37,
+      "_source": "fixture://portal-landed-quote/rate_settings/1"
+     }
+    ],
+    "fgItem": [
+     {
+      "projectKey": "PK-1",
+      "targetQty": 7000,
+      "pinnedFormulationId": null,
+      "_source": "fixture://portal-landed-quote/fg_item/PK-1"
+     }
+    ],
+    "projectSubAssembly": [
+     {
+      "id": "psa-proj-1-formula",
+      "fmProjectId": "proj-1",
+      "kind": "formula",
+      "formulationId": "form-1",
+      "bomId": null,
+      "updatedAt": "2026-09-01T00:00:00Z",
+      "_source": "fixture://portal-landed-quote/project_subassembly/psa-proj-1-formula"
+     },
+     {
+      "id": "psa-proj-1-assembly",
+      "fmProjectId": "proj-1",
+      "kind": "assembly",
+      "formulationId": null,
+      "bomId": "bom-1",
+      "updatedAt": "2026-09-01T00:00:00Z",
+      "_source": "fixture://portal-landed-quote/project_subassembly/psa-proj-1-assembly"
+     }
+    ],
+    "formulation": [
+     {
+      "id": "form-1",
+      "code": "F-1",
+      "specificGravity": 1.05,
+      "_source": "fixture://portal-landed-quote/formulation/form-1",
+      "status": "APPROVED",
+      "deletedAt": null,
+      "ingredients": [
+       {
+        "percentage": 72.5,
+        "product": {
+         "name": "water",
+         "code": "RM-1",
+         "unitCost": 0.02,
+         "uom": "kg",
+         "_source": "fixture://portal-landed-quote/product/RM-1"
+        }
+       },
+       {
+        "percentage": 20,
+        "product": {
+         "name": "surfactant",
+         "code": "RM-2",
+         "unitCost": 3.1,
+         "uom": "kg",
+         "_source": "fixture://portal-landed-quote/product/RM-2"
+        }
+       },
+       {
+        "percentage": 7.5,
+        "product": {
+         "name": "fragrance",
+         "code": "RM-3",
+         "unitCost": 41.333,
+         "uom": "kg",
+         "_source": "fixture://portal-landed-quote/product/RM-3"
+        }
+       }
+      ]
+     }
+    ],
+    "billOfMaterials": [
+     {
+      "id": "bom-1",
+      "fillWeightG": 236.6,
+      "_source": "fixture://portal-landed-quote/bom/bom-1",
+      "category": "ASSEMBLY",
+      "version": 1,
+      "projectKey": "PK-1",
+      "updatedAt": "2026-09-01T00:00:00Z",
+      "deletedAt": null,
+      "lines": [
+       {
+        "id": "l-bottle",
+        "productId": "p-bottle",
+        "quantity": 1,
+        "needsSourcing": false,
+        "estimatedUnitCost": null,
+        "cost": 0.3,
+        "packagingType": "bottle",
+        "deletedAt": null,
+        "_source": "fixture://portal-landed-quote/bom_line/l-bottle",
+        "product": {
+         "id": "p-bottle",
+         "name": "1000 ml bottle",
+         "code": "P-02458",
+         "hsCode": "3923.30",
+         "_source": "fixture://portal-landed-quote/product/p-bottle",
+         "supplierProducts": [
+          {
+           "id": "sp-bottle-old",
+           "unitCost": 0.36,
+           "deliveryCost": 0.03,
+           "isPreferred": false,
+           "isActive": true,
+           "updatedAt": "2026-09-01T00:00:00Z",
+           "currency": "USD",
+           "incoterms": "FOB",
+           "countryOfOrigin": "CN",
+           "uomPerSellingUnit": 1,
+           "supplier": {
+            "incoterms": null
+           },
+           "tiers": [],
+           "_source": "fixture://portal-landed-quote/supplier_product/sp-bottle-old"
+          },
+          {
+           "id": "sp-bottle",
+           "unitCost": 0.33,
+           "deliveryCost": 0.0215,
+           "isPreferred": true,
+           "isActive": true,
+           "updatedAt": "2026-08-01T10:00:00Z",
+           "currency": "USD",
+           "incoterms": "FOB",
+           "countryOfOrigin": "CN",
+           "uomPerSellingUnit": 1,
+           "supplier": {
+            "incoterms": null
+           },
+           "tiers": [
+            {
+             "minQty": 20000,
+             "unitCost": 0.27,
+             "effectiveFrom": null,
+             "updatedAt": "2026-07-15T08:30:00Z",
+             "_source": "fixture://portal-landed-quote/tier/sp-bottle/20000"
+            },
+            {
+             "minQty": 5000,
+             "unitCost": 0.31,
+             "effectiveFrom": "2026-07-01",
+             "updatedAt": null,
+             "_source": "fixture://portal-landed-quote/tier/sp-bottle/5000"
+            }
+           ],
+           "_source": "fixture://portal-landed-quote/supplier_product/sp-bottle"
+          },
+          {
+           "id": "sp-bottle-off",
+           "unitCost": 0.01,
+           "deliveryCost": 0,
+           "isPreferred": true,
+           "isActive": false,
+           "updatedAt": "2026-08-01T10:00:00Z",
+           "currency": "USD",
+           "incoterms": "FOB",
+           "countryOfOrigin": "CN",
+           "uomPerSellingUnit": 1,
+           "supplier": {
+            "incoterms": null
+           },
+           "tiers": [],
+           "_source": "fixture://portal-landed-quote/supplier_product/sp-bottle-off"
+          }
+         ]
+        }
+       },
+       {
+        "id": "l-cap",
+        "productId": "p-cap",
+        "quantity": 1,
+        "needsSourcing": false,
+        "estimatedUnitCost": null,
+        "cost": 0.05,
+        "packagingType": "cap",
+        "deletedAt": null,
+        "_source": "fixture://portal-landed-quote/bom_line/l-cap",
+        "product": {
+         "id": "p-cap",
+         "name": "cap",
+         "code": "P-02459",
+         "hsCode": null,
+         "_source": "fixture://portal-landed-quote/product/p-cap",
+         "supplierProducts": [
+          {
+           "id": "sp-cap",
+           "unitCost": 0.13,
+           "deliveryCost": null,
+           "isPreferred": true,
+           "isActive": true,
+           "updatedAt": "2026-06-01T00:00:00Z",
+           "currency": "USD",
+           "incoterms": null,
+           "countryOfOrigin": "CN",
+           "uomPerSellingUnit": 1,
+           "supplier": {
+            "incoterms": null
+           },
+           "tiers": [],
+           "_source": "fixture://portal-landed-quote/supplier_product/sp-cap"
+          }
+         ]
+        }
+       },
+       {
+        "id": "l-case",
+        "productId": "p-case",
+        "quantity": 0,
+        "needsSourcing": false,
+        "estimatedUnitCost": null,
+        "cost": 0.9,
+        "packagingType": "case",
+        "deletedAt": null,
+        "_source": "fixture://portal-landed-quote/bom_line/l-case",
+        "product": {
+         "id": "p-case",
+         "name": "shipper case",
+         "code": "P-02460",
+         "hsCode": "4819.10",
+         "_source": "fixture://portal-landed-quote/product/p-case",
+         "supplierProducts": [
+          {
+           "id": "sp-case",
+           "unitCost": 1.005,
+           "deliveryCost": 0.0342,
+           "isPreferred": true,
+           "isActive": true,
+           "updatedAt": "2026-08-01T10:00:00Z",
+           "currency": "CAD",
+           "incoterms": "FOB",
+           "countryOfOrigin": null,
+           "uomPerSellingUnit": 12,
+           "supplier": {
+            "incoterms": null
+           },
+           "tiers": [],
+           "_source": "fixture://portal-landed-quote/supplier_product/sp-case"
+          }
+         ]
+        }
+       },
+       {
+        "id": "l-old",
+        "productId": "p-old",
+        "quantity": 1,
+        "needsSourcing": false,
+        "estimatedUnitCost": null,
+        "cost": 9,
+        "packagingType": "removed",
+        "deletedAt": "2026-08-01T00:00:00Z",
+        "_source": "fixture://portal-landed-quote/bom_line/l-old",
+        "product": null
+       }
+      ]
+     }
+    ],
+    "fgRouting": [
+     {
+      "id": "rt-1",
+      "projectKey": "PK-1",
+      "isPrimary": true,
+      "standardHoursPerUnit": 0.0042,
+      "standardSetupMinutes": 90,
+      "totalOperators": 3,
+      "lineNumber": 2,
+      "_source": "fixture://portal-landed-quote/fg_routing/rt-1"
+     }
+    ],
+    "quoteRunQty": 12000,
+    "purchaseOrderLine": [
+     {
+      "id": "pol-1",
+      "productId": "p-bottle",
+      "unitPrice": 0.31,
+      "quantityReceived": 12500,
+      "purchaseOrderId": "po-1",
+      "updatedAt": "2026-09-02T00:00:00Z",
+      "_source": "fixture://portal-landed-quote/po_line/pol-1",
+      "purchaseOrder": {
+       "poNumber": "PO5447",
+       "receivedDate": "2026-09-01T00:00:00Z",
+       "shippingCost": 1710,
+       "_source": "fixture://portal-landed-quote/po/po-1"
+      }
+     },
+     {
+      "id": "pol-2",
+      "productId": "p-cap",
+      "unitPrice": 0.05,
+      "quantityReceived": 12500,
+      "purchaseOrderId": "po-1",
+      "updatedAt": "2026-09-02T00:00:00Z",
+      "_source": "fixture://portal-landed-quote/po_line/pol-2",
+      "purchaseOrder": {
+       "poNumber": "PO5447",
+       "receivedDate": "2026-09-01T00:00:00Z",
+       "shippingCost": 1710,
+       "_source": "fixture://portal-landed-quote/po/po-1"
+      }
+     },
+     {
+      "id": "pol-3",
+      "productId": "p-bottle",
+      "unitPrice": 0.29,
+      "quantityReceived": 5000,
+      "purchaseOrderId": "po-0",
+      "updatedAt": "2026-05-02T00:00:00Z",
+      "_source": "fixture://portal-landed-quote/po_line/pol-3",
+      "purchaseOrder": {
+       "poNumber": "PO5300",
+       "receivedDate": "2026-05-01T00:00:00Z",
+       "shippingCost": null,
+       "_source": "fixture://portal-landed-quote/po/po-0"
+      }
+     },
+     {
+      "id": "pol-4",
+      "productId": "p-case",
+      "unitPrice": 1.0,
+      "quantityReceived": 0,
+      "purchaseOrderId": "po-1",
+      "updatedAt": "2026-09-02T00:00:00Z",
+      "_source": "fixture://portal-landed-quote/po_line/pol-4",
+      "purchaseOrder": {
+       "poNumber": "PO5447",
+       "receivedDate": "2026-09-01T00:00:00Z",
+       "shippingCost": 1710,
+       "_source": "fixture://portal-landed-quote/po/po-1"
+      }
+     }
+    ],
+    "inventory": [
+     {
+      "productId": "p-bottle",
+      "currentQuantity": 30000,
+      "unitCost": 0.29,
+      "lastTransactionAt": "2026-09-10T12:00:00Z",
+      "updatedAt": null,
+      "_source": "fixture://portal-landed-quote/inventory/1"
+     },
+     {
+      "productId": "p-bottle",
+      "currentQuantity": 20000,
+      "unitCost": 0.305,
+      "lastTransactionAt": null,
+      "updatedAt": "2026-09-12T00:00:00Z",
+      "_source": "fixture://portal-landed-quote/inventory/2"
+     },
+     {
+      "productId": "p-cap",
+      "currentQuantity": 500,
+      "unitCost": null,
+      "lastTransactionAt": null,
+      "updatedAt": "2026-09-01T00:00:00Z",
+      "_source": "fixture://portal-landed-quote/inventory/3"
+     }
+    ]
+   },
+   "offer": {
+    "quoteLines": [
+     {
+      "stdCost": null
+     },
+     {
+      "stdCost": 1.42
+     }
+    ],
+    "selections": [
+     {
+      "askedUnits": 5000,
+      "marginPct": 40
+     }
+    ],
+    "quoteMarginTargetPct": null,
+    "taxRatePercent": 13
+   }
+  },
+  {
+   "name": "project_without_facts",
+   "project_ref": "PK-2",
+   "asked_volumes": null,
+   "db": {
+    "project": [
+     {
+      "id": "proj-2",
+      "projectKey": "PK-2",
+      "customerId": null,
+      "_source": "fixture://portal-landed-quote/project/proj-2"
+     }
+    ]
+   },
+   "offer": {
+    "quoteLines": [
+     {
+      "stdCost": 0
+     },
+     {
+      "stdCost": 2.4
+     }
+    ],
+    "selections": [],
+    "quoteMarginTargetPct": 30,
+    "taxRatePercent": 0
+   }
+  },
+  {
+   "name": "unsourced_lines_fg_pin",
+   "project_ref": "proj-3",
+   "asked_volumes": [
+    7000
+   ],
+   "db": {
+    "project": [
+     {
+      "id": "proj-3",
+      "projectKey": "PK-3",
+      "customerId": "cust-3",
+      "_source": "fixture://portal-landed-quote/project/proj-3"
+     }
+    ],
+    "rateSettings": [
+     {
+      "overheadPerProductionHour": 31.3,
+      "marginTiersPct": "bad",
+      "quoteSuggestionVolumes": [
+       5000.4,
+       5000,
+       -1,
+       12000
+      ],
+      "_source": "fixture://portal-landed-quote/rate_settings/1"
+     }
+    ],
+    "fgItem": [
+     {
+      "projectKey": "PK-3",
+      "targetQty": 7000,
+      "pinnedFormulationId": "form-3",
+      "_source": "fixture://portal-landed-quote/fg_item/PK-3"
+     }
+    ],
+    "projectSubAssembly": [
+     {
+      "id": "psa-proj-3-assembly",
+      "fmProjectId": "proj-3",
+      "kind": "assembly",
+      "formulationId": null,
+      "bomId": "bom-3",
+      "updatedAt": "2026-09-01T00:00:00Z",
+      "_source": "fixture://portal-landed-quote/project_subassembly/psa-proj-3-assembly"
+     }
+    ],
+    "formulation": [
+     {
+      "id": "form-3",
+      "code": "F-3",
+      "specificGravity": null,
+      "_source": "fixture://portal-landed-quote/formulation/form-3",
+      "status": "APPROVED",
+      "deletedAt": null,
+      "ingredients": [
+       {
+        "percentage": 100,
+        "product": {
+         "name": "base",
+         "code": "RM-9",
+         "unitCost": null,
+         "uom": "ea",
+         "_source": "fixture://portal-landed-quote/product/RM-9"
+        }
+       }
+      ]
+     }
+    ],
+    "billOfMaterials": [
+     {
+      "id": "bom-3",
+      "fillWeightG": null,
+      "_source": "fixture://portal-landed-quote/bom/bom-3",
+      "category": "ASSEMBLY",
+      "version": 1,
+      "projectKey": "PK-3",
+      "updatedAt": "2026-09-01T00:00:00Z",
+      "deletedAt": null,
+      "lines": [
+       {
+        "id": "u-label",
+        "productId": null,
+        "quantity": 2,
+        "needsSourcing": true,
+        "estimatedUnitCost": 0.04,
+        "cost": 0,
+        "packagingType": "label",
+        "deletedAt": null,
+        "_source": "fixture://portal-landed-quote/bom_line/u-label",
+        "product": null
+       },
+       {
+        "id": "u-jar",
+        "productId": "p-jar",
+        "quantity": 1,
+        "needsSourcing": false,
+        "estimatedUnitCost": 0.5,
+        "cost": 0.45,
+        "packagingType": "jar",
+        "deletedAt": null,
+        "_source": "fixture://portal-landed-quote/bom_line/u-jar",
+        "product": {
+         "id": "p-jar",
+         "name": "jar",
+         "code": "P-9",
+         "hsCode": "7010.90",
+         "_source": "fixture://portal-landed-quote/product/p-jar",
+         "supplierProducts": []
+        }
+       },
+       {
+        "id": "u-lid",
+        "productId": "p-lid",
+        "quantity": 1,
+        "needsSourcing": false,
+        "estimatedUnitCost": null,
+        "cost": 0.12,
+        "packagingType": "lid",
+        "deletedAt": null,
+        "_source": "fixture://portal-landed-quote/bom_line/u-lid",
+        "product": {
+         "id": "p-lid",
+         "name": "lid",
+         "code": "P-10",
+         "hsCode": null,
+         "_source": "fixture://portal-landed-quote/product/p-lid",
+         "supplierProducts": [
+          {
+           "id": "sp-lid-off",
+           "unitCost": 0.2,
+           "deliveryCost": 0.01,
+           "isPreferred": true,
+           "isActive": false,
+           "updatedAt": "2026-08-01T10:00:00Z",
+           "currency": "USD",
+           "incoterms": "FOB",
+           "countryOfOrigin": "CN",
+           "uomPerSellingUnit": 1,
+           "supplier": {
+            "incoterms": null
+           },
+           "tiers": [],
+           "_source": "fixture://portal-landed-quote/supplier_product/sp-lid-off"
+          }
+         ]
+        }
+       }
+      ]
+     }
+    ],
+    "inventory": [
+     {
+      "productId": "p-lid",
+      "currentQuantity": "250",
+      "unitCost": "0.11",
+      "lastTransactionAt": "2026-09-03",
+      "updatedAt": null,
+      "_source": "fixture://portal-landed-quote/inventory/9"
+     }
+    ]
+   },
+   "offer": null
+  },
+  {
+   "name": "draft_tier_overrides",
+   "project_ref": "proj-1",
+   "asked_volumes": [
+    12000,
+    30000
+   ],
+   "db": {
+    "project": [
+     {
+      "id": "proj-1",
+      "projectKey": "PK-1",
+      "customerId": "cust-1",
+      "_source": "fixture://portal-landed-quote/project/proj-1"
+     }
+    ],
+    "projectLocal": [
+     {
+      "id": "PK-1",
+      "targetPrice": "$1.85 retail",
+      "customerId": null,
+      "fpId": null,
+      "_source": "fixture://portal-landed-quote/project_local/PK-1",
+      "createdAt": "2026-08-01T00:00:00Z",
+      "updatedAt": "2026-09-01T00:00:00Z"
+     }
+    ],
+    "rateSettings": [
+     {
+      "rawMaterialsAdjustmentRate": 12,
+      "assemblyQuotingLaborRate": 22.5,
+      "batchingQuotingLaborRate": 30,
+      "overheadPerProductionHour": 35,
+      "marginPercent": 35,
+      "marginTiersPct": [
+       25,
+       35,
+       45
+      ],
+      "tariffRate": 0.1,
+      "landedMultiplier": 1.2,
+      "fxRateCadUsd": 1.37,
+      "_source": "fixture://portal-landed-quote/rate_settings/1"
+     }
+    ],
+    "fgItem": [
+     {
+      "projectKey": "PK-1",
+      "targetQty": 7000,
+      "pinnedFormulationId": null,
+      "_source": "fixture://portal-landed-quote/fg_item/PK-1"
+     }
+    ],
+    "projectSubAssembly": [
+     {
+      "id": "psa-proj-1-formula",
+      "fmProjectId": "proj-1",
+      "kind": "formula",
+      "formulationId": "form-1",
+      "bomId": null,
+      "updatedAt": "2026-09-01T00:00:00Z",
+      "_source": "fixture://portal-landed-quote/project_subassembly/psa-proj-1-formula"
+     },
+     {
+      "id": "psa-proj-1-assembly",
+      "fmProjectId": "proj-1",
+      "kind": "assembly",
+      "formulationId": null,
+      "bomId": "bom-1",
+      "updatedAt": "2026-09-01T00:00:00Z",
+      "_source": "fixture://portal-landed-quote/project_subassembly/psa-proj-1-assembly"
+     }
+    ],
+    "formulation": [
+     {
+      "id": "form-1",
+      "code": "F-1",
+      "specificGravity": 1.05,
+      "_source": "fixture://portal-landed-quote/formulation/form-1",
+      "status": "APPROVED",
+      "deletedAt": null,
+      "ingredients": [
+       {
+        "percentage": 72.5,
+        "product": {
+         "name": "water",
+         "code": "RM-1",
+         "unitCost": 0.02,
+         "uom": "kg",
+         "_source": "fixture://portal-landed-quote/product/RM-1"
+        }
+       },
+       {
+        "percentage": 20,
+        "product": {
+         "name": "surfactant",
+         "code": "RM-2",
+         "unitCost": 3.1,
+         "uom": "kg",
+         "_source": "fixture://portal-landed-quote/product/RM-2"
+        }
+       },
+       {
+        "percentage": 7.5,
+        "product": {
+         "name": "fragrance",
+         "code": "RM-3",
+         "unitCost": 41.333,
+         "uom": "kg",
+         "_source": "fixture://portal-landed-quote/product/RM-3"
+        }
+       }
+      ]
+     }
+    ],
+    "billOfMaterials": [
+     {
+      "id": "bom-1",
+      "fillWeightG": 236.6,
+      "_source": "fixture://portal-landed-quote/bom/bom-1",
+      "category": "ASSEMBLY",
+      "version": 1,
+      "projectKey": "PK-1",
+      "updatedAt": "2026-09-01T00:00:00Z",
+      "deletedAt": null,
+      "lines": [
+       {
+        "id": "l-bottle",
+        "productId": "p-bottle",
+        "quantity": 1,
+        "needsSourcing": false,
+        "estimatedUnitCost": null,
+        "cost": 0.3,
+        "packagingType": "bottle",
+        "deletedAt": null,
+        "_source": "fixture://portal-landed-quote/bom_line/l-bottle",
+        "product": {
+         "id": "p-bottle",
+         "name": "1000 ml bottle",
+         "code": "P-02458",
+         "hsCode": "3923.30",
+         "_source": "fixture://portal-landed-quote/product/p-bottle",
+         "supplierProducts": [
+          {
+           "id": "sp-bottle-old",
+           "unitCost": 0.36,
+           "deliveryCost": 0.03,
+           "isPreferred": false,
+           "isActive": true,
+           "updatedAt": "2026-09-01T00:00:00Z",
+           "currency": "USD",
+           "incoterms": "FOB",
+           "countryOfOrigin": "CN",
+           "uomPerSellingUnit": 1,
+           "supplier": {
+            "incoterms": null
+           },
+           "tiers": [],
+           "_source": "fixture://portal-landed-quote/supplier_product/sp-bottle-old"
+          },
+          {
+           "id": "sp-bottle",
+           "unitCost": 0.33,
+           "deliveryCost": 0.0215,
+           "isPreferred": true,
+           "isActive": true,
+           "updatedAt": "2026-08-01T10:00:00Z",
+           "currency": "USD",
+           "incoterms": "FOB",
+           "countryOfOrigin": "CN",
+           "uomPerSellingUnit": 1,
+           "supplier": {
+            "incoterms": null
+           },
+           "tiers": [
+            {
+             "minQty": 20000,
+             "unitCost": 0.27,
+             "effectiveFrom": null,
+             "updatedAt": "2026-07-15T08:30:00Z",
+             "_source": "fixture://portal-landed-quote/tier/sp-bottle/20000"
+            },
+            {
+             "minQty": 5000,
+             "unitCost": 0.31,
+             "effectiveFrom": "2026-07-01",
+             "updatedAt": null,
+             "_source": "fixture://portal-landed-quote/tier/sp-bottle/5000"
+            }
+           ],
+           "_source": "fixture://portal-landed-quote/supplier_product/sp-bottle"
+          },
+          {
+           "id": "sp-bottle-off",
+           "unitCost": 0.01,
+           "deliveryCost": 0,
+           "isPreferred": true,
+           "isActive": false,
+           "updatedAt": "2026-08-01T10:00:00Z",
+           "currency": "USD",
+           "incoterms": "FOB",
+           "countryOfOrigin": "CN",
+           "uomPerSellingUnit": 1,
+           "supplier": {
+            "incoterms": null
+           },
+           "tiers": [],
+           "_source": "fixture://portal-landed-quote/supplier_product/sp-bottle-off"
+          }
+         ]
+        }
+       },
+       {
+        "id": "l-cap",
+        "productId": "p-cap",
+        "quantity": 1,
+        "needsSourcing": false,
+        "estimatedUnitCost": null,
+        "cost": 0.05,
+        "packagingType": "cap",
+        "deletedAt": null,
+        "_source": "fixture://portal-landed-quote/bom_line/l-cap",
+        "product": {
+         "id": "p-cap",
+         "name": "cap",
+         "code": "P-02459",
+         "hsCode": null,
+         "_source": "fixture://portal-landed-quote/product/p-cap",
+         "supplierProducts": [
+          {
+           "id": "sp-cap",
+           "unitCost": 0.13,
+           "deliveryCost": null,
+           "isPreferred": true,
+           "isActive": true,
+           "updatedAt": "2026-06-01T00:00:00Z",
+           "currency": "USD",
+           "incoterms": null,
+           "countryOfOrigin": "CN",
+           "uomPerSellingUnit": 1,
+           "supplier": {
+            "incoterms": null
+           },
+           "tiers": [],
+           "_source": "fixture://portal-landed-quote/supplier_product/sp-cap"
+          }
+         ]
+        }
+       },
+       {
+        "id": "l-case",
+        "productId": "p-case",
+        "quantity": 0,
+        "needsSourcing": false,
+        "estimatedUnitCost": null,
+        "cost": 0.9,
+        "packagingType": "case",
+        "deletedAt": null,
+        "_source": "fixture://portal-landed-quote/bom_line/l-case",
+        "product": {
+         "id": "p-case",
+         "name": "shipper case",
+         "code": "P-02460",
+         "hsCode": "4819.10",
+         "_source": "fixture://portal-landed-quote/product/p-case",
+         "supplierProducts": [
+          {
+           "id": "sp-case",
+           "unitCost": 1.005,
+           "deliveryCost": 0.0342,
+           "isPreferred": true,
+           "isActive": true,
+           "updatedAt": "2026-08-01T10:00:00Z",
+           "currency": "CAD",
+           "incoterms": "FOB",
+           "countryOfOrigin": null,
+           "uomPerSellingUnit": 12,
+           "supplier": {
+            "incoterms": null
+           },
+           "tiers": [],
+           "_source": "fixture://portal-landed-quote/supplier_product/sp-case"
+          }
+         ]
+        }
+       },
+       {
+        "id": "l-old",
+        "productId": "p-old",
+        "quantity": 1,
+        "needsSourcing": false,
+        "estimatedUnitCost": null,
+        "cost": 9,
+        "packagingType": "removed",
+        "deletedAt": "2026-08-01T00:00:00Z",
+        "_source": "fixture://portal-landed-quote/bom_line/l-old",
+        "product": null
+       }
+      ]
+     }
+    ],
+    "quoteRunQty": 12000,
+    "purchaseOrderLine": [
+     {
+      "id": "pol-1",
+      "productId": "p-bottle",
+      "unitPrice": 0.31,
+      "quantityReceived": 12500,
+      "purchaseOrderId": "po-1",
+      "updatedAt": "2026-09-02T00:00:00Z",
+      "_source": "fixture://portal-landed-quote/po_line/pol-1",
+      "purchaseOrder": {
+       "poNumber": "PO5447",
+       "receivedDate": "2026-09-01T00:00:00Z",
+       "shippingCost": 1710,
+       "_source": "fixture://portal-landed-quote/po/po-1"
+      }
+     },
+     {
+      "id": "pol-2",
+      "productId": "p-cap",
+      "unitPrice": 0.05,
+      "quantityReceived": 12500,
+      "purchaseOrderId": "po-1",
+      "updatedAt": "2026-09-02T00:00:00Z",
+      "_source": "fixture://portal-landed-quote/po_line/pol-2",
+      "purchaseOrder": {
+       "poNumber": "PO5447",
+       "receivedDate": "2026-09-01T00:00:00Z",
+       "shippingCost": 1710,
+       "_source": "fixture://portal-landed-quote/po/po-1"
+      }
+     },
+     {
+      "id": "pol-3",
+      "productId": "p-bottle",
+      "unitPrice": 0.29,
+      "quantityReceived": 5000,
+      "purchaseOrderId": "po-0",
+      "updatedAt": "2026-05-02T00:00:00Z",
+      "_source": "fixture://portal-landed-quote/po_line/pol-3",
+      "purchaseOrder": {
+       "poNumber": "PO5300",
+       "receivedDate": "2026-05-01T00:00:00Z",
+       "shippingCost": null,
+       "_source": "fixture://portal-landed-quote/po/po-0"
+      }
+     },
+     {
+      "id": "pol-4",
+      "productId": "p-case",
+      "unitPrice": 1.0,
+      "quantityReceived": 0,
+      "purchaseOrderId": "po-1",
+      "updatedAt": "2026-09-02T00:00:00Z",
+      "_source": "fixture://portal-landed-quote/po_line/pol-4",
+      "purchaseOrder": {
+       "poNumber": "PO5447",
+       "receivedDate": "2026-09-01T00:00:00Z",
+       "shippingCost": 1710,
+       "_source": "fixture://portal-landed-quote/po/po-1"
+      }
+     }
+    ],
+    "inventory": [
+     {
+      "productId": "p-bottle",
+      "currentQuantity": 30000,
+      "unitCost": 0.29,
+      "lastTransactionAt": "2026-09-10T12:00:00Z",
+      "updatedAt": null,
+      "_source": "fixture://portal-landed-quote/inventory/1"
+     },
+     {
+      "productId": "p-bottle",
+      "currentQuantity": 20000,
+      "unitCost": 0.305,
+      "lastTransactionAt": null,
+      "updatedAt": "2026-09-12T00:00:00Z",
+      "_source": "fixture://portal-landed-quote/inventory/2"
+     },
+     {
+      "productId": "p-cap",
+      "currentQuantity": 500,
+      "unitCost": null,
+      "lastTransactionAt": null,
+      "updatedAt": "2026-09-01T00:00:00Z",
+      "_source": "fixture://portal-landed-quote/inventory/3"
+     }
+    ],
+    "draftCostOverride": [
+     {
+      "projectKey": "PK-1",
+      "fgItemId": null,
+      "process": "assembly",
+      "templateId": null,
+      "source": "override",
+      "tankCode": null,
+      "batchType": null,
+      "compounderCount": null,
+      "hours": null,
+      "yieldUnits": 3000,
+      "labourPerUnit": 0.0035,
+      "lineNumber": 2,
+      "lineCode": "L2",
+      "headcount": 4,
+      "rateBpm": null,
+      "uptimeHours": 7,
+      "setupMinutes": 60,
+      "teardownMinutes": null,
+      "overheadPerUnit": null,
+      "runVolumeTier": {
+       "code": "10k"
+      },
+      "_source": "fixture://portal-landed-quote/draft_cost_override/assembly-10k"
+     },
+     {
+      "projectKey": "PK-1",
+      "fgItemId": null,
+      "process": "compounding",
+      "templateId": null,
+      "source": "override",
+      "tankCode": "T1",
+      "batchType": null,
+      "compounderCount": 2,
+      "hours": 6,
+      "yieldUnits": 9000,
+      "labourPerUnit": null,
+      "lineNumber": null,
+      "lineCode": null,
+      "headcount": null,
+      "rateBpm": null,
+      "uptimeHours": null,
+      "setupMinutes": null,
+      "teardownMinutes": null,
+      "overheadPerUnit": null,
+      "runVolumeTier": {
+       "code": "10k"
+      },
+      "_source": "fixture://portal-landed-quote/draft_cost_override/compounding-10k"
+     }
+    ]
+   },
+   "offer": null
+  },
+  {
+   "name": "card_priced_raw_crew_drafts",
+   "project_ref": "PK-4",
+   "asked_volumes": [
+    30000,
+    8000
+   ],
+   "offer": null,
+   "db": {
+    "project": [
+     {
+      "id": "proj-4",
+      "projectKey": "PK-4",
+      "customerId": "cust-4",
+      "_source": "fixture://portal-landed-quote/project/proj-4"
+     }
+    ],
+    "rateSettings": [
+     {
+      "rawMaterialsAdjustmentRate": 12,
+      "assemblyQuotingLaborRate": 22.5,
+      "batchingQuotingLaborRate": 30,
+      "overheadPerProductionHour": 35,
+      "marginPercent": 35,
+      "marginTiersPct": [
+       25,
+       35,
+       45
+      ],
+      "tariffRate": 0.1,
+      "landedMultiplier": 1.2,
+      "fxRateCadUsd": 1.37,
+      "_source": "fixture://portal-landed-quote/rate_settings/1"
+     }
+    ],
+    "fgItem": [
+     {
+      "projectKey": "PK-4",
+      "targetQty": 20000,
+      "pinnedFormulationId": "form-4",
+      "_source": "fixture://portal-landed-quote/fg_item/PK-4"
+     }
+    ],
+    "projectSubAssembly": [
+     {
+      "id": "psa-cleared",
+      "fmProjectId": "proj-4",
+      "kind": "formula",
+      "formulationId": null,
+      "bomId": null,
+      "updatedAt": "2026-09-01T00:00:00Z",
+      "_source": "fixture://portal-landed-quote/project_subassembly/psa-cleared"
+     }
+    ],
+    "formulation": [
+     {
+      "id": "form-4",
+      "code": "F-4",
+      "specificGravity": 0.98,
+      "status": "DRAFT",
+      "deletedAt": null,
+      "_source": "fixture://portal-landed-quote/formulation/form-4",
+      "ingredients": [
+       {
+        "percentage": 60,
+        "product": {
+         "name": "fm costed",
+         "code": "RM-A",
+         "unitCost": 2.5,
+         "uom": "kg",
+         "_source": "fixture://portal-landed-quote/product/RM-A",
+         "supplierProducts": [
+          {
+           "id": "sp-a1",
+           "systemCost": 9,
+           "isPreferred": true,
+           "isActive": true,
+           "updatedAt": "2026-09-05T00:00:00Z",
+           "_source": "fixture://portal-landed-quote/supplier_product/sp-a1"
+          }
+         ]
+        }
+       },
+       {
+        "percentage": 30,
+        "product": {
+         "name": "new raw",
+         "code": "RM-B",
+         "unitCost": 0,
+         "uom": "kg",
+         "_source": "fixture://portal-landed-quote/product/RM-B",
+         "supplierProducts": [
+          {
+           "id": "sp-b1",
+           "systemCost": 7,
+           "isPreferred": false,
+           "isActive": true,
+           "updatedAt": "2026-09-09T00:00:00Z",
+           "_source": "fixture://portal-landed-quote/supplier_product/sp-b1"
+          },
+          {
+           "id": "sp-b5",
+           "systemCost": 3.9,
+           "isPreferred": true,
+           "isActive": true,
+           "updatedAt": "2026-09-01T00:00:00Z",
+           "_source": "fixture://portal-landed-quote/supplier_product/sp-b5"
+          },
+          {
+           "id": "sp-b2",
+           "systemCost": 8,
+           "isPreferred": true,
+           "isActive": false,
+           "updatedAt": "2026-09-08T00:00:00Z",
+           "_source": "fixture://portal-landed-quote/supplier_product/sp-b2"
+          },
+          {
+           "id": "sp-b3",
+           "systemCost": 4.2,
+           "isPreferred": true,
+           "isActive": true,
+           "updatedAt": "2026-09-02T00:00:00Z",
+           "_source": "fixture://portal-landed-quote/supplier_product/sp-b3"
+          },
+          {
+           "id": "sp-b4",
+           "systemCost": null,
+           "isPreferred": true,
+           "isActive": true,
+           "updatedAt": "2026-09-07T00:00:00Z",
+           "_source": "fixture://portal-landed-quote/supplier_product/sp-b4"
+          }
+         ]
+        }
+       },
+       {
+        "percentage": 10,
+        "product": {
+         "name": "uncosted",
+         "code": "RM-C",
+         "unitCost": null,
+         "uom": "kg",
+         "_source": "fixture://portal-landed-quote/product/RM-C",
+         "supplierProducts": []
+        }
+       }
+      ]
+     }
+    ],
+    "billOfMaterials": [
+     {
+      "id": "bom-4a",
+      "category": "ASSEMBLY",
+      "version": 1,
+      "projectKey": "PK-4",
+      "projectId": null,
+      "deletedAt": null,
+      "updatedAt": "2026-08-01T00:00:00Z",
+      "fillWeightG": 400,
+      "_source": "fixture://portal-landed-quote/bom/bom-4a",
+      "lines": []
+     },
+     {
+      "id": "bom-4b",
+      "category": "ASSEMBLY",
+      "version": 2,
+      "projectKey": null,
+      "projectId": "proj-4",
+      "deletedAt": null,
+      "updatedAt": "2026-08-02T00:00:00Z",
+      "fillWeightG": 500,
+      "_source": "fixture://portal-landed-quote/bom/bom-4b",
+      "lines": [
+       {
+        "id": "l4-tube",
+        "productId": "p-tube",
+        "quantity": 1,
+        "needsSourcing": false,
+        "estimatedUnitCost": null,
+        "cost": 0.25,
+        "packagingType": "tube",
+        "deletedAt": null,
+        "_source": "fixture://portal-landed-quote/bom_line/l4-tube",
+        "product": {
+         "id": "p-tube",
+         "name": "tube",
+         "code": "P-TUBE",
+         "hsCode": "3923.30",
+         "_source": "fixture://portal-landed-quote/product/p-tube",
+         "supplierProducts": [
+          {
+           "id": "sp-tube",
+           "unitCost": 0.21,
+           "deliveryCost": 0.01,
+           "incoterms": "FOB",
+           "countryOfOrigin": "CN",
+           "currency": "USD",
+           "isActive": true,
+           "isPreferred": true,
+           "updatedAt": "2026-09-01T00:00:00Z",
+           "supplier": {
+            "incoterms": null
+           },
+           "_source": "fixture://portal-landed-quote/supplier_product/sp-tube",
+           "tiers": [
+            {
+             "minQty": 50000,
+             "unitCost": 0.18,
+             "_source": "fixture://portal-landed-quote/tier/sp-tube-50k"
+            },
+            {
+             "minQty": 10000,
+             "unitCost": 0.2,
+             "_source": "fixture://portal-landed-quote/tier/sp-tube-10k"
+            }
+           ]
+          }
+         ]
+        }
+       },
+       {
+        "id": "l4-carton",
+        "productId": null,
+        "quantity": 0.05,
+        "needsSourcing": true,
+        "estimatedUnitCost": 0.6,
+        "cost": 0,
+        "packagingType": "shipper carton",
+        "deletedAt": null,
+        "_source": "fixture://portal-landed-quote/bom_line/l4-carton",
+        "product": null
+       }
+      ]
+     },
+     {
+      "id": "bom-4c",
+      "category": "ASSEMBLY",
+      "version": 3,
+      "projectKey": "PK-4",
+      "projectId": null,
+      "deletedAt": "2026-09-01T00:00:00Z",
+      "updatedAt": "2026-09-01T00:00:00Z",
+      "fillWeightG": 900,
+      "_source": "fixture://portal-landed-quote/bom/bom-4c",
+      "lines": []
+     }
+    ],
+    "fgRouting": [
+     {
+      "id": "rt-4np",
+      "projectKey": "PK-4",
+      "isPrimary": false,
+      "standardHoursPerUnit": 0.01,
+      "standardSetupMinutes": 10,
+      "standardChangeoverMinutes": 5,
+      "totalOperators": 9,
+      "lineNumber": 3,
+      "_source": "fixture://portal-landed-quote/fg_routing/rt-4np"
+     },
+     {
+      "id": "rt-4",
+      "projectKey": "PK-4",
+      "isPrimary": true,
+      "standardHoursPerUnit": 0.003,
+      "standardSetupMinutes": null,
+      "standardChangeoverMinutes": null,
+      "totalOperators": 4,
+      "lineNumber": 3,
+      "groupCode": "D301",
+      "actionKeys": [
+       "fill:x"
+      ],
+      "_source": "fixture://portal-landed-quote/fg_routing/rt-4"
+     }
+    ],
+    "lineActionSetupStandard": [
+     {
+      "lineNumber": 3,
+      "groupCode": "*",
+      "actionKey": "*",
+      "setupMinutes": 45,
+      "changeoverMinutes": 20,
+      "source": "confirmed",
+      "_source": "fixture://portal-landed-quote/setup_standard/line3"
+     },
+     {
+      "lineNumber": 0,
+      "groupCode": "*",
+      "actionKey": "*",
+      "setupMinutes": 150,
+      "changeoverMinutes": 60,
+      "source": "seed",
+      "_source": "fixture://portal-landed-quote/setup_standard/seed"
+     }
+    ],
+    "draftCostOverride": [
+     {
+      "projectKey": "PK-4",
+      "fgItemId": null,
+      "process": "assembly",
+      "templateId": null,
+      "source": "draft",
+      "tankCode": null,
+      "batchType": null,
+      "compounderCount": null,
+      "hours": null,
+      "yieldUnits": null,
+      "labourPerUnit": null,
+      "lineNumber": null,
+      "lineCode": null,
+      "headcount": 5,
+      "rateBpm": 40,
+      "uptimeHours": null,
+      "setupMinutes": null,
+      "teardownMinutes": null,
+      "overheadPerUnit": null,
+      "runVolumeTier": {
+       "code": "25k"
+      },
+      "_source": "fixture://portal-landed-quote/draft_cost_override/PK-4-assembly-25k-draft"
+     },
+     {
+      "projectKey": "PK-4",
+      "fgItemId": null,
+      "process": "assembly",
+      "templateId": null,
+      "source": "confirmed",
+      "tankCode": null,
+      "batchType": null,
+      "compounderCount": null,
+      "hours": null,
+      "yieldUnits": 2400,
+      "labourPerUnit": null,
+      "lineNumber": null,
+      "lineCode": null,
+      "headcount": 6,
+      "rateBpm": 50,
+      "uptimeHours": 0,
+      "setupMinutes": null,
+      "teardownMinutes": null,
+      "overheadPerUnit": null,
+      "runVolumeTier": {
+       "code": "25k"
+      },
+      "_source": "fixture://portal-landed-quote/draft_cost_override/PK-4-assembly-25k-confirmed"
+     },
+     {
+      "projectKey": "PK-4",
+      "fgItemId": null,
+      "process": "compounding",
+      "templateId": null,
+      "source": "confirmed",
+      "tankCode": null,
+      "batchType": null,
+      "compounderCount": 3,
+      "hours": 7.5,
+      "yieldUnits": 12000,
+      "labourPerUnit": null,
+      "lineNumber": null,
+      "lineCode": null,
+      "headcount": null,
+      "rateBpm": null,
+      "uptimeHours": null,
+      "setupMinutes": null,
+      "teardownMinutes": null,
+      "overheadPerUnit": null,
+      "runVolumeTier": {
+       "code": "25k"
+      },
+      "_source": "fixture://portal-landed-quote/draft_cost_override/PK-4-compounding-25k-confirmed"
+     },
+     {
+      "projectKey": "PK-4",
+      "fgItemId": null,
+      "process": "compounding",
+      "templateId": null,
+      "source": "draft",
+      "tankCode": null,
+      "batchType": null,
+      "compounderCount": null,
+      "hours": null,
+      "yieldUnits": null,
+      "labourPerUnit": 0,
+      "lineNumber": null,
+      "lineCode": null,
+      "headcount": null,
+      "rateBpm": null,
+      "uptimeHours": null,
+      "setupMinutes": null,
+      "teardownMinutes": null,
+      "overheadPerUnit": null,
+      "runVolumeTier": {
+       "code": "5k"
+      },
+      "_source": "fixture://portal-landed-quote/draft_cost_override/PK-4-compounding-5k-draft"
+     }
+    ],
+    "quoteRunQty": 30000
+   }
+  },
+  {
+   "name": "customer_supplied_g9",
+   "project_ref": "proj-9",
+   "asked_volumes": [
+    24000,
+    5000
+   ],
+   "db": {
+    "project": [
+     {
+      "id": "proj-9",
+      "projectKey": "PK-9",
+      "customerId": "cust-g77",
+      "_source": "fixture://portal-landed-quote/project/proj-9"
+     }
+    ],
+    "projectLocal": [
+     {
+      "id": "PK-9",
+      "targetPrice": "$1.85 retail",
+      "customerId": "77",
+      "fpId": null,
+      "_source": "fixture://portal-landed-quote/project_local/PK-9",
+      "createdAt": "2026-08-01T00:00:00Z",
+      "updatedAt": "2026-09-01T00:00:00Z"
+     }
+    ],
+    "rateSettings": [
+     {
+      "rawMaterialsAdjustmentRate": 12,
+      "assemblyQuotingLaborRate": 22.5,
+      "batchingQuotingLaborRate": 30,
+      "overheadPerProductionHour": 35,
+      "marginPercent": 35,
+      "marginTiersPct": [
+       25,
+       35,
+       45
+      ],
+      "tariffRate": 0.1,
+      "landedMultiplier": 1.2,
+      "fxRateCadUsd": 1.37,
+      "_source": "fixture://portal-landed-quote/rate_settings/1"
+     }
+    ],
+    "fgItem": [
+     {
+      "projectKey": "PK-9",
+      "targetQty": 7000,
+      "pinnedFormulationId": null,
+      "_source": "fixture://portal-landed-quote/fg_item/PK-9"
+     }
+    ],
+    "projectSubAssembly": [
+     {
+      "id": "psa-proj-1-formula",
+      "fmProjectId": "proj-9",
+      "kind": "formula",
+      "formulationId": "form-1",
+      "bomId": null,
+      "updatedAt": "2026-09-01T00:00:00Z",
+      "_source": "fixture://portal-landed-quote/project_subassembly/psa-proj-1-formula"
+     },
+     {
+      "id": "psa-proj-1-assembly",
+      "fmProjectId": "proj-9",
+      "kind": "assembly",
+      "formulationId": null,
+      "bomId": "bom-1",
+      "updatedAt": "2026-09-01T00:00:00Z",
+      "_source": "fixture://portal-landed-quote/project_subassembly/psa-proj-1-assembly"
+     }
+    ],
+    "formulation": [
+     {
+      "id": "form-1",
+      "code": "F-1",
+      "specificGravity": 1.05,
+      "_source": "fixture://portal-landed-quote/formulation/form-1",
+      "status": "APPROVED",
+      "deletedAt": null,
+      "ingredients": [
+       {
+        "percentage": 72.499,
+        "product": {
+         "name": "water",
+         "code": "RM-1",
+         "unitCost": 0.02,
+         "uom": "kg",
+         "_source": "fixture://portal-landed-quote/product/RM-1"
+        },
+        "productId": "rm-water"
+       },
+       {
+        "percentage": 12,
+        "product": {
+         "name": "surfactant",
+         "code": "RM-2",
+         "unitCost": 3.1,
+         "uom": "kg",
+         "_source": "fixture://portal-landed-quote/product/RM-2"
+        },
+        "productId": "rm-surf"
+       },
+       {
+        "percentage": 7.5,
+        "product": {
+         "name": "fragrance",
+         "code": "RM-3",
+         "unitCost": 41.333,
+         "uom": "kg",
+         "_source": "fixture://portal-landed-quote/product/RM-3"
+        },
+        "productId": "rm-frag"
+       },
+       {
+        "percentage": 8,
+        "product": {
+         "name": "surfactant",
+         "code": "RM-2",
+         "unitCost": 3.1,
+         "uom": "kg",
+         "_source": "fixture://portal-landed-quote/product/RM-2"
+        },
+        "productId": "rm-surf"
+       },
+       {
+        "percentage": 0.001,
+        "productId": "rm-trace",
+        "product": {
+         "name": "trace active",
+         "code": "RM-4",
+         "unitCost": 900,
+         "uom": "kg",
+         "_source": "fixture://portal-landed-quote/product/RM-4"
+        }
+       }
+      ]
+     }
+    ],
+    "billOfMaterials": [
+     {
+      "id": "bom-1",
+      "fillWeightG": 236.6,
+      "_source": "fixture://portal-landed-quote/bom/bom-1",
+      "category": "ASSEMBLY",
+      "version": 1,
+      "projectKey": "PK-9",
+      "updatedAt": "2026-09-01T00:00:00Z",
+      "deletedAt": null,
+      "lines": [
+       {
+        "id": "l-bottle",
+        "productId": "p-bottle",
+        "quantity": 1,
+        "needsSourcing": false,
+        "estimatedUnitCost": null,
+        "cost": 0.3,
+        "packagingType": "bottle",
+        "deletedAt": null,
+        "_source": "fixture://portal-landed-quote/bom_line/l-bottle",
+        "product": {
+         "id": "p-bottle",
+         "name": "1000 ml bottle",
+         "code": "P-02458",
+         "hsCode": "3923.30",
+         "_source": "fixture://portal-landed-quote/product/p-bottle",
+         "supplierProducts": [
+          {
+           "id": "sp-bottle-old",
+           "unitCost": 0.36,
+           "deliveryCost": 0.03,
+           "isPreferred": false,
+           "isActive": true,
+           "updatedAt": "2026-09-01T00:00:00Z",
+           "currency": "USD",
+           "incoterms": "FOB",
+           "countryOfOrigin": "CN",
+           "uomPerSellingUnit": 1,
+           "supplier": {
+            "incoterms": null
+           },
+           "tiers": [],
+           "_source": "fixture://portal-landed-quote/supplier_product/sp-bottle-old"
+          },
+          {
+           "id": "sp-bottle",
+           "unitCost": 0.33,
+           "deliveryCost": 0.0215,
+           "isPreferred": true,
+           "isActive": true,
+           "updatedAt": "2026-08-01T10:00:00Z",
+           "currency": "USD",
+           "incoterms": "FOB",
+           "countryOfOrigin": "CN",
+           "uomPerSellingUnit": 1,
+           "supplier": {
+            "incoterms": null
+           },
+           "tiers": [
+            {
+             "minQty": 20000,
+             "unitCost": 0.27,
+             "effectiveFrom": null,
+             "updatedAt": "2026-07-15T08:30:00Z",
+             "_source": "fixture://portal-landed-quote/tier/sp-bottle/20000"
+            },
+            {
+             "minQty": 5000,
+             "unitCost": 0.31,
+             "effectiveFrom": "2026-07-01",
+             "updatedAt": null,
+             "_source": "fixture://portal-landed-quote/tier/sp-bottle/5000"
+            }
+           ],
+           "_source": "fixture://portal-landed-quote/supplier_product/sp-bottle"
+          },
+          {
+           "id": "sp-bottle-off",
+           "unitCost": 0.01,
+           "deliveryCost": 0,
+           "isPreferred": true,
+           "isActive": false,
+           "updatedAt": "2026-08-01T10:00:00Z",
+           "currency": "USD",
+           "incoterms": "FOB",
+           "countryOfOrigin": "CN",
+           "uomPerSellingUnit": 1,
+           "supplier": {
+            "incoterms": null
+           },
+           "tiers": [],
+           "_source": "fixture://portal-landed-quote/supplier_product/sp-bottle-off"
+          }
+         ]
+        }
+       },
+       {
+        "id": "l-cap",
+        "productId": "p-cap",
+        "quantity": 1,
+        "needsSourcing": false,
+        "estimatedUnitCost": null,
+        "cost": 0.05,
+        "packagingType": "cap",
+        "deletedAt": null,
+        "_source": "fixture://portal-landed-quote/bom_line/l-cap",
+        "product": {
+         "id": "p-cap",
+         "name": "cap",
+         "code": "P-02459",
+         "hsCode": null,
+         "_source": "fixture://portal-landed-quote/product/p-cap",
+         "supplierProducts": [
+          {
+           "id": "sp-cap",
+           "unitCost": 0.13,
+           "deliveryCost": null,
+           "isPreferred": true,
+           "isActive": true,
+           "updatedAt": "2026-06-01T00:00:00Z",
+           "currency": "USD",
+           "incoterms": null,
+           "countryOfOrigin": "CN",
+           "uomPerSellingUnit": 1,
+           "supplier": {
+            "incoterms": null
+           },
+           "tiers": [],
+           "_source": "fixture://portal-landed-quote/supplier_product/sp-cap"
+          }
+         ]
+        }
+       },
+       {
+        "id": "l-case",
+        "productId": "p-case",
+        "quantity": 0,
+        "needsSourcing": false,
+        "estimatedUnitCost": null,
+        "cost": 0.9,
+        "packagingType": "case",
+        "deletedAt": null,
+        "_source": "fixture://portal-landed-quote/bom_line/l-case",
+        "product": {
+         "id": "p-case",
+         "name": "shipper case",
+         "code": "P-02460",
+         "hsCode": "4819.10",
+         "_source": "fixture://portal-landed-quote/product/p-case",
+         "supplierProducts": [
+          {
+           "id": "sp-case",
+           "unitCost": 1.005,
+           "deliveryCost": 0.0342,
+           "isPreferred": true,
+           "isActive": true,
+           "updatedAt": "2026-08-01T10:00:00Z",
+           "currency": "CAD",
+           "incoterms": "FOB",
+           "countryOfOrigin": null,
+           "uomPerSellingUnit": 12,
+           "supplier": {
+            "incoterms": null
+           },
+           "tiers": [],
+           "_source": "fixture://portal-landed-quote/supplier_product/sp-case"
+          }
+         ]
+        }
+       },
+       {
+        "id": "l-old",
+        "productId": "p-old",
+        "quantity": 1,
+        "needsSourcing": false,
+        "estimatedUnitCost": null,
+        "cost": 9,
+        "packagingType": "removed",
+        "deletedAt": "2026-08-01T00:00:00Z",
+        "_source": "fixture://portal-landed-quote/bom_line/l-old",
+        "product": null
+       },
+       {
+        "id": "l-label",
+        "productId": null,
+        "quantity": 2,
+        "needsSourcing": true,
+        "estimatedUnitCost": 0.12,
+        "cost": null,
+        "packagingType": "label",
+        "deletedAt": null,
+        "_source": "fixture://portal-landed-quote/bom_line/l-label",
+        "product": null
+       }
+      ]
+     }
+    ],
+    "fgRouting": [
+     {
+      "id": "rt-1",
+      "projectKey": "PK-9",
+      "isPrimary": true,
+      "standardHoursPerUnit": 0.0042,
+      "standardSetupMinutes": 90,
+      "totalOperators": 3,
+      "lineNumber": 2,
+      "_source": "fixture://portal-landed-quote/fg_routing/rt-1"
+     }
+    ],
+    "quoteRunQty": 12000,
+    "purchaseOrderLine": [
+     {
+      "id": "pol-1",
+      "productId": "p-bottle",
+      "unitPrice": 0.31,
+      "quantityReceived": 12500,
+      "purchaseOrderId": "po-1",
+      "updatedAt": "2026-09-02T00:00:00Z",
+      "_source": "fixture://portal-landed-quote/po_line/pol-1",
+      "purchaseOrder": {
+       "poNumber": "PO5447",
+       "receivedDate": "2026-09-01T00:00:00Z",
+       "shippingCost": 1710,
+       "_source": "fixture://portal-landed-quote/po/po-1"
+      }
+     },
+     {
+      "id": "pol-2",
+      "productId": "p-cap",
+      "unitPrice": 0.05,
+      "quantityReceived": 12500,
+      "purchaseOrderId": "po-1",
+      "updatedAt": "2026-09-02T00:00:00Z",
+      "_source": "fixture://portal-landed-quote/po_line/pol-2",
+      "purchaseOrder": {
+       "poNumber": "PO5447",
+       "receivedDate": "2026-09-01T00:00:00Z",
+       "shippingCost": 1710,
+       "_source": "fixture://portal-landed-quote/po/po-1"
+      }
+     },
+     {
+      "id": "pol-3",
+      "productId": "p-bottle",
+      "unitPrice": 0.29,
+      "quantityReceived": 5000,
+      "purchaseOrderId": "po-0",
+      "updatedAt": "2026-05-02T00:00:00Z",
+      "_source": "fixture://portal-landed-quote/po_line/pol-3",
+      "purchaseOrder": {
+       "poNumber": "PO5300",
+       "receivedDate": "2026-05-01T00:00:00Z",
+       "shippingCost": null,
+       "_source": "fixture://portal-landed-quote/po/po-0"
+      }
+     },
+     {
+      "id": "pol-4",
+      "productId": "p-case",
+      "unitPrice": 1.0,
+      "quantityReceived": 0,
+      "purchaseOrderId": "po-1",
+      "updatedAt": "2026-09-02T00:00:00Z",
+      "_source": "fixture://portal-landed-quote/po_line/pol-4",
+      "purchaseOrder": {
+       "poNumber": "PO5447",
+       "receivedDate": "2026-09-01T00:00:00Z",
+       "shippingCost": 1710,
+       "_source": "fixture://portal-landed-quote/po/po-1"
+      }
+     }
+    ],
+    "inventory": [
+     {
+      "productId": "p-bottle",
+      "currentQuantity": 30000,
+      "unitCost": 0.29,
+      "lastTransactionAt": "2026-09-10T12:00:00Z",
+      "updatedAt": null,
+      "_source": "fixture://portal-landed-quote/inventory/1"
+     },
+     {
+      "productId": "p-bottle",
+      "currentQuantity": 20000,
+      "unitCost": 0.305,
+      "lastTransactionAt": null,
+      "updatedAt": "2026-09-12T00:00:00Z",
+      "_source": "fixture://portal-landed-quote/inventory/2"
+     },
+     {
+      "productId": "p-cap",
+      "currentQuantity": 500,
+      "unitCost": null,
+      "lastTransactionAt": null,
+      "updatedAt": "2026-09-01T00:00:00Z",
+      "_source": "fixture://portal-landed-quote/inventory/3"
+     }
+    ],
+    "customer": [
+     {
+      "id": "cust-g77",
+      "externalId": "fm-cust-77",
+      "deletedAt": null,
+      "_source": "fixture://portal-landed-quote/customer/cust-g77"
+     },
+     {
+      "id": "cust-other",
+      "externalId": "fm-cust-88",
+      "deletedAt": null,
+      "_source": "fixture://portal-landed-quote/customer/cust-other"
+     }
+    ],
+    "product": [
+     {
+      "id": "rm-water",
+      "externalId": "fm-raw-501",
+      "productType": "RAW_MATERIAL",
+      "_source": "fixture://portal-landed-quote/product/RM-1"
+     },
+     {
+      "id": "rm-surf",
+      "externalId": "502",
+      "productType": "RAW_MATERIAL",
+      "_source": "fixture://portal-landed-quote/product/RM-2"
+     },
+     {
+      "id": "rm-frag",
+      "externalId": "fm-raw-512",
+      "productType": "RAW_MATERIAL",
+      "_source": "fixture://portal-landed-quote/product/RM-3"
+     },
+     {
+      "id": "rm-trace",
+      "externalId": null,
+      "productType": "RAW_MATERIAL",
+      "_source": "fixture://portal-landed-quote/product/RM-4"
+     }
+    ],
+    "customerSuppliedItem": [
+     {
+      "id": "csi-1",
+      "customerId": "cust-g77",
+      "productId": "rm-surf",
+      "isActive": true,
+      "customer": {
+       "deletedAt": null
+      },
+      "_source": "fixture://portal-landed-quote/customer_supplied_item/csi-1"
+     },
+     {
+      "id": "csi-2",
+      "customerId": "cust-g77",
+      "productId": "rm-trace",
+      "isActive": true,
+      "customer": {
+       "deletedAt": null
+      },
+      "_source": "fixture://portal-landed-quote/customer_supplied_item/csi-2"
+     },
+     {
+      "id": "csi-3",
+      "customerId": "cust-g77",
+      "productId": "p-bottle",
+      "isActive": true,
+      "customer": {
+       "deletedAt": null
+      },
+      "_source": "fixture://portal-landed-quote/customer_supplied_item/csi-3"
+     },
+     {
+      "id": "csi-4",
+      "customerId": "cust-g77",
+      "productId": "p-cap",
+      "isActive": false,
+      "customer": {
+       "deletedAt": null
+      },
+      "_source": "fixture://portal-landed-quote/customer_supplied_item/csi-4"
+     },
+     {
+      "id": "csi-5",
+      "customerId": "cust-other",
+      "productId": "rm-water",
+      "isActive": true,
+      "customer": {
+       "deletedAt": null
+      },
+      "_source": "fixture://portal-landed-quote/customer_supplied_item/csi-5"
+     }
+    ],
+    "assemblySourcingRequest": [
+     {
+      "id": "sr-1",
+      "bomLineId": "l-label",
+      "materialType": "PACKAGING",
+      "sourcingPath": "CUSTOMER",
+      "status": "BRIEF_SENT",
+      "customerId": "77",
+      "linkedProductId": null,
+      "rawMaterialId": null,
+      "_source": "fixture://portal-landed-quote/sourcing_request/sr-1"
+     },
+     {
+      "id": "sr-2",
+      "bomLineId": "l-cap",
+      "materialType": "PACKAGING",
+      "sourcingPath": "CUSTOMER",
+      "status": "LINKED",
+      "customerId": "77",
+      "linkedProductId": null,
+      "rawMaterialId": null,
+      "_source": "fixture://portal-landed-quote/sourcing_request/sr-2"
+     },
+     {
+      "id": "sr-3",
+      "bomLineId": "l-case",
+      "materialType": "PACKAGING",
+      "sourcingPath": "VENDOR",
+      "status": "OPEN",
+      "customerId": "77",
+      "linkedProductId": null,
+      "rawMaterialId": null,
+      "_source": "fixture://portal-landed-quote/sourcing_request/sr-3"
+     },
+     {
+      "id": "sr-4",
+      "bomLineId": null,
+      "materialType": "RAW",
+      "sourcingPath": "CUSTOMER",
+      "status": "OPEN",
+      "customerId": "77",
+      "linkedProductId": null,
+      "rawMaterialId": "512",
+      "_source": "fixture://portal-landed-quote/sourcing_request/sr-4"
+     },
+     {
+      "id": "sr-5",
+      "bomLineId": null,
+      "materialType": "RAW",
+      "sourcingPath": "CUSTOMER",
+      "status": "CANCELLED",
+      "customerId": "77",
+      "linkedProductId": "rm-water",
+      "rawMaterialId": null,
+      "_source": "fixture://portal-landed-quote/sourcing_request/sr-5"
+     },
+     {
+      "id": "sr-6",
+      "bomLineId": null,
+      "materialType": "RAW",
+      "sourcingPath": "CUSTOMER",
+      "status": "OPEN",
+      "customerId": "88",
+      "linkedProductId": "rm-water",
+      "rawMaterialId": null,
+      "_source": "fixture://portal-landed-quote/sourcing_request/sr-6"
+     }
+    ],
+    "bomLine": [
+     {
+      "id": "l-bottle",
+      "productId": "p-bottle",
+      "_source": "fixture://portal-landed-quote/bom_line/l-bottle"
+     },
+     {
+      "id": "l-cap",
+      "productId": "p-cap",
+      "_source": "fixture://portal-landed-quote/bom_line/l-cap"
+     },
+     {
+      "id": "l-case",
+      "productId": "p-case",
+      "_source": "fixture://portal-landed-quote/bom_line/l-case"
+     },
+     {
+      "id": "l-old",
+      "productId": "p-old",
+      "_source": "fixture://portal-landed-quote/bom_line/l-old"
+     },
+     {
+      "id": "l-label",
+      "productId": null,
+      "_source": "fixture://portal-landed-quote/bom_line/l-label"
+     }
+    ]
+   }
+  },
+  {
+   "name": "customer_supplied_all_lines",
+   "project_ref": "proj-10",
+   "asked_volumes": [
+    10000
+   ],
+   "db": {
+    "project": [
+     {
+      "id": "proj-10",
+      "projectKey": "PK-10",
+      "customerId": "cust-g80",
+      "_source": "fixture://portal-landed-quote/project/proj-10"
+     }
+    ],
+    "fgItem": [
+     {
+      "projectKey": "PK-10",
+      "targetQty": 3000,
+      "pinnedFormulationId": null,
+      "_source": "fixture://portal-landed-quote/fg_item/PK-10"
+     }
+    ],
+    "billOfMaterials": [
+     {
+      "id": "bom-10",
+      "fillWeightG": 50,
+      "_source": "fixture://portal-landed-quote/bom/bom-10",
+      "category": "ASSEMBLY",
+      "version": 1,
+      "projectKey": "PK-10",
+      "updatedAt": "2026-09-01T00:00:00Z",
+      "deletedAt": null,
+      "lines": [
+       {
+        "id": "l-jar",
+        "productId": "p-jar",
+        "quantity": 1,
+        "needsSourcing": false,
+        "estimatedUnitCost": null,
+        "cost": 0.4,
+        "packagingType": "jar",
+        "deletedAt": null,
+        "_source": "fixture://portal-landed-quote/bom_line/l-jar",
+        "product": {
+         "id": "p-jar",
+         "name": "50 ml jar",
+         "code": "P-9",
+         "hsCode": null,
+         "_source": "fixture://portal-landed-quote/product/p-jar",
+         "supplierProducts": []
+        }
+       },
+       {
+        "id": "l-lid",
+        "productId": "p-lid",
+        "quantity": 1,
+        "needsSourcing": true,
+        "estimatedUnitCost": 0.05,
+        "cost": null,
+        "packagingType": "lid",
+        "deletedAt": null,
+        "_source": "fixture://portal-landed-quote/bom_line/l-lid",
+        "product": {
+         "id": "p-lid",
+         "name": "jar lid",
+         "code": "P-10",
+         "hsCode": null,
+         "_source": "fixture://portal-landed-quote/product/p-lid",
+         "supplierProducts": []
+        }
+       }
+      ]
+     }
+    ],
+    "customer": [
+     {
+      "id": "cust-g80",
+      "externalId": "local-cust-80",
+      "deletedAt": null,
+      "_source": "fixture://portal-landed-quote/customer/cust-g80"
+     }
+    ],
+    "customerSuppliedItem": [
+     {
+      "id": "csi-10",
+      "customerId": "cust-g80",
+      "productId": "p-jar",
+      "isActive": true,
+      "customer": {
+       "deletedAt": null
+      },
+      "_source": "fixture://portal-landed-quote/customer_supplied_item/csi-10"
+     },
+     {
+      "id": "csi-11",
+      "customerId": "cust-g80",
+      "productId": "p-lid",
+      "isActive": true,
+      "customer": {
+       "deletedAt": null
+      },
+      "_source": "fixture://portal-landed-quote/customer_supplied_item/csi-11"
+     }
+    ],
+    "bomLine": [
+     {
+      "id": "l-jar",
+      "productId": "p-jar",
+      "_source": "fixture://portal-landed-quote/bom_line/l-jar"
+     },
+     {
+      "id": "l-lid",
+      "productId": "p-lid",
+      "_source": "fixture://portal-landed-quote/bom_line/l-lid"
+     }
+    ]
+   }
+  }
+ ]
+}

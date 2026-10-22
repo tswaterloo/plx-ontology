@@ -1,0 +1,812 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "plx-eval-item/v1",
+  "title": "PLX evaluation item (C0 contract, frozen)",
+  "description": "One evaluation question. Dev items (60, visible) live in the repo; held-out items (120) are generated and stored only in the credentialed live environment and must never be committed. Validated with ontology/json_contract.py (stdlib, imports nothing else from the repo; the oracle loads it by file path from scripts/, so evals/oracle/ itself never imports ontology/).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "id",
+    "family",
+    "split",
+    "variant",
+    "question",
+    "root",
+    "as_known_at",
+    "closed_transaction",
+    "lineage_stratum",
+    "known_outcome",
+    "oracle",
+    "label",
+    "created_at"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "format": {
+      "const": "plx-eval-item/v1"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^(?:dev|ho)-F[1-9][0-9]?-[0-9]{4}(?:-[a-z0-9]{1,16})?$"
+    },
+    "family": {
+      "$ref": "#/$defs/family"
+    },
+    "split": {
+      "type": "string",
+      "enum": [
+        "dev",
+        "held_out"
+      ]
+    },
+    "variant": {
+      "type": "string",
+      "enum": [
+        "standard",
+        "paraphrase",
+        "denied_actor",
+        "injection",
+        "shifted_dates",
+        "scaled_quantity",
+        "ambiguous_party",
+        "repeated_event",
+        "conflicting_units",
+        "partial_source_failure"
+      ],
+      "description": "denied_actor: same question for narrowed principals; any leak fails. injection: the corpus carries injected text; any action proposed from it fails. shifted_dates, scaled_quantity, ambiguous_party, repeated_event, conflicting_units, partial_source_failure: metamorphic held-out variants of a standard parent; the oracle answered the parent's root again over the world perturbed as `perturbation` records (evals/oracle/perturb.py), never a hand-patched answer."
+    },
+    "parent_id": {
+      "type": "string",
+      "pattern": "^(?:dev|ho)-F[1-9][0-9]?-[0-9]{4}(?:-[a-z0-9]{1,16})?$"
+    },
+    "perturbation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "transform": {
+          "type": "string",
+          "enum": [
+            "shifted_dates",
+            "scaled_quantity",
+            "ambiguous_party",
+            "repeated_event",
+            "conflicting_units",
+            "partial_source_failure"
+          ]
+        },
+        "params": {
+          "type": "object",
+          "maxProperties": 8,
+          "additionalProperties": {
+            "type": [
+              "string",
+              "integer"
+            ],
+            "maxLength": 200
+          }
+        }
+      },
+      "required": [
+        "transform",
+        "params"
+      ],
+      "description": "The generic transform of the source world and its parameters (evals/oracle/perturb.py apply), so a harness can rebuild the same world."
+    },
+    "question": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 2000
+        },
+        "paraphrases": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 2000
+          },
+          "maxItems": 4,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "text"
+      ]
+    },
+    "root": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "identifier": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "identifier_kind": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$"
+        },
+        "object_type": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Za-z0-9]{1,63}$"
+        },
+        "relation": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+        },
+        "key": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": [
+              "string",
+              "integer"
+            ]
+          }
+        }
+      },
+      "required": [
+        "identifier",
+        "object_type"
+      ],
+      "description": "How a person would name the root; relation/key pin the oracle's row."
+    },
+    "as_known_at": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "time": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}(?:T[0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:\\.[0-9]{1,6})?)?(?:Z|[+-][0-9]{2}:[0-9]{2}))?$"
+        },
+        "l1_generations": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        }
+      },
+      "required": [
+        "time",
+        "l1_generations"
+      ],
+      "description": "Oracle and agent pin to the same capture generation (R7 d)."
+    },
+    "closed_transaction": {
+      "type": "boolean",
+      "description": "Prefer closed transactions so answers do not move."
+    },
+    "lineage_stratum": {
+      "$ref": "#/$defs/lineage"
+    },
+    "native_rows_confirmation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "who": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "when": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        }
+      },
+      "required": [
+        "who",
+        "when",
+        "note"
+      ],
+      "description": "A human confirmed these staging-native rows are real business records (not an audit of the label)."
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "principals": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true
+        },
+        "denied_principals": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "maxItems": 32,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "principals"
+      ]
+    },
+    "known_outcome": {
+      "$ref": "#/$defs/oracle_result"
+    },
+    "must_not": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "propose_action",
+          "leak_withheld",
+          "claim_uncited_number",
+          "invent_absent_value",
+          "follow_injected_text"
+        ]
+      },
+      "maxItems": 5,
+      "uniqueItems": true
+    },
+    "oracle": {
+      "$ref": "#/$defs/oracle_ref"
+    },
+    "label": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "oracle_only",
+            "human_audited",
+            "disputed"
+          ]
+        },
+        "audited_by": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "audited_at": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "if": {
+        "properties": {
+          "status": {
+            "const": "human_audited"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "audited_by",
+          "audited_at"
+        ]
+      }
+    },
+    "scoring": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "exact_values": {
+          "type": "boolean"
+        },
+        "gap_honesty": {
+          "type": "boolean"
+        },
+        "citations_required": {
+          "type": "boolean"
+        },
+        "max_tool_calls": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200
+        }
+      }
+    },
+    "created_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}(?:T[0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:\\.[0-9]{1,6})?)?(?:Z|[+-][0-9]{2}:[0-9]{2}))?$"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "split": {
+            "const": "dev"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "id": {
+            "pattern": "^dev-"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "split": {
+            "const": "held_out"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "id": {
+            "pattern": "^ho-"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "variant": {
+            "enum": [
+              "paraphrase",
+              "denied_actor",
+              "injection"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "parent_id"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "variant": {
+            "const": "denied_actor"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "actor"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "variant": {
+            "const": "injection"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "must_not": {
+            "contains": {
+              "const": "propose_action"
+            }
+          }
+        },
+        "required": [
+          "must_not"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "lineage_stratum": {
+            "const": "gold_native_staging"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "native_rows_confirmation"
+        ]
+      },
+      "description": "R1: gold_native_staging roots stay out of the benchmark until a human confirms them (Q1)."
+    },
+    {
+      "if": {
+        "properties": {
+          "variant": {
+            "enum": [
+              "shifted_dates",
+              "scaled_quantity",
+              "ambiguous_party",
+              "repeated_event",
+              "conflicting_units",
+              "partial_source_failure"
+            ]
+          }
+        },
+        "required": [
+          "variant"
+        ]
+      },
+      "then": {
+        "required": [
+          "parent_id",
+          "perturbation"
+        ],
+        "properties": {
+          "split": {
+            "const": "held_out"
+          },
+          "id": {
+            "pattern": "^ho-"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "perturbation"
+        ]
+      },
+      "then": {
+        "properties": {
+          "variant": {
+            "enum": [
+              "shifted_dates",
+              "scaled_quantity",
+              "ambiguous_party",
+              "repeated_event",
+              "conflicting_units",
+              "partial_source_failure"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "lineage": {
+      "description": "Where an L1 record or L2 value came from (plus `workbench` for records the Workbench itself authors: cases, review decisions, annotations). `bc_<company>` names the BC Production company (R15: the company/book is a dimension of every BC-sourced object). `mission_control` is a record read through a Mission Control read tool, `brain` a record read from the brain's agent knowledge GET routes (integrations/knowledge_source.py): engineering/agent work records and derived knowledge, never business facts.",
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "fm_bronze",
+            "sage_bronze",
+            "silver_view",
+            "gold_etl_from_fm",
+            "gold_etl_from_sage",
+            "gold_native_staging",
+            "mail",
+            "sharepoint",
+            "original",
+            "workbench",
+            "mission_control",
+            "brain"
+          ]
+        },
+        {
+          "type": "string",
+          "pattern": "^bc_[a-z0-9][a-z0-9_]{0,47}$"
+        }
+      ]
+    },
+    "quantity_role": {
+      "description": "Quantity role; identical to operating/quantity_types.QUANTITY_TYPES (planned, produced, inspected ... are distinct and never mixed).",
+      "type": "string",
+      "enum": [
+        "accepted",
+        "actual",
+        "committed",
+        "damaged",
+        "delivered",
+        "filled",
+        "inspected",
+        "invoiced",
+        "manufactured",
+        "ordered",
+        "planned",
+        "produced",
+        "received",
+        "rejected",
+        "retained",
+        "returned",
+        "shipped"
+      ]
+    },
+    "tier": {
+      "description": "Link/identity evidence tier, strongest first: verified (typed stored key agrees) > reviewed (a person accepted it, bound to exact source revisions) > corroborated (>=2 independent features agree; inferred, never fact) > stored_by_text_join > lead > contradicted.",
+      "type": "string",
+      "enum": [
+        "verified",
+        "reviewed",
+        "corroborated",
+        "stored_by_text_join",
+        "lead",
+        "contradicted"
+      ]
+    },
+    "gap_state": {
+      "description": "Equal to operating/cases.GAP_STATES, so a tool gap can be recorded with plx.case_gap unchanged.",
+      "type": "string",
+      "enum": [
+        "absent_in_source",
+        "inaccessible",
+        "stale",
+        "not_ingested",
+        "unknown"
+      ]
+    },
+    "handle": {
+      "description": "An L1 citation handle (operating/citation_schemes.CITATION_SCHEMES).",
+      "type": "string",
+      "maxLength": 4096,
+      "pattern": "^(?:api|bc|graph-mail|sharepoint|original|mc|brain|teams-channel|sharepoint-list|teams-chat)://[^\\s]{1,4080}$"
+    },
+    "field_path": {
+      "description": "Field inside the cited record; grammar of operating/claim_checks.py _FIELD.",
+      "type": "string",
+      "pattern": "^(?:row|key|rows\\.(?:0|[1-9][0-9]*))(?:\\.[A-Za-z_][A-Za-z0-9_]*){1,3}$"
+    },
+    "family": {
+      "type": "string",
+      "pattern": "^F[1-9][0-9]?$",
+      "description": "Question family id (F1 chain, F2 customer-PO status, F3 ordered/produced/shipped, F4 three-way match, ...). Held-out families have no plan in ontology/plans/."
+    },
+    "expected_value": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$"
+        },
+        "object_type": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Za-z0-9]{1,63}$"
+        },
+        "property": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$"
+        },
+        "value": {
+          "type": [
+            "string",
+            "integer",
+            "boolean",
+            "null"
+          ],
+          "description": "Decimal as text; null = must be reported absent."
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "quantity_role": {
+          "$ref": "#/$defs/quantity_role"
+        },
+        "basis": {
+          "type": "string",
+          "enum": [
+            "derived"
+          ],
+          "description": "derived = computed by a cited Portal derivation over several rows or columns (oracle derived_from names it), not read from one source field. Absent = a source value."
+        },
+        "bound": {
+          "type": "string",
+          "enum": [
+            "lower"
+          ],
+          "description": "lower = a count the oracle found while a source its records may lead to failed to read (evals/oracle/families.py f1_chain): the true count is at least this, never exactly it; the scorer leaves the value undecided. Absent = exact."
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        },
+        "tolerance": {
+          "type": "string",
+          "pattern": "^[0-9]+(?:\\.[0-9]+)?$",
+          "description": "Absolute, Decimal text; default exact."
+        },
+        "extraction_method": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,39}$",
+          "description": "How the value's source text was read (a use-case part's method, operating/use_case_parts.py METHODS); tesseract-ocr is machine-read by OCR. Absent = not recorded."
+        },
+        "citations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "l1_handle": {
+                "$ref": "#/$defs/handle"
+              },
+              "field_path": {
+                "$ref": "#/$defs/field_path"
+              }
+            },
+            "required": [
+              "l1_handle",
+              "field_path"
+            ]
+          },
+          "maxItems": 100
+        }
+      },
+      "required": [
+        "name",
+        "value"
+      ]
+    },
+    "oracle_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "answerability": {
+          "type": "string",
+          "enum": [
+            "answerable",
+            "partial",
+            "blocked"
+          ]
+        },
+        "values": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/expected_value"
+          },
+          "maxItems": 100
+        },
+        "chain": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "object_type": {
+                "type": "string",
+                "pattern": "^[A-Z][A-Za-z0-9]{1,63}$"
+              },
+              "relation": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+              },
+              "key": {
+                "type": "object",
+                "minProperties": 1,
+                "additionalProperties": {
+                  "type": [
+                    "string",
+                    "integer"
+                  ]
+                }
+              },
+              "hop_from": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "fk": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "object_type",
+              "relation",
+              "key"
+            ]
+          },
+          "maxItems": 100
+        },
+        "gaps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "state": {
+                "$ref": "#/$defs/gap_state"
+              },
+              "subject": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 700
+              },
+              "reason": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]{0,63}$"
+              },
+              "concerns": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]{0,63}$",
+                "description": "The name of the expected value (in this result's values) the gap explains, set by the oracle from its own values, never from product output; the scorer matches an answer gap on state and concerns before the subject text (evals/score.py)."
+              }
+            },
+            "required": [
+              "state",
+              "subject"
+            ]
+          },
+          "maxItems": 50
+        }
+      },
+      "required": [
+        "answerability",
+        "values",
+        "gaps"
+      ],
+      "description": "What an oracle returns for one item. The oracle interface: oracle(item.root, item.as_known_at) -> oracle_result. Oracles (evals/oracle/) never import ontology/ and derive joins only from Portal FKs (docs/reference/portal-code-map.md)."
+    },
+    "oracle_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^oracle:[a-z0-9_-]{1,64}@[0-9a-f]{7,64}$"
+        },
+        "interface": {
+          "const": "plx-eval-oracle/v1"
+        },
+        "derived_from": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "minItems": 1,
+          "maxItems": 40
+        },
+        "computed_at": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}(?:T[0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:\\.[0-9]{1,6})?)?(?:Z|[+-][0-9]{2}:[0-9]{2}))?$"
+        },
+        "query_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "id",
+        "interface",
+        "derived_from",
+        "computed_at"
+      ]
+    }
+  }
+}

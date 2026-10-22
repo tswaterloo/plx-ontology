@@ -1,0 +1,141 @@
+{
+ "format": "plx-eval-item/v1",
+ "id": "dev-F2-0004-fixture",
+ "family": "F2",
+ "split": "dev",
+ "variant": "standard",
+ "question": {
+  "text": "What is the status of customer PO FXCPO-108: which sales orders carry it and what has shipped?"
+ },
+ "root": {
+  "identifier": "FXCPO-108",
+  "identifier_kind": "customer_po",
+  "object_type": "SalesOrder",
+  "relation": "public.app_sales_order",
+  "key": {
+   "id": "fx-so-108"
+  }
+ },
+ "as_known_at": {
+  "time": "2099-01-02T03:04:05Z",
+  "l1_generations": {
+   "portal_api": "8a5851cbdc2e491a"
+  }
+ },
+ "closed_transaction": true,
+ "lineage_stratum": "gold_etl_from_fm",
+ "known_outcome": {
+  "answerability": "answerable",
+  "values": [
+   {
+    "name": "order_count",
+    "object_type": "SalesOrder",
+    "value": 1
+   },
+   {
+    "name": "order_number",
+    "object_type": "SalesOrder",
+    "property": "order_number",
+    "value": "FXSO100108",
+    "citations": [
+     {
+      "l1_handle": "api://public.app_sales_order/%7B%22id%22%3A%22fx-so-108%22%7D@8a5851cbdc2e491a",
+      "field_path": "row.order_number"
+     }
+    ]
+   },
+   {
+    "name": "order_status",
+    "object_type": "SalesOrder",
+    "property": "status",
+    "value": "SHIPPED",
+    "citations": [
+     {
+      "l1_handle": "api://public.app_sales_order/%7B%22id%22%3A%22fx-so-108%22%7D@8a5851cbdc2e491a",
+      "field_path": "row.status"
+     }
+    ]
+   },
+   {
+    "name": "required_date",
+    "object_type": "SalesOrder",
+    "property": "required_date",
+    "value": "2098-12-25",
+    "citations": [
+     {
+      "l1_handle": "api://public.app_sales_order/%7B%22id%22%3A%22fx-so-108%22%7D@8a5851cbdc2e491a",
+      "field_path": "row.required_date"
+     }
+    ]
+   },
+   {
+    "name": "shipment_count",
+    "object_type": "Shipment",
+    "value": 1
+   },
+   {
+    "name": "shipment_statuses",
+    "object_type": "Shipment",
+    "property": "status",
+    "value": "SHIPPED",
+    "citations": [
+     {
+      "l1_handle": "api://public.app_shipment/%7B%22id%22%3A%22fx-shp-108%22%7D@8a5851cbdc2e491a",
+      "field_path": "row.status"
+     }
+    ]
+   },
+   {
+    "name": "sage_order_count",
+    "object_type": "SageOrder",
+    "value": 0
+   }
+  ],
+  "gaps": [],
+  "chain": [
+   {
+    "object_type": "SalesOrder",
+    "relation": "public.app_sales_order",
+    "key": {
+     "id": "fx-so-108"
+    }
+   },
+   {
+    "object_type": "Shipment",
+    "relation": "public.app_shipment",
+    "key": {
+     "id": "fx-shp-108"
+    },
+    "hop_from": 0,
+    "fk": "so.shipments"
+   }
+  ]
+ },
+ "must_not": [
+  "claim_uncited_number",
+  "invent_absent_value"
+ ],
+ "oracle": {
+  "id": "oracle:f2_customer_po_status@1c117db7f628",
+  "interface": "plx-eval-oracle/v1",
+  "derived_from": [
+   "docs/reference/portal-code-map.md#3.3 app_sales_order.po_reference (exact, untrimmed, not unique)",
+   "docs/reference/portal-code-map.md#3.2 normalizeSalesOrderStatus (P:src/lib/sales-order/status.ts:8)",
+   "docs/reference/portal-code-map.md#3.10 shipment lines of SHIPPED/DELIVERED shipments (P@59b0548:src/lib/assembly-bom/pack-out-history.ts:274; ShipmentStatus prisma/schema.prisma:372)",
+   "docs/reference/portal-code-map.md#3.3 sage.oe_order_header.ponumber (exact)",
+   "SO closed: SHIPPED/COMPLETE, FM text complet/closed/realiz (P@c3ffda3:src/lib/wms/source-status.ts:24) or Sage header complete 1/Y (etl-sage-distribution-gold.mjs:1393)"
+  ],
+  "computed_at": "2099-01-02T04:00:00Z",
+  "query_digest": "c5a256aa618b6f311d93fe398aaf6d8d6409312ae693685a9606d52679b4bcb8"
+ },
+ "label": {
+  "status": "oracle_only",
+  "note": "evidence: injected-transport fixture (synthetic FX rows from evals/oracle/fixture_world.py), not live PLX data. audit_requested: a person checks known_outcome against the sources, then sets status human_audited (audited_by, audited_at) or disputed."
+ },
+ "scoring": {
+  "exact_values": true,
+  "gap_honesty": true,
+  "citations_required": true
+ },
+ "created_at": "2099-01-02T04:00:00Z"
+}

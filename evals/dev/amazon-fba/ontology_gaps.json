@@ -1,0 +1,186 @@
+{
+ "format": "plx-case-ontology-gaps/v1",
+ "case": "amazon-fba",
+ "status": "What the ontology lacks to answer evals/dev/amazon-fba/proposed_items.json: one entry per ranked gap (map_rank 1-7), weak link or dependency of the Amazon FBA Replenishment Map, plus the unread originals. map_says is the map's claim, attributed to Greg's walkthrough of 16 Oct 2026; implementation, where present, is a claim about deployed code that nobody here verified (the map's author read no Portal or BC code). Sources are named, never read here; OntologyProject refs are at the base f635203cfe41, the map's at e58e8a98f3ef. 'source unknown' carries the question for Greg or Vince that would find one.",
+ "advisory": "advisory:45cd3b70238a",
+ "gaps": [
+  {
+   "id": "FBA-GAP-01",
+   "map_rank": 1,
+   "map_gap": "Create a shipment order for Amazon replenishment",
+   "map_stages": "4-9",
+   "kind": "object",
+   "name": "ReplenishmentShipment (one Amazon inbound shipment of PLX stock: Amazon shipment ID, FC, status, OR, BOL, freight booking, lines in cases)",
+   "map_says": "nothing holds one Amazon replenishment shipment from stock check to tracking; the Sage OR is raised before Amazon assigns the FC and is then revised",
+   "implementation": "the map labels the Portal shipment order 'not built'; unverified against Portal code",
+   "ontology_today": "SalesOrder (sage.oe_order_header) and Shipment (Sage OE, Portal and BC bindings) exist; neither carries an Amazon shipment ID or an Amazon FC, and Shipment.same_record_as needs a stable shared key the map says does not exist.",
+   "needed_by": ["FBA-03", "FBA-A1", "FBA-A3"],
+   "sources": [
+    {"system": "portal-reporting-api", "relation": "sage.oe_order_header (the OR)", "ref": "OntologyProject:ontology/schema/domains/orders.json@f635203cfe41:203-221"},
+    {"system": "ontology", "relation": "Shipment and its bindings", "ref": "OntologyProject:ontology/schema/domains/orders.json@f635203cfe41:2228-2318"},
+    {"system": "ontology", "relation": "Shipment.same_record_as", "ref": "OntologyProject:ontology/schema/domains/orders.json@f635203cfe41:4838"}
+   ]
+  },
+  {
+   "id": "FBA-GAP-02",
+   "map_rank": 2,
+   "map_gap": "Connect Seller Central inbound (Amazon shipment ID, FC, labels)",
+   "map_stages": "3, 6",
+   "kind": "link",
+   "name": "Shipment.amazon_inbound_shipment (an OR or shipment to the Amazon shipment ID it fulfils; one order per Amazon shipment)",
+   "map_says": "the Amazon shipment ID is on none of the OR, packing slip or BOL; it is the only key that joins Amazon, Sage, Freightcom and BC",
+   "implementation": "the map reports a dashboard SP-API connection whose inbound/fulfilment role is unverified",
+   "ontology_today": "No Amazon or SP-API object, binding or source registry entry exists.",
+   "needed_by": ["FBA-03", "FBA-A1", "FBA-A3"],
+   "sources": [
+    {"system": "source-record", "relation": "the map's source record (the claim, not a reader)", "ref": "OntologyProject:context/45cd3b70238a0ac8371ea62bb873b9e9ac36c5727504198dcd051ca1487f6ef1.json@e58e8a98f3ef"}
+   ],
+   "source": "source unknown",
+   "open_question": "Greg or Vince: does PLX's Seller Central app (the dashboard's SP-API connection) hold the inbound/fulfilment role, and may a read-only reader use it to list inbound shipments with their shipment ID, FC and box/pallet labels?"
+  },
+  {
+   "id": "FBA-GAP-03",
+   "map_rank": 3,
+   "map_gap": "Amazon inventory feed and low-stock alert (45/90 days on last-30-day sales)",
+   "map_stages": "1-2",
+   "kind": "reader",
+   "name": "Amazon FBA on-hand, inbound and last-30-day sales per seller SKU, with as-of date",
+   "map_says": "the trigger is a manual Seller Central check with no threshold; the rule Greg stated is alert below 45 days of supply, replenish to 90, on last-30-day sales, for every brand",
+   "implementation": "the map says nothing in the Portal watches Amazon inventory; unverified against Portal code",
+   "ontology_today": "No object or reader for Amazon inventory or sales; no days-of-supply measure.",
+   "needed_by": ["FBA-02", "FBA-A4"],
+   "sources": [],
+   "source": "source unknown",
+   "open_question": "Greg or Vince: which system is the source of truth for last-30-day Amazon sales per SKU (Seller Central reports, the dashboard, Sage or another tool), and do days of supply count FBA inbound units?"
+  },
+  {
+   "id": "FBA-GAP-04",
+   "map_rank": 4,
+   "map_gap": "Warehouse screen for final dims, pallets and customs fields",
+   "map_stages": "5-6",
+   "kind": "object",
+   "name": "ShipmentPallet (final pallet count, dimensions and weight, gross and net, captured before the freight quote)",
+   "map_says": "final dims came by email after a quote was already put forward; net weight equals gross weight on the paperwork",
+   "implementation": "the map labels the warehouse dims screen 'not built'; unverified",
+   "ontology_today": "Shipment has no pallet, dimension or weight members the cards can cite.",
+   "needed_by": ["FBA-06", "FBA-A4"],
+   "sources": [
+    {"system": "source-record", "relation": "the map's source record (the claim, not a reader)", "ref": "OntologyProject:context/45cd3b70238a0ac8371ea62bb873b9e9ac36c5727504198dcd051ca1487f6ef1.json@e58e8a98f3ef"}
+   ],
+   "source": "source unknown",
+   "open_question": "Greg or Vince: where are final pallet dims and weights recorded today (email only, Sage, the WMS) and who enters them?"
+  },
+  {
+   "id": "FBA-GAP-05",
+   "map_rank": 5,
+   "map_gap": "Generate customs documents from item data",
+   "map_stages": "5",
+   "kind": "object",
+   "name": "CustomsDocument (commercial invoice and TSCA/USMCA certificates of one shipment: lines in units, certificate coverage per SKU, validity)",
+   "map_says": "the customs invoice declares 144 units where 12 cases at case pack 8 are 96; the TSCA and USMCA certificates were reused from an earlier shipment and list other SKUs",
+   "ontology_today": "No customs document or certificate object; Product has no certificate link.",
+   "needed_by": ["FBA-04", "FBA-A2"],
+   "sources": [
+    {"system": "source-record", "relation": "the map's source record (the claim, not a reader)", "ref": "OntologyProject:context/45cd3b70238a0ac8371ea62bb873b9e9ac36c5727504198dcd051ca1487f6ef1.json@e58e8a98f3ef"}
+   ],
+   "source": "source unknown",
+   "open_question": "Greg or Vince: who prepares the customs packet and from which item data, and where are the signed certificates kept?"
+  },
+  {
+   "id": "FBA-GAP-06",
+   "map_rank": 6,
+   "map_gap": "Connect Freightcom (quote on final dims, booking, BOL, tracking)",
+   "map_stages": "7, 9",
+   "kind": "reader",
+   "name": "Freightcom quote, booking, BOL, PRO/SCAC and tracking per shipment",
+   "map_says": "freight is quoted and booked by hand in Freightcom; final freight is approved by the warehouse manager with Greg copied",
+   "implementation": "the Portal source at the repo pin names Freightcom hosts in a WMS carrier config; whether that client quotes or books Amazon LTL is unverified",
+   "ontology_today": "The source registry lists the Freightcom hosts as a Portal integration; no ontology object or Workbench reader covers a booking, BOL or tracking event.",
+   "needed_by": ["FBA-06", "FBA-A4"],
+   "sources": [
+    {"system": "portal", "relation": "Freightcom hosts in the WMS carrier config (implementation evidence only)", "ref": "OntologyProject:ontology/source_registry.json@f635203cfe41:179"},
+    {"system": "portal", "relation": "Freightcom hosts in the WMS carrier config (implementation evidence only)", "ref": "OntologyProject:ontology/source_registry.json@f635203cfe41:185"}
+   ],
+   "source": "source unknown",
+   "open_question": "Greg or Vince: is the Portal's Freightcom client used for Amazon LTL quotes and bookings, and under which Freightcom account can a read-only reader list bookings, BOLs and tracking?"
+  },
+  {
+   "id": "FBA-GAP-07",
+   "map_rank": 7,
+   "map_gap": "Inventory move to an Amazon location in BC at BOL",
+   "map_stages": "8",
+   "kind": "link",
+   "name": "Shipment.moved_by_transfer (the BOL of a replenishment shipment to the BC transfer posting that moves its stock to the Amazon location)",
+   "map_says": "the move to VMI happens at BOL (Greg, confirmed 16 Oct 2026); in the real case stock already showed VMI before the BOL; BC has no Amazon location yet",
+   "implementation": "a BC transfer order posted at BOL is the map's expectation of standard BC behaviour, not checked in the repo",
+   "ontology_today": "ItemLedgerEntry is partial (entry types include transfer) and Warehouse is not served (it pends bc_warehouse.json); nothing links a shipment or BOL to a ledger entry by location.",
+   "needed_by": ["FBA-07", "FBA-A5"],
+   "sources": [
+    {"system": "bc", "relation": "itemLedgerEntries (ItemLedgerEntry)", "ref": "OntologyProject:ontology/schema/domains/bc_finance.json@f635203cfe41:89-100"},
+    {"system": "ontology", "relation": "ItemLedgerEntry.posted_by_shipment", "ref": "OntologyProject:ontology/schema/domains/bc_finance.json@f635203cfe41:1499"},
+    {"system": "portal", "relation": "public.app_warehouse (Warehouse, VMI site; not served)", "ref": "OntologyProject:ontology/schema/domains/bc_bridge.json@f635203cfe41:12-30"}
+   ]
+  },
+  {
+   "id": "FBA-GAP-08",
+   "map_rank": "weak link 2",
+   "map_gap": "Case pack lives in people's heads",
+   "map_stages": "4-5",
+   "kind": "link",
+   "name": "Product.case_pack (an item's units per case, cited to one ItemUnitOfMeasure row)",
+   "map_says": "FNA305-2LP is 8 units per case (Greg, 16 Oct 2026) while the customs invoice implies 12",
+   "ontology_today": "ItemUnitOfMeasure (sage.ic_item_uom) is the only source a unit conversion may cite; whether a case-pack row exists for each FBA SKU is unread.",
+   "needed_by": ["FBA-04", "FBA-A2"],
+   "sources": [
+    {"system": "portal-reporting-api", "relation": "sage.ic_item_uom (ItemUnitOfMeasure)", "ref": "OntologyProject:ontology/schema/domains/items.json@f635203cfe41:300-345"}
+   ]
+  },
+  {
+   "id": "FBA-GAP-09",
+   "map_rank": "weak link 4",
+   "map_gap": "Item to Amazon SKU mapping unconfirmed",
+   "map_stages": "1-4",
+   "kind": "link",
+   "name": "Product.amazon_listing (a PLX item to its Amazon seller SKU, FNSKU and ASIN)",
+   "map_says": "unknown whether the Sage item number is the Amazon seller SKU; the map proposes storing seller SKU and FNSKU on the item",
+   "ontology_today": "Product binds sage.ic_item; no Amazon listing identity exists.",
+   "needed_by": ["FBA-05", "FBA-A4"],
+   "sources": [
+    {"system": "portal-reporting-api", "relation": "sage.ic_item (Product)", "ref": "OntologyProject:ontology/schema/domains/catalog_parties.json@f635203cfe41:12"}
+   ],
+   "source": "source unknown",
+   "open_question": "Greg or Vince: is the Sage item number used as the Amazon seller SKU, and where are FNSKU and ASIN kept per item?"
+  },
+  {
+   "id": "FBA-GAP-10",
+   "map_rank": "dependency",
+   "map_gap": "Warehouse stock accuracy (out of scope, assumed fixed separately)",
+   "map_stages": "2",
+   "kind": "reader",
+   "name": "On-hand per item and location with as-of time, and a shelf count to compare",
+   "map_says": "for FNA305-500 the record showed 30 cases and 17 existed, found after the OR and the Amazon build",
+   "ontology_today": "ItemLedgerEntry is partial; no cycle-count or shelf-count object.",
+   "needed_by": ["FBA-08"],
+   "sources": [
+    {"system": "bc", "relation": "itemLedgerEntries (ItemLedgerEntry)", "ref": "OntologyProject:ontology/schema/domains/bc_finance.json@f635203cfe41:89-100"}
+   ]
+  },
+  {
+   "id": "FBA-GAP-11",
+   "map_rank": "source files",
+   "map_gap": "Source files of example A (links 'added after upload')",
+   "map_stages": "1-9",
+   "kind": "reader",
+   "name": "The originals of OR1000154027 (missing_originals MO-01 to MO-10 in proposed_items.json)",
+   "map_says": "six source-file folders (kick-off email, first OR and packing slip, Amazon build and OR revision, quote and dims, customs packet, BOL); the Amazon shipment and labels, the Freightcom quote and booking and tracking are still to come; Teams messages were not provided",
+   "ontology_today": "Email and SharePointFile exist; only the map itself is a watched original, and none of these folders is a registry watch folder.",
+   "needed_by": ["FBA-01", "FBA-A1", "FBA-A2", "FBA-A6"],
+   "sources": [
+    {"system": "sharepoint", "relation": "/Ontology UseCases watch folder (the map only)", "ref": "OntologyProject:examples/case_originals.json@f635203cfe41:194-201"},
+    {"system": "ontology", "relation": "Email, SharePointFile", "ref": "OntologyProject:ontology/schema/domains/documents.json@f635203cfe41:9"}
+   ],
+   "source": "source unknown",
+   "open_question": "Greg: where were the 'A FA to HIA-1' source files uploaded (drive and folder), so they can be watched and read?"
+  }
+ ]
+}

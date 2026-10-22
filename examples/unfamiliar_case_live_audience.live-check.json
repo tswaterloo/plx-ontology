@@ -1,0 +1,13 @@
+{
+ "schema": "plx-live-source-audience/v1",
+ "tenant": "plx",
+ "note": "EXAMPLE ONLY, not a PLX-confirmed grant: the host capture principal and the investigators of the case.unfamiliar_order live check, narrowed to what it reads. Default deny. BC: the company list and the captured sales invoices and customer cards (GET only); the investigators read the captured BC records through the same grant.",
+ "default_classification": "confidential",
+ "audiences": {
+  "bc:production:*": [
+   "staff:purchasing",
+   "staff:sales",
+   "svc:workbench-host"
+  ]
+ }
+}

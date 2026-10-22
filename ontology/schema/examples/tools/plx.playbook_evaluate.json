@@ -1,0 +1,114 @@
+{
+  "tool": "plx.playbook_evaluate",
+  "examples": [
+    {
+      "name": "a non-regressing comparison on two frozen cases",
+      "input": {
+        "proposal_id": "sp-0123456789abcdef01234567"
+      },
+      "output": {
+        "proposal_id": "sp-0123456789abcdef01234567",
+        "proposal_status": "evaluated",
+        "runner": "playbook_eval.case_runner",
+        "regression": false,
+        "verdict": "non_regressing",
+        "playbook_reasons": [],
+        "cases": [
+          {
+            "case_id": "case-0123456789abcdef0123456789abcdef",
+            "before_outcome": "pass",
+            "after_outcome": "pass",
+            "regressed": false
+          },
+          {
+            "case_id": "case-fedcba9876543210fedcba9876543210",
+            "before_outcome": "fail",
+            "after_outcome": "fail",
+            "regressed": false
+          }
+        ],
+        "business_system_writes": 0
+      }
+    },
+    {
+      "name": "a version that widens authority regresses",
+      "input": {
+        "proposal_id": "sp-0123456789abcdef01234567"
+      },
+      "output": {
+        "proposal_id": "sp-0123456789abcdef01234567",
+        "proposal_status": "evaluated",
+        "runner": "playbook_eval.case_runner",
+        "regression": true,
+        "verdict": "regresses",
+        "playbook_reasons": [
+          "widens_authority:plx.case_close"
+        ],
+        "cases": [
+          {
+            "case_id": "case-0123456789abcdef0123456789abcdef",
+            "before_outcome": "pass",
+            "after_outcome": "pass",
+            "regressed": false
+          }
+        ],
+        "business_system_writes": 0
+      }
+    },
+    {
+      "name": "a frozen case the evaluator reads only in part is unscored",
+      "input": {
+        "proposal_id": "sp-0123456789abcdef01234567"
+      },
+      "output": {
+        "proposal_id": "sp-0123456789abcdef01234567",
+        "proposal_status": "evaluated",
+        "runner": "playbook_eval.case_runner",
+        "regression": false,
+        "verdict": "unscored",
+        "playbook_reasons": [],
+        "cases": [
+          {
+            "case_id": "case-0123456789abcdef0123456789abcdef",
+            "before_outcome": "unscored",
+            "after_outcome": "unscored",
+            "regressed": false
+          }
+        ],
+        "business_system_writes": 0
+      }
+    },
+    {
+      "name": "a frozen case no reader can read in full is unscorable and left out",
+      "input": {
+        "proposal_id": "sp-0123456789abcdef01234567"
+      },
+      "output": {
+        "proposal_id": "sp-0123456789abcdef01234567",
+        "proposal_status": "evaluated",
+        "runner": "playbook_eval.case_runner",
+        "regression": false,
+        "verdict": "non_regressing",
+        "playbook_reasons": [],
+        "cases": [
+          {
+            "case_id": "case-0123456789abcdef0123456789abcdef",
+            "before_outcome": "unscorable",
+            "after_outcome": "unscorable",
+            "regressed": false,
+            "unscorable_reasons": [
+              "mirror_rebuilt"
+            ]
+          },
+          {
+            "case_id": "case-fedcba9876543210fedcba9876543210",
+            "before_outcome": "pass",
+            "after_outcome": "pass",
+            "regressed": false
+          }
+        ],
+        "business_system_writes": 0
+      }
+    }
+  ]
+}

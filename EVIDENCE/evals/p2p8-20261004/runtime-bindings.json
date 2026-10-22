@@ -1,0 +1,660 @@
+{
+  "schema": "plx-extraction-runtime-binding-draft/v1",
+  "status": "local_only_pending_review",
+  "source_main": "357a87ccb9d0b60167c0ba515d18497346b3068e",
+  "counts": {
+    "items": 4,
+    "development": 4,
+    "heldout": 0,
+    "end_to_end_runtime_validated": 0
+  },
+  "items": {
+    "dev-F7-1001-exposed": {
+      "source_item": "DEV-P2-PI-01",
+      "source_cluster": "soapbox-po5447",
+      "exposure": "development_exposed",
+      "status": "schema_admissible_runtime_citation_hook_missing",
+      "source_id": "pi",
+      "source_sha256": "442664a40f5d38eeebd547e9f1425683624a28e7f34aa0797cd096e29f0edf5a",
+      "fields": {
+        "document_number": {
+          "gold_pointer": "/items/0/fields/0",
+          "citation_ids": [
+            "pi.number"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "printed_date_iso_date": {
+          "gold_pointer": "/items/0/fields/1",
+          "citation_ids": [
+            "pi.date"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "printed_date_raw": {
+          "gold_pointer": "/items/0/fields/1",
+          "citation_ids": [
+            "pi.date"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "total_amount": {
+          "gold_pointer": "/items/0/fields/2",
+          "citation_ids": [
+            "pi.total",
+            "pi.currency"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "ordered_quantity_p02458": {
+          "gold_pointer": "/items/0/fields/3",
+          "citation_ids": [
+            "pi.sku1",
+            "pi.qty1",
+            "pi.uom"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "ordered_quantity_p02459": {
+          "gold_pointer": "/items/0/fields/4",
+          "citation_ids": [
+            "pi.sku2",
+            "pi.qty2",
+            "pi.uom"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "ordered_quantity_p02460": {
+          "gold_pointer": "/items/0/fields/5",
+          "citation_ids": [
+            "pi.sku3",
+            "pi.qty3",
+            "pi.uom"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "ordered_quantity_p02461": {
+          "gold_pointer": "/items/0/fields/6",
+          "citation_ids": [
+            "pi.sku4",
+            "pi.qty4",
+            "pi.uom"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "incoterm_named_place": {
+          "gold_pointer": "/items/0/fields/7",
+          "citation_ids": [
+            "pi.incoterm"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "incoterm_raw": {
+          "gold_pointer": "/items/0/fields/7",
+          "citation_ids": [
+            "pi.incoterm"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "incoterm_term": {
+          "gold_pointer": "/items/0/fields/7",
+          "citation_ids": [
+            "pi.incoterm"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        }
+      },
+      "unmapped_expected_unknowns": []
+    },
+    "dev-F9-1001-exposed": {
+      "source_item": "DEV-P2-FREIGHT-FCL-01",
+      "source_cluster": "soapbox-po5447",
+      "exposure": "development_exposed",
+      "status": "schema_admissible_runtime_citation_hook_missing",
+      "source_id": "fcl",
+      "source_sha256": "40cc740e7185b855f4db123b3e5284dcff92e52c9eda4a8c6a61abf348d69ba7",
+      "fields": {
+        "quote_date_iso_date": {
+          "gold_pointer": "/items/1/fields/0",
+          "citation_ids": [
+            "fcl.date"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "quote_date_raw": {
+          "gold_pointer": "/items/1/fields/0",
+          "citation_ids": [
+            "fcl.date"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "valid_until_iso_date": {
+          "gold_pointer": "/items/1/fields/1",
+          "citation_ids": [
+            "fcl.validity"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "valid_until_raw": {
+          "gold_pointer": "/items/1/fields/1",
+          "citation_ids": [
+            "fcl.validity"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "quoted_amount": {
+          "gold_pointer": "/items/1/fields/2",
+          "citation_ids": [
+            "fcl.total",
+            "fcl.currency"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "capacity_container_type": {
+          "gold_pointer": "/items/1/fields/3",
+          "citation_ids": [
+            "fcl.size"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "capacity_containers": {
+          "gold_pointer": "/items/1/fields/3",
+          "citation_ids": [
+            "fcl.size"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "capacity_raw": {
+          "gold_pointer": "/items/1/fields/3",
+          "citation_ids": [
+            "fcl.size"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "incoterm_raw": {
+          "gold_pointer": "/items/1/fields/4",
+          "citation_ids": [
+            "fcl.incoterm"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "scope": {
+          "gold_pointer": "/items/1/fields/5",
+          "citation_ids": [
+            "fcl.scope.import",
+            "fcl.scope.delivery",
+            "fcl.size"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "exclusions_1": {
+          "gold_pointer": "/items/1/fields/6",
+          "citation_ids": [
+            "fcl.exclusions"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "exclusions_2": {
+          "gold_pointer": "/items/1/fields/6",
+          "citation_ids": [
+            "fcl.exclusions"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "exclusions_3": {
+          "gold_pointer": "/items/1/fields/6",
+          "citation_ids": [
+            "fcl.exclusions"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "exclusions_4": {
+          "gold_pointer": "/items/1/fields/6",
+          "citation_ids": [
+            "fcl.exclusions"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "exclusions_5": {
+          "gold_pointer": "/items/1/fields/6",
+          "citation_ids": [
+            "fcl.exclusions"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        }
+      },
+      "unmapped_expected_unknowns": []
+    },
+    "dev-F9-1002-exposed": {
+      "source_item": "DEV-P2-FREIGHT-AIR-01",
+      "source_cluster": "soapbox-po5447",
+      "exposure": "development_exposed",
+      "status": "schema_admissible_runtime_citation_hook_missing",
+      "source_id": "air",
+      "source_sha256": "92092d35cb19be50d5f4e28b43dd1f918ba01caa4492eb3dce75b0597c388808",
+      "fields": {
+        "quote_date_iso_date": {
+          "gold_pointer": "/items/2/fields/0",
+          "citation_ids": [
+            "air.date"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "quote_date_raw": {
+          "gold_pointer": "/items/2/fields/0",
+          "citation_ids": [
+            "air.date"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "valid_until_iso_date": {
+          "gold_pointer": "/items/2/fields/1",
+          "citation_ids": [
+            "air.validity"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "valid_until_raw": {
+          "gold_pointer": "/items/2/fields/1",
+          "citation_ids": [
+            "air.validity"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "quoted_amount": {
+          "gold_pointer": "/items/2/fields/2",
+          "citation_ids": [
+            "air.total",
+            "air.total_currency"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "scope": {
+          "gold_pointer": "/items/2/fields/3",
+          "citation_ids": [
+            "air.scope.china",
+            "air.scope.air",
+            "air.scope.usa"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "exclusions_1": {
+          "gold_pointer": "/items/2/fields/4",
+          "citation_ids": [
+            "air.exclusions"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "exclusions_2": {
+          "gold_pointer": "/items/2/fields/4",
+          "citation_ids": [
+            "air.exclusions"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "exclusions_3": {
+          "gold_pointer": "/items/2/fields/4",
+          "citation_ids": [
+            "air.exclusions"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "exclusions_4": {
+          "gold_pointer": "/items/2/fields/4",
+          "citation_ids": [
+            "air.exclusions"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "exclusions_5": {
+          "gold_pointer": "/items/2/fields/4",
+          "citation_ids": [
+            "air.exclusions"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "incoterm": {
+          "gold_pointer": "/items/2/fields/5",
+          "citation_ids": [
+            "air.incoterm.blank"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        }
+      },
+      "unmapped_expected_unknowns": []
+    },
+    "dev-F7-1002-exposed": {
+      "source_item": "DEV-P8-AO-26005B-01",
+      "source_cluster": "ao-26005b-bulk-bc26007e",
+      "exposure": "development_exposed",
+      "status": "schema_admissible_runtime_citation_hook_missing",
+      "source_id": "ao",
+      "source_sha256": "bb40d85c7fdb2db6ad3763c9c3aa2eda70f49dfabe53c45258acb2024e72c259",
+      "fields": {
+        "ao_lot": {
+          "gold_pointer": "/items/3/fields/0",
+          "citation_ids": [
+            "ao.id"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "bulk_lot": {
+          "gold_pointer": "/items/3/fields/1",
+          "citation_ids": [
+            "ao.bulk_lot"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "planned_quantity": {
+          "gold_pointer": "/items/3/fields/2",
+          "citation_ids": [
+            "ao.planned"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "planned_cases": {
+          "gold_pointer": "/items/3/fields/3",
+          "citation_ids": [
+            "ao.planned"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "document_header_date_raw": {
+          "gold_pointer": "/items/3/fields/4",
+          "citation_ids": [
+            "ao.planned"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "label_verification_header_cases": {
+          "gold_pointer": "/items/3/fields/5",
+          "citation_ids": [
+            "ao.header_case_variant"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "filling_row_quantity": {
+          "gold_pointer": "/items/3/fields/6",
+          "citation_ids": [
+            "ao.filled_row",
+            "ao.qty_header"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "filling_row_date": {
+          "gold_pointer": "/items/3/fields/7",
+          "citation_ids": [
+            "ao.filled_row"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "shop_floor_samples": {
+          "gold_pointer": "/items/3/fields/9",
+          "citation_ids": [
+            "ao.samples"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "qc_retain_row_quantity": {
+          "gold_pointer": "/items/3/fields/10",
+          "citation_ids": [
+            "ao.qc_retain",
+            "ao.qty_header"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "shop_floor_completion_date": {
+          "gold_pointer": "/items/3/fields/11",
+          "citation_ids": [
+            "ao.completed_date"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "inspection_release_sheet_header_quantity": {
+          "gold_pointer": "/items/3/fields/12",
+          "citation_ids": [
+            "ao.inspection_scope_quantity"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "micro_samples_taken": {
+          "gold_pointer": "/items/3/fields/13",
+          "citation_ids": [
+            "ao.micro_samples"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "micro_sample_date": {
+          "gold_pointer": "/items/3/fields/14",
+          "citation_ids": [
+            "ao.micro_samples"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "samples_retained": {
+          "gold_pointer": "/items/3/fields/15",
+          "citation_ids": [
+            "ao.retained_samples"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "rejects": {
+          "gold_pointer": "/items/3/fields/16",
+          "citation_ids": [
+            "ao.rejects"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "shipment_release_mark": {
+          "gold_pointer": "/items/3/fields/17",
+          "citation_ids": [
+            "ao.release_mark"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "shipment_hold_mark": {
+          "gold_pointer": "/items/3/fields/18",
+          "citation_ids": [
+            "ao.release_mark"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "qc_inspection_signoff_date": {
+          "gold_pointer": "/items/3/fields/19",
+          "citation_ids": [
+            "ao.qc_signoff"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "qc_inspection_signoff_signature_present": {
+          "gold_pointer": "/items/3/fields/19",
+          "citation_ids": [
+            "ao.qc_signoff"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "qa_qc_release_signoff_date": {
+          "gold_pointer": "/items/3/fields/20",
+          "citation_ids": [
+            "ao.qa_release_signoff"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "qa_qc_release_signoff_signature_present": {
+          "gold_pointer": "/items/3/fields/20",
+          "citation_ids": [
+            "ao.qa_release_signoff"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "bulk_manufactured_quantity": {
+          "gold_pointer": "/items/3/fields/21",
+          "citation_ids": [
+            "ao.bulk_mfg"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "bulk_label_status_qc": {
+          "gold_pointer": "/items/3/fields/22",
+          "citation_ids": [
+            "ao.bulk_status"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "bulk_label_status_status": {
+          "gold_pointer": "/items/3/fields/22",
+          "citation_ids": [
+            "ao.bulk_status"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        },
+        "bulk_label_release_datetime_raw": {
+          "gold_pointer": "/items/3/fields/23",
+          "citation_ids": [
+            "ao.bulk_release_datetime"
+          ],
+          "runtime_l1_handle": null,
+          "runtime_field_path": null,
+          "status": "page_span_gold_verified_runtime_binding_unassigned"
+        }
+      },
+      "unmapped_expected_unknowns": [
+        "shop_floor_total_quantity",
+        "actual_inspected_quantity",
+        "numeric_finished_goods_released_quantity"
+      ]
+    }
+  },
+  "blocking_runtime_gap": {
+    "source": "https://github.com/tswaterloo/OntologyProject/blob/357a87ccb9d0b60167c0ba515d18497346b3068e/evals/score.py#L61-L64",
+    "detail": "Current scorer states original:// page-text claims resolve to no row and count uncited. These PDFs have no returned runtime field/page handles in this work. Exact native source IDs/revisions and page/span gold are ready; hook and actor/capture bindings remain unassigned. Do not mark these passed or fully runnable just because the loader accepts them."
+  },
+  "ownership": "eval-3 currently owns evals/**; no owned files edited or branch publication performed",
+  "needed_next_step": "Have current P2/P8/eval owner map the verified pages/spans to actual returned source handles and supported citation evidence, then run the real-source items. Keep these exposed and preserve the gold unknowns."
+}

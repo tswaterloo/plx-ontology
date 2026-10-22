@@ -1,0 +1,2601 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "plx-ontology-domain/v1",
+  "title": "PLX ontology domain schema file (C0 contract, frozen)",
+  "description": "Format of every ontology/schema/domains/<domain>.json (curated) and ontology/schema/generated/*.json (skeleton) file. Cross-file rules (unique ids, links/events/actions naming declared types and bindings, identifier kinds declared in ontology/schema/identifiers.json, link_contract ids existing) are the loader's; this schema fixes the shapes. Validated with ontology/json_contract.py (stdlib).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "domain",
+    "origin",
+    "description"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "format": {
+      "const": "plx-ontology-domain/v1"
+    },
+    "domain": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "origin": {
+      "type": "string",
+      "enum": [
+        "curated",
+        "generated"
+      ]
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    },
+    "upstream_pins": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{7,40}$"
+      },
+      "propertyNames": {
+        "enum": [
+          "plx-customer-portal",
+          "PLX_MC",
+          "agentic-swarm",
+          "plx_secondbrain"
+        ]
+      }
+    },
+    "object_types": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/object_type"
+      },
+      "maxItems": 200
+    },
+    "link_types": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/link_type"
+      },
+      "maxItems": 400
+    },
+    "event_types": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/event_type"
+      },
+      "maxItems": 200
+    },
+    "action_types": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/action_type"
+      },
+      "maxItems": 100
+    },
+    "evidence_catalog": {
+      "type": "object",
+      "maxProperties": 2000,
+      "propertyNames": {
+        "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/evidence_entry"
+      },
+      "description": "Shared evidence entries cited as {kind: ref, id}."
+    }
+  },
+  "$defs": {
+    "lineage": {
+      "description": "Where an L1 record or L2 value came from (plus `workbench` for records the Workbench itself authors: cases, review decisions, annotations). `bc_<company>` names the BC Production company (the company/book is a dimension of every BC-sourced object). `mission_control` is a record read through a Mission Control read tool, `brain` a record read from the brain's agent knowledge GET routes (integrations/knowledge_source.py): engineering/agent work records and derived knowledge, never business facts.",
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "fm_bronze",
+            "sage_bronze",
+            "silver_view",
+            "gold_etl_from_fm",
+            "gold_etl_from_sage",
+            "gold_native_staging",
+            "mail",
+            "sharepoint",
+            "original",
+            "workbench",
+            "mission_control",
+            "brain"
+          ]
+        },
+        {
+          "type": "string",
+          "pattern": "^bc_[a-z0-9][a-z0-9_]{0,47}$"
+        }
+      ]
+    },
+    "tier": {
+      "description": "Link/identity evidence tier, strongest first: verified (typed stored key agrees) > reviewed (a person accepted it, bound to exact source revisions) > corroborated (>=2 independent features agree; inferred, never fact) > stored_by_text_join > lead > contradicted.",
+      "type": "string",
+      "enum": [
+        "verified",
+        "reviewed",
+        "corroborated",
+        "stored_by_text_join",
+        "lead",
+        "contradicted"
+      ]
+    },
+    "marking": {
+      "description": "Property/object marking. A reader must hold every marking of a value; derived values carry the union of their inputs' markings.",
+      "type": "string",
+      "enum": [
+        "finance",
+        "l5",
+        "pii",
+        "quality_controlled"
+      ]
+    },
+    "quantity_role": {
+      "description": "Quantity role; identical to operating/quantity_types.QUANTITY_TYPES (planned, produced, inspected ... are distinct and never mixed).",
+      "type": "string",
+      "enum": [
+        "accepted",
+        "actual",
+        "committed",
+        "damaged",
+        "delivered",
+        "filled",
+        "inspected",
+        "invoiced",
+        "manufactured",
+        "ordered",
+        "planned",
+        "produced",
+        "received",
+        "rejected",
+        "retained",
+        "returned",
+        "shipped"
+      ]
+    },
+    "tax_basis": {
+      "description": "Whether a money amount includes sales tax: incl_tax (tax included), excl_tax (before tax), tax_only (the tax amount itself) or unknown (no upstream code grounds it). Amounts on two bases, or a known basis next to unknown, are never summed or compared (ontology/units.py). The projection stores each money value's basis with it (object_values.tax_basis).",
+      "type": "string",
+      "enum": [
+        "incl_tax",
+        "excl_tax",
+        "tax_only",
+        "unknown"
+      ]
+    },
+    "money_measure": {
+      "description": "What a money property measures: amount (an additive sum of money such as a line total, an order total or a balance; the default) or unit_price (a price or cost per one unit of a denominator, a rate). A unit_price is never summed, and two unit prices compare only on one declared denominator after the Portal spelling fold (ontology/units.py); every source of a unit_price declares its denominator (per_unit, per_unit_from or per_unit_unknown).",
+      "type": "string",
+      "enum": [
+        "amount",
+        "unit_price"
+      ]
+    },
+    "time_basis": {
+      "description": "How an event's time is known. Lateness/order are computed only between bases that allow it.",
+      "type": "string",
+      "enum": [
+        "source_recorded",
+        "source_business_date",
+        "planned",
+        "capture_observed",
+        "document_stated",
+        "document_ocr"
+      ]
+    },
+    "source": {
+      "description": "L1 source family of a binding; each maps to one citation scheme: portal_api=api://, bc=bc://, graph_mail=graph-mail://, sharepoint=sharepoint:// (list items: sharepoint-list://, integrations/capture_sharepoint_lists.py), original=original://, workbench=Workbench case store, mission_control=mc:// (Mission Control reads, integrations/mc_sources.py), brain=brain:// (derived engineering/agent knowledge captured namespace-trimmed from the brain's agent/items, integrations/knowledge_source.py; untrusted T3 leads, never business facts), teams=teams-channel:// and teams-chat:// (Teams channel and chat messages captured with their conversation's membership, integrations/capture_teams.py).",
+      "type": "string",
+      "enum": [
+        "portal_api",
+        "bc",
+        "graph_mail",
+        "sharepoint",
+        "original",
+        "workbench",
+        "mission_control",
+        "brain",
+        "teams"
+      ]
+    },
+    "path": {
+      "description": "A column, or a key inside a JSON column (at most 3 segments). Values cite it as field path `row.<path>` (operating/claim_checks.py _FIELD).",
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*){0,2}$"
+    },
+    "evidence_entry": {
+      "description": "Why a binding, link or rule is believed. Upstream code is cited as repo + path + commit so the nightly meaning diff can re-check it.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "repo",
+            "path",
+            "commit"
+          ],
+          "properties": {
+            "kind": {
+              "const": "upstream_code"
+            },
+            "repo": {
+              "type": "string",
+              "enum": [
+                "plx-customer-portal",
+                "PLX_MC",
+                "agentic-swarm",
+                "plx_secondbrain"
+              ]
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "commit": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{7,40}$"
+            },
+            "symbol": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "lines": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*(?:-[1-9][0-9]*)?$"
+            },
+            "note": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "ref"
+          ],
+          "properties": {
+            "kind": {
+              "const": "context_pack"
+            },
+            "ref": {
+              "type": "string",
+              "pattern": "^docs/reference/[a-z0-9-]+\\.md(?:[#§:].{1,80})?$"
+            },
+            "note": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "path"
+          ],
+          "properties": {
+            "kind": {
+              "const": "workbench_code"
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "commit": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{7,40}$"
+            },
+            "note": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "ref"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "live_trace",
+                "data_profile"
+              ]
+            },
+            "ref": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "note": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "who",
+            "when",
+            "note"
+          ],
+          "properties": {
+            "kind": {
+              "const": "human"
+            },
+            "who": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "when": {
+              "type": "string",
+              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+            },
+            "note": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            }
+          }
+        }
+      ]
+    },
+    "evidence": {
+      "description": "An evidence entry, or a reference to one in the file's evidence_catalog (the loader resolves it; an unknown id is an error).",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/evidence_entry"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "ref"
+            },
+            "id": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$"
+            }
+          }
+        }
+      ]
+    },
+    "evidence_list": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/evidence"
+      },
+      "minItems": 1,
+      "maxItems": 20
+    },
+    "ref_path": {
+      "description": "A path in the bound record, or {via_link, path}: the path in the record reached by one hop along a declared link of this object type whose cardinality is N:1 or 1:1 and whose binding starts at this binding (loader check; one hop only, no chains). Used for lineage predicates and unit/currency paths (a line's unit on its item, a line's lineage on its header).",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/path"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "via_link",
+            "path"
+          ],
+          "properties": {
+            "via_link": {
+              "type": "string",
+              "pattern": "^[A-Z][A-Za-z0-9]{1,63}\\.[a-z][a-z0-9_]{0,63}$"
+            },
+            "path": {
+              "$ref": "#/$defs/path"
+            }
+          }
+        }
+      ]
+    },
+    "unknown": {
+      "description": "Declares that the unit (or currency) is not recorded anywhere reachable. The projector stores NULL and every tool value carries a typed gap; plx.aggregate refuses to combine such values.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason"
+      ],
+      "properties": {
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence_list"
+        }
+      }
+    },
+    "scalar": {
+      "type": [
+        "string",
+        "integer",
+        "boolean"
+      ]
+    },
+    "predicate": {
+      "description": "A row test over one path. present/absent take no value; in takes a list.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "op"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/path"
+        },
+        "via_link": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Za-z0-9]{1,63}\\.[a-z][a-z0-9_]{0,63}$",
+          "description": "Test the record reached by this one-hop N:1/1:1 link instead of the bound row (e.g. a line tests its header's custom_fields.source)."
+        },
+        "op": {
+          "type": "string",
+          "enum": [
+            "eq",
+            "ne",
+            "in",
+            "prefix",
+            "present",
+            "absent",
+            "gte",
+            "lt"
+          ]
+        },
+        "value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/scalar"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/scalar"
+              },
+              "minItems": 1,
+              "maxItems": 50
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "enum": [
+                  "present",
+                  "absent"
+                ]
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "value"
+              ]
+            }
+          },
+          "else": {
+            "required": [
+              "value"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "in"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "type": "array"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "lineage_rule": {
+      "description": "First matching rule (all predicates true) sets the record's lineage (custom_fields.source, fmId, sageOrdUniq, externalId prefixes, FM ids >= 900000).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "when",
+        "lineage",
+        "evidence"
+      ],
+      "properties": {
+        "when": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/predicate"
+          },
+          "minItems": 1,
+          "maxItems": 8
+        },
+        "lineage": {
+          "$ref": "#/$defs/lineage"
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence_list"
+        }
+      }
+    },
+    "binding": {
+      "description": "One L1 record type this object type is projected from. The projection reads only L1 captures (never a second reader); every object cites the record's L1 handle.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "source",
+        "relation",
+        "key",
+        "lineage",
+        "evidence"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_.-]{1,95}$"
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        },
+        "relation": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)?$",
+          "description": "portal_api: schema.relation as served (93 relations); bc: API entity set (purchaseOrders); graph_mail: messages; sharepoint: driveItems/listItems; teams: channelMessages/chatMessages; original: originals; workbench: store table."
+        },
+        "key": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/path"
+          },
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true
+        },
+        "where": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/predicate"
+          },
+          "minItems": 1,
+          "maxItems": 8
+        },
+        "stands_for": {
+          "description": "This binding stands in for a record of another binding of the same type that the source no longer serves (BC deletes a sales order once it is shipped and invoiced; its posted documents keep the order number). One object per company and key (the pairs' `from` paths of this binding, compared as the `to` paths of `binding`), cited to the first-recorded record naming it, and only where no record of `binding`, nor of a binding listed before this one that stands in for it, holds that key: one identity, never a second object of one record. Not projected while the source says it does not hold `binding` whole (`capture_gap`). Every binding standing in for one binding compares the same `to` paths in the same way.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "binding",
+            "pairs"
+          ],
+          "properties": {
+            "binding": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_.-]{1,95}$"
+            },
+            "pairs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/pair"
+              },
+              "minItems": 1,
+              "maxItems": 4
+            }
+          }
+        },
+        "lineage": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "default"
+              ],
+              "description": "First matching rule wins; else, with `inherit`, the lineage of the record reached by that one-hop N:1/1:1 link (a line inherits its header's); else (link unresolved) `default`. The projector computes link targets first; the loader refuses inheritance cycles.",
+              "properties": {
+                "default": {
+                  "$ref": "#/$defs/lineage"
+                },
+                "rules": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/lineage_rule"
+                  },
+                  "minItems": 1,
+                  "maxItems": 16
+                },
+                "inherit": {
+                  "type": "string",
+                  "pattern": "^[A-Z][A-Za-z0-9]{1,63}\\.[a-z][a-z0-9_]{0,63}$"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "from_capture"
+              ],
+              "properties": {
+                "from_capture": {
+                  "const": "bc_company"
+                }
+              },
+              "description": "lineage = bc_<company> of the capture (BC bindings only)."
+            }
+          ]
+        },
+        "registry_entries": {
+          "$ref": "#/$defs/registry_entries"
+        },
+        "local_currency": {
+          "description": "A currency column of this binding (a currency_from reads it, directly or over its one hop) whose blank cell means the local currency of the record's scope (a BC document with no currencyCode is in its company's local currency). When the cell is blank text, the projector reads `path` on the one record of `binding` with the same lineage (the two bindings must share a lineage, e.g. both take it from the BC capture), on that record's version in force at the value's time (its first version from the start of the capture pass that first read it), and cites it beside the value's own record (object_values.currency_citation; a reader who may not read it reads the currency as unknown). None or several such records, no version in force then (gap local_currency_unversioned, never another version), or a blank or invalid code there, and the currency stays unresolved.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "blank",
+            "binding",
+            "path",
+            "evidence"
+          ],
+          "properties": {
+            "blank": {
+              "$ref": "#/$defs/path"
+            },
+            "binding": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_.-]{1,95}$"
+            },
+            "path": {
+              "$ref": "#/$defs/path"
+            },
+            "evidence": {
+              "$ref": "#/$defs/evidence_list"
+            }
+          }
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence_list"
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "source": {
+                "const": "portal_api"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "relation": {
+                "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "source": {
+                "const": "bc"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "lineage": {
+                "required": [
+                  "from_capture"
+                ]
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "lineage": {
+                "required": [
+                  "default"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "value_source": {
+      "description": "Where one property value is read: a binding and a path in its record, plus the deterministic parser that turns source text into the typed value (only deterministic parsers produce values). unit*/currency* here override the property-level default for this source (Portal, Sage and BC keep currency and UoM in different columns). Money sources declare tax_basis, or tax_basis_from where each record states its own (one of the two required for money, both refused elsewhere). A unit_price money source declares the unit its price is per (per_unit, per_unit_from or per_unit_unknown, optionally per_unit_unknown_by_lineage, and per_unit_rules that decide it per record where per_unit_unknown leaves it unknown); other sources never do.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "binding",
+        "path"
+      ],
+      "properties": {
+        "binding": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_.-]{1,95}$"
+        },
+        "path": {
+          "$ref": "#/$defs/path"
+        },
+        "parser": {
+          "type": "string",
+          "enum": [
+            "as_is",
+            "trim",
+            "decimal_text",
+            "integer_text",
+            "iso_date",
+            "yyyymmdd_date",
+            "iso_timestamp",
+            "boolean_text",
+            "identifier",
+            "post_project"
+          ],
+          "description": "identifier = the normalizer of the property's identifier_kind (ontology/identifiers.py). post_project = not read by the projector: a build_store post_project step writes the value (a fact the Workbench records about this record version, e.g. a person's confirmation; lineage workbench), citing this path of the version it binds to. Default as_is."
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "unit_from": {
+          "$ref": "#/$defs/ref_path"
+        },
+        "unit_unknown": {
+          "$ref": "#/$defs/unknown"
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        },
+        "currency_from": {
+          "$ref": "#/$defs/ref_path"
+        },
+        "currency_unknown": {
+          "$ref": "#/$defs/unknown"
+        },
+        "when": {
+          "description": "The record tests (all must hold) under which this source carries the property, when the field means it only on some records (a BC invoice's External Document No. is the customer's PO only on an invoice posted from a sales order). A record that fails them is not read for the property: no value, a source_condition_unmet gap.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/predicate"
+          },
+          "minItems": 1,
+          "maxItems": 8
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence_list"
+        },
+        "tax_basis": {
+          "$ref": "#/$defs/tax_basis"
+        },
+        "tax_basis_by_lineage": {
+          "description": "Per record lineage, the tax basis when one source column is written with and without tax by different writers (e.g. a Portal total recomputed by an ETL without tax); a lineage not listed takes tax_basis.",
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/lineage"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/tax_basis"
+          },
+          "minProperties": 1,
+          "maxProperties": 12
+        },
+        "tax_basis_from": {
+          "description": "Where each record states its own tax basis: a boolean cell of the record (or of the record one hop away, a line reading its header's) that says whether the record's prices include tax. true is incl_tax, false is excl_tax; null, absent or not a boolean is unknown (a tax_basis_unresolved gap). The projector stores the basis with the value; never with tax_basis or tax_basis_by_lineage.",
+          "$ref": "#/$defs/ref_path"
+        },
+        "per_unit": {
+          "description": "The literal unit a unit_price is per (a LITERAL_UNITS token, ontology/schema.py), when upstream code states it for every record of the source.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "per_unit_from": {
+          "description": "Where a unit_price's denominator unit is read: the record's (or one hop's) unit-of-measure cell the price is per. The projector stores the cell as the money value's unit; it is a denominator, never a conversion.",
+          "$ref": "#/$defs/ref_path"
+        },
+        "per_unit_unknown": {
+          "$ref": "#/$defs/unknown"
+        },
+        "per_unit_unknown_by_lineage": {
+          "description": "Per record lineage, a denominator that is not grounded although the source column exists (a writer stores a placeholder or another record's unit next to the price); a lineage not listed takes per_unit or per_unit_from.",
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/lineage"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/unknown"
+          },
+          "minProperties": 1,
+          "maxProperties": 12
+        },
+        "per_unit_rules": {
+          "description": "Per-record rules that decide the denominator a per_unit_unknown source leaves unknown, tried in order, the first that decides wins: when (record tests, all must hold) with per_unit (a literal unit, as per_unit), or agreeing (2-4 unit-of-measure cells of the record that all hold one unit after the Portal spelling fold, ontology/units.py; any blank or a disagreement does not decide). A record no rule decides keeps per_unit_unknown's reason (a price_denominator_unknown gap). Each decision is counted in the build report (money_rule.price_denominator.<binding>.<id>).",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "evidence"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]{1,39}$"
+              },
+              "when": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/predicate"
+                },
+                "minItems": 1,
+                "maxItems": 8
+              },
+              "per_unit": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 40
+              },
+              "agreeing": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/path"
+                },
+                "minItems": 2,
+                "maxItems": 4,
+                "uniqueItems": true
+              },
+              "note": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "evidence": {
+                "$ref": "#/$defs/evidence_list"
+              }
+            },
+            "oneOf": [
+              {
+                "required": [
+                  "when",
+                  "per_unit"
+                ],
+                "not": {
+                  "required": [
+                    "agreeing"
+                  ]
+                }
+              },
+              {
+                "required": [
+                  "agreeing"
+                ],
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "when"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "per_unit"
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "per_unit_rules"
+            ]
+          },
+          "then": {
+            "required": [
+              "per_unit_unknown"
+            ]
+          }
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "unit",
+                  "unit_from"
+                ]
+              },
+              {
+                "required": [
+                  "unit",
+                  "unit_unknown"
+                ]
+              },
+              {
+                "required": [
+                  "unit_from",
+                  "unit_unknown"
+                ]
+              },
+              {
+                "required": [
+                  "currency",
+                  "currency_from"
+                ]
+              },
+              {
+                "required": [
+                  "currency",
+                  "currency_unknown"
+                ]
+              },
+              {
+                "required": [
+                  "currency_from",
+                  "currency_unknown"
+                ]
+              },
+              {
+                "required": [
+                  "per_unit",
+                  "per_unit_from"
+                ]
+              },
+              {
+                "required": [
+                  "per_unit",
+                  "per_unit_unknown"
+                ]
+              },
+              {
+                "required": [
+                  "per_unit_from",
+                  "per_unit_unknown"
+                ]
+              },
+              {
+                "required": [
+                  "per_unit_unknown",
+                  "per_unit_unknown_by_lineage"
+                ]
+              },
+              {
+                "required": [
+                  "tax_basis",
+                  "tax_basis_from"
+                ]
+              },
+              {
+                "required": [
+                  "tax_basis_by_lineage",
+                  "tax_basis_from"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "authority_rule": {
+      "description": "One precedence entry; earlier entries outrank later ones. gold_native_staging may be authority only with a recorded human confirmation that those rows are real.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lineage",
+        "evidence"
+      ],
+      "properties": {
+        "lineage": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/lineage"
+          },
+          "minItems": 1,
+          "maxItems": 12,
+          "uniqueItems": true
+        },
+        "binding": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_.-]{1,95}$"
+        },
+        "era": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "basis"
+          ],
+          "minProperties": 2,
+          "description": "Rule applies only when the record's `basis` date property falls in [from, until).",
+          "properties": {
+            "basis": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]{0,63}$"
+            },
+            "from": {
+              "type": "string",
+              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+            },
+            "until": {
+              "type": "string",
+              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+            }
+          }
+        },
+        "human_confirmation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "who",
+            "when",
+            "note"
+          ],
+          "properties": {
+            "who": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "when": {
+              "type": "string",
+              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+            },
+            "note": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            }
+          }
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence_list"
+        }
+      },
+      "if": {
+        "properties": {
+          "lineage": {
+            "contains": {
+              "const": "gold_native_staging"
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "human_confirmation"
+        ]
+      }
+    },
+    "property": {
+      "description": "A typed property. Values are per source (never merged); `authority` declares which source wins for display, and disagreement is always reported as a conflict.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "value_type",
+        "sources"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "value_type": {
+          "type": "string",
+          "enum": [
+            "text",
+            "identifier",
+            "integer",
+            "decimal",
+            "money",
+            "quantity",
+            "boolean",
+            "date",
+            "timestamp",
+            "enum",
+            "json"
+          ],
+          "description": "text/json values are untrusted source text and always reach a model inside an untrusted_text envelope; decimal/money/quantity are Decimal carried as text."
+        },
+        "identifier_kind": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$",
+          "description": "A kind declared in ontology/schema/identifiers.json."
+        },
+        "enum_values": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "unit_from": {
+          "$ref": "#/$defs/ref_path"
+        },
+        "unit_unknown": {
+          "$ref": "#/$defs/unknown"
+        },
+        "quantity_role": {
+          "$ref": "#/$defs/quantity_role"
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        },
+        "currency_from": {
+          "$ref": "#/$defs/ref_path"
+        },
+        "currency_unknown": {
+          "$ref": "#/$defs/unknown"
+        },
+        "money_measure": {
+          "$ref": "#/$defs/money_measure"
+        },
+        "markings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/marking"
+          },
+          "maxItems": 4,
+          "uniqueItems": true
+        },
+        "availability": {
+          "type": "string",
+          "enum": [
+            "served",
+            "not_served",
+            "degraded"
+          ]
+        },
+        "availability_reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "placeholder_when_equal_to": {
+          "description": "Identifier properties of the same object type: a source value of this property equal to the same row's value of one of them is a placeholder (the record's own number copied as a fallback), read as absent for this property, never as its value.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,63}$"
+          },
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true
+        },
+        "identifies": {
+          "description": "Identifier properties only: which record the value names. self (the default): the record holding it (its own number or an alias of it). reference: another record (a foreign key such as an FM customer or order id, a ledger entry's document No.); plx.find reads a match on it as a lead to the holder, never verified, never a root and never followed to the holder's links.",
+          "type": "string",
+          "enum": [
+            "self",
+            "reference"
+          ]
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/value_source"
+          },
+          "minItems": 1,
+          "maxItems": 12
+        },
+        "authority": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "precedence"
+          ],
+          "properties": {
+            "precedence": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/authority_rule"
+              },
+              "minItems": 1,
+              "maxItems": 12
+            },
+            "note": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            }
+          }
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence_list"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "value_type": {
+                "const": "identifier"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "identifier_kind"
+            ]
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "identifies"
+            ]
+          },
+          "then": {
+            "properties": {
+              "value_type": {
+                "const": "identifier"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "value_type": {
+                "const": "enum"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "enum_values"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "value_type": {
+                "const": "quantity"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "quantity_role"
+            ],
+            "anyOf": [
+              {
+                "required": [
+                  "unit"
+                ]
+              },
+              {
+                "required": [
+                  "unit_from"
+                ]
+              },
+              {
+                "required": [
+                  "unit_unknown"
+                ]
+              },
+              {
+                "properties": {
+                  "sources": {
+                    "items": {
+                      "anyOf": [
+                        {
+                          "required": [
+                            "unit"
+                          ]
+                        },
+                        {
+                          "required": [
+                            "unit_from"
+                          ]
+                        },
+                        {
+                          "required": [
+                            "unit_unknown"
+                          ]
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "description": "A quantity's unit is declared at property level (default) or on every source; unit_unknown is explicit, never a placeholder."
+        },
+        {
+          "if": {
+            "properties": {
+              "value_type": {
+                "const": "money"
+              }
+            }
+          },
+          "then": {
+            "anyOf": [
+              {
+                "required": [
+                  "currency"
+                ]
+              },
+              {
+                "required": [
+                  "currency_from"
+                ]
+              },
+              {
+                "required": [
+                  "currency_unknown"
+                ]
+              },
+              {
+                "properties": {
+                  "sources": {
+                    "items": {
+                      "anyOf": [
+                        {
+                          "required": [
+                            "currency"
+                          ]
+                        },
+                        {
+                          "required": [
+                            "currency_from"
+                          ]
+                        },
+                        {
+                          "required": [
+                            "currency_unknown"
+                          ]
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "unit",
+                  "unit_from"
+                ]
+              },
+              {
+                "required": [
+                  "unit",
+                  "unit_unknown"
+                ]
+              },
+              {
+                "required": [
+                  "unit_from",
+                  "unit_unknown"
+                ]
+              },
+              {
+                "required": [
+                  "currency",
+                  "currency_from"
+                ]
+              },
+              {
+                "required": [
+                  "currency",
+                  "currency_unknown"
+                ]
+              },
+              {
+                "required": [
+                  "currency_from",
+                  "currency_unknown"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "sources": {
+                "minItems": 2
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "authority"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "availability": {
+                "enum": [
+                  "not_served",
+                  "degraded"
+                ]
+              }
+            },
+            "required": [
+              "availability"
+            ]
+          },
+          "then": {
+            "required": [
+              "availability_reason"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "value_type": {
+                "const": "money"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "sources": {
+                "items": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "tax_basis"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "tax_basis_from"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "sources": {
+                "items": {
+                  "not": {
+                    "anyOf": [
+                      {
+                        "required": [
+                          "tax_basis"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "tax_basis_by_lineage"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "tax_basis_from"
+                        ]
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "A unit_price is money and every source declares its denominator; no other property declares one.",
+          "if": {
+            "properties": {
+              "money_measure": {
+                "const": "unit_price"
+              }
+            },
+            "required": [
+              "money_measure"
+            ]
+          },
+          "then": {
+            "properties": {
+              "value_type": {
+                "const": "money"
+              },
+              "sources": {
+                "items": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "per_unit"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "per_unit_from"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "per_unit_unknown"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "sources": {
+                "items": {
+                  "not": {
+                    "anyOf": [
+                      {
+                        "required": [
+                          "per_unit"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "per_unit_from"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "per_unit_unknown"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "per_unit_unknown_by_lineage"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "per_unit_rules"
+                        ]
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "identity_key": {
+      "description": "A key that identifies records of this type within or across bindings. `tier` is the strongest tier agreement on it can reach; a non-unique key yields cluster candidates, never a merge.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "properties",
+        "tier",
+        "unique",
+        "evidence"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$"
+        },
+        "properties": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,63}$"
+          },
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true
+        },
+        "identifier_kind": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$"
+        },
+        "tier": {
+          "$ref": "#/$defs/tier"
+        },
+        "unique": {
+          "type": "boolean"
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "within_binding",
+            "cross_binding"
+          ]
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence_list"
+        }
+      }
+    },
+    "object_type": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "description",
+        "availability",
+        "bindings",
+        "properties",
+        "evidence"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Za-z0-9]{1,63}$"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "interfaces": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "Party",
+              "Item",
+              "Document"
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 3,
+          "uniqueItems": true
+        },
+        "anchor": {
+          "type": "boolean",
+          "description": "Anchors (orders, POs, AOs, invoices) never auto-merge."
+        },
+        "availability": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state"
+          ],
+          "properties": {
+            "state": {
+              "type": "string",
+              "enum": [
+                "served",
+                "partial",
+                "not_served"
+              ]
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            },
+            "upstream_ask": {
+              "type": "string",
+              "description": "A question (Qn), or for a BC set or page what it waits on: bc_api_v2:<name> (BC must serve it under api/v2.0) or workbench_grammar:<name> (a custom API route the Workbench's GET-only grammar does not admit); ontology/generator/bc.py UPSTREAM_ASKS.",
+              "pattern": "^(Q[0-9]{1,2}|(bc_api_v2|workbench_grammar):[A-Za-z][A-Za-z0-9]{0,79})$"
+            }
+          },
+          "if": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "partial",
+                  "not_served"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "reason"
+            ]
+          }
+        },
+        "bindings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/binding"
+          },
+          "maxItems": 16
+        },
+        "properties": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/property"
+          },
+          "maxItems": 200
+        },
+        "identity_keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identity_key"
+          },
+          "minItems": 1,
+          "maxItems": 16
+        },
+        "display": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,63}$"
+          },
+          "minItems": 1,
+          "maxItems": 3,
+          "description": "Properties that form the human-readable name, in order."
+        },
+        "markings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/marking"
+          },
+          "maxItems": 4,
+          "uniqueItems": true
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence_list"
+        }
+      },
+      "if": {
+        "properties": {
+          "availability": {
+            "properties": {
+              "state": {
+                "const": "not_served"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "bindings": {
+            "maxItems": 0
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "bindings": {
+            "minItems": 1
+          }
+        }
+      }
+    },
+    "pair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "to",
+        "compare"
+      ],
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/path"
+        },
+        "to": {
+          "$ref": "#/$defs/path"
+        },
+        "compare": {
+          "type": "string",
+          "enum": [
+            "integer_id",
+            "text",
+            "text_id",
+            "identifier"
+          ],
+          "description": "integer_id/text/text_id as operating/link_contracts.json; identifier = equal after the identifier_kind normalizer (also the way to compare prefixed ids such as fm-cust-{id} with a bare FM id: a kind whose normalizer maps both forms to one key keeps the tier verified). text (a free-text compare) is legal only on text_match bindings; fk/json_path/same_record bindings compare stored keys and use integer_id, text_id or identifier (DECISIONS/2026-10-02-stored-key-compare)."
+        },
+        "identifier_kind": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$"
+        }
+      },
+      "if": {
+        "properties": {
+          "compare": {
+            "const": "identifier"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "identifier_kind"
+        ]
+      }
+    },
+    "stored_key_pair": {
+      "description": "A pair of a stored-key binding (fk/json_path/same_record): the compare is a stored key, never free text (DECISIONS/2026-10-02-stored-key-compare). The loader (ontology/schema.py) reports violations by binding.",
+      "properties": {
+        "compare": {
+          "enum": [
+            "integer_id",
+            "text_id",
+            "identifier"
+          ]
+        }
+      }
+    },
+    "link_binding": {
+      "description": "How one link instance is found. kind fk/json_path/same_record compare stored keys; text_match compares free text; mention comes from a document span; reviewed is a recorded human decision. tier_ceiling is the strongest tier that evidence can ever reach.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "tier_ceiling",
+        "evidence"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "fk",
+            "json_path",
+            "same_record",
+            "text_match",
+            "mention",
+            "reviewed"
+          ]
+        },
+        "tier_ceiling": {
+          "type": "string",
+          "enum": [
+            "verified",
+            "reviewed",
+            "corroborated",
+            "stored_by_text_join",
+            "lead"
+          ]
+        },
+        "from_binding": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_.-]{1,95}$"
+        },
+        "to_binding": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_.-]{1,95}$"
+        },
+        "pairs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/pair"
+          },
+          "minItems": 1,
+          "maxItems": 4
+        },
+        "via": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "binding",
+            "from_pairs",
+            "to_pairs"
+          ],
+          "description": "N:M join record (e.g. FM order_entry_item_assembly).",
+          "properties": {
+            "binding": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_.-]{1,95}$"
+            },
+            "from_pairs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/pair"
+              },
+              "minItems": 1,
+              "maxItems": 4
+            },
+            "to_pairs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/pair"
+              },
+              "minItems": 1,
+              "maxItems": 4
+            }
+          }
+        },
+        "link_contract": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{1,95}$",
+          "description": "id in operating/link_contracts.json this binding absorbs."
+        },
+        "where": {
+          "description": "The binding is tried only on a from-record every predicate passes, so a fallback binding fires only where the primary one cannot (e.g. the system id it pairs on is blank or an ERP nil Guid). Tested on the bound row alone: link projection has no resolved hops yet, so `via_link` is not allowed here.",
+          "type": "array",
+          "items": {
+            "allOf": [
+              {"$ref": "#/$defs/predicate"},
+              {"not": {"required": ["via_link"]}}
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 8
+        },
+        "unique_target": {
+          "description": "A to-one binding (N:1/1:1) links only where exactly one clean candidate answers in the company: an ambiguous key stays unresolved instead of being capped to a lead guess.",
+          "type": "boolean"
+        },
+        "company_by_reader": {
+          "description": "A binding joining a BC record on a number to a record of another source: the projector still caps its links at lead (bc_company_not_known), and plx.process counts such a link at the binding's tier_ceiling only for a reader whose grant and markings cover every BC company and who sees every link of the binding to that far record start in one company (one order carries the number). Several companies, or a projector ambiguous_target, leave it uncounted with an ambiguous_target reason; a narrower reader gets it withheld, never decided.",
+          "type": "boolean"
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence_list"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "fk",
+                  "json_path",
+                  "same_record",
+                  "text_match"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "from_binding",
+              "to_binding"
+            ],
+            "anyOf": [
+              {
+                "required": [
+                  "pairs"
+                ]
+              },
+              {
+                "required": [
+                  "via"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "fk",
+                  "json_path",
+                  "same_record"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "pairs": {
+                "items": {
+                  "$ref": "#/$defs/stored_key_pair"
+                }
+              },
+              "via": {
+                "properties": {
+                  "from_pairs": {
+                    "items": {
+                      "$ref": "#/$defs/stored_key_pair"
+                    }
+                  },
+                  "to_pairs": {
+                    "items": {
+                      "$ref": "#/$defs/stored_key_pair"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "text_match"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "tier_ceiling": {
+                "enum": [
+                  "stored_by_text_join",
+                  "lead"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "mention"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "tier_ceiling": {
+                "enum": [
+                  "corroborated",
+                  "lead"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "reviewed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "tier_ceiling": {
+                "const": "reviewed"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "link_type": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "from",
+        "to",
+        "name",
+        "reverse_name",
+        "cardinality",
+        "description",
+        "bindings"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Za-z0-9]{1,63}\\.[a-z][a-z0-9_]{0,63}$",
+          "description": "<From type>.<name>"
+        },
+        "from": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Za-z0-9]{1,63}$"
+        },
+        "to": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Za-z0-9]{1,63}$"
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$"
+        },
+        "reverse_name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$"
+        },
+        "cardinality": {
+          "type": "string",
+          "enum": [
+            "1:1",
+            "N:1",
+            "1:N",
+            "N:M"
+          ],
+          "description": "from:to. plx.aggregate refuses to sum a from-side measure across a to-many hop (fan-out) and never aggregates through N:M without an explicit allocation, which is never inferred."
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "bindings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/link_binding"
+          },
+          "minItems": 1,
+          "maxItems": 8
+        },
+        "markings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/marking"
+          },
+          "maxItems": 4,
+          "uniqueItems": true
+        }
+      }
+    },
+    "event_type": {
+      "description": "Business event declared from a date column, a status change between captures (capture_observed) or a document (valid time only on events).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "object_type",
+        "description",
+        "time_basis",
+        "qualifiers",
+        "evidence"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Za-z0-9]{1,63}\\.[a-z][a-z0-9_]{0,63}$"
+        },
+        "object_type": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Za-z0-9]{1,63}$"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "time_basis": {
+          "$ref": "#/$defs/time_basis"
+        },
+        "time": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "binding",
+            "path"
+          ],
+          "properties": {
+            "binding": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_.-]{1,95}$"
+            },
+            "path": {
+              "$ref": "#/$defs/path"
+            },
+            "parser": {
+              "type": "string",
+              "enum": [
+                "iso_date",
+                "yyyymmdd_date",
+                "iso_timestamp"
+              ]
+            }
+          }
+        },
+        "observed_property": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$",
+          "description": "capture_observed: the property whose change between two captures is the event; the true time lies in that window."
+        },
+        "qualifiers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "qualifier",
+              "object_type",
+              "via"
+            ],
+            "properties": {
+              "qualifier": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]{0,63}$"
+              },
+              "object_type": {
+                "type": "string",
+                "pattern": "^[A-Z][A-Za-z0-9]{1,63}$"
+              },
+              "via": {
+                "type": "string",
+                "pattern": "^(?:self|[A-Z][A-Za-z0-9]{1,63}\\.[a-z][a-z0-9_]{0,63})$",
+                "description": "self or a link type id."
+              }
+            }
+          },
+          "minItems": 1,
+          "maxItems": 12
+        },
+        "markings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/marking"
+          },
+          "maxItems": 4,
+          "uniqueItems": true
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence_list"
+        }
+      },
+      "if": {
+        "properties": {
+          "time_basis": {
+            "const": "capture_observed"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "observed_property"
+        ]
+      },
+      "else": {
+        "required": [
+          "time"
+        ]
+      }
+    },
+    "registry_entries": {
+      "description": "Source-registry entry ids (ontology/source_registry.json, <system>.<kind>:<key>) this binding reads or this action type acts on: scripts/source_registry.py counts each such entry bound through it, whatever its kind (an MCP tool, a BC web-service action, an external host).",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9-]*\\.[a-z][a-z_]*:.{1,200}$"
+      },
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true
+    },
+    "action_param": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "provenance"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "object_ref",
+            "text",
+            "identifier",
+            "integer",
+            "decimal",
+            "money",
+            "quantity",
+            "date",
+            "boolean",
+            "citation"
+          ]
+        },
+        "object_type": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Za-z0-9]{1,63}$"
+        },
+        "property_ref": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Za-z0-9]{1,63}\\.[a-z][a-z0-9_]{0,63}$",
+          "description": "<Type>.<property> the value must equal when traced."
+        },
+        "provenance": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "cited_value",
+              "schema_constant",
+              "user_objective"
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 3,
+          "uniqueItems": true
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        }
+      },
+      "description": "Every parameter must trace to a cited typed value, a schema constant or the trusted user objective recorded at case_open."
+    },
+    "action_type": {
+      "description": "Typed action: data that feeds operating/action_path.py. Owner-system actions stop at dispatched_by_human; only Workbench-internal edits execute here.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "description",
+        "target",
+        "params",
+        "submission_criteria",
+        "owner_system",
+        "executor",
+        "approval",
+        "verification",
+        "idempotency",
+        "evidence"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Za-z0-9]{1,63}$"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "target": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Za-z0-9]{1,63}$"
+        },
+        "params": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 16,
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_]{0,63}$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/action_param"
+          }
+        },
+        "submission_criteria": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "description"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]{0,63}$"
+              },
+              "description": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              }
+            }
+          },
+          "minItems": 1,
+          "maxItems": 16
+        },
+        "owner_system": {
+          "type": "string",
+          "enum": [
+            "portal",
+            "bc",
+            "sharepoint",
+            "mission_control",
+            "workbench"
+          ]
+        },
+        "executor": {
+          "type": "string",
+          "enum": [
+            "workbench_internal",
+            "human_in_owner_system"
+          ]
+        },
+        "approval": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "route"
+          ],
+          "properties": {
+            "route": {
+              "type": "string",
+              "enum": [
+                "none",
+                "mc_request_approval"
+              ]
+            },
+            "decider": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            }
+          }
+        },
+        "expected_effect": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "object",
+            "property",
+            "equals"
+          ],
+          "properties": {
+            "object": {
+              "const": "target"
+            },
+            "property": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]{0,63}$"
+            },
+            "equals": {
+              "type": "string",
+              "pattern": "^params\\.[a-z][a-z0-9_]{0,63}$"
+            }
+          }
+        },
+        "verification": {
+          "description": "How the effect is verified. read_back: the Workbench reads the owner system's record after the write and compares it. workbench_log: the Workbench's own log is the effect (workbench_internal). person_check: the owner system's user who ran it confirms the effect there and the Workbench reads nothing back; an action whose effect the Workbench cannot read never claims read_back.",
+          "type": "string",
+          "enum": [
+            "read_back",
+            "workbench_log",
+            "person_check"
+          ]
+        },
+        "idempotency": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?:target|params\\.[a-z][a-z0-9_]{0,63})$"
+          },
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true
+        },
+        "markings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/marking"
+          },
+          "maxItems": 4,
+          "uniqueItems": true
+        },
+        "registry_entries": {
+          "$ref": "#/$defs/registry_entries"
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence_list"
+        }
+      },
+      "if": {
+        "properties": {
+          "executor": {
+            "const": "workbench_internal"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "owner_system": {
+            "const": "workbench"
+          },
+          "verification": {
+            "const": "workbench_log"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "owner_system": {
+            "enum": [
+              "portal",
+              "bc",
+              "sharepoint",
+              "mission_control"
+            ]
+          },
+          "approval": {
+            "properties": {
+              "route": {
+                "const": "mc_request_approval"
+              }
+            }
+          },
+          "verification": {
+            "enum": [
+              "read_back",
+              "person_check"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

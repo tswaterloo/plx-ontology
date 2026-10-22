@@ -1,0 +1,4010 @@
+{
+ "format": "plx-ontology-skeleton-coverage/v1",
+ "catalog_digest": "sha256:3cad58e31674b37a407208ba78b364aff347d2296d510f107d2e776584d24473",
+ "catalog_evidence_mode": "upstream-manifest",
+ "inputs": {
+  "catalog": {
+   "repo": "plx-customer-portal",
+   "commit": "52c9116f77ab",
+   "paths": [
+    "services/workbench-api/manifest/allowlist.json",
+    "services/workbench-api/test/core/fixtures/catalog-facts.json",
+    "services/workbench-api/src/core/catalog.mjs",
+    "services/workbench-api/test/core/helpers.mjs"
+   ]
+  },
+  "prisma": {
+   "repo": "plx-customer-portal",
+   "path": "portal/prisma/schema.prisma",
+   "commit": "52c9116f77ab"
+  },
+  "registry": {
+   "path": "ontology/source_registry.json",
+   "read_digest": "sha256:4836de1b1cae4b07f1fe0b873ce74c640c447c3c8256a5b509e8efbf4beea90d",
+   "commit": "52c9116f77ab"
+  },
+  "workbench": [
+   "operating/link_contracts.json",
+   "ontology/relation_contracts.py:FM_SOURCE_FK",
+   "operating/source_unit_contracts.json",
+   "ontology/schema/overrides/identity.json",
+   "ontology/schema/overrides/lineage.json",
+   "ontology/schema/overrides/markings.json",
+   "ontology/schema/overrides/money.json",
+   "ontology/schema/overrides/names.json"
+  ]
+ },
+ "counts": {
+  "catalog_relations": 104,
+  "served_relations": 104,
+  "bound_relations": 104,
+  "excluded_relations": 0,
+  "object_types": 104,
+  "link_types": 62,
+  "properties": 4354,
+  "not_served_types": 320
+ },
+ "relations": {
+  "public.app_approval_record": {
+   "object_type": "RelPublicAppApprovalRecord",
+   "binding": "gen.public.app_approval_record"
+  },
+  "public.app_assembly_order_damage": {
+   "object_type": "RelPublicAppAssemblyOrderDamage",
+   "binding": "gen.public.app_assembly_order_damage"
+  },
+  "public.app_assembly_order_status": {
+   "object_type": "RelPublicAppAssemblyOrderStatus",
+   "binding": "gen.public.app_assembly_order_status"
+  },
+  "public.app_batch_record": {
+   "object_type": "RelPublicAppBatchRecord",
+   "binding": "gen.public.app_batch_record"
+  },
+  "public.app_batch_schedule": {
+   "object_type": "RelPublicAppBatchSchedule",
+   "binding": "gen.public.app_batch_schedule"
+  },
+  "public.app_bc_entity_map": {
+   "object_type": "RelPublicAppBcEntityMap",
+   "binding": "gen.public.app_bc_entity_map"
+  },
+  "public.app_customer": {
+   "object_type": "RelPublicAppCustomer",
+   "binding": "gen.public.app_customer"
+  },
+  "public.app_customer_location": {
+   "object_type": "RelPublicAppCustomerLocation",
+   "binding": "gen.public.app_customer_location"
+  },
+  "public.app_fg_item": {
+   "object_type": "RelPublicAppFgItem",
+   "binding": "gen.public.app_fg_item"
+  },
+  "public.app_manufacturer": {
+   "object_type": "RelPublicAppManufacturer",
+   "binding": "gen.public.app_manufacturer"
+  },
+  "public.app_manufacturing_job": {
+   "object_type": "RelPublicAppManufacturingJob",
+   "binding": "gen.public.app_manufacturing_job"
+  },
+  "public.app_manufacturing_order": {
+   "object_type": "RelPublicAppManufacturingOrder",
+   "binding": "gen.public.app_manufacturing_order"
+  },
+  "public.app_manufacturing_order_line": {
+   "object_type": "RelPublicAppManufacturingOrderLine",
+   "binding": "gen.public.app_manufacturing_order_line"
+  },
+  "public.app_pr_line_item": {
+   "object_type": "RelPublicAppPrLineItem",
+   "binding": "gen.public.app_pr_line_item"
+  },
+  "public.app_product": {
+   "object_type": "RelPublicAppProduct",
+   "binding": "gen.public.app_product"
+  },
+  "public.app_production_task": {
+   "object_type": "RelPublicAppProductionTask",
+   "binding": "gen.public.app_production_task"
+  },
+  "public.app_purchase_order": {
+   "object_type": "RelPublicAppPurchaseOrder",
+   "binding": "gen.public.app_purchase_order"
+  },
+  "public.app_purchase_order_line": {
+   "object_type": "RelPublicAppPurchaseOrderLine",
+   "binding": "gen.public.app_purchase_order_line"
+  },
+  "public.app_purchase_requisition": {
+   "object_type": "RelPublicAppPurchaseRequisition",
+   "binding": "gen.public.app_purchase_requisition"
+  },
+  "public.app_quote": {
+   "object_type": "RelPublicAppQuote",
+   "binding": "gen.public.app_quote"
+  },
+  "public.app_quote_line": {
+   "object_type": "RelPublicAppQuoteLine",
+   "binding": "gen.public.app_quote_line"
+  },
+  "public.app_receipt": {
+   "object_type": "RelPublicAppReceipt",
+   "binding": "gen.public.app_receipt"
+  },
+  "public.app_receipt_line": {
+   "object_type": "RelPublicAppReceiptLine",
+   "binding": "gen.public.app_receipt_line"
+  },
+  "public.app_sales_order": {
+   "object_type": "RelPublicAppSalesOrder",
+   "binding": "gen.public.app_sales_order"
+  },
+  "public.app_sales_order_line": {
+   "object_type": "RelPublicAppSalesOrderLine",
+   "binding": "gen.public.app_sales_order_line"
+  },
+  "public.app_ship_release": {
+   "object_type": "RelPublicAppShipRelease",
+   "binding": "gen.public.app_ship_release"
+  },
+  "public.app_shipment": {
+   "object_type": "RelPublicAppShipment",
+   "binding": "gen.public.app_shipment"
+  },
+  "public.app_shipment_line": {
+   "object_type": "RelPublicAppShipmentLine",
+   "binding": "gen.public.app_shipment_line"
+  },
+  "public.app_supplier": {
+   "object_type": "RelPublicAppSupplier",
+   "binding": "gen.public.app_supplier"
+  },
+  "public.app_supplier_product": {
+   "object_type": "RelPublicAppSupplierProduct",
+   "binding": "gen.public.app_supplier_product"
+  },
+  "public.app_supplier_product_tier": {
+   "object_type": "RelPublicAppSupplierProductTier",
+   "binding": "gen.public.app_supplier_product_tier"
+  },
+  "public.assembly_order": {
+   "object_type": "RelPublicAssemblyOrder",
+   "binding": "gen.public.assembly_order"
+  },
+  "public.assembly_order_damage": {
+   "object_type": "RelPublicAssemblyOrderDamage",
+   "binding": "gen.public.assembly_order_damage"
+  },
+  "public.assembly_order_item": {
+   "object_type": "RelPublicAssemblyOrderItem",
+   "binding": "gen.public.assembly_order_item"
+  },
+  "public.assembly_order_status": {
+   "object_type": "RelPublicAssemblyOrderStatus",
+   "binding": "gen.public.assembly_order_status"
+  },
+  "public.batch": {
+   "object_type": "RelPublicBatch",
+   "binding": "gen.public.batch"
+  },
+  "public.batch_calibration": {
+   "object_type": "RelPublicBatchCalibration",
+   "binding": "gen.public.batch_calibration"
+  },
+  "public.bulk_product": {
+   "object_type": "RelPublicBulkProduct",
+   "binding": "gen.public.bulk_product"
+  },
+  "public.customer": {
+   "object_type": "RelPublicCustomer",
+   "binding": "gen.public.customer"
+  },
+  "public.finished_product": {
+   "object_type": "RelPublicFinishedProduct",
+   "binding": "gen.public.finished_product"
+  },
+  "public.finished_product_item": {
+   "object_type": "RelPublicFinishedProductItem",
+   "binding": "gen.public.finished_product_item"
+  },
+  "public.generated_purchase_order": {
+   "object_type": "RelPublicGeneratedPurchaseOrder",
+   "binding": "gen.public.generated_purchase_order"
+  },
+  "public.generated_purchase_order_item": {
+   "object_type": "RelPublicGeneratedPurchaseOrderItem",
+   "binding": "gen.public.generated_purchase_order_item"
+  },
+  "public.manufacturer": {
+   "object_type": "RelPublicManufacturer",
+   "binding": "gen.public.manufacturer"
+  },
+  "public.order_entry": {
+   "object_type": "RelPublicOrderEntry",
+   "binding": "gen.public.order_entry"
+  },
+  "public.order_entry_item": {
+   "object_type": "RelPublicOrderEntryItem",
+   "binding": "gen.public.order_entry_item"
+  },
+  "public.order_entry_item_assembly": {
+   "object_type": "RelPublicOrderEntryItemAssembly",
+   "binding": "gen.public.order_entry_item_assembly"
+  },
+  "public.order_entry_item_batch": {
+   "object_type": "RelPublicOrderEntryItemBatch",
+   "binding": "gen.public.order_entry_item_batch"
+  },
+  "public.packaging": {
+   "object_type": "RelPublicPackaging",
+   "binding": "gen.public.packaging"
+  },
+  "public.packaging_supplier": {
+   "object_type": "RelPublicPackagingSupplier",
+   "binding": "gen.public.packaging_supplier"
+  },
+  "public.production": {
+   "object_type": "RelPublicProduction",
+   "binding": "gen.public.production"
+  },
+  "public.raw_material": {
+   "object_type": "RelPublicRawMaterial",
+   "binding": "gen.public.raw_material"
+  },
+  "public.raw_material_supplier": {
+   "object_type": "RelPublicRawMaterialSupplier",
+   "binding": "gen.public.raw_material_supplier"
+  },
+  "public.receipt": {
+   "object_type": "RelPublicReceipt",
+   "binding": "gen.public.receipt"
+  },
+  "public.receipt_packaging": {
+   "object_type": "RelPublicReceiptPackaging",
+   "binding": "gen.public.receipt_packaging"
+  },
+  "public.receipt_raw_material": {
+   "object_type": "RelPublicReceiptRawMaterial",
+   "binding": "gen.public.receipt_raw_material"
+  },
+  "public.supplier": {
+   "object_type": "RelPublicSupplier",
+   "binding": "gen.public.supplier"
+  },
+  "sage.ap_open_document": {
+   "object_type": "RelSageApOpenDocument",
+   "binding": "gen.sage.ap_open_document"
+  },
+  "sage.ap_term": {
+   "object_type": "RelSageApTerm",
+   "binding": "gen.sage.ap_term"
+  },
+  "sage.ap_vendor": {
+   "object_type": "RelSageApVendor",
+   "binding": "gen.sage.ap_vendor"
+  },
+  "sage.ap_vendor_remit": {
+   "object_type": "RelSageApVendorRemit",
+   "binding": "gen.sage.ap_vendor_remit"
+  },
+  "sage.ar_customer": {
+   "object_type": "RelSageArCustomer",
+   "binding": "gen.sage.ar_customer"
+  },
+  "sage.ar_ship_to": {
+   "object_type": "RelSageArShipTo",
+   "binding": "gen.sage.ar_ship_to"
+  },
+  "sage.gl_account": {
+   "object_type": "RelSageGlAccount",
+   "binding": "gen.sage.gl_account"
+  },
+  "sage.gl_batch": {
+   "object_type": "RelSageGlBatch",
+   "binding": "gen.sage.gl_batch"
+  },
+  "sage.gl_je_detail": {
+   "object_type": "RelSageGlJeDetail",
+   "binding": "gen.sage.gl_je_detail"
+  },
+  "sage.gl_je_header": {
+   "object_type": "RelSageGlJeHeader",
+   "binding": "gen.sage.gl_je_header"
+  },
+  "sage.ic_item": {
+   "object_type": "RelSageIcItem",
+   "binding": "gen.sage.ic_item"
+  },
+  "sage.ic_item_uom": {
+   "object_type": "RelSageIcItemUom",
+   "binding": "gen.sage.ic_item_uom"
+  },
+  "sage.oe_invoice_detail": {
+   "object_type": "RelSageOeInvoiceDetail",
+   "binding": "gen.sage.oe_invoice_detail"
+  },
+  "sage.oe_invoice_header": {
+   "object_type": "RelSageOeInvoiceHeader",
+   "binding": "gen.sage.oe_invoice_header"
+  },
+  "sage.oe_order_detail": {
+   "object_type": "RelSageOeOrderDetail",
+   "binding": "gen.sage.oe_order_detail"
+  },
+  "sage.oe_order_header": {
+   "object_type": "RelSageOeOrderHeader",
+   "binding": "gen.sage.oe_order_header"
+  },
+  "sage.oe_shipment_detail": {
+   "object_type": "RelSageOeShipmentDetail",
+   "binding": "gen.sage.oe_shipment_detail"
+  },
+  "sage.oe_shipment_header": {
+   "object_type": "RelSageOeShipmentHeader",
+   "binding": "gen.sage.oe_shipment_header"
+  },
+  "sage.po_detail": {
+   "object_type": "RelSagePoDetail",
+   "binding": "gen.sage.po_detail"
+  },
+  "sage.po_header": {
+   "object_type": "RelSagePoHeader",
+   "binding": "gen.sage.po_header"
+  },
+  "sage.po_receipt_detail": {
+   "object_type": "RelSagePoReceiptDetail",
+   "binding": "gen.sage.po_receipt_detail"
+  },
+  "sage.po_receipt_header": {
+   "object_type": "RelSagePoReceiptHeader",
+   "binding": "gen.sage.po_receipt_header"
+  },
+  "silver.assembly_order_damage": {
+   "object_type": "RelSilverAssemblyOrderDamage",
+   "binding": "gen.silver.assembly_order_damage"
+  },
+  "silver.assembly_order_items": {
+   "object_type": "RelSilverAssemblyOrderItems",
+   "binding": "gen.silver.assembly_order_items"
+  },
+  "silver.assembly_order_statuses": {
+   "object_type": "RelSilverAssemblyOrderStatuses",
+   "binding": "gen.silver.assembly_order_statuses"
+  },
+  "silver.batch_schedule": {
+   "object_type": "RelSilverBatchSchedule",
+   "binding": "gen.silver.batch_schedule"
+  },
+  "silver.batches": {
+   "object_type": "RelSilverBatches",
+   "binding": "gen.silver.batches"
+  },
+  "silver.bulk_products": {
+   "object_type": "RelSilverBulkProducts",
+   "binding": "gen.silver.bulk_products"
+  },
+  "silver.customers": {
+   "object_type": "RelSilverCustomers",
+   "binding": "gen.silver.customers"
+  },
+  "silver.finished_product_items": {
+   "object_type": "RelSilverFinishedProductItems",
+   "binding": "gen.silver.finished_product_items"
+  },
+  "silver.finished_products": {
+   "object_type": "RelSilverFinishedProducts",
+   "binding": "gen.silver.finished_products"
+  },
+  "silver.manufacturers": {
+   "object_type": "RelSilverManufacturers",
+   "binding": "gen.silver.manufacturers"
+  },
+  "silver.manufacturing_orders": {
+   "object_type": "RelSilverManufacturingOrders",
+   "binding": "gen.silver.manufacturing_orders"
+  },
+  "silver.order_entries": {
+   "object_type": "RelSilverOrderEntries",
+   "binding": "gen.silver.order_entries"
+  },
+  "silver.order_entry_items": {
+   "object_type": "RelSilverOrderEntryItems",
+   "binding": "gen.silver.order_entry_items"
+  },
+  "silver.packaging": {
+   "object_type": "RelSilverPackaging",
+   "binding": "gen.silver.packaging"
+  },
+  "silver.packaging_suppliers": {
+   "object_type": "RelSilverPackagingSuppliers",
+   "binding": "gen.silver.packaging_suppliers"
+  },
+  "silver.production_tasks": {
+   "object_type": "RelSilverProductionTasks",
+   "binding": "gen.silver.production_tasks"
+  },
+  "silver.purchase_order_items": {
+   "object_type": "RelSilverPurchaseOrderItems",
+   "binding": "gen.silver.purchase_order_items"
+  },
+  "silver.purchase_orders": {
+   "object_type": "RelSilverPurchaseOrders",
+   "binding": "gen.silver.purchase_orders"
+  },
+  "silver.raw_material_suppliers": {
+   "object_type": "RelSilverRawMaterialSuppliers",
+   "binding": "gen.silver.raw_material_suppliers"
+  },
+  "silver.raw_materials": {
+   "object_type": "RelSilverRawMaterials",
+   "binding": "gen.silver.raw_materials"
+  },
+  "silver.receipt_pack_items": {
+   "object_type": "RelSilverReceiptPackItems",
+   "binding": "gen.silver.receipt_pack_items"
+  },
+  "silver.receipt_raw_items": {
+   "object_type": "RelSilverReceiptRawItems",
+   "binding": "gen.silver.receipt_raw_items"
+  },
+  "silver.receipts": {
+   "object_type": "RelSilverReceipts",
+   "binding": "gen.silver.receipts"
+  },
+  "silver.shipments": {
+   "object_type": "RelSilverShipments",
+   "binding": "gen.silver.shipments"
+  },
+  "silver.suppliers": {
+   "object_type": "RelSilverSuppliers",
+   "binding": "gen.silver.suppliers"
+  }
+ },
+ "excluded_relations": {},
+ "not_served": {
+  "public.app_access_policy_grant": {
+   "object_type": "RelPublicAppAccessPolicyGrant",
+   "upstream_name": "AccessPolicyGrant",
+   "declared_by": "generated"
+  },
+  "public.app_account": {
+   "object_type": "RelPublicAppAccount",
+   "upstream_name": "Account",
+   "declared_by": "generated"
+  },
+  "public.app_activity_event": {
+   "object_type": "RelPublicAppActivityEvent",
+   "upstream_name": "ActivityEvent",
+   "declared_by": "generated"
+  },
+  "public.app_activity_thread": {
+   "object_type": "RelPublicAppActivityThread",
+   "upstream_name": "ActivityThread",
+   "declared_by": "generated"
+  },
+  "public.app_admin_task": {
+   "object_type": "RelPublicAppAdminTask",
+   "upstream_name": "AdminTask",
+   "declared_by": "generated"
+  },
+  "public.app_agent": {
+   "object_type": "RelPublicAppAgent",
+   "upstream_name": "Agent",
+   "declared_by": "generated"
+  },
+  "public.app_agent_access": {
+   "object_type": "RelPublicAppAgentAccess",
+   "upstream_name": "AgentAccess",
+   "declared_by": "generated"
+  },
+  "public.app_agent_audit_log": {
+   "object_type": "RelPublicAppAgentAuditLog",
+   "upstream_name": "AgentAuditLog",
+   "declared_by": "generated"
+  },
+  "public.app_agent_eval_case": {
+   "object_type": "RelPublicAppAgentEvalCase",
+   "upstream_name": "AgentEvalCase",
+   "declared_by": "generated"
+  },
+  "public.app_agent_eval_result": {
+   "object_type": "RelPublicAppAgentEvalResult",
+   "upstream_name": "AgentEvalResult",
+   "declared_by": "generated"
+  },
+  "public.app_agent_eval_run": {
+   "object_type": "RelPublicAppAgentEvalRun",
+   "upstream_name": "AgentEvalRun",
+   "declared_by": "generated"
+  },
+  "public.app_agent_loop_state": {
+   "object_type": "RelPublicAppAgentLoopState",
+   "upstream_name": "AgentLoopState",
+   "declared_by": "generated"
+  },
+  "public.app_agent_message": {
+   "object_type": "RelPublicAppAgentMessage",
+   "upstream_name": "AgentMessage",
+   "declared_by": "generated"
+  },
+  "public.app_agent_run": {
+   "object_type": "RelPublicAppAgentRun",
+   "upstream_name": "AgentRun",
+   "declared_by": "generated"
+  },
+  "public.app_agent_thread": {
+   "object_type": "RelPublicAppAgentThread",
+   "upstream_name": "AgentThread",
+   "declared_by": "generated"
+  },
+  "public.app_agent_version": {
+   "object_type": "RelPublicAppAgentVersion",
+   "upstream_name": "AgentVersion",
+   "declared_by": "generated"
+  },
+  "public.app_ai_decision": {
+   "object_type": "RelPublicAppAiDecision",
+   "upstream_name": "AIDecision",
+   "declared_by": "generated"
+  },
+  "public.app_ai_prediction": {
+   "object_type": "RelPublicAppAiPrediction",
+   "upstream_name": "AiPrediction",
+   "declared_by": "generated"
+  },
+  "public.app_ai_skill": {
+   "object_type": "RelPublicAppAiSkill",
+   "upstream_name": "AiSkill",
+   "declared_by": "generated"
+  },
+  "public.app_ao_label_reconciliation_line": {
+   "object_type": "RelPublicAppAoLabelReconciliationLine",
+   "upstream_name": "AoLabelReconciliationLine",
+   "declared_by": "generated"
+  },
+  "public.app_ao_label_verification_signoff": {
+   "object_type": "RelPublicAppAoLabelVerificationSignoff",
+   "upstream_name": "AoLabelVerificationSignoff",
+   "declared_by": "generated"
+  },
+  "public.app_ao_line_inspection": {
+   "object_type": "RelPublicAppAoLineInspection",
+   "upstream_name": "AoLineInspection",
+   "declared_by": "generated"
+  },
+  "public.app_ao_qc_release_ack": {
+   "object_type": "RelPublicAppAoQcReleaseAck",
+   "upstream_name": "AoQcReleaseAck",
+   "declared_by": "generated"
+  },
+  "public.app_ao_run_note": {
+   "object_type": "RelPublicAppAoRunNote",
+   "upstream_name": "AoRunNote",
+   "declared_by": "generated"
+  },
+  "public.app_ao_setup_snapshot": {
+   "object_type": "RelPublicAppAoSetupSnapshot",
+   "upstream_name": "AoSetupSnapshot",
+   "declared_by": "generated"
+  },
+  "public.app_api_key": {
+   "object_type": "RelPublicAppApiKey",
+   "upstream_name": "ApiKey",
+   "declared_by": "generated"
+  },
+  "public.app_approval": {
+   "object_type": "RelPublicAppApproval",
+   "upstream_name": "Approval",
+   "declared_by": "generated"
+  },
+  "public.app_artwork_version_basis": {
+   "object_type": "RelPublicAppArtworkVersionBasis",
+   "upstream_name": "ArtworkVersionBasis",
+   "declared_by": "generated"
+  },
+  "public.app_artwork_version_decision": {
+   "object_type": "RelPublicAppArtworkVersionDecision",
+   "upstream_name": "ArtworkVersionDecision",
+   "declared_by": "generated"
+  },
+  "public.app_artwork_version_packaging_item": {
+   "object_type": "RelPublicAppArtworkVersionPackagingItem",
+   "upstream_name": "ArtworkVersionPackagingItem",
+   "declared_by": "generated"
+  },
+  "public.app_assembly_layer_groups": {
+   "object_type": "RelPublicAppAssemblyLayerGroups",
+   "upstream_name": "AssemblyLayerGroup",
+   "declared_by": "generated"
+  },
+  "public.app_attachment": {
+   "object_type": "RelPublicAppAttachment",
+   "upstream_name": "Attachment",
+   "declared_by": "generated"
+  },
+  "public.app_audit_log": {
+   "object_type": "RelPublicAppAuditLog",
+   "upstream_name": "AuditLog",
+   "declared_by": "generated"
+  },
+  "public.app_batch_override": {
+   "object_type": "RelPublicAppBatchOverride",
+   "upstream_name": "BatchOverride",
+   "declared_by": "generated"
+  },
+  "public.app_batch_production_task_local": {
+   "object_type": "RelPublicAppBatchProductionTaskLocal",
+   "upstream_name": "BatchProductionTaskLocal",
+   "declared_by": "generated"
+  },
+  "public.app_batch_record_material": {
+   "object_type": "RelPublicAppBatchRecordMaterial",
+   "upstream_name": "BatchRecordMaterial",
+   "declared_by": "generated"
+  },
+  "public.app_batch_record_step": {
+   "object_type": "RelPublicAppBatchRecordStep",
+   "upstream_name": "BatchRecordStep",
+   "declared_by": "generated"
+  },
+  "public.app_bc_checkpoint": {
+   "object_type": "RelPublicAppBcCheckpoint",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.app_bc_dead_letter": {
+   "object_type": "RelPublicAppBcDeadLetter",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.app_bc_inbox": {
+   "object_type": "RelPublicAppBcInbox",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.app_bc_outbox": {
+   "object_type": "RelPublicAppBcOutbox",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.app_bc_sync_run": {
+   "object_type": "RelPublicAppBcSyncRun",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.app_bench_item": {
+   "object_type": "RelPublicAppBenchItem",
+   "upstream_name": "BenchItem",
+   "declared_by": "generated"
+  },
+  "public.app_bill_of_materials": {
+   "object_type": "BillOfMaterials",
+   "upstream_name": "BillOfMaterials",
+   "declared_by": "generated"
+  },
+  "public.app_bin_location": {
+   "object_type": "RelPublicAppBinLocation",
+   "upstream_name": "BinLocation",
+   "declared_by": "generated"
+  },
+  "public.app_bom_line": {
+   "object_type": "RelPublicAppBomLine",
+   "upstream_name": "BomLine",
+   "declared_by": "generated"
+  },
+  "public.app_brief_invite": {
+   "object_type": "RelPublicAppBriefInvite",
+   "upstream_name": "BriefInvite",
+   "declared_by": "generated"
+  },
+  "public.app_bulk_inventory_lab_id": {
+   "object_type": "RelPublicAppBulkInventoryLabId",
+   "upstream_name": "BulkInventoryLabId",
+   "declared_by": "generated"
+  },
+  "public.app_calibration_record": {
+   "object_type": "RelPublicAppCalibrationRecord",
+   "upstream_name": "CalibrationRecord",
+   "declared_by": "generated"
+  },
+  "public.app_capa": {
+   "object_type": "RelPublicAppCapa",
+   "upstream_name": "Capa",
+   "declared_by": "generated"
+  },
+  "public.app_capacity_scenario": {
+   "object_type": "RelPublicAppCapacityScenario",
+   "upstream_name": "CapacityScenario",
+   "declared_by": "generated"
+  },
+  "public.app_changeover_event": {
+   "object_type": "RelPublicAppChangeoverEvent",
+   "upstream_name": "ChangeoverEvent",
+   "declared_by": "generated"
+  },
+  "public.app_client_error": {
+   "object_type": "RelPublicAppClientError",
+   "upstream_name": "ClientError",
+   "declared_by": "generated"
+  },
+  "public.app_component_classification": {
+   "object_type": "RelPublicAppComponentClassification",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.app_component_field": {
+   "object_type": "RelPublicAppComponentField",
+   "upstream_name": "ComponentField",
+   "declared_by": "generated"
+  },
+  "public.app_component_field_value": {
+   "object_type": "RelPublicAppComponentFieldValue",
+   "upstream_name": "ComponentFieldValue",
+   "declared_by": "generated"
+  },
+  "public.app_component_rule": {
+   "object_type": "RelPublicAppComponentRule",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.app_component_type": {
+   "object_type": "RelPublicAppComponentType",
+   "upstream_name": "ComponentType",
+   "declared_by": "generated"
+  },
+  "public.app_contact_email_subscription": {
+   "object_type": "RelPublicAppContactEmailSubscription",
+   "upstream_name": "ContactEmailSubscription",
+   "declared_by": "generated"
+  },
+  "public.app_credit_application": {
+   "object_type": "RelPublicAppCreditApplication",
+   "upstream_name": "CreditApplication",
+   "declared_by": "generated"
+  },
+  "public.app_crew_shift_capacity": {
+   "object_type": "RelPublicAppCrewShiftCapacity",
+   "upstream_name": "CrewShiftCapacity",
+   "declared_by": "generated"
+  },
+  "public.app_customer_contact": {
+   "object_type": "RelPublicAppCustomerContact",
+   "upstream_name": "CustomerContact",
+   "declared_by": "generated"
+  },
+  "public.app_customer_label_rule": {
+   "object_type": "RelPublicAppCustomerLabelRule",
+   "upstream_name": "CustomerLabelRule",
+   "declared_by": "generated"
+  },
+  "public.app_customer_local": {
+   "object_type": "RelPublicAppCustomerLocal",
+   "upstream_name": "CustomerLocal",
+   "declared_by": "generated"
+  },
+  "public.app_customer_material_request": {
+   "object_type": "RelPublicAppCustomerMaterialRequest",
+   "upstream_name": "CustomerMaterialRequest",
+   "declared_by": "generated"
+  },
+  "public.app_customer_material_request_line": {
+   "object_type": "RelPublicAppCustomerMaterialRequestLine",
+   "upstream_name": "CustomerMaterialRequestLine",
+   "declared_by": "generated"
+  },
+  "public.app_customer_override": {
+   "object_type": "RelPublicAppCustomerOverride",
+   "upstream_name": "CustomerOverride",
+   "declared_by": "generated"
+  },
+  "public.app_customer_pitch": {
+   "object_type": "RelPublicAppCustomerPitch",
+   "upstream_name": "CustomerPitch",
+   "declared_by": "generated"
+  },
+  "public.app_customer_requirement": {
+   "object_type": "RelPublicAppCustomerRequirement",
+   "upstream_name": "CustomerRequirement",
+   "declared_by": "generated"
+  },
+  "public.app_customer_supplied_item": {
+   "object_type": "RelPublicAppCustomerSuppliedItem",
+   "upstream_name": "CustomerSuppliedItem",
+   "declared_by": "generated"
+  },
+  "public.app_cycle_count": {
+   "object_type": "RelPublicAppCycleCount",
+   "upstream_name": "CycleCount",
+   "declared_by": "generated"
+  },
+  "public.app_cycle_count_line": {
+   "object_type": "RelPublicAppCycleCountLine",
+   "upstream_name": "CycleCountLine",
+   "declared_by": "generated"
+  },
+  "public.app_department": {
+   "object_type": "RelPublicAppDepartment",
+   "upstream_name": "Department",
+   "declared_by": "generated"
+  },
+  "public.app_deviation": {
+   "object_type": "RelPublicAppDeviation",
+   "upstream_name": "Deviation",
+   "declared_by": "generated"
+  },
+  "public.app_document": {
+   "object_type": "RelPublicAppDocument",
+   "upstream_name": "Document",
+   "declared_by": "generated"
+  },
+  "public.app_document_tag": {
+   "object_type": "RelPublicAppDocumentTag",
+   "upstream_name": "DocumentTag",
+   "declared_by": "generated"
+  },
+  "public.app_draft_cost_override": {
+   "object_type": "RelPublicAppDraftCostOverride",
+   "upstream_name": "DraftCostOverride",
+   "declared_by": "generated"
+  },
+  "public.app_electronic_signature": {
+   "object_type": "RelPublicAppElectronicSignature",
+   "upstream_name": "ElectronicSignature",
+   "declared_by": "generated"
+  },
+  "public.app_email_message": {
+   "object_type": "RelPublicAppEmailMessage",
+   "upstream_name": "EmailMessage",
+   "declared_by": "generated"
+  },
+  "public.app_email_sender": {
+   "object_type": "RelPublicAppEmailSender",
+   "upstream_name": "EmailSender",
+   "declared_by": "generated"
+  },
+  "public.app_email_type": {
+   "object_type": "RelPublicAppEmailType",
+   "upstream_name": "EmailType",
+   "declared_by": "generated"
+  },
+  "public.app_employee_rate": {
+   "object_type": "RelPublicAppEmployeeRate",
+   "upstream_name": "EmployeeRate",
+   "declared_by": "generated"
+  },
+  "public.app_entra_projection_intent": {
+   "object_type": "RelPublicAppEntraProjectionIntent",
+   "upstream_name": "EntraProjectionIntent",
+   "declared_by": "generated"
+  },
+  "public.app_entra_reconciliation_cursor": {
+   "object_type": "RelPublicAppEntraReconciliationCursor",
+   "upstream_name": "EntraReconciliationCursor",
+   "declared_by": "generated"
+  },
+  "public.app_eqms_event": {
+   "object_type": "RelPublicAppEqmsEvent",
+   "upstream_name": "EqmsEvent",
+   "declared_by": "generated"
+  },
+  "public.app_eqms_link": {
+   "object_type": "RelPublicAppEqmsLink",
+   "upstream_name": "EqmsLink",
+   "declared_by": "generated"
+  },
+  "public.app_eqms_record": {
+   "object_type": "QualityRecord",
+   "upstream_name": "EqmsRecord",
+   "declared_by": "generated"
+  },
+  "public.app_eqms_section": {
+   "object_type": "RelPublicAppEqmsSection",
+   "upstream_name": "EqmsSection",
+   "declared_by": "generated"
+  },
+  "public.app_eqms_sequence": {
+   "object_type": "RelPublicAppEqmsSequence",
+   "upstream_name": "EqmsSequence",
+   "declared_by": "generated"
+  },
+  "public.app_equipment": {
+   "object_type": "RelPublicAppEquipment",
+   "upstream_name": "Equipment",
+   "declared_by": "generated"
+  },
+  "public.app_equipment_asset": {
+   "object_type": "RelPublicAppEquipmentAsset",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.app_feedback": {
+   "object_type": "RelPublicAppFeedback",
+   "upstream_name": "Feedback",
+   "declared_by": "generated"
+  },
+  "public.app_feedback_attachment": {
+   "object_type": "RelPublicAppFeedbackAttachment",
+   "upstream_name": "FeedbackAttachment",
+   "declared_by": "generated"
+  },
+  "public.app_feedback_event": {
+   "object_type": "RelPublicAppFeedbackEvent",
+   "upstream_name": "FeedbackEvent",
+   "declared_by": "generated"
+  },
+  "public.app_fg_item_revision": {
+   "object_type": "RelPublicAppFgItemRevision",
+   "upstream_name": "FgItemRevision",
+   "declared_by": "generated"
+  },
+  "public.app_fg_pack_draft": {
+   "object_type": "RelPublicAppFgPackDraft",
+   "upstream_name": "FgPackDraft",
+   "declared_by": "generated"
+  },
+  "public.app_fg_route_plan": {
+   "object_type": "RelPublicAppFgRoutePlan",
+   "upstream_name": "FgRoutePlan",
+   "declared_by": "generated"
+  },
+  "public.app_fg_route_plan_band": {
+   "object_type": "RelPublicAppFgRoutePlanBand",
+   "upstream_name": "FgRoutePlanBand",
+   "declared_by": "generated"
+  },
+  "public.app_fg_routing": {
+   "object_type": "RelPublicAppFgRouting",
+   "upstream_name": "FgRouting",
+   "declared_by": "generated"
+  },
+  "public.app_fm_mapping_override": {
+   "object_type": "RelPublicAppFmMappingOverride",
+   "upstream_name": "FMMappingOverride",
+   "declared_by": "generated"
+  },
+  "public.app_fm_tank_vessel_map": {
+   "object_type": "RelPublicAppFmTankVesselMap",
+   "upstream_name": "FmTankVesselMap",
+   "declared_by": "generated"
+  },
+  "public.app_form_request": {
+   "object_type": "RelPublicAppFormRequest",
+   "upstream_name": "FormRequest",
+   "declared_by": "generated"
+  },
+  "public.app_formula_compounding_standard": {
+   "object_type": "RelPublicAppFormulaCompoundingStandard",
+   "upstream_name": "FormulaCompoundingStandard",
+   "declared_by": "generated"
+  },
+  "public.app_formula_edit_log": {
+   "object_type": "RelPublicAppFormulaEditLog",
+   "upstream_name": "FormulaEditLog",
+   "declared_by": "generated"
+  },
+  "public.app_formula_progress_options": {
+   "object_type": "RelPublicAppFormulaProgressOptions",
+   "upstream_name": "FormulaProgressOption",
+   "declared_by": "generated"
+  },
+  "public.app_formula_sample_item": {
+   "object_type": "RelPublicAppFormulaSampleItem",
+   "upstream_name": "FormulaSampleItem",
+   "declared_by": "generated"
+  },
+  "public.app_formula_spec_row": {
+   "object_type": "RelPublicAppFormulaSpecRow",
+   "upstream_name": "FormulaSpecRow",
+   "declared_by": "generated"
+  },
+  "public.app_formulation": {
+   "object_type": "RelPublicAppFormulation",
+   "upstream_name": "Formulation",
+   "declared_by": "generated"
+  },
+  "public.app_formulation_ingredient": {
+   "object_type": "RelPublicAppFormulationIngredient",
+   "upstream_name": "FormulationIngredient",
+   "declared_by": "generated"
+  },
+  "public.app_formulation_step": {
+   "object_type": "RelPublicAppFormulationStep",
+   "upstream_name": "FormulationStep",
+   "declared_by": "generated"
+  },
+  "public.app_gate_transition": {
+   "object_type": "RelPublicAppGateTransition",
+   "upstream_name": "GateTransition",
+   "declared_by": "generated"
+  },
+  "public.app_grid_configuration": {
+   "object_type": "RelPublicAppGridConfiguration",
+   "upstream_name": "GridConfiguration",
+   "declared_by": "generated"
+  },
+  "public.app_incoming_qc_record": {
+   "object_type": "RelPublicAppIncomingQcRecord",
+   "upstream_name": "IncomingQcRecord",
+   "declared_by": "generated"
+  },
+  "public.app_ingredient": {
+   "object_type": "RelPublicAppIngredient",
+   "upstream_name": "Ingredient",
+   "declared_by": "generated"
+  },
+  "public.app_inventory": {
+   "object_type": "RelPublicAppInventory",
+   "upstream_name": "Inventory",
+   "declared_by": "generated"
+  },
+  "public.app_inventory_item_transaction": {
+   "object_type": "RelPublicAppInventoryItemTransaction",
+   "upstream_name": "InventoryItemTransaction",
+   "declared_by": "generated"
+  },
+  "public.app_inventory_lot": {
+   "object_type": "Lot",
+   "upstream_name": "InventoryLot",
+   "declared_by": "pending/people_lots.json"
+  },
+  "public.app_inventory_transaction": {
+   "object_type": "RelPublicAppInventoryTransaction",
+   "upstream_name": "InventoryTransaction",
+   "declared_by": "generated"
+  },
+  "public.app_knowledge_gap": {
+   "object_type": "RelPublicAppKnowledgeGap",
+   "upstream_name": "KnowledgeGap",
+   "declared_by": "generated"
+  },
+  "public.app_label_change_check": {
+   "object_type": "RelPublicAppLabelChangeCheck",
+   "upstream_name": "LabelChangeCheck",
+   "declared_by": "generated"
+  },
+  "public.app_label_complaint": {
+   "object_type": "RelPublicAppLabelComplaint",
+   "upstream_name": "LabelComplaint",
+   "declared_by": "generated"
+  },
+  "public.app_label_complaint_lot_disposition": {
+   "object_type": "RelPublicAppLabelComplaintLotDisposition",
+   "upstream_name": "LabelComplaintLotDisposition",
+   "declared_by": "generated"
+  },
+  "public.app_label_complaint_photo": {
+   "object_type": "RelPublicAppLabelComplaintPhoto",
+   "upstream_name": "LabelComplaintPhoto",
+   "declared_by": "generated"
+  },
+  "public.app_lead": {
+   "object_type": "RelPublicAppLead",
+   "upstream_name": "Lead",
+   "declared_by": "generated"
+  },
+  "public.app_license_plate": {
+   "object_type": "RelPublicAppLicensePlate",
+   "upstream_name": "LicensePlate",
+   "declared_by": "generated"
+  },
+  "public.app_line_action_setup_standard": {
+   "object_type": "RelPublicAppLineActionSetupStandard",
+   "upstream_name": "LineActionSetupStandard",
+   "declared_by": "generated"
+  },
+  "public.app_line_diagram": {
+   "object_type": "RelPublicAppLineDiagram",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.app_line_overhead_rate": {
+   "object_type": "RelPublicAppLineOverheadRate",
+   "upstream_name": "LineOverheadRate",
+   "declared_by": "generated"
+  },
+  "public.app_line_product_diagram": {
+   "object_type": "RelPublicAppLineProductDiagram",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.app_line_trial": {
+   "object_type": "RelPublicAppLineTrial",
+   "upstream_name": "LineTrial",
+   "declared_by": "generated"
+  },
+  "public.app_link_kind": {
+   "object_type": "RelPublicAppLinkKind",
+   "upstream_name": "LinkKind",
+   "declared_by": "generated"
+  },
+  "public.app_location": {
+   "object_type": "RelPublicAppLocation",
+   "upstream_name": "Location",
+   "declared_by": "generated"
+  },
+  "public.app_maintenance_work_order": {
+   "object_type": "RelPublicAppMaintenanceWorkOrder",
+   "upstream_name": "MaintenanceWorkOrder",
+   "declared_by": "generated"
+  },
+  "public.app_material_evidence": {
+   "object_type": "RelPublicAppMaterialEvidence",
+   "upstream_name": "MaterialEvidence",
+   "declared_by": "generated"
+  },
+  "public.app_notification": {
+   "object_type": "RelPublicAppNotification",
+   "upstream_name": "Notification",
+   "declared_by": "generated"
+  },
+  "public.app_order_prepayment": {
+   "object_type": "RelPublicAppOrderPrepayment",
+   "upstream_name": "OrderPrepayment",
+   "declared_by": "generated"
+  },
+  "public.app_page_rating": {
+   "object_type": "RelPublicAppPageRating",
+   "upstream_name": "PageRating",
+   "declared_by": "generated"
+  },
+  "public.app_page_view": {
+   "object_type": "RelPublicAppPageView",
+   "upstream_name": "PageView",
+   "declared_by": "generated"
+  },
+  "public.app_party_email_setting": {
+   "object_type": "RelPublicAppPartyEmailSetting",
+   "upstream_name": "PartyEmailSetting",
+   "declared_by": "generated"
+  },
+  "public.app_pd_number_sequence": {
+   "object_type": "RelPublicAppPdNumberSequence",
+   "upstream_name": "PdNumberSequence",
+   "declared_by": "generated"
+  },
+  "public.app_person": {
+   "object_type": "RelPublicAppPerson",
+   "upstream_name": "Person",
+   "declared_by": "generated"
+  },
+  "public.app_persona_qa_action_tape": {
+   "object_type": "RelPublicAppPersonaQaActionTape",
+   "upstream_name": "PersonaQaActionTape",
+   "declared_by": "generated"
+  },
+  "public.app_persona_qa_evidence": {
+   "object_type": "RelPublicAppPersonaQaEvidence",
+   "upstream_name": "PersonaQaEvidence",
+   "declared_by": "generated"
+  },
+  "public.app_persona_qa_finding": {
+   "object_type": "RelPublicAppPersonaQaFinding",
+   "upstream_name": "PersonaQaFinding",
+   "declared_by": "generated"
+  },
+  "public.app_persona_qa_generated_test": {
+   "object_type": "RelPublicAppPersonaQaGeneratedTest",
+   "upstream_name": "PersonaQaGeneratedTest",
+   "declared_by": "generated"
+  },
+  "public.app_persona_qa_quirk": {
+   "object_type": "RelPublicAppPersonaQaQuirk",
+   "upstream_name": "PersonaQaQuirk",
+   "declared_by": "generated"
+  },
+  "public.app_persona_qa_remediation": {
+   "object_type": "RelPublicAppPersonaQaRemediation",
+   "upstream_name": "PersonaQaRemediation",
+   "declared_by": "generated"
+  },
+  "public.app_persona_qa_run": {
+   "object_type": "RelPublicAppPersonaQaRun",
+   "upstream_name": "PersonaQaRun",
+   "declared_by": "generated"
+  },
+  "public.app_pick_line": {
+   "object_type": "RelPublicAppPickLine",
+   "upstream_name": "PickLine",
+   "declared_by": "generated"
+  },
+  "public.app_pick_list": {
+   "object_type": "PickList",
+   "upstream_name": "PickList",
+   "declared_by": "generated"
+  },
+  "public.app_pinned_communication": {
+   "object_type": "RelPublicAppPinnedCommunication",
+   "upstream_name": "PinnedCommunication",
+   "declared_by": "generated"
+  },
+  "public.app_policy_approval_type": {
+   "object_type": "RelPublicAppPolicyApprovalType",
+   "upstream_name": "PolicyApprovalType",
+   "declared_by": "generated"
+  },
+  "public.app_policy_approval_type_department": {
+   "object_type": "RelPublicAppPolicyApprovalTypeDepartment",
+   "upstream_name": "PolicyApprovalTypeDepartment",
+   "declared_by": "generated"
+  },
+  "public.app_policy_evidence_map": {
+   "object_type": "RelPublicAppPolicyEvidenceMap",
+   "upstream_name": "PolicyEvidenceMap",
+   "declared_by": "generated"
+  },
+  "public.app_policy_requirement_type": {
+   "object_type": "RelPublicAppPolicyRequirementType",
+   "upstream_name": "PolicyRequirementType",
+   "declared_by": "generated"
+  },
+  "public.app_preweigh_line": {
+   "object_type": "RelPublicAppPreweighLine",
+   "upstream_name": "PreWeighLine",
+   "declared_by": "generated"
+  },
+  "public.app_preweigh_task": {
+   "object_type": "RelPublicAppPreweighTask",
+   "upstream_name": "PreWeighTask",
+   "declared_by": "generated"
+  },
+  "public.app_printer_order_confirmation": {
+   "object_type": "RelPublicAppPrinterOrderConfirmation",
+   "upstream_name": "PrinterOrderConfirmation",
+   "declared_by": "generated"
+  },
+  "public.app_printer_order_confirmation_line": {
+   "object_type": "RelPublicAppPrinterOrderConfirmationLine",
+   "upstream_name": "PrinterOrderConfirmationLine",
+   "declared_by": "generated"
+  },
+  "public.app_prod_line_group_lookup": {
+   "object_type": "RelPublicAppProdLineGroupLookup",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.app_product_category": {
+   "object_type": "RelPublicAppProductCategory",
+   "upstream_name": "ProductCategory",
+   "declared_by": "generated"
+  },
+  "public.app_product_line_override": {
+   "object_type": "RelPublicAppProductLineOverride",
+   "upstream_name": "ProductLineOverride",
+   "declared_by": "generated"
+  },
+  "public.app_product_pack_spec": {
+   "object_type": "RelPublicAppProductPackSpec",
+   "upstream_name": "ProductPackSpec",
+   "declared_by": "generated"
+  },
+  "public.app_product_selling_price": {
+   "object_type": "RelPublicAppProductSellingPrice",
+   "upstream_name": "ProductSellingPrice",
+   "declared_by": "generated"
+  },
+  "public.app_product_uom_barcode": {
+   "object_type": "RelPublicAppProductUomBarcode",
+   "upstream_name": "ProductUomBarcode",
+   "declared_by": "generated"
+  },
+  "public.app_production_groups": {
+   "object_type": "RelPublicAppProductionGroups",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.app_production_vessel": {
+   "object_type": "RelPublicAppProductionVessel",
+   "upstream_name": "ProductionVessel",
+   "declared_by": "generated"
+  },
+  "public.app_project": {
+   "object_type": "RelPublicAppProject",
+   "upstream_name": "Project",
+   "declared_by": "generated"
+  },
+  "public.app_project_artwork": {
+   "object_type": "RelPublicAppProjectArtwork",
+   "upstream_name": "ProjectArtwork",
+   "declared_by": "generated"
+  },
+  "public.app_project_artwork_check": {
+   "object_type": "RelPublicAppProjectArtworkCheck",
+   "upstream_name": "ProjectArtworkCheck",
+   "declared_by": "generated"
+  },
+  "public.app_project_brief_ext": {
+   "object_type": "RelPublicAppProjectBriefExt",
+   "upstream_name": "ProjectBriefExt",
+   "declared_by": "generated"
+  },
+  "public.app_project_dev_state": {
+   "object_type": "RelPublicAppProjectDevState",
+   "upstream_name": "ProjectDevState",
+   "declared_by": "generated"
+  },
+  "public.app_project_evidence_waiver": {
+   "object_type": "RelPublicAppProjectEvidenceWaiver",
+   "upstream_name": "ProjectEvidenceWaiver",
+   "declared_by": "generated"
+  },
+  "public.app_project_feedback": {
+   "object_type": "RelPublicAppProjectFeedback",
+   "upstream_name": "ProjectFeedback",
+   "declared_by": "generated"
+  },
+  "public.app_project_gate_decision": {
+   "object_type": "RelPublicAppProjectGateDecision",
+   "upstream_name": "ProjectGateDecision",
+   "declared_by": "generated"
+  },
+  "public.app_project_gate_signoff": {
+   "object_type": "RelPublicAppProjectGateSignoff",
+   "upstream_name": "ProjectGateSignoff",
+   "declared_by": "generated"
+  },
+  "public.app_project_local": {
+   "object_type": "RelPublicAppProjectLocal",
+   "upstream_name": "ProjectLocal",
+   "declared_by": "generated"
+  },
+  "public.app_project_override": {
+   "object_type": "RelPublicAppProjectOverride",
+   "upstream_name": "ProjectOverride",
+   "declared_by": "generated"
+  },
+  "public.app_project_phase_event": {
+   "object_type": "RelPublicAppProjectPhaseEvent",
+   "upstream_name": "ProjectPhaseEvent",
+   "declared_by": "generated"
+  },
+  "public.app_project_phase_state": {
+   "object_type": "RelPublicAppProjectPhaseState",
+   "upstream_name": "ProjectPhaseState",
+   "declared_by": "generated"
+  },
+  "public.app_project_pipeline": {
+   "object_type": "RelPublicAppProjectPipeline",
+   "upstream_name": "ProjectPipeline",
+   "declared_by": "generated"
+  },
+  "public.app_project_pipeline_event": {
+   "object_type": "RelPublicAppProjectPipelineEvent",
+   "upstream_name": "ProjectPipelineEvent",
+   "declared_by": "generated"
+  },
+  "public.app_project_requirement": {
+   "object_type": "RelPublicAppProjectRequirement",
+   "upstream_name": "ProjectRequirement",
+   "declared_by": "generated"
+  },
+  "public.app_project_seed_provenance": {
+   "object_type": "RelPublicAppProjectSeedProvenance",
+   "upstream_name": "ProjectSeedProvenance",
+   "declared_by": "generated"
+  },
+  "public.app_project_subassembly": {
+   "object_type": "RelPublicAppProjectSubassembly",
+   "upstream_name": "ProjectSubAssembly",
+   "declared_by": "generated"
+  },
+  "public.app_project_task": {
+   "object_type": "RelPublicAppProjectTask",
+   "upstream_name": "ProjectTask",
+   "declared_by": "generated"
+  },
+  "public.app_project_test_flag": {
+   "object_type": "RelPublicAppProjectTestFlag",
+   "upstream_name": "ProjectTestFlag",
+   "declared_by": "generated"
+  },
+  "public.app_projected_revenue_snapshot": {
+   "object_type": "RelPublicAppProjectedRevenueSnapshot",
+   "upstream_name": "ProjectedRevenueSnapshot",
+   "declared_by": "generated"
+  },
+  "public.app_provisioning_audit_log": {
+   "object_type": "RelPublicAppProvisioningAuditLog",
+   "upstream_name": "ProvisioningAuditLog",
+   "declared_by": "generated"
+  },
+  "public.app_pulse_campaign": {
+   "object_type": "RelPublicAppPulseCampaign",
+   "upstream_name": "PulseCampaign",
+   "declared_by": "generated"
+  },
+  "public.app_pulse_response": {
+   "object_type": "RelPublicAppPulseResponse",
+   "upstream_name": "PulseResponse",
+   "declared_by": "generated"
+  },
+  "public.app_pulse_template": {
+   "object_type": "RelPublicAppPulseTemplate",
+   "upstream_name": "PulseTemplate",
+   "declared_by": "generated"
+  },
+  "public.app_qc_specification": {
+   "object_type": "RelPublicAppQcSpecification",
+   "upstream_name": "QcSpecification",
+   "declared_by": "generated"
+  },
+  "public.app_qc_test": {
+   "object_type": "RelPublicAppQcTest",
+   "upstream_name": "QcTest",
+   "declared_by": "generated"
+  },
+  "public.app_quality_test": {
+   "object_type": "RelPublicAppQualityTest",
+   "upstream_name": "QualityTest",
+   "declared_by": "generated"
+  },
+  "public.app_quality_test_attachment": {
+   "object_type": "RelPublicAppQualityTestAttachment",
+   "upstream_name": "QualityTestAttachment",
+   "declared_by": "generated"
+  },
+  "public.app_quality_test_measurement": {
+   "object_type": "RelPublicAppQualityTestMeasurement",
+   "upstream_name": "QualityTestMeasurement",
+   "declared_by": "generated"
+  },
+  "public.app_quote_volume": {
+   "object_type": "RelPublicAppQuoteVolume",
+   "upstream_name": "QuoteVolume",
+   "declared_by": "generated"
+  },
+  "public.app_rate_settings": {
+   "object_type": "RelPublicAppRateSettings",
+   "upstream_name": "RateSettings",
+   "declared_by": "generated"
+  },
+  "public.app_record_link": {
+   "object_type": "RelPublicAppRecordLink",
+   "upstream_name": "RecordLink",
+   "declared_by": "generated"
+  },
+  "public.app_record_type": {
+   "object_type": "RelPublicAppRecordType",
+   "upstream_name": "RecordType",
+   "declared_by": "generated"
+  },
+  "public.app_reorder_rule": {
+   "object_type": "RelPublicAppReorderRule",
+   "upstream_name": "ReorderRule",
+   "declared_by": "generated"
+  },
+  "public.app_run_volume_tier": {
+   "object_type": "RelPublicAppRunVolumeTier",
+   "upstream_name": "RunVolumeTier",
+   "declared_by": "generated"
+  },
+  "public.app_sales_return": {
+   "object_type": "RelPublicAppSalesReturn",
+   "upstream_name": "SalesReturn",
+   "declared_by": "generated"
+  },
+  "public.app_sample_dispatch": {
+   "object_type": "RelPublicAppSampleDispatch",
+   "upstream_name": "SampleDispatch",
+   "declared_by": "generated"
+  },
+  "public.app_security_event": {
+   "object_type": "RelPublicAppSecurityEvent",
+   "upstream_name": "SecurityEvent",
+   "declared_by": "generated"
+  },
+  "public.app_session": {
+   "object_type": "RelPublicAppSession",
+   "upstream_name": "Session",
+   "declared_by": "generated"
+  },
+  "public.app_setting": {
+   "object_type": "RelPublicAppSetting",
+   "upstream_name": "AppSetting",
+   "declared_by": "generated"
+  },
+  "public.app_ship_release_line": {
+   "object_type": "RelPublicAppShipReleaseLine",
+   "upstream_name": "ShipReleaseLine",
+   "declared_by": "generated"
+  },
+  "public.app_shipment_allocation": {
+   "object_type": "RelPublicAppShipmentAllocation",
+   "upstream_name": "ShipmentAllocation",
+   "declared_by": "generated"
+  },
+  "public.app_shipment_dock_scan": {
+   "object_type": "RelPublicAppShipmentDockScan",
+   "upstream_name": "ShipmentDockScan",
+   "declared_by": "generated"
+  },
+  "public.app_shipment_order": {
+   "object_type": "RelPublicAppShipmentOrder",
+   "upstream_name": "ShipmentOrder",
+   "declared_by": "generated"
+  },
+  "public.app_sourcing_request": {
+   "object_type": "RelPublicAppSourcingRequest",
+   "upstream_name": "AssemblySourcingRequest",
+   "declared_by": "generated"
+  },
+  "public.app_sourcing_sample": {
+   "object_type": "RelPublicAppSourcingSample",
+   "upstream_name": "AssemblySourcingSample",
+   "declared_by": "generated"
+  },
+  "public.app_sourcing_vendor_package": {
+   "object_type": "RelPublicAppSourcingVendorPackage",
+   "upstream_name": "AssemblySourcingVendorPackage",
+   "declared_by": "generated"
+  },
+  "public.app_sourcing_vendor_package_line": {
+   "object_type": "RelPublicAppSourcingVendorPackageLine",
+   "upstream_name": "AssemblySourcingVendorPackageLine",
+   "declared_by": "generated"
+  },
+  "public.app_stability_study": {
+   "object_type": "RelPublicAppStabilityStudy",
+   "upstream_name": "StabilityStudy",
+   "declared_by": "generated"
+  },
+  "public.app_stability_time_point": {
+   "object_type": "RelPublicAppStabilityTimePoint",
+   "upstream_name": "StabilityTimePoint",
+   "declared_by": "generated"
+  },
+  "public.app_stock_movement": {
+   "object_type": "RelPublicAppStockMovement",
+   "upstream_name": "StockMovement",
+   "declared_by": "generated"
+  },
+  "public.app_storage_finalize_job": {
+   "object_type": "RelPublicAppStorageFinalizeJob",
+   "upstream_name": "StorageFinalizeJob",
+   "declared_by": "generated"
+  },
+  "public.app_storage_location": {
+   "object_type": "RelPublicAppStorageLocation",
+   "upstream_name": "StorageLocation",
+   "declared_by": "generated"
+  },
+  "public.app_supplier_certification": {
+   "object_type": "RelPublicAppSupplierCertification",
+   "upstream_name": "SupplierCertification",
+   "declared_by": "generated"
+  },
+  "public.app_supplier_contact": {
+   "object_type": "RelPublicAppSupplierContact",
+   "upstream_name": "SupplierContact",
+   "declared_by": "generated"
+  },
+  "public.app_supplier_location": {
+   "object_type": "RelPublicAppSupplierLocation",
+   "upstream_name": "SupplierLocation",
+   "declared_by": "generated"
+  },
+  "public.app_template_assembly_cost_matrix": {
+   "object_type": "RelPublicAppTemplateAssemblyCostMatrix",
+   "upstream_name": "TemplateAssemblyCostMatrix",
+   "declared_by": "generated"
+  },
+  "public.app_template_compounding_cost_matrix": {
+   "object_type": "RelPublicAppTemplateCompoundingCostMatrix",
+   "upstream_name": "TemplateCompoundingCostMatrix",
+   "declared_by": "generated"
+  },
+  "public.app_temporary_elevation_grant": {
+   "object_type": "RelPublicAppTemporaryElevationGrant",
+   "upstream_name": "TemporaryElevationGrant",
+   "declared_by": "generated"
+  },
+  "public.app_temporary_elevation_request": {
+   "object_type": "RelPublicAppTemporaryElevationRequest",
+   "upstream_name": "TemporaryElevationRequest",
+   "declared_by": "generated"
+  },
+  "public.app_test_lot": {
+   "object_type": "RelPublicAppTestLot",
+   "upstream_name": "AppTestLot",
+   "declared_by": "generated"
+  },
+  "public.app_test_lot_allocation": {
+   "object_type": "RelPublicAppTestLotAllocation",
+   "upstream_name": "AppTestLotAllocation",
+   "declared_by": "generated"
+  },
+  "public.app_theoretical_fg": {
+   "object_type": "RelPublicAppTheoreticalFg",
+   "upstream_name": "TheoreticalFG",
+   "declared_by": "generated"
+  },
+  "public.app_three_pl_activity_snapshot": {
+   "object_type": "RelPublicAppThreePlActivitySnapshot",
+   "upstream_name": "ThreePlActivitySnapshot",
+   "declared_by": "generated"
+  },
+  "public.app_three_pl_billing_line": {
+   "object_type": "RelPublicAppThreePlBillingLine",
+   "upstream_name": "ThreePlBillingLine",
+   "declared_by": "generated"
+  },
+  "public.app_three_pl_billing_run": {
+   "object_type": "RelPublicAppThreePlBillingRun",
+   "upstream_name": "ThreePlBillingRun",
+   "declared_by": "generated"
+  },
+  "public.app_three_pl_rate_card": {
+   "object_type": "RelPublicAppThreePlRateCard",
+   "upstream_name": "ThreePlRateCard",
+   "declared_by": "generated"
+  },
+  "public.app_three_pl_rate_line": {
+   "object_type": "RelPublicAppThreePlRateLine",
+   "upstream_name": "ThreePlRateLine",
+   "declared_by": "generated"
+  },
+  "public.app_triple_t_conversation": {
+   "object_type": "RelPublicAppTripleTConversation",
+   "upstream_name": "TripleTConversation",
+   "declared_by": "generated"
+  },
+  "public.app_triple_t_message": {
+   "object_type": "RelPublicAppTripleTMessage",
+   "upstream_name": "TripleTMessage",
+   "declared_by": "generated"
+  },
+  "public.app_triple_t_model_prior": {
+   "object_type": "RelPublicAppTripleTModelPrior",
+   "upstream_name": "TripleTModelPrior",
+   "declared_by": "generated"
+  },
+  "public.app_uat_agent_event": {
+   "object_type": "RelPublicAppUatAgentEvent",
+   "upstream_name": "UatAgentEvent",
+   "declared_by": "generated"
+  },
+  "public.app_uat_agent_outbox": {
+   "object_type": "RelPublicAppUatAgentOutbox",
+   "upstream_name": "UatAgentOutbox",
+   "declared_by": "generated"
+  },
+  "public.app_uat_agent_run": {
+   "object_type": "RelPublicAppUatAgentRun",
+   "upstream_name": "UatAgentRun",
+   "declared_by": "generated"
+  },
+  "public.app_uat_clarification_request": {
+   "object_type": "RelPublicAppUatClarificationRequest",
+   "upstream_name": "UatClarificationRequest",
+   "declared_by": "generated"
+  },
+  "public.app_uat_feedback_event": {
+   "object_type": "RelPublicAppUatFeedbackEvent",
+   "upstream_name": "UatFeedbackEvent",
+   "declared_by": "generated"
+  },
+  "public.app_uat_notification_delivery": {
+   "object_type": "RelPublicAppUatNotificationDelivery",
+   "upstream_name": "UatNotificationDelivery",
+   "declared_by": "generated"
+  },
+  "public.app_uat_public_response_token": {
+   "object_type": "RelPublicAppUatPublicResponseToken",
+   "upstream_name": "UatPublicResponseToken",
+   "declared_by": "generated"
+  },
+  "public.app_uat_rate_limit_event": {
+   "object_type": "RelPublicAppUatRateLimitEvent",
+   "upstream_name": "UatRateLimitEvent",
+   "declared_by": "generated"
+  },
+  "public.app_uat_webhook_delivery": {
+   "object_type": "RelPublicAppUatWebhookDelivery",
+   "upstream_name": "UatWebhookDelivery",
+   "declared_by": "generated"
+  },
+  "public.app_ui_settings": {
+   "object_type": "RelPublicAppUiSettings",
+   "upstream_name": "AppUiSetting",
+   "declared_by": "generated"
+  },
+  "public.app_user": {
+   "object_type": "Person",
+   "upstream_name": "User",
+   "declared_by": "pending/people_lots.json"
+  },
+  "public.app_user_access_scope": {
+   "object_type": "RelPublicAppUserAccessScope",
+   "upstream_name": "UserAccessScope",
+   "declared_by": "generated"
+  },
+  "public.app_user_department_membership": {
+   "object_type": "RelPublicAppUserDepartmentMembership",
+   "upstream_name": "UserDepartmentMembership",
+   "declared_by": "generated"
+  },
+  "public.app_user_nav_preference": {
+   "object_type": "RelPublicAppUserNavPreference",
+   "upstream_name": "UserNavPreference",
+   "declared_by": "generated"
+  },
+  "public.app_verification_token": {
+   "object_type": "RelPublicAppVerificationToken",
+   "upstream_name": "VerificationToken",
+   "declared_by": "generated"
+  },
+  "public.app_warehouse": {
+   "object_type": "Warehouse",
+   "upstream_name": "Warehouse",
+   "declared_by": "pending/bc_warehouse.json"
+  },
+  "public.app_warehouse_transfer": {
+   "object_type": "RelPublicAppWarehouseTransfer",
+   "upstream_name": "WarehouseTransfer",
+   "declared_by": "generated"
+  },
+  "public.app_warehouse_transfer_line": {
+   "object_type": "RelPublicAppWarehouseTransferLine",
+   "upstream_name": "WarehouseTransferLine",
+   "declared_by": "generated"
+  },
+  "public.app_work_center_equipment": {
+   "object_type": "RelPublicAppWorkCenterEquipment",
+   "upstream_name": "WorkCenterEquipment",
+   "declared_by": "generated"
+  },
+  "public.app_work_item": {
+   "object_type": "RelPublicAppWorkItem",
+   "upstream_name": "WorkItem",
+   "declared_by": "generated"
+  },
+  "public.app_work_routing_identity_map": {
+   "object_type": "RelPublicAppWorkRoutingIdentityMap",
+   "upstream_name": "WorkRoutingIdentityMap",
+   "declared_by": "generated"
+  },
+  "public.app_work_routing_outbox": {
+   "object_type": "RelPublicAppWorkRoutingOutbox",
+   "upstream_name": "WorkRoutingOutbox",
+   "declared_by": "generated"
+  },
+  "public.app_work_routing_run": {
+   "object_type": "RelPublicAppWorkRoutingRun",
+   "upstream_name": "WorkRoutingRun",
+   "declared_by": "generated"
+  },
+  "public.app_workflow_run": {
+   "object_type": "RelPublicAppWorkflowRun",
+   "upstream_name": "WorkflowRun",
+   "declared_by": "generated"
+  },
+  "public.app_workflow_template": {
+   "object_type": "RelPublicAppWorkflowTemplate",
+   "upstream_name": "WorkflowTemplate",
+   "declared_by": "generated"
+  },
+  "public.app_working_day_calendar": {
+   "object_type": "RelPublicAppWorkingDayCalendar",
+   "upstream_name": "WorkingDayCalendar",
+   "declared_by": "generated"
+  },
+  "public.app_workstream": {
+   "object_type": "RelPublicAppWorkstream",
+   "upstream_name": "Workstream",
+   "declared_by": "generated"
+  },
+  "public.app_zone": {
+   "object_type": "RelPublicAppZone",
+   "upstream_name": "Zone",
+   "declared_by": "generated"
+  },
+  "public.batch_item": {
+   "object_type": "RelPublicBatchItem",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.batchitem": {
+   "object_type": "RelPublicBatchitem",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.bc_credit_memo_snapshot": {
+   "object_type": "RelPublicBcCreditMemoSnapshot",
+   "upstream_name": "BcCreditMemoSnapshot",
+   "declared_by": "generated"
+  },
+  "public.bc_currency_rate_snapshot": {
+   "object_type": "RelPublicBcCurrencyRateSnapshot",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.bc_customer_snapshot": {
+   "object_type": "RelPublicBcCustomerSnapshot",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.bc_invoice_snapshot": {
+   "object_type": "RelPublicBcInvoiceSnapshot",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.bc_item_snapshot": {
+   "object_type": "RelPublicBcItemSnapshot",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.bc_payment_snapshot": {
+   "object_type": "RelPublicBcPaymentSnapshot",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.bc_purchase_invoice_snapshot": {
+   "object_type": "RelPublicBcPurchaseInvoiceSnapshot",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.bc_receipt_snapshot": {
+   "object_type": "RelPublicBcReceiptSnapshot",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.bc_shipment_snapshot": {
+   "object_type": "RelPublicBcShipmentSnapshot",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.bc_vendor_payment_snapshot": {
+   "object_type": "RelPublicBcVendorPaymentSnapshot",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.bulk": {
+   "object_type": "RelPublicBulk",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.bulk_inventory_item": {
+   "object_type": "RelPublicBulkInventoryItem",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.finished_product_inventory_item": {
+   "object_type": "RelPublicFinishedProductInventoryItem",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.finproduct": {
+   "object_type": "RelPublicFinproduct",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.formula": {
+   "object_type": "Formulation",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.formula_item": {
+   "object_type": "RelPublicFormulaItem",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.formula_procedure": {
+   "object_type": "RelPublicFormulaProcedure",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.fp": {
+   "object_type": "RelPublicFp",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.genpoitem": {
+   "object_type": "RelPublicGenpoitem",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.inci": {
+   "object_type": "RelPublicInci",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.inciraw": {
+   "object_type": "RelPublicInciraw",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.inventory_item": {
+   "object_type": "RelPublicInventoryItem",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.inventory_lab_test": {
+   "object_type": "RelPublicInventoryLabTest",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.inventory_raw": {
+   "object_type": "RelPublicInventoryRaw",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.inventoryitem": {
+   "object_type": "RelPublicInventoryitem",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.inventorylab": {
+   "object_type": "RelPublicInventorylab",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.pack": {
+   "object_type": "RelPublicPack",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.packaging_inventory": {
+   "object_type": "RelPublicPackagingInventory",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.packaging_inventory_item": {
+   "object_type": "RelPublicPackagingInventoryItem",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.packsupp": {
+   "object_type": "RelPublicPacksupp",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.project": {
+   "object_type": "RelPublicProject",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.rawsupp": {
+   "object_type": "RelPublicRawsupp",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.receiptpack": {
+   "object_type": "RelPublicReceiptpack",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.receiptraw": {
+   "object_type": "RelPublicReceiptraw",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.tierpricing": {
+   "object_type": "RelPublicTierpricing",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.warehouse_location": {
+   "object_type": "RelPublicWarehouseLocation",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.warehouse_movement": {
+   "object_type": "RelPublicWarehouseMovement",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.wloc": {
+   "object_type": "RelPublicWloc",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "public.wmove": {
+   "object_type": "RelPublicWmove",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "sage.ic_ioth": {
+   "object_type": "RelSageIcIoth",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "sage.ic_ival": {
+   "object_type": "RelSageIcIval",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "sage.ic_pricp": {
+   "object_type": "RelSageIcPricp",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "sage.oy_btd": {
+   "object_type": "RelSageOyBtd",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "sage.oy_bth": {
+   "object_type": "RelSageOyBth",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "silver.batch_items": {
+   "object_type": "RelSilverBatchItems",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "silver.bulk_inventory_lab_ids": {
+   "object_type": "RelSilverBulkInventoryLabIds",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "silver.formula_items": {
+   "object_type": "RelSilverFormulaItems",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "silver.formulations": {
+   "object_type": "RelSilverFormulations",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "silver.inventory_items": {
+   "object_type": "RelSilverInventoryItems",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "silver.inventory_lab_tests": {
+   "object_type": "RelSilverInventoryLabTests",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "silver.packaging_inventory_items": {
+   "object_type": "RelSilverPackagingInventoryItems",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "silver.people": {
+   "object_type": "RelSilverPeople",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "silver.projects": {
+   "object_type": "RelSilverProjects",
+   "upstream_name": null,
+   "declared_by": "generated"
+  },
+  "silver.purchase_orders_legacy": {
+   "object_type": "RelSilverPurchaseOrdersLegacy",
+   "upstream_name": null,
+   "declared_by": "generated"
+  }
+ },
+ "prisma_relations_not_bound": [
+  {
+   "from": "public.app_approval_record",
+   "field": "approvalType",
+   "to": "public.app_policy_approval_type",
+   "reason": "target relation not served",
+   "link": {
+    "name": "approval_type",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key ApprovalRecord.approvalType (public.app_approval_record.approval_type_key -> public.app_policy_approval_type.key).",
+    "pairs": [
+     {
+      "from": "approval_type_key",
+      "to": "key",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "ApprovalRecord",
+      "lines": "1167",
+      "note": "@relation(fields: [approval_type_key], references: [key])"
+     }
+    ]
+   },
+   "target_type": "RelPublicAppPolicyApprovalType"
+  },
+  {
+   "from": "public.app_approval_record",
+   "field": "approvedBy",
+   "to": "public.app_user",
+   "reason": "target relation not served",
+   "link": {
+    "name": "approved_by",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key ApprovalRecord.approvedBy (public.app_approval_record.approved_by_id -> public.app_user.id).",
+    "pairs": [
+     {
+      "from": "approved_by_id",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "ApprovalRecord",
+      "lines": "1168",
+      "note": "@relation(fields: [approved_by_id], references: [id])"
+     }
+    ]
+   },
+   "target_type": "Person"
+  },
+  {
+   "from": "public.app_batch_record",
+   "field": "equipment",
+   "to": "public.app_equipment",
+   "reason": "target relation not served",
+   "link": {
+    "name": "equipment",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key BatchRecord.equipment (public.app_batch_record.equipment_id -> public.app_equipment.id).",
+    "pairs": [
+     {
+      "from": "equipment_id",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "BatchRecord",
+      "lines": "2942",
+      "note": "@relation(fields: [equipment_id], references: [id])"
+     }
+    ]
+   },
+   "target_type": "RelPublicAppEquipment"
+  },
+  {
+   "from": "public.app_batch_record",
+   "field": "formulation",
+   "to": "public.app_formulation",
+   "reason": "target relation not served",
+   "target_type": "RelPublicAppFormulation"
+  },
+  {
+   "from": "public.app_batch_record",
+   "field": "operator",
+   "to": "public.app_user",
+   "reason": "target relation not served",
+   "link": {
+    "name": "operator",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key BatchRecord.operator (public.app_batch_record.operator_id -> public.app_user.id).",
+    "pairs": [
+     {
+      "from": "operator_id",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "BatchRecord",
+      "lines": "2943",
+      "note": "@relation(fields: [operator_id], references: [id])"
+     }
+    ]
+   },
+   "target_type": "Person"
+  },
+  {
+   "from": "public.app_batch_record",
+   "field": "signedBy",
+   "to": "public.app_user",
+   "reason": "target relation not served",
+   "link": {
+    "name": "signed_by",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key BatchRecord.signedBy (public.app_batch_record.signed_by_id -> public.app_user.id).",
+    "pairs": [
+     {
+      "from": "signed_by_id",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "BatchRecord",
+      "lines": "2944",
+      "note": "@relation(fields: [signed_by_id], references: [id])"
+     }
+    ]
+   },
+   "target_type": "Person"
+  },
+  {
+   "from": "public.app_customer",
+   "field": "accountManager",
+   "to": "public.app_user",
+   "reason": "target relation not served",
+   "link": {
+    "name": "account_manager",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key Customer.accountManager (public.app_customer.account_manager_id -> public.app_user.id).",
+    "pairs": [
+     {
+      "from": "account_manager_id",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "Customer",
+      "lines": "1466",
+      "note": "@relation(fields: [account_manager_id], references: [id])"
+     }
+    ]
+   },
+   "target_type": "Person"
+  },
+  {
+   "from": "public.app_customer",
+   "field": "threePlRateCard",
+   "to": "public.app_three_pl_rate_card",
+   "reason": "target relation not served",
+   "link": {
+    "name": "three_pl_rate_card",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key Customer.threePlRateCard (public.app_customer.three_pl_rate_card_id -> public.app_three_pl_rate_card.id).",
+    "pairs": [
+     {
+      "from": "three_pl_rate_card_id",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "Customer",
+      "lines": "1483",
+      "note": "@relation(fields: [three_pl_rate_card_id], references: [id])"
+     }
+    ]
+   },
+   "target_type": "RelPublicAppThreePlRateCard"
+  },
+  {
+   "from": "public.app_customer",
+   "field": "user",
+   "to": "public.app_user",
+   "reason": "target relation not served",
+   "link": {
+    "name": "user",
+    "cardinality": "1:1",
+    "description": "Prisma foreign key Customer.user (public.app_customer.user_id -> public.app_user.id).",
+    "pairs": [
+     {
+      "from": "user_id",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "Customer",
+      "lines": "1465",
+      "note": "@relation(fields: [user_id], references: [id])"
+     }
+    ]
+   },
+   "target_type": "Person"
+  },
+  {
+   "from": "public.app_fg_item",
+   "field": "pinnedBom",
+   "to": "public.app_bill_of_materials",
+   "reason": "target relation not served",
+   "link": {
+    "name": "pinned_bom",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key FgItem.pinnedBom (public.app_fg_item.pinned_bom_id -> public.app_bill_of_materials.id).",
+    "pairs": [
+     {
+      "from": "pinned_bom_id",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "FgItem",
+      "lines": "7244",
+      "note": "@relation(fields: [pinned_bom_id], references: [id])"
+     }
+    ]
+   },
+   "target_type": "BillOfMaterials"
+  },
+  {
+   "from": "public.app_fg_item",
+   "field": "pinnedFormulation",
+   "to": "public.app_formulation",
+   "reason": "target relation not served",
+   "target_type": "RelPublicAppFormulation"
+  },
+  {
+   "from": "public.app_manufacturing_job",
+   "field": "createdByUser",
+   "to": "public.app_user",
+   "reason": "target relation not served",
+   "link": {
+    "name": "created_by_user",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key ManufacturingJob.createdByUser (public.app_manufacturing_job.created_by -> public.app_user.id).",
+    "pairs": [
+     {
+      "from": "created_by",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "ManufacturingJob",
+      "lines": "2643",
+      "note": "@relation(fields: [created_by], references: [id])"
+     }
+    ]
+   },
+   "target_type": "Person"
+  },
+  {
+   "from": "public.app_manufacturing_order",
+   "field": "assignedEquipment",
+   "to": "public.app_equipment",
+   "reason": "target relation not served",
+   "link": {
+    "name": "assigned_equipment",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key ManufacturingOrder.assignedEquipment (public.app_manufacturing_order.assigned_equipment_id -> public.app_equipment.id).",
+    "pairs": [
+     {
+      "from": "assigned_equipment_id",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "ManufacturingOrder",
+      "lines": "2724",
+      "note": "@relation(fields: [assigned_equipment_id], references: [id])"
+     }
+    ]
+   },
+   "target_type": "RelPublicAppEquipment"
+  },
+  {
+   "from": "public.app_manufacturing_order",
+   "field": "bom",
+   "to": "public.app_bill_of_materials",
+   "reason": "target relation not served",
+   "link": {
+    "name": "bom",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key ManufacturingOrder.bom (public.app_manufacturing_order.bom_id -> public.app_bill_of_materials.id).",
+    "pairs": [
+     {
+      "from": "bom_id",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "ManufacturingOrder",
+      "lines": "2723",
+      "note": "@relation(fields: [bom_id], references: [id])"
+     }
+    ]
+   },
+   "target_type": "BillOfMaterials"
+  },
+  {
+   "from": "public.app_manufacturing_order",
+   "field": "createdByUser",
+   "to": "public.app_user",
+   "reason": "target relation not served",
+   "link": {
+    "name": "created_by_user",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key ManufacturingOrder.createdByUser (public.app_manufacturing_order.created_by -> public.app_user.id).",
+    "pairs": [
+     {
+      "from": "created_by",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "ManufacturingOrder",
+      "lines": "2725",
+      "note": "@relation(fields: [created_by], references: [id])"
+     }
+    ]
+   },
+   "target_type": "Person"
+  },
+  {
+   "from": "public.app_manufacturing_order",
+   "field": "formulation",
+   "to": "public.app_formulation",
+   "reason": "target relation not served",
+   "target_type": "RelPublicAppFormulation"
+  },
+  {
+   "from": "public.app_manufacturing_order",
+   "field": "vessel",
+   "to": "public.app_production_vessel",
+   "reason": "target relation not served",
+   "link": {
+    "name": "vessel",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key ManufacturingOrder.vessel (public.app_manufacturing_order.vessel_id -> public.app_production_vessel.id).",
+    "pairs": [
+     {
+      "from": "vessel_id",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "ManufacturingOrder",
+      "lines": "2726",
+      "note": "@relation(fields: [vessel_id], references: [id])"
+     }
+    ]
+   },
+   "target_type": "RelPublicAppProductionVessel"
+  },
+  {
+   "from": "public.app_pr_line_item",
+   "field": "ingredient",
+   "to": "public.app_ingredient",
+   "reason": "target relation not served",
+   "link": {
+    "name": "ingredient",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key PRLineItem.ingredient (public.app_pr_line_item.ingredient_id -> public.app_ingredient.id).",
+    "pairs": [
+     {
+      "from": "ingredient_id",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "PRLineItem",
+      "lines": "3785",
+      "note": "@relation(fields: [ingredient_id], references: [id])"
+     }
+    ]
+   },
+   "target_type": "RelPublicAppIngredient"
+  },
+  {
+   "from": "public.app_pr_line_item",
+   "field": "reorderRule",
+   "to": "public.app_reorder_rule",
+   "reason": "target relation not served",
+   "link": {
+    "name": "reorder_rule",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key PRLineItem.reorderRule (public.app_pr_line_item.reorder_rule_id -> public.app_reorder_rule.id).",
+    "pairs": [
+     {
+      "from": "reorder_rule_id",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "PRLineItem",
+      "lines": "3786",
+      "note": "@relation(fields: [reorder_rule_id], references: [id])"
+     }
+    ]
+   },
+   "target_type": "RelPublicAppReorderRule"
+  },
+  {
+   "from": "public.app_product",
+   "field": "category",
+   "to": "public.app_product_category",
+   "reason": "target relation not served",
+   "link": {
+    "name": "category",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key Product.category (public.app_product.category_id -> public.app_product_category.id).",
+    "pairs": [
+     {
+      "from": "category_id",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "Product",
+      "lines": "1930",
+      "note": "@relation(fields: [category_id], references: [id])"
+     }
+    ]
+   },
+   "target_type": "RelPublicAppProductCategory"
+  },
+  {
+   "from": "public.app_product",
+   "field": "createdByUser",
+   "to": "public.app_user",
+   "reason": "target relation not served",
+   "link": {
+    "name": "created_by_user",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key Product.createdByUser (public.app_product.created_by -> public.app_user.id).",
+    "pairs": [
+     {
+      "from": "created_by",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "Product",
+      "lines": "1931",
+      "note": "@relation(fields: [created_by], references: [id])"
+     }
+    ]
+   },
+   "target_type": "Person"
+  },
+  {
+   "from": "public.app_product",
+   "field": "updatedByUser",
+   "to": "public.app_user",
+   "reason": "target relation not served",
+   "link": {
+    "name": "updated_by_user",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key Product.updatedByUser (public.app_product.updated_by -> public.app_user.id).",
+    "pairs": [
+     {
+      "from": "updated_by",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "Product",
+      "lines": "1932",
+      "note": "@relation(fields: [updated_by], references: [id])"
+     }
+    ]
+   },
+   "target_type": "Person"
+  },
+  {
+   "from": "public.app_purchase_order",
+   "field": "createdByUser",
+   "to": "public.app_user",
+   "reason": "target relation not served",
+   "link": {
+    "name": "created_by_user",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key PurchaseOrder.createdByUser (public.app_purchase_order.created_by -> public.app_user.id).",
+    "pairs": [
+     {
+      "from": "created_by",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "PurchaseOrder",
+      "lines": "3628",
+      "note": "@relation(fields: [created_by], references: [id])"
+     }
+    ]
+   },
+   "target_type": "Person"
+  },
+  {
+   "from": "public.app_purchase_order",
+   "field": "warehouse",
+   "to": "public.app_warehouse",
+   "reason": "target relation not served",
+   "link": {
+    "name": "warehouse",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key PurchaseOrder.warehouse (public.app_purchase_order.warehouse_id -> public.app_warehouse.id).",
+    "pairs": [
+     {
+      "from": "warehouse_id",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "PurchaseOrder",
+      "lines": "3627",
+      "note": "@relation(fields: [warehouse_id], references: [id])"
+     }
+    ]
+   },
+   "target_type": "Warehouse"
+  },
+  {
+   "from": "public.app_purchase_requisition",
+   "field": "approver",
+   "to": "public.app_user",
+   "reason": "target relation not served",
+   "link": {
+    "name": "approver",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key PurchaseRequisition.approver (public.app_purchase_requisition.approved_by -> public.app_user.id).",
+    "pairs": [
+     {
+      "from": "approved_by",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "PurchaseRequisition",
+      "lines": "3757",
+      "note": "@relation(fields: [approved_by], references: [id])"
+     }
+    ]
+   },
+   "target_type": "Person"
+  },
+  {
+   "from": "public.app_purchase_requisition",
+   "field": "requester",
+   "to": "public.app_user",
+   "reason": "target relation not served",
+   "link": {
+    "name": "requester",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key PurchaseRequisition.requester (public.app_purchase_requisition.requested_by -> public.app_user.id).",
+    "pairs": [
+     {
+      "from": "requested_by",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "PurchaseRequisition",
+      "lines": "3756",
+      "note": "@relation(fields: [requested_by], references: [id])"
+     }
+    ]
+   },
+   "target_type": "Person"
+  },
+  {
+   "from": "public.app_quote",
+   "field": "createdByUser",
+   "to": "public.app_user",
+   "reason": "target relation not served",
+   "link": {
+    "name": "created_by_user",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key Quote.createdByUser (public.app_quote.created_by -> public.app_user.id).",
+    "pairs": [
+     {
+      "from": "created_by",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "Quote",
+      "lines": "5698",
+      "note": "@relation(fields: [created_by], references: [id])"
+     }
+    ]
+   },
+   "target_type": "Person"
+  },
+  {
+   "from": "public.app_quote_line",
+   "field": "quoteVolume",
+   "to": "public.app_quote_volume",
+   "reason": "target relation not served",
+   "link": {
+    "name": "quote_volume",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key QuoteLine.quoteVolume (public.app_quote_line.quote_volume_id -> public.app_quote_volume.id).",
+    "pairs": [
+     {
+      "from": "quote_volume_id",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "QuoteLine",
+      "lines": "5767",
+      "note": "@relation(fields: [quote_volume_id], references: [id])"
+     }
+    ]
+   },
+   "target_type": "RelPublicAppQuoteVolume"
+  },
+  {
+   "from": "public.app_receipt",
+   "field": "customerMaterialRequest",
+   "to": "public.app_customer_material_request",
+   "reason": "target relation not served",
+   "link": {
+    "name": "customer_material_request",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key Receipt.customerMaterialRequest (public.app_receipt.customer_material_request_id -> public.app_customer_material_request.id).",
+    "pairs": [
+     {
+      "from": "customer_material_request_id",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "Receipt",
+      "lines": "3919",
+      "note": "@relation(fields: [customer_material_request_id], references: [id])"
+     }
+    ]
+   },
+   "target_type": "RelPublicAppCustomerMaterialRequest"
+  },
+  {
+   "from": "public.app_receipt",
+   "field": "warehouse",
+   "to": "public.app_warehouse",
+   "reason": "target relation not served",
+   "link": {
+    "name": "warehouse",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key Receipt.warehouse (public.app_receipt.warehouse_id -> public.app_warehouse.id).",
+    "pairs": [
+     {
+      "from": "warehouse_id",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "Receipt",
+      "lines": "3918",
+      "note": "@relation(fields: [warehouse_id], references: [id])"
+     }
+    ]
+   },
+   "target_type": "Warehouse"
+  },
+  {
+   "from": "public.app_receipt_line",
+   "field": "cmrLine",
+   "to": "public.app_customer_material_request_line",
+   "reason": "target relation not served",
+   "link": {
+    "name": "cmr_line",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key ReceiptLine.cmrLine (public.app_receipt_line.cmr_line_id -> public.app_customer_material_request_line.id).",
+    "pairs": [
+     {
+      "from": "cmr_line_id",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "ReceiptLine",
+      "lines": "3962",
+      "note": "@relation(fields: [cmr_line_id], references: [id])"
+     }
+    ]
+   },
+   "target_type": "RelPublicAppCustomerMaterialRequestLine"
+  },
+  {
+   "from": "public.app_sales_order",
+   "field": "warehouse",
+   "to": "public.app_warehouse",
+   "reason": "target relation not served",
+   "link": {
+    "name": "warehouse",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key SalesOrder.warehouse (public.app_sales_order.warehouse_id -> public.app_warehouse.id).",
+    "pairs": [
+     {
+      "from": "warehouse_id",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "SalesOrder",
+      "lines": "4063",
+      "note": "@relation(fields: [warehouse_id], references: [id])"
+     }
+    ]
+   },
+   "target_type": "Warehouse"
+  },
+  {
+   "from": "public.app_sales_order_line",
+   "field": "warehouse",
+   "to": "public.app_warehouse",
+   "reason": "target relation not served",
+   "link": {
+    "name": "warehouse",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key SalesOrderLine.warehouse (public.app_sales_order_line.warehouse_id -> public.app_warehouse.id).",
+    "pairs": [
+     {
+      "from": "warehouse_id",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "SalesOrderLine",
+      "lines": "4102",
+      "note": "@relation(fields: [warehouse_id], references: [id])"
+     }
+    ]
+   },
+   "target_type": "Warehouse"
+  },
+  {
+   "from": "public.app_ship_release",
+   "field": "cancelledByUser",
+   "to": "public.app_user",
+   "reason": "target relation not served",
+   "link": {
+    "name": "cancelled_by_user",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key ShipRelease.cancelledByUser (public.app_ship_release.cancelled_by -> public.app_user.id).",
+    "pairs": [
+     {
+      "from": "cancelled_by",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "ShipRelease",
+      "lines": "4365",
+      "note": "@relation(fields: [cancelled_by], references: [id])"
+     }
+    ]
+   },
+   "target_type": "Person"
+  },
+  {
+   "from": "public.app_ship_release",
+   "field": "createdByUser",
+   "to": "public.app_user",
+   "reason": "target relation not served",
+   "link": {
+    "name": "created_by_user",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key ShipRelease.createdByUser (public.app_ship_release.created_by -> public.app_user.id).",
+    "pairs": [
+     {
+      "from": "created_by",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "ShipRelease",
+      "lines": "4363",
+      "note": "@relation(fields: [created_by], references: [id])"
+     }
+    ]
+   },
+   "target_type": "Person"
+  },
+  {
+   "from": "public.app_ship_release",
+   "field": "releasedByUser",
+   "to": "public.app_user",
+   "reason": "target relation not served",
+   "link": {
+    "name": "released_by_user",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key ShipRelease.releasedByUser (public.app_ship_release.released_by -> public.app_user.id).",
+    "pairs": [
+     {
+      "from": "released_by",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "ShipRelease",
+      "lines": "4364",
+      "note": "@relation(fields: [released_by], references: [id])"
+     }
+    ]
+   },
+   "target_type": "Person"
+  },
+  {
+   "from": "public.app_shipment",
+   "field": "createdByUser",
+   "to": "public.app_user",
+   "reason": "target relation not served",
+   "link": {
+    "name": "created_by_user",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key Shipment.createdByUser (public.app_shipment.created_by -> public.app_user.id).",
+    "pairs": [
+     {
+      "from": "created_by",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "Shipment",
+      "lines": "4189",
+      "note": "@relation(fields: [created_by], references: [id])"
+     }
+    ]
+   },
+   "target_type": "Person"
+  },
+  {
+   "from": "public.app_shipment",
+   "field": "warehouse",
+   "to": "public.app_warehouse",
+   "reason": "target relation not served",
+   "link": {
+    "name": "warehouse",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key Shipment.warehouse (public.app_shipment.warehouse_id -> public.app_warehouse.id).",
+    "pairs": [
+     {
+      "from": "warehouse_id",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "Shipment",
+      "lines": "4188",
+      "note": "@relation(fields: [warehouse_id], references: [id])"
+     }
+    ]
+   },
+   "target_type": "Warehouse"
+  },
+  {
+   "from": "public.app_shipment_line",
+   "field": "lot",
+   "to": "public.app_inventory_lot",
+   "reason": "target relation not served",
+   "link": {
+    "name": "lot",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key ShipmentLine.lot (public.app_shipment_line.lot_id -> public.app_inventory_lot.id).",
+    "pairs": [
+     {
+      "from": "lot_id",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "ShipmentLine",
+      "lines": "4278",
+      "note": "@relation(fields: [lot_id], references: [id])"
+     }
+    ]
+   },
+   "target_type": "Lot"
+  },
+  {
+   "from": "public.app_supplier",
+   "field": "accountManager",
+   "to": "public.app_user",
+   "reason": "target relation not served",
+   "link": {
+    "name": "account_manager",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key Supplier.accountManager (public.app_supplier.account_manager_id -> public.app_user.id).",
+    "pairs": [
+     {
+      "from": "account_manager_id",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "Supplier",
+      "lines": "1637",
+      "note": "@relation(fields: [account_manager_id], references: [id])"
+     }
+    ]
+   },
+   "target_type": "Person"
+  },
+  {
+   "from": "public.app_supplier",
+   "field": "createdByUser",
+   "to": "public.app_user",
+   "reason": "target relation not served",
+   "link": {
+    "name": "created_by_user",
+    "cardinality": "N:1",
+    "description": "Prisma foreign key Supplier.createdByUser (public.app_supplier.created_by_id -> public.app_user.id).",
+    "pairs": [
+     {
+      "from": "created_by_id",
+      "to": "id",
+      "compare": "text_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "52c9116f77ab",
+      "symbol": "Supplier",
+      "lines": "1638",
+      "note": "@relation(fields: [created_by_id], references: [id])"
+     }
+    ]
+   },
+   "target_type": "Person"
+  }
+ ],
+ "link_contracts": {
+  "bc-invoice-to-portal-order-by-doc-number": "not bound: relation not served: public.bc_invoice_snapshot",
+  "fm-ao-item-to-assembly-order": "bound as RelSilverAssemblyOrderItems.fm_ao_item_to_assembly_order",
+  "fm-ao-link-to-assembly-order": "bound as RelPublicOrderEntryItemAssembly.fm_ao_link_to_assembly_order",
+  "fm-ao-link-to-order-line": "bound as RelPublicOrderEntryItemAssembly.fm_ao_link_to_order_line",
+  "fm-damage-to-assembly-order": "bound as RelSilverAssemblyOrderDamage.fm_damage_to_assembly_order",
+  "fm-order-line-to-order": "bound as RelPublicOrderEntryItem.fm_order_line_to_order",
+  "fm-packaging-receipt-to-po-item": "bound as RelPublicReceiptPackaging.fm_packaging_receipt_to_po_item",
+  "fm-po-item-to-fm-po": "bound as RelPublicGeneratedPurchaseOrderItem.fm_po_item_to_fm_po",
+  "fm-production-task-to-assembly-order": "bound as RelSilverProductionTasks.fm_production_task_to_assembly_order",
+  "portal-po-line-to-po": "bound as RelPublicAppPurchaseOrderLine.purchase_order",
+  "portal-po-to-fm-generated-po": "bound as RelPublicAppPurchaseOrder.portal_po_to_fm_generated_po",
+  "portal-quote-to-sales-order-by-converted-id": "bound as RelPublicAppQuote.portal_quote_to_sales_order_by_converted_id",
+  "portal-receipt-to-po-by-id": "bound as RelPublicAppReceipt.purchase_order",
+  "portal-receipt-to-po-by-number-text": "bound as RelPublicAppReceipt.portal_receipt_to_po_by_number_text",
+  "portal-sales-order-to-quote-by-source-id": "bound as RelPublicAppSalesOrder.portal_sales_order_to_quote_by_source_id",
+  "portal-so-to-fm-order-by-fmid": "bound as RelPublicAppSalesOrder.portal_so_to_fm_order_by_fmid"
+ },
+ "fm_source_fk": {
+  "fm_ao_item_bulk": {
+   "status": "no link contract",
+   "column": "bulk_product_id",
+   "semantic": "bulkProductId",
+   "served_relations_with_column": [
+    "public.app_batch_record",
+    "public.app_manufacturing_order_line",
+    "public.app_product",
+    "silver.assembly_order_items",
+    "silver.batches",
+    "silver.finished_product_items",
+    "silver.finished_products",
+    "silver.order_entry_items"
+   ],
+   "note": "Curation lead only: FM_SOURCE_FK names the column, not the relation pair; add a link contract or a curated link."
+  },
+  "fm_ao_item_finished": {
+   "status": "no link contract",
+   "column": "finished_product_id",
+   "semantic": "finishedProductId",
+   "served_relations_with_column": [
+    "public.app_manufacturing_order",
+    "public.app_manufacturing_order_line",
+    "silver.assembly_order_items",
+    "silver.finished_product_items",
+    "silver.manufacturing_orders",
+    "silver.order_entry_items"
+   ],
+   "note": "Curation lead only: FM_SOURCE_FK names the column, not the relation pair; add a link contract or a curated link."
+  },
+  "fm_ao_item_packaging": {
+   "status": "no link contract",
+   "column": "packaging_id",
+   "semantic": "packagingId",
+   "served_relations_with_column": [
+    "public.app_manufacturing_order_line",
+    "silver.assembly_order_items",
+    "silver.finished_product_items",
+    "silver.packaging_suppliers",
+    "silver.receipt_pack_items"
+   ],
+   "note": "Curation lead only: FM_SOURCE_FK names the column, not the relation pair; add a link contract or a curated link."
+  },
+  "fm_assembly_link_for_line": {
+   "status": "bound",
+   "link_type": "RelPublicOrderEntryItemAssembly.fm_ao_link_to_order_line"
+  },
+  "fm_damage_for_assembly_item": {
+   "status": "no link contract",
+   "column": "assembly_item_id",
+   "semantic": "assemblyItemId",
+   "served_relations_with_column": [
+    "public.app_assembly_order_damage",
+    "silver.assembly_order_damage"
+   ],
+   "note": "Curation lead only: FM_SOURCE_FK names the column, not the relation pair; add a link contract or a curated link."
+  },
+  "fm_damage_of_assembly_order": {
+   "status": "bound",
+   "link_type": "RelSilverAssemblyOrderDamage.fm_damage_to_assembly_order"
+  },
+  "fm_item_of_assembly_order": {
+   "status": "bound",
+   "link_type": "RelSilverAssemblyOrderItems.fm_ao_item_to_assembly_order"
+  },
+  "fm_line_of_purchase_order": {
+   "status": "bound",
+   "link_type": "RelPublicGeneratedPurchaseOrderItem.fm_po_item_to_fm_po"
+  },
+  "fm_line_of_sales_order": {
+   "status": "bound",
+   "link_type": "RelPublicOrderEntryItem.fm_order_line_to_order"
+  },
+  "fm_linked_assembly_order": {
+   "status": "bound",
+   "link_type": "RelPublicOrderEntryItemAssembly.fm_ao_link_to_assembly_order"
+  },
+  "fm_ordered_by": {
+   "status": "no link contract",
+   "column": "idcust",
+   "semantic": "customerId",
+   "served_relations_with_column": [
+    "public.bulk_product",
+    "public.finished_product",
+    "public.order_entry",
+    "public.packaging",
+    "sage.ap_vendor",
+    "sage.ar_customer",
+    "sage.ar_ship_to"
+   ],
+   "note": "Curation lead only: FM_SOURCE_FK names the column, not the relation pair; add a link contract or a curated link."
+  },
+  "fm_ordered_from": {
+   "status": "no link contract",
+   "column": "idsupplier",
+   "semantic": "supplierId",
+   "served_relations_with_column": [
+    "public.generated_purchase_order",
+    "public.generated_purchase_order_item",
+    "public.manufacturer",
+    "public.raw_material_supplier"
+   ],
+   "note": "Curation lead only: FM_SOURCE_FK names the column, not the relation pair; add a link contract or a curated link."
+  },
+  "fm_packaging_receipt_detail_for_purchase_line": {
+   "status": "bound",
+   "link_type": "RelPublicReceiptPackaging.fm_packaging_receipt_to_po_item"
+  },
+  "fm_packaging_supplier_material": {
+   "status": "no link contract",
+   "column": "idpack",
+   "semantic": "packagingId",
+   "served_relations_with_column": [
+    "public.assembly_order_item",
+    "public.finished_product_item",
+    "public.packaging_supplier",
+    "public.receipt_packaging"
+   ],
+   "note": "Curation lead only: FM_SOURCE_FK names the column, not the relation pair; add a link contract or a curated link."
+  },
+  "fm_po_line_packaging_supplier": {
+   "status": "no link contract",
+   "column": "idproductsupp",
+   "semantic": "supplierProductId",
+   "served_relations_with_column": [
+    "public.generated_purchase_order_item"
+   ],
+   "note": "Curation lead only: FM_SOURCE_FK names the column, not the relation pair; add a link contract or a curated link."
+  },
+  "fm_po_line_raw_supplier": {
+   "status": "no link contract",
+   "column": "idproductsupp",
+   "semantic": "supplierProductId",
+   "served_relations_with_column": [
+    "public.generated_purchase_order_item"
+   ],
+   "note": "Curation lead only: FM_SOURCE_FK names the column, not the relation pair; add a link contract or a curated link."
+  },
+  "fm_raw_receipt_detail_for_purchase_line": {
+   "status": "no link contract",
+   "column": "idpogenitem",
+   "semantic": "purchaseOrderLineId",
+   "served_relations_with_column": [
+    "public.receipt_packaging",
+    "public.receipt_raw_material"
+   ],
+   "note": "Curation lead only: FM_SOURCE_FK names the column, not the relation pair; add a link contract or a curated link."
+  },
+  "fm_raw_supplier_material": {
+   "status": "no link contract",
+   "column": "idraw",
+   "semantic": "rawMaterialId",
+   "served_relations_with_column": [
+    "public.raw_material_supplier"
+   ],
+   "note": "Curation lead only: FM_SOURCE_FK names the column, not the relation pair; add a link contract or a curated link."
+  },
+  "fm_receipt_for_purchase_line": {
+   "status": "no link contract",
+   "column": "idgenpoitem",
+   "semantic": "purchaseOrderLineId",
+   "served_relations_with_column": [
+    "public.receipt"
+   ],
+   "note": "Curation lead only: FM_SOURCE_FK names the column, not the relation pair; add a link contract or a curated link."
+  },
+  "fm_sales_line_bulk_product": {
+   "status": "no link contract",
+   "column": "idbulk",
+   "semantic": "bulkProductId",
+   "served_relations_with_column": [
+    "public.assembly_order_item",
+    "public.batch",
+    "public.finished_product",
+    "public.finished_product_item",
+    "public.order_entry_item"
+   ],
+   "note": "Curation lead only: FM_SOURCE_FK names the column, not the relation pair; add a link contract or a curated link."
+  },
+  "fm_sales_line_product": {
+   "status": "no link contract",
+   "column": "idfp",
+   "semantic": "productId",
+   "served_relations_with_column": [
+    "public.order_entry_item"
+   ],
+   "note": "Curation lead only: FM_SOURCE_FK names the column, not the relation pair; add a link contract or a curated link."
+  },
+  "fm_status_of_assembly_order": {
+   "status": "no link contract",
+   "column": "assembly_order_id",
+   "semantic": "assemblyOrderId",
+   "served_relations_with_column": [
+    "public.app_assembly_order_damage",
+    "public.app_assembly_order_status",
+    "public.app_manufacturing_order_line",
+    "silver.assembly_order_damage",
+    "silver.assembly_order_items",
+    "silver.assembly_order_statuses"
+   ],
+   "note": "Curation lead only: FM_SOURCE_FK names the column, not the relation pair; add a link contract or a curated link."
+  },
+  "fm_task_of_assembly_order": {
+   "status": "bound",
+   "link_type": "RelSilverProductionTasks.fm_production_task_to_assembly_order"
+  }
+ },
+ "unit_contracts": {
+  "public-app-manufacturing-order-qty-damaged-damaged": "applied to RelPublicAppManufacturingOrder.qty_damaged (role damaged, unit_unknown)",
+  "public-app-manufacturing-order-quantity-planned": "applied to RelPublicAppManufacturingOrder.quantity (role planned, unit_unknown)",
+  "public-app-manufacturing-order-size-pieces-planned": "applied to RelPublicAppManufacturingOrder.size_pieces (role planned, unit_unknown)",
+  "public-order-entry-item-assembly-qtymfg-c-manufactured": "applied to RelPublicOrderEntryItemAssembly.qtymfg_c (role manufactured, unit_unknown)",
+  "public-order-entry-item-assembly-qtyplan-c-planned": "applied to RelPublicOrderEntryItemAssembly.qtyplan_c (role planned, unit_unknown)",
+  "public-order-entry-item-qty-ordered": "applied to RelPublicOrderEntryItem.qty (role ordered, unit_unknown)",
+  "silver-assembly-order-damage-qty-damaged-damaged": "applied to RelSilverAssemblyOrderDamage.qty_damaged (role damaged, unit_unknown)",
+  "silver-assembly-order-items-actual-amount-actual": "applied to RelSilverAssemblyOrderItems.actual_amount (role actual, unit_unknown)",
+  "silver-assembly-order-items-quantity-planned": "applied to RelSilverAssemblyOrderItems.quantity (role planned, unit_unknown)",
+  "silver-formula-items-percentage-fraction": "not applied: silver.formula_items.percentage is not served",
+  "silver-production-tasks-qty-filled-on-filling": "not applied: the role holds only when {\"column\": \"task_type\", \"equals\": \"Filling\"}; curate a conditional type or binding `where`"
+ },
+ "money": {
+  "public.app_purchase_requisition.total_amount": "money: currency unknown (finance-marked)",
+  "public.app_quote.subtotal": "money: currency from the record's currency column (finance-marked)",
+  "public.app_quote.tax_amount": "money: currency from the record's currency column (finance-marked)",
+  "public.app_quote.total_amount": "money: currency from the record's currency column (finance-marked)",
+  "public.app_quote_line.tooling_cost": "money: currency from its header's currency column (RelPublicAppQuoteLine.quote) (finance-marked)",
+  "public.app_quote_line.total_price": "money: currency from its header's currency column (RelPublicAppQuoteLine.quote) (finance-marked)",
+  "public.app_quote_line.unit_price": "money: currency from its header's currency column (RelPublicAppQuoteLine.quote); price per the unit in uom (finance-marked)",
+  "public.app_fg_item.retail_price": "finance-marked decimal: the name reads as money; no measure or currency is declared",
+  "public.app_manufacturing_order_line.actual_amount": "not money: the quantity of the component used, not money (docs/reference/portal-code-map.md section 3.8: ManufacturingOrderLine quantity = required, actual_amount = used)",
+  "public.app_manufacturing_order_line.price_packaging": "finance-marked decimal: the name reads as money; no measure or currency is declared",
+  "public.app_pr_line_item.estimated_cost": "finance-marked decimal: the name reads as money; no measure or currency is declared",
+  "public.app_product.average_cost": "finance-marked decimal: the name reads as money; no measure or currency is declared",
+  "public.app_product.bulk_cost": "finance-marked decimal: the name reads as money; no measure or currency is declared",
+  "public.app_product.total_cost": "finance-marked decimal: the name reads as money; no measure or currency is declared",
+  "public.app_purchase_order.discount": "finance-marked decimal: the name reads as money; no measure or currency is declared",
+  "public.app_purchase_order.duties_cost": "finance-marked decimal: the name reads as money; no measure or currency is declared",
+  "public.app_purchase_order.shipping_cost": "finance-marked decimal: the name reads as money; no measure or currency is declared",
+  "public.app_purchase_order.subtotal": "finance-marked decimal: the name reads as money; no measure or currency is declared",
+  "public.app_purchase_order.tax_amount": "finance-marked decimal: the name reads as money; no measure or currency is declared",
+  "public.app_purchase_order.total_cost": "finance-marked decimal: the name reads as money; no measure or currency is declared",
+  "public.app_purchase_order_line.total_price": "finance-marked decimal: the name reads as money; no measure or currency is declared",
+  "public.app_purchase_order_line.unit_price": "finance-marked decimal: the name reads as money; no measure or currency is declared",
+  "public.app_receipt.amount": "finance-marked decimal: the name reads as money; no measure or currency is declared",
+  "public.app_receipt.duties_cost": "finance-marked decimal: the name reads as money; no measure or currency is declared",
+  "public.app_receipt.freight_cost": "finance-marked decimal: the name reads as money; no measure or currency is declared",
+  "public.app_sales_order.subtotal": "finance-marked decimal: the name reads as money; no measure or currency is declared",
+  "public.app_sales_order.tax_amount": "finance-marked decimal: the name reads as money; no measure or currency is declared",
+  "public.app_sales_order.total_amount": "finance-marked decimal: the name reads as money; no measure or currency is declared",
+  "public.app_sales_order_line.total_price": "finance-marked decimal: the name reads as money; no measure or currency is declared",
+  "public.app_sales_order_line.unit_price": "finance-marked decimal: the name reads as money; no measure or currency is declared",
+  "public.app_shipment.freight_cost": "finance-marked decimal: the name reads as money; no measure or currency is declared",
+  "public.app_supplier.min_order_cost": "finance-marked decimal: the name reads as money; no measure or currency is declared",
+  "public.app_supplier.surcharge": "finance-marked decimal: the name reads as money; no measure or currency is declared",
+  "public.app_supplier_product.delivery_cost": "finance-marked decimal: the name reads as money; no measure or currency is declared",
+  "public.app_supplier_product.system_cost": "finance-marked decimal: the name reads as money; no measure or currency is declared",
+  "public.app_supplier_product_tier.unit_cost": "finance-marked decimal: the name reads as money; no measure or currency is declared",
+  "public.assembly_order.costoh_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.assembly_order.costpack_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.assembly_order.costunit_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.assembly_order.costunitoh_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.assembly_order.costunitpack_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.assembly_order.costunitraw_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.assembly_order_item.actualamount": "not money: the FM component consumption (qty_per_batch x produced units), not money (operating/source_unit_contracts.json silver-assembly-order-items-actual-amount-actual)",
+  "public.assembly_order_item.costpack_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.assembly_order_item.pricepack": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.batch.costingredientadj": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.batch.costrawmat_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.batch.costunit_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.batch.costunitmat_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.batch.costunitoh_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.finished_product.bulkcost_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.finished_product.costexfill": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.finished_product.subtotal_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.finished_product.sumcost_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.finished_product.sumcost_case_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.finished_product_item.costtoapply_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.finished_product_item.itemcost_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.finished_product_item.itemcostbox_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.finished_product_item.sumcost": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.finished_product_item.sumcostbox": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.finished_product_item.thformulacost": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order.cost": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order.costadded_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order.costaddedperuom_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order.costdiscount_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order.costduties_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order.costshipping": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order.costshippingsystem_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order.costshow": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order.costsurcharge_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order.costtotal_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order.discount": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order.minordercost": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order.othercost": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order.subtotal_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order.tollfeephone": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order_item.costcustoms_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order_item.costcustomsperuom_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order_item.costdutiesperuom_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order_item.costdutiestotal_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order_item.costentry_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order_item.costentryperuom_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order_item.costperkg": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order_item.costsurcharge_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order_item.costsystemunits": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order_item.costtotal_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order_item.costtotalsystem_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order_item.costtotalsystemperuom_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order_item.costuofm": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order_item.dlt_costentrysurcharge_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order_item.dlt_costentrysurchargeperuom_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order_item.dlt_costsystemcadnosurch_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order_item.itemcost": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order_item.itemcostkg": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order_item.tempcostperkg": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.generated_purchase_order_item.tempitemcost": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.packaging.cost_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.packaging_supplier.costcad_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.packaging_supplier.costdelivery": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.packaging_supplier.costentry": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.packaging_supplier.costperuofm_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.packaging_supplier.costsystem_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.packaging_supplier.costsystemtext_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.packaging_supplier.datecost": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.packaging_supplier.mocost": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.packaging_supplier.surcharge": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.packaging_supplier.unused_currencysurcharge": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.production.costoh_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.raw_material.averagecost": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.raw_material.costdelivery": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.raw_material_supplier.costdelivery": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.raw_material_supplier.costentry": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.raw_material_supplier.costentrykg_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.raw_material_supplier.costentrypo": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.raw_material_supplier.costsystem": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.raw_material_supplier.costsystem_c_copy": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.raw_material_supplier.costsystemkgpo_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.raw_material_supplier.costsystemnosurchargepo_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.raw_material_supplier.costsystempotext_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.raw_material_supplier.costsystemsurchargepo_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.raw_material_supplier.costsystemtext_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.raw_material_supplier.datecost": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.raw_material_supplier.dlt_costcadnosurcharge_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.raw_material_supplier.dlt_costcadsurcharge_c_usecostsystem": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.raw_material_supplier.mocost": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.raw_material_supplier.surcharge": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.raw_material_supplier.unused_surchargeperc_c": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.receipt.amount": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.receipt_packaging.costitem": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.receipt_raw_material.costitem": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.supplier.costdelivery": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.supplier.minordercost": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.supplier.surcharge": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.supplier.surchargeperc": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "public.supplier.tollfeephone": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_invoice_detail.costed": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_invoice_detail.itramount1": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_invoice_detail.itramount2": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_invoice_detail.itramount3": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_invoice_detail.itramount4": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_invoice_detail.itramount5": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_invoice_detail.misccharge": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_invoice_detail.priamount": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_invoice_detail.priceopt": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_invoice_detail.priceover": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_invoice_detail.priceunit": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_invoice_detail.prpriceby": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_invoice_detail.rtgamount": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_invoice_detail.tamount1": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_invoice_detail.tamount2": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_invoice_detail.tamount3": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_invoice_detail.tamount4": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_invoice_detail.tamount5": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_invoice_detail.unitprice": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_invoice_header.rtgamount": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_invoice_header.teamount1": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_invoice_header.teamount2": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_invoice_header.teamount3": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_invoice_header.teamount4": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_invoice_header.teamount5": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_invoice_header.tiamount1": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_invoice_header.tiamount2": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_invoice_header.tiamount3": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_invoice_header.tiamount4": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_invoice_header.tiamount5": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_order_detail.extoprice": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_order_detail.misccharge": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_order_detail.otramount1": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_order_detail.otramount2": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_order_detail.otramount3": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_order_detail.otramount4": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_order_detail.otramount5": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_order_detail.priamount": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_order_detail.priceopt": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_order_detail.priceover": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_order_detail.priceunit": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_order_detail.prpriceby": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_order_detail.tamount1": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_order_detail.tamount2": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_order_detail.tamount3": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_order_detail.tamount4": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_order_detail.tamount5": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_order_detail.unitprice": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_order_header.teamount1": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_order_header.teamount2": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_order_header.teamount3": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_order_header.teamount4": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_order_header.teamount5": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_order_header.tiamount1": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_order_header.tiamount2": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_order_header.tiamount3": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_order_header.tiamount4": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_order_header.tiamount5": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_shipment_detail.misccharge": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_shipment_detail.priamount": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_shipment_detail.priceopt": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_shipment_detail.priceover": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_shipment_detail.priceunit": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_shipment_detail.prpriceby": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_shipment_detail.rtgamount": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_shipment_detail.stramount1": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_shipment_detail.stramount2": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_shipment_detail.stramount3": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_shipment_detail.stramount4": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_shipment_detail.stramount5": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_shipment_detail.tamount1": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_shipment_detail.tamount2": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_shipment_detail.tamount3": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_shipment_detail.tamount4": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_shipment_detail.tamount5": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_shipment_detail.unitprice": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_shipment_header.rtgamount": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_shipment_header.teamount1": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_shipment_header.teamount2": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_shipment_header.teamount3": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_shipment_header.teamount4": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_shipment_header.teamount5": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_shipment_header.tiamount1": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_shipment_header.tiamount2": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_shipment_header.tiamount3": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_shipment_header.tiamount4": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.oe_shipment_header.tiamount5": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_detail.discount": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_detail.discountf": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_header.discount": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_header.fcamount": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_header.scamount": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_header.taramount1": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_header.taramount2": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_header.taramount3": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_header.taramount4": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_header.taramount5": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_header.taxamount": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_header.taxamount1": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_header.taxamount2": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_header.taxamount3": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_header.taxamount4": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_header.taxamount5": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_receipt_detail.discount": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_receipt_detail.discountf": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_receipt_detail.rtgamount": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_receipt_header.amount": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_receipt_header.discount": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_receipt_header.fcamount": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_receipt_header.raxamount1": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_receipt_header.raxamount2": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_receipt_header.raxamount3": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_receipt_header.raxamount4": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_receipt_header.raxamount5": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_receipt_header.rtgamount": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_receipt_header.scamount": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_receipt_header.taramount1": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_receipt_header.taramount2": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_receipt_header.taramount3": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_receipt_header.taramount4": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_receipt_header.taramount5": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_receipt_header.taxamount": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_receipt_header.taxamount1": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_receipt_header.taxamount2": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_receipt_header.taxamount3": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_receipt_header.taxamount4": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "sage.po_receipt_header.taxamount5": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "silver.assembly_order_items.cost_packaging": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "silver.assembly_order_items.price_packaging": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "silver.batches.cost_materials_per_unit": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "silver.batches.cost_overhead_per_unit": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "silver.batches.cost_per_unit": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "silver.batches.cost_raw_materials": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "silver.finished_product_items.box_cost": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "silver.finished_product_items.cost_to_apply": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "silver.finished_product_items.formula_cost": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "silver.finished_product_items.unit_cost": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "silver.finished_products.bulk_cost": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "silver.finished_products.total_cost": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "silver.manufacturing_orders.cost_overhead": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "silver.manufacturing_orders.cost_packaging": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "silver.manufacturing_orders.cost_per_unit": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "silver.manufacturing_orders.cost_raw_materials": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "silver.packaging.cost": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "silver.packaging_suppliers.cost_entry": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "silver.packaging_suppliers.cost_system": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "silver.production_tasks.cost_overhead": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "silver.purchase_order_items.total_cost": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "silver.purchase_order_items.unit_cost": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "silver.purchase_orders.discount": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "silver.purchase_orders.shipping_cost": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "silver.purchase_orders.subtotal": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "silver.purchase_orders.tax_amount": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "silver.purchase_orders.total_cost": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "silver.raw_material_suppliers.cost_entry": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "silver.raw_material_suppliers.cost_system": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "silver.raw_materials.average_cost": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "silver.receipts.amount": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "silver.suppliers.min_order_cost": "finance-marked text: the name reads as money; no measure or currency is declared",
+  "silver.suppliers.surcharge": "finance-marked text: the name reads as money; no measure or currency is declared"
+ },
+ "upstream_ask": {
+  "id": "Q3",
+  "ask": "Approve a reporting-API manifest expansion: serve these relations, in this order; each completes the Portal API routes whose data is otherwise served.",
+  "method": "Greedy over the source registry's api_route data keys against the pinned catalog: the next relation completes the most routes still incomplete (ties: most routes reading it, then name). credential_columns: the Prisma columns that store a credential (CREDENTIAL_COLUMN); an owner decides their exclusion before the relation is served; null: no Prisma model, columns unknown.",
+  "routes": {
+   "with_data": 777,
+   "fully_served": 41,
+   "need_unserved": 736
+  },
+  "prisma_models_not_served": 256,
+  "gaps": {
+   "gap-c440ac2a2bcd": "registry:portal.api_route:not_served",
+   "gap-3a042fa019b4": "registry:portal.prisma_model:not_served"
+  },
+  "relations_needed": 293,
+  "ranked": [
+   {
+    "relation": "public.app_audit_log",
+    "object_type": "RelPublicAppAuditLog",
+    "routes_reading": 425,
+    "routes_completed": 24,
+    "routes_completed_total": 24,
+    "credential_columns": []
+   },
+   {
+    "relation": "public.app_user",
+    "object_type": "Person",
+    "routes_reading": 315,
+    "routes_completed": 11,
+    "routes_completed_total": 35,
+    "credential_columns": [
+     "hashed_password",
+     "reset_token",
+     "two_factor_secret"
+    ]
+   },
+   {
+    "relation": "public.app_activity_event",
+    "object_type": "RelPublicAppActivityEvent",
+    "routes_reading": 244,
+    "routes_completed": 5,
+    "routes_completed_total": 40,
+    "credential_columns": []
+   },
+   {
+    "relation": "public.app_inventory_lot",
+    "object_type": "Lot",
+    "routes_reading": 93,
+    "routes_completed": 5,
+    "routes_completed_total": 45,
+    "credential_columns": []
+   },
+   {
+    "relation": "public.app_warehouse",
+    "object_type": "Warehouse",
+    "routes_reading": 67,
+    "routes_completed": 6,
+    "routes_completed_total": 51,
+    "credential_columns": []
+   },
+   {
+    "relation": "public.app_ingredient",
+    "object_type": "RelPublicAppIngredient",
+    "routes_reading": 12,
+    "routes_completed": 5,
+    "routes_completed_total": 56,
+    "credential_columns": []
+   },
+   {
+    "relation": "public.app_formulation",
+    "object_type": "RelPublicAppFormulation",
+    "routes_reading": 178,
+    "routes_completed": 4,
+    "routes_completed_total": 60,
+    "credential_columns": []
+   },
+   {
+    "relation": "public.app_equipment",
+    "object_type": "RelPublicAppEquipment",
+    "routes_reading": 113,
+    "routes_completed": 4,
+    "routes_completed_total": 64,
+    "credential_columns": []
+   },
+   {
+    "relation": "public.app_location",
+    "object_type": "RelPublicAppLocation",
+    "routes_reading": 10,
+    "routes_completed": 4,
+    "routes_completed_total": 68,
+    "credential_columns": []
+   },
+   {
+    "relation": "public.app_product_selling_price",
+    "object_type": "RelPublicAppProductSellingPrice",
+    "routes_reading": 21,
+    "routes_completed": 5,
+    "routes_completed_total": 73,
+    "credential_columns": []
+   },
+   {
+    "relation": "sage.ic_pricp",
+    "object_type": "RelSageIcPricp",
+    "routes_reading": 32,
+    "routes_completed": 4,
+    "routes_completed_total": 77,
+    "credential_columns": null
+   },
+   {
+    "relation": "public.app_api_key",
+    "object_type": "RelPublicAppApiKey",
+    "routes_reading": 5,
+    "routes_completed": 4,
+    "routes_completed_total": 81,
+    "credential_columns": [
+     "key_hash"
+    ]
+   },
+   {
+    "relation": "public.app_storage_location",
+    "object_type": "RelPublicAppStorageLocation",
+    "routes_reading": 232,
+    "routes_completed": 3,
+    "routes_completed_total": 84,
+    "credential_columns": []
+   },
+   {
+    "relation": "public.app_pinned_communication",
+    "object_type": "RelPublicAppPinnedCommunication",
+    "routes_reading": 116,
+    "routes_completed": 3,
+    "routes_completed_total": 87,
+    "credential_columns": []
+   },
+   {
+    "relation": "public.app_project_test_flag",
+    "object_type": "RelPublicAppProjectTestFlag",
+    "routes_reading": 113,
+    "routes_completed": 3,
+    "routes_completed_total": 90,
+    "credential_columns": []
+   },
+   {
+    "relation": "public.app_deviation",
+    "object_type": "RelPublicAppDeviation",
+    "routes_reading": 84,
+    "routes_completed": 3,
+    "routes_completed_total": 93,
+    "credential_columns": []
+   },
+   {
+    "relation": "public.app_maintenance_work_order",
+    "object_type": "RelPublicAppMaintenanceWorkOrder",
+    "routes_reading": 84,
+    "routes_completed": 3,
+    "routes_completed_total": 96,
+    "credential_columns": []
+   },
+   {
+    "relation": "public.app_notification",
+    "object_type": "RelPublicAppNotification",
+    "routes_reading": 66,
+    "routes_completed": 3,
+    "routes_completed_total": 99,
+    "credential_columns": []
+   },
+   {
+    "relation": "public.app_document",
+    "object_type": "RelPublicAppDocument",
+    "routes_reading": 237,
+    "routes_completed": 3,
+    "routes_completed_total": 102,
+    "credential_columns": []
+   },
+   {
+    "relation": "public.app_user_department_membership",
+    "object_type": "RelPublicAppUserDepartmentMembership",
+    "routes_reading": 199,
+    "routes_completed": 3,
+    "routes_completed_total": 105,
+    "credential_columns": []
+   },
+   {
+    "relation": "public.app_supplier_contact",
+    "object_type": "RelPublicAppSupplierContact",
+    "routes_reading": 65,
+    "routes_completed": 3,
+    "routes_completed_total": 108,
+    "credential_columns": []
+   },
+   {
+    "relation": "public.app_inventory",
+    "object_type": "RelPublicAppInventory",
+    "routes_reading": 56,
+    "routes_completed": 3,
+    "routes_completed_total": 111,
+    "credential_columns": []
+   },
+   {
+    "relation": "public.app_inventory_item_transaction",
+    "object_type": "RelPublicAppInventoryItemTransaction",
+    "routes_reading": 10,
+    "routes_completed": 6,
+    "routes_completed_total": 117,
+    "credential_columns": []
+   },
+   {
+    "relation": "public.app_stock_movement",
+    "object_type": "RelPublicAppStockMovement",
+    "routes_reading": 5,
+    "routes_completed": 5,
+    "routes_completed_total": 122,
+    "credential_columns": []
+   },
+   {
+    "relation": "public.app_shipment_allocation",
+    "object_type": "RelPublicAppShipmentAllocation",
+    "routes_reading": 25,
+    "routes_completed": 3,
+    "routes_completed_total": 125,
+    "credential_columns": []
+   }
+  ],
+  "sensitive": [
+   "public.app_user",
+   "public.app_api_key"
+  ]
+ }
+}

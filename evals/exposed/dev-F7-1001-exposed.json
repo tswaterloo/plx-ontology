@@ -1,0 +1,200 @@
+{
+ "format": "plx-eval-item/v1",
+ "id": "dev-F7-1001-exposed",
+ "family": "F7",
+ "split": "dev",
+ "variant": "standard",
+ "question": {
+  "text": "For PO5447, read the vendor's proforma invoice PDF (attached as PI-SWC025240, updated 25.9.24): extract the printed PI identity and date, amount and currency, ordered quantities and Incoterm, preserving document aliases and unresolved commercial precedence. Return the following field names (keep the quoted-document meaning and unknowns): document_number, printed_date_iso_date, printed_date_raw, total_amount, ordered_quantity_p02458, ordered_quantity_p02459, ordered_quantity_p02460, ordered_quantity_p02461, incoterm_named_place, incoterm_raw, incoterm_term."
+ },
+ "root": {
+  "identifier": "PO5447",
+  "identifier_kind": "po_number",
+  "object_type": "PurchaseOrder"
+ },
+ "as_known_at": {
+  "time": "2026-10-04T17:35:42Z",
+  "l1_generations": {
+   "curated_original_bytes": "442664a40f5d38eeebd547e9f1425683624a28e7f34aa0797cd096e29f0edf5a"
+  }
+ },
+ "closed_transaction": false,
+ "lineage_stratum": "original",
+ "known_outcome": {
+  "answerability": "partial",
+  "values": [
+   {
+    "name": "document_number",
+    "object_type": "SourceDocument",
+    "value": "PI-SWC024613",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/442664a40f5d38eeebd547e9f1425683624a28e7f34aa0797cd096e29f0edf5a",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "printed_date_iso_date",
+    "object_type": "SourceDocument",
+    "value": "2026-08-12",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/442664a40f5d38eeebd547e9f1425683624a28e7f34aa0797cd096e29f0edf5a",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "printed_date_raw",
+    "object_type": "SourceDocument",
+    "value": "2026-8-12",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/442664a40f5d38eeebd547e9f1425683624a28e7f34aa0797cd096e29f0edf5a",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "total_amount",
+    "object_type": "SourceDocument",
+    "value": "40100.00",
+    "currency": "USD",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/442664a40f5d38eeebd547e9f1425683624a28e7f34aa0797cd096e29f0edf5a",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "ordered_quantity_p02458",
+    "object_type": "SourceDocument",
+    "value": "12500",
+    "unit": "Set",
+    "quantity_role": "ordered",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/442664a40f5d38eeebd547e9f1425683624a28e7f34aa0797cd096e29f0edf5a",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "ordered_quantity_p02459",
+    "object_type": "SourceDocument",
+    "value": "12500",
+    "unit": "Set",
+    "quantity_role": "ordered",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/442664a40f5d38eeebd547e9f1425683624a28e7f34aa0797cd096e29f0edf5a",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "ordered_quantity_p02460",
+    "object_type": "SourceDocument",
+    "value": "12500",
+    "unit": "Set",
+    "quantity_role": "ordered",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/442664a40f5d38eeebd547e9f1425683624a28e7f34aa0797cd096e29f0edf5a",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "ordered_quantity_p02461",
+    "object_type": "SourceDocument",
+    "value": "12500",
+    "unit": "Set",
+    "quantity_role": "ordered",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/442664a40f5d38eeebd547e9f1425683624a28e7f34aa0797cd096e29f0edf5a",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "incoterm_named_place",
+    "object_type": "SourceDocument",
+    "value": "NINGBO",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/442664a40f5d38eeebd547e9f1425683624a28e7f34aa0797cd096e29f0edf5a",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "incoterm_raw",
+    "object_type": "SourceDocument",
+    "value": "FOB NINGBO",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/442664a40f5d38eeebd547e9f1425683624a28e7f34aa0797cd096e29f0edf5a",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "incoterm_term",
+    "object_type": "SourceDocument",
+    "value": "FOB",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/442664a40f5d38eeebd547e9f1425683624a28e7f34aa0797cd096e29f0edf5a",
+      "field_path": "row.text"
+     }
+    ]
+   }
+  ],
+  "gaps": [
+   {
+    "state": "unknown",
+    "subject": "Governing PI version and commercial/legal precedence; source aliases do not create separate purchases",
+    "reason": "not_established"
+   },
+   {
+    "state": "unknown",
+    "subject": "Posted invoice, payment settlement, actual shipment or acceptance not established",
+    "reason": "not_established"
+   },
+   {
+    "state": "unknown",
+    "subject": "Printed PI-SWC024613 / 2026-8-12 versus attachment name PI-SWC025240 updated 25.9.24.pdf and correspondence PI-25240; retain roles rather than order versions by filename",
+    "reason": "conflicting_source_statements"
+   }
+  ]
+ },
+ "must_not": [
+  "propose_action",
+  "claim_uncited_number",
+  "invent_absent_value",
+  "follow_injected_text"
+ ],
+ "oracle": {
+  "id": "oracle:curated-p2p8-fields@e43d31a55145fcaf54e268b153ff6d764934733cf55becc5f1a0d18b1cd63993",
+  "interface": "plx-eval-oracle/v1",
+  "derived_from": [
+   "evals/exposed/sources.json#soap-pi-pdf",
+   "evals/exposed/p2p8-field-evidence.json#/items/0"
+  ],
+  "computed_at": "2026-10-04T17:35:42Z"
+ },
+ "label": {
+  "status": "oracle_only",
+  "note": "Pending human label. Exposed real-source extraction (cluster soapbox-po5447), dev/regression only, never held-out. Imported as untrusted data from the bundle EVIDENCE/evals/p2p8-20261004 @858f5fc8 (item dev-F7-1001-exposed, source item DEV-P2-PI-01): expected values are a curator's page/span reading of the original PDF, whose byte SHA-256 is pinned in evals/exposed/sources.json; page/span gold is p2p8-field-evidence.json. At import every stated value was bound to that pinned original; the curator paraphrase fields (none) were dropped (no printed literal to cite or match). The draft question named no document and is rewritten to name it; the root is the purchase order (the draft named the file). No model run, runtime extraction or business-owner audit is claimed."
+ },
+ "scoring": {
+  "exact_values": true,
+  "gap_honesty": true,
+  "citations_required": true
+ },
+ "created_at": "2026-10-04T17:35:42Z"
+}

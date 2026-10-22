@@ -1,0 +1,109 @@
+{
+ "id": "ontology.document_fields_customer_po",
+ "description": "Customer purchase orders read from live SharePoint captures (DOC-01): one GET-only capture run of the PLXCUSTOMERS site's 'Customer Documents' folder (integrations/capture_sharepoint.py through the GET-only Graph client; scanned PDFs OCR-read locally, never a network service) into the check's temporary Workbench state, a projection of that capture alone, then for every CustomerPoDocument the document-field extractor projected (ontology/document_fields.py, class customer_po): fields stated, gaps by reason, line items, and whether every page/span citation of its evidence resolves against the captured bytes (and OCR text); per field the denominators extracted / blank / unreadable / ambiguous / not_stated (scripts/eval_document_fields_live.py); accuracy only against operator-interpreted items, 'no_operator_items' until one exists; the stage funnel (funnel: files, captured, text_extracted, ocr_attempted / ocr_unavailable / ocr_failed and ocr_failed_by (the failed OCR runs by typed cause: deadline; the tool that exited (pdf_unreadable: pdfinfo could not open the file, pdfinfo_exit, text_layer_exit, render_exit, recognize_exit) or tool_signal (killed); tool_exit only the macOS helper's unrecognised exit; output_bound, render_mismatch, image_page_bound, page_bound, page_count, ocr_output_invalid; untyped, unknown), classified per document class, excluded by reason, evaluated, ambiguous_class (the ambiguous documents by cause, prose_title or title_lines, of class_read, and prose_title_rate: the share a prose title made ambiguous), sums, dropped_at naming the stage that left no document, and no_candidate typing why none was evaluated: stage, reason, unread_documents, title_signals, portal_metadata_documents; ontology/document_fields.py stages). A document left unread because the host has no OCR engine makes the check blocked with ocr_unavailable (blocked_when), never a pass and never 'no documents'. Counts, booleans and enums only; no names, paths, ids, identifiers, values or text. QA-06: portal_metadata counts the projected SharePointFile.portal_metadata values (the Portal-taxonomy columns the Portal states on each captured version, read GET-only per version with the scope's list_item_columns 'portal_taxonomy' and bound to its eTag; operating/sharepoint_host_check.py portal_metadata_counts): documents_with_portal_metadata (versions stating at least one column, must be at least 1), documents_read, columns_stated and gap_reasons by column name and typed gap, served_to_reader, and visible_to_withheld (versions the capture's gate serves a reader the audience withholds, must be 0).",
+ "source": "sharepoint",
+ "command": [
+  "python3",
+  "-m",
+  "scripts.eval_document_fields_live",
+  "--state-dir",
+  "{tmp}/state",
+  "--scope",
+  "examples/sharepoint_capture_scope.customer_documents.live-check.json",
+  "--live-audience",
+  "examples/sharepoint_capture_audience.live-check.json",
+  "--document-class",
+  "customer_po",
+  "--min-documents",
+  "1",
+  "--capture-budget-seconds",
+  "900"
+ ],
+ "cadence": "daily",
+ "timeout_seconds": 1500,
+ "requires_env": [
+  "MICROSOFT_GRAPH_TENANT_ID",
+  "MICROSOFT_GRAPH_CLIENT_ID",
+  "MICROSOFT_GRAPH_CLIENT_SECRET",
+  "SHAREPOINT_SITE_ID"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "documents",
+   "fields_stated",
+   "citations",
+   "citations_resolved",
+   "gaps",
+   "capture.files_current",
+   "field_outcomes",
+   "accuracy.status",
+   "capture_complete",
+   "funnel.evaluated",
+   "funnel.excluded",
+   "funnel.classified",
+   "funnel.ambiguous_class",
+   "funnel.ocr_failed_by",
+   "portal_metadata.documents_with_portal_metadata",
+   "portal_metadata.visible_to_withheld",
+   "portal_metadata.served_to_reader"
+  ],
+  "json_equals": {
+   "ok": true,
+   "check": "ontology.document_fields_sharepoint",
+   "object_type": "CustomerPoDocument",
+   "funnel.sums": true,
+   "portal_metadata.visible_to_withheld": 0
+  },
+  "json_min": {
+   "documents": 1,
+   "fields_stated": 1,
+   "citations": 1,
+   "portal_metadata.documents_with_portal_metadata": 1,
+   "portal_metadata.served_to_reader": 1
+  }
+ },
+ "record": [
+  "ok",
+  "evidence_label",
+  "documents",
+  "documents_ocr",
+  "fields_stated",
+  "citations",
+  "citations_resolved",
+  "gaps",
+  "links",
+  "capture",
+  "requests_sent",
+  "capture_complete",
+  "funnel",
+  "funnel.dropped_at",
+  "funnel.no_candidate",
+  "funnel.ambiguous_class",
+  "funnel.ocr_failed_by",
+  "blocked",
+  "field_outcomes",
+  "accuracy",
+  "accuracy.status",
+  "portal_metadata"
+ ],
+ "record_keys": [
+  "gaps",
+  "links",
+  "capture",
+  "field_outcomes",
+  "accuracy",
+  "funnel",
+  "funnel.ocr_failed_by",
+  "portal_metadata"
+ ],
+ "record_enums": [
+  "evidence_label",
+  "accuracy.status",
+  "blocked",
+  "funnel.dropped_at",
+  "funnel.no_candidate"
+ ],
+ "notes": "Live-unverified until the live check runs it; its test is injected-transport (operating/tests/test_attested_missing.py runs operating.sharepoint_host_check --document-class customer_po with scripts.eval_document_fields_live over the in-process FakeDrive and checks this spec's expectations on that output). Captured files live only in {tmp}/state and are deleted with the check's temporary directory. Unverified live assumptions: 'Customer Documents' holds customers' purchase orders as PDFs whose text (or OCR text) carries a title line the customer_po profile knows ('Purchase Order' alone on its line); how many fields and line items they yield is measured here, never assumed. The capture walk is bounded (--capture-budget-seconds 900: a root it cuts is incomplete, capture_complete false). The order-side missing_in_record leads need the Portal mirror and are proven by the fixture test only; this check does not claim them. The first verdict (2026-10-08, main 4ea60735) failed with documents=0 over a complete capture (33 files, 16 with text, 0 OCR) and no stage named; the funnel now names the stage (its signals count, per class, documents whose text holds the class's title phrase but not as their title: mention_beside_title, after_other_title, beside_other_title, numbered_title_only, beside_numbered_title, own_issued, issued_category, own_mailbox_send, not_alone, after_text, capture_text_only). Direction (decision 2026-10-08): a file whose confirmed DocumentCategory is an issued purchase order (read per version by this scope's list_item_columns) is excluded as own_issued; a purchase order with no provenance signal stays a customer PO and records the gap issuer_unknown, so gaps.issuer_unknown equals documents, and plx.object reports issued_by_own_party for one whose number a readable own purchase order holds. Unverified live assumption: how many of this folder's purchase orders carry a confirmed category at all. The prose-title ambiguous_class rate (funnel.ambiguous_class.prose_title_rate, review c5c50e8b58e6 item 2) is unmeasured until this check runs live. portal_metadata (QA-06): live-unverified; its test is injected-transport (operating/tests/test_attested_missing.py CustomerPoLiveCheckTests over a fake listItem). Unverified live assumption: that files of 'Customer Documents' carry Portal-filled columns at all (graph.sharepoint_library_columns live-2026-10-11 measured DocStatus and DocumentCategory filled on 92 of the library's newest 200 documents, not per folder); a 0 fails this check and names the gap. Why documents=0 at funnel.dropped_at 'class' (QA-06, derived keyless from code, the mirrored taxonomy and the recorded verdict of 2026-10-14, main b24a3783; live-unverified): the capture was complete (36 files), 16 texts were read and none holds the customer_po title phrase anywhere (funnel.signals empty), 18 scanned PDFs gave no text (ocr_failed 11, ocr_no_text 7), so a customer PO in this folder can only be among those unread scans or the 11 files with Portal-stated columns. The classifier reads title text only, and the column cannot replace it: since TASK-2594 the Portal writes DocumentCategory as documentCategoryColumn of the category (operating/doc_metadata_taxonomy.py DOCUMENT_TYPES), which is OTHER for CUSTOMER_PO (the CPO code goes into the stored file name only); only files filed before it may state CUSTOMER_PO. The result now types it (funnel.no_candidate, scripts/eval_document_fields_live.py no_candidate, derived from the funnel counts alone): stage, reason (at class with no title signal and unread documents: no_title_phrase_unread_documents), unread_documents, title_signals and portal_metadata_documents; documents 0 still fails this check, with that reason recorded. The QA-06 row is re-derived from the next live verdict's funnel.no_candidate. QA-06 (live-unverified): 0 of 37 captured files classified customer_po on the 2026-10-18 daily (ocr_failed 11, ocr_no_text 7); a failed OCR run now stores its typed cause and funnel.ocr_failed_by counts it, so the next daily names why those 11 scans failed. The OCR path now turns a scanned page OSD says is upside down or on its side upright before reading it. Whether a per-page OCR budget is needed is decided from that daily's ocr_failed_by (deadline), not assumed. Live-unverified: the 11 tool_exit failures were one untyped cause for any non-zero exit of pdfinfo, pdftotext, pdftoppm or tesseract, so which tool failed was unknowable from the result; each tool now has its own cause, a text layer pdftotext refuses is read around by OCR, and a render or recognition that dies is retried once at half the resolution. The root cause on the live files is named by the next daily's ocr_failed_by, not claimed here.",
+ "blocked_when": "blocked"
+}

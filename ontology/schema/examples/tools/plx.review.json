@@ -1,0 +1,113 @@
+{
+  "tool": "plx.review",
+  "examples": [
+    {
+      "name": "confirm a supplier number as an alias of a PO",
+      "input": {
+        "mode": "record",
+        "decision": "alias",
+        "subject": "PurchaseOrder:portal.fm_generated_purchase_order:{\"id\":9}",
+        "alias": {
+          "identifier_kind": "vendor_confirmation",
+          "value": "PI-ABC001234"
+        },
+        "evidence": [
+          {
+            "l1_handle": "graph-mail://orders@plx.test/MSG-1@CK-1",
+            "digest": "1111111111111111111111111111111111111111111111111111111111111111",
+            "field_path": "row.subject"
+          }
+        ]
+      },
+      "output": {
+        "mode": "record",
+        "review": {
+          "review_id": "rev-0123456789abcdef0123456789abcdef",
+          "decision": "alias",
+          "subject": "PurchaseOrder:portal.fm_generated_purchase_order:{\"id\":9}",
+          "evidence": [
+            {
+              "digest": "1111111111111111111111111111111111111111111111111111111111111111",
+              "field_path": "row.subject",
+              "l1_handle": "graph-mail://orders@plx.test/MSG-1@CK-1",
+              "object_id": "Email:graph_mail.messages:{\"id\":\"MSG-1\",\"mailbox\":\"orders@plx.test\"}"
+            }
+          ],
+          "author": {
+            "channel": "console",
+            "principal": "employee:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "session": "5555555555555555555555555555555555555555555555555555555555555555"
+          },
+          "recorded_at": "2026-10-02T12:00:00.000000Z",
+          "state": "effective",
+          "alias": {
+            "identifier_kind": "vendor_confirmation",
+            "normalized": "PI-ABC001234"
+          }
+        },
+        "created": true,
+        "projection": "plx_find_now",
+        "business_system_writes": 0,
+        "meta": {
+          "schema_digest": "6caf383f712245f39aaa7e1a9118a6b1d4aac6539484ac8de1bdbbe3a4a84a3f",
+          "as_known_at": "2026-10-02T12:30:00Z",
+          "freshness": []
+        }
+      }
+    },
+    {
+      "name": "reviews of a record for this reader",
+      "input": {
+        "mode": "status",
+        "subject": "PurchaseOrder:portal.fm_generated_purchase_order:{\"id\":9}"
+      },
+      "output": {
+        "mode": "status",
+        "subject": "PurchaseOrder:portal.fm_generated_purchase_order:{\"id\":9}",
+        "reviews": [
+          {
+            "review_id": "rev-0123456789abcdef0123456789abcdef",
+            "decision": "alias",
+            "subject": "PurchaseOrder:portal.fm_generated_purchase_order:{\"id\":9}",
+            "evidence": [
+              {
+                "digest": "1111111111111111111111111111111111111111111111111111111111111111",
+                "field_path": "row.subject",
+                "l1_handle": "graph-mail://orders@plx.test/MSG-1@CK-1",
+                "object_id": "Email:graph_mail.messages:{\"id\":\"MSG-1\",\"mailbox\":\"orders@plx.test\"}"
+              }
+            ],
+            "author": {
+              "channel": "console",
+              "principal": "employee:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+              "session": "5555555555555555555555555555555555555555555555555555555555555555"
+            },
+            "recorded_at": "2026-10-02T12:00:00.000000Z",
+            "state": "effective",
+            "alias": {
+              "identifier_kind": "vendor_confirmation",
+              "normalized": "PI-ABC001234"
+            }
+          }
+        ],
+        "withheld": {
+          "reviews": 0,
+          "reason": "evidence_not_visible"
+        },
+        "completeness": {
+          "complete": true,
+          "truncated": false,
+          "returned": 1,
+          "total": 1,
+          "next_cursor": null
+        },
+        "business_system_writes": 0,
+        "meta": {
+          "schema_digest": "6caf383f712245f39aaa7e1a9118a6b1d4aac6539484ac8de1bdbbe3a4a84a3f",
+          "as_known_at": "2026-10-02T12:30:00Z",
+          "freshness": []
+        }
+      }
+    }
+  ]
+}

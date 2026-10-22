@@ -1,0 +1,50 @@
+{
+ "id": "bc.adapter_probe",
+ "description": "Business Central (Production, GET only) adapter probe: token, companies, one purchaseOrders record and its citation round-trip; no values.",
+ "source": "business-central",
+ "command": [
+  "python3",
+  "-m",
+  "integrations.bc_read",
+  "probe"
+ ],
+ "timeout_seconds": 300,
+ "requires_env": [
+  "BC_TENANT_ID",
+  "BC_CLIENT_ID",
+  "BC_CLIENT_SECRET",
+  "BC_ENVIRONMENT"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "companies_count",
+   "entity.records_returned",
+   "requests_sent"
+  ],
+  "json_equals": {
+   "token": "ok",
+   "environment_is_production": true,
+   "entity.citation_roundtrip": "current"
+  },
+  "json_min": {
+   "companies_count": 1
+  }
+ },
+ "record": [
+  "token",
+  "environment_is_production",
+  "companies_count",
+  "entity.entity_set",
+  "entity.records_returned",
+  "entity.has_etag",
+  "entity.citation_roundtrip",
+  "requests_sent"
+ ],
+ "record_enums": [
+  "token",
+  "entity.citation_roundtrip",
+  "entity.entity_set"
+ ],
+ "notes": "The probe stops typed at its wall cap (integrations/bc_read.py PROBE_WALL_SECONDS, 240 s, 30 s per attempt): this check's timeout sits above it by more than one attempt so a slow source ends with a typed wall_cap failure, never a timeout kill (asserted by integrations/tests/test_bc_read_probe_counts.py)."
+}

@@ -1,0 +1,56 @@
+{
+ "schema": "plx-mail-capture-scope/v1",
+ "note": "Live-check scope of graph.mail_capture (verify/live-checks/graph.mail_capture.json): the six operational mailboxes the owner named (decision 2026-10-20-mail-capture-folder-scope option 1), inbox and sent items (12 folders) over a 90-day first-round window, captured whole (no page cap). Every mailbox named here must be on the canonical allowlist, operating/case_mail_scope.json, or the scope is refused. Configuration, never a grant.",
+ "window_days": 90,
+ "mailboxes": [
+  {
+   "address": "order-confirmation@petrasoap.com",
+   "folders": [
+    "inbox",
+    "sentitems"
+   ]
+  },
+  {
+   "address": "ship@petrasoap.com",
+   "folders": [
+    "inbox",
+    "sentitems"
+   ]
+  },
+  {
+   "address": "torontowh@petrasoap.com",
+   "folders": [
+    "inbox",
+    "sentitems"
+   ]
+  },
+  {
+   "address": "ap@petrasoap.com",
+   "folders": [
+    "inbox",
+    "sentitems"
+   ]
+  },
+  {
+   "address": "receiving@petrasoap.com",
+   "folders": [
+    "inbox",
+    "sentitems"
+   ]
+  },
+  {
+   "address": "qclabresults@petrasoap.com",
+   "folders": [
+    "inbox",
+    "sentitems"
+   ]
+  }
+ ],
+ "all_mailboxes": {
+  "enabled": false,
+  "folders": [
+   "inbox",
+   "sentitems"
+  ]
+ }
+}

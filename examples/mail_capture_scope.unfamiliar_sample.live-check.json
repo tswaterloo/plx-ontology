@@ -1,0 +1,56 @@
+{
+ "schema": "plx-mail-capture-scope/v1",
+ "note": "Mail scope of eval.unfamiliar_sample (verify/live-checks/eval.unfamiliar_sample.json, --mail-scope; gap-f713876847b6): the purchase-order mailbox the check read alone before (inbox and sent items) and the six operational mailboxes the owner named, inbox. Each is searched, then listed, under the eval audience; a mailbox outside the canonical allowlist (operating/case_mail_scope.json) is blocked (later_ask mail-scope-grant), never read; a mailbox the people-exclusion guard (integrations/people_exclusion.py) cannot clear is blocked (later_ask excluded-people-oids). Reports name mailboxes by scope id (mailbox-<n>, their order here), never by address. Configuration, never a grant.",
+ "window_days": 90,
+ "mailboxes": [
+  {
+   "address": "purchase-order@petrasoap.com",
+   "folders": [
+    "inbox",
+    "sentitems"
+   ]
+  },
+  {
+   "address": "order-confirmation@petrasoap.com",
+   "folders": [
+    "inbox"
+   ]
+  },
+  {
+   "address": "ship@petrasoap.com",
+   "folders": [
+    "inbox"
+   ]
+  },
+  {
+   "address": "torontowh@petrasoap.com",
+   "folders": [
+    "inbox"
+   ]
+  },
+  {
+   "address": "ap@petrasoap.com",
+   "folders": [
+    "inbox"
+   ]
+  },
+  {
+   "address": "receiving@petrasoap.com",
+   "folders": [
+    "inbox"
+   ]
+  },
+  {
+   "address": "qclabresults@petrasoap.com",
+   "folders": [
+    "inbox"
+   ]
+  }
+ ],
+ "all_mailboxes": {
+  "enabled": false,
+  "folders": [
+   "inbox"
+  ]
+ }
+}

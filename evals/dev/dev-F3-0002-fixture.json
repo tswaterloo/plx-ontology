@@ -1,0 +1,161 @@
+{
+ "format": "plx-eval-item/v1",
+ "id": "dev-F3-0002-fixture",
+ "family": "F3",
+ "split": "dev",
+ "variant": "standard",
+ "question": {
+  "text": "For sales order FXSO100108, how many units were ordered, produced and shipped?"
+ },
+ "root": {
+  "identifier": "FXSO100108",
+  "identifier_kind": "so_number",
+  "object_type": "SalesOrder",
+  "relation": "public.app_sales_order",
+  "key": {
+   "id": "fx-so-108"
+  }
+ },
+ "as_known_at": {
+  "time": "2099-01-02T03:04:05Z",
+  "l1_generations": {
+   "portal_api": "8a5851cbdc2e491a"
+  }
+ },
+ "closed_transaction": true,
+ "lineage_stratum": "gold_etl_from_fm",
+ "known_outcome": {
+  "answerability": "partial",
+  "values": [
+   {
+    "name": "ordered",
+    "object_type": "SalesOrderLine",
+    "property": "quantity",
+    "value": "10800",
+    "quantity_role": "ordered",
+    "citations": [
+     {
+      "l1_handle": "api://public.app_sales_order_line/%7B%22id%22%3A%22fx-sol-108-1%22%7D@8a5851cbdc2e491a",
+      "field_path": "row.quantity"
+     }
+    ],
+    "unit": "ea"
+   },
+   {
+    "name": "produced",
+    "object_type": "AssemblyOrder",
+    "property": "qty_manufactured",
+    "value": null,
+    "quantity_role": "produced",
+    "citations": [
+     {
+      "l1_handle": "api://public.app_manufacturing_order/%7B%22id%22%3A%22fx-mo-108%22%7D@8a5851cbdc2e491a",
+      "field_path": "row.yield_actual"
+     }
+    ],
+    "unit": "ea",
+    "basis": "derived"
+   },
+   {
+    "name": "shipped",
+    "object_type": "ShipmentLine",
+    "property": "quantity",
+    "value": "10800",
+    "quantity_role": "shipped",
+    "citations": [
+     {
+      "l1_handle": "api://public.app_shipment_line/%7B%22id%22%3A%22fx-shl-108-1%22%7D@8a5851cbdc2e491a",
+      "field_path": "row.quantity"
+     }
+    ],
+    "unit": "ea"
+   }
+  ],
+  "gaps": [
+   {
+    "state": "absent_in_source",
+    "subject": "produced: a row has no qty_manufactured",
+    "reason": "qty_manufactured_empty",
+    "concerns": "produced"
+   }
+  ],
+  "chain": [
+   {
+    "object_type": "SalesOrder",
+    "relation": "public.app_sales_order",
+    "key": {
+     "id": "fx-so-108"
+    }
+   },
+   {
+    "object_type": "SalesOrderLine",
+    "relation": "public.app_sales_order_line",
+    "key": {
+     "id": "fx-sol-108-1"
+    },
+    "hop_from": 0,
+    "fk": "so.lines"
+   },
+   {
+    "object_type": "AssemblyOrder",
+    "relation": "public.app_manufacturing_order",
+    "key": {
+     "id": "fx-mo-108"
+    },
+    "hop_from": 1,
+    "fk": "so_line.assembly"
+   },
+   {
+    "object_type": "FmAssemblyOrder",
+    "relation": "public.assembly_order",
+    "key": {
+     "id": 8108
+    },
+    "hop_from": 2,
+    "fk": "assembly.fm_assembly"
+   },
+   {
+    "object_type": "Shipment",
+    "relation": "public.app_shipment",
+    "key": {
+     "id": "fx-shp-108"
+    },
+    "hop_from": 0,
+    "fk": "so.shipments"
+   }
+  ]
+ },
+ "must_not": [
+  "claim_uncited_number",
+  "invent_absent_value"
+ ],
+ "oracle": {
+  "id": "oracle:f3_quantities@1c117db7f628",
+  "interface": "plx-eval-oracle/v1",
+  "derived_from": [
+   "docs/reference/portal-code-map.md#3.4 resolveOrderByNumber: exact order_number",
+   "docs/reference/portal-code-map.md#3.2 app_sales_order_line.quantity, uom free text (never converted)",
+   "docs/reference/portal-code-map.md#3.8 qty_manufactured = COALESCE(SUM(status qtymanuf), yield_actual) per AO, Cancelled excluded (P@59b0548:src/app/mrp/assembly/assembly-queries.ts:254)",
+   "docs/reference/portal-code-map.md#3.10 shipment lines of SHIPPED/DELIVERED shipments (P@59b0548:src/lib/assembly-bom/pack-out-history.ts:274; ShipmentStatus prisma/schema.prisma:372)",
+   "docs/reference/portal-code-map.md#3.2 app_sales_order_line.sales_order_id -> app_sales_order.id (P:prisma/schema.prisma:3720)",
+   "docs/reference/portal-code-map.md#3.8 app_manufacturing_order.sales_order_line_id -> app_sales_order_line.id (P:prisma/schema.prisma:2507)",
+   "docs/reference/portal-code-map.md#3.10 app_shipment.sales_order_id -> app_sales_order.id (P:prisma/schema.prisma:3788)",
+   "docs/reference/portal-code-map.md#3.10 app_shipment_line.shipment_id -> app_shipment.id (P:prisma/schema.prisma:3885)",
+   "docs/reference/portal-code-map.md#3.8 app_manufacturing_order.mo_code = FM assembly_order.nameamo_c (etlManufacturingOrders)",
+   "docs/reference/portal-code-map.md#3.8 FM assembly_order_status.idassembly -> assembly_order.id, qtymanuf = qty_manufactured (Portal migration 20260409_add_silver_assembly_views_and_indexes.sql:95)",
+   "SO closed: SHIPPED/COMPLETE, FM text complet/closed/realiz (P@c3ffda3:src/lib/wms/source-status.ts:24) or Sage header complete 1/Y (etl-sage-distribution-gold.mjs:1393)"
+  ],
+  "computed_at": "2099-01-02T04:00:00Z",
+  "query_digest": "6d86833cad124cc7cb55e568b99329a4d05d5abc0876748ca3c000f2314debeb"
+ },
+ "label": {
+  "status": "oracle_only",
+  "note": "evidence: injected-transport fixture (synthetic FX rows from evals/oracle/fixture_world.py), not live PLX data."
+ },
+ "scoring": {
+  "exact_values": true,
+  "gap_honesty": true,
+  "citations_required": true
+ },
+ "created_at": "2099-01-02T04:00:00Z"
+}

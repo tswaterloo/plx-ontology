@@ -1,0 +1,1236 @@
+{
+ "real_example": {
+  "evidence_note": "Sanitized excerpts from the map; personal contact details removed by the map's author. Literals are copied exactly as written in the extraction. The map's 'what the portal could record' is its reading of code (current_code_description); 'what would close the gap' is a proposal (proposed_fix).",
+  "cards": [
+   {
+    "id": "soapbox_01_intro",
+    "map_stage_label": "Stage 01",
+    "map_stage_numbers": [
+     1
+    ],
+    "title": "Opportunity introduction",
+    "channel_tag": "EMAIL ONLY",
+    "source_folder": "A SoapBox retail and gallon program/01 Inquiry - referral (May 2024)",
+    "what_happened": {
+     "text": "An existing customer, Diversified Hospitality Solutions, introduced SoapBox's founder and CEO, David Simnick. Vince replied 25 minutes later with a short pitch (formulation, packaging, automation) and asked for an intro call. David accepted, moved Sean to bcc, and went to find a time with his ops team. At this point the lead is qualified and waiting on a call, and every detail of it is in email.",
+     "evidence_type": "real_example_excerpt"
+    },
+    "portal_could_record": [
+     {
+      "text": "The Lead model already has a referral source (lib/leads/lifecycle.ts:20), but no code ever creates a lead with it.",
+      "evidence_type": "current_code_description"
+     },
+     {
+      "text": "Staff can't add a lead by hand. /api/mrp/leads only lists leads, and the only way a lead is created is the public /start-your-project form.",
+      "evidence_type": "current_code_description"
+     },
+     {
+      "text": "So this introduction lives only in Vince's inbox. Neither the referring customer (Diversified) nor the date of first contact is recorded against SoapBox.",
+      "evidence_type": "current_code_description"
+     },
+     {
+      "text": "Even a lead created from the web form couldn't hold this thread. Lead (schema.prisma, app_lead) has no owner, no notes or activity log, no next step (such as \"intro call pending\") and no follow-up date. Its status is only NEW, VERIFIED or DISCARDED.",
+      "evidence_type": "current_code_description"
+     }
+    ],
+    "what_would_close_gap": [
+     {
+      "text": "A New lead action in /mrp/leads with source Referral, a referred by link to the existing customer, and the introduction email attached. The lead should also have an owner, an activity log for the thread, and a next step with a date (here: book the intro call). Verifying the lead would then create the Prospect and the project as it does today.",
+      "evidence_type": "proposed_fix"
+     }
+    ],
+    "anchors": [],
+    "literals": [
+     {
+      "label": "referral email date",
+      "literal": "23 May 2024",
+      "evidence_type": "real_example_excerpt"
+     }
+    ],
+    "tables": []
+   },
+   {
+    "id": "soapbox_02_brief",
+    "map_stage_label": "Stage 02",
+    "map_stage_numbers": [
+     2
+    ],
+    "title": "The brief arrives in pieces",
+    "channel_tag": "EMAIL ONLY",
+    "source_folder": "A SoapBox retail and gallon program/02 Brief - reconnect emails (Feb 2026)",
+    "what_happened": {
+     "text": "Almost two years after the introduction, the conversation picked up again. The brief came as a series of emails rather than one document. Dan asked for preliminary INCIs (ingredient lists) for each formula and saved logistics questions for the Friday call. SoapBox wants PLX to send an unscented base to its own fragrance house, which will supply the fragrance cost. A quote package for core hair SKUs was to follow.",
+     "evidence_type": "real_example_excerpt"
+    },
+    "portal_could_record": [
+     {
+      "text": "A brief or TT can only be uploaded once a project exists, and there is no project yet. The emails, call notes and open logistics questions have nowhere to go.",
+      "evidence_type": "current_code_description"
+     },
+     {
+      "text": "No field records that the customer’s fragrance house supplies the fragrance, or that the fragrance cost comes from the customer and will change the price.",
+      "evidence_type": "current_code_description"
+     },
+     {
+      "text": "A lead holds one contact (Lead.contactName). SoapBox already has four people involved: David, Dan, Andrea and Naya.",
+      "evidence_type": "current_code_description"
+     }
+    ],
+    "what_would_close_gap": [
+     {
+      "text": "Let the lead, or an early-stage project, hold the thread: several contacts, emails, call notes and a list of open questions. Add structured brief fields for what the customer supplies (fragrance, primary packaging, labels), since each of these changes both the BOM and the price.",
+      "evidence_type": "proposed_fix"
+     }
+    ],
+    "anchors": [],
+    "literals": [
+     {
+      "label": "email thread window",
+      "literal": "4–7 Feb 2026",
+      "evidence_type": "real_example_excerpt"
+     }
+    ],
+    "tables": []
+   },
+   {
+    "id": "soapbox_02_03_label",
+    "map_stage_label": "Stage 02 → 03",
+    "map_stage_numbers": [
+     2,
+     3
+    ],
+    "title": "Label artwork & French front panel",
+    "channel_tag": "EMAIL ONLY",
+    "source_folder": "A SoapBox retail and gallon program/02-03 Label artwork - customer supplied (Feb 2026)",
+    "what_happened": {
+     "text": "SoapBox sent the print-ready label for its Coconut Liquid Hand Soap gallon and asked PLX for help with French on the front panel. The directions and the ingredient heading are already bilingual, but the front panel is English only. The label is a packaging component supplied by the customer, and it comes with a full print spec: size, substrate, spot colours and version.",
+     "evidence_type": "real_example_excerpt"
+    },
+    "portal_could_record": [
+     {
+      "text": "Artwork can be stored on a project (ProjectArtwork). Its source is set to \"customer\" automatically only for Tech Transfer projects (lib/projects/write.ts:325-340), and this request is Brief-style.",
+      "evidence_type": "current_code_description"
+     },
+     {
+      "text": "The label spec fits the BOM line only in part. BomLine.pmsCodes, colorDescription, materialFamily and artworkType exist, but label size, substrate and artwork version have no fields; they could only go in the free-form attributes JSON.",
+      "evidence_type": "current_code_description"
+     },
+     {
+      "text": "Nothing on the BOM line says \"label: supplied by SoapBox\", so the Assembly BOM template would still flag the label for PLX to source.",
+      "evidence_type": "current_code_description"
+     },
+     {
+      "text": "A French or regulatory copy review has no task or checklist item.",
+      "evidence_type": "current_code_description"
+     }
+    ],
+    "what_would_close_gap": [
+     {
+      "text": "Add a supplier field to each BOM line (PLX-sourced, customer-supplied or consigned). Customer-supplied lines skip sourcing and wait for the customer’s artwork or stock. Give label lines proper spec fields (size, substrate, colours, artwork version and file) so the approved version is traceable, and make a French front-panel review a project task.",
+      "evidence_type": "proposed_fix"
+     }
+    ],
+    "anchors": [
+     {
+      "kind": "attachment_name",
+      "value": "SB_COCO_LHS_Gallon_2.6.26",
+      "evidence_type": "real_example_excerpt"
+     }
+    ],
+    "literals": [
+     {
+      "label": "label size",
+      "literal": "4.75″ × 4.75″",
+      "evidence_type": "real_example_excerpt"
+     },
+     {
+      "label": "substrate",
+      "literal": "2.4 mil clear BOPP",
+      "evidence_type": "real_example_excerpt"
+     },
+     {
+      "label": "label version",
+      "literal": "0888-0",
+      "evidence_type": "real_example_excerpt"
+     }
+    ],
+    "tables": []
+   },
+   {
+    "id": "soapbox_06_sourcing_leads",
+    "map_stage_label": "Stage 06",
+    "map_stage_numbers": [
+     6
+    ],
+    "title": "Sourcing leads & sample tracking",
+    "channel_tag": "EMAIL ONLY",
+    "source_folder": "A SoapBox retail and gallon program/06 Sourcing leads - raw materials (Feb 2026)",
+    "what_happened": {
+     "text": "Within a week of the call, sourcing had candidate vendors for eight raw materials. Leads were ranked by price (green = primary, cheapest; orange = secondary, next closest), and sample shipments were tracked by carrier and ETA. Biotin shampoo and conditioner raws were still out with vendors. The whole status report was an email table.",
+     "evidence_type": "real_example_excerpt"
+    },
+    "portal_could_record": [
+     {
+      "text": "A sourcing request holds one vendor response (vendorResponse JSON), so a primary and a secondary lead for the same material (R-1538 has both) can’t be compared side by side.",
+      "evidence_type": "current_code_description"
+     },
+     {
+      "text": "Samples can be tracked: AssemblySourcingSample has status, quantity, who paid, tracking number and date received, but not the carrier or an ETA. The sample screens are built around the packaging workflow.",
+      "evidence_type": "current_code_description"
+     },
+     {
+      "text": "The portal can’t produce a status report like this one. Sourcing rebuilds it by hand each week.",
+      "evidence_type": "current_code_description"
+     }
+    ],
+    "what_would_close_gap": [
+     {
+      "text": "Allow several vendor responses per sourcing request, each with a lead rank (primary or secondary) and a price. Add carrier and ETA to samples. A sourcing status view by customer or project would replace this weekly email.",
+      "evidence_type": "proposed_fix"
+     }
+    ],
+    "anchors": [
+     {
+      "kind": "raw_material_ref",
+      "value": "R-0286",
+      "evidence_type": "real_example_excerpt"
+     },
+     {
+      "kind": "raw_material_ref",
+      "value": "R-1535",
+      "evidence_type": "real_example_excerpt"
+     },
+     {
+      "kind": "raw_material_ref",
+      "value": "R-1538",
+      "evidence_type": "real_example_excerpt"
+     }
+    ],
+    "literals": [
+     {
+      "label": "status email date",
+      "literal": "13 Feb 2026",
+      "evidence_type": "real_example_excerpt"
+     }
+    ],
+    "tables": []
+   },
+   {
+    "id": "soapbox_quote_QT280426",
+    "map_stage_label": "Stage 03 · 06–08",
+    "map_stage_numbers": [
+     3,
+     6,
+     7,
+     8
+    ],
+    "title": "Quote QT.280426.01 & packaging costs",
+    "channel_tag": "SPREADSHEET",
+    "source_folder": "A SoapBox retail and gallon program/03 Quote QT.280426.01 (Apr 2026)",
+    "what_happened": {
+     "text": "PLX quoted two conditioners and two shampoos in 16 oz bottles. The quote splits packaging responsibility by component: SoapBox supplies the primary bottle and the label, and PLX supplies the master shipper (the 12-count case). Behind the quote, the costing prices each gallon-program component separately, compares shipper box prices by truckload, and sets a target delivered price for the gallon jug.",
+     "evidence_type": "real_example_excerpt"
+    },
+    "portal_could_record": [
+     {
+      "text": "Your step 3 in practice: the portal has no field for who supplies a packaging component, and this quote needs one per component: primary, label and shipper.",
+      "evidence_type": "current_code_description"
+     },
+     {
+      "text": "The customer-side INCO terms are supported. Customer.incoterms and fobPoint flow into quotes (lib/quote/terms.ts). They are separate from the vendor INCO terms in stages 6–11.",
+      "evidence_type": "current_code_description"
+     },
+     {
+      "text": "Quantity price breaks fit SupplierProductTier, but tiers by truckload (½ FTL to 4 FTL) have no field. That is the pallet and container gap in stage 7.",
+      "evidence_type": "current_code_description"
+     },
+     {
+      "text": "\"Delivered at .5\" is a landed-cost target. The portal can hold only one deliveryCost figure for it (stage 8), and nothing compares it with the freight actually paid later.",
+      "evidence_type": "current_code_description"
+     },
+     {
+      "text": "The workbook’s \"Landed Cost\" factor (0.73) converts the CAD total to USD. It is an exchange rate, not freight and duty, so landed cost is currently worked out by hand outside the portal.",
+      "evidence_type": "current_code_description"
+     }
+    ],
+    "what_would_close_gap": [
+     {
+      "text": "Add a supplier field to each packaging BOM line and have it fill the quote’s \"Provided by\" columns. Add truckload price breaks on the supplier item. Show freight, duty and exchange rate as separate lines on the quote instead of one factor.",
+      "evidence_type": "proposed_fix"
+     }
+    ],
+    "anchors": [
+     {
+      "kind": "quote_number",
+      "value": "QT.280426.01",
+      "evidence_type": "real_example_excerpt"
+     },
+     {
+      "kind": "workbook_name",
+      "value": "Soapbox Theoretical Pricing Without Fragrance",
+      "evidence_type": "real_example_excerpt"
+     }
+    ],
+    "literals": [
+     {
+      "label": "quote date",
+      "literal": "28 Apr 2026",
+      "evidence_type": "real_example_excerpt"
+     },
+     {
+      "label": "quote valid until",
+      "literal": "28 May 2026",
+      "evidence_type": "real_example_excerpt"
+     },
+     {
+      "label": "unit price basis",
+      "literal": "Prices are USD per unit",
+      "evidence_type": "real_example_excerpt",
+      "currency_as_stated": "USD"
+     },
+     {
+      "label": "gallon box cost per unit",
+      "literal": "0.2425",
+      "evidence_type": "real_example_excerpt",
+      "currency_as_stated": "CAD"
+     },
+     {
+      "label": "gallon jug cost per unit",
+      "literal": "0.541",
+      "evidence_type": "real_example_excerpt",
+      "currency_as_stated": "CAD"
+     },
+     {
+      "label": "gallon cap cost per unit",
+      "literal": "0.043",
+      "evidence_type": "real_example_excerpt",
+      "currency_as_stated": "CAD"
+     },
+     {
+      "label": "gallon label cost per unit",
+      "literal": "0.08",
+      "evidence_type": "real_example_excerpt",
+      "currency_as_stated": "CAD"
+     },
+     {
+      "label": "landed-cost target",
+      "literal": "delivered at .5",
+      "evidence_type": "real_example_excerpt"
+     },
+     {
+      "label": "workbook 'Landed Cost' factor",
+      "literal": "0.73",
+      "evidence_type": "real_example_excerpt"
+     },
+     {
+      "label": "incoterms on quote",
+      "literal": "FOB Concord",
+      "evidence_type": "real_example_excerpt"
+     }
+    ],
+    "tables": [
+     {
+      "name": "quote_price_tiers",
+      "columns": [
+       "ITEM",
+       "FORMULA",
+       "SCENT",
+       "SIZE",
+       "PRIMARY",
+       "MASTER SHIPPER",
+       "PACK-OUT",
+       "10K",
+       "25K",
+       "50K",
+       "100K"
+      ],
+      "rows": [
+       [
+        "Conditioner",
+        "F-26-0769",
+        "Cost MOD",
+        "16 oz",
+        "SoapBox",
+        "PLX",
+        "12",
+        "1.55",
+        "1.45",
+        "1.35",
+        "1.20"
+       ],
+       [
+        "Conditioner",
+        "F-26-0763",
+        "Clean",
+        "16 oz",
+        "SoapBox",
+        "PLX",
+        "12",
+        "1.65",
+        "1.50",
+        "1.40",
+        "1.25"
+       ],
+       [
+        "Shampoo",
+        "F-26-0768",
+        "Cost MOD",
+        "16 oz",
+        "SoapBox",
+        "PLX",
+        "12",
+        "1.70",
+        "1.55",
+        "1.45",
+        "1.30"
+       ],
+       [
+        "Shampoo",
+        "F-26-0578",
+        "Clean",
+        "16 oz",
+        "SoapBox",
+        "PLX",
+        "12",
+        "1.75",
+        "1.60",
+        "1.50",
+        "1.35"
+       ]
+      ],
+      "evidence_type": "real_example_excerpt"
+     },
+     {
+      "name": "gallon_program_packaging",
+      "columns": [],
+      "rows": [
+       [
+        "GALLON PROGRAM PACKAGING",
+        "BOX",
+        "GALLON",
+        "CAP",
+        "LABEL"
+       ],
+       [
+        "Cost per unit (CAD)",
+        "0.2425",
+        "0.541 (target: \"delivered at .5\")",
+        "0.043",
+        "0.08"
+       ],
+       [
+        "SHIPPER BOX PRICE BREAKS",
+        "½ FTL · 6,000",
+        "FTL · 12,000",
+        "2 FTL · 24,000",
+        "4 FTL · 48,000"
+       ],
+       [
+        "Current box",
+        "1.13",
+        "1.09",
+        "1.08",
+        "1.07"
+       ],
+       [
+        "32ECT box, comparable to SoapBox’s",
+        "0.99",
+        "0.96",
+        "0.95",
+        "0.94"
+       ]
+      ],
+      "evidence_type": "real_example_excerpt"
+     }
+    ]
+   },
+   {
+    "id": "lifetime_06_09_samples",
+    "map_stage_label": "Stage 06 · 09",
+    "map_stage_numbers": [
+     6,
+     9
+    ],
+    "title": "Samples & artwork approval",
+    "channel_tag": "EMAIL ONLY",
+    "source_folder": "B SoapBox x Lifetime printed bottles/07 Samples and artwork approval (Jun-Jul 2026)",
+    "what_happened": {
+     "text": "To win the order, PLX paid for rush samples of its own stock bottle printed with SoapBox’s artwork. The vendor raised the price of the samples, confused two SoapBox requests, delayed the samples, resized the artwork, and tested print durability. The spec moved more than once: a 38 mm neck for samples, 43 mm floated, and 53 mm on the final PO.",
+     "evidence_type": "real_example_excerpt"
+    },
+    "portal_could_record": [
+     {
+      "text": "A sourcing request tracks samples (AssemblySourcingSample with who paid and a tracking number), but has no field for sample cost. The $400 went onto an unrelated PI balance.",
+      "evidence_type": "current_code_description"
+     },
+     {
+      "text": "Proof approval (\"Approved\", 14 Jul) and the tape test have no record. The approved dieline lives only as an email attachment.",
+      "evidence_type": "current_code_description"
+     },
+     {
+      "text": "The neck finish is the spec that changed. A BOM line has no neck size field, and nothing flags that the samples (38 mm) differ from what was ordered (53 mm).",
+      "evidence_type": "current_code_description"
+     },
+     {
+      "text": "Two requests to the same vendor for the same customer were mixed up. Separate sourcing requests with their own IDs in the subject line would prevent that.",
+      "evidence_type": "current_code_description"
+     },
+     {
+      "text": "The thread’s subject says HTS codes but the HS code discussion itself isn’t here. In the portal, an HS code is only captured on a sourcing response and then set on the item (stage 9).",
+      "evidence_type": "current_code_description"
+     }
+    ],
+    "what_would_close_gap": [
+     {
+      "text": "Add sample cost and a proof-approval step (file, version, approver, date) to the sourcing request, plus neck finish and decoration fields on bottle lines. Give each sourcing request an ID the vendor puts in the subject line.",
+      "evidence_type": "proposed_fix"
+     }
+    ],
+    "anchors": [
+     {
+      "kind": "proforma_invoice_ref",
+      "value": "PI23219",
+      "evidence_type": "real_example_excerpt"
+     }
+    ],
+    "literals": [
+     {
+      "label": "sample cost per design",
+      "literal": "$100 per design ($400)",
+      "evidence_type": "real_example_excerpt",
+      "currency_as_stated": "not stated beside the figure in the timeline row"
+     }
+    ],
+    "tables": [
+     {
+      "name": "sample_timeline",
+      "columns": [
+       "DATE",
+       "WHO",
+       "WHAT"
+      ],
+      "rows": [
+       [
+        "22 Jun",
+        "Vince → Somewang",
+        "SoapBox wants a 53/400 pump; Vince asks for 3–5 samples of each artwork on PLX’s standard 900 ml 38 mm amber frosted bottle, and offers a rush fee."
+       ],
+       [
+        "23 Jun",
+        "Somewang",
+        "Sample cost $100 per design ($400), 10–15 days. Rush arranged; the cost is added to the balance of an earlier PI (PI23219)."
+       ],
+       [
+        "23–24 Jun",
+        "Vince → AP → Somewang",
+        "\"Can we get this paid asap?\" AP pays and sends the payment confirmation."
+       ],
+       [
+        "24–25 Jun",
+        "SoapBox via Vince",
+        "Customer asks how the print survives a shower; they don’t want a label. Somewang will run a 3M tape test."
+       ],
+       [
+        "30 Jun",
+        "Vince",
+        "Asks whether a 43 mm neck would be easier than 53 mm if the customer agrees."
+       ],
+       [
+        "6–7 Jul",
+        "Somewang ↔ Vince",
+        "Vendor mixes up two SoapBox requests: the 900 ml Lifetime bottles vs 16 oz retail bottle samples. Vince: \"#1 is extremely urgent.\""
+       ],
+       [
+        "10 Jul",
+        "Somewang",
+        "Samples slip to 17 Jul because the machine is busy."
+       ],
+       [
+        "14 Jul",
+        "Somewang ↔ Vince",
+        "Vendor shrinks the print to fit and sends a revised proof. Vince approves it; the print is white ink only."
+       ],
+       [
+        "17 Jul",
+        "Somewang",
+        "Sample photos; shipped by DHL."
+       ],
+       [
+        "20 Jul",
+        "Somewang",
+        "Sends a video of the tape test: \"the printing is good.\""
+       ]
+      ],
+      "evidence_type": "real_example_excerpt"
+     }
+    ]
+   },
+   {
+    "id": "lifetime_11_po5447",
+    "map_stage_label": "Stage 11",
+    "map_stage_numbers": [
+     11
+    ],
+    "title": "PO5447 & price confirmation",
+    "channel_tag": "PORTAL PO + EMAIL",
+    "source_folder": "B SoapBox x Lifetime printed bottles/11 PO5447 and vendor PI (Sep 2026)",
+    "what_happened": {
+     "text": "Ross issued PO5447 for 50,000 bottles before the price was confirmed, so every line went out at $0.000. The vendor priced it the next day, and the PI (US$40,100) became the actual contract. Almost every term on the PI differs from the PO: price, INCO terms, payment terms and delivery point. The customer’s hard minimum of 11,500 per artwork, and the fastest ready date (Oct 25–30), were only settled by email.",
+     "evidence_type": "real_example_excerpt"
+    },
+    "portal_could_record": [
+     {
+      "text": "This PO would reach BC at $0. The step that fills zero-cost lines before the BC push leaves packaging lines at $0 by default, treating them as customer-supplied (lib/business-central/ensure-po-line-costs.ts). Here PLX is paying $0.802 per bottle.",
+      "evidence_type": "current_code_description"
+     },
+     {
+      "text": "The four items, P-02458 to P-02461, exist, but they were numbered outside the portal. The portal has no packaging number series (stage 9).",
+      "evidence_type": "current_code_description"
+     },
+     {
+      "text": "The PO’s INCO terms, payment terms and ship-to don’t match the PI. The portal copies INCO terms from the supplier default and has no place to record the vendor’s confirmation or the PI as the agreed terms.",
+      "evidence_type": "current_code_description"
+     },
+     {
+      "text": "Editing prices or ETAs after the fact sets the whole PO to REVISED; there is no \"confirmed by vendor\" status.",
+      "evidence_type": "current_code_description"
+     }
+    ],
+    "what_would_close_gap": [
+     {
+      "text": "Block sending a PO with $0 lines unless each line is marked customer-supplied. Add a \"vendor confirmed\" step that records the PI number, confirmed price, INCO terms, payment terms and ready date, and flags any difference from the PO.",
+      "evidence_type": "proposed_fix"
+     }
+    ],
+    "anchors": [
+     {
+      "kind": "purchase_order_number",
+      "value": "PO5447",
+      "evidence_type": "real_example_excerpt"
+     },
+     {
+      "kind": "item_code",
+      "value": "P-02458",
+      "evidence_type": "real_example_excerpt"
+     },
+     {
+      "kind": "item_code",
+      "value": "P-02459",
+      "evidence_type": "real_example_excerpt"
+     },
+     {
+      "kind": "item_code",
+      "value": "P-02460",
+      "evidence_type": "real_example_excerpt"
+     },
+     {
+      "kind": "item_code",
+      "value": "P-02461",
+      "evidence_type": "real_example_excerpt"
+     }
+    ],
+    "literals": [
+     {
+      "label": "PO total quantity",
+      "literal": "50,000",
+      "evidence_type": "real_example_excerpt"
+     },
+     {
+      "label": "PO cost per each",
+      "literal": "$0.000",
+      "evidence_type": "real_example_excerpt"
+     },
+     {
+      "label": "PI price per each",
+      "literal": "$0.802",
+      "evidence_type": "real_example_excerpt"
+     },
+     {
+      "label": "PI total",
+      "literal": "US$40,100.00",
+      "evidence_type": "real_example_excerpt"
+     },
+     {
+      "label": "PO sent date",
+      "literal": "14 Sep 2026",
+      "evidence_type": "real_example_excerpt"
+     }
+    ],
+    "tables": [
+     {
+      "name": "po5447_lines_vs_pi",
+      "columns": [
+       "PO5447 LINE",
+       "ITEM",
+       "QTY",
+       "PO COST/EA",
+       "PI PRICE/EA"
+      ],
+      "rows": [
+       [
+        "53 mm Boston round amber frosted – Body Wash",
+        "P-02458",
+        "12,500",
+        "$0.000",
+        "$0.802"
+       ],
+       [
+        "… – Conditioner",
+        "P-02459",
+        "12,500",
+        "$0.000",
+        "$0.802"
+       ],
+       [
+        "… – Lotion",
+        "P-02460",
+        "12,500",
+        "$0.000",
+        "$0.802"
+       ],
+       [
+        "… – Shampoo",
+        "P-02461",
+        "12,500",
+        "$0.000",
+        "$0.802"
+       ],
+       [
+        "Total",
+        "",
+        "50,000",
+        "$0.00",
+        "US$40,100.00"
+       ]
+      ],
+      "evidence_type": "real_example_excerpt"
+     },
+     {
+      "name": "po_vs_pi_terms",
+      "columns": [
+       "TERM",
+       "ON THE PO (14 SEP)",
+       "IN THE EMAILS / PI"
+      ],
+      "rows": [
+       [
+        "Price",
+        "$0.000 per bottle",
+        "$0.552 bottle (FOB Ningbo) + $0.175 matte coating + $0.025 per print colour = $0.752; +$0.05 for 50 per carton = $0.802"
+       ],
+       [
+        "INCO terms",
+        "F.O.B. point: Destination",
+        "PI: FOB Ningbo. Freight RFQ: EXW shipper’s factory"
+       ],
+       [
+        "Payment",
+        "NET 30",
+        "PI: 30% deposit, balance against BL copy"
+       ],
+       [
+        "Ship to",
+        "PLX, Concord ON",
+        "Email: \"our California warehouse\". Freight RFQ: SoapBox, Washington DC"
+       ],
+       [
+        "Dates",
+        "Required date blank; \"XF date 09/30\" in the email",
+        "Vendor: 30 days bottles + 15 days print and coating; fastest Oct 25–30 for 11,500 per design"
+       ],
+       [
+        "Pack-out",
+        "—",
+        "50 bottles per carton, same artwork (asked 23 Sep, +$0.05)"
+       ]
+      ],
+      "evidence_type": "real_example_excerpt"
+     }
+    ]
+   },
+   {
+    "id": "lifetime_12_deposit",
+    "map_stage_label": "Stage 12",
+    "map_stage_numbers": [
+     12
+    ],
+    "title": "Deposit to start production",
+    "channel_tag": "BANK + EMAIL",
+    "source_folder": "B SoapBox x Lifetime printed bottles/12 Deposit on PO5447 (Sep 2026)",
+    "what_happened": {
+     "text": "AP wired the 30% deposit (US$11,280) the same day the PI was updated, so production could start. Vince forwarded the bank confirmation to the vendor. The balance is due against a copy of the bill of lading, which ties payment to stages 14–15.",
+     "evidence_type": "real_example_excerpt"
+    },
+    "portal_could_record": [
+     {
+      "text": "No vendor prepayment record exists. /mrp/ap-payments can only pay a posted purchase invoice, and there is no invoice yet.",
+      "evidence_type": "current_code_description"
+     },
+     {
+      "text": "BC’s Prepayment % on the purchase order is never set, so the deposit is booked in BC by hand. The PO in BC still shows $0 (card above).",
+      "evidence_type": "current_code_description"
+     },
+     {
+      "text": "The payment terms that matter here (\"30% deposit, balance against BL copy\") exist only on the PI. The PO says NET 30.",
+      "evidence_type": "current_code_description"
+     },
+     {
+      "text": "Three different PI numbers refer to one document. Nothing in the portal ties the PI to the PO.",
+      "evidence_type": "current_code_description"
+     }
+    ],
+    "what_would_close_gap": [
+     {
+      "text": "Record a deposit against the PO: amount, date, PI number, and \"balance due on BL copy\", and have it post as a BC prepayment. Show on the PO what’s been paid and what’s left, so the balance payment can be released when the BL arrives.",
+      "evidence_type": "proposed_fix"
+     }
+    ],
+    "anchors": [
+     {
+      "kind": "proforma_invoice_ref",
+      "value": "PI-SWC024613",
+      "evidence_type": "real_example_excerpt"
+     },
+     {
+      "kind": "proforma_invoice_ref",
+      "value": "PI-SWC025240",
+      "evidence_type": "real_example_excerpt"
+     },
+     {
+      "kind": "proforma_invoice_ref",
+      "value": "PI-25240",
+      "evidence_type": "real_example_excerpt"
+     },
+     {
+      "kind": "purchase_order_reference",
+      "value": "Our PO 5447",
+      "evidence_type": "real_example_excerpt"
+     }
+    ],
+    "literals": [
+     {
+      "label": "PI total",
+      "literal": "US$40,100.00",
+      "evidence_type": "real_example_excerpt",
+      "currency_as_stated": "USD"
+     },
+     {
+      "label": "deposit",
+      "literal": "US$11,280.00",
+      "evidence_type": "real_example_excerpt",
+      "currency_as_stated": "USD"
+     },
+     {
+      "label": "balance",
+      "literal": "US$28,820.00",
+      "evidence_type": "real_example_excerpt",
+      "currency_as_stated": "USD"
+     },
+     {
+      "label": "deposit share",
+      "literal": "30%",
+      "evidence_type": "real_example_excerpt"
+     },
+     {
+      "label": "wire entered and approved",
+      "literal": "23 Sep 2026",
+      "evidence_type": "real_example_excerpt"
+     },
+     {
+      "label": "value date",
+      "literal": "24 Sep",
+      "evidence_type": "real_example_excerpt"
+     }
+    ],
+    "tables": []
+   },
+   {
+    "id": "lifetime_07_08_13_freight",
+    "map_stage_label": "Stages 07–08 · 13",
+    "map_stage_numbers": [
+     7,
+     8,
+     13
+    ],
+    "title": "Pack-out & freight quote",
+    "channel_tag": "EMAIL + PDF",
+    "source_folder": "B SoapBox x Lifetime printed bottles/08-10 Freight RFQ and forwarder quotes (Sep 2026)",
+    "what_happened": {
+     "text": "Once the order was placed, Vince asked the forwarder for a door-to-door quote against a firm delivery date. The forwarder came back with six options. They ranged from about $11,500 for a standard 40HQ to Baltimore (freight plus destination charges, before duty and a second container), which misses the date,, to about $84,000 by air, more than twice the US$40,100 value of the bottles. The carton size was still unknown (\"after our holiday\"), so the RFQ used different cargo details from the PO.",
+     "evidence_type": "real_example_excerpt"
+    },
+    "portal_could_record": [
+     {
+      "text": "Cargo details disagree between documents. The RFQ says 1000 ml PE, 112 per carton and a declared value of $25,000. The PO, PI and artwork say 53 mm amber frosted PETG 900 ml, 50 per carton and $40,100. Pallet and carton data have no field (stage 7), so each email restates them.",
+      "evidence_type": "current_code_description"
+     },
+     {
+      "text": "INCO terms conflict. The PI is FOB Ningbo, where the vendor clears export; the RFQ is EXW, where PLX’s forwarder does it. Whoever builds the freight quote can’t see the PO’s agreed terms.",
+      "evidence_type": "current_code_description"
+     },
+     {
+      "text": "The portal has no forwarder record, no freight quote with options, and no validity date (these rates expired the next day). Only one deliveryCost number fits.",
+      "evidence_type": "current_code_description"
+     },
+     {
+      "text": "Duty under Section 301 needs the HS code. It sits on the item (stage 9) but isn’t on the PO or the freight request.",
+      "evidence_type": "current_code_description"
+     },
+     {
+      "text": "The goods ship direct to SoapBox, so PLX never receives them. The portal’s receiving (stage 16) and landed cost (stage 17) assume goods arrive at a PLX warehouse.",
+      "evidence_type": "current_code_description"
+     }
+    ],
+    "what_would_close_gap": [
+     {
+      "text": "An inbound shipment record on the PO holding the carton and pallet data, INCO terms, HS codes, declared value, forwarder, quote options with validity, and chosen mode. It would fill the RFQ from the PO, so the two can’t disagree. It also needs a way to handle direct-to-customer delivery, and to add the chosen freight and duty to the cost of these bottles.",
+      "evidence_type": "proposed_fix"
+     }
+    ],
+    "anchors": [
+     {
+      "kind": "purchase_order_number",
+      "value": "PO5470",
+      "evidence_type": "real_example_excerpt"
+     },
+     {
+      "kind": "rfq_subject",
+      "value": "URGENT RFQ FOR FREIGHT – SBLT",
+      "evidence_type": "real_example_excerpt"
+     }
+    ],
+    "literals": [
+     {
+      "label": "RFQ cargo gross weight",
+      "literal": "3,352.5 kg gross",
+      "evidence_type": "real_example_excerpt"
+     },
+     {
+      "label": "RFQ cargo net weight",
+      "literal": "2,905.5 kg net",
+      "evidence_type": "real_example_excerpt"
+     },
+     {
+      "label": "RFQ cargo volume",
+      "literal": "81.04 CBM",
+      "evidence_type": "real_example_excerpt"
+     },
+     {
+      "label": "RFQ declared value",
+      "literal": "US$25,000",
+      "evidence_type": "real_example_excerpt"
+     },
+     {
+      "label": "RFQ carton count",
+      "literal": "447 cartons at 112 per carton",
+      "evidence_type": "real_example_excerpt"
+     },
+     {
+      "label": "RFQ quantity",
+      "literal": "50,000 pcs",
+      "evidence_type": "real_example_excerpt"
+     },
+     {
+      "label": "air quote all-in",
+      "literal": "US$83,965.56",
+      "evidence_type": "real_example_excerpt"
+     }
+    ],
+    "tables": [
+     {
+      "name": "forwarder_options_29_sep",
+      "columns": [
+       "OPTION (29 SEP)",
+       "PICKUP",
+       "ETA DOOR",
+       "TRANSIT",
+       "FREIGHT"
+      ],
+      "rows": [
+       [
+        "1 · LCL via LAX to Baltimore",
+        "10.25",
+        "12.12",
+        "35 days",
+        "$280/CBM"
+       ],
+       [
+        "2 · Air to IAD",
+        "10.25",
+        "11.3–11.5",
+        "5–7 days",
+        "¥36/kg · all-in US$83,965.56"
+       ],
+       [
+        "3 · FCL standard, Baltimore",
+        "10.25",
+        "12.11",
+        "35 days",
+        "~$9,800/40HQ or ~$8,100/20GP + $1,710 destination"
+       ],
+       [
+        "4 · FCL standard, New York",
+        "10.25",
+        "12.4",
+        "30 days",
+        "~$9,500/40HQ or ~$7,800/20GP + trucking TBC"
+       ],
+       [
+        "5 · Matson express, Baltimore",
+        "10.24",
+        "11.29",
+        "27 days",
+        "~$23,500/40HQ or ~$18,500/20GP + $1,710"
+       ],
+       [
+        "6 · Matson express, LA + truck",
+        "10.24",
+        "11.21",
+        "15 days",
+        "~$15,400/40HQ or ~$10,800/20GP + trucking TBC"
+       ]
+      ],
+      "evidence_type": "real_example_excerpt"
+     }
+    ]
+   }
+  ],
+  "missing_native_crosswalk": [
+   {
+    "item": "portal_fm_row_ids_for_po5447",
+    "status": "unknown",
+    "note": "Portal app_purchase_order.id, custom_fields.fmGeneratedPoId and FM generated_purchase_order.id for PO5447 are not in the map."
+   },
+   {
+    "item": "portal_fm_row_ids_for_items_p02458_p02461",
+    "status": "unknown",
+    "note": "Portal app_product.id / FM packaging.id (fm-pack-<id>) for P-02458..P-02461 are not in the map; the map says the items were numbered outside the portal."
+   },
+   {
+    "item": "bc_guids_and_numbers",
+    "status": "unknown",
+    "note": "No BC Purchase Header No./GUID, app_bc_entity_map row, vendor GUID or item GUID for this example."
+   },
+   {
+    "item": "receipt_and_lot_ids",
+    "status": "unknown",
+    "note": "No receipt (lab id), receipt line or inventory lot id: goods ship direct to the customer per the map and were never received by PLX."
+   },
+   {
+    "item": "item_ledger_value_entry_numbers",
+    "status": "unknown",
+    "note": "No Item Ledger Entry or Value Entry number."
+   },
+   {
+    "item": "gl_entry_numbers",
+    "status": "unknown",
+    "note": "No G/L Entry number; the deposit is described as booked in BC by hand and the map did not read BC."
+   },
+   {
+    "item": "governing_pi_document_and_version",
+    "status": "unknown",
+    "note": "Three PI numbers (PI-SWC024613, PI-SWC025240, PI-25240) refer to one document per the map; which PI version governs is unresolved."
+   },
+   {
+    "item": "currency_and_basis_of_totals",
+    "status": "unknown",
+    "note": "Currency, unit basis and which PI governs the US$40,100.00 / deposit / balance figures beyond what the text states are unresolved; none is an approved payment or accounting decision."
+   },
+   {
+    "item": "inbound_shipment_identifiers",
+    "status": "unknown",
+    "note": "No BOL, container, vessel or freight-forwarder record; the map says none exists in the portal."
+   },
+   {
+    "item": "original_documents",
+    "status": "unknown",
+    "note": "The map's author and our extraction did not open the original SharePoint files; all ten links point to one AGENTS folder."
+   }
+  ]
+ },
+ "corrections_from_verified_originals": {
+  "note": "Added by the Workbench, not part of Vince's map: findings from the verified original documents (summarised in docs/reference/cases-and-artifacts.md section 1.11; files in verified_originals) that correct or qualify the map text at the path named. The map text itself stays as Vince wrote it.",
+  "items": [
+   {
+    "id": "po5447_currency_usd",
+    "applies_to": "$.stages[10].recorded",
+    "map_says": "Currency is hard-coded to CAD.",
+    "finding": "The PO5447 PDF (page 1) states its total explicitly in USD; the CAD statement is the map's reading of the FM PO code path and does not hold for PO5447. A case reads currency from the cited purchase order row, never from a constant.",
+    "source": "finding F03"
+   },
+   {
+    "id": "po5447_currency_usd_field_tracer",
+    "applies_to": "$.field_tracer.rows[5].cells[3]",
+    "map_says": "Hard-coded CAD in the FileMaker PO path; no exchange rate stored",
+    "finding": "The PO5447 PDF (page 1) states its total in USD. The CAD statement describes the FM PO code path, not PO5447; a case reads currency from the cited purchase order row and never applies a constant.",
+    "source": "finding F03"
+   },
+   {
+    "id": "po5447_deposit_before_pi_update",
+    "applies_to": "$.real_example.cards[7].what_happened",
+    "map_says": "AP wired the 30% deposit (US$11,280) the same day the PI was updated",
+    "finding": "The deposit email (2026-09-23) precedes the vendor's 2026-09-24 pack-out surcharge and updated PI: the deposit was paid the day before the PI update, on the pre-surcharge base.",
+    "source": "finding F01"
+   },
+   {
+    "id": "pi_aliases_one_document",
+    "applies_to": "$.real_example.cards[7].portal_could_record",
+    "map_says": "Three different PI numbers refer to one document.",
+    "finding": "The updated PI prints PI-SWC024613, dated August 12, 2026, PO5447, destination Canada; the email attachment is named PI-SWC025240 updated 25.9.24.pdf and correspondence says PI-25240. The attached and standalone PI are byte-identical (same SHA-256): aliases of one document. The governing version is unresolved.",
+    "source": "finding F02"
+   },
+   {
+    "id": "freight_quote_destination_only_and_air_not_all_in",
+    "applies_to": "$.real_example.cards[8].tables[0]",
+    "map_says": "~$9,800/40HQ or ~$8,100/20GP + $1,710 destination; ¥36/kg · all-in US$83,965.56",
+    "finding": "US$1,710 is destination charges for one 40HQ container only, not ocean freight. The air quote total US$83,965.56 excludes taxes and listed contingencies despite the 'all-in' file name. The email gives validity '9.31' (impossible) while the PDFs say September 30: the conflict is kept. These are alternatives, not a booking or a realized charge.",
+    "source": "finding F05"
+   },
+   {
+    "id": "shipping_claims_conflict",
+    "applies_to": "$.real_example.cards[6].what_happened",
+    "map_says": "Almost every term on the PI differs from the PO: price, INCO terms, payment terms and delivery point.",
+    "finding": "The PO, PI, mails and freight RFQ disagree on destination (Canada, California, direct to customer, Washington DC), Incoterm (Destination, FOB, EXW), packing (50 vs 112 per carton) and declared value. Each version is kept with its time and source; a planned direct shipment is not delivery or a transfer of ownership.",
+    "source": "finding F04"
+   },
+   {
+    "id": "originals_opened_by_the_verification_record",
+    "applies_to": "$.real_example.missing_native_crosswalk[9]",
+    "map_says": "The map's author and our extraction did not open the original SharePoint files",
+    "finding": "That holds for the map and its extraction. The verified-originals record later opened and hashed eleven archive members (see verified_originals); the purchase order PDF, the PI and both freight-quote PDFs are cited originals by SHA-256. The remaining unknowns (native row ids, BC records) are unchanged.",
+    "source": "selected_source_manifest"
+   }
+  ]
+ },
+ "verified_originals": {
+  "note": "Added by the Workbench, not part of Vince's map: the original files behind the SoapBox x Lifetime example, located and hashed by the verified-originals source record. Each member is a cited original (identity = SHA-256 of its bytes). Only these members were inspected; the record grants no authority and is not a Procure-to-GL truth set (no receipt, lot, AP posting, item ledger, value entry or G/L entry is in the archive).",
+  "record_ref": "source-records",
+  "record_path": "context/2e7013f1dca3bc5fad6f27dbf887d55a4f784e1e37bef0eb8a53ea1613b78d66.json",
+  "record_created_at": "2026-09-30T22:22:12Z",
+  "purchase_order_number": "PO5447",
+  "archive": {
+   "url": "https://petrasoap.sharepoint.com/sites/AGENTS/Shared%20Documents/Ontology%20UseCases/soapbox-packaging-examples.zip",
+   "drive_id": "b!W4ssx17NiUipzjgFW2Rt1fW8RXEL_4xBgKvtLTtDIYNO-gr9fxAMQ7PHzLrczCuH",
+   "item_id": "01RVPYB2FYNVL5CSAAMBCLSU77JM3ZRS3M",
+   "e_tag": "\"{D1576DB8-0048-4460-B953-FF4B3798CB6C},2\"",
+   "last_modified": "2026-09-30T20:57:09Z",
+   "bytes": 31198030,
+   "entries": 37,
+   "sha256": "0301f1d3b247349010120c74388e874be05650767b11a029052c34c995187c61"
+  },
+  "members": [
+   {
+    "archive_member": "SoapBox Packaging Procure-to-GL Examples/B SoapBox x Lifetime printed bottles/12 Deposit on PO5447 (Sep 2026)/2026-09-23 Deposit sent to Somewang (email, wire report removed).html",
+    "role": "deposit_mail",
+    "bytes": 32330,
+    "sha256": "cb8d80cd5e3a14bc6c9a98a9604095f7c1b4a1708ab233e656817dfa36e2bb09",
+    "message_id": null,
+    "attached_as": []
+   },
+   {
+    "archive_member": "SoapBox Packaging Procure-to-GL Examples/B SoapBox x Lifetime printed bottles/11 PO5447 and vendor PI (Sep 2026)/2026-09-24 Somewang pricing, pack-out and lead time.msg",
+    "role": "vendor_pricing_mail",
+    "bytes": 303616,
+    "sha256": "f10591a2e33ecdba8452054c2faeaef4af4431984f4b592b195e474064df5f0c",
+    "message_id": "<533205582342E6B2DB9182B6BF87F4AC9360AAA2F@SOMEWANG.COM>",
+    "attached_as": []
+   },
+   {
+    "archive_member": "SoapBox Packaging Procure-to-GL Examples/B SoapBox x Lifetime printed bottles/11 PO5447 and vendor PI (Sep 2026)/PI-SWC024613 proforma invoice (file named PI-SWC025240, updated 2026-09-24).pdf",
+    "role": "vendor_pi",
+    "bytes": 215700,
+    "sha256": "442664a40f5d38eeebd547e9f1425683624a28e7f34aa0797cd096e29f0edf5a",
+    "message_id": null,
+    "attached_as": [
+     {
+      "attachment_name": "PI-SWC025240 updated 25.9.24.pdf",
+      "parent_file": "2026-09-24 Somewang updated PI and holiday timing.msg"
+     }
+    ]
+   },
+   {
+    "archive_member": "SoapBox Packaging Procure-to-GL Examples/B SoapBox x Lifetime printed bottles/11 PO5447 and vendor PI (Sep 2026)/2026-09-14 PO5447 issued - Ross to Vince.eml",
+    "role": "po_issue_mail",
+    "bytes": 4189302,
+    "sha256": "4f3031d7bf72f9fce1d2b8a0b1bc1a406ea0e37e32c0ea57aeaa5daf232c1655",
+    "message_id": "<YT1PR01MB92114D4256051D97C680A960D7BB2@YT1PR01MB9211.CANPRD01.PROD.OUTLOOK.COM>",
+    "attached_as": []
+   },
+   {
+    "archive_member": "SoapBox Packaging Procure-to-GL Examples/B SoapBox x Lifetime printed bottles/11 PO5447 and vendor PI (Sep 2026)/2026-09-24 Somewang updated PI and holiday timing.msg",
+    "role": "vendor_pi_mail",
+    "bytes": 588288,
+    "sha256": "5714131642de242417f412ef2a24fbf034fdf345562d3289eca4b05791c16a69",
+    "message_id": "<465966853342E6B2DB9182B6BF87F4AC9360AAA2F@SOMEWANG.COM>",
+    "attached_as": []
+   },
+   {
+    "archive_member": "SoapBox Packaging Procure-to-GL Examples/B SoapBox x Lifetime printed bottles/11 PO5447 and vendor PI (Sep 2026)/2026-09-14 PO5447 sent to Somewang.msg",
+    "role": "po_sent_mail",
+    "bytes": 4350464,
+    "sha256": "2e456fec410ae98fd371b0d02cca764c60f5afe9b747ac00cc05c5469a4d3861",
+    "message_id": "<YTBPR01MB235124243BFB5235A9078E9CBDBB2@YTBPR01MB2351.CANPRD01.PROD.OUTLOOK.COM>",
+    "attached_as": []
+   },
+   {
+    "archive_member": "SoapBox Packaging Procure-to-GL Examples/B SoapBox x Lifetime printed bottles/11 PO5447 and vendor PI (Sep 2026)/PO5447 (portal PO, 0 dollar lines).pdf",
+    "role": "purchase_order_pdf",
+    "bytes": 62020,
+    "sha256": "1c8df689c766e08041ab1c4ce1b55287d778c9822e96b74ba0cf8e86cf781254",
+    "message_id": null,
+    "attached_as": [
+     {
+      "attachment_name": "PO#5447_20260914203.pdf",
+      "parent_file": "2026-09-14 PO5447 sent to Somewang.msg"
+     },
+     {
+      "attachment_name": "PO#5447_20260914203.pdf",
+      "parent_file": "2026-09-14 PO5447 issued - Ross to Vince.eml"
+     }
+    ]
+   },
+   {
+    "archive_member": "SoapBox Packaging Procure-to-GL Examples/B SoapBox x Lifetime printed bottles/08-10 Freight RFQ and forwarder quotes (Sep 2026)/Horizon quote NGB-IAD air all-in.pdf",
+    "role": "freight_quote",
+    "bytes": 299227,
+    "sha256": "92092d35cb19be50d5f4e28b43dd1f918ba01caa4492eb3dce75b0597c388808",
+    "message_id": null,
+    "attached_as": [
+     {
+      "attachment_name": "OL000-Vince-Quotation-NGB-IAD-AIR.pdf",
+      "parent_file": "2026-09-29 Horizon Global freight options (RFQ thread).msg"
+     }
+    ]
+   },
+   {
+    "archive_member": "SoapBox Packaging Procure-to-GL Examples/B SoapBox x Lifetime printed bottles/08-10 Freight RFQ and forwarder quotes (Sep 2026)/Horizon quote NGB-BAL FCL 40HQ destination charges.pdf",
+    "role": "freight_quote",
+    "bytes": 264148,
+    "sha256": "40cc740e7185b855f4db123b3e5284dcff92e52c9eda4a8c6a61abf348d69ba7",
+    "message_id": null,
+    "attached_as": [
+     {
+      "attachment_name": "OL000-Quotation-NGB-BAL-FCL.pdf",
+      "parent_file": "2026-09-29 Horizon Global freight options (RFQ thread).msg"
+     }
+    ]
+   },
+   {
+    "archive_member": "SoapBox Packaging Procure-to-GL Examples/B SoapBox x Lifetime printed bottles/08-10 Freight RFQ and forwarder quotes (Sep 2026)/2026-09-29 Horizon Global freight options (RFQ thread).msg",
+    "role": "freight_rfq_mail",
+    "bytes": 892928,
+    "sha256": "855712bf88c59e429cee1d79b849db41d5fdd6f6a61230cd360942b74f6fe54f",
+    "message_id": "<202609292253121998258@hgl-china.com>",
+    "attached_as": []
+   },
+   {
+    "archive_member": "SoapBox Packaging Procure-to-GL Examples/00 Index - start here.html",
+    "role": "archive_index",
+    "bytes": 10758,
+    "sha256": "a3d994bf731cbc43122e3802a69c679bce2af805d8ff53294b75549baba51994",
+    "message_id": null,
+    "attached_as": []
+   }
+  ]
+ }
+}

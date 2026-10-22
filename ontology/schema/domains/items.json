@@ -1,0 +1,665 @@
+{
+ "$schema": "../_format.schema.json",
+ "format": "plx-ontology-domain/v1",
+ "domain": "items",
+ "origin": "curated",
+ "description": "Development FG items and Sage item units of measure. The FG item links to the product it was minted as, its analog reference product and the FM finished product it adopted; a unit of measure links to its Sage item. Conversions are Decimal text read from Sage, never inferred.",
+ "upstream_pins": {
+  "plx-customer-portal": "790256ca43"
+ },
+ "object_types": [
+  {
+   "id": "FgItem",
+   "description": "The development identity of a finished good: one per project key, DRAFT until activation mints (or adoption links) the sellable product. Carries the census targets (fill, pack, quantity, retail price) the project was costed on.",
+   "interfaces": [
+    "Item"
+   ],
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "portal.app_fg_item",
+     "source": "portal_api",
+     "relation": "public.app_fg_item",
+     "key": [
+      "id"
+     ],
+     "lineage": {
+      "default": "gold_native_staging"
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "allowlist.public.app_fg_item"
+      },
+      {
+       "kind": "ref",
+       "id": "prisma.fg_item"
+      }
+     ],
+     "note": "Portal-native project-development rows: gold_native_staging."
+    }
+   ],
+   "properties": [
+    {
+     "name": "code",
+     "value_type": "identifier",
+     "identifier_kind": "item_code",
+     "identifies": "reference",
+     "description": "The finished-product code (FM codefp_c when adopted); not unique, so it names the product it becomes, never this record alone.",
+     "sources": [
+      {
+       "binding": "portal.app_fg_item",
+       "path": "code",
+       "parser": "identifier"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.fg_adoption"
+      },
+      {
+       "kind": "ref",
+       "id": "prisma.fg_item"
+      }
+     ]
+    },
+    {
+     "name": "name",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "portal.app_fg_item",
+       "path": "name",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.fg_item"
+      }
+     ]
+    },
+    {
+     "name": "state",
+     "value_type": "enum",
+     "enum_values": [
+      "DRAFT",
+      "ACTIVE",
+      "RETIRED"
+     ],
+     "sources": [
+      {
+       "binding": "portal.app_fg_item",
+       "path": "state",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.fg_item_state"
+      }
+     ]
+    },
+    {
+     "name": "project_key",
+     "value_type": "identifier",
+     "identifier_kind": "project_key",
+     "identifies": "reference",
+     "description": "The project this FG item belongs to (unique here; no FK).",
+     "sources": [
+      {
+       "binding": "portal.app_fg_item",
+       "path": "project_key",
+       "parser": "identifier"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.fg_item"
+      }
+     ]
+    },
+    {
+     "name": "target_fill_g",
+     "value_type": "decimal",
+     "description": "Census target fill per unit, in grams.",
+     "sources": [
+      {
+       "binding": "portal.app_fg_item",
+       "path": "target_fill_g",
+       "parser": "decimal_text",
+       "unit": "g"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.fg_item"
+      }
+     ]
+    },
+    {
+     "name": "target_quantity",
+     "value_type": "decimal",
+     "description": "Census target quantity; its basis is stated only in qty_basis_note text.",
+     "sources": [
+      {
+       "binding": "portal.app_fg_item",
+       "path": "target_qty",
+       "parser": "decimal_text"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.fg_item"
+      }
+     ]
+    },
+    {
+     "name": "qty_basis_note",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "portal.app_fg_item",
+       "path": "qty_basis_note",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.fg_item"
+      }
+     ]
+    },
+    {
+     "name": "pack_summary",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "portal.app_fg_item",
+       "path": "pack_summary",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.fg_item"
+      }
+     ]
+    },
+    {
+     "name": "retail_price",
+     "value_type": "money",
+     "money_measure": "unit_price",
+     "markings": [
+      "finance"
+     ],
+     "sources": [
+      {
+       "binding": "portal.app_fg_item",
+       "path": "retail_price",
+       "parser": "decimal_text",
+       "tax_basis": "unknown",
+       "currency_unknown": {
+        "reason": "Census intake stores a bare number; no currency is recorded.",
+        "evidence": [
+         {
+          "kind": "ref",
+          "id": "prisma.fg_item"
+         }
+        ]
+       },
+       "per_unit_unknown": {
+        "reason": "No writer states the retail unit.",
+        "evidence": [
+         {
+          "kind": "ref",
+          "id": "prisma.fg_item"
+         }
+        ]
+       }
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.fg_item"
+      }
+     ]
+    },
+    {
+     "name": "reference_provenance",
+     "value_type": "enum",
+     "enum_values": [
+      "measured",
+      "analog",
+      "default"
+     ],
+     "description": "Whether the reference product's costs are measured, an analog or a default.",
+     "sources": [
+      {
+       "binding": "portal.app_fg_item",
+       "path": "reference_provenance",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.fg_item"
+      }
+     ]
+    },
+    {
+     "name": "brief_ref",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "portal.app_fg_item",
+       "path": "brief_ref",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.fg_item"
+      }
+     ]
+    }
+   ],
+   "display": [
+    "code",
+    "name"
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "prisma.fg_item"
+    },
+    {
+     "kind": "ref",
+     "id": "portal.fg_item"
+    },
+    {
+     "kind": "ref",
+     "id": "context.portal.3.6"
+    }
+   ]
+  },
+  {
+   "id": "ItemUnitOfMeasure",
+   "description": "One unit of measure of a Sage inventory item and its conversion to the item's stocking unit (Sage ICUNIT, e.g. EA = 1, CSE = 24). The only source a Workbench unit conversion for that item may cite; line UOMs elsewhere are free text and never converted.",
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "portal.sage_ic_item_uom",
+     "source": "portal_api",
+     "relation": "sage.ic_item_uom",
+     "key": [
+      "_sage_pk"
+     ],
+     "lineage": {
+      "default": "sage_bronze"
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "allowlist.sage.ic_item_uom"
+      },
+      {
+       "kind": "ref",
+       "id": "portal.sage_uom"
+      }
+     ]
+    }
+   ],
+   "properties": [
+    {
+     "name": "item_number",
+     "value_type": "identifier",
+     "identifier_kind": "erp_item_code",
+     "identifies": "reference",
+     "description": "The Sage item No. the unit belongs to.",
+     "sources": [
+      {
+       "binding": "portal.sage_ic_item_uom",
+       "path": "itemno",
+       "parser": "identifier"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.sage_uom"
+      }
+     ]
+    },
+    {
+     "name": "unit",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "portal.sage_ic_item_uom",
+       "path": "unit",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.sage_uom"
+      }
+     ]
+    },
+    {
+     "name": "conversion",
+     "value_type": "decimal",
+     "description": "Stocking units (eaches) in one of this unit; Sage stores it as text.",
+     "sources": [
+      {
+       "binding": "portal.sage_ic_item_uom",
+       "path": "conversion",
+       "parser": "decimal_text"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.sage_uom"
+      },
+      {
+       "kind": "ref",
+       "id": "portal.sage_uom_use"
+      }
+     ]
+    }
+   ],
+   "identity_keys": [
+    {
+     "name": "item_unit",
+     "properties": [
+      "item_number",
+      "unit"
+     ],
+     "tier": "verified",
+     "unique": true,
+     "scope": "within_binding",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.sage_uom"
+      }
+     ]
+    }
+   ],
+   "display": [
+    "item_number",
+    "unit"
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "portal.sage_uom"
+    },
+    {
+     "kind": "ref",
+     "id": "portal.sage_uom_use"
+    },
+    {
+     "kind": "ref",
+     "id": "context.portal.4.5"
+    }
+   ]
+  },
+  {
+   "id": "Lot",
+   "description": "An inventory lot of one product (lot number BASE@BINCODE) with on-hand, reserved and available quantities, QC status, ownership and expiry. Bindings and links are declared and tested in ontology/schema/pending/people_lots.json, which replaces this placeholder when loaded with include_pending.",
+   "availability": {
+    "state": "not_served",
+    "reason": "Pending: the reporting-API allowlist (services/workbench-api/manifest/allowlist.json@790256ca43) does not serve public.app_inventory_lot (portal-code-map.md 3.9: no lot or inventory relation is served); lot numbers appear only as text on AO, MO, batch and receipt rows.",
+    "upstream_ask": "Q3"
+   },
+   "bindings": [],
+   "properties": [],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "prisma.inventory_lot"
+    },
+    {
+     "kind": "ref",
+     "id": "context.portal.3.9"
+    }
+   ]
+  }
+ ],
+ "link_types": [
+  {
+   "id": "FgItem.minted_as",
+   "from": "FgItem",
+   "to": "Product",
+   "name": "minted_as",
+   "reverse_name": "minted_from_fg_item",
+   "cardinality": "1:1",
+   "description": "The gold product minted at activation (minted_product_id FK).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "portal.app_fg_item",
+     "to_binding": "portal.app_product",
+     "pairs": [
+      {
+       "from": "minted_product_id",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.fg_item"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "FgItem.reference_product",
+   "from": "FgItem",
+   "to": "Product",
+   "name": "reference_product",
+   "reverse_name": "referenced_by_fg_items",
+   "cardinality": "N:1",
+   "description": "The analog/ROM reference product its costs are anchored on (reference_product_id FK).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "portal.app_fg_item",
+     "to_binding": "portal.app_product",
+     "pairs": [
+      {
+       "from": "reference_product_id",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.fg_item"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "FgItem.adopts",
+   "from": "FgItem",
+   "to": "Product",
+   "name": "adopts",
+   "reverse_name": "adopted_by_fg_item",
+   "cardinality": "1:1",
+   "description": "The FM finished product an adoption linked (fm_fp_id = finished_product.id).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "portal.app_fg_item",
+     "to_binding": "portal.fm_finished_product",
+     "pairs": [
+      {
+       "from": "fm_fp_id",
+       "to": "id",
+       "compare": "integer_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.fg_adoption"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "ItemUnitOfMeasure.unit_of",
+   "from": "ItemUnitOfMeasure",
+   "to": "Product",
+   "name": "unit_of",
+   "reverse_name": "units_of_measure",
+   "cardinality": "N:1",
+   "description": "The Sage item the unit belongs to (itemno).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "portal.sage_ic_item_uom",
+     "to_binding": "portal.sage_ic_item",
+     "pairs": [
+      {
+       "from": "itemno",
+       "to": "itemno",
+       "compare": "identifier",
+       "identifier_kind": "erp_item_code"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.sage_uom"
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "evidence_catalog": {
+  "allowlist.public.app_fg_item": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "services/workbench-api/manifest/allowlist.json",
+   "commit": "790256ca43",
+   "note": "Reporting API allowlist entry public.app_fg_item: every cited column is served. pinned_formulation_id/version are NOT served.",
+   "symbol": "public.app_fg_item"
+  },
+  "allowlist.sage.ic_item_uom": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "services/workbench-api/manifest/allowlist.json",
+   "commit": "790256ca43",
+   "note": "Reporting API allowlist entry sage.ic_item_uom: every cited column is served. Key _sage_pk = itemno|unit.",
+   "symbol": "sage.ic_item_uom"
+  },
+  "prisma.fg_item": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/prisma/schema.prisma",
+   "commit": "790256ca43",
+   "note": "FgItem -> app_fg_item: unique projectKey (not an FK), code (not unique), state FgItemState, census intake targetFillG/packSummary/targetQty/qtyBasisNote/retailPrice, referenceProductId + referenceProvenance, pins, mintedProductId and fmFpId filled at activation.",
+   "symbol": "FgItem",
+   "lines": "6681-6731"
+  },
+  "prisma.fg_item_state": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/prisma/schema.prisma",
+   "commit": "790256ca43",
+   "note": "enum FgItemState: DRAFT, ACTIVE, RETIRED.",
+   "symbol": "FgItemState",
+   "lines": "652-656"
+  },
+  "portal.fg_item": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/src/lib/final-products/fg-item.ts",
+   "commit": "790256ca43",
+   "note": "One draft FG identity per project_key (mintDraftFgItem never creates a second); reference_provenance is measured | analog | default.",
+   "symbol": "buildDraftFgItemData",
+   "lines": "1-30"
+  },
+  "portal.fg_adoption": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/src/lib/final-products/fm-adoption.ts",
+   "commit": "790256ca43",
+   "note": "Adopting an FM finished product mints the FG item with code = FM finished_product.codefp_c and fmFpId = finished_product.id.",
+   "lines": "264-276"
+  },
+  "portal.sage_uom": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "docs/modules/3pl-billing/powerbi-model-appendix.md",
+   "commit": "790256ca43",
+   "note": "sage.ic_item_uom (Sage ICUNIT): itemno, unit, conversion stored as TEXT, PK itemno|unit; e.g. DPI-001 EA=1, CSE=24 (eaches per unit). Sage text is right-padded.",
+   "lines": "379-395"
+  },
+  "portal.sage_uom_use": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/src/lib/3pl/sage-etl.ts",
+   "commit": "790256ca43",
+   "note": "sqtyuomAdj divides an EA quantity by the item's conversion (> 1) to get cases: conversion = stocking units (eaches) per one unit.",
+   "symbol": "sqtyuomAdj",
+   "lines": "355-362"
+  },
+  "context.portal.3.6": {
+   "kind": "context_pack",
+   "ref": "docs/reference/portal-code-map.md#3.6",
+   "note": "Item / product; app_fg_item and sage.ic_item_uom are served."
+  },
+  "context.portal.4.5": {
+   "kind": "context_pack",
+   "ref": "docs/reference/portal-code-map.md#4.5",
+   "note": "Line UOMs are free strings and are never converted on orders or shipments."
+  },
+  "prisma.inventory_lot": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/prisma/schema.prisma",
+   "commit": "790256ca43",
+   "note": "InventoryLot -> app_inventory_lot: productId FK, lotNumber (unique with productId), batchNumber, supplierLotNumber, Float quantityOnHand/Reserved/Available, free-text uom, status InventoryStatus, ownership PETRA|CUSTOMER, ownerCustomerId (no FK), dates, receiptId (no FK), customFields.",
+   "symbol": "InventoryLot",
+   "lines": "3124-3166"
+  },
+  "context.portal.3.9": {
+   "kind": "context_pack",
+   "ref": "docs/reference/portal-code-map.md#3.9",
+   "note": "Lot ledger app_inventory_lot; not served by the reporting API."
+  }
+ }
+}

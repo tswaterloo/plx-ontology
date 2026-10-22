@@ -1,0 +1,76 @@
+{
+ "id": "case.sharepoint_documents",
+ "description": "The case host answers a SharePoint document question while Portal is out of the path: one GET-only capture run of the configured scope (integrations/capture_sharepoint.py; QCQA '/AOs/2026 - AOs' and the AGENTS use-case folder; scanned PDFs OCR-read locally by poppler + tesseract, never a network service) into the check's temporary Workbench state, a projection of that capture alone, then plx.documents through operating/case_tools_host.CaptureCaseHostTools with the host's live SharePoint readers re-reading every served file's permissions (GET). The questions are the identifiers the captured text itself names on a page (the one identifier grammar; no configured case value), each asked as written with its label when the value alone names no identifier: each must return a captured file with a page-cited mention, labelled as_of_capture (never live). Each question without one is counted under its reason (unanswered: unpaged_mention, a captured file came back without a page-cited mention; withheld, nothing came back and the host refused a captured file; no_document, nothing came back). The same questions from a reader without a grant and from a folder-only reader (folder granted, item permissions required, no source identity) must return no document. Counts, booleans and enums only; no names, paths, identifiers, ids or text.",
+ "source": "sharepoint",
+ "command": [
+  "python3",
+  "-m",
+  "operating.sharepoint_host_check",
+  "--state-dir",
+  "{tmp}/state",
+  "--scope",
+  "examples/sharepoint_capture_scope.live-check.json",
+  "--live-audience",
+  "examples/sharepoint_capture_audience.live-check.json"
+ ],
+ "cadence": "daily",
+ "timeout_seconds": 2400,
+ "requires_env": [
+  "MICROSOFT_GRAPH_TENANT_ID",
+  "MICROSOFT_GRAPH_CLIENT_ID",
+  "MICROSOFT_GRAPH_CLIENT_SECRET",
+  "SHAREPOINT_SITE_ID"
+ ],
+ "optional_env": [
+  "BC_CLIENT_SECRET"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "questions",
+   "answered_with_page_citation",
+   "labelled_as_of_capture",
+   "capture.files_current",
+   "capture.texts_ocr",
+   "host_gets_sent",
+   "unanswered"
+  ],
+  "json_equals": {
+   "ok": true,
+   "errors": 0,
+   "capture.texts_ocr_unavailable": 0,
+   "leak_check.denied_documents": 0
+  },
+  "json_min": {
+   "questions": 1,
+   "answered_with_page_citation": 1,
+   "labelled_as_of_capture": 1,
+   "capture.texts_ocr": 1,
+   "host_gets_sent": 1
+  }
+ },
+ "record": [
+  "ok",
+  "evidence_label",
+  "capture",
+  "questions",
+  "errors",
+  "answered_with_page_citation",
+  "labelled_as_of_capture",
+  "unanswered",
+  "leak_check",
+  "capture_requests_sent",
+  "host_requests_sent",
+  "host_gets_sent",
+  "requests_sent"
+ ],
+ "record_keys": [
+  "capture",
+  "leak_check",
+  "unanswered"
+ ],
+ "record_enums": [
+  "evidence_label"
+ ],
+ "notes": "Live-unverified until the live check runs it; the evidence label of its tests is injected-transport (operating/tests/test_case_host_sharepoint.py runs this module over the in-process FakeDrive). Captured files live only in {tmp}/state and are deleted with the check's temporary directory. requests_sent is every Graph request of the check: the capture's (capture_requests_sent) plus the host's (host_requests_sent, its OAuth token POSTs included). host_gets_sent counts the host's Graph GETs alone (item metadata and permissions of its live re-reads): host_gets_sent >= 1 proves a re-read GET was sent, which a token POST alone cannot satisfy; each tool call's re-reads are bounded by the host's per-call GET budget. The daily run 2026-10-04 (main 7ebf186) answered 0 of 5 with a page citation; two causes are fixed since: a packet the projection listed by the identifier in its name came back with that name mention only (fixed 2026-10-05, case_tools_host._with_mentions), and a question taken bare from a labelled identifier (a value that names an identifier only after its label) matched nothing (questions now carry the label). Both are reproduced on fixtures; which the live run met is unknown (it predates unanswered). Unverified live assumptions: the runner host has poppler and tesseract (else capture.texts_ocr_unavailable > 0 fails the check visibly); the scanned AO packets OCR well enough that their text names at least one identifier on a page; the shared app may read item permissions for the live re-read. The reader is the capture principal of examples/sharepoint_capture_audience.live-check.json (no item permissions required), so this check proves the question/answer path and the leak bounds, not a named employee's trimming. Scope: examples/sharepoint_capture_scope.live-check.json (the folders this check was written for), not the wide scope integrations/sharepoint_capture_scope.json, whose serial capture outlasts the timeout (capture.sharepoint, live 2026-10-05)."
+}

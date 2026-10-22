@@ -1,0 +1,10 @@
+{
+  "schema": "plx-source-mirror-audience/v1",
+  "note": "EXAMPLE configuration, not authority (verify/live-checks/case.mail_evidence.json). Operations (held by both readers of the check) reads Portal purchase orders and suppliers; only purchasing also reads the mailbox. Default deny.",
+  "tenant": "plx",
+  "default_classification": "internal",
+  "audiences": {
+    "public.app_purchase_order": ["staff:operations"],
+    "public.app_supplier": ["staff:operations"]
+  }
+}

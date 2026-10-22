@@ -1,0 +1,477 @@
+{
+ "format": "plx-eval-case-card-proposals/v1",
+ "status": "PROPOSED dev cards for lead triage, never gold. Ross's New Packaging Sourcing proposal for review (16 Oct 2026; eleven target stages, proposed rules P1 to P6, the P-02486 example; cards PS-*). It is read through its pinned advisory record only; the file is pinned by item id and SHA-256 and watched in /Ontology UseCases. Every claim a card attributes to the proposal is the proposal's; P1 to P6 are proposed, pending Vince, never decided practice. Portal and BC statements come from the system map of 30 Sep 2026 that the proposal relies on and are unverified expectations, never findings about deployed systems. Cards carry no prices, no message bodies, no signatory names and no personal details.",
+ "case": "packaging-sourcing",
+ "source": {
+  "advisory": {
+   "id": "advisory:62802e1f72f6",
+   "ref": "advisory@448579b0c49a675b5731b119e8e74328ff2d63f4",
+   "path": "context/62802e1f72f68f40f39c3d858760fc145ce5c274aed4fcaf2216b90403363cc7.json",
+   "record_sha256": "d7b0553494bc711e85a7eada40077f93ed8414091730af4b117d6f9964c40efe",
+   "source_revision": "version:1.0;modified:2026-10-16T18:49:04Z;sha256:98fb0accf8525793dd3b0ac0d5239056d5415d00b6395f47201783b70b9ac351",
+   "created_at": "2026-10-16T19:03:01Z"
+  },
+  "related_advisories": [
+   {
+    "id": "advisory:f82f3bca13c5",
+    "role": "the Packaging Procure-to-GL Map artifact extraction of 30 Sep 2026, the candidate for the system map of Sept 30 whose Portal and BC lanes the proposal relies on (that it is the same map is unverified)",
+    "ref": "advisory@e059ffc6ee9e1d1dfab49276457176c8cf1d4fee",
+    "path": "context/f82f3bca13c5a8b73cea9421e43587e8ee5082fd4751bfbf321fb96e500448f8.json",
+    "record_sha256": "87f4a182c4ea7749bba55aad6ef7255fcee7c66d24dcb24fcba6f5ecd438899f",
+    "source_revision": "sha256:17cd652f6783ed3945050817bad4029fdd229dd74546e3a6a747f73d43fa60ab",
+    "created_at": "2026-09-30T22:04:30.898623Z"
+   }
+  ],
+  "originals_registry": "examples/case_originals.json",
+  "watched_originals": {
+   "note": "The proposal file, pinned from the advisory record (source_id item, source_revision sha256, the evidence's byte count); the discovered receipt (entry nr-1c6c5bb396ae, 17 Oct 2026) lists the same item, size and modification time but its body was unavailable, so no read receipt matches this pin yet. Name only, no contents.",
+   "folders": {
+    "Ontology UseCases": "wf-a672d852ff20"
+   },
+   "files": [
+    {
+     "case": "Ontology UseCases",
+     "name": "New Packaging Sourcing — Proposal for Review.md",
+     "item_id": "01RVPYB2DBBVHH4OFKCJGY4XQT5P4YSZQF",
+     "sha256": "98fb0accf8525793dd3b0ac0d5239056d5415d00b6395f47201783b70b9ac351",
+     "bytes": 9355,
+     "advisory": "advisory:62802e1f72f6"
+    }
+   ]
+  }
+ },
+ "proposed_rules": {
+  "note": "The proposal's six rules for Vince's decision; its introduction says five. None is decided: status and adopted stay as here until a record of Vince's decision is pinned.",
+  "rules": [
+   {
+    "id": "P1",
+    "subject": "three sign-offs (customer, QC, costing) before a packaging quote is approved",
+    "status": "proposed, pending Vince",
+    "adopted": false
+   },
+   {
+    "id": "P2",
+    "subject": "the part is created at approval from the approved quote; a drawing and an HS code before it is ordered",
+    "status": "proposed, pending Vince",
+    "adopted": false
+   },
+   {
+    "id": "P3",
+    "subject": "the packaging part is linked to its project",
+    "status": "proposed, pending Vince",
+    "adopted": false
+   },
+   {
+    "id": "P4",
+    "subject": "cost allocated to the component that carries it, priced per component when parts ship separately",
+    "status": "proposed, pending Vince",
+    "adopted": false
+   },
+   {
+    "id": "P5",
+    "subject": "purchasing requests vendor deposits, recorded in BC as prepayments on the purchase order",
+    "status": "proposed, pending Vince",
+    "adopted": false
+   },
+   {
+    "id": "P6",
+    "subject": "a purchase order before the vendor PI, and the PI's price, quantity and terms checked before payment",
+    "status": "proposed, pending Vince",
+    "adopted": false
+   }
+  ]
+ },
+ "missing_originals": [
+  {
+   "id": "MO-01",
+   "kind": "map",
+   "item": "The fuller map the proposal links (a claude.ai artifact, not fetched or verified)",
+   "example": null,
+   "state": "not_fetched",
+   "gap": "PS-GAP-10"
+  },
+  {
+   "id": "MO-02",
+   "kind": "item",
+   "item": "The P-02486 item records (bottle and cap) and their cost allocation",
+   "example": "P-02486",
+   "state": "not_provided",
+   "gap": "PS-GAP-04"
+  },
+  {
+   "id": "MO-03",
+   "kind": "proforma_invoice",
+   "item": "The vendor proforma invoice PI-SWC025623 and the PO it was checked against",
+   "example": "P-02486",
+   "state": "not_provided",
+   "gap": "PS-GAP-07"
+  },
+  {
+   "id": "MO-04",
+   "kind": "deposit",
+   "item": "The vendor deposit record the proposal cites",
+   "example": "P-02486",
+   "state": "not_provided",
+   "gap": "PS-GAP-08"
+  },
+  {
+   "id": "MO-05",
+   "kind": "sign_off",
+   "item": "The customer, QC and costing sign-offs of an approved packaging quote",
+   "example": null,
+   "state": "not_evidenced",
+   "gap": "PS-GAP-01"
+  }
+ ],
+ "missing_originals_note": "Typed here because the registry generator makes gap rows only from the baseline and delta source-pin records. not_fetched: the proposal links it and the intake did not fetch it; not_provided: the proposal cites the record but no copy reached the Workbench; not_evidenced: the proposal requires it and evidences none. None was read; a card never infers their content.",
+ "live_sources": [
+  {
+   "id": "sharepoint.ontology_usecases",
+   "system": "sharepoint",
+   "relation": "AGENTS drive /Ontology UseCases (watch folder wf-a672d852ff20 of examples/case_originals.json, read by scripts.case_originals read): the proposal file, pinned by item id and SHA-256",
+   "reader": "watch_read",
+   "evidence": "OntologyProject:scripts/case_originals.py@d3b3fc7555d0:1881-1943; OntologyProject:examples/case_originals.json@d3b3fc7555d0:194-201"
+  },
+  {
+   "id": "portal.app_sourcing_request",
+   "system": "portal",
+   "relation": "AssemblySourcingRequest and its samples and vendor packages (app_sourcing_request and siblings): where the Sept 30 map places the brief, vendor responses, samples and the link to a packaging item; not an approved relation of the reporting API",
+   "reader": "not_served",
+   "evidence": "OntologyProject:ontology/schema/generated/portal_not_served_s_z.json@d3b3fc7555d0:272-300; OntologyProject:ontology/source_registry.json@d3b3fc7555d0:1365-1368"
+  },
+  {
+   "id": "portal.app_product",
+   "system": "portal-reporting-api",
+   "relation": "public.app_product (Product, the packaging part) with hs_code; the Sept 30 map says hs_code is set when a sourcing request is linked, unverified",
+   "reader": "served",
+   "evidence": "OntologyProject:ontology/schema/domains/catalog_parties.json@d3b3fc7555d0:18-24; OntologyProject:ontology/schema/domains/catalog_parties.json@d3b3fc7555d0:936-946"
+  },
+  {
+   "id": "portal.app_supplier_product",
+   "system": "portal-reporting-api",
+   "relation": "public.app_supplier_product (a supplier's item: cost, tiers, MOQ, lead time, INCO terms, origin, delivery cost, per the Sept 30 map, unverified)",
+   "reader": "served",
+   "evidence": "OntologyProject:ontology/schema/domains/catalog_parties.json@d3b3fc7555d0:3133-3135"
+  },
+  {
+   "id": "portal.app_purchase_requisition",
+   "system": "portal-reporting-api",
+   "relation": "public.app_purchase_requisition (the requisition the assembly demand raises)",
+   "reader": "served",
+   "evidence": "OntologyProject:ontology/schema/domains/requisitions.json@d3b3fc7555d0:23-27"
+  },
+  {
+   "id": "portal.app_purchase_order",
+   "system": "portal-reporting-api",
+   "relation": "public.app_purchase_order and public.app_purchase_order_line (PurchaseOrder); the Sept 30 map says its lines carry no HS code and it has no PI number or deposit field, unverified",
+   "reader": "served",
+   "evidence": "OntologyProject:ontology/schema/domains/purchasing.json@d3b3fc7555d0:12-25; OntologyProject:ontology/schema/domains/purchasing.json@d3b3fc7555d0:1041-1047; OntologyProject:ontology/source_registry.json@d3b3fc7555d0:413"
+  },
+  {
+   "id": "portal.app_order_prepayment",
+   "system": "portal",
+   "relation": "OrderPrepayment (app_order_prepayment): customer (AR) prepayments per the Sept 30 map, unverified; not an approved relation of the reporting API",
+   "reader": "not_served",
+   "evidence": "OntologyProject:ontology/schema/generated/portal_not_served_f_o.json@d3b3fc7555d0:1207-1225"
+  },
+  {
+   "id": "portal.app_attachment",
+   "system": "portal",
+   "relation": "Attachment (app_attachment): where a drawing, a sample photo or a vendor PI could be attached; not an approved relation of the reporting API",
+   "reader": "not_served",
+   "evidence": "OntologyProject:ontology/source_registry.json@d3b3fc7555d0:1369"
+  },
+  {
+   "id": "bc.purchase_orders",
+   "system": "bc",
+   "relation": "purchaseOrders (BC purchase order headers); its select allowlist has no prepayment field, so the Workbench cannot read a PO's prepayment today",
+   "reader": "partial",
+   "evidence": "OntologyProject:integrations/live_source_grammar.py@d3b3fc7555d0:490-493"
+  },
+  {
+   "id": "bc.purchase_invoices",
+   "system": "bc",
+   "relation": "purchaseInvoices (posted vendor invoices with orderNumber): a posted invoice, not a vendor proforma invoice",
+   "reader": "partial",
+   "evidence": "OntologyProject:integrations/live_source_grammar.py@d3b3fc7555d0:512-515"
+  },
+  {
+   "id": "bc.vendor_payments",
+   "system": "bc",
+   "relation": "vendorPayments (Payment, partial): payment journal lines that apply to an invoice; no field ties a payment to a purchase order",
+   "reader": "partial",
+   "evidence": "OntologyProject:ontology/schema/domains/bc_finance.json@d3b3fc7555d0:989-996; OntologyProject:ontology/schema/domains/bc_finance.json@d3b3fc7555d0:1021; OntologyProject:integrations/live_source_grammar.py@d3b3fc7555d0:577-581"
+  }
+ ],
+ "layers": {
+  "comprehension": "what the proposal says, attributed to Ross's walkthrough of 16 Oct 2026, with its rules kept as proposals pending Vince and its targets apart from today's practice",
+  "tracing": "joins from a sourcing request to a packaging part, its requisition, purchase order, PI and deposit across the Portal and BC; an unseen join is a gap, never a match, and a Portal or BC claim from the Sept 30 map is an unverified expectation",
+  "actual_case_answerability": "UNSCORED until the P-02486 records, PI-SWC025623 and the deposit are supplied and the missing objects, links and readers exist (ontology_gaps.json)"
+ },
+ "open_questions": [
+  "which of P1 to P6 Vince accepts, and whether the proposal means five rules or six",
+  "where the customer, QC and costing sign-offs are recorded today",
+  "where a vendor PI is kept and who checks it against the PO before payment",
+  "whether a DDP quote is counted twice by the landed-cost multiplier",
+  "which entity purchases and which pays for packaging",
+  "whether the Sept 30 map's Portal and BC statements still hold in the code"
+ ],
+ "non_goals": [
+  "Portal or BC writes, creating parts, raising POs or recording deposits",
+  "deciding P1 to P6",
+  "computing landed costs or reconciling a PI or a deposit",
+  "fetching the fuller map or any original"
+ ],
+ "real_example": {
+  "batch_id": "new-packaging-sourcing-proposal",
+  "exposure": "dev-exposed",
+  "split": "dev",
+  "as_of": "2026-10-16T19:03:01Z",
+  "cards": [
+   {
+    "id": "PS-01",
+    "layer": "comprehension",
+    "question": "What is the New Packaging Sourcing proposal, and what kind of evidence is it?",
+    "criterion": "Attribute to the proposal (a Markdown file for review in /Ontology UseCases, pinned by item id and SHA-256, captured 16 Oct 2026): a Ross-attributed walkthrough of how a new packaging item should be sourced, with eleven target stages confirmed on 16 Oct 2026 and six proposed business rules P1 to P6 put to Vince (proposed, pending Vince). Say that approval of the rules is not evidenced, that its introduction counts five rules while its table lists six, that its six build tasks are proposals, and that its Portal and BC references come from a system map last checked on 30 Sep 2026 and need code verification, so every Portal or BC statement in it is unverified. Call it a stakeholder proposal, not a decision, an implementation instruction or authority to act.",
+    "originals": [],
+    "live_sources": [
+     "sharepoint.ontology_usecases"
+    ],
+    "cites": [
+     "advisory:62802e1f72f6",
+     "sharepoint.ontology_usecases"
+    ]
+   },
+   {
+    "id": "PS-02",
+    "layer": "comprehension",
+    "question": "Which business rules does the proposal put to Vince, and what is their status?",
+    "criterion": "Name the six as the proposal's (proposed_rules): P1 three sign-offs before a packaging quote is approved; P2 part creation at approval with the order prerequisites; P3 linking the part to its project; P4 allocating cost to the component that carries it; P5 who requests and records a vendor deposit; P6 a PO before the vendor PI and the PI matched before payment. Each is proposed, pending Vince: an answer never describes any of them as decided, as current practice or as built, and notes the five-versus-six count mismatch in the proposal.",
+    "originals": [],
+    "live_sources": [
+     "sharepoint.ontology_usecases"
+    ],
+    "cites": [
+     "advisory:62802e1f72f6",
+     "sharepoint.ontology_usecases"
+    ]
+   },
+   {
+    "id": "PS-03",
+    "layer": "comprehension",
+    "question": "What quote evidence does the proposal require from a packaging vendor?",
+    "criterion": "Per the proposal: currency, MOQ, lead time, INCO term with its named place, country of origin, the vendor's item number and the case-pack, with the drawing and sample evidence behind the quote, for each component. Per the Sept 30 map (unverified): a supplier item holds cost, price tiers, MOQ, lead time, INCO terms, origin and one delivery cost; a named place and a case-pack are not named there. An answer keeps the proposal's requirement apart from what the Portal holds and gives no figures.",
+    "originals": [],
+    "live_sources": [
+     "portal.app_supplier_product",
+     "portal.app_sourcing_request"
+    ],
+    "cites": [
+     "advisory:62802e1f72f6",
+     "advisory:f82f3bca13c5",
+     "portal.app_supplier_product"
+    ]
+   },
+   {
+    "id": "PS-04",
+    "layer": "comprehension",
+    "question": "Which sign-offs does the proposal require before a packaging quote is approved, and where are they recorded?",
+    "criterion": "The proposal requires customer, QC and costing sign-offs (P1, proposed, pending Vince). It does not evidence an approval, and where each sign-off is recorded today is unknown (PS-GAP-01). An answer names the three roles, not people, and reports the record as unknown rather than inferring it from a sample status.",
+    "originals": [],
+    "live_sources": [
+     "portal.app_sourcing_request"
+    ],
+    "cites": [
+     "advisory:62802e1f72f6",
+     "portal.app_sourcing_request"
+    ]
+   },
+   {
+    "id": "PS-05",
+    "layer": "tracing",
+    "question": "When does the proposal have the packaging part created, and what can the Portal do today?",
+    "criterion": "The proposal: the part is created at approval from the approved quote and linked to its project (P2 and P3, proposed, pending Vince). The Sept 30 map (unverified): linking a sourcing request needs an accepted sample, a drawing and an existing packaging item; the Portal has no way to create a new packaging item and no P-#### number series. An answer keeps the target, the map's claim and the unchecked code apart.",
+    "originals": [],
+    "live_sources": [
+     "portal.app_product",
+     "portal.app_sourcing_request"
+    ],
+    "cites": [
+     "advisory:62802e1f72f6",
+     "advisory:f82f3bca13c5",
+     "portal.app_product"
+    ]
+   },
+   {
+    "id": "PS-06",
+    "layer": "tracing",
+    "question": "What must exist before a packaging part may be ordered, and does the purchase order carry the HS code?",
+    "criterion": "The proposal: a drawing and an HS code before the part is ordered (P2, proposed, pending Vince). The Sept 30 map (unverified): the HS code is set on the product when the request is linked, purchase order lines carry no HS code and none is sent to BC. An answer says whether a given part has an HS code only from public.app_product and never claims the PO line or BC carries it.",
+    "originals": [],
+    "live_sources": [
+     "portal.app_product",
+     "portal.app_purchase_order"
+    ],
+    "cites": [
+     "advisory:62802e1f72f6",
+     "advisory:f82f3bca13c5",
+     "portal.app_product"
+    ]
+   },
+   {
+    "id": "PS-07",
+    "layer": "tracing",
+    "question": "How should prices be recorded when the components of one packaging item ship separately?",
+    "criterion": "The proposal: a price per component when the parts ship separately, and the cost allocated to the component that carries it (P4, proposed, pending Vince). The Sept 30 map (unverified): a supplier item carries one cost with price tiers per supplier and product. An answer describes the price structure (per component, currency, unit, tier) and states no price figures.",
+    "originals": [],
+    "live_sources": [
+     "portal.app_supplier_product"
+    ],
+    "cites": [
+     "advisory:62802e1f72f6",
+     "advisory:f82f3bca13c5",
+     "portal.app_supplier_product"
+    ]
+   },
+   {
+    "id": "PS-08",
+    "layer": "tracing",
+    "question": "What must exist before a vendor proforma invoice, and what is checked on it before payment?",
+    "criterion": "The proposal: a PO is issued before the vendor's PI, and the PI's price, quantity and terms are checked against the PO before anything is paid (P6, proposed, pending Vince). The Sept 30 map (unverified): the PO has no PI number field; BC purchaseInvoices are posted invoices, not proforma invoices. Where a PI is kept and who checks it is unknown (PS-GAP-06, PS-GAP-07). An answer never treats a posted BC invoice as the PI.",
+    "originals": [],
+    "live_sources": [
+     "portal.app_purchase_order",
+     "bc.purchase_invoices",
+     "portal.app_attachment"
+    ],
+    "cites": [
+     "advisory:62802e1f72f6",
+     "advisory:f82f3bca13c5",
+     "portal.app_purchase_order"
+    ]
+   },
+   {
+    "id": "PS-09",
+    "layer": "tracing",
+    "question": "How does the proposal want vendor deposits handled, and what exists for them today?",
+    "criterion": "The proposal: purchasing requests the deposit, with the account manager stating urgency, and it is recorded in BC as a prepayment on the purchase order (P5, proposed, pending Vince). The Sept 30 map (unverified): vendor prepayment is not built; BC Prepayment % on the PO is never set; AP handles deposits in BC by hand; OrderPrepayment is customer (AR) only. The Workbench's purchaseOrders allowlist has no prepayment field and vendorPayments apply to invoices, so an answer reports a PO's deposit as unknown.",
+    "originals": [],
+    "live_sources": [
+     "bc.purchase_orders",
+     "bc.vendor_payments",
+     "portal.app_order_prepayment"
+    ],
+    "cites": [
+     "advisory:62802e1f72f6",
+     "advisory:f82f3bca13c5",
+     "bc.purchase_orders"
+    ]
+   },
+   {
+    "id": "PS-10",
+    "layer": "tracing",
+    "question": "How does an approved packaging part reach a purchase order in the proposal's workflow?",
+    "criterion": "Per the proposal: brief, component BOM, vendor RFQs, quote, drawing and sample evidence, approval, handoff to purchasing, part creation, assembly demand, requisition and PO, then the deposit. Per the Sept 30 map (unverified): only the requisition is approved, a PO has no approval of its own and sending it records no send time. An answer traces a part from public.app_product to public.app_purchase_requisition and public.app_purchase_order and reports a step it cannot see as a gap, never a match.",
+    "originals": [],
+    "live_sources": [
+     "portal.app_purchase_requisition",
+     "portal.app_purchase_order"
+    ],
+    "cites": [
+     "advisory:62802e1f72f6",
+     "advisory:f82f3bca13c5",
+     "portal.app_purchase_requisition"
+    ]
+   },
+   {
+    "id": "PS-11",
+    "layer": "comprehension",
+    "question": "What does the proposal leave open, and what must a cutover handle?",
+    "criterion": "Open per the proposal: whether a label states 100mL or 3.5 fl.oz; which entity purchases and which pays; whether the DDP multiplier counts freight and duty twice; how far the sourcing-request workflow has been used historically. Cutover: packaging item identifiers, open assembly orders and POs, and vendor deposits. An answer lists these as open and does not answer them from the proposal.",
+    "originals": [],
+    "live_sources": [
+     "sharepoint.ontology_usecases"
+    ],
+    "cites": [
+     "advisory:62802e1f72f6",
+     "sharepoint.ontology_usecases"
+    ]
+   },
+   {
+    "id": "PS-12",
+    "layer": "tracing",
+    "question": "Can a DDP vendor quote be double counted by the landed-cost formula?",
+    "criterion": "The proposal raises it as an open question. The Sept 30 map (unverified): the quote-time landed cost is (tier price + duty) times a multiplier plus freight, with freight added per unit, so a DDP price that already includes freight and duty could be counted twice. An answer reports the risk as unconfirmed, computes no landed cost and names the question for Vince (PS-GAP-09).",
+    "originals": [],
+    "live_sources": [
+     "portal.app_supplier_product"
+    ],
+    "cites": [
+     "advisory:62802e1f72f6",
+     "advisory:f82f3bca13c5",
+     "portal.app_supplier_product"
+    ]
+   },
+   {
+    "id": "PS-A1",
+    "layer": "actual_case_answerability",
+    "question": "How was the P-02486 bottle and cap cost allocated, and what does the proposal correct?",
+    "criterion": "The proposal says the cost of the bottle and its cap was assigned to the bottle alone, and proposes allocating it to each component (P4, proposed, pending Vince). The P-02486 item records are not supplied (MO-02), so the allocation is the proposal's claim, unverified. An answer quotes no price and does not reconstruct the allocation from other records.",
+    "originals": [],
+    "live_sources": [
+     "portal.app_product",
+     "portal.app_supplier_product"
+    ],
+    "cites": [
+     "advisory:62802e1f72f6",
+     "portal.app_product"
+    ]
+   },
+   {
+    "id": "PS-A2",
+    "layer": "actual_case_answerability",
+    "question": "What mismatches does the proposal report on PI-SWC025623?",
+    "criterion": "The proposal cites mismatches between PI-SWC025623 and what was ordered; the PI is not supplied (MO-03), so the mismatches and the PO they belong to are unverified. An answer attributes them to the proposal, lists no amounts and treats a PI-to-PO join as unseen.",
+    "originals": [],
+    "live_sources": [
+     "portal.app_purchase_order",
+     "portal.app_attachment"
+    ],
+    "cites": [
+     "advisory:62802e1f72f6",
+     "portal.app_purchase_order"
+    ]
+   },
+   {
+    "id": "PS-A3",
+    "layer": "actual_case_answerability",
+    "question": "Which vendor deposit does the proposal cite, and was it recorded as a prepayment on the purchase order?",
+    "criterion": "The proposal cites a vendor deposit; the deposit record is not supplied (MO-04), and the Sept 30 map says deposits are booked in BC by hand without a PO prepayment (unverified). An answer reports whether it was recorded as a prepayment as unknown and states no amount.",
+    "originals": [],
+    "live_sources": [
+     "bc.vendor_payments",
+     "bc.purchase_orders"
+    ],
+    "cites": [
+     "advisory:62802e1f72f6",
+     "advisory:f82f3bca13c5",
+     "bc.vendor_payments"
+    ]
+   },
+   {
+    "id": "PS-A4",
+    "layer": "actual_case_answerability",
+    "question": "Which originals of this case exist, and which have been read?",
+    "criterion": "Pinned: the proposal file (item id, SHA-256 and size from the advisory record), watched in /Ontology UseCases; its body was read by the intake, which exported minimised facts only, and the discovered receipt of 17 Oct 2026 lists the item with its body unavailable, so nothing here was read from it. Not supplied (missing_originals): the fuller map the proposal links (not fetched), the P-02486 item records, PI-SWC025623, the deposit record and the three sign-offs. An answer lists each unread original with its state and infers nothing about its content.",
+    "originals": [],
+    "live_sources": [
+     "sharepoint.ontology_usecases"
+    ],
+    "cites": [
+     "advisory:62802e1f72f6",
+     "sharepoint.ontology_usecases"
+    ]
+   }
+  ]
+ }
+}

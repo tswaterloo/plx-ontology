@@ -1,0 +1,661 @@
+{
+ "$schema": "_plan.schema.json",
+ "format": "plx-investigate-plan/v1",
+ "id": "commercial_chain",
+ "families": [
+  "F12"
+ ],
+ "title": "The recorded links of a quote, order or purchase order's commercial chain",
+ "description": "Which recorded link joins a quote to its order (Portal app_quote.convertedSalesOrderId and app_sales_order.sourceQuoteId, written by the Portal's quote conversion), an order to its twins in BC, FM and Sage, a purchase order to its receipts, invoices and the payments applied to them; each link the chain needs and no source records is a typed gap with the question for the source's owner (deposit to PO or proforma, supply agreement, won volume tier, legacy FileMaker/Sage screens, complaint to resolution). Links are only read, never inferred: two records sharing a customer, date or amount are not linked unless a source stores the link (operating/commercial_chain.py).",
+ "root": {
+  "object_types": [
+   "Quote",
+   "SalesOrder",
+   "PurchaseOrder"
+  ],
+  "fallback_filters": [
+   {
+    "object_type": "Quote",
+    "property": "quote_number"
+   },
+   {
+    "object_type": "SalesOrder",
+    "property": "order_number"
+   },
+   {
+    "object_type": "PurchaseOrder",
+    "property": "po_number"
+   }
+  ]
+ },
+ "step_budget": 64,
+ "steps": [
+  {
+   "id": "root_read",
+   "tool": "plx.object",
+   "from": "root",
+   "bind": "object_id"
+  },
+  {
+   "id": "quote_orders",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Quote.converted_to",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   },
+   "description": "A Portal quote to the order it was converted to (app_quote.convertedSalesOrderId)."
+  },
+  {
+   "id": "order_quotes",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrder.created_from_quote",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   },
+   "description": "An order to the quote it was converted from (app_sales_order.sourceQuoteId)."
+  },
+  {
+   "id": "quote_orders_named",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrder.created_from_quote",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "order_quotes_named",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Quote.converted_to",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "order_twins",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrder.same_record_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   },
+   "description": "The order's twins in BC, FM and Sage: a BC order reaches its Portal quote only through its Portal twin."
+  },
+  {
+   "id": "order_twins_named",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrder.same_record_as",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "twin_quotes",
+   "tool": "plx.around",
+   "from": "order_twins",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrder.created_from_quote",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "twin_quotes_named",
+   "tool": "plx.around",
+   "from": "order_twins_named",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrder.created_from_quote",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "twin_quotes_converted",
+   "tool": "plx.around",
+   "from": "order_twins",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Quote.converted_to",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "twin_quotes_converted_named",
+   "tool": "plx.around",
+   "from": "order_twins_named",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Quote.converted_to",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "po_twins",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrder.same_record_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "po_twins_named",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrder.same_record_as",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "receipts",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Receipt.receives",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   },
+   "description": "Receipts posted against the purchase order."
+  },
+  {
+   "id": "twin_receipts",
+   "tool": "plx.around",
+   "from": "po_twins",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Receipt.receives",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "twin_receipts_named",
+   "tool": "plx.around",
+   "from": "po_twins_named",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Receipt.receives",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "invoices",
+   "tool": "plx.around",
+   "from": ["root", "po_twins", "po_twins_named"],
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseInvoice.invoices",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "invoices_named",
+   "tool": "plx.around",
+   "from": ["root", "po_twins", "po_twins_named"],
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseInvoice.names_order",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "payments",
+   "tool": "plx.around",
+   "from": "invoices",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Payment.applies_to_purchase_invoice",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "payments_named",
+   "tool": "plx.around",
+   "from": "invoices_named",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Payment.applies_to_purchase_invoice",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  }
+ ],
+ "evidence": [
+  {
+   "name": "chain_roots",
+   "kind": "count",
+   "from": "root",
+   "description": "The records the question resolved to."
+  },
+  {
+   "name": "commercial_links",
+   "kind": "compute",
+   "engine": "commercial_chain",
+   "engine_args": {
+    "roots": "chain_roots",
+    "hops": [
+     {
+      "label": "order_to_quote",
+      "from_types": [
+       "SalesOrder"
+      ],
+      "link_types": [
+       "SalesOrder.created_from_quote",
+       "Quote.converted_to"
+      ],
+      "through": [
+       "SalesOrder.same_record_as"
+      ],
+      "gap": "order_quote_link_not_recorded",
+      "question": "When an order is entered in Business Central or FileMaker rather than converted in the Portal, where is the quote it was priced from recorded, if anywhere?",
+      "who_can_answer": "operations (who keeps the source)"
+     },
+     {
+      "label": "quote_to_order",
+      "from_types": [
+       "Quote"
+      ],
+      "link_types": [
+       "Quote.converted_to",
+       "SalesOrder.created_from_quote"
+      ],
+      "gap": "quote_order_link_not_recorded",
+      "question": "When a quote is won but the order is entered outside the Portal, where is the order it became recorded?",
+      "who_can_answer": "operations (who keeps the source)"
+     },
+     {
+      "label": "po_to_receipt",
+      "from_types": [
+       "PurchaseOrder"
+      ],
+      "link_types": [
+       "Receipt.receives"
+      ],
+      "through": [
+       "PurchaseOrder.same_record_as"
+      ],
+      "gap": "receipt_not_recorded",
+      "question": "Which receiving record (a Business Central posted receipt, a warehouse slip or a FileMaker entry) shows the actual receipt of a purchase order, and does it name the order?",
+      "who_can_answer": "operations (who keeps the source)"
+     },
+     {
+      "label": "po_to_invoice",
+      "from_types": [
+       "PurchaseOrder"
+      ],
+      "link_types": [
+       "PurchaseInvoice.invoices",
+       "PurchaseInvoice.names_order"
+      ],
+      "through": [
+       "PurchaseOrder.same_record_as"
+      ],
+      "gap": "purchase_invoice_not_recorded"
+     },
+     {
+      "label": "invoice_payment",
+      "from_types": [
+       "PurchaseOrder"
+      ],
+      "link_types": [
+       "Payment.applies_to_purchase_invoice"
+      ],
+      "through": [
+       "PurchaseOrder.same_record_as",
+       "PurchaseInvoice.invoices",
+       "PurchaseInvoice.names_order"
+      ],
+      "depth": 2,
+      "gap": "payment_not_recorded"
+     },
+     {
+      "label": "deposit_to_po",
+      "from_types": [
+       "PurchaseOrder"
+      ],
+      "unbound": {
+       "reason": "deposit_link_source_unknown",
+       "state": "unknown",
+       "detail": "no source the Workbench reads is known to link a supplier deposit to the purchase order or proforma it pays; a payment is never matched to an order by supplier, date or amount"
+      },
+      "question": "How is a supplier deposit recorded in Business Central (prepayment invoice, or a vendor payment line with which applies-to or external document number), and does it name the PO?",
+      "who_can_answer": "operations (who keeps the source)"
+     },
+     {
+      "label": "supply_agreement",
+      "from_types": [
+       "Quote",
+       "SalesOrder"
+      ],
+      "unbound": {
+       "reason": "supply_agreement_source_unknown",
+       "state": "unknown",
+       "detail": "no source the Workbench reads is known to hold the signed supply agreement or the payment terms and deposit rules it sets for the customer"
+      },
+      "question": "Where are signed MSAs and supply agreements stored, and who records their payment terms and deposit rules against the customer?",
+      "who_can_answer": "operations (who keeps the source)"
+     },
+     {
+      "label": "won_tier_to_order_line",
+      "from_types": [
+       "Quote"
+      ],
+      "unbound": {
+       "reason": "won_tier_not_recorded",
+       "state": "absent_in_source",
+       "detail": "the Portal's quote conversion copies every quoted volume tier to the order and records no tier as the one won, so no order line is linked to a won tier"
+      },
+      "question": "When a quote offers several volume tiers, where is the tier the customer accepted recorded?",
+      "who_can_answer": "operations (who keeps the source)"
+     },
+     {
+      "label": "legacy_quote_screens",
+      "from_types": [
+       "Quote",
+       "SalesOrder"
+      ],
+      "unbound": {
+       "reason": "legacy_quote_source_not_ingested",
+       "state": "not_ingested",
+       "detail": "quotes priced and orders entered in FileMaker layouts or Sage screens are not read, so a link recorded only there is not seen"
+      },
+      "question": "Which FileMaker layouts and Sage screens are still used to price quotes or enter orders, and for which customers?",
+      "who_can_answer": "operations (who keeps the source)"
+     },
+     {
+      "label": "complaint_to_resolution",
+      "from_types": [
+       "SalesOrder",
+       "PurchaseOrder"
+      ],
+      "unbound": {
+       "reason": "complaint_source_unknown",
+       "state": "unknown",
+       "detail": "no source the Workbench reads is known to record customer complaints or their resolution against an order"
+      },
+      "question": "Where is a customer complaint and its resolution recorded, and which inventory transaction posts a replacement or return?",
+      "who_can_answer": "operations (who keeps the source)"
+     }
+    ]
+   },
+   "description": "Each recorded link of the chain, and a typed gap with its owner question for each link no source records."
+  }
+ ]
+}

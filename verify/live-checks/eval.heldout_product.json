@@ -1,0 +1,198 @@
+{
+ "id": "eval.heldout_product",
+ "description": "Product scored on the frozen held-out set (10-DECISION 8; decision 2026-10-01-tools-shape item 7, the untemplated held-out pass rate; ENG-12). The one baseline scorer (scripts/eval_dev_baseline.py, split held_out) loads the set eval.heldout froze (run id heldout-v2, in the host state directory) only through evals.runner's held-out load: the credentialed environment, PLX_EVAL_HELD_OUT_DIR outside Git holding that state directory, every item schema-valid and none sharing a document, root or identifier with a committed dev or exposed item. It refuses (exit 3, refused a code) a set that is not frozen, differs from its digest list or was frozen from another source, or shares a partition key with a live dev run's manifest. The standard items run on the deterministic investigation path over the runner session's mirror and projection (as eval.dev_baseline); each metamorphic variant runs on that run's own mirror replayed perturbed as the item records (the oracle's own transform, evals/oracle/perturb.py portal_port, through the GET-only client into a mirror and projection of its own, its clock moved with the replica time): one perturbed product per perturbation, never a second read of any source. Only the Portal is perturbed, so a variant whose label reads BC or a document is refused by admission (perturbed_reads_not_served), counted in admission_refused. Run pins read no oracle: each checks the frozen label's value against the pinned mirror row (pin_drift when the source has since moved). stdout: eval.held_out (the pass rate), eval.by_family, eval.by_variant, eval.answer, counts and the set hash; aggregates and codes only, never an item id, a value, a label or a per-item row.",
+ "source": "portal-workbench-api+business-central",
+ "cadence": "daily",
+ "requires": [
+  "eval.heldout",
+  "mirror.full_coverage",
+  "ontology.session_projection"
+ ],
+ "answer_source": true,
+ "command": [
+  "python3",
+  "-m",
+  "scripts.eval_dev_baseline",
+  "heldout",
+  "--source",
+  "live",
+  "--run-id",
+  "heldout-v2",
+  "--work-dir",
+  "{tmp}/work",
+  "--mirror-db",
+  "{session_state}/mirror.sqlite",
+  "--session-projection",
+  "{session_state}/projection",
+  "--total-budget-seconds",
+  "1800",
+  "--run-reserve-seconds",
+  "600",
+  "--min-items",
+  "20",
+  "--link-depth",
+  "2"
+ ],
+ "timeout_seconds": 2400,
+ "requires_env": [
+  "BC_TENANT_ID",
+  "BC_CLIENT_ID",
+  "BC_CLIENT_SECRET",
+  "BC_ENVIRONMENT",
+  "PLX_WORKBENCH_API_KEY",
+  "PLX_EVAL_HELD_OUT_DIR"
+ ],
+ "optional_env": [
+  "PLX_WORKBENCH_API_URL"
+ ],
+ "session_audience": {
+  "/mirror.sqlite": {
+   "sources": [
+    "portal-workbench-api"
+   ],
+   "env": [
+    "PLX_WORKBENCH_API_KEY",
+    "PLX_WORKBENCH_API_URL"
+   ],
+   "reader": "service"
+  },
+  "/projection": {
+   "sources": [
+    "business-central",
+    "portal-workbench-api"
+   ],
+   "env": [
+    "BC_CLIENT_ID",
+    "BC_CLIENT_SECRET",
+    "BC_ENVIRONMENT",
+    "BC_TENANT_ID",
+    "PLX_WORKBENCH_API_KEY",
+    "PLX_WORKBENCH_API_URL"
+   ],
+   "reader": "service"
+  }
+ },
+ "session_reads": [
+  "/mirror.sqlite",
+  "/projection"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "run_id",
+   "set.set_sha256",
+   "counts.measured",
+   "counts.variants",
+   "counts.variants_measured",
+   "counts.refused",
+   "admission_refused",
+   "variant_products",
+   "eval.held_out",
+   "eval.attempted",
+   "eval.by_family",
+   "eval.by_variant",
+   "eval.by_reason",
+   "eval.answer",
+   "eval.pinned",
+   "eval.pin_drift",
+   "eval.blocked",
+   "eval.blocked_share",
+   "eval.fail_reasons",
+   "product"
+  ],
+  "json_equals": {
+   "adapter_status": "live-unverified",
+   "evidence_label": "live-read",
+   "values_published": false,
+   "eval.split": "held_out",
+   "set.run_id": "heldout-v2",
+   "eval.llm_calls": 0,
+   "eval.complete": true
+  },
+  "json_min": {
+   "counts.measured": 20,
+   "counts.variants_measured": 1,
+   "product.objects": 1,
+   "eval.answer.accuracy_rate": 0.8,
+   "eval.answer.coverage_rate": 0.8
+  },
+  "json_empty": [
+   "eval.fail_reasons"
+  ],
+  "json_absent": [
+   "items",
+   "item_rows"
+  ],
+  "json_max": {
+   "eval.answer.confident_unsupported_rate": 0.02
+  }
+ },
+ "expect_blocked": {
+  "exit_code": 0,
+  "json_fields": [
+   "run_id",
+   "eval.pass_rule",
+   "eval.answer",
+   "eval.measured",
+   "eval.blocked_upstream",
+   "blocked_upstream",
+   "eval.blocked_share",
+   "eval.fail_reasons"
+  ],
+  "json_equals": {
+   "adapter_status": "live-unverified",
+   "evidence_label": "live-read",
+   "values_published": false,
+   "eval.split": "held_out",
+   "eval.llm_calls": 0,
+   "eval.complete": true
+  },
+  "json_min": {
+   "eval.measured": 1,
+   "product.objects": 1,
+   "eval.answer.accuracy_rate": 0.8,
+   "eval.answer.coverage_rate": 0.8
+  },
+  "json_empty": [
+   "eval.fail_reasons"
+  ],
+  "json_absent": [
+   "items",
+   "item_rows"
+  ],
+  "json_max": {
+   "eval.answer.confident_unsupported_rate": 0.02
+  }
+ },
+ "blocked_when": "outage_unmeasured",
+ "record": [
+  "run_id",
+  "set",
+  "counts",
+  "eval",
+  "product",
+  "sources",
+  "admission_refused",
+  "variant_products",
+  "refused",
+  "blocked_upstream"
+ ],
+ "record_keys": [
+  "set",
+  "counts",
+  "eval",
+  "product",
+  "sources",
+  "admission_refused",
+  "variant_products"
+ ],
+ "record_enums": [
+  "run_id",
+  "set",
+  "eval",
+  "sources",
+  "refused",
+  "variant_products"
+ ],
+ "notes": "live-unverified until a passing live-check result; the keyless counterpart is the fixture held-out set (python3 -m scripts.eval_oracle_dev heldout --source fixture, then python3 -m scripts.eval_dev_baseline heldout --source fixture under a held-out directory; tests/test_eval_dev_baseline.py HeldOutProductTests). Daily and bounded: no oracle generation (the set is frozen), so the run spends its 1800 s budget on the product: the session mirror and projection (or its own build, which stops 600 s before the end), the standard items, then one perturbed product per variant group, the transforms in turn, each a delta over the base product (a copy of its mirror with only the relations the perturbation touches replayed, projected incrementally over the base generation, so only those relations' units rebuild); the 2400 s timeout leaves the watchdog its 60 s grace. eval.heldout measured 699 s (heldout-v1), 2008 s and 1878 s (heldout-v2 generations, 2026-10-11/12): this check reads no source of its own and runs inside one such budget. A group the budget does not reach is counted in variant_products not_reached and leaves eval.complete false (exit 3): measured, never assumed. Skipped until the credentialed environment sets PLX_EVAL_HELD_OUT_DIR to a directory outside Git holding the held-out state directory (the default $PLX_EVAL_HELDOUT_DIR or $XDG_STATE_HOME/plx-workbench/eval-heldout). Requires eval.heldout: no frozen set until it passes once (heldout-v2 has not frozen yet: its fresh generations were 239/240 deterministic); a missing set is refused heldout_set_not_frozen. Known limits: a repeated_event variant whose cited row is delivered twice cannot be pinned (the runner's run pin reads key_not_unique: pin_drift, excluded from every rate); variants reading BC or documents are not scored (admission_refused perturbed_reads_not_served); the deterministic path still counts plan-less families needs_agent. B1: the check passes only when eval.answer meets accuracy_rate (correct/answered) >= 0.8, coverage_rate (answered/ran) >= 0.8 and confident_unsupported_rate (over answered) <= 0.02 (scripts.eval_dev_baseline answer_block via evals.score.answer_rates); a Portal-outage run is judged on the items that ran with the same rates."
+}

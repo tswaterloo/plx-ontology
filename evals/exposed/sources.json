@@ -1,0 +1,479 @@
+{
+ "schema": "plx-eval-exposed-sources/v1",
+ "note": "Identity of the originals the exposed eval items (evals/exposed/dev-*.json) cite, copied from the source records (data, not authority): R = Ricardo/Vince consolidated originals, S = SoapBox archive manifest. Observed through the connectors on 2026-10-02 (R original_access_proof); never read from this repository's runtime. scripts/eval_exposed_sources.py compares what the GET-only Graph readers return with these pins (verify/live-checks/case.exposed_originals.json, case.exposed_mail.json). sha256_basis: bytes = SHA-256 of the downloaded file bytes; utf8_text = SHA-256 of the retrieved UTF-8 text (R says each byte length equals its metadata size); null = no SHA-256 pinned (identity by eTag and quickXorHash only). Mail body_sha256 is the connector's full-body hash and is not comparable with the GET-only reader's text body; mail ids are REST ids (not immutable ids) and the mailbox is not recorded in R, so messages are located by mailbox + received time and attachments by name + byte SHA-256.",
+ "evidence_records": {
+  "R": {
+   "path": "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json",
+   "git_blob_sha": "6d0305f500f12bc025215e25eabe275214039286",
+   "content_sha256": "a5f4e154a62be713c0ac19421c1716212f85d25d08939203dfcc5ac9ec3e6949",
+   "branch": "source-records"
+  },
+  "S": {
+   "path": "context/2e7013f1dca3bc5fad6f27dbf887d55a4f784e1e37bef0eb8a53ea1613b78d66.json",
+   "git_blob_sha": "475889a9c2b557ce56daa9791b7e09149bde177e",
+   "content_sha256": "d58dff9b872e1401ca3ac80f4e08896beaa26486728fe6f414c85a4d94f9652b",
+   "branch": "source-records"
+  }
+ },
+ "observed_at": "2026-10-02T18:07:03.017Z",
+ "drive_items": [
+  {
+   "source_id": "qrm-liquid-spec",
+   "site": "QCQA",
+   "drive_id": "b!ubhBC91PLkOOCpyUeCUJMLOi0jT3ADZHi0QxVdjuwxvq6wHrgPmdQqNrzbAMxVqk",
+   "item_id": "01CXTNGXFQ4VPGS5YTORB3FB4VWF23YWFZ",
+   "e_tag": "\"{695EE5B0-1377-4374-B287-95B175BC58B9},1\"",
+   "name": "RMP-0425 CM Glucan Liquid Specifications.pdf",
+   "bytes": 228686,
+   "modified_at": "2026-09-29T16:06:51Z",
+   "sha256": null,
+   "sha256_basis": null,
+   "quick_xor_hash": "+B2wlcrCyTZ5rBFivc18WhOwcP8=",
+   "url": "https://petrasoap.sharepoint.com/sites/QCQA/Shared%20Documents/QA%20Documents/2026/Quality%20Risk%20Management/QRM-26037/RMP-0425%20CM%20Glucan%20Liquid%20Specifications.pdf",
+   "evidence": "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/original_source_revisions/qrm/qrm_files/0"
+  },
+  {
+   "source_id": "qrm-granulate-sds",
+   "site": "QCQA",
+   "drive_id": "b!ubhBC91PLkOOCpyUeCUJMLOi0jT3ADZHi0QxVdjuwxvq6wHrgPmdQqNrzbAMxVqk",
+   "item_id": "01CXTNGXHHJYHTH6S3KZD3JXQHBQ442AAC",
+   "e_tag": "\"{330F4EE7-5BFA-4756-B4DE-070C39CD0002},1\"",
+   "name": "CM-Glucan Granulate SDS Storage Conditions.pdf",
+   "bytes": 200866,
+   "modified_at": "2026-09-29T15:57:50Z",
+   "sha256": null,
+   "sha256_basis": null,
+   "quick_xor_hash": "4iwmSMSkxG/ZeB1DprAPW/AKuNM=",
+   "url": "https://petrasoap.sharepoint.com/sites/QCQA/Shared%20Documents/QA%20Documents/2026/Quality%20Risk%20Management/QRM-26037/CM-Glucan%20Granulate%20SDS%20Storage%20Conditions.pdf",
+   "evidence": "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/original_source_revisions/qrm/qrm_files/1"
+  },
+  {
+   "source_id": "qrm-granulate-coa",
+   "site": "QCQA",
+   "drive_id": "b!ubhBC91PLkOOCpyUeCUJMLOi0jT3ADZHi0QxVdjuwxvq6wHrgPmdQqNrzbAMxVqk",
+   "item_id": "01CXTNGXGUG3COXHDRFJCIVLHGYTOFABP2",
+   "e_tag": "\"{EBC436D4-719C-442A-8AAC-E6C4DC5005FA},1\"",
+   "name": "CM-Glucan Granulate COA.pdf",
+   "bytes": 464148,
+   "modified_at": "2026-09-29T15:58:16Z",
+   "sha256": "e5e53a5214c33538cc06af248640b424a203dd2933aee24c9702a1250d8f122f",
+   "sha256_basis": "bytes",
+   "quick_xor_hash": "R/6DhgCd4tSOSkq/qPYgIT5rfq8=",
+   "url": "https://petrasoap.sharepoint.com/sites/QCQA/Shared%20Documents/QA%20Documents/2026/Quality%20Risk%20Management/QRM-26037/CM-Glucan%20Granulate%20COA.pdf",
+   "evidence": "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/original_source_revisions/qrm/qrm_files/2"
+  },
+  {
+   "source_id": "qrm-assessment",
+   "site": "QCQA",
+   "drive_id": "b!ubhBC91PLkOOCpyUeCUJMLOi0jT3ADZHi0QxVdjuwxvq6wHrgPmdQqNrzbAMxVqk",
+   "item_id": "01CXTNGXHDAW73F2MXQVGLCOVIU3VFPQYQ",
+   "e_tag": "\"{B2BF05E3-97E9-4C85-B13A-A8A6EA57C310},47\"",
+   "name": "26037.docx",
+   "bytes": 249728,
+   "modified_at": "2026-09-29T18:35:47Z",
+   "sha256": "97182d9439a8619adeba7da17da631fcb0183c083068e587cc302a121a06645b",
+   "sha256_basis": "bytes",
+   "quick_xor_hash": "XpERze5dX5mvWAQ+0fBhI9m7bqE=",
+   "url": "https://petrasoap.sharepoint.com/sites/QCQA/_layouts/15/Doc.aspx?sourcedoc=%7BB2BF05E3-97E9-4C85-B13A-A8A6EA57C310%7D&file=26037.docx&action=default&mobileredirect=true",
+   "evidence": "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/original_source_revisions/qrm/qrm_files/3"
+  },
+  {
+   "source_id": "process-map:ontology-file-intake/Ontology-File-Intake-Map.html",
+   "site": "Operations",
+   "drive_id": "b!21cDMtYWPk-2Su5-pozouhzo_iLz19dAtUMJDRf47JSsDBDlNOUZRadmEvEPqrmg",
+   "item_id": "01TBGFSAS7QUUE7Q7BUFEJDSA5ACNG4DVG",
+   "e_tag": "\"{4F28855F-E1C3-48A1-91C8-1D009A6E0EA6},1\"",
+   "name": "Ontology-File-Intake-Map.html",
+   "bytes": 56855,
+   "modified_at": "2026-10-02T17:45:45Z",
+   "sha256": "fa7bb1489b07ce1f295dc61ecd2ddae3a65efa456bfdc8cf5307919a1f1a1233",
+   "sha256_basis": "utf8_text",
+   "quick_xor_hash": "0mqsRN6u2gLY9z8k59XPv51Wdm8=",
+   "url": "https://petrasoap.sharepoint.com/sites/Operations/Shared%20Documents/Ricardo/process-maps/ontology-file-intake/Ontology-File-Intake-Map.html",
+   "evidence": "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/source_manifest/0"
+  },
+  {
+   "source_id": "process-map:ontology-file-intake/ontology-file-intake-map-ontology.csv",
+   "site": "Operations",
+   "drive_id": "b!21cDMtYWPk-2Su5-pozouhzo_iLz19dAtUMJDRf47JSsDBDlNOUZRadmEvEPqrmg",
+   "item_id": "01TBGFSAR73EG2IV5ZZFF3652IOKDHOMYY",
+   "e_tag": "\"{A40DD93F-B957-4BC9-BF77-487286773318},1\"",
+   "name": "ontology-file-intake-map-ontology.csv",
+   "bytes": 2990,
+   "modified_at": "2026-10-02T17:45:45Z",
+   "sha256": "cd6492823bf166f7b199cc97bb97290b68694568925ba943efe28cae2f202ea4",
+   "sha256_basis": "utf8_text",
+   "quick_xor_hash": "aXpvXDDHOC6KqhqldufUegbkKjM=",
+   "url": "https://petrasoap.sharepoint.com/sites/Operations/_layouts/15/Doc.aspx?sourcedoc=%7BA40DD93F-B957-4BC9-BF77-487286773318%7D&file=ontology-file-intake-map-ontology.csv&action=default&mobileredirect=true",
+   "evidence": "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/source_manifest/1"
+  },
+  {
+   "source_id": "process-map:ontology-file-intake/ontology-file-intake-map-ontology.json",
+   "site": "Operations",
+   "drive_id": "b!21cDMtYWPk-2Su5-pozouhzo_iLz19dAtUMJDRf47JSsDBDlNOUZRadmEvEPqrmg",
+   "item_id": "01TBGFSAWHTXVCPTUYNJGIXB3D2PMSK5E2",
+   "e_tag": "\"{27EA9DC7-98CE-4C6A-8B87-63D3D925749A},1\"",
+   "name": "ontology-file-intake-map-ontology.json",
+   "bytes": 10118,
+   "modified_at": "2026-10-02T17:45:45Z",
+   "sha256": "0f27a8869d26dc1ca9bbcbc05dc54538b2db5393ee19e74bd74ff57d095a3be1",
+   "sha256_basis": "utf8_text",
+   "quick_xor_hash": "GX7VLsVKOcD+LDqjTqvVQN9dTHc=",
+   "url": "https://petrasoap.sharepoint.com/sites/Operations/Shared%20Documents/Ricardo/process-maps/ontology-file-intake/ontology-file-intake-map-ontology.json",
+   "evidence": "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/source_manifest/2"
+  },
+  {
+   "source_id": "process-map:ontology-file-intake/spec.json",
+   "site": "Operations",
+   "drive_id": "b!21cDMtYWPk-2Su5-pozouhzo_iLz19dAtUMJDRf47JSsDBDlNOUZRadmEvEPqrmg",
+   "item_id": "01TBGFSAXGFQ4VCOV2NZFZEQCYTENEMKCH",
+   "e_tag": "\"{51392CE6-BA3A-4B6E-9240-58991A462847},1\"",
+   "name": "spec.json",
+   "bytes": 34266,
+   "modified_at": "2026-10-02T17:45:46Z",
+   "sha256": "2d73d58f0bc2e4dd76ae1c9a75d467cd6455f712359b98b8ab3b42bbbe3c4bf4",
+   "sha256_basis": "utf8_text",
+   "quick_xor_hash": "0pzTzQ69Z6qCXwg6kQorlQ733KQ=",
+   "url": "https://petrasoap.sharepoint.com/sites/Operations/Shared%20Documents/Ricardo/process-maps/ontology-file-intake/spec.json",
+   "evidence": "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/source_manifest/3"
+  },
+  {
+   "source_id": "process-map:order-lifecycle-cost/Order-Lifecycle-Cost-Map.html",
+   "site": "Operations",
+   "drive_id": "b!21cDMtYWPk-2Su5-pozouhzo_iLz19dAtUMJDRf47JSsDBDlNOUZRadmEvEPqrmg",
+   "item_id": "01TBGFSAT5KUB55O6EW5B3VO2NGZB4TFOI",
+   "e_tag": "\"{DE03557D-C4BB-43B7-BABB-4D3643C995C8},1\"",
+   "name": "Order-Lifecycle-Cost-Map.html",
+   "bytes": 46894,
+   "modified_at": "2026-10-02T17:45:46Z",
+   "sha256": "a1613103b4fd32dd7333537ce62d501663acea6d2bc9f9688c8beefa61638ad5",
+   "sha256_basis": "utf8_text",
+   "quick_xor_hash": "OAgCRNvC39BpWNXi/aQx5iAvjpE=",
+   "url": "https://petrasoap.sharepoint.com/sites/Operations/Shared%20Documents/Ricardo/process-maps/order-lifecycle-cost/Order-Lifecycle-Cost-Map.html",
+   "evidence": "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/source_manifest/4"
+  },
+  {
+   "source_id": "process-map:order-lifecycle-cost/order-lifecycle-cost-map-ontology.csv",
+   "site": "Operations",
+   "drive_id": "b!21cDMtYWPk-2Su5-pozouhzo_iLz19dAtUMJDRf47JSsDBDlNOUZRadmEvEPqrmg",
+   "item_id": "01TBGFSAWXBNWRG3Z47BEL2XKLQZYFP7CW",
+   "e_tag": "\"{136D0BD7-3C6F-48F8-BD5D-4B867057FC56},1\"",
+   "name": "order-lifecycle-cost-map-ontology.csv",
+   "bytes": 2088,
+   "modified_at": "2026-10-02T17:45:46Z",
+   "sha256": "b969ad4688606e5c190ffaf4921078ee201fbaebfc3e65afe3d0ffb23d3b8826",
+   "sha256_basis": "utf8_text",
+   "quick_xor_hash": "gcQIhdd404626dxGKXa7vokT6vw=",
+   "url": "https://petrasoap.sharepoint.com/sites/Operations/_layouts/15/Doc.aspx?sourcedoc=%7B136D0BD7-3C6F-48F8-BD5D-4B867057FC56%7D&file=order-lifecycle-cost-map-ontology.csv&action=default&mobileredirect=true",
+   "evidence": "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/source_manifest/5"
+  },
+  {
+   "source_id": "process-map:order-lifecycle-cost/order-lifecycle-cost-map-ontology.json",
+   "site": "Operations",
+   "drive_id": "b!21cDMtYWPk-2Su5-pozouhzo_iLz19dAtUMJDRf47JSsDBDlNOUZRadmEvEPqrmg",
+   "item_id": "01TBGFSAW6AUYGYINWGJE3MV3ZZ5DZ56LX",
+   "e_tag": "\"{6C3005DE-B621-4932-B657-79CF479EF977},1\"",
+   "name": "order-lifecycle-cost-map-ontology.json",
+   "bytes": 8405,
+   "modified_at": "2026-10-02T17:45:46Z",
+   "sha256": "5d5f85d91d73da9d43399b457c62cc0b38c824483b25f6e61297491044a40ccf",
+   "sha256_basis": "utf8_text",
+   "quick_xor_hash": "ja4gjHfA3Gu6RifOPvSXfQR/Ca8=",
+   "url": "https://petrasoap.sharepoint.com/sites/Operations/Shared%20Documents/Ricardo/process-maps/order-lifecycle-cost/order-lifecycle-cost-map-ontology.json",
+   "evidence": "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/source_manifest/6"
+  },
+  {
+   "source_id": "process-map:order-lifecycle-cost/spec.json",
+   "site": "Operations",
+   "drive_id": "b!21cDMtYWPk-2Su5-pozouhzo_iLz19dAtUMJDRf47JSsDBDlNOUZRadmEvEPqrmg",
+   "item_id": "01TBGFSAXMHFOH32SZEBDYMZE4UCB5ZOPR",
+   "e_tag": "\"{7D5C39EC-59EA-4720-8664-9CA083DCB9F1},1\"",
+   "name": "spec.json",
+   "bytes": 25808,
+   "modified_at": "2026-10-02T17:45:46Z",
+   "sha256": "cd2043e3d05f580867789e80dab7b7cd9582c2652b38193a7f379f7888a0345d",
+   "sha256_basis": "utf8_text",
+   "quick_xor_hash": "TgdEkMwjSa9g/JZmrZv58kNzV9k=",
+   "url": "https://petrasoap.sharepoint.com/sites/Operations/Shared%20Documents/Ricardo/process-maps/order-lifecycle-cost/spec.json",
+   "evidence": "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/source_manifest/7"
+  },
+  {
+   "source_id": "process-map:po-delivery-window/PO-Delivery-Window-Map.html",
+   "site": "Operations",
+   "drive_id": "b!21cDMtYWPk-2Su5-pozouhzo_iLz19dAtUMJDRf47JSsDBDlNOUZRadmEvEPqrmg",
+   "item_id": "01TBGFSARMKUES2VJIDVBLDQSSTTWYW6P5",
+   "e_tag": "\"{2D09552C-2855-421D-B1C2-529CED8B79FD},1\"",
+   "name": "PO-Delivery-Window-Map.html",
+   "bytes": 47504,
+   "modified_at": "2026-10-02T17:45:47Z",
+   "sha256": "ae557cae96709e19a808f2ec1afdc1b637e1466419f21143987ce23c4645ce4d",
+   "sha256_basis": "utf8_text",
+   "quick_xor_hash": "uWQeB8rZfdEXYf6959WF9+vKScY=",
+   "url": "https://petrasoap.sharepoint.com/sites/Operations/Shared%20Documents/Ricardo/process-maps/po-delivery-window/PO-Delivery-Window-Map.html",
+   "evidence": "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/source_manifest/8"
+  },
+  {
+   "source_id": "process-map:po-delivery-window/po-delivery-window-map-ontology.csv",
+   "site": "Operations",
+   "drive_id": "b!21cDMtYWPk-2Su5-pozouhzo_iLz19dAtUMJDRf47JSsDBDlNOUZRadmEvEPqrmg",
+   "item_id": "01TBGFSAQJPBXQZIM745HZPIMDCQGNMWE6",
+   "e_tag": "\"{0C6F7809-9FA1-4FE7-97A1-83140CD6589E},1\"",
+   "name": "po-delivery-window-map-ontology.csv",
+   "bytes": 1741,
+   "modified_at": "2026-10-02T17:45:46Z",
+   "sha256": "3a374614172af5b9ae2998a97a69c14ede0e08e387ca72f77e68a4de7bdf954f",
+   "sha256_basis": "utf8_text",
+   "quick_xor_hash": "jBo8aQJM7GoO78n1Eli0TB9rnq0=",
+   "url": "https://petrasoap.sharepoint.com/sites/Operations/_layouts/15/Doc.aspx?sourcedoc=%7B0C6F7809-9FA1-4FE7-97A1-83140CD6589E%7D&file=po-delivery-window-map-ontology.csv&action=default&mobileredirect=true",
+   "evidence": "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/source_manifest/9"
+  },
+  {
+   "source_id": "process-map:po-delivery-window/po-delivery-window-map-ontology.json",
+   "site": "Operations",
+   "drive_id": "b!21cDMtYWPk-2Su5-pozouhzo_iLz19dAtUMJDRf47JSsDBDlNOUZRadmEvEPqrmg",
+   "item_id": "01TBGFSAW22MMJHYSKIZGJR3M2WT4XJ63R",
+   "e_tag": "\"{9318D3DA-4AE2-4C46-98ED-9AB4F974FB71},1\"",
+   "name": "po-delivery-window-map-ontology.json",
+   "bytes": 7071,
+   "modified_at": "2026-10-02T17:45:46Z",
+   "sha256": "5732c3b783c0b5a63c54e4b68815d2f5afcecccaaaefcba1a185624a5ce64ba2",
+   "sha256_basis": "utf8_text",
+   "quick_xor_hash": "9PNQ+zrUDtsKKB4OXFDY0JjUr8c=",
+   "url": "https://petrasoap.sharepoint.com/sites/Operations/Shared%20Documents/Ricardo/process-maps/po-delivery-window/po-delivery-window-map-ontology.json",
+   "evidence": "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/source_manifest/10"
+  },
+  {
+   "source_id": "process-map:po-delivery-window/spec.json",
+   "site": "Operations",
+   "drive_id": "b!21cDMtYWPk-2Su5-pozouhzo_iLz19dAtUMJDRf47JSsDBDlNOUZRadmEvEPqrmg",
+   "item_id": "01TBGFSAWMAIX5CCINKBDJI7JRT7DAGQ36",
+   "e_tag": "\"{D12F02CC-0D09-4650-947D-319FC603437E},1\"",
+   "name": "spec.json",
+   "bytes": 27230,
+   "modified_at": "2026-10-02T17:45:46Z",
+   "sha256": "7bf3532c019c2e4e3d85f4cb96ebcff8670d7c54f3a90b5f7012b2419075098d",
+   "sha256_basis": "utf8_text",
+   "quick_xor_hash": "QD2agE96msk1ZN6VIfS6HCbKK9o=",
+   "url": "https://petrasoap.sharepoint.com/sites/Operations/Shared%20Documents/Ricardo/process-maps/po-delivery-window/spec.json",
+   "evidence": "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/source_manifest/11"
+  },
+  {
+   "source_id": "soapbox-archive",
+   "site": "AGENTS",
+   "drive_id": "b!W4ssx17NiUipzjgFW2Rt1fW8RXEL_4xBgKvtLTtDIYNO-gr9fxAMQ7PHzLrczCuH",
+   "item_id": "01RVPYB2FYNVL5CSAAMBCLSU77JM3ZRS3M",
+   "e_tag": "\"{D1576DB8-0048-4460-B953-FF4B3798CB6C},2\"",
+   "name": "soapbox-packaging-examples.zip",
+   "bytes": 31198030,
+   "modified_at": "2026-09-30T20:57:09Z",
+   "sha256": "0301f1d3b247349010120c74388e874be05650767b11a029052c34c995187c61",
+   "sha256_basis": "bytes",
+   "quick_xor_hash": null,
+   "url": "https://petrasoap.sharepoint.com/sites/AGENTS/Shared%20Documents/Ontology%20UseCases/soapbox-packaging-examples.zip",
+   "evidence": "context/2e7013f1dca3bc5fad6f27dbf887d55a4f784e1e37bef0eb8a53ea1613b78d66.json#/source_archive"
+  }
+ ],
+ "archive_members": [
+  {
+   "source_id": "soap-deposit-export",
+   "archive": "soapbox-archive",
+   "member": "SoapBox Packaging Procure-to-GL Examples/B SoapBox x Lifetime printed bottles/12 Deposit on PO5447 (Sep 2026)/2026-09-23 Deposit sent to Somewang (email, wire report removed).html",
+   "bytes": 32330,
+   "sha256": "cb8d80cd5e3a14bc6c9a98a9604095f7c1b4a1708ab233e656817dfa36e2bb09",
+   "evidence": "context/2e7013f1dca3bc5fad6f27dbf887d55a4f784e1e37bef0eb8a53ea1613b78d66.json#/selected_source_manifest/0"
+  },
+  {
+   "source_id": "soap-pricing-mail",
+   "archive": "soapbox-archive",
+   "member": "SoapBox Packaging Procure-to-GL Examples/B SoapBox x Lifetime printed bottles/11 PO5447 and vendor PI (Sep 2026)/2026-09-24 Somewang pricing, pack-out and lead time.msg",
+   "bytes": 303616,
+   "sha256": "f10591a2e33ecdba8452054c2faeaef4af4431984f4b592b195e474064df5f0c",
+   "evidence": "context/2e7013f1dca3bc5fad6f27dbf887d55a4f784e1e37bef0eb8a53ea1613b78d66.json#/selected_source_manifest/1",
+   "native_email_message_id": "<533205582342E6B2DB9182B6BF87F4AC9360AAA2F@SOMEWANG.COM>"
+  },
+  {
+   "source_id": "soap-pi-pdf",
+   "archive": "soapbox-archive",
+   "member": "SoapBox Packaging Procure-to-GL Examples/B SoapBox x Lifetime printed bottles/11 PO5447 and vendor PI (Sep 2026)/PI-SWC024613 proforma invoice (file named PI-SWC025240, updated 2026-09-24).pdf",
+   "bytes": 215700,
+   "sha256": "442664a40f5d38eeebd547e9f1425683624a28e7f34aa0797cd096e29f0edf5a",
+   "evidence": "context/2e7013f1dca3bc5fad6f27dbf887d55a4f784e1e37bef0eb8a53ea1613b78d66.json#/selected_source_manifest/2"
+  },
+  {
+   "source_id": "soap-po-issued-mail",
+   "archive": "soapbox-archive",
+   "member": "SoapBox Packaging Procure-to-GL Examples/B SoapBox x Lifetime printed bottles/11 PO5447 and vendor PI (Sep 2026)/2026-09-14 PO5447 issued - Ross to Vince.eml",
+   "bytes": 4189302,
+   "sha256": "4f3031d7bf72f9fce1d2b8a0b1bc1a406ea0e37e32c0ea57aeaa5daf232c1655",
+   "evidence": "context/2e7013f1dca3bc5fad6f27dbf887d55a4f784e1e37bef0eb8a53ea1613b78d66.json#/selected_source_manifest/3",
+   "native_email_message_id": "<YT1PR01MB92114D4256051D97C680A960D7BB2@YT1PR01MB9211.CANPRD01.PROD.OUTLOOK.COM>"
+  },
+  {
+   "source_id": "soap-pi-updated-mail",
+   "archive": "soapbox-archive",
+   "member": "SoapBox Packaging Procure-to-GL Examples/B SoapBox x Lifetime printed bottles/11 PO5447 and vendor PI (Sep 2026)/2026-09-24 Somewang updated PI and holiday timing.msg",
+   "bytes": 588288,
+   "sha256": "5714131642de242417f412ef2a24fbf034fdf345562d3289eca4b05791c16a69",
+   "evidence": "context/2e7013f1dca3bc5fad6f27dbf887d55a4f784e1e37bef0eb8a53ea1613b78d66.json#/selected_source_manifest/4",
+   "native_email_message_id": "<465966853342E6B2DB9182B6BF87F4AC9360AAA2F@SOMEWANG.COM>"
+  },
+  {
+   "source_id": "soap-po-sent-mail",
+   "archive": "soapbox-archive",
+   "member": "SoapBox Packaging Procure-to-GL Examples/B SoapBox x Lifetime printed bottles/11 PO5447 and vendor PI (Sep 2026)/2026-09-14 PO5447 sent to Somewang.msg",
+   "bytes": 4350464,
+   "sha256": "2e456fec410ae98fd371b0d02cca764c60f5afe9b747ac00cc05c5469a4d3861",
+   "evidence": "context/2e7013f1dca3bc5fad6f27dbf887d55a4f784e1e37bef0eb8a53ea1613b78d66.json#/selected_source_manifest/5",
+   "native_email_message_id": "<YTBPR01MB235124243BFB5235A9078E9CBDBB2@YTBPR01MB2351.CANPRD01.PROD.OUTLOOK.COM>"
+  },
+  {
+   "source_id": "soap-po-pdf",
+   "archive": "soapbox-archive",
+   "member": "SoapBox Packaging Procure-to-GL Examples/B SoapBox x Lifetime printed bottles/11 PO5447 and vendor PI (Sep 2026)/PO5447 (portal PO, 0 dollar lines).pdf",
+   "bytes": 62020,
+   "sha256": "1c8df689c766e08041ab1c4ce1b55287d778c9822e96b74ba0cf8e86cf781254",
+   "evidence": "context/2e7013f1dca3bc5fad6f27dbf887d55a4f784e1e37bef0eb8a53ea1613b78d66.json#/selected_source_manifest/6"
+  },
+  {
+   "source_id": "soap-air-quote",
+   "archive": "soapbox-archive",
+   "member": "SoapBox Packaging Procure-to-GL Examples/B SoapBox x Lifetime printed bottles/08-10 Freight RFQ and forwarder quotes (Sep 2026)/Horizon quote NGB-IAD air all-in.pdf",
+   "bytes": 299227,
+   "sha256": "92092d35cb19be50d5f4e28b43dd1f918ba01caa4492eb3dce75b0597c388808",
+   "evidence": "context/2e7013f1dca3bc5fad6f27dbf887d55a4f784e1e37bef0eb8a53ea1613b78d66.json#/selected_source_manifest/7"
+  },
+  {
+   "source_id": "soap-fcl-quote",
+   "archive": "soapbox-archive",
+   "member": "SoapBox Packaging Procure-to-GL Examples/B SoapBox x Lifetime printed bottles/08-10 Freight RFQ and forwarder quotes (Sep 2026)/Horizon quote NGB-BAL FCL 40HQ destination charges.pdf",
+   "bytes": 264148,
+   "sha256": "40cc740e7185b855f4db123b3e5284dcff92e52c9eda4a8c6a61abf348d69ba7",
+   "evidence": "context/2e7013f1dca3bc5fad6f27dbf887d55a4f784e1e37bef0eb8a53ea1613b78d66.json#/selected_source_manifest/8"
+  },
+  {
+   "source_id": "soap-freight-mail",
+   "archive": "soapbox-archive",
+   "member": "SoapBox Packaging Procure-to-GL Examples/B SoapBox x Lifetime printed bottles/08-10 Freight RFQ and forwarder quotes (Sep 2026)/2026-09-29 Horizon Global freight options (RFQ thread).msg",
+   "bytes": 892928,
+   "sha256": "855712bf88c59e429cee1d79b849db41d5fdd6f6a61230cd360942b74f6fe54f",
+   "evidence": "context/2e7013f1dca3bc5fad6f27dbf887d55a4f784e1e37bef0eb8a53ea1613b78d66.json#/selected_source_manifest/9",
+   "native_email_message_id": "<202609292253121998258@hgl-china.com>"
+  },
+  {
+   "source_id": "soap-index",
+   "archive": "soapbox-archive",
+   "member": "SoapBox Packaging Procure-to-GL Examples/00 Index - start here.html",
+   "bytes": 10758,
+   "sha256": "a3d994bf731cbc43122e3802a69c679bce2af805d8ff53294b75549baba51994",
+   "evidence": "context/2e7013f1dca3bc5fad6f27dbf887d55a4f784e1e37bef0eb8a53ea1613b78d66.json#/selected_source_manifest/10"
+  }
+ ],
+ "mail_messages": [
+  {
+   "source_id": "dandy-packing-mail",
+   "message_id": "AAMkADY4MDc2NWY4LWMwMjgtNDM5Mi1iNTY2LWIwMGNmYzAxZWYwNABGAAAAAABi-q754syHRLp6yXpvmvMcBwA8fZBoqIkCSpe7VTTiwa8yAAAAAAEMAAA8fZBoqIkCSpe7VTTiwa8yAASTpimiAAA=",
+   "id_type": "rest",
+   "received_at": "2026-09-15T20:27:21Z",
+   "body_sha256": "16effced8acf141682a067c683b0717b978ce05c6c2a1c1f97c24bc913663d48",
+   "evidence": "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/original_source_revisions/receiving/messages/0"
+  },
+  {
+   "source_id": "midas-shipment-mail",
+   "message_id": "AAMkADY4MDc2NWY4LWMwMjgtNDM5Mi1iNTY2LWIwMGNmYzAxZWYwNABGAAAAAABi-q754syHRLp6yXpvmvMcBwA8fZBoqIkCSpe7VTTiwa8yAAAAAAEMAAA8fZBoqIkCSpe7VTTiwa8yAASVtQegAAA=",
+   "id_type": "rest",
+   "received_at": "2026-09-16T13:52:55Z",
+   "body_sha256": "f6ebe760a17a8567d737d7089f65ef50f8a22f7096a37dd6835e10cce511b1f3",
+   "evidence": "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/original_source_revisions/receiving/messages/1"
+  },
+  {
+   "source_id": "trc-arrival-mail",
+   "message_id": "AAMkADY4MDc2NWY4LWMwMjgtNDM5Mi1iNTY2LWIwMGNmYzAxZWYwNABGAAAAAABi-q754syHRLp6yXpvmvMcBwA8fZBoqIkCSpe7VTTiwa8yAAAAAAEMAAA8fZBoqIkCSpe7VTTiwa8yAASWF5p3AAA=",
+   "id_type": "rest",
+   "received_at": "2026-09-17T12:22:53Z",
+   "body_sha256": "05323435fbced3e00e94b1e824c434b1770af1db23f6282e515a0ea6e94f9f28",
+   "evidence": "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/original_source_revisions/receiving/messages/2"
+  },
+  {
+   "source_id": "dandy-receipt-request",
+   "message_id": "AAMkADY4MDc2NWY4LWMwMjgtNDM5Mi1iNTY2LWIwMGNmYzAxZWYwNABGAAAAAABi-q754syHRLp6yXpvmvMcBwA8fZBoqIkCSpe7VTTiwa8yAAAAAAEMAAA8fZBoqIkCSpe7VTTiwa8yAASeDQ9OAAA=",
+   "id_type": "rest",
+   "received_at": "2026-09-29T20:36:31Z",
+   "body_sha256": "daa3e8d0713e98bded929a73f2c51708f8ac515e60a39cb31388bf4d70f7a2ce",
+   "evidence": "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/original_source_revisions/receiving/messages/3"
+  },
+  {
+   "source_id": "dandy-confirmation-chase",
+   "message_id": "AAMkADY4MDc2NWY4LWMwMjgtNDM5Mi1iNTY2LWIwMGNmYzAxZWYwNABGAAAAAABi-q754syHRLp6yXpvmvMcBwA8fZBoqIkCSpe7VTTiwa8yAAAAAAEMAAA8fZBoqIkCSpe7VTTiwa8yAASexilOAAA=",
+   "id_type": "rest",
+   "received_at": "2026-09-30T15:01:40Z",
+   "body_sha256": "baaa0d507374a14449d7126e3ece5cc1a4c80480d35cf43bc6f2ff42bcd376f6",
+   "evidence": "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/original_source_revisions/receiving/messages/4"
+  },
+  {
+   "source_id": "dandy-attachment-repair",
+   "message_id": "AAMkADY4MDc2NWY4LWMwMjgtNDM5Mi1iNTY2LWIwMGNmYzAxZWYwNABGAAAAAABi-q754syHRLp6yXpvmvMcBwA8fZBoqIkCSpe7VTTiwa8yAAAAAAEMAAA8fZBoqIkCSpe7VTTiwa8yAASexilRAAA=",
+   "id_type": "rest",
+   "received_at": "2026-09-30T17:38:00Z",
+   "body_sha256": "c5acba02547bd15a02fcf403426393e295013a1d79f1e1b13df97e2f0dbb4339",
+   "evidence": "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/original_source_revisions/receiving/messages/5"
+  },
+  {
+   "source_id": "dandy-confirmation-sent",
+   "message_id": "AAMkADY4MDc2NWY4LWMwMjgtNDM5Mi1iNTY2LWIwMGNmYzAxZWYwNABGAAAAAABi-q754syHRLp6yXpvmvMcBwA8fZBoqIkCSpe7VTTiwa8yAAAAAAEMAAA8fZBoqIkCSpe7VTTiwa8yAASexilSAAA=",
+   "id_type": "rest",
+   "received_at": "2026-09-30T17:40:27Z",
+   "body_sha256": "8871bbdcc86abe80ce095e9d81396f4b2cb0246fa5d5e76d22a8832f15e26571",
+   "evidence": "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/original_source_revisions/receiving/messages/6"
+  },
+  {
+   "source_id": "dandy-unresolved-complaint",
+   "message_id": "AAMkADY4MDc2NWY4LWMwMjgtNDM5Mi1iNTY2LWIwMGNmYzAxZWYwNABGAAAAAABi-q754syHRLp6yXpvmvMcBwA8fZBoqIkCSpe7VTTiwa8yAAAAAAEMAAA8fZBoqIkCSpe7VTTiwa8yAASfqC9UAAA=",
+   "id_type": "rest",
+   "received_at": "2026-10-02T15:46:30Z",
+   "body_sha256": "24adaaede8cc447bee8a8e80ad92c41de770fb671d1d149f02e13ba3d881aacf",
+   "evidence": "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/original_source_revisions/receiving/messages/7"
+  }
+ ],
+ "mail_attachments": [
+  {
+   "source_id": "dandy-packing-workbook",
+   "message": "dandy-packing-mail",
+   "attachment_id": "AAMkADY4MDc2NWY4LWMwMjgtNDM5Mi1iNTY2LWIwMGNmYzAxZWYwNABGAAAAAABi-q754syHRLp6yXpvmvMcBwA8fZBoqIkCSpe7VTTiwa8yAAAAAAEMAAA8fZBoqIkCSpe7VTTiwa8yAASTpimiAAABEgAQACUnd0lR_1NGiUuVyu1x5ww=",
+   "name": "HQ To Petra Transfer - Packing List.xlsx",
+   "source_size_bytes": 17985,
+   "bytes": 17563,
+   "sha256": "691a8427d6db7df0057f36e29f5b3c9abc7303986450772ebe99f42c1a7c5ac2",
+   "evidence": "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/original_source_revisions/receiving/attachments/0"
+  },
+  {
+   "source_id": "trc-po-pdf",
+   "message": "trc-arrival-mail",
+   "attachment_id": "AAMkADY4MDc2NWY4LWMwMjgtNDM5Mi1iNTY2LWIwMGNmYzAxZWYwNABGAAAAAABi-q754syHRLp6yXpvmvMcBwA8fZBoqIkCSpe7VTTiwa8yAAAAAAEMAAA8fZBoqIkCSpe7VTTiwa8yAASWF5p3AAABEgAQAJawjxO22ExBkd2g65H_1rw=",
+   "name": "PO#5455_20260916723.pdf",
+   "source_size_bytes": 92295,
+   "bytes": 91944,
+   "sha256": "3a01ce39f30609ad7dfafea2fb32a8d8f77a4193681bdc679397dd03dc69540e",
+   "evidence": "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/original_source_revisions/receiving/attachments/1"
+  },
+  {
+   "source_id": "midas-packing-slip",
+   "message": "midas-shipment-mail",
+   "attachment_id": "AAMkADY4MDc2NWY4LWMwMjgtNDM5Mi1iNTY2LWIwMGNmYzAxZWYwNABGAAAAAABi-q754syHRLp6yXpvmvMcBwA8fZBoqIkCSpe7VTTiwa8yAAAAAAEMAAA8fZBoqIkCSpe7VTTiwa8yAASVtQegAAABEgAQAMDQxh_hOYpEqttxrRCKQ6Q=",
+   "name": "ROBERTET_12406623.pdf",
+   "source_size_bytes": 48720,
+   "bytes": 48476,
+   "sha256": "58f6d1690a0a3f1c8245f4e4643bf48bd6c397bcbc9d9924b8d88f5909eba9b3",
+   "evidence": "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/original_source_revisions/receiving/attachments/2"
+  },
+  {
+   "source_id": "dandy-received-pdf",
+   "message": "dandy-confirmation-sent",
+   "attachment_id": "AAMkADY4MDc2NWY4LWMwMjgtNDM5Mi1iNTY2LWIwMGNmYzAxZWYwNABGAAAAAABi-q754syHRLp6yXpvmvMcBwA8fZBoqIkCSpe7VTTiwa8yAAAAAAEMAAA8fZBoqIkCSpe7VTTiwa8yAASexilSAAABEgAQACeyiG_fzVJBnQy_D4345do=",
+   "name": "2485.pdf",
+   "source_size_bytes": 626297,
+   "bytes": 622622,
+   "sha256": "70c62b275ae3fda858c71fc4dcfa7fe784a93fb4f68e9f3ce7e33d11788aa742",
+   "evidence": "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/original_source_revisions/receiving/attachments/3"
+  }
+ ]
+}

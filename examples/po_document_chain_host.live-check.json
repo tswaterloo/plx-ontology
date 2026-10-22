@@ -1,0 +1,31 @@
+{
+ "schema": "plx-host-config/v1",
+ "note": "Host config of the case.po_document_chain live check (verify/live-checks/case.po_document_chain.json): one capture cycle of the purchase-order Portal relations through the source mirror, the BC purchaseOrders of every pinned company and the eight purchasing and operations mailboxes where a purchase order's mail lives (examples/case_mail_purchasing_capture_scope.live-check.json; the shared purchase-order inbox alone held 3 messages, so no supplier confirmation was ever captured), bounded at 600 s of mail capture per cycle (a folder the budget leaves is recorded incomplete, never complete), so the projection holds a Petra PO, its FM and BC twins and the supplier documents mailed about it (document-field links, leads). Configuration, never a grant: the audiences decide what the capture principal may read.",
+ "tenant": "plx",
+ "capture_audience": "po_document_chain_live_audience.live-check.json",
+ "live_audience": "po_document_chain_live_audience.live-check.json",
+ "mirror_audience": "po_document_chain_mirror_audience.live-check.json",
+ "portal": {
+  "relations": [
+   "public.app_purchase_order",
+   "public.app_purchase_order_line",
+   "public.app_supplier",
+   "public.app_receipt",
+   "public.generated_purchase_order",
+   "public.generated_purchase_order_item",
+   "public.receipt_packaging",
+   "public.receipt_raw_material"
+  ],
+  "budget_seconds": 900
+ },
+ "bc": {
+  "entity_sets": [
+   "purchaseOrders"
+  ],
+  "budget_seconds": 600
+ },
+ "mail": {
+  "scope": "case_mail_purchasing_capture_scope.live-check.json",
+  "budget_seconds": 600
+ }
+}

@@ -1,0 +1,111 @@
+{
+ "id": "eval.order_margin",
+ "description": "Order margin (P9, family F10) on live Business Central captures: one full GET-only capture (Production) of every pinned company's BC entity sets the ontology binds (integrations/bc_read.py CAPTURE_ENTITY_SETS: salesOrders (+ lines), salesInvoices (+ lines), salesShipments, salesCreditMemos (+ lines), customers, items, itemLedgerEntries and the rest, so a complete capture proves the BC family whole; Production is pinned to My Company alone, salesInvoices are read posted-only (status ne Draft) and the customer and vendor payment journals are captured GET-only from the same company, but order margin (revenue minus booked cost) does not consume them: unposted journal lines are not margin evidence) into {session_state}/bc-capture.sqlite, projected alone (ontology/project_bc.py BcCaptures, no Portal) into {tmp}/product; then per run up to 12 sales orders that an invoice of the same company names, drawn by a seed (the run id, live-<UTC hour>). The product answers plx.investigate family F10 (ontology/plans/order_margin.json, engine operating/order_margin.py) from the order's object through the tool table with a per-reader citation resolver over the capture; the independent oracle (evals/oracle/order_margin.py, raw captured records only, never imports ontology/) computes revenue net of the posted credit memos applied to the order's invoices, booked cost net of their item-ledger returns and margin per order line and for the order from the same captures, with caveats for credit memos not read completely and for a posted credit memo of the order's customer that cannot be attributed to an invoice (BC states no invoiceId and its invoiceNumber names no single invoice of the company). Figures are compared as Decimals: correct / wrong / abstain_ok apart, excluded (oracle decides nothing or cannot read the order), not_held, product_error; coverage beside accuracy; items partitioned dev / held_out with related documents and near-duplicate order numbers in one partition. No Portal read: it runs while the Portal reporting API fails. Counts, rates and enums only.",
+ "source": "business-central",
+ "requires": [
+  "bc.capture_full"
+ ],
+ "command": [
+  "python3",
+  "-m",
+  "scripts.eval_order_margin",
+  "live",
+  "--db",
+  "{session_state}/bc-capture.sqlite",
+  "--work-dir",
+  "{tmp}/product",
+  "--run-id",
+  "auto",
+  "--count",
+  "12",
+  "--min-scored",
+  "3",
+  "--max-wrong-rate",
+  "0.10",
+  "--total-budget-seconds",
+  "2400"
+ ],
+ "timeout_seconds": 2700,
+ "cadence": "daily",
+ "requires_env": [
+  "BC_TENANT_ID",
+  "BC_CLIENT_ID",
+  "BC_CLIENT_SECRET",
+  "BC_ENVIRONMENT"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "run_id",
+   "items_digest",
+   "capture.all_complete",
+   "capture.units_total",
+   "capture.units_complete",
+   "eval.sampled",
+   "eval.scored",
+   "eval.correct",
+   "eval.wrong",
+   "eval.abstain_ok",
+   "eval.excluded",
+   "eval.not_held",
+   "eval.product_error",
+   "eval.coverage",
+   "eval.accuracy",
+   "eval.answered",
+   "eval.wrong_max",
+   "eval.product_caveats",
+   "eval.by_partition",
+   "eval.partition_violations",
+   "eval.fail_reasons"
+  ],
+  "json_equals": {
+   "adapter_status": "live-unverified",
+   "evidence_label": "live-read",
+   "values_published": false,
+   "environment_is_production": true,
+   "row_data_check.leaked": 0,
+   "eval.complete": true,
+   "eval.wrong_within_bound": true,
+   "eval.partition_violations": 0,
+   "eval.pass": true
+  },
+  "json_min": {
+   "eval.sampled": 3,
+   "eval.scored": 3
+  },
+  "json_empty": [
+   "eval.fail_reasons"
+  ]
+ },
+ "record": [
+  "eval",
+  "capture",
+  "row_data_check",
+  "items_digest"
+ ],
+ "record_keys": [
+  "eval",
+  "capture",
+  "row_data_check"
+ ],
+ "record_enums": [
+  "eval",
+  "capture",
+  "items_digest"
+ ],
+ "notes": "live-unverified until a passing live-check result; module tests are injected-transport and isolated-fixture (tests/test_eval_order_margin.py: the BC fake through the real bc_read capture, projection, plx.investigate and the oracle; tests/test_investigate_order_margin.py: the plan's output contract). Its only requires is its session producer bc.capture_full (BC only, never blocking): the check reads BC only, so a Portal outage (portal.health_catalog failing) never skips it. In one runner session it tops up that producer's {session_state}/bc-capture.sqlite (capture.topped_up, capture.units_reused: units the producer finished in this session, PLX_CAPTURE_FRESH_SINCE from the runner, are not read again, and capture.capture_age_seconds records the oldest complete unit's age; a store complete from an earlier invocation is read again, so its 1,800 s capture share continues where the producer's ~1,400 s stopped instead of a cold 70/93-unit capture), else it captures cold (session_state.shared_store false). Fails (exit 3, eval.fail_reasons) when fewer than --min-scored (3) items were scored (below_min_scored), when wrong > floor(0.10 x scored) (wrong_above_bound), when no item is correct (no_correct_answer: abstaining everywhere never passes), on any plx.investigate tool error (product_error), a partition violation, a cut run (incomplete) or a leak. Wrong counts a product figure that differs from the oracle's, a product figure where the oracle leaves the figure undecided (a margin over missing or unbooked cost is never right), and a figure stated without the product gap matching an oracle caveat (credit_memos_not_captured for credit memos not read completely, credit_memo_unattributed for a posted credit memo of the customer applied to no invoice, which the product cites and never nets). The product keeps credit_memos_not_captured unless the capture proves the memos: a complete BC family capture (capture.all_complete true), or complete company= claims on both salesCreditMemos and salesCreditMemoLines for the order's company (the eval runs the host's own tool table, so a ledger at its record cap no longer keeps the gap); eval.product_caveats counts the items carrying each credit gap. Expected honest result: BC deletes fully invoiced sales orders, so sampled orders are open ones and many lines are partly invoiced (excluded or abstain_ok); the itemLedgerEntries capture may stop at its record cap (capture.all_complete false), so lines whose sales unit is not the item's base unit stay undecided (COST_COMPLETENESS_UNPROVEN) while lines in the base unit are proven by quantity. Unverified live assumptions: API v2.0 itemLedgerEntries documentType reads Sales_x0020_Shipment (or Sales Shipment) and Sales_x0020_Credit_x0020_Memo for a credit memo's return (documentNumber the posted credit memo number); salesCreditMemos invoiceId is the nil Guid (not blank) when no invoice is applied, which is what the plan filters on to reach the memos whose applies_to may bind nothing and documentNumber is the posted shipment No.; a blank invoice currencyCode is the company LCY (CAD on the manufacturing and distribution books, Portal bcTransactionCurrency).",
+ "session_audience": {
+  "/bc-capture.sqlite": {
+   "sources": [
+    "business-central"
+   ],
+   "env": [
+    "BC_CLIENT_ID",
+    "BC_CLIENT_SECRET",
+    "BC_ENVIRONMENT",
+    "BC_TENANT_ID"
+   ],
+   "reader": "service"
+  }
+ }
+}

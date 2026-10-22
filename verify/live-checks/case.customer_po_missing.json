@@ -1,0 +1,134 @@
+{
+ "id": "case.customer_po_missing",
+ "description": "REC-01 (information in documents missing from the Portal) on the general path: one host capture cycle (operating.host: the Portal sales orders into the source mirror, the PLXCUSTOMERS 'Customer Documents' folder through the GET-only Graph reader), then offline over those captures: pick=SalesOrder+CustomerPoDocument (the newest sales order the investigator may read from which a customer purchase order document is reached within two links; the document-field link is a lead) is opened through the generic tools. Every missing_in_record lead plx.object reports (a value the machine-read document states that the order's fields hold empty) is recorded on the case as an unknown fact finding citing the document's pages and the empty order rows, never as a value of the order and never as a proposal; leads_by_kind counts them per reader. The workspace is rendered for the investigator and for a reader who reads the orders but no document (the lead is withheld from it). Counts and enums only, never an identifier or value.",
+ "source": "portal-workbench-api+microsoft-graph",
+ "cadence": "daily",
+ "command": [
+  "python3",
+  "-m",
+  "operating.case_workspace_live",
+  "--state-dir",
+  "{tmp}/state",
+  "--mirror-audience",
+  "examples/unfamiliar_case_audience.example.json",
+  "--host-config",
+  "examples/customer_po_missing_host.live-check.json",
+  "--live-source-audience",
+  "examples/customer_po_missing_live_audience.live-check.json",
+  "--principal",
+  "staff:sales",
+  "--principal",
+  "staff:operations",
+  "--clearance",
+  "restricted",
+  "--open",
+  "pick=SalesOrder+CustomerPoDocument",
+  "--reader",
+  "staff:operations",
+  "--min-rendered",
+  "1"
+ ],
+ "timeout_seconds": 2400,
+ "requires_env": [
+  "PLX_WORKBENCH_API_URL",
+  "PLX_WORKBENCH_API_KEY",
+  "MICROSOFT_GRAPH_TENANT_ID",
+  "MICROSOFT_GRAPH_CLIENT_ID",
+  "MICROSOFT_GRAPH_CLIENT_SECRET",
+  "SHAREPOINT_SITE_ID"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "cases[*].request",
+   "cases[*].status",
+   "cases[*].readers[*].reader",
+   "cases[*].readers[*].status",
+   "cases[*].readers[*].leads_by_kind",
+   "capture.sources",
+   "blocked_upstream"
+  ],
+  "json_equals": {
+   "mirror.workbench_client": false,
+   "capture.exit_code": 0,
+   "cases_requested": 1,
+   "failed_unnamed": 0,
+   "row_leaks": 0,
+   "withheld_relation_refs": 0,
+   "summary_row_data_check.leaked": 0
+  },
+  "json_min": {
+   "cases_rendered": 1,
+   "cases[*].readers[*].leads_by_kind.missing_in_record": 1
+  }
+ },
+ "expect_blocked": {
+  "exit_code": 0,
+  "json_fields": [
+   "cases[*].request",
+   "cases[*].status",
+   "capture.sources",
+   "blocked_upstream"
+  ],
+  "json_equals": {
+   "mirror.workbench_client": false,
+   "capture.exit_code": 0,
+   "failed": 0,
+   "failed_unnamed": 0,
+   "row_leaks": 0,
+   "withheld_relation_refs": 0,
+   "summary_row_data_check.leaked": 0
+  }
+ },
+ "record": [
+  "capture.state",
+  "capture.sources",
+  "capture.projection",
+  "cases_requested",
+  "cases_rendered",
+  "cases_unlinked",
+  "failed",
+  "failed_unnamed",
+  "blocked",
+  "cases[*].request",
+  "cases[*].status",
+  "cases[*].missing",
+  "cases[*].readers[*].reader",
+  "cases[*].readers[*].investigator",
+  "cases[*].readers[*].status",
+  "cases[*].readers[*].records",
+  "cases[*].readers[*].findings",
+  "cases[*].readers[*].leads_by_kind",
+  "cases[*].readers[*].gaps_by_state",
+  "cases[*].readers[*].conflicts_by_kind",
+  "cases[*].readers[*].withheld",
+  "cases[*].readers[*].row_leaks",
+  "cases[*].readers[*].withheld_relation_refs",
+  "row_leaks",
+  "withheld_relation_refs",
+  "summary_row_data_check",
+  "seconds",
+  "blocked_upstream"
+ ],
+ "record_keys": [
+  "capture.sources",
+  "cases[*].readers[*].findings",
+  "cases[*].readers[*].leads_by_kind",
+  "cases[*].readers[*].gaps_by_state",
+  "cases[*].readers[*].conflicts_by_kind",
+  "cases[*].readers[*].withheld",
+  "summary_row_data_check",
+  "seconds"
+ ],
+ "record_enums": [
+  "cases[*].request",
+  "cases[*].status",
+  "cases[*].missing",
+  "cases[*].readers[*].reader",
+  "cases[*].readers[*].status",
+  "cases[*].readers[*].leads_by_kind",
+  "cases[*].readers[*].gaps_by_state",
+  "blocked_upstream"
+ ],
+ "notes": "Live-unverified until the live check runs it; the module test is injected-transport (operating/tests/test_case_workspace_live.py CustomerPoMissingTest: the spec's own command, its host config copied with the in-process FakeWorkbench and a FakeDrive standing for the PLXCUSTOMERS site; its expectations checked on the real summary; a Portal answering HTTP 500 at capture meets expect_blocked). REC-01 passes only with a lead: json_min requires leads_by_kind.missing_in_record >= 1 on every reader that lists the kind (the investigator; the reader who reads no document lists none, so the lead withheld from it is not counted against it), so a rendered case without one is a truthful red ('missing cases[*].readers[*].leads_by_kind.missing_in_record'): plx.object reported no missing-in-record lead for that order (the order holds a PO, the field was not read, no captured customer purchase order names it, or the value is withheld). Expected honest failure, named in cases[*].missing (the pick's typed cause): pick_linked_absent or pick_linked_unjoined (pick_source_not_captured:<source> while a capture unit did not finish) while no captured customer purchase order names a sales order the investigator may read. A lead is never a proposal: it becomes a draft only through plx.act propose, with person_confirms_evidence_belongs_to_order. The capture walk is bounded by the scope (max_folders 5000); seconds.capture/open/render are recorded so the first run measures the 2400 s timeout. No BC variable is declared: the case reads no BC source (its host config names portal and sharepoint, its live audience grants only sharepoint:*), so build_live_readers builds no BC reader and reads no BC_* variable (live-readers-one-filter); an earlier run ended error undeclared_env BC_CLIENT_SECRET while the readers were built for every source the environment configured. Run 2026-10-20 (539a3ba): pick_linked_absent with SharePoint captured in full (37 files, none classified customer_po: 18 unread by OCR) and mail never configured by this host config; since case-po-pick-live no customer purchase order held while a source of the type was never captured is pick_source_not_configured:graph_mail (CustomerPoDocument's mail binding: no evidence of none), and a capture-state cause (pick_source_not_captured:<source> or pick_source_not_configured:<source>) roots the newest readable sales order with a pick_linked_not_captured gap (not_ingested, naming neither the document type nor the source, so the reader who reads no document sees no document type): status unlinked, counted in cases_unlinked and failed, never in cases_rendered, so the run stays red (exit 1, 'cases_rendered < 1') naming the source in cases[*].missing."
+}

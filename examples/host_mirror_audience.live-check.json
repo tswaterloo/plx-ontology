@@ -1,0 +1,14 @@
+{
+ "schema": "plx-source-mirror-audience/v1",
+ "note": "EXAMPLE ONLY, not a PLX-confirmed grant: the two Portal relations the host.cycles live check mirrors, for the host capture principal. Default deny.",
+ "tenant": "plx",
+ "default_classification": "internal",
+ "audiences": {
+  "public.app_sales_order": [
+   "svc:workbench-host"
+  ],
+  "public.assembly_order": [
+   "svc:workbench-host"
+  ]
+ }
+}

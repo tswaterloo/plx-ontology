@@ -1,0 +1,250 @@
+{
+  "tool": "plx.find",
+  "examples": [
+    {
+      "name": "exact",
+      "input": {
+        "query": "SO 2099 0001",
+        "identifier_kind": "so_number"
+      },
+      "output": {
+        "status": "found",
+        "candidates": [
+          {
+            "object": {
+              "object_id": "SalesOrder:portal.app_sales_order:ex-so-1",
+              "object_type": "SalesOrder",
+              "display": {
+                "untrusted_text": "SO-2099-0001",
+                "origin": {
+                  "citation": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42",
+                  "field_path": "row.order_number"
+                }
+              },
+              "lineage": "gold_etl_from_fm"
+            },
+            "rank": 1,
+            "tier": "verified",
+            "reason": "exact_identifier",
+            "matched": {
+              "identifier_kind": "so_number",
+              "normalized": "SO-2099-0001",
+              "raw": {
+                "untrusted_text": "SO-2099-0001",
+                "origin": {
+                  "citation": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42",
+                  "field_path": "row.order_number"
+                }
+              },
+              "property": "order_number",
+              "binding": "portal.app_sales_order",
+              "role": "primary"
+            }
+          }
+        ],
+        "set": "set:abcdefgh1234",
+        "gaps": [],
+        "completeness": {
+          "complete": true,
+          "truncated": false,
+          "returned": 1,
+          "total": 1,
+          "next_cursor": null
+        },
+        "meta": {
+          "schema_digest": "df0ad6e43880f09c90ebf95f19110178aba6890df0010ebda7485029e2b543b4",
+          "as_known_at": "2099-01-02T03:04:05Z",
+          "freshness": [
+            {
+              "source": "portal_api",
+              "captured_at": "2099-01-02T03:00:00Z",
+              "lag_seconds": 245,
+              "completeness": "complete",
+              "stale": false
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "ambiguous",
+      "input": {
+        "query": "SO-2099-0001",
+        "limit": 10
+      },
+      "output": {
+        "status": "ambiguous",
+        "candidates": [
+          {
+            "object": {
+              "object_id": "SalesOrder:portal.app_sales_order:ex-so-1",
+              "object_type": "SalesOrder",
+              "display": {
+                "untrusted_text": "SO-2099-0001",
+                "origin": {
+                  "citation": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42",
+                  "field_path": "row.order_number"
+                }
+              },
+              "lineage": "gold_etl_from_fm"
+            },
+            "rank": 1,
+            "tier": "verified",
+            "reason": "exact_identifier",
+            "matched": {
+              "identifier_kind": "so_number",
+              "normalized": "SO-2099-0001",
+              "raw": {
+                "untrusted_text": "SO-2099-0001",
+                "origin": {
+                  "citation": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42",
+                  "field_path": "row.order_number"
+                }
+              },
+              "property": "order_number",
+              "binding": "portal.app_sales_order",
+              "role": "primary"
+            }
+          },
+          {
+            "object": {
+              "object_id": "SalesOrder:portal.app_sales_order:ex-so-2",
+              "object_type": "SalesOrder",
+              "display": {
+                "untrusted_text": "SO-2099-0002",
+                "origin": {
+                  "citation": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-2%22%7D@0123456789abcdef-43",
+                  "field_path": "row.order_number"
+                }
+              },
+              "lineage": "gold_native_staging"
+            },
+            "rank": 2,
+            "tier": "lead",
+            "reason": "alias_match",
+            "matched": {
+              "identifier_kind": "so_number",
+              "normalized": "SO-2099-0001",
+              "raw": {
+                "untrusted_text": "SO-2099-0001",
+                "origin": {
+                  "citation": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-2%22%7D@0123456789abcdef-43",
+                  "field_path": "row.custom_fields.fmOeNumber"
+                }
+              },
+              "property": "order_number",
+              "binding": "portal.app_sales_order",
+              "role": "alias"
+            }
+          }
+        ],
+        "set": "set:abcdefgh5678",
+        "gaps": [],
+        "withheld": {
+          "properties": 0,
+          "objects": null,
+          "reason": "audience"
+        },
+        "completeness": {
+          "complete": true,
+          "truncated": false,
+          "returned": 2,
+          "total": 2,
+          "next_cursor": null
+        },
+        "meta": {
+          "schema_digest": "df0ad6e43880f09c90ebf95f19110178aba6890df0010ebda7485029e2b543b4",
+          "as_known_at": "2099-01-02T03:04:05Z",
+          "freshness": [
+            {
+              "source": "portal_api",
+              "captured_at": "2099-01-02T03:00:00Z",
+              "lag_seconds": 245,
+              "completeness": "complete",
+              "stale": false
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "not found",
+      "input": {
+        "query": "PO 99999"
+      },
+      "output": {
+        "status": "not_found",
+        "candidates": [],
+        "gaps": [
+          {
+            "state": "absent_in_source",
+            "reason": "no_match",
+            "subject": "petra_po:99999",
+            "searched": {
+              "sources": [
+                "portal_api",
+                "bc"
+              ],
+              "queries": [
+                "PO 99999"
+              ]
+            }
+          }
+        ],
+        "completeness": {
+          "complete": true,
+          "truncated": false,
+          "returned": 0,
+          "total": 0,
+          "next_cursor": null
+        },
+        "meta": {
+          "schema_digest": "df0ad6e43880f09c90ebf95f19110178aba6890df0010ebda7485029e2b543b4",
+          "as_known_at": "2099-01-02T03:04:05Z",
+          "freshness": [
+            {
+              "source": "portal_api",
+              "captured_at": "2099-01-02T03:00:00Z",
+              "lag_seconds": 245,
+              "completeness": "complete",
+              "stale": false
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "error",
+      "input": {
+        "object_type": "Formulation",
+        "filters": [
+          {
+            "property": "code",
+            "op": "eq",
+            "value": "F-1"
+          }
+        ]
+      },
+      "output": {
+        "error": {
+          "code": "not_served",
+          "message": "Formulation is not exposed by the Portal API.",
+          "hint": "Record a gap; ask Portal owners (Q3)."
+        },
+        "meta": {
+          "schema_digest": "df0ad6e43880f09c90ebf95f19110178aba6890df0010ebda7485029e2b543b4",
+          "as_known_at": "2099-01-02T03:04:05Z",
+          "freshness": [
+            {
+              "source": "portal_api",
+              "captured_at": "2099-01-02T03:00:00Z",
+              "lag_seconds": 245,
+              "completeness": "complete",
+              "stale": false
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

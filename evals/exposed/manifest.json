@@ -1,0 +1,401 @@
+{
+ "format": "plx-eval-exposed-manifest/v1",
+ "split": "dev",
+ "exposure": "exposed",
+ "rule": "Exposed real cases: visible, so dev/regression only and never held-out (docs/reference/cases-and-artifacts.md 1.1 assessment; source batch classification). They are evaluation data only: product code must not name them (gate no-hardcoded-cases, verify/hardcoded-case-denylist.json). The leakage unit is the whole cluster: the four soapbox-po5447 items are one transaction.",
+ "evidence_label": "source-curated (expected values copied from the source records; no live read, no host run, no human audit)",
+ "run": "python3 -m evals.runner run --items evals/exposed --split dev ... (kept apart from evals/dev so the fixture baseline over the synthetic dev set is unchanged)",
+ "families": {
+  "F7": "A communication or document exists (a confirmation resent, an assessment recorded, a PO PDF, a deposit sent): does it establish the business outcome (inventory fixed, approval, ERP state, settlement)?",
+  "F8": "An item or document is named differently in the mail and in the PDF: is the join established or only a lead?",
+  "F9": "The sources give conflicting dates or versioned claims: which are supported, and can an actual event be asserted?",
+  "F3": "How many units were ordered, planned, produced, filled, retained or damaged, by source and role (never interchanged, never summed across components)?"
+ },
+ "evidence_records": {
+  "B": {
+   "path": "context/006786de5454dcb66a83cfdd2fad4974b2545e5f61a24a75aad1b74bc288b23e.json",
+   "git_blob_sha": "1ac1867277013217864e369eb797e9240dc365fe",
+   "branch": "source-records",
+   "source_revision": "sha256:f2438ec3002e3917c5634a9d4e6a93e6e95dc129d648319fdff33fac61547996"
+  },
+  "coverage_map": {
+   "path": "context/47de419dd1f9759b01da2095ceb41cf08ac760fdffd999f5dbb52e2576aad522.json",
+   "git_blob_sha": "0a876983706f99be2bd9e0b276db53043595045b",
+   "branch": "source-records"
+  },
+  "sources": "evals/exposed/sources.json evidence_records (R, S)",
+  "P2P8": {
+   "branch": "source-records",
+   "commit": "858f5fc888d591cab3cd7fabb4c4374f16e27e64",
+   "path": "EVIDENCE/evals/p2p8-20261004",
+   "imported": "evals/exposed/p2p8-field-evidence.json (copy)",
+   "not_imported": "runtime-bindings.json (a draft whose runtime handles are all null; the import binds each value to its pinned original instead) and the four draft items (converted here)"
+  }
+ },
+ "excluded": [
+  {
+   "batch_unit": "DEV-005",
+   "cluster": "formula-f18-0025",
+   "reason": "Its only source is Portal code (a helper comment at a pinned commit), not a business original a user reaches through the Workbench sources; no L1 handle scheme cites it."
+  },
+  {
+   "batch_unit": "DEV-P2-PACKING-MIDAS-01",
+   "cluster": "po00349-midas",
+   "reason": "It is marked blocked_original_page_verification and excluded_from_scoring: no original bytes or verified mailbox route, so no page gold."
+  }
+ ],
+ "counts": {
+  "items": 14,
+  "by_family": {
+   "F3": 1,
+   "F7": 6,
+   "F8": 2,
+   "F9": 5
+  },
+  "clusters": 6,
+  "human_audited": 0
+ },
+ "items": [
+  {
+   "id": "dev-F7-0001-exposed",
+   "family": "F7",
+   "batch_unit": "DEV-002",
+   "cluster": "dandylion-sept2026-receipt",
+   "lineage_stratum": "mail",
+   "outcome": {
+    "answerability": "partial",
+    "values_established": 9,
+    "values_reported_absent": 0,
+    "gaps_unknown": 6,
+    "gaps_absent_in_source": 0
+   },
+   "label": "pending_human_label",
+   "sources": [
+    "dandy-packing-mail",
+    "dandy-packing-workbook",
+    "dandy-receipt-request",
+    "dandy-confirmation-chase",
+    "dandy-attachment-repair",
+    "dandy-confirmation-sent",
+    "dandy-received-pdf",
+    "dandy-unresolved-complaint"
+   ],
+   "evidence": [
+    "context/006786de5454dcb66a83cfdd2fad4974b2545e5f61a24a75aad1b74bc288b23e.json#/evaluation_batch/cases/1",
+    "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/case_acceptance/1",
+    "docs/reference/cases-and-artifacts.md#3.6"
+   ]
+  },
+  {
+   "id": "dev-F7-0002-exposed",
+   "family": "F7",
+   "batch_unit": "DEV-001",
+   "cluster": "qrm-26037",
+   "lineage_stratum": "sharepoint",
+   "outcome": {
+    "answerability": "partial",
+    "values_established": 22,
+    "values_reported_absent": 2,
+    "gaps_unknown": 3,
+    "gaps_absent_in_source": 1
+   },
+   "label": "pending_human_label",
+   "sources": [
+    "qrm-assessment",
+    "qrm-liquid-spec",
+    "qrm-granulate-coa",
+    "qrm-granulate-sds"
+   ],
+   "evidence": [
+    "context/006786de5454dcb66a83cfdd2fad4974b2545e5f61a24a75aad1b74bc288b23e.json#/evaluation_batch/cases/0",
+    "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/case_acceptance/0",
+    "docs/reference/cases-and-artifacts.md#3.6"
+   ]
+  },
+  {
+   "id": "dev-F7-0003-exposed",
+   "family": "F7",
+   "batch_unit": "DEV-006",
+   "cluster": "soapbox-po5447",
+   "lineage_stratum": "original",
+   "outcome": {
+    "answerability": "partial",
+    "values_established": 5,
+    "values_reported_absent": 0,
+    "gaps_unknown": 3,
+    "gaps_absent_in_source": 0
+   },
+   "label": "pending_human_label",
+   "sources": [
+    "soap-po-pdf"
+   ],
+   "evidence": [
+    "context/006786de5454dcb66a83cfdd2fad4974b2545e5f61a24a75aad1b74bc288b23e.json#/evaluation_batch/cases/5",
+    "docs/reference/cases-and-artifacts.md#1.11 F03"
+   ]
+  },
+  {
+   "id": "dev-F7-0004-exposed",
+   "family": "F7",
+   "batch_unit": "DEV-008",
+   "cluster": "soapbox-po5447",
+   "lineage_stratum": "original",
+   "outcome": {
+    "answerability": "partial",
+    "values_established": 7,
+    "values_reported_absent": 0,
+    "gaps_unknown": 6,
+    "gaps_absent_in_source": 0
+   },
+   "label": "pending_human_label",
+   "sources": [
+    "soap-deposit-export",
+    "soap-pricing-mail",
+    "soap-pi-updated-mail",
+    "soap-pi-pdf",
+    "soap-index"
+   ],
+   "evidence": [
+    "context/006786de5454dcb66a83cfdd2fad4974b2545e5f61a24a75aad1b74bc288b23e.json#/evaluation_batch/cases/7",
+    "docs/reference/cases-and-artifacts.md#1.11 F01"
+   ]
+  },
+  {
+   "id": "dev-F8-0001-exposed",
+   "family": "F8",
+   "batch_unit": "DEV-003",
+   "cluster": "po5455-trc",
+   "lineage_stratum": "mail",
+   "outcome": {
+    "answerability": "partial",
+    "values_established": 9,
+    "values_reported_absent": 0,
+    "gaps_unknown": 2,
+    "gaps_absent_in_source": 0
+   },
+   "label": "pending_human_label",
+   "sources": [
+    "trc-arrival-mail",
+    "trc-po-pdf"
+   ],
+   "evidence": [
+    "context/006786de5454dcb66a83cfdd2fad4974b2545e5f61a24a75aad1b74bc288b23e.json#/evaluation_batch/cases/2",
+    "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/case_acceptance/2",
+    "docs/reference/cases-and-artifacts.md#3.6"
+   ]
+  },
+  {
+   "id": "dev-F8-0002-exposed",
+   "family": "F8",
+   "batch_unit": "DEV-007",
+   "cluster": "soapbox-po5447",
+   "lineage_stratum": "original",
+   "outcome": {
+    "answerability": "partial",
+    "values_established": 7,
+    "values_reported_absent": 0,
+    "gaps_unknown": 2,
+    "gaps_absent_in_source": 0
+   },
+   "label": "pending_human_label",
+   "sources": [
+    "soap-pi-pdf",
+    "soap-pi-updated-mail",
+    "soap-pricing-mail"
+   ],
+   "evidence": [
+    "context/006786de5454dcb66a83cfdd2fad4974b2545e5f61a24a75aad1b74bc288b23e.json#/evaluation_batch/cases/6",
+    "docs/reference/cases-and-artifacts.md#1.11 F02"
+   ]
+  },
+  {
+   "id": "dev-F9-0001-exposed",
+   "family": "F9",
+   "batch_unit": "DEV-004",
+   "cluster": "po00349-midas",
+   "lineage_stratum": "mail",
+   "outcome": {
+    "answerability": "partial",
+    "values_established": 10,
+    "values_reported_absent": 0,
+    "gaps_unknown": 3,
+    "gaps_absent_in_source": 0
+   },
+   "label": "pending_human_label",
+   "sources": [
+    "midas-shipment-mail",
+    "midas-packing-slip"
+   ],
+   "evidence": [
+    "context/006786de5454dcb66a83cfdd2fad4974b2545e5f61a24a75aad1b74bc288b23e.json#/evaluation_batch/cases/3",
+    "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/case_acceptance/3",
+    "docs/reference/cases-and-artifacts.md#3.6"
+   ]
+  },
+  {
+   "id": "dev-F9-0002-exposed",
+   "family": "F9",
+   "batch_unit": "DEV-009",
+   "cluster": "soapbox-po5447",
+   "lineage_stratum": "original",
+   "outcome": {
+    "answerability": "partial",
+    "values_established": 6,
+    "values_reported_absent": 0,
+    "gaps_unknown": 5,
+    "gaps_absent_in_source": 0
+   },
+   "label": "pending_human_label",
+   "sources": [
+    "soap-fcl-quote",
+    "soap-air-quote",
+    "soap-freight-mail",
+    "soap-index"
+   ],
+   "evidence": [
+    "context/006786de5454dcb66a83cfdd2fad4974b2545e5f61a24a75aad1b74bc288b23e.json#/evaluation_batch/cases/8",
+    "docs/reference/cases-and-artifacts.md#1.11 F05"
+   ]
+  },
+  {
+   "id": "dev-F9-0003-exposed",
+   "family": "F9",
+   "batch_unit": "DEV-010",
+   "cluster": "soapbox-po5447",
+   "lineage_stratum": "original",
+   "outcome": {
+    "answerability": "partial",
+    "values_established": 8,
+    "values_reported_absent": 0,
+    "gaps_unknown": 3,
+    "gaps_absent_in_source": 0
+   },
+   "label": "pending_human_label",
+   "sources": [
+    "soap-po-pdf",
+    "soap-pricing-mail",
+    "soap-pi-updated-mail",
+    "soap-pi-pdf",
+    "soap-freight-mail",
+    "soap-index"
+   ],
+   "evidence": [
+    "context/006786de5454dcb66a83cfdd2fad4974b2545e5f61a24a75aad1b74bc288b23e.json#/evaluation_batch/cases/9",
+    "docs/reference/cases-and-artifacts.md#1.11 F04",
+    "docs/reference/cases-and-artifacts.md#1.11 F06",
+    "docs/reference/cases-and-artifacts.md#1.11 F07"
+   ]
+  },
+  {
+   "id": "dev-F7-1001-exposed",
+   "family": "F7",
+   "batch_unit": "DEV-P2-PI-01",
+   "cluster": "soapbox-po5447",
+   "lineage_stratum": "original",
+   "outcome": {
+    "answerability": "partial",
+    "values_established": 11,
+    "values_reported_absent": 0,
+    "gaps_unknown": 3,
+    "gaps_absent_in_source": 0
+   },
+   "label": "pending_human_label",
+   "sources": [
+    "soap-pi-pdf"
+   ],
+   "pinned_by": "evals/exposed/sources.json#soap-pi-pdf",
+   "evidence": [
+    "evals/exposed/p2p8-field-evidence.json#/items/0",
+    "EVIDENCE/evals/p2p8-20261004/runtime-bindings.json#/items/dev-F7-1001-exposed (@858f5fc8)"
+   ]
+  },
+  {
+   "id": "dev-F7-1002-exposed",
+   "family": "F7",
+   "batch_unit": "DEV-P8-AO-26005B-01",
+   "cluster": "ao-26005b",
+   "lineage_stratum": "original",
+   "outcome": {
+    "answerability": "partial",
+    "values_established": 26,
+    "values_reported_absent": 0,
+    "gaps_unknown": 12,
+    "gaps_absent_in_source": 0
+   },
+   "label": "pending_human_label",
+   "sources": [],
+   "pinned_by": "evals/dev/cases/ao_originals_expected.json#/files/0",
+   "evidence": [
+    "evals/exposed/p2p8-field-evidence.json#/items/3",
+    "EVIDENCE/evals/p2p8-20261004/runtime-bindings.json#/items/dev-F7-1002-exposed (@858f5fc8)"
+   ]
+  },
+  {
+   "id": "dev-F9-1001-exposed",
+   "family": "F9",
+   "batch_unit": "DEV-P2-FREIGHT-FCL-01",
+   "cluster": "soapbox-po5447",
+   "lineage_stratum": "original",
+   "outcome": {
+    "answerability": "partial",
+    "values_established": 13,
+    "values_reported_absent": 0,
+    "gaps_unknown": 3,
+    "gaps_absent_in_source": 0
+   },
+   "label": "pending_human_label",
+   "sources": [
+    "soap-fcl-quote"
+   ],
+   "pinned_by": "evals/exposed/sources.json#soap-fcl-quote",
+   "evidence": [
+    "evals/exposed/p2p8-field-evidence.json#/items/1",
+    "EVIDENCE/evals/p2p8-20261004/runtime-bindings.json#/items/dev-F9-1001-exposed (@858f5fc8)"
+   ]
+  },
+  {
+   "id": "dev-F9-1002-exposed",
+   "family": "F9",
+   "batch_unit": "DEV-P2-FREIGHT-AIR-01",
+   "cluster": "soapbox-po5447",
+   "lineage_stratum": "original",
+   "outcome": {
+    "answerability": "partial",
+    "values_established": 9,
+    "values_reported_absent": 1,
+    "gaps_unknown": 4,
+    "gaps_absent_in_source": 0
+   },
+   "label": "pending_human_label",
+   "sources": [
+    "soap-air-quote"
+   ],
+   "pinned_by": "evals/exposed/sources.json#soap-air-quote",
+   "evidence": [
+    "evals/exposed/p2p8-field-evidence.json#/items/2",
+    "EVIDENCE/evals/p2p8-20261004/runtime-bindings.json#/items/dev-F9-1002-exposed (@858f5fc8)"
+   ]
+  },
+  {
+   "id": "dev-F3-1001-exposed",
+   "family": "F3",
+   "batch_unit": "P8-AO-QUANTITIES",
+   "cluster": "ao-26005b",
+   "lineage_stratum": "fm_bronze",
+   "outcome": {
+    "answerability": "partial",
+    "values_established": 7,
+    "values_reported_absent": 0,
+    "gaps_unknown": 5,
+    "gaps_absent_in_source": 0
+   },
+   "label": "pending_human_label",
+   "sources": [],
+   "pinned_by": "evals/dev/cases/ao_originals_expected.json#/files/0",
+   "evidence": [
+    "EVIDENCE/live/2026-09-30-ao-26005b-live-trace.json",
+    "docs/reference/cases-and-artifacts.md#3.4"
+   ]
+  }
+ ]
+}

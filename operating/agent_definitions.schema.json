@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "plx-agent-definitions/v1: the Workbench's agents (AGT-06), validated by operating/agent_definitions.py with ontology/json_contract.py. Unknown fields fail closed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "default_agent", "agents"],
+  "properties": {
+    "schema": {"const": "plx-agent-definitions/v1"},
+    "note": {"type": "string", "maxLength": 2000},
+    "default_agent": {"$ref": "#/$defs/agent_id"},
+    "agents": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"$ref": "#/$defs/agent"}}
+  },
+  "$defs": {
+    "agent_id": {"type": "string", "pattern": "^plx\\.agent\\.[a-z][a-z0-9_]{0,40}$"},
+    "name": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}(\\.[a-z][a-z0-9_-]{0,63}){1,5}$"},
+    "text": {"type": "string", "minLength": 1, "maxLength": 600},
+    "names": {"type": "array", "uniqueItems": true, "maxItems": 64, "items": {"$ref": "#/$defs/name"}},
+    "count": {"type": "integer", "minimum": 1, "maximum": 100000},
+    "target": {"enum": ["mc_approval", "human"]},
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "role", "responsibilities", "tools", "action_types",
+                   "data_scopes", "limits", "stop", "escalation", "forbidden"],
+      "properties": {
+        "id": {"$ref": "#/$defs/agent_id"},
+        "version": {"type": "integer", "minimum": 1, "maximum": 1000000},
+        "role": {"$ref": "#/$defs/text"},
+        "responsibilities": {"type": "array", "minItems": 1, "maxItems": 12, "items": {"$ref": "#/$defs/text"}},
+        "tools": {"allOf": [{"$ref": "#/$defs/names"}, {"minItems": 1}]},
+        "action_types": {"$ref": "#/$defs/names"},
+        "data_scopes": {"type": "array", "uniqueItems": true, "minItems": 1,
+                        "items": {"enum": ["api", "original", "graph-mail", "sharepoint", "bc"]}},
+        "limits": {
+          "type": "object", "additionalProperties": false,
+          "required": ["max_tool_calls", "max_consecutive_errors"],
+          "properties": {"max_tool_calls": {"$ref": "#/$defs/count"},
+                         "max_consecutive_errors": {"$ref": "#/$defs/count"}}
+        },
+        "stop": {
+          "type": "object", "additionalProperties": false, "required": ["when", "escalate_to"],
+          "properties": {
+            "when": {"type": "array", "uniqueItems": true, "minItems": 1,
+                     "items": {"enum": ["max_tool_calls", "max_consecutive_errors"]}},
+            "escalate_to": {"$ref": "#/$defs/target"}
+          }
+        },
+        "escalation": {
+          "type": "object", "additionalProperties": false,
+          "properties": {"mc_gate": {"$ref": "#/$defs/target"},
+                         "per_call_human_approval": {"$ref": "#/$defs/target"}}
+        },
+        "forbidden": {"type": "array", "uniqueItems": true, "minItems": 1, "maxItems": 64,
+                      "items": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,127}$"}}
+      }
+    }
+  }
+}

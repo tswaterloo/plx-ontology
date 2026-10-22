@@ -1,0 +1,21 @@
+{
+ "format": "plx-generator-overrides/v1",
+ "kind": "markings",
+ "description": "Markings by column name, for columns no other override types. A raw column of one of value_types whose name matches and does not match unless keeps its type (measure and currency undeclared, so plx.aggregate and plx.compare refuse to combine a decimal or text one) and carries the marking, so a reader without it never sees it. exceptions: such names that are not what the rule reads them as, with the evidence. Rules apply in order; declared money columns are skipped.",
+ "name_rules": [
+  {
+   "marking": "finance",
+   "value_types": ["decimal", "integer", "text"],
+   "matches": "cost|price|amount|subtotal|discount|surcharge|fee|charge",
+   "unless": "percent|pct|rate|ratio|qty|quantity|code|list|class",
+   "applied": "the name reads as money; no measure or currency is declared",
+   "exception_label": "not money",
+   "exceptions": [
+    {"relation": "public.app_manufacturing_order_line", "column": "actual_amount",
+     "reason": "the quantity of the component used, not money (docs/reference/portal-code-map.md section 3.8: ManufacturingOrderLine quantity = required, actual_amount = used)"},
+    {"relation": "public.assembly_order_item", "column": "actualamount",
+     "reason": "the FM component consumption (qty_per_batch x produced units), not money (operating/source_unit_contracts.json silver-assembly-order-items-actual-amount-actual)"}
+   ]
+  }
+ ]
+}

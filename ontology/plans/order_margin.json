@@ -1,0 +1,699 @@
+{
+ "$schema": "_plan.schema.json",
+ "format": "plx-investigate-plan/v1",
+ "id": "order_margin",
+ "families": [
+  "F10"
+ ],
+ "title": "Margin of a sales order, line by line: invoiced revenue net of credit memos against booked item-ledger cost",
+ "description": "BC only (answers while the Portal API is down). An order BC deleted (root of a posted_bindings binding): one line per item, whole when invoiced = shipped ledger quantity. Per line: revenue = the posted invoice lines (SalesInvoice.bills, status Open/Paid) of the line's item, excluding tax, less the Item lines for that item of the posted credit memos applied to those invoices (SalesCreditMemo.applies_to), subtracted by document type, never by sign; booked cost = the shipped cost (minus the item ledger Cost Amount (Actual) of the Sale / Sales Shipment entries posted on the order's shipments, ItemLedgerEntry.posted_by_shipment) less the returned cost (that of the Sale / Sales Credit Memo entries of those memos, ItemLedgerEntry.posted_by_credit_memo); margin = revenue - booked cost, % on price. A line not wholly invoiced, a ledger set not proven whole, a missing actual cost, a credited return not on the item ledger, an unknown or second currency leave that line (and the total) null with a typed gap, never zero. Only a credit memo line of line type Item is goods: a Charge or Account credit is never netted into a line and leaves the order total unstated (credit_memo_line_unattributed). Only credit memos applied to the order's invoices are netted; the posted memos of the order's customer BC states no invoiceId for (SalesOrder.ordered_by, SalesCreditMemo.credited_to) are counted by one filtered plx.around and their applies_to resolved: one applied to no invoice (its invoiceNumber names no single invoice of the company) may credit this order, so the typed gap credit_memo_unattributed counts them and cites a few, never netted; unless the customer's memos are reached, readable by this reader and the BC capture is complete, the gap credit_memos_not_captured stays. A memo's returned cost is its own ledger entries. Portal and Sage twins and lead-tier documents never enter a sum. The landed-cost estimate (F7, plan landed_cost) is shown apart, never added to booked cost (ERP-D-015).",
+ "root": {
+  "object_types": [
+   "SalesOrder"
+  ],
+  "fallback_filters": [
+   {
+    "object_type": "SalesOrder",
+    "property": "order_number"
+   }
+  ]
+ },
+ "step_budget": 128,
+ "max_each": 50,
+ "steps": [
+  {
+   "id": "root_read",
+   "tool": "plx.object",
+   "from": "root",
+   "bind": "object_id"
+  },
+  {
+   "id": "lines",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrderLine.line_of",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   },
+   "required": true
+  },
+  {
+   "id": "line_read",
+   "tool": "plx.object",
+   "from": "lines",
+   "bind": "object_id",
+   "required": true
+  },
+  {
+   "id": "line_items",
+   "tool": "plx.around",
+   "from": "lines",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrderLine.for_item",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "invoices",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesInvoice.bills",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "invoice_read",
+   "tool": "plx.object",
+   "from": "invoices",
+   "bind": "object_id"
+  },
+  {
+   "id": "invoice_lines",
+   "tool": "plx.around",
+   "from": "invoices",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesInvoiceLine.line_of",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "invoice_line_read",
+   "tool": "plx.object",
+   "from": "invoice_lines",
+   "bind": "object_id"
+  },
+  {
+   "id": "invoice_line_items",
+   "tool": "plx.around",
+   "from": "invoice_lines",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesInvoiceLine.for_item",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "item_read",
+   "tool": "plx.object",
+   "from": "invoice_line_items",
+   "bind": "object_id"
+  },
+  {
+   "id": "shipments",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Shipment.ships",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "ledger",
+   "tool": "plx.around",
+   "from": "shipments",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "ItemLedgerEntry.posted_by_shipment",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "ledger_read",
+   "tool": "plx.object",
+   "from": "ledger",
+   "bind": "object_id"
+  },
+  {
+   "id": "ledger_items",
+   "tool": "plx.around",
+   "from": "ledger",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "ItemLedgerEntry.for_item",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "credit_memos",
+   "tool": "plx.around",
+   "from": "invoices",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesCreditMemo.applies_to",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "credit_memo_read",
+   "tool": "plx.object",
+   "from": "credit_memos",
+   "bind": "object_id"
+  },
+  {
+   "id": "credit_lines",
+   "tool": "plx.around",
+   "from": "credit_memos",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesCreditMemoLine.line_of",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "credit_line_read",
+   "tool": "plx.object",
+   "from": "credit_lines",
+   "bind": "object_id"
+  },
+  {
+   "id": "credit_line_items",
+   "tool": "plx.around",
+   "from": "credit_lines",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesCreditMemoLine.for_item",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "returns",
+   "tool": "plx.around",
+   "from": "credit_memos",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "ItemLedgerEntry.posted_by_credit_memo",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "return_read",
+   "tool": "plx.object",
+   "from": "returns",
+   "bind": "object_id"
+  },
+  {
+   "id": "return_items",
+   "tool": "plx.around",
+   "from": "returns",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "ItemLedgerEntry.for_item",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "loose_memos",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrder.ordered_by",
+      "direction": "forward"
+     },
+     {
+      "link_type": "SalesCreditMemo.credited_to",
+      "direction": "reverse"
+     }
+    ],
+    "filters": [
+     {
+      "property": "applies_to_invoice_id",
+      "op": "in",
+      "value": [
+       "00000000-0000-0000-0000-000000000000"
+      ]
+     },
+     {
+      "property": "status",
+      "op": "in",
+      "value": [
+       "Open",
+       "Paid"
+      ]
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "loose_applies",
+   "tool": "plx.around",
+   "from": "loose_memos",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesCreditMemo.applies_to",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  }
+ ],
+ "evidence": [
+  {
+   "name": "ordered",
+   "kind": "property",
+   "object_type": "SalesOrderLine",
+   "properties": [
+    "ordered_quantity"
+   ],
+   "quantity_role": "ordered"
+  },
+  {
+   "name": "base_uom",
+   "kind": "property",
+   "object_type": "Product",
+   "properties": [
+    "bc_base_uom"
+   ]
+  },
+  {
+   "name": "invoice",
+   "kind": "property",
+   "object_type": "SalesInvoice",
+   "properties": [
+    "invoice_number"
+   ]
+  },
+  {
+   "name": "invoice_status",
+   "kind": "property",
+   "object_type": "SalesInvoice",
+   "properties": [
+    "status"
+   ]
+  },
+  {
+   "name": "invoiced",
+   "kind": "property",
+   "object_type": "SalesInvoiceLine",
+   "properties": [
+    "invoiced_quantity"
+   ],
+   "quantity_role": "invoiced"
+  },
+  {
+   "name": "revenue",
+   "kind": "property",
+   "object_type": "SalesInvoiceLine",
+   "properties": [
+    "amount_excluding_tax"
+   ]
+  },
+  {
+   "name": "entry_type",
+   "kind": "property",
+   "object_type": "ItemLedgerEntry",
+   "properties": [
+    "entry_type"
+   ]
+  },
+  {
+   "name": "document_type",
+   "kind": "property",
+   "object_type": "ItemLedgerEntry",
+   "properties": [
+    "document_type"
+   ]
+  },
+  {
+   "name": "ledger_quantity",
+   "kind": "property",
+   "object_type": "ItemLedgerEntry",
+   "properties": [
+    "quantity"
+   ]
+  },
+  {
+   "name": "booked_cost",
+   "kind": "property",
+   "object_type": "ItemLedgerEntry",
+   "properties": [
+    "cost_amount_actual"
+   ]
+  },
+  {
+   "name": "ledger_capture",
+   "kind": "select",
+   "step": "ledger",
+   "path": "meta.freshness.*.completeness",
+   "where": {
+    "source": "bc"
+   },
+   "reduce": "first",
+   "description": "Whether the BC capture the ledger entries were read from is complete (decides whole-ness when quantities are not comparable)."
+  },
+  {
+   "name": "credit_memo",
+   "kind": "property",
+   "object_type": "SalesCreditMemo",
+   "properties": [
+    "bc_number"
+   ]
+  },
+  {
+   "name": "credit_status",
+   "kind": "property",
+   "object_type": "SalesCreditMemo",
+   "properties": [
+    "status"
+   ]
+  },
+  {
+   "name": "credit_line_type",
+   "kind": "property",
+   "object_type": "SalesCreditMemoLine",
+   "properties": [
+    "line_type"
+   ]
+  },
+  {
+   "name": "returned",
+   "kind": "property",
+   "object_type": "SalesCreditMemoLine",
+   "properties": [
+    "credited_quantity"
+   ],
+   "quantity_role": "returned"
+  },
+  {
+   "name": "credit",
+   "kind": "property",
+   "object_type": "SalesCreditMemoLine",
+   "properties": [
+    "amount_excluding_tax"
+   ]
+  },
+  {
+   "name": "credit_capture",
+   "kind": "select",
+   "step": "loose_memos",
+   "path": "meta.freshness.*.completeness",
+   "where": {
+    "source": "bc"
+   },
+   "reduce": "first",
+   "description": "Whether the BC capture the order's customer and its credit memos were read from is complete: with a reached customer it proves no credit memo against the order is unseen."
+  },
+  {
+   "name": "credit_customer",
+   "kind": "select",
+   "step": "loose_memos",
+   "path": "hops.*.count",
+   "where": {
+    "link_type": "SalesOrder.ordered_by"
+   },
+   "reduce": "first",
+   "description": "How many BC customers the order reached (one: its credit memos were searched)."
+  },
+  {
+   "name": "credit_hidden",
+   "kind": "select",
+   "step": "loose_memos",
+   "path": "gaps.*.state",
+   "where": {
+    "reason": "marking_withheld"
+   },
+   "reduce": "count",
+   "description": "The customer's credit memos carry what this reader may not read (nothing readable reached)."
+  },
+  {
+   "name": "credit_withheld",
+   "kind": "select",
+   "step": "loose_memos",
+   "path": "gaps.*.state",
+   "where": {
+    "reason": "withheld_by_permission"
+   },
+   "reduce": "count",
+   "description": "The customer's credit memos carry what this reader may not read (some readable reached)."
+  },
+  {
+   "name": "order",
+   "kind": "select",
+   "step": "root_read",
+   "path": "object.object_id",
+   "reduce": "first",
+   "description": "The order's object: rooted at a binding of posted_bindings, BC no longer serves the order, so its lines are its posted invoice lines."
+  },
+  {
+   "name": "order_margin",
+   "kind": "compute",
+   "required": true,
+   "description": "Per line: revenue net of applied credit memos, booked cost net of returns and margin in the invoice currency; the order totals and margin % only when every item line is computed over a line set proven complete with no credit left unattributed to a line.",
+   "engine": "order_margin",
+   "engine_args": {
+    "roles": {
+     "ordered": "ordered",
+     "base_uom": "base_uom",
+     "invoice": "invoice",
+     "invoice_status": "invoice_status",
+     "invoiced": "invoiced",
+     "revenue": "revenue",
+     "entry_type": "entry_type",
+     "ledger_quantity": "ledger_quantity",
+     "cost": "booked_cost",
+     "ledger_capture": "ledger_capture",
+     "document_type": "document_type",
+     "credit_memo": "credit_memo",
+     "credit_status": "credit_status",
+     "credit_line_type": "credit_line_type",
+     "returned": "returned",
+     "credit": "credit",
+     "credit_capture": "credit_capture",
+     "credit_hidden": "credit_hidden",
+     "credit_withheld": "credit_withheld",
+     "credit_customer": "credit_customer",
+     "order": "order"
+    },
+    "line_link": "SalesOrderLine.line_of",
+    "line_item": "SalesOrderLine.for_item",
+    "invoice_link": "SalesInvoice.bills",
+    "invoice_line_link": "SalesInvoiceLine.line_of",
+    "invoice_item": "SalesInvoiceLine.for_item",
+    "shipment_link": "Shipment.ships",
+    "ledger_link": "ItemLedgerEntry.posted_by_shipment",
+    "ledger_item": "ItemLedgerEntry.for_item",
+    "credit_link": "SalesCreditMemo.applies_to",
+    "credit_line_link": "SalesCreditMemoLine.line_of",
+    "credit_item": "SalesCreditMemoLine.for_item",
+    "return_link": "ItemLedgerEntry.posted_by_credit_memo",
+    "customer_link": "SalesCreditMemo.credited_to",
+    "posted_bindings": [
+     "bc.sales_invoices.order",
+     "bc.sales_shipments.order"
+    ]
+   }
+  }
+ ]
+}

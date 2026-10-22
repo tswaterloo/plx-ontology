@@ -1,0 +1,14 @@
+{
+ "schema": "plx-mail-capture-scope/v1",
+ "note": "Mail capture scope (one mail store, integrations/capture_mail): the Workbench reads every mailbox of the tenant directory and keeps what it captures in its own capture store under the Workbench state directory, never in Git or logs. all_mailboxes lists every member user with a mail address through the guarded, paged /users GET at the start of each run; each mailbox keeps its own per-folder delta cursor, so a mailbox new in the directory starts its first round (90-day window) while the others resume from their delta links. exclude is the explicit exclusion list (address or object id, with the reason); an excluded mailbox's mail is never requested. A mailbox Graph refuses (HTTP 403, e.g. outside the Exchange application access policy) is a bound, incomplete gap with reason forbidden, never dropped. Capturing grants nothing: every reader is re-gated per mailbox (live-source audience, mailbox owner ACL, employee gate) whenever results are viewed.",
+ "window_days": 90,
+ "mailboxes": [],
+ "all_mailboxes": {
+  "enabled": true,
+  "folders": [
+   "inbox",
+   "sentitems"
+  ],
+  "exclude": []
+ }
+}

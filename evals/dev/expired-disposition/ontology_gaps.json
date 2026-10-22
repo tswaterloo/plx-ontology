@@ -1,0 +1,347 @@
+{
+ "format": "plx-case-ontology-gaps/v1",
+ "case": "expired-disposition",
+ "status": "What the ontology lacks to answer evals/dev/expired-disposition/proposed_items.json: one entry per gap of the Expired-Material Disposition Map (map_gap_index 1-10, in the map's order) plus the disposal, replacement and waiver-verification links its stages name. map_says is the map's claim, attributed to the QC owner's walkthrough of 16 Oct 2026; implementation, where present, is a claim about deployed Portal or BC behaviour that nobody here verified (the map's review notes: portal code not verified). Each gap names its system of record, or says 'source unknown' with the question for QC. Sources are named, never read here; OntologyProject refs are at the base c11ad1ed5732, the map's at c8fcb26d00c8.",
+ "advisory": "advisory:28a8482d8ba0",
+ "gaps": [
+  {
+   "id": "EMD-GAP-01",
+   "map_gap_index": 1,
+   "map_gap": "Approved lots cannot be restricted",
+   "map_stages": "7, 10",
+   "kind": "link",
+   "name": "LotRestriction (a lot usable only for a named batch, customer or non-compendial use, from its waiver or approval) enforced at picking and posting",
+   "map_says": "approved lots cannot be restricted; the R-0030 waiver names one batch yet nothing stops the lot going into another; the pick step is where the gate belongs",
+   "implementation": "the map says the Portal pick step has no lot-restriction check and BC Strict Expiration Posting would be the posting control; both unverified against Portal code and PLX's BC setup",
+   "ontology_today": "PickList and PickLine are Portal models outside the reporting API; Lot is a pending placeholder (not served); no restriction member or link exists.",
+   "needed_by": [
+    "EMD-09",
+    "EMD-A4"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "PickList / PickLine",
+     "ref": "OntologyProject:ontology/source_registry.json@c11ad1ed5732:1482-1483"
+    },
+    {
+     "system": "ontology",
+     "relation": "Lot (pending)",
+     "ref": "OntologyProject:ontology/schema/domains/items.json@c11ad1ed5732:427-445"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "QC: where is a waiver's or approval's batch or customer restriction recorded today besides the signed PDF (a hand-marked label, the QC log), and who checks it when a batch is picked?"
+  },
+  {
+   "id": "EMD-GAP-02",
+   "map_gap_index": 2,
+   "map_gap": "No disposition case; requests and priorities run by email",
+   "map_stages": "1, 6, 10",
+   "kind": "object",
+   "name": "DispositionCase (one per lot: trigger, routes with status, documents, single closing decision with owner and date)",
+   "map_says": "no disposition case; requests and priorities run by email and the outcome is typed into four unlinked places",
+   "implementation": "the map's target is a Portal case; the map says none exists, unverified",
+   "ontology_today": "No case, decision or route object for a lot; Attachment is a Portal model outside the reporting API.",
+   "needed_by": [
+    "EMD-05",
+    "EMD-08"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "Attachment (app_attachment)",
+     "ref": "OntologyProject:ontology/source_registry.json@c11ad1ed5732:1369"
+    },
+    {
+     "system": "source-record",
+     "relation": "the map's source record (the claim, not a reader)",
+     "ref": "OntologyProject:context/28a8482d8ba0dec0ecf02871caab3fdfba9ac1aa5b02f3e288ec40a4fdbf64d1.json@c8fcb26d00c8"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "QC: is there any record today that lists the open expired-lot cases and their routes (a QC spreadsheet log, a SharePoint folder of Form 063s), and where is it kept?"
+  },
+  {
+   "id": "EMD-GAP-03",
+   "map_gap_index": 3,
+   "map_gap": "Waivers approve without a new date",
+   "map_stages": "7",
+   "kind": "link",
+   "name": "Lot.consumption_exception (a one-batch release of an expired lot that keeps its original expiry) and its BC posting path",
+   "map_says": "waivers approve without a new date; Strict Expiration Posting would refuse consumption of that lot, so the exception needs a defined posting path (open design decision)",
+   "implementation": "Strict Expiration Posting behaviour is the map's expectation of standard BC; unverified against PLX's item tracking codes",
+   "ontology_today": "No exception, waiver or expiry-override member on Lot, ItemLedgerEntry or any BC binding.",
+   "needed_by": [
+    "EMD-10",
+    "EMD-A4"
+   ],
+   "sources": [
+    {
+     "system": "bc",
+     "relation": "itemLedgerEntries (allowlist without lot or expiration)",
+     "ref": "OntologyProject:integrations/live_source_grammar.py@c11ad1ed5732:558-560"
+    },
+    {
+     "system": "source-record",
+     "relation": "the map's source record (the claim, not a reader)",
+     "ref": "OntologyProject:context/28a8482d8ba0dec0ecf02871caab3fdfba9ac1aa5b02f3e288ec40a4fdbf64d1.json@c8fcb26d00c8"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "QC: when a waiver releases an expired lot to one batch, how is its consumption posted today (a temporary new date, a manual override, no BC posting), and who decides?"
+  },
+  {
+   "id": "EMD-GAP-04",
+   "map_gap_index": 4,
+   "map_gap": "Customer acceptance is implied",
+   "map_stages": "2",
+   "kind": "object",
+   "name": "CustomerExpiredMaterialPolicy (allowed with QC justification / ask first / never, cited to the quality agreement)",
+   "map_says": "customer acceptance is implied (A2, A6); restrictions live in people's heads",
+   "implementation": "the map says app_customer has no expired-material policy field; unverified",
+   "ontology_today": "Customer is served (public.app_customer) with no policy member; no quality-agreement object.",
+   "needed_by": [
+    "EMD-04"
+   ],
+   "sources": [
+    {
+     "system": "portal-reporting-api",
+     "relation": "Customer (public.app_customer)",
+     "ref": "OntologyProject:ontology/schema/domains/catalog_parties.json@c11ad1ed5732:1391-1405"
+    }
+   ],
+   "system_of_record": "today: no record (the map: tribal knowledge); the quality agreement per customer is the document a policy would be cited to; target (map): a field on the Portal customer"
+  },
+  {
+   "id": "EMD-GAP-05",
+   "map_gap_index": 5,
+   "map_gap": "The label hides the extension",
+   "map_stages": "11",
+   "kind": "link",
+   "name": "LotLabel (a printed container label tied to the lot record: expiry, extension marker and count, re-release date)",
+   "map_says": "the label hides the extension: R-0663's reissued label keeps the April release",
+   "implementation": "the map says the Portal does not print raw-material labels from the lot record (to confirm); unverified",
+   "ontology_today": "No label object or link from a label to a lot or to Form 063.",
+   "needed_by": [
+    "EMD-11",
+    "EMD-A3"
+   ],
+   "sources": [
+    {
+     "system": "source-record",
+     "relation": "the map's source record (the claim, not a reader)",
+     "ref": "OntologyProject:context/28a8482d8ba0dec0ecf02871caab3fdfba9ac1aa5b02f3e288ec40a4fdbf64d1.json@c8fcb26d00c8"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "QC: where are raw-material container labels printed from today (a template, FileMaker, the Portal), and is a copy of each reprint kept anywhere besides Form 063?"
+  },
+  {
+   "id": "EMD-GAP-06",
+   "map_gap_index": 6,
+   "map_gap": "Justification text is free-form",
+   "map_stages": "3, 5, 9",
+   "kind": "object",
+   "name": "LotRetestResult (a retest or recertification result per lot and attribute, route type, tests run, sent out or omitted, risks covered)",
+   "map_says": "justification text is free-form; results are on Form 063 under SOP QC-002 (paper or PDF), not structured per lot and attribute",
+   "ontology_today": "CertificateOfAnalysis covers a supplier CoA of one lot (served from mail and SharePoint); no object holds Petra's own retest results or a justification.",
+   "needed_by": [
+    "EMD-02",
+    "EMD-08",
+    "EMD-A2"
+   ],
+   "sources": [
+    {
+     "system": "graph_mail",
+     "relation": "CertificateOfAnalysis",
+     "ref": "OntologyProject:ontology/schema/domains/quality.json@c11ad1ed5732:132-140"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "QC: where are completed Form 063 records and FT-IR printouts filed (a SharePoint library, a shared drive, paper only), and may the Workbench read that location?"
+  },
+  {
+   "id": "EMD-GAP-07",
+   "map_gap_index": 7,
+   "map_gap": "Short-dated receipts feed the process",
+   "map_stages": "1",
+   "kind": "reader",
+   "name": "Remaining shelf life at receipt (expiry date of a received raw-material lot against its receipt date)",
+   "map_says": "short-dated receipts feed the process: R-0663 was released in April with about five and a half months left",
+   "ontology_today": "ReceiptLine.expiry_date is served from the FM raw-material receipt and the gold receipt line; no remaining-shelf-life measure.",
+   "needed_by": [
+    "EMD-07"
+   ],
+   "sources": [
+    {
+     "system": "portal-reporting-api",
+     "relation": "ReceiptLine.expiry_date (public.receipt_raw_material, public.app_receipt_line)",
+     "ref": "OntologyProject:ontology/schema/domains/purchasing.json@c11ad1ed5732:2450-2468"
+    }
+   ],
+   "system_of_record": "FileMaker raw-material receipt (public.receipt_raw_material, served) today; the Portal receipt line as its gold copy"
+  },
+  {
+   "id": "EMD-GAP-08",
+   "map_gap_index": 8,
+   "map_gap": "Date type and extension history are not captured",
+   "map_stages": "2, 4, 11",
+   "kind": "object",
+   "name": "LotExtension (each extension of a lot: route, previous and new expiry, case, approver; the count the once-per-lot rule needs) and the item's date type",
+   "map_says": "date type and extension history are not captured; the 30-day route's 'never expired before' cannot be checked by any system",
+   "implementation": "the map's target is a custom field on BC Lot No. Information; not built per the map, unverified",
+   "ontology_today": "Lot (pending) has one expiry; no extension history, count or date-type member; no BC Lot No. Information reader.",
+   "needed_by": [
+    "EMD-03",
+    "EMD-A1"
+   ],
+   "sources": [
+    {
+     "system": "ontology",
+     "relation": "Lot.expires (pending)",
+     "ref": "OntologyProject:ontology/schema/pending/people_lots.json@c11ad1ed5732:615-622"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "QC: is a lot's earlier extension recorded anywhere today (the QC log, Form 063 history, the receipt comment), and is the date type on supplier documents (expiry, best-use, retest) noted anywhere?"
+  },
+  {
+   "id": "EMD-GAP-09",
+   "map_gap_index": 9,
+   "map_gap": "Cases open at scheduling time",
+   "map_stages": "1",
+   "kind": "link",
+   "name": "Lot.allocated_to_batch (the raw-material lot a scheduled batch will consume, with the batch date) for priority by batch demand",
+   "map_says": "cases open at scheduling time; a look-ahead of lots expiring before their scheduled use would give the manufacturer and procurement routes time",
+   "ontology_today": "BatchSchedule and Batch are served; lot numbers appear only as text on AO, MO, batch and receipt rows, so no lot-to-batch link exists.",
+   "needed_by": [
+    "EMD-06",
+    "EMD-A4"
+   ],
+   "sources": [
+    {
+     "system": "portal-reporting-api",
+     "relation": "BatchSchedule (public.batch_calibration)",
+     "ref": "OntologyProject:ontology/schema/domains/production.json@c11ad1ed5732:12-21"
+    },
+    {
+     "system": "portal-reporting-api",
+     "relation": "Batch (public.batch)",
+     "ref": "OntologyProject:ontology/schema/domains/manufacturing.json@c11ad1ed5732:1643-1655"
+    },
+    {
+     "system": "ontology",
+     "relation": "Lot availability (lot numbers as text only)",
+     "ref": "OntologyProject:ontology/schema/domains/items.json@c11ad1ed5732:431"
+    }
+   ],
+   "system_of_record": "FileMaker batch schedule (public.batch_calibration, served) for batch dates; the lot-to-batch allocation has no system of record the Workbench reads"
+  },
+  {
+   "id": "EMD-GAP-10",
+   "map_gap_index": 10,
+   "map_gap": "Lot dates live in FileMaker",
+   "map_stages": "1, 11",
+   "kind": "reader",
+   "name": "A lot's current expiry from every copy: FileMaker receipt, Portal lot and BC item ledger (lot number and expiration date)",
+   "map_says": "lot dates live in FileMaker: QC release updates only the FileMaker receipt row, and a new expiry is typed into its comment field, the QC log and the label",
+   "implementation": "the map says QC release writes only the FileMaker receipt row; unverified against Portal code",
+   "ontology_today": "FM receipt expirydate is served; the Portal lot is not served; the BC itemLedgerEntries allowlist reads no lot number and no expiration date.",
+   "needed_by": [
+    "EMD-05",
+    "EMD-07",
+    "EMD-A1"
+   ],
+   "sources": [
+    {
+     "system": "portal-reporting-api",
+     "relation": "public.receipt_raw_material",
+     "ref": "OntologyProject:ontology/source_registry.json@c11ad1ed5732:451"
+    },
+    {
+     "system": "portal",
+     "relation": "Lot (pending, not served)",
+     "ref": "OntologyProject:ontology/schema/domains/items.json@c11ad1ed5732:427-445"
+    },
+    {
+     "system": "bc",
+     "relation": "itemLedgerEntries allowlist",
+     "ref": "OntologyProject:integrations/live_source_grammar.py@c11ad1ed5732:558-560"
+    }
+   ],
+   "system_of_record": "today (map): the FileMaker receipt row (public.receipt_raw_material, served), with the new date in a free-text comment; target (map): the BC lot"
+  },
+  {
+   "id": "EMD-GAP-11",
+   "map_stages": "12",
+   "kind": "link",
+   "name": "Disposal.write_off (the write-off of a rejected lot to its case, with a reason code and the case number; returned quantity of customer-supplied lots)",
+   "map_says": "no reason code links the write-off to the case; a customer-supplied lot's return or disposal instruction is not recorded",
+   "implementation": "the map says write-offs post to BC as item journal batch PLXADJ through codeunit 50116, from the system map; unverified",
+   "ontology_today": "InventoryTransaction is a Portal model outside the reporting API; ItemLedgerEntry (partial) has no case or reason link.",
+   "needed_by": [
+    "EMD-11"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "InventoryTransaction (app_inventory_transaction)",
+     "ref": "OntologyProject:ontology/source_registry.json@c11ad1ed5732:1452"
+    },
+    {
+     "system": "bc",
+     "relation": "ItemLedgerEntry",
+     "ref": "OntologyProject:ontology/schema/domains/bc_finance.json@c11ad1ed5732:89-100"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "QC: when an expired lot is rejected, where is the write-off or return recorded today (a WMS transaction, FileMaker, a disposal form), and is the reason kept?"
+  },
+  {
+   "id": "EMD-GAP-12",
+   "map_stages": "8",
+   "kind": "link",
+   "name": "PurchaseOrder.replaces_lot (a replacement purchase to the expired lot and case it replaces)",
+   "map_says": "the replacement PO is not linked to the expired lot it replaces",
+   "ontology_today": "PurchaseOrder is served; no member or link names an expired lot or a disposition case.",
+   "needed_by": [
+    "EMD-11"
+   ],
+   "sources": [
+    {
+     "system": "portal-reporting-api",
+     "relation": "PurchaseOrder (public.app_purchase_order)",
+     "ref": "OntologyProject:ontology/schema/domains/purchasing.json@c11ad1ed5732:12-25"
+    }
+   ],
+   "system_of_record": "the Portal purchase order (public.app_purchase_order, served); the link itself has no system of record"
+  },
+  {
+   "id": "EMD-GAP-13",
+   "map_stages": "5, 7, 12",
+   "kind": "reader",
+   "name": "A visual read of the signed waiver page (lot, batch, signature date) and the stage 5 and stage 12 example originals",
+   "map_says": "the waiver names lot 52174440 and batch BC-26267D; the map's two further examples are pending",
+   "ontology_today": "The archive is read as text extraction only; the waiver's text layer and OCR disagree on both identifiers, so they stay unverified.",
+   "needed_by": [
+    "EMD-01",
+    "EMD-A4",
+    "EMD-A5"
+   ],
+   "sources": [
+    {
+     "system": "sharepoint",
+     "relation": "AGENTS /Ontology UseCases watch folder",
+     "ref": "OntologyProject:scripts/case_originals.py@c11ad1ed5732:1881-1943"
+    },
+    {
+     "system": "source-record",
+     "relation": "the map's source record (the claim, not a reader)",
+     "ref": "OntologyProject:context/28a8482d8ba0dec0ecf02871caab3fdfba9ac1aa5b02f3e288ec40a4fdbf64d1.json@c8fcb26d00c8"
+    }
+   ],
+   "system_of_record": "the map's archive in the AGENTS drive /Ontology UseCases (pinned by item id and SHA-256)"
+  }
+ ]
+}

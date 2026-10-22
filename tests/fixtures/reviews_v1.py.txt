@@ -1,0 +1,513 @@
+"""Human review decisions over the ontology: an append-only store and their projection.
+
+A person's correction survives a
+restart and changes the next investigation. Four decisions, each by one authenticated
+employee, timestamped, citing the exact record versions (L1 handle and content digest)
+the person reviewed:
+
+* ``accept_link`` / ``reject_link``: a declared link type between two records is
+  confirmed or refused (a mention lead becomes ``reviewed``, or ``contradicted``);
+* ``alias``: an identifier (one kind of ``ontology/schema/identifiers.json``, normalized
+  by the one grammar) names the subject record, read in a cited field of the evidence:
+  Vince's confirmed supplier number becomes a persistent alias of the PO;
+* ``document_kind``: a document record is of a Portal document type.
+
+A correction is a new record, never an edit: a later decision on the same key (the
+same link, the same alias of the same record, the document's kind) supersedes the
+earlier one, and ``retract`` withdraws a named review (the decision before it, if any,
+applies again). The table refuses UPDATE and DELETE (triggers) and this module has no
+path for either. The file lives in the Workbench state directory; nothing here writes
+to any business system.
+
+Withdrawal is automatic and never stored: a review applies only while every record
+version it cites is still the current version of its record (same digest). A new
+capture with other content withdraws it (``state_at``: ``withdrawn``,
+``evidence_changed``), and the projection gives its rows a ``superseded_at`` at that
+capture, so ``as_known_at`` still reads it for the time it held.
+
+Projection (``link_step``): a ``build_store`` ``post_project`` step writes every link
+decision into the generation being built as a ``reviewed`` (accept) or ``contradicted``
+(reject) link with binding ``reviewed``, the reviewer, time and review id, the cited
+handles as evidence and the union of their markings, valid while the decision held and
+its evidence was current. Aliases are not projected into the identifier index (an
+identifier row must cite a version of its own record, and the alias is read in another
+record): ``ontology.resolve.ReviewedAliases`` answers them for ``plx.find`` from this
+store at query time, so an alias applies from the next call. A build resolves document
+mentions through them too (``BuildAliases``: ``ontology.mentions`` and
+``ontology.document_fields`` read them beside the identifier index), so a later document
+naming a confirmed supplier number links to the record it names. Document kinds stay in
+this store (no store column holds a reviewed kind) and are served by ``plx.review``.
+"""
+
+from __future__ import annotations
+
+from contextlib import closing
+from datetime import datetime, timezone
+import hashlib
+import json
+from pathlib import Path
+import secrets
+import sqlite3
+from typing import Any, Callable, Iterable, Mapping, Sequence
+
+from ontology.store import canonical, instant, markings_text
+
+FORMAT = "plx-reviews/v1"
+DECISIONS = ("accept_link", "reject_link", "alias", "document_kind", "retract")
+LINK_DECISIONS = frozenset({"accept_link", "reject_link"})
+STATES = ("effective", "superseded", "retracted", "withdrawn", "unverified")
+STORE_FILE = "reviews.sqlite"
+
+_DDL = (
+    "CREATE TABLE IF NOT EXISTS review_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+    f"""CREATE TABLE IF NOT EXISTS reviews (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        review_id TEXT NOT NULL UNIQUE,
+        tenant TEXT NOT NULL,
+        review_key TEXT NOT NULL,
+        decision TEXT NOT NULL CHECK (decision IN ({", ".join(repr(d) for d in DECISIONS)})),
+        subject TEXT NOT NULL,
+        target TEXT,
+        link_type TEXT,
+        alias_kind TEXT,
+        alias_normalized TEXT,
+        alias_raw TEXT,
+        document_kind TEXT,
+        retracts TEXT REFERENCES reviews(review_id),
+        evidence TEXT NOT NULL CHECK (json_valid(evidence) AND json_type(evidence) = 'array'),
+        author TEXT NOT NULL CHECK (json_valid(author)),
+        recorded_at TEXT NOT NULL,
+        CHECK (decision = 'retract' OR json_array_length(evidence) > 0),
+        CHECK ((decision = 'retract') = (retracts IS NOT NULL)))""",
+    "CREATE INDEX IF NOT EXISTS reviews_by_key ON reviews(tenant, review_key, seq)",
+    "CREATE INDEX IF NOT EXISTS reviews_by_subject ON reviews(tenant, subject)",
+    "CREATE INDEX IF NOT EXISTS reviews_by_target ON reviews(tenant, target)",
+    "CREATE INDEX IF NOT EXISTS reviews_by_alias ON reviews(tenant, alias_kind, alias_normalized)",
+    # Append-only: a correction is a new record.
+    "CREATE TRIGGER IF NOT EXISTS reviews_no_update BEFORE UPDATE ON reviews "
+    "BEGIN SELECT RAISE(ABORT, 'reviews_append_only'); END",
+    "CREATE TRIGGER IF NOT EXISTS reviews_no_delete BEFORE DELETE ON reviews "
+    "BEGIN SELECT RAISE(ABORT, 'reviews_append_only'); END",
+)
+
+
+class ReviewError(ValueError):
+    """A review refused; ``code`` is stable."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+def store_path(state_dir: str | Path) -> Path:
+    """The review store of a Workbench state directory."""
+    return Path(state_dir) / STORE_FILE
+
+
+def review_key(decision: str, subject: str, *, target: str | None = None,
+               link_type: str | None = None, alias_kind: str | None = None,
+               alias_normalized: str | None = None) -> str:
+    """What a decision is about: a later decision with the same key supersedes it."""
+    if decision in LINK_DECISIONS:
+        parts: list[Any] = ["link", subject, target, link_type]
+    elif decision == "alias":
+        parts = ["alias", subject, alias_kind, alias_normalized]
+    elif decision == "document_kind":
+        parts = ["document_kind", subject]
+    else:
+        raise ReviewError("decision_invalid")
+    return hashlib.sha256(canonical(parts).encode("utf-8")).hexdigest()
+
+
+def _record(row: sqlite3.Row) -> dict[str, Any]:
+    out = {"seq": row["seq"], "review_id": row["review_id"], "tenant": row["tenant"],
+           "review_key": row["review_key"], "decision": row["decision"],
+           "subject": row["subject"], "evidence": json.loads(row["evidence"]),
+           "author": json.loads(row["author"]), "recorded_at": row["recorded_at"]}
+    for column in ("target", "link_type", "document_kind", "retracts"):
+        if row[column] is not None:
+            out[column] = row[column]
+    if row["alias_kind"] is not None:
+        out["alias"] = {"identifier_kind": row["alias_kind"],
+                        "normalized": row["alias_normalized"], "raw": row["alias_raw"]}
+    return out
+
+
+class ReviewStore:
+    """Review decisions in the Workbench's own SQLite file: ``record`` appends, the rest
+    reads. ``clock`` returns the UTC now a record is stamped with (never earlier than the
+    tenant's last record, so store order is time order)."""
+
+    def __init__(self, path: str | Path, *,
+                 clock: Callable[[], datetime] | None = None) -> None:
+        self.path = Path(path)
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(self._db()) as db, db:
+            for statement in _DDL:
+                db.execute(statement)
+            db.execute("INSERT INTO review_meta(key, value) VALUES ('format', ?) "
+                       "ON CONFLICT(key) DO NOTHING", (FORMAT,))
+
+    def _db(self) -> sqlite3.Connection:
+        db = sqlite3.connect(self.path, timeout=30)
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA foreign_keys = ON")
+        return db
+
+    def record(self, *, tenant: str, author: Mapping[str, Any], decision: str, subject: str,
+               evidence: Sequence[Mapping[str, Any]], target: str | None = None,
+               link_type: str | None = None, alias: Mapping[str, str] | None = None,
+               document_kind: str | None = None, retracts: str | None = None
+               ) -> tuple[dict[str, Any], bool]:
+        """Append one decision; returns ``(record, created)``. The caller has checked the
+        evidence for the reader and derived ``author`` from the session. Repeating the
+        decision that is already in force for its key (same payload, evidence and
+        author) appends nothing and returns that record (``created`` False)."""
+        if decision not in DECISIONS:
+            raise ReviewError("decision_invalid")
+        if not isinstance(author, Mapping) or not author.get("principal"):
+            raise ReviewError("author_required")
+        evidence = [dict(item) for item in evidence]
+        with closing(self._db()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            if decision == "retract":
+                named = db.execute("SELECT * FROM reviews WHERE tenant = ? AND review_id = ?",
+                                   (tenant, retracts)).fetchone()
+                if named is None:
+                    raise ReviewError("review_not_found")
+                if named["decision"] == "retract":
+                    raise ReviewError("retract_of_a_retraction")
+                if db.execute("SELECT 1 FROM reviews WHERE tenant = ? AND retracts = ?",
+                              (tenant, retracts)).fetchone():
+                    raise ReviewError("already_retracted")
+                key, subject = named["review_key"], named["subject"]
+            else:
+                if retracts is not None or not evidence:
+                    raise ReviewError("evidence_required" if not evidence
+                                      else "retracts_only_with_retract")
+                key = review_key(decision, subject, target=target, link_type=link_type,
+                                 alias_kind=(alias or {}).get("identifier_kind"),
+                                 alias_normalized=(alias or {}).get("normalized"))
+                current = effective(_record(row) for row in db.execute(
+                    "SELECT * FROM reviews WHERE tenant = ? AND review_key = ? ORDER BY seq",
+                    (tenant, key))).get(key)
+                if current is not None and current["decision"] == decision and (
+                        current.get("document_kind") == document_kind
+                        and current["evidence"] == evidence
+                        and current["author"] == dict(author)):
+                    return current, False
+            last = db.execute("SELECT MAX(recorded_at) FROM reviews WHERE tenant = ?",
+                              (tenant,)).fetchone()[0]
+            now = instant(self._clock())
+            recorded_at = max(now, last) if last else now
+            review_id = "rev-" + secrets.token_hex(16)
+            db.execute(
+                "INSERT INTO reviews (review_id, tenant, review_key, decision, subject, "
+                "target, link_type, alias_kind, alias_normalized, alias_raw, document_kind, "
+                "retracts, evidence, author, recorded_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (review_id, tenant, key, decision, subject, target, link_type,
+                 (alias or {}).get("identifier_kind"), (alias or {}).get("normalized"),
+                 (alias or {}).get("raw"), document_kind, retracts, canonical(evidence),
+                 canonical(dict(author)), recorded_at))
+            row = db.execute("SELECT * FROM reviews WHERE review_id = ?",
+                             (review_id,)).fetchone()
+        return _record(row), True
+
+    def get(self, tenant: str, review_id: str) -> dict[str, Any] | None:
+        with closing(self._db()) as db:
+            row = db.execute("SELECT * FROM reviews WHERE tenant = ? AND review_id = ?",
+                             (tenant, review_id)).fetchone()
+        return None if row is None else _record(row)
+
+    def history(self, tenant: str, object_id: str) -> list[dict[str, Any]]:
+        """Every record of every key that names ``object_id`` (as subject or target),
+        retractions included, in store order."""
+        with closing(self._db()) as db:
+            rows = db.execute(
+                "SELECT * FROM reviews WHERE tenant = ? AND review_key IN (SELECT review_key "
+                "FROM reviews WHERE tenant = ? AND (subject = ? OR target = ?)) ORDER BY seq",
+                (tenant, tenant, object_id, object_id)).fetchall()
+        return [_record(row) for row in rows]
+
+    def alias_history(self, tenant: str, keys: Iterable[tuple[str, str]] | None
+                      ) -> list[dict[str, Any]]:
+        """Every record of every alias key whose (kind, normalized) is in ``keys``
+        (None: of every alias key)."""
+        if keys is None:
+            where, params = "", ()
+        else:
+            wanted = sorted({(str(kind), str(normalized)) for kind, normalized in keys})
+            if not wanted:
+                return []
+            where = ("AND (alias_kind, alias_normalized) IN (SELECT json_extract(value, "
+                     "'$[0]'), json_extract(value, '$[1]') FROM json_each(?))")
+            params = (json.dumps(wanted),)
+        with closing(self._db()) as db:
+            rows = db.execute(
+                "SELECT * FROM reviews WHERE tenant = ? AND review_key IN (SELECT review_key "
+                f"FROM reviews WHERE tenant = ? AND decision = 'alias' {where}) ORDER BY seq",
+                (tenant, tenant, *params)).fetchall()
+        return [_record(row) for row in rows]
+
+    def link_history(self, tenant: str) -> list[dict[str, Any]]:
+        """Every record of every link key, in store order."""
+        with closing(self._db()) as db:
+            rows = db.execute(
+                "SELECT * FROM reviews WHERE tenant = ? AND review_key IN (SELECT review_key "
+                "FROM reviews WHERE tenant = ? AND decision IN ('accept_link', 'reject_link')) "
+                "ORDER BY seq", (tenant, tenant)).fetchall()
+        return [_record(row) for row in rows]
+
+
+# --------------------------------------------------------------------------- folding
+
+def _by_key(records: Iterable[Mapping[str, Any]]) -> dict[str, list[Mapping[str, Any]]]:
+    out: dict[str, list[Mapping[str, Any]]] = {}
+    for record in sorted(records, key=lambda r: r["seq"]):
+        out.setdefault(record["review_key"], []).append(record)
+    return out
+
+
+def _in_force(records: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+    retracted = {r["retracts"] for r in records if r["decision"] == "retract"}
+    for record in reversed(records):
+        if record["decision"] != "retract" and record["review_id"] not in retracted:
+            return record
+    return None
+
+
+def effective(records: Iterable[Mapping[str, Any]], at: str | None = None
+              ) -> dict[str, Mapping[str, Any]]:
+    """review key -> the decision in force (as of ``at``, store time text; None = now):
+    the key's latest decision that no retraction names. A key whose decisions are all
+    retracted has none."""
+    out = {}
+    for key, records in _by_key(r for r in records
+                                if at is None or r["recorded_at"] <= at).items():
+        current = _in_force(records)
+        if current is not None:
+            out[key] = current
+    return out
+
+
+def state_at(records: Sequence[Mapping[str, Any]],
+             current_digest: Callable[[str], str | None]) -> dict[str, tuple[str, str | None]]:
+    """review id -> (state, reason) now. ``current_digest(object_id)``: the digest of the
+    record's current version in the store the reader reads (None when not held there).
+    A decision in force whose cited evidence moved is ``withdrawn``
+    (``evidence_changed``); one whose evidence the store does not hold is
+    ``unverified`` (``evidence_not_in_store``)."""
+    out: dict[str, tuple[str, str | None]] = {}
+    for key, chain in _by_key(records).items():
+        in_force = _in_force(chain)
+        retracted = {r["retracts"] for r in chain if r["decision"] == "retract"}
+        for record in chain:
+            rid = record["review_id"]
+            if record["decision"] == "retract":
+                out[rid] = ("effective", None)
+            elif rid in retracted:
+                out[rid] = ("retracted", "retracted_by_review")
+            elif in_force is None or rid != in_force["review_id"]:
+                out[rid] = ("superseded", "later_review")
+            else:
+                digests = [current_digest(item["object_id"]) for item in record["evidence"]]
+                if any(d is None for d in digests):
+                    out[rid] = ("unverified", "evidence_not_in_store")
+                elif any(d != item["digest"] for d, item in zip(digests, record["evidence"])):
+                    out[rid] = ("withdrawn", "evidence_changed")
+                else:
+                    out[rid] = ("effective", None)
+    return out
+
+
+def _spans(chain: Sequence[Mapping[str, Any]]) -> list[tuple[Mapping[str, Any], str, str | None]]:
+    """(decision, from, until) for each stretch of store time one decision was in force."""
+    out: list[tuple[Mapping[str, Any], str, str | None]] = []
+    held: tuple[Mapping[str, Any], str] | None = None
+    for index in range(len(chain)):
+        moment = chain[index]["recorded_at"]
+        current = _in_force(chain[:index + 1])
+        if held is not None and (current is None or current["review_id"] != held[0]["review_id"]):
+            out.append((held[0], held[1], moment))
+            held = None
+        if current is not None and held is None:
+            held = (current, moment)
+    if held is not None:
+        out.append((held[0], held[1], None))
+    return out
+
+
+# --------------------------------------------------------------------------- projection
+
+def _cited_version(conn: sqlite3.Connection, item: Mapping[str, Any], at: str
+                   ) -> sqlite3.Row | None:
+    """The version of the cited record with the cited digest that was current when the
+    decision was made, else its latest version with that digest."""
+    rows = conn.execute(
+        "SELECT * FROM object_versions WHERE object_id = ? AND digest = ? "
+        "ORDER BY recorded_at DESC", (item["object_id"], item["digest"])).fetchall()
+    for row in rows:
+        if row["recorded_at"] <= at and (row["superseded_at"] is None
+                                         or row["superseded_at"] > at):
+            return row
+    return rows[0] if rows else None
+
+
+def _held(conn: sqlite3.Connection, record: Mapping[str, Any], start: str, until: str | None
+          ) -> tuple[list[sqlite3.Row], str, str | None] | str:
+    """The generation's versions a decision cites and the stretch [begin, end) within its
+    span [start, until) over which every one of them is current, else why there is none
+    (``evidence_not_projected``, ``evidence_changed_before_review``)."""
+    versions = [_cited_version(conn, item, record["recorded_at"])
+                for item in record["evidence"]]
+    if None in versions:
+        return "evidence_not_projected"
+    begin = max([start] + [v["recorded_at"] for v in versions])
+    ends_at = [t for t in [until] + [v["superseded_at"] for v in versions] if t]
+    end = min(ends_at) if ends_at else None
+    if end is not None and end <= begin:
+        return "evidence_changed_before_review"
+    return versions, begin, end
+
+
+class BuildAliases:
+    """Reviewed aliases as candidates of the generation being built: the build-time
+    counterpart of ``ontology.resolve.ReviewedAliases`` (which answers ``plx.find`` per
+    reader). ``rows(conn, kind, normalized)`` gives, for each stretch an alias decision of
+    ``tenant`` held while every version it cites was current in this generation, one row
+    shaped as an identifier-index row of its subject (role ``alias``, property
+    ``reviewed_alias``, the cited field's handle and path, the union of the cited
+    versions' markings) plus ``review_id`` and ``evidence_handles`` (every cited version).
+    Actor-free like the index: a link made from it cites every evidence handle, so a
+    reader who may not read the evidence does not see the link. A subject the generation
+    does not hold, or a decision citing no field, gives no row. The store is read once."""
+
+    PROPERTY = "reviewed_alias"   # as ontology.resolve.ReviewedAliases.PROPERTY
+
+    def __init__(self, reviews: ReviewStore, tenant: str) -> None:
+        self._chains: dict[tuple[str, str], list[list[Mapping[str, Any]]]] = {}
+        for chain in _by_key(reviews.alias_history(tenant, None)).values():
+            alias = next(r["alias"] for r in chain if "alias" in r)
+            key = (alias["identifier_kind"], alias["normalized"])
+            self._chains.setdefault(key, []).append(chain)
+        self._rows: dict[tuple[str, str], list[dict[str, Any]]] = {}
+
+    def rows(self, conn: sqlite3.Connection, kind: str, normalized: str
+             ) -> list[dict[str, Any]]:
+        key = (kind, normalized)
+        if key not in self._rows:
+            previous = conn.row_factory
+            conn.row_factory = sqlite3.Row
+            try:
+                self._rows[key] = [row for chain in self._chains.get(key, ())
+                                   for row in self._chain_rows(conn, chain)]
+            finally:
+                conn.row_factory = previous
+        return self._rows[key]
+
+    def _chain_rows(self, conn: sqlite3.Connection, chain: Sequence[Mapping[str, Any]]
+                    ) -> list[dict[str, Any]]:
+        out = []
+        for record, start, until in _spans(chain):
+            subject = conn.execute("SELECT object_type FROM objects WHERE object_id = ?",
+                                   (record["subject"],)).fetchone()
+            cited = next((i for i, item in enumerate(record["evidence"])
+                          if item.get("field_path")), None)
+            held = _held(conn, record, start, until)
+            if subject is None or cited is None or isinstance(held, str):
+                continue
+            versions, begin, end = held
+            marks: set[str] = set()
+            for version in versions:
+                marks.update(json.loads(version["markings"]))
+            alias = record["alias"]
+            out.append({
+                "object_id": record["subject"], "object_type": subject[0],
+                "identifier_kind": alias["identifier_kind"],
+                "normalized": alias["normalized"], "property": self.PROPERTY,
+                "role": "alias", "l1_handle": versions[cited]["l1_handle"],
+                "field_path": record["evidence"][cited]["field_path"],
+                "lineage": versions[cited]["lineage"], "recorded_at": begin,
+                "superseded_at": end, "digest": versions[cited]["digest"],
+                "markings": markings_text(marks), "review_id": record["review_id"],
+                "evidence_handles": sorted({v["l1_handle"] for v in versions})})
+        return out
+
+
+def link_step(reviews: ReviewStore, tenant: str
+              ) -> Callable[[Any, Any], dict[str, Any]]:
+    """A ``build_store`` ``post_project`` step writing ``tenant``'s link decisions into
+    the generation being built (see the module docstring). Counts what was not written:
+    an end or a cited version the generation does not hold, a link type the schema does
+    not declare between the two types, or evidence that changed before the decision."""
+
+    def step(builder: Any, projector: Any) -> dict[str, Any]:
+        conn = builder.connection
+        previous = conn.row_factory
+        conn.row_factory = sqlite3.Row
+        try:
+            return _write_links(conn, builder, getattr(projector, "links", {}) or {},
+                                reviews.link_history(tenant))
+        finally:
+            conn.row_factory = previous
+    return step
+
+
+def _write_links(conn: sqlite3.Connection, builder: Any, declared: Mapping[str, Any],
+                 history: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    counts = {"decisions": 0, "links": 0, "end_not_projected": 0, "undeclared_link_type": 0,
+              "evidence_not_projected": 0, "evidence_changed_before_review": 0}
+    tiers: dict[str, int] = {}
+    rows = []
+    types: dict[str, str | None] = {}
+    for chain in _by_key(history).values():
+        for record, start, until in _spans(chain):
+            counts["decisions"] += 1
+            ends = [record["subject"], record["target"]]
+            for oid in ends:
+                if oid not in types:
+                    found = conn.execute("SELECT object_type FROM objects WHERE object_id = ?",
+                                         (oid,)).fetchone()
+                    types[oid] = None if found is None else found[0]
+            if None in (types[oid] for oid in ends):
+                counts["end_not_projected"] += 1
+                continue
+            link = declared.get(record["link_type"]) or {}
+            if (link.get("from"), link.get("to")) != (types[ends[0]], types[ends[1]]):
+                counts["undeclared_link_type"] += 1
+                continue
+            held = _held(conn, record, start, until)
+            if isinstance(held, str):
+                counts[held] += 1
+                continue
+            versions, begin, end = held
+            accept = record["decision"] == "accept_link"
+            cites = [{"l1_handle": v["l1_handle"], "field_path": item["field_path"],
+                      "digest": v["digest"], "lineage": v["lineage"]}
+                     for v, item in zip(versions, record["evidence"]) if item.get("field_path")]
+            feature: dict[str, Any] = {"feature": "person_reviewed", "agrees": accept}
+            if cites:
+                feature["citations"] = cites[:4]
+            marks: set[str] = set()
+            for version in versions:
+                marks.update(json.loads(version["markings"]))
+            tier = "reviewed" if accept else "contradicted"
+            rows.append({
+                "link_id": f"rvw-{record['review_id'][4:]}-{begin}",
+                "link_type": record["link_type"], "from_object": ends[0], "to_object": ends[1],
+                "tier": tier, "binding_kind": "reviewed", "link_contract": None,
+                "reason": canonical([feature]), "why_not": "[]",
+                "evidence_handles": canonical(sorted({v["l1_handle"] for v in versions})),
+                "reviewed_by": record["author"]["principal"],
+                "reviewed_at": record["recorded_at"], "review_action_id": record["review_id"],
+                "markings": markings_text(marks), "recorded_at": begin, "superseded_at": end})
+            tiers[tier] = tiers.get(tier, 0) + 1
+    counts["links"] = builder.add("links", rows) if rows else 0
+    return {"counts": counts, "link_tiers": tiers}
+
+
+__all__ = ["BuildAliases", "DECISIONS", "FORMAT", "LINK_DECISIONS", "ReviewError",
+           "ReviewStore", "STATES", "effective", "link_step", "review_key", "state_at",
+           "store_path"]

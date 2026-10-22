@@ -1,0 +1,137 @@
+{
+ "id": "mc.sources_capture",
+ "description": "Mission Control as an ontology source: integrations.mc_sources captures one MC operator scope (mc_get_context full, or, when that answer is over the byte bound, mc_search_tasks keyset pages between two mc_list_buckets reads with and without includeArchived; mc_get_task per task up to 25, mc_list_buckets, mc_search_knowledge for one fixed harmless query; read tools only) into a throwaway capture store in {tmp}, twice (the second pass resumes the task-detail cursor and must not re-version unchanged records), then resolves every captured handle offline for a reader the throwaway audience grants, checks that an ungranted reader sees no unit, and that a reader granted every collection but one MC project (the first captured; MC scopes tasks, approval gates, task events and buckets per project, a task without a bucket row as unparented, PLX_MC@77a5af6 src/lib/permissions/project-acl.ts) sees, through records, resolve and completeness, exactly that project's records and 0 of any other project's; with fewer than two projects captured that probe has nothing to withhold, so _summary.project_trim is not_measured and the result is recorded incomplete (complete_when), never a per-project pass. Output is counts, states, reasons and booleans only; never a title, id, email, query hit or citation.",
+ "source": "mission-control-mcp",
+ "command": [
+  "python3",
+  "-m",
+  "integrations.mc_sources",
+  "capture",
+  "--store",
+  "{tmp}/mc-capture.sqlite",
+  "--scope",
+  "live",
+  "--query",
+  "PLX Agent Workbench",
+  "--max-task-reads",
+  "25",
+  "--passes",
+  "2",
+  "--operator-email-default",
+  "cos@petrasoap.com"
+ ],
+ "timeout_seconds": 300,
+ "requires_env": [
+  "MC_MCP_API_KEY"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "_summary.units_total",
+   "_summary.units_complete",
+   "_summary.records_current",
+   "_summary.new_versions_per_pass",
+   "_summary.handles_resolved",
+   "passes[*].units[*].collection",
+   "passes[*].units[*].state",
+   "requests_sent",
+   "tools_called",
+   "_summary.projects_seen",
+   "_summary.project_scoped_records",
+   "_summary.project_trim",
+   "_summary.tasks_dropped_by_reason.no_bucket_row",
+   "_summary.tasks_dropped_by_reason.bucket_project_invalid",
+   "_summary.tasks_dropped_by_reason.not_permitted",
+   "_summary.tasks_dropped_by_reason.other"
+  ],
+  "json_equals": {
+   "evidence_label": "live-read",
+   "_summary.units_total": 5,
+   "_summary.units_failed": 0,
+   "_summary.tools_outside_policy": 0,
+   "_summary.resolve_all_ok": true,
+   "_summary.audience_trim_ok": true,
+   "_summary.atomic_upstream_snapshot": false,
+   "_summary.deletions_proven": false,
+   "_summary.ungranted_project_records": 0,
+   "_summary.granted_project_records_ok": true
+  },
+  "json_min": {
+   "_summary.units_complete": 2,
+   "_summary.handles_resolved": 1,
+   "_summary.project_scoped_records": 1
+  }
+ },
+ "complete_when": {
+  "_summary.project_trim": "measured"
+ },
+ "record": [
+  "operator_email_source",
+  "requests_sent",
+  "tools_called",
+  "passes[*].units[*].collection",
+  "passes[*].units[*].state",
+  "passes[*].units[*].reason",
+  "passes[*].units[*].error",
+  "passes[*].units[*].records_current",
+  "passes[*].units[*].new_versions",
+  "passes[*].units[*].dropped",
+  "_summary.tasks_dropped_by_reason.no_bucket_row",
+  "_summary.tasks_dropped_by_reason.bucket_project_invalid",
+  "_summary.tasks_dropped_by_reason.not_permitted",
+  "_summary.tasks_dropped_by_reason.other",
+  "_summary.units_total",
+  "_summary.units_complete",
+  "_summary.units_failed",
+  "_summary.records_current",
+  "_summary.new_versions_per_pass",
+  "_summary.handles_resolved",
+  "_summary.resolve_all_ok",
+  "_summary.audience_trim_ok",
+  "_summary.projects_seen",
+  "_summary.project_trim",
+  "_summary.project_scoped_records",
+  "_summary.ungranted_project_records",
+  "_summary.granted_project_records_ok",
+  "_summary.units_blocked",
+  "blocked_upstream[*].part",
+  "blocked_upstream[*].error_code"
+ ],
+ "record_enums": [
+  "operator_email_source",
+  "tools_called",
+  "passes[*].units[*].collection",
+  "passes[*].units[*].state",
+  "passes[*].units[*].reason",
+  "passes[*].units[*].error",
+  "_summary.project_trim",
+  "blocked_upstream[*].part",
+  "blocked_upstream[*].error_code"
+ ],
+ "notes": "live-unverified until the live check records a result; module tests are injected-transport (integrations/tests/test_mc_sources.py, whose LiveCheckSpecTests runs this exact command against a fake MC and requires every expectation here to hold except evidence_label). MC read tools only, (read-only MC tools/call by the runner, each appending MC's own mcp.tool.invoked row); integrations.mc_sources.CaptureMcClient refuses every name outside CAPTURE_TOOLS before I/O and plx_hub_guard refuses MC writes as well. The five units are tasks, approvals, task_events, buckets and knowledge. units_complete >= 2: tasks and buckets are complete reads; approvals completes once every task's detail is read (25 per pass, so an MC with more than 50 visible tasks leaves it in_progress with reason cap:max_task_reads, resumable, recorded rather than required), task_events is partial (source_window:last_25) when a task returns MC's whole 25-event window, and knowledge is always partial (ranked_search: a top-k search is never an enumeration). new_versions_per_pass[1] should be near 0 (only what MC changed between the passes). Brain items are not captured by mc_sources (integrations/knowledge_source.py is the only brain-item path). Shared (non-restricted) MC projects need the explicit mc:<scope>:project:<p> grant as well (docs/decisions/2026-10-07-mc-shared-project-grant.md); this check's audience grants mc:<scope>:*, so a live ingestion audience must be updated by its owner to grant each project, and the ingestion worker reports what it withholds for a missing project grant (withheld:project_grant:<n>). Blocked, not failed (live 53285db79efc: mc_get_context depth full answered upstream_error with no layer while mc.brain_probe's compact read passed): a unit an MC-side failure stopped has reason blocked_upstream and error the failing layer (http_<5xx|408|429>, jsonrpc_<code> other than our-request codes -32700/-32600/-32601/-32602, tool_error for result.isError, transport, knowledge_status) and is listed in blocked_upstream (part = collection, error_code = layer); expect_blocked then applies: the check is blocked naming the layer, never pass, red after 24 h. A JSON-RPC error about our arguments (-32602 jsonrpc_-32602) or any unclassified failure stays source_error, a product failure. expect_blocked has no json_min: the blocked parts are required (json_fields), and a run with every unit blocked is still recorded blocked, not failed or measured in part. registry_names: the source registry credits each mission_control relation a unit of this run captured (passes[*].units[*].collection: tasks, approvals, task_events, buckets, knowledge) with the check's result, so a relation no unit reached (e.g. approvals while task details are unread) is not credited. tasks_dropped_by_reason: the tasks unit's dropped tasks of the last pass by reason, counts only: no_bucket_row (its bucket in neither bucket list while the lists moved during a paged read), bucket_project_invalid (its bucket's project is no MC project id), not_permitted (counted in mc_search_tasks' total but on no page served to this operator) and other (no task id, or returned twice); it names which cause drops the tasks a live run reports as dropped. Retired work (PLX_MC@2f653cf TASK-2532) is recorded with row.retired_in_mc, never dropped.",
+ "expect_blocked": {
+  "exit_code": 0,
+  "json_fields": [
+   "blocked_upstream[*].part",
+   "blocked_upstream[*].error_code",
+   "requests_sent",
+   "tools_called",
+   "passes[*].units[*].state"
+  ],
+  "json_equals": {
+   "evidence_label": "live-read",
+   "_summary.units_failed": 0,
+   "_summary.tools_outside_policy": 0,
+   "_summary.resolve_all_ok": true,
+   "_summary.audience_trim_ok": true,
+   "_summary.atomic_upstream_snapshot": false,
+   "_summary.deletions_proven": false,
+   "_summary.ungranted_project_records": 0
+  }
+ },
+ "registry_names": {
+  "pass": [
+   "passes[*].units[*].collection"
+  ]
+ }
+}

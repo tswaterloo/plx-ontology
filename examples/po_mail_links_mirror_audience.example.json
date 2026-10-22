@@ -1,0 +1,12 @@
+{
+  "schema": "plx-source-mirror-audience/v1",
+  "note": "EXAMPLE configuration, not authority (verify/live-checks/case.po_sent_chain.json). The plxwb_ key is one shared login, so the source mirror enforces this relation audience itself: default deny. Purchasing reads Portal purchase orders and suppliers, FM purchase orders and Sage PO headers only.",
+  "tenant": "plx",
+  "default_classification": "internal",
+  "audiences": {
+    "public.app_purchase_order": ["staff:purchasing"],
+    "public.app_supplier": ["staff:purchasing"],
+    "public.generated_purchase_order": ["staff:purchasing"],
+    "sage.po_header": ["staff:purchasing"]
+  }
+}

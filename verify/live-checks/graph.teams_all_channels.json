@@ -1,0 +1,159 @@
+{
+ "id": "graph.teams_all_channels",
+ "description": "Teams everything (2026-10-21): the census of graph.teams_capture over every team of the tenant (graph.teams, not only the teams a member joined), each team's members, each private or shared channel's and each chat's members read first and cleared by the shared people guard (integrations/people_exclusion.py) before its name, channels or messages are requested; a team, channel or chat with an excluded member, and a one-on-one chat whose id embeds an excluded person's object id, is refused before any request naming it, counted and never named, and nothing of it is requested again in the run. The scope (examples/teams_capture_scope.all_channels.live-check.json) sets teams all_census_cleared; its members cos@ and vince@ are only the member-joined baseline: their joined teams are listed (ids) and coverage.channels_member_joined counts the channels the census enumerated in those teams, so coverage.wider_than_member_joined is true when the census enumerated more channels than member-joined discovery would. Content is read of every channel and chat this census cleared only once the owner's plx-teams-content-confirmation/v1 of scope all_census_cleared (his full name, the date; never written or defaulted by code) sits beside the census file; without a usable one the run is a typed block on part teams.content_confirmation, cause later_ask (teams-content-confirmation). Every GET the client sends passes the run's request log (integrations.capture_teams.RequestLog), which checks its URL against the people guard and the refused set before it is sent: coverage.excluded_requested must be 0 and coverage.requests_logged equal gets_sent (the log saw every GET). Chats need Chat.Read.All (a Microsoft protected API): without it a chat read is its own blocked part (teams.chats, teams.chat_members or teams.chat_messages, error_code missing_permission, the permission named) beside the channels captured, never hidden. A typed block is accepted only when every part names its Graph permission or is the owner-confirmation later ask (coverage.blocked_unnamed 0). Then the store is read back offline as a member, an outsider and a withheld principal (0 rows). Counts, booleans and enums only.",
+ "source": "microsoft-graph",
+ "command": [
+  "python3",
+  "-m",
+  "integrations.graph_read",
+  "teams-capture",
+  "--scope",
+  "examples/teams_capture_scope.all_channels.live-check.json",
+  "--live-audience",
+  "examples/teams_capture_audience.live-check.json",
+  "--runs",
+  "2",
+  "--max-runs",
+  "12",
+  "--budget-seconds",
+  "6300"
+ ],
+ "timeout_seconds": 6900,
+ "requires_env": [
+  "MICROSOFT_GRAPH_TENANT_ID",
+  "MICROSOFT_GRAPH_CLIENT_ID",
+  "MICROSOFT_GRAPH_CLIENT_SECRET"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "coverage.channels_member_joined",
+   "census.member_joined.teams",
+   "summary.messages_current",
+   "resolve_check.resolved_offline",
+   "census.message_counts.status"
+  ],
+  "json_equals": {
+   "ok": true,
+   "storage.outside_git_tree": true,
+   "storage.under_state_dir": true,
+   "summary.source_errors": 0,
+   "leak_check.outsider_actor_rows": 0,
+   "leak_check.outsider_actor_resolved": 0,
+   "leak_check.withheld_actor_rows": 0,
+   "leak_check.withheld_actor_resolved": 0,
+   "census.status": "complete",
+   "census.file.outside_git_tree": true,
+   "content.status": "confirmed",
+   "content.form": "all_census_cleared",
+   "coverage.wider_than_member_joined": true,
+   "coverage.excluded_requested": 0,
+   "coverage.blocked_unnamed": 0
+  },
+  "json_same": {
+   "coverage.requests_logged": "gets_sent",
+   "resolve_check.resolved_offline": "resolve_check.handles_checked"
+  },
+  "json_min": {
+   "coverage.channels_enumerated": 1,
+   "coverage.channels_captured": 1,
+   "census.teams": 1
+  },
+  "json_empty": [
+   "blocked_upstream"
+  ]
+ },
+ "expect_blocked": {
+  "exit_code": 1,
+  "json_fields": [
+   "blocked_upstream[*].part",
+   "blocked_upstream[*].error_code",
+   "blocked_upstream[*].cause",
+   "census.teams",
+   "census.channels",
+   "content.status"
+  ],
+  "json_equals": {
+   "status": "blocked",
+   "storage.outside_git_tree": true,
+   "census.file.outside_git_tree": true,
+   "coverage.excluded_requested": 0,
+   "coverage.blocked_unnamed": 0,
+   "leak_check.outsider_actor_rows": 0,
+   "leak_check.outsider_actor_resolved": 0,
+   "leak_check.withheld_actor_rows": 0,
+   "leak_check.withheld_actor_resolved": 0
+  },
+  "json_same": {
+   "coverage.requests_logged": "gets_sent"
+  }
+ },
+ "record": [
+  "ok",
+  "status",
+  "storage",
+  "summary",
+  "leak_check",
+  "resolve_check",
+  "coverage",
+  "content",
+  "content.status",
+  "content.form",
+  "content.confirmation",
+  "census.status",
+  "census.teams",
+  "census.channels",
+  "census.chats",
+  "census.teams_refused",
+  "census.channels_refused",
+  "census.chats_refused",
+  "census.member_joined",
+  "census.message_counts.status",
+  "blocked_upstream",
+  "blocked_upstream[*].part",
+  "blocked_upstream[*].permission",
+  "blocked_upstream[*].error_code",
+  "blocked_upstream[*].cause",
+  "pass.runs",
+  "pass.stop",
+  "pass.last_run_complete",
+  "pass.unvisited",
+  "budget",
+  "requests_sent",
+  "gets_sent",
+  "operations_read"
+ ],
+ "record_keys": [
+  "storage",
+  "summary",
+  "leak_check",
+  "resolve_check",
+  "coverage",
+  "content",
+  "census.teams_refused",
+  "census.channels_refused",
+  "census.chats_refused",
+  "census.member_joined"
+ ],
+ "record_enums": [
+  "status",
+  "content.status",
+  "content.form",
+  "content.confirmation",
+  "census.status",
+  "census.message_counts.status",
+  "blocked_upstream[*].part",
+  "blocked_upstream[*].permission",
+  "blocked_upstream[*].error_code",
+  "blocked_upstream[*].cause",
+  "pass.stop",
+  "operations_read"
+ ],
+ "notes": "Live-unverified: written and checked against the injected-transport fixture run only (integrations/tests/test_capture_teams_all_channels.py runs this argv over a fake Graph and applies check_expectations to its output; evidence label injected-transport). No complete_when: one pass over every cleared channel of the tenant can take several daily runs (the rotation of graph.teams_capture carries it in the host state directory); this check asserts breadth (wider_than_member_joined, channels_captured), the guard's request log and the read-back, not a finished pass. Unverified live assumptions: graph.teams lists every team of the tenant app-only (Team.ReadBasic.All); /users/{id}/joinedTeams answers for the baseline members; a one-on-one chat id embeds both members' object ids (19:<oid>_<oid>@unq.gbl.spaces), which is why such a chat with an excluded person is refused before its members are read. The request log decides on the URL before the request is sent and keeps no URL; an address it cannot decide (guard unbound) counts as excluded (fail closed). registry_names: the source registry credits a Graph endpoint template only through operations_read.",
+ "registry_names": {
+  "pass": [
+   "operations_read"
+  ]
+ },
+ "cadence": "weekly"
+}

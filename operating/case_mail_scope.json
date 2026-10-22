@@ -1,0 +1,23 @@
+{
+ "schema": "plx-case-mail-scope/v1",
+ "note": "The one canonical mail allowlist: the mailboxes a capture scope may name one by one (integrations/capture_mail refuses a named mailbox outside this list; tenant-wide capture of every directory mailbox minus an explicit exclusion list, ING-06, is configured in integrations/mail_capture_scope.json and does not depend on this list) and whose mail may enter a case (ING-13, WS-08). Reported Graph mail allowlist at petrasoap.com, enforced upstream by the Exchange application access policy group graph-portal-mailscope@petrasoap.com. Only status 'reported_allowlisted' is in scope; 'pending_confirmation' stays out until confirmed (fail closed). Personal mailboxes (ricardo, vince) are listed because the allowlist lists them (use only allowlisted mailboxes). This file grants nothing: a reader still needs the live-source audience (and, for an employee, mailbox ownership) to read any message.",
+ "source": "reported Graph mail allowlist at petrasoap.com",
+ "mailboxes": [
+  {"address": "receiving@petrasoap.com", "status": "reported_allowlisted", "kind": "shared_operational"},
+  {"address": "ship@petrasoap.com", "status": "reported_allowlisted", "kind": "shared_operational"},
+  {"address": "purchase-order@petrasoap.com", "status": "reported_allowlisted", "kind": "shared_operational"},
+  {"address": "accounting@petrasoap.com", "status": "reported_allowlisted", "kind": "shared_operational"},
+  {"address": "invoice@petrasoap.com", "status": "reported_allowlisted", "kind": "shared_operational"},
+  {"address": "ap@petrasoap.com", "status": "reported_allowlisted", "kind": "shared_operational"},
+  {"address": "tracking@petrasoap.com", "status": "reported_allowlisted", "kind": "shared_operational"},
+  {"address": "shipmentconfirmation@petrasoap.com", "status": "reported_allowlisted", "kind": "shared_operational"},
+  {"address": "ricardo@petrasoap.com", "status": "reported_allowlisted", "kind": "personal"},
+  {"address": "vince@petrasoap.com", "status": "reported_allowlisted", "kind": "personal"},
+  {"address": "cos@petrasoap.com", "status": "reported_allowlisted", "kind": "agent_operational"},
+  {"address": "order-confirmation@petrasoap.com", "status": "reported_allowlisted", "kind": "shared_operational", "note": "named (2026-10-21) as a mailbox mail capture reads"},
+  {"address": "torontowh@petrasoap.com", "status": "reported_allowlisted", "kind": "shared_operational", "note": "named (2026-10-21) as a mailbox mail capture reads"},
+  {"address": "qclabresults@petrasoap.com", "status": "reported_allowlisted", "kind": "shared_operational", "note": "named (2026-10-21) as a mailbox mail capture reads"},
+  {"address": "accounting1@petrasoap.com", "status": "pending_confirmation", "kind": "shared_operational"}
+ ],
+ "internal_domains": ["petrasoap.com", "petralabx.com"]
+}

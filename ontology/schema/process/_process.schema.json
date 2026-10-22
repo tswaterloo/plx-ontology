@@ -1,0 +1,1237 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "plx-process-graph/v1",
+ "title": "Process stage graph",
+ "description": "A declarative process stage graph read by plx.process (operating/ontology_tools_process.py). Stages are evidenced by ontology objects reached from the root along declared link types, with status/event predicates; variants skip stages; requirements make a reached stage out_of_order; quantity checks compare quantity roles across sides (three-way match); each stage names its owning role and may name prerequisites: stages of other processes the records it reaches must have reached first (a sales order's manufacturing waits on its assembly orders, theirs on their materials' purchase receipts). Nothing here is code: every name must exist in the compiled ontology schema (checked by the loader).",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "$schema",
+  "format",
+  "id",
+  "description",
+  "root_type",
+  "stages",
+  "evidence"
+ ],
+ "properties": {
+  "$schema": {
+   "type": "string"
+  },
+  "format": {
+   "const": "plx-process-graph/v1"
+  },
+  "id": {
+   "$ref": "#/$defs/name"
+  },
+  "description": {
+   "type": "string",
+   "minLength": 1,
+   "maxLength": 2000
+  },
+  "root_type": {
+   "$ref": "#/$defs/type_id"
+  },
+  "tier_floor": {
+   "$ref": "#/$defs/tier",
+   "description": "Weakest link tier that counts as evidence (default stored_by_text_join, as plx.around). A link touching a gold_native_staging version counts as lead."
+  },
+  "implicit": {
+   "type": "boolean",
+   "description": "false: plx.process uses this graph only when the call names it (`process`), so a second graph over the same root type never makes an unnamed call ambiguous. Default true."
+  },
+  "open_when": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "definition",
+    "rules"
+   ],
+   "description": "When a root is open (issued, not closed): the shared purchase-order status definition (`operating.po_status`, docs/decisions/2026-10-21-po-open-sage-fm.md) over the root's own status values the rules name and its own lines' ordered and received quantities, never a word list here. A root is open only when the definition says open; a withheld, unreadable, unmapped or disputed status, or unread lines, is unknown and decides nothing. A graph with implicit false and open_when is the one plx.process uses for an unnamed call when every root is open (else the implicit graph); lateness reads the same class (draft or cancelled: not applicable; received; partial).",
+   "properties": {
+    "definition": {
+     "const": "po_status"
+    },
+    "rules": {
+     "type": "array",
+     "minItems": 1,
+     "maxItems": 8,
+     "items": {
+      "$ref": "#/$defs/open_rule"
+     }
+    },
+    "note": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 600
+    }
+   }
+  },
+  "variant_by": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "property",
+    "values",
+    "default"
+   ],
+   "description": "Selects the variant from one root property. `default` applies when the source value is null (mirrors the upstream rule); an unreadable or uncarried value leaves the variant unknown.",
+   "properties": {
+    "property": {
+     "$ref": "#/$defs/name"
+    },
+    "compare": {
+     "$ref": "#/$defs/compare"
+    },
+    "values": {
+     "type": "object",
+     "minProperties": 1,
+     "maxProperties": 16,
+     "additionalProperties": {
+      "$ref": "#/$defs/name"
+     }
+    },
+    "default": {
+     "$ref": "#/$defs/name"
+    },
+    "note": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 600
+    }
+   }
+  },
+  "variants": {
+   "type": "array",
+   "minItems": 1,
+   "maxItems": 8,
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "id",
+     "skips"
+    ],
+    "properties": {
+     "id": {
+      "$ref": "#/$defs/name"
+     },
+     "label": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+     },
+     "skips": {
+      "type": "array",
+      "items": {
+       "$ref": "#/$defs/name"
+      },
+      "maxItems": 30,
+      "uniqueItems": true
+     }
+    }
+   }
+  },
+  "conditions": {
+   "type": "array",
+   "maxItems": 16,
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "id",
+     "description",
+     "evidence"
+    ],
+    "properties": {
+     "id": {
+      "$ref": "#/$defs/name"
+     },
+     "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 600
+     },
+     "evidence": {
+      "type": "array",
+      "items": {
+       "$ref": "#/$defs/evidence_spec"
+      },
+      "minItems": 1,
+      "maxItems": 8
+     }
+    }
+   }
+  },
+  "stages": {
+   "type": "array",
+   "minItems": 1,
+   "maxItems": 30,
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "id",
+     "description",
+     "owner_role"
+    ],
+    "properties": {
+     "id": {
+      "$ref": "#/$defs/name"
+     },
+     "label": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+     },
+     "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 600
+     },
+     "owner_role": {
+      "$ref": "#/$defs/owner_role"
+     },
+     "evidence": {
+      "type": "array",
+      "items": {
+       "$ref": "#/$defs/evidence_spec"
+      },
+      "minItems": 1,
+      "maxItems": 8
+     },
+     "evidence_of": {
+      "$ref": "#/$defs/evidence_of"
+     },
+     "absence_unproven": {
+      "$ref": "#/$defs/absence_unproven"
+     },
+     "requires": {
+      "type": "object",
+      "description": "Per variant id (or `*` for every variant): stage:<id> or condition:<id> that must hold when this stage is reached; a reached stage whose requirement is proven unmet is out_of_order.",
+      "maxProperties": 8,
+      "additionalProperties": {
+       "type": "array",
+       "items": {
+        "type": "string",
+        "pattern": "^(?:stage|condition):[a-z][a-z0-9_]{0,63}$"
+       },
+       "minItems": 1,
+       "maxItems": 8,
+       "uniqueItems": true
+      }
+     },
+     "source_note": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 600
+     },
+     "optional": {
+      "type": "boolean",
+      "description": "The process may proceed without this stage (the owning system records no such step, so nothing waits on it). Its state is still reported, with its gap, but it never positions current_stage and is never a requirement implied by order; name it in `requires` to make it one."
+     },
+     "due": {
+      "$ref": "#/$defs/due"
+     },
+     "prerequisites": {
+      "type": "array",
+      "items": {
+       "$ref": "#/$defs/prerequisite"
+      },
+      "minItems": 1,
+      "maxItems": 4,
+      "description": "Stages of other processes this stage waits on (in-graph order is `requires`)."
+     }
+    },
+    "oneOf": [
+     {
+      "required": [
+       "evidence"
+      ]
+     },
+     {
+      "required": [
+       "evidence_of"
+      ]
+     }
+    ]
+   }
+  },
+  "quantity_checks": {
+   "type": "array",
+   "maxItems": 4,
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "id",
+     "description",
+     "group_by",
+     "sides",
+     "compare"
+    ],
+    "properties": {
+     "id": {
+      "$ref": "#/$defs/name"
+     },
+     "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 600
+     },
+     "group_by": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "object_type"
+      ],
+      "properties": {
+       "object_type": {
+        "$ref": "#/$defs/type_id"
+       },
+       "identity_link": {
+        "$ref": "#/$defs/link_id",
+        "description": "Records of the group type joined by this link at an identity tier (verified/reviewed) are one group; nothing else is merged."
+       }
+      }
+     },
+     "sides": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 4,
+      "items": {
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+        "role",
+        "stage",
+        "object_type",
+        "paths",
+        "group_link",
+        "quantity"
+       ],
+       "properties": {
+        "role": {
+         "$ref": "#/$defs/quantity_role"
+        },
+        "stage": {
+         "$ref": "#/$defs/name"
+        },
+        "object_type": {
+         "$ref": "#/$defs/type_id"
+        },
+        "paths": {
+         "$ref": "#/$defs/paths",
+         "description": "The side's own system of record: alternative paths from the root (union)."
+        },
+        "group_link": {
+         "$ref": "#/$defs/link_id"
+        },
+        "quantity": {
+         "$ref": "#/$defs/name"
+        },
+        "price": {
+         "type": "array",
+         "items": {
+          "$ref": "#/$defs/name"
+         },
+         "minItems": 1,
+         "maxItems": 4,
+         "uniqueItems": true,
+         "description": "Unit price properties, first present on a line wins (one record carries one source's property)."
+        },
+        "fallback_paths": {
+         "$ref": "#/$defs/paths",
+         "description": "Paths to the same records in a twin system (e.g. the PO's BC copy). Read when the side's stage was read from its twin (the stage's own records are proven none; its evidence must declare fallback_paths), and the answer says so; a header without captured lines keeps the side undecided with a header_without_lines gap. When both reach records their sums are never added: a disagreement is a cross_system_conflict gap."
+        },
+        "not_attributable": {
+         "type": "array",
+         "maxItems": 4,
+         "description": "Link bindings through which a line reaches the root without its quantity belonging only to the root (e.g. a receipt header that may cover several POs but names one). A line reached only through such a link is cited but never summed: every comparison of its group (all groups, when it has no single item) is undecided with a quantity_not_attributable gap.",
+         "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+           "link",
+           "from_binding",
+           "reason"
+          ],
+          "properties": {
+           "link": {
+            "$ref": "#/$defs/link_id"
+           },
+           "from_binding": {
+            "$ref": "#/$defs/binding_id"
+           },
+           "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+           }
+          }
+         }
+        },
+        "ignore_through": {
+         "type": "array",
+         "maxItems": 4,
+         "description": "Records on the side's path (a header between the root and the lines) whose status is in `values` drop their lines from the side, as the upstream query does (Portal sums shipment lines of shipments not CANCELLED). A carried but unreadable status leaves the side's comparisons undecided.",
+         "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+           "object_type",
+           "property",
+           "values",
+           "evidence"
+          ],
+          "properties": {
+           "object_type": {
+            "$ref": "#/$defs/type_id"
+           },
+           "property": {
+            "$ref": "#/$defs/name"
+           },
+           "compare": {
+            "$ref": "#/$defs/compare"
+           },
+           "values": {
+            "$ref": "#/$defs/values"
+           },
+           "evidence": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+           },
+           "match": {
+            "enum": [
+             "equals",
+             "contains_ci"
+            ],
+            "description": "equals (default): the status, normalized by `compare`, is one of `values`. contains_ci: the status contains one of `values`, case-insensitively (Portal classifyInvoice: status includes 'cancel')."
+           },
+           "count_only": {
+            "type": "boolean",
+            "description": "true: `values` are the statuses that count (e.g. a shipment SHIPPED or DELIVERED); a record of any other carried status is in progress: its lines are never summed, the side's comparisons stay decided on the counted lines, and an in_progress_not_counted gap names it. A record of a binding that does not carry the status counts."
+           }
+          }
+         }
+        },
+        "lead_note": {
+         "type": "string",
+         "minLength": 1,
+         "maxLength": 300,
+         "description": "What the upstream system does with the side's text-lead links (e.g. Portal matches BC invoices to orders by number text), quoted in the lead_evidence_not_counted gap. Leads are never counted in a sum."
+        },
+        "recorded_on": {
+         "type": "object",
+         "additionalProperties": false,
+         "required": [
+          "role",
+          "quantity",
+          "evidence",
+          "measure_id",
+          "measure_evidence"
+         ],
+         "description": "The upstream system also records this side's quantity on another side's lines (Portal rolls each receipt onto PurchaseOrderLine.quantityReceived). Per item, that recorded figure and this side's line sum (zero when this side's stage is proven absent) are two measures of one quantity: when they differ it is one recorded_measure_conflict naming both, never a choice, and every quantity comparison of this side for that item is undecided. Units are matched as labels only; nothing is converted.",
+         "properties": {
+          "role": {
+           "$ref": "#/$defs/quantity_role"
+          },
+          "quantity": {
+           "$ref": "#/$defs/name"
+          },
+          "evidence": {
+           "type": "string",
+           "minLength": 1,
+           "maxLength": 300
+          },
+          "measure_id": {
+           "$ref": "#/$defs/name",
+           "description": "The quantity check item's measured_by when the comparison of the two sides is decided from this figure: only when every line of this side's item is in a unit that is no label of the figure's and none contradicts it as zero against non-zero (a line in its unit can contradict it: then nothing is decided), with gaps saying the line sum was not compared."
+          },
+          "measure_evidence": {
+           "type": "string",
+           "minLength": 1,
+           "maxLength": 300,
+           "description": "Where the upstream system compares the other side's quantity with this figure (why deciding from it follows upstream semantics)."
+          }
+         }
+        },
+        "absent_by": {
+         "type": "object",
+         "additionalProperties": false,
+         "required": [
+          "role",
+          "quantity",
+          "evidence"
+         ],
+         "description": "Proof of this side's absence for a BC-rooted record (absent_in_bc, docs/decisions/2026-10-14-three-way-absence-proven.md): BC records this side's quantity on another side's lines. The side's stage is proven absent, with the read time, only when the root's own BC records hold no such record, every line of the other side was read completely and records the figure, and every figure is zero; then the side sums to zero in its quantity comparisons. A read not complete, a line without the figure, a non-zero or unreadable figure leaves the stage undecided.",
+         "properties": {
+          "role": {
+           "$ref": "#/$defs/quantity_role"
+          },
+          "quantity": {
+           "$ref": "#/$defs/name"
+          },
+          "evidence": {
+           "type": "string",
+           "minLength": 1,
+           "maxLength": 300
+          }
+         }
+        }
+       }
+      }
+     },
+     "compare": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 6,
+      "items": {
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+        "roles",
+        "measure",
+        "tolerance"
+       ],
+       "properties": {
+        "roles": {
+         "type": "array",
+         "items": {
+          "$ref": "#/$defs/quantity_role"
+         },
+         "minItems": 2,
+         "maxItems": 2,
+         "uniqueItems": true
+        },
+        "measure": {
+         "enum": [
+          "quantity",
+          "price"
+         ]
+        },
+        "tolerance": {
+         "type": "string",
+         "pattern": "^[0-9]+(?:\\.[0-9]+)?$",
+         "description": "Absolute tolerance in the compared unit; \"0\" = exact. Only a tolerance an upstream system defines may be declared, with its evidence."
+        },
+        "tolerance_evidence": {
+         "type": "string",
+         "minLength": 1,
+         "maxLength": 300
+        },
+        "rule": {
+         "enum": [
+          "within",
+          "covers"
+         ],
+         "description": "within (default): |first - second| <= tolerance. covers: second >= first - tolerance agrees (Portal derivePoFulfillmentCode: received + EPS < ordered is PARTIAL, anything more is complete); an excess is reported as information, not a mismatch."
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "evidence": {
+   "type": "array",
+   "minItems": 1,
+   "maxItems": 16,
+   "items": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 300,
+    "description": "repo:path@commit (symbol) or workbench path."
+   }
+  }
+ },
+ "$defs": {
+  "name": {
+   "type": "string",
+   "pattern": "^[a-z][a-z0-9_]{0,63}$"
+  },
+  "type_id": {
+   "type": "string",
+   "pattern": "^[A-Z][A-Za-z0-9]{1,63}$"
+  },
+  "link_id": {
+   "type": "string",
+   "pattern": "^[A-Z][A-Za-z0-9]{1,63}\\.[a-z][a-z0-9_]{0,63}$"
+  },
+  "event_id": {
+   "type": "string",
+   "pattern": "^[A-Z][A-Za-z0-9]{1,63}\\.[a-z][a-z0-9_]{0,63}$"
+  },
+  "binding_id": {
+   "type": "string",
+   "pattern": "^[a-z][a-z0-9_.-]{1,95}$"
+  },
+  "tier": {
+   "enum": [
+    "verified",
+    "reviewed",
+    "corroborated",
+    "stored_by_text_join",
+    "lead"
+   ]
+  },
+  "quantity_role": {
+   "enum": [
+    "accepted",
+    "actual",
+    "committed",
+    "damaged",
+    "delivered",
+    "filled",
+    "inspected",
+    "invoiced",
+    "manufactured",
+    "ordered",
+    "planned",
+    "produced",
+    "received",
+    "rejected",
+    "retained",
+    "returned",
+    "shipped"
+   ]
+  },
+  "compare": {
+   "enum": [
+    "exact",
+    "upper"
+   ],
+   "description": "upper = compare upper-cased trimmed text (the upstream code's toUpperCase())."
+  },
+  "values": {
+   "type": "array",
+   "items": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 64
+   },
+   "minItems": 1,
+   "maxItems": 32,
+   "uniqueItems": true
+  },
+  "hop": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "link",
+    "direction"
+   ],
+   "properties": {
+    "link": {
+     "$ref": "#/$defs/link_id"
+    },
+    "direction": {
+     "enum": [
+      "forward",
+      "reverse"
+     ]
+    }
+   }
+  },
+  "paths": {
+   "type": "array",
+   "minItems": 1,
+   "maxItems": 4,
+   "description": "Alternative paths from the root (union). [] = the root itself. At most eight hops: a Portal MO reaches a BC-only PO of a component item through its FM twin, the component, the item, the item's Portal and BC records, the BC line (each hop's frontier is capped, MAX_EVIDENCE).",
+   "items": {
+    "type": "array",
+    "items": {
+     "$ref": "#/$defs/hop"
+    },
+    "maxItems": 8
+   }
+  },
+  "predicate": {
+   "oneOf": [
+    {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "kind",
+      "property",
+      "quantifier"
+     ],
+     "description": "Stage reached when the live evidence records' status is in `done` (or not in `not_done`): `all` = at least one live record and every live record done (upstream every()), `any` = some live record done (upstream some()). Records whose status is in `ignore` are not live.",
+     "properties": {
+      "kind": {
+       "const": "status"
+      },
+      "property": {
+       "$ref": "#/$defs/name"
+      },
+      "compare": {
+       "$ref": "#/$defs/compare"
+      },
+      "done": {
+       "$ref": "#/$defs/values"
+      },
+      "not_done": {
+       "$ref": "#/$defs/values"
+      },
+      "ignore": {
+       "$ref": "#/$defs/values"
+      },
+      "quantifier": {
+       "enum": [
+        "all",
+        "any"
+       ]
+      }
+     },
+     "oneOf": [
+      {
+       "required": [
+        "done"
+       ]
+      },
+      {
+       "required": [
+        "not_done"
+       ]
+      }
+     ]
+    },
+    {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "kind",
+      "quantifier"
+     ],
+     "description": "A purchase-order stage reached when the record is issued by the shared purchase-order status definition (operating.po_status.header_class over the status properties its binding carries): a draft is not done, a cancelled record is not live, an unmapped, null or disputed word is unknown. `all` and `any` as for kind status.",
+     "properties": {
+      "kind": {
+       "const": "po_status"
+      },
+      "quantifier": {
+       "enum": [
+        "all",
+        "any"
+       ]
+      }
+     }
+    },
+    {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "kind"
+     ],
+     "description": "Stage reached when at least one live evidence record exists.",
+     "properties": {
+      "kind": {
+       "const": "exists"
+      },
+      "ignore": {
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+        "property",
+        "values"
+       ],
+       "properties": {
+        "property": {
+         "$ref": "#/$defs/name"
+        },
+        "compare": {
+         "$ref": "#/$defs/compare"
+        },
+        "values": {
+         "$ref": "#/$defs/values"
+        }
+       }
+      }
+     }
+    },
+    {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "kind",
+      "event_types"
+     ],
+     "description": "Stage reached when a live evidence record has a visible event of one of these types.",
+     "properties": {
+      "kind": {
+       "const": "event"
+      },
+      "event_types": {
+       "type": "array",
+       "items": {
+        "$ref": "#/$defs/event_id"
+       },
+       "minItems": 1,
+       "maxItems": 8,
+       "uniqueItems": true
+      }
+     }
+    },
+    {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "kind",
+      "property"
+     ],
+     "description": "Stage reached when a live evidence record holds a value of `property` (a date column filled, a paper field written). `blank` says what an empty value means: `open` (default) = the step is not done (a record's empty date column); `unknown` = not stated (a machine-read document's blank field is unknown, never a no). A value the reader may not read leaves the record withheld.",
+     "properties": {
+      "kind": {
+       "const": "present"
+      },
+      "property": {
+       "$ref": "#/$defs/name"
+      },
+      "blank": {
+       "enum": [
+        "open",
+        "unknown"
+       ]
+      }
+     }
+    }
+   ]
+  },
+  "evidence_spec": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "object_type",
+    "predicate"
+   ],
+   "properties": {
+    "object_type": {
+     "$ref": "#/$defs/type_id"
+    },
+    "bindings": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/binding_id"
+     },
+     "minItems": 1,
+     "maxItems": 8,
+     "uniqueItems": true,
+     "description": "Only records of these bindings are evidence (other bindings' vocabularies differ)."
+    },
+    "paths": {
+     "$ref": "#/$defs/paths"
+    },
+    "fallback_paths": {
+     "$ref": "#/$defs/paths",
+     "description": "Paths to the same evidence in a twin system (e.g. the order's Sage copy), as a quantity side's fallback_paths: the stage reads them only when every evidence spec's own `paths` are proven to reach no live record (none, or only ignored ones), so the stage and the quantity side read the same system of record."
+    },
+    "predicate": {
+     "$ref": "#/$defs/predicate"
+    },
+    "events": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/event_id"
+     },
+     "maxItems": 8,
+     "uniqueItems": true,
+     "description": "Event types cited for the evidence records."
+    },
+    "note": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 600
+    },
+    "exclude_present": {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "property",
+      "evidence"
+     ],
+     "properties": {
+      "property": {
+       "$ref": "#/$defs/name"
+      },
+      "evidence": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 300
+      }
+     },
+     "description": "Records whose property has a non-null value are not evidence (a soft delete, as the upstream loader's `where: { deletedAt: null }`). A carried but unreadable value leaves the record unknown."
+    }
+   },
+   "description": "`paths` may be omitted only for an object type that is not served; a not-served type's stage is unknown with a not_served gap whether or not paths are declared (declared paths are checked now and used once the type is served)."
+  },
+  "evidence_of": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "process",
+    "stage",
+    "object_type",
+    "paths"
+   ],
+   "description": "The stage is another graph's stage of the records `paths` reach (e.g. an assembly order's shipment is its sales order's sales_order_lifecycle shipment): that stage's evidence, read from each reached `object_type` record (the other graph's root type) exactly as that graph reads it, own then twin paths. Reached when any reached record reaches it; an absence holds only when the reached records are proven complete and each proves one (that stage's `absence_unproven` included). With none reached the stage is unknown, never missing.",
+   "properties": {
+    "process": {
+     "$ref": "#/$defs/name"
+    },
+    "stage": {
+     "$ref": "#/$defs/name"
+    },
+    "object_type": {
+     "$ref": "#/$defs/type_id"
+    },
+    "paths": {
+     "$ref": "#/$defs/paths"
+    }
+   }
+  },
+  "absence_unproven": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "note",
+    "evidence"
+   ],
+   "description": "Root records of these bindings or lineages never prove this stage's absence (their source does not link every such evidence record to them): there the stage is unknown, never missing. Applies wherever the stage is read, `evidence_of` included.",
+   "properties": {
+    "bindings": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/binding_id"
+     },
+     "minItems": 1,
+     "maxItems": 8,
+     "uniqueItems": true
+    },
+    "lineages": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/name"
+     },
+     "minItems": 1,
+     "maxItems": 8,
+     "uniqueItems": true
+    },
+    "note": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 400
+    },
+    "evidence": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 400
+    }
+   },
+   "anyOf": [
+    {
+     "required": [
+      "bindings"
+     ]
+    },
+    {
+     "required": [
+      "lineages"
+     ]
+    }
+   ]
+  },
+  "due": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "object_type",
+    "paths"
+   ],
+   "description": "When the stage is due: the declared date columns of the records `paths` reach (the root is [[]]) — planned `event_types` of `object_type`, or a date/timestamp `property` of it, never a computed or default date. plx.process reports the stage overdue only when it is proven not reached and every due date is one date before the answer's as_known_at; dates that disagree, a withheld or unproven date set, or an undecided stage leave it undecided.",
+   "properties": {
+    "object_type": {
+     "$ref": "#/$defs/type_id"
+    },
+    "paths": {
+     "$ref": "#/$defs/paths"
+    },
+    "event_types": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/event_id"
+     },
+     "minItems": 1,
+     "maxItems": 8,
+     "uniqueItems": true
+    },
+    "property": {
+     "$ref": "#/$defs/name"
+    },
+    "replaced_by": {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "event_type",
+      "object_type",
+      "paths",
+      "property"
+     ],
+     "description": "A date recorded per part of each reached record, in place of that record's own `event_type` date: the date `property` of every `object_type` record `paths` reach from it (e.g. its lines). The record's own `event_type` date still counts when it reaches no such record or one of them records no date (BC: a purchase line's expectedReceiptDate, else its order's requestedReceiptDate). Never a computed date: every date read is reported, and dates that differ are not chosen.",
+     "properties": {
+      "event_type": {
+       "$ref": "#/$defs/event_id"
+      },
+      "object_type": {
+       "$ref": "#/$defs/type_id"
+      },
+      "paths": {
+       "$ref": "#/$defs/paths"
+      },
+      "property": {
+       "$ref": "#/$defs/name"
+      }
+     }
+    },
+    "note": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 600
+    },
+    "lateness": {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "precedence",
+      "received"
+     ],
+     "description": "How late the root is (plx.process `lateness`): the received date (or, while not fully received, the answer's date) against the governing date, which is the planned (requested-by) date of the highest-precedence tier that states one date (tiers: lists of this due's event_types; a replaced_by date takes its event_type's tier), else reported missing: a supplier promise never stands in. Reported with every date read, each cited, and the reason chain; `overdue` stays the conservative verdict that never chooses.",
+     "properties": {
+      "precedence": {
+       "type": "array",
+       "minItems": 1,
+       "maxItems": 8,
+       "items": {
+        "type": "array",
+        "items": {
+         "$ref": "#/$defs/event_id"
+        },
+        "minItems": 1,
+        "maxItems": 8,
+        "uniqueItems": true
+       }
+      },
+      "promised": {
+       "$ref": "#/$defs/dated_records"
+      },
+      "received": {
+       "$ref": "#/$defs/dated_records"
+      },
+      "lines": {
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+        "object_type",
+        "paths",
+        "ordered",
+        "received"
+       ],
+       "description": "Per line of each due record: its ordered and received quantities (same unit only) and, when declared, its own expected date property, reported as that line's expected date (a supplier-side date, never the due date nor a lateness of its own).",
+       "properties": {
+        "object_type": {
+         "$ref": "#/$defs/type_id"
+        },
+        "paths": {
+         "$ref": "#/$defs/paths"
+        },
+        "expected": {
+         "$ref": "#/$defs/name"
+        },
+        "ordered": {
+         "$ref": "#/$defs/name"
+        },
+        "received": {
+         "$ref": "#/$defs/name"
+        }
+       }
+      },
+      "note": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 600
+      }
+     }
+    }
+   },
+   "oneOf": [
+    {
+     "required": [
+      "event_types"
+     ]
+    },
+    {
+     "required": [
+      "property"
+     ]
+    }
+   ]
+  },
+  "owner_role": {
+   "enum": [
+    "ACCTMGMT",
+    "ARTWORK",
+    "COMPOUND",
+    "EXEC",
+    "FIN",
+    "HR",
+    "IT",
+    "MAINT",
+    "OPS",
+    "PROC",
+    "RND",
+    "PROD",
+    "QUALITY",
+    "QA",
+    "QC",
+    "SALES",
+    "SHIP",
+    "WH"
+   ],
+   "description": "The Portal Department code (app_department.code) whose people perform the stage: plx-customer-portal:portal/src/lib/policies/seed-rules.ts@48d76e835 ROUTING_DEPARTMENTS, the codes Portal's work routing targets (portal/prisma/schema.prisma@48d76e835 WorkItem.departmentId :8467, a rule's departments PolicyApprovalTypeDepartment :1099, escalation Department.leadDepartmentId :1027). A stage Portal routes names that rule's department (the graph's evidence cites it); every other assignment is the graph's declaration pending PLX review, never read from data. A role (UserRole) is not a department and never an owner."
+  },
+  "prerequisite": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "process",
+    "stage",
+    "object_type",
+    "paths",
+    "note"
+   ],
+   "description": "evidence_of's cross-process reference read the other way: every live record `paths` reach (the other graph's root type) must have reached `stage` of `process`, read as that graph reads it, before this stage can be. plx.process lists, on a stage not reached, each record proven not to have reached it as a blocker with the stage's owner_role (and, below a proven blocker, that stage's own prerequisites); anything unproven (a withheld or incomplete reach, an undecided record, no live record reached) is a blocker entry with its gap, never clear.",
+   "properties": {
+    "process": {
+     "$ref": "#/$defs/name"
+    },
+    "stage": {
+     "$ref": "#/$defs/name"
+    },
+    "object_type": {
+     "$ref": "#/$defs/type_id"
+    },
+    "paths": {
+     "$ref": "#/$defs/paths"
+    },
+    "applies_from": {
+     "$ref": "#/$defs/name",
+     "description": "A stage of `process`: a reached record is a prerequisite only once it has reached it (an issued PO, a live AO); proven not reached (a draft, a cancelled record) it blocks nothing; undecided, it is a blocker entry with its gap."
+    },
+    "note": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 300,
+     "description": "Why the records are prerequisites and what the link does not prove; quoted in each blocker entry."
+    },
+    "proves_dependency": {
+     "type": "boolean",
+     "description": "false: the paths do not tie a reached record to the root (a PO linked by item only, as MRP pools demand), so a record not reached is listed as an undecided candidate (dependency_unproven), never a proven blocker, a record that reached the stage proves nothing either, and one dependency_not_pegged entry over the live records it reads (typed open, met or unread) keeps the prerequisites undecided, never clear; reaching none, the reach's own entry (no_prerequisite_record or its unproven reach) does (what the paths do not reach, such as stock, is not read). Default true, which needs pegged_by."
+    },
+    "pegged_by": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/link_id"
+     },
+     "minItems": 1,
+     "maxItems": 4,
+     "uniqueItems": true,
+     "description": "Required unless proves_dependency is false: the link types of a pegging record that ties the reached record to this root (an MO naming its order line, an FM allocation row). Every path must hop one of them, and each must be a served link: both of its object types served and a binding at or above the graph's tier floor (a text lead never pegs)."
+    },
+    "schedule": {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "needed_by",
+      "available_by",
+      "note"
+     ],
+     "description": "When a prerequisite record must and is expected to meet its stage (operating/process_risks.py): `needed_by` names a stage of this process with a `due` (read for the record that waits), `available_by` a stage with a `due` of a process whose root type is `object_type` (read for each blocker record). plx.process lists a schedule_risk, both dates cited, when the available date is after the needed date; a side without one proven declared date is a schedule_undecided gap, never a computed or default date.",
+     "properties": {
+      "needed_by": {
+       "$ref": "#/$defs/name"
+      },
+      "available_by": {
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+        "process",
+        "stage"
+       ],
+       "properties": {
+        "process": {
+         "$ref": "#/$defs/name"
+        },
+        "stage": {
+         "$ref": "#/$defs/name"
+        }
+       }
+      },
+      "note": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 300,
+       "description": "Why the prerequisite is needed by that date and what the dates do not prove (the graph's record of the declaration; each risk names the stages it read)."
+      }
+     }
+    }
+   }
+  },
+  "open_rule": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "binding",
+    "property"
+   ],
+   "description": "One status property of the root type and the binding it is read from; what its values mean is the shared definition's.",
+   "properties": {
+    "binding": {
+     "$ref": "#/$defs/binding_id"
+    },
+    "property": {
+     "$ref": "#/$defs/name"
+    }
+   }
+  },
+  "dated_records": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "object_type",
+    "paths",
+    "event_types"
+   ],
+   "description": "Dated records of each due record: the `event_types` of the `object_type` records `paths` reach from it, cited.",
+   "properties": {
+    "object_type": {
+     "$ref": "#/$defs/type_id"
+    },
+    "paths": {
+     "$ref": "#/$defs/paths"
+    },
+    "event_types": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/event_id"
+     },
+     "minItems": 1,
+     "maxItems": 8,
+     "uniqueItems": true
+    },
+    "order_by": {
+     "$ref": "#/$defs/name",
+     "description": "A date property of object_type that orders its records (the later one revises the earlier); records it does not date are not ordered."
+    }
+   }
+  }
+ }
+}

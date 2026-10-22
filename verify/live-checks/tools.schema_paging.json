@@ -1,0 +1,122 @@
+{
+ "id": "tools.schema_paging",
+ "description": "plx.schema pages to every type. operating.host cycles (Host.cycle: a GET-only BC capture of the named entity sets into a throwaway host state in {tmp}, then the projection build) on a BC-only host configuration the module writes beside that state: no Portal, mail or SharePoint configured; the capture principal and the reader granted the BC environment, the reader also the Portal relations (a MANAGER holds the Portal too). The tools are the ones the host's mcp serves over that state (Host.served_tools), called as the reader staff:manager with the clearance the Portal MANAGER role bootstraps under examples/employee_permission_policy.example.json. plx.schema is then paged by its next_cursor to the end: no page says truncated without a cursor (truncated_without_cursor), and the pages together list every declared object, link, event and action type exactly once (sections.*.missing, duplicates). A BC cycle that did not answer is a blocked_upstream part (blocked, never a pass); a 429/503 throttle is one part per entity set it left unread, typed error_code upstream_throttled. Every answer is validated against its frozen contract. Output is counts, booleans, codes and states only; never a value, number, name, identifier or citation.",
+ "source": "business-central",
+ "cadence": "hourly",
+ "tier": "deterministic_tools",
+ "command": [
+  "python3",
+  "-m",
+  "scripts.live_employee_tools",
+  "schema",
+  "--state-dir",
+  "{tmp}/state",
+  "--cycle",
+  "vendors",
+  "--budget-seconds",
+  "240"
+ ],
+ "timeout_seconds": 420,
+ "requires_env": [
+  "BC_TENANT_ID",
+  "BC_CLIENT_ID",
+  "BC_CLIENT_SECRET",
+  "BC_ENVIRONMENT"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "pages",
+   "sections",
+   "bc_capture",
+   "blocked_upstream"
+  ],
+  "json_equals": {
+   "contract_failures": 0,
+   "capture_errors": 0,
+   "projection_failed": 0,
+   "budget_exhausted": false,
+   "portal_state": "not_configured",
+   "truncated_without_cursor": 0,
+   "missing_total": 0,
+   "duplicates_total": 0,
+   "page_cap_hit": false,
+   "last_page_complete": true
+  },
+  "json_same": {
+   "sections.object_types.listed": "sections.object_types.declared",
+   "sections.link_types.listed": "sections.link_types.declared"
+  },
+  "json_min": {
+   "pages": 2,
+   "objects": 1
+  }
+ },
+ "expect_blocked": {
+  "exit_code": 0,
+  "json_fields": [
+   "pages",
+   "sections",
+   "blocked_upstream"
+  ],
+  "json_equals": {
+   "contract_failures": 0,
+   "capture_errors": 0,
+   "projection_failed": 0,
+   "budget_exhausted": false,
+   "portal_state": "not_configured",
+   "truncated_without_cursor": 0,
+   "missing_total": 0,
+   "duplicates_total": 0,
+   "page_cap_hit": false,
+   "last_page_complete": true
+  },
+  "json_same": {
+   "sections.object_types.listed": "sections.object_types.declared",
+   "sections.link_types.listed": "sections.link_types.declared"
+  },
+  "json_min": {
+   "pages": 2
+  }
+ },
+ "record": [
+  "pages",
+  "truncated_without_cursor",
+  "page_cap_hit",
+  "last_page_complete",
+  "missing_total",
+  "duplicates_total",
+  "sections",
+  "objects",
+  "object_types_held",
+  "bc_capture",
+  "bc_capture.reasons",
+  "blocked_upstream",
+  "upstream_throttled",
+  "portal_state",
+  "reader_clearance",
+  "clearance_source",
+  "role",
+  "calls",
+  "contract_failures",
+  "error_codes",
+  "capture_errors",
+  "projection_failed",
+  "budget_exhausted",
+  "seconds"
+ ],
+ "record_keys": [
+  "sections",
+  "bc_capture",
+  "error_codes"
+ ],
+ "notes": "Live-unverified until the live check records a result. Module tests: injected-transport (tests/test_live_employee_tools.py runs this spec's own argv over the BC fake of integrations/tests/test_bc_capture.py and checks it with live_verify.check_expectations; only the live size floors may miss there, and each check is also run against a reproduction of the defect it guards, which it must fail). One small capture (vendors, no document lines) only builds the host's projection; the schema answer does not depend on its size. pages >= 2 keeps the check about paging (407 object types do not fit one page).",
+ "record_enums": [
+  "portal_state",
+  "reader_clearance",
+  "clearance_source",
+  "role",
+  "bc_capture.reasons",
+  "upstream_throttled"
+ ]
+}

@@ -1,0 +1,78 @@
+{
+ "schema": "plx-source-mirror-audience/v1",
+ "note": "EXAMPLE for the case.unfamiliar_order live check (python3 -m operating.case_workspace_live --host-config examples/unfamiliar_case_host.live-check.json), not authority: grants exactly the Portal relations the host cycle mirrors. svc:workbench-host is the host's capture principal (it fills the mirror); staff:sales and staff:operations read the sales-order chain, staff:purchasing the purchase-order chain. Principals must be confirmed by PLX before real use.",
+ "tenant": "plx",
+ "default_classification": "internal",
+ "audiences": {
+  "public.app_sales_order": [
+   "staff:operations",
+   "staff:sales",
+   "svc:workbench-host"
+  ],
+  "public.app_sales_order_line": [
+   "staff:operations",
+   "staff:sales",
+   "svc:workbench-host"
+  ],
+  "public.app_customer": [
+   "staff:sales",
+   "svc:workbench-host"
+  ],
+  "public.app_shipment": [
+   "staff:operations",
+   "svc:workbench-host"
+  ],
+  "public.order_entry": [
+   "staff:operations",
+   "svc:workbench-host"
+  ],
+  "public.order_entry_item": [
+   "staff:operations",
+   "svc:workbench-host"
+  ],
+  "public.order_entry_item_assembly": [
+   "staff:operations",
+   "svc:workbench-host"
+  ],
+  "public.assembly_order": [
+   "staff:operations",
+   "svc:workbench-host"
+  ],
+  "public.app_purchase_order": [
+   "staff:purchasing",
+   "svc:workbench-host"
+  ],
+  "public.app_purchase_order_line": [
+   "staff:purchasing",
+   "svc:workbench-host"
+  ],
+  "public.app_supplier": [
+   "staff:purchasing",
+   "svc:workbench-host"
+  ],
+  "public.app_receipt": [
+   "staff:purchasing",
+   "svc:workbench-host"
+  ],
+  "public.generated_purchase_order": [
+   "staff:purchasing",
+   "svc:workbench-host"
+  ],
+  "public.generated_purchase_order_item": [
+   "staff:purchasing",
+   "svc:workbench-host"
+  ],
+  "public.receipt_packaging": [
+   "staff:purchasing",
+   "svc:workbench-host"
+  ],
+  "public.receipt_raw_material": [
+   "staff:purchasing",
+   "svc:workbench-host"
+  ],
+  "sage.po_header": [
+   "staff:purchasing",
+   "svc:workbench-host"
+  ]
+ }
+}

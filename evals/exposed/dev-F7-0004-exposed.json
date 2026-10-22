@@ -1,0 +1,231 @@
+{
+ "format": "plx-eval-item/v1",
+ "id": "dev-F7-0004-exposed",
+ "family": "F7",
+ "split": "dev",
+ "variant": "standard",
+ "question": {
+  "text": "Does the PO5447 packet explain the 11,280 deposit versus the later 40,100 total, and does it prove settlement or a required top-up?"
+ },
+ "root": {
+  "identifier": "PO5447",
+  "identifier_kind": "po_number",
+  "object_type": "PurchaseOrder"
+ },
+ "as_known_at": {
+  "time": "2026-10-02T18:07:03Z",
+  "l1_generations": {
+   "advisory_r": "a5f4e154a62be713c0ac19421c1716212f85d25d08939203dfcc5ac9ec3e6949",
+   "advisory_s": "d58dff9b872e1401ca3ac80f4e08896beaa26486728fe6f414c85a4d94f9652b"
+  }
+ },
+ "closed_transaction": false,
+ "lineage_stratum": "original",
+ "known_outcome": {
+  "answerability": "partial",
+  "values": [
+   {
+    "name": "deposit_sent_date",
+    "object_type": "SourceDocument",
+    "value": "2026-09-23",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/cb8d80cd5e3a14bc6c9a98a9604095f7c1b4a1708ab233e656817dfa36e2bb09",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "surcharge_accepted_date",
+    "object_type": "SourceMessage",
+    "value": "2026-09-24",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/f10591a2e33ecdba8452054c2faeaef4af4431984f4b592b195e474064df5f0c",
+      "field_path": "row.text"
+     },
+     {
+      "l1_handle": "original://sha256/5714131642de242417f412ef2a24fbf034fdf345562d3289eca4b05791c16a69",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "pre_surcharge_total",
+    "object_type": "SourceDocument",
+    "value": "37600",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/f10591a2e33ecdba8452054c2faeaef4af4431984f4b592b195e474064df5f0c",
+      "field_path": "row.text"
+     },
+     {
+      "l1_handle": "original://sha256/5714131642de242417f412ef2a24fbf034fdf345562d3289eca4b05791c16a69",
+      "field_path": "row.text"
+     },
+     {
+      "l1_handle": "original://sha256/442664a40f5d38eeebd547e9f1425683624a28e7f34aa0797cd096e29f0edf5a",
+      "field_path": "row.text"
+     },
+     {
+      "l1_handle": "original://sha256/cb8d80cd5e3a14bc6c9a98a9604095f7c1b4a1708ab233e656817dfa36e2bb09",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "deposit_amount",
+    "object_type": "SourceDocument",
+    "value": "11280",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/f10591a2e33ecdba8452054c2faeaef4af4431984f4b592b195e474064df5f0c",
+      "field_path": "row.text"
+     },
+     {
+      "l1_handle": "original://sha256/5714131642de242417f412ef2a24fbf034fdf345562d3289eca4b05791c16a69",
+      "field_path": "row.text"
+     },
+     {
+      "l1_handle": "original://sha256/442664a40f5d38eeebd547e9f1425683624a28e7f34aa0797cd096e29f0edf5a",
+      "field_path": "row.text"
+     },
+     {
+      "l1_handle": "original://sha256/cb8d80cd5e3a14bc6c9a98a9604095f7c1b4a1708ab233e656817dfa36e2bb09",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "pack_out_surcharge",
+    "object_type": "SourceMessage",
+    "value": "2500",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/f10591a2e33ecdba8452054c2faeaef4af4431984f4b592b195e474064df5f0c",
+      "field_path": "row.text"
+     },
+     {
+      "l1_handle": "original://sha256/5714131642de242417f412ef2a24fbf034fdf345562d3289eca4b05791c16a69",
+      "field_path": "row.text"
+     },
+     {
+      "l1_handle": "original://sha256/442664a40f5d38eeebd547e9f1425683624a28e7f34aa0797cd096e29f0edf5a",
+      "field_path": "row.text"
+     },
+     {
+      "l1_handle": "original://sha256/cb8d80cd5e3a14bc6c9a98a9604095f7c1b4a1708ab233e656817dfa36e2bb09",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "pi_total",
+    "object_type": "SourceDocument",
+    "value": "40100",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/f10591a2e33ecdba8452054c2faeaef4af4431984f4b592b195e474064df5f0c",
+      "field_path": "row.text"
+     },
+     {
+      "l1_handle": "original://sha256/5714131642de242417f412ef2a24fbf034fdf345562d3289eca4b05791c16a69",
+      "field_path": "row.text"
+     },
+     {
+      "l1_handle": "original://sha256/442664a40f5d38eeebd547e9f1425683624a28e7f34aa0797cd096e29f0edf5a",
+      "field_path": "row.text"
+     },
+     {
+      "l1_handle": "original://sha256/cb8d80cd5e3a14bc6c9a98a9604095f7c1b4a1708ab233e656817dfa36e2bb09",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "remainder_after_deposit",
+    "object_type": "SourceDocument",
+    "value": "28820",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/f10591a2e33ecdba8452054c2faeaef4af4431984f4b592b195e474064df5f0c",
+      "field_path": "row.text"
+     },
+     {
+      "l1_handle": "original://sha256/5714131642de242417f412ef2a24fbf034fdf345562d3289eca4b05791c16a69",
+      "field_path": "row.text"
+     },
+     {
+      "l1_handle": "original://sha256/442664a40f5d38eeebd547e9f1425683624a28e7f34aa0797cd096e29f0edf5a",
+      "field_path": "row.text"
+     },
+     {
+      "l1_handle": "original://sha256/cb8d80cd5e3a14bc6c9a98a9604095f7c1b4a1708ab233e656817dfa36e2bb09",
+      "field_path": "row.text"
+     }
+    ]
+   }
+  ],
+  "gaps": [
+   {
+    "state": "unknown",
+    "subject": "bank settlement of the deposit",
+    "reason": "not_established"
+   },
+   {
+    "state": "unknown",
+    "subject": "Business Central prepayment posting",
+    "reason": "no_native_erp_read"
+   },
+   {
+    "state": "unknown",
+    "subject": "required top-up obligation",
+    "reason": "not_established"
+   },
+   {
+    "state": "unknown",
+    "subject": "governing accepted commercial version",
+    "reason": "not_established"
+   },
+   {
+    "state": "unknown",
+    "subject": "currency denomination of the deposit calculation",
+    "reason": "not_established"
+   },
+   {
+    "state": "unknown",
+    "subject": "deposit computed on the pre-surcharge base (supported inference, not stated)",
+    "reason": "inference_only"
+   }
+  ]
+ },
+ "must_not": [
+  "propose_action",
+  "claim_uncited_number",
+  "invent_absent_value"
+ ],
+ "oracle": {
+  "id": "oracle:advisory-dev-batch-01@f2438ec3002e3917c5634a9d4e6a93e6e95dc129d648319fdff33fac61547996",
+  "interface": "plx-eval-oracle/v1",
+  "derived_from": [
+   "context/006786de5454dcb66a83cfdd2fad4974b2545e5f61a24a75aad1b74bc288b23e.json#/evaluation_batch/cases/7",
+   "docs/reference/cases-and-artifacts.md#1.11 F01",
+   "evals/exposed/sources.json#soap-deposit-export",
+   "evals/exposed/sources.json#soap-pricing-mail",
+   "evals/exposed/sources.json#soap-pi-updated-mail",
+   "evals/exposed/sources.json#soap-pi-pdf",
+   "evals/exposed/sources.json#soap-index"
+  ],
+  "computed_at": "2026-10-03T21:18:48Z"
+ },
+ "label": {
+  "status": "oracle_only",
+  "note": "Exposed real case (source batch existing-packets-development-batch-01 unit DEV-008, cluster soapbox-po5447): dev/regression only, never held-out. Expected values are the source-backed claims of the source records (oracle.derived_from), not a Workbench oracle run and not a human audit; every claim the records do not establish is a gap with state unknown. Pending human label: a person checks known_outcome against the originals in evals/exposed/sources.json, then sets human_audited (audited_by, audited_at) or disputed."
+ },
+ "scoring": {
+  "exact_values": true,
+  "gap_honesty": true,
+  "citations_required": true
+ },
+ "created_at": "2026-10-04"
+}

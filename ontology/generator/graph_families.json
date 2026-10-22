@@ -1,0 +1,114 @@
+{
+ "format": "plx-graph-families/v1",
+ "description": "Which Workbench capture holds which Microsoft Graph v1.0 resource, and which resources are not business data, for ontology/generator/graph.py. A rule names resource types (CSDL entity types) and, optionally, a type the request path went through first (via; the nearest one wins over a rule without via); a bound rule whose relation no capture reads carries blocked (the exact reason and its decision record). Every action and $ref is a write operation, and so is a template every upstream request of which writes (write_method: its registry methods hold no GET and no unknown request); a template bound to a family is read only when some upstream request GETs it. templates: a registry template that does not resolve as folded, read at one of its upstream citations (evidence): as (the template with its folded values written out, every literal segment kept; a value holds no '/' unless it is a drive path it opens as path addressing, root:/a/b, closed by the template's next ':') or a not_business_data reason with its decision. generate: the generated types of a family, one per relation, each property typed by the CSDL property its captured row field holds (fields: row path -> CSDL property path).",
+ "rules": [
+  {"resources": ["message"], "source": "graph_mail", "relation": "messages",
+   "note": "integrations/capture_mail.py: message versions (a $value read is the same message's MIME)."},
+  {"resources": ["attachment", "fileAttachment"], "source": "graph_mail", "relation": "attachments"},
+  {"resources": ["driveItem"], "source": "sharepoint", "relation": "driveItems",
+   "note": "integrations/capture_sharepoint.py reads drives by id: SharePoint libraries and OneDrive for Business drives (also a SharePoint library); content is the captured file bytes."},
+  {"resources": ["listItem", "fieldValueSet"], "via": "driveItem", "source": "sharepoint", "relation": "driveItems",
+   "note": "A drive item's own list item: its column snapshot is captured with every file version (capture_sharepoint listItem fields)."},
+  {"resources": ["workbook", "workbookWorksheet", "workbookRange", "workbookTable"], "via": "driveItem", "source": "sharepoint", "relation": "driveItems",
+   "note": "Workbook cells are the content of the captured file."},
+  {"resources": ["listItem", "fieldValueSet", "listItemVersion"], "via": "list", "source": "sharepoint", "relation": "listItems",
+   "note": "Items of a SharePoint list that is not a document library: integrations/capture_sharepoint_lists.py captures the lists its scope names (integrations/sharepoint_list_capture_scope.json; docs/decisions/2026-10-10-gen-graph-residual-list-items.md option b), item permissions as their audience."},
+  {"resources": ["chatMessage"], "via": "channel", "source": "teams", "relation": "channelMessages",
+   "note": "integrations/capture_teams.py: channel messages and replies."},
+  {"resources": ["chatMessage"], "via": "chat", "source": "teams", "relation": "chatMessages",
+   "note": "integrations/capture_teams.py: the chats of every account on the mail allowlist (operating/case_mail_scope.json; docs/decisions/2026-10-07-ovs-teams-capture.md item 2), projected gated by chat membership (docs/decisions/2026-10-10-followup-decisions.md item 6)."},
+  {"resources": ["site", "drive", "list", "columnDefinition", "mailFolder", "team", "channel", "chat", "teamsTab", "sharedDriveItem"],
+   "not_business_data": "container", "decision": "docs/decisions/2026-10-08-gen-graph-not-business-data.md",
+   "note": "A container, its configuration or its schema: the captures traverse it to reach the items; it holds no business record of its own."},
+  {"resources": ["user", "group", "directoryObject", "organization"],
+   "not_business_data": "directory", "decision": "docs/decisions/2026-10-08-gen-graph-not-business-data.md",
+   "note": "Directory identities and memberships: permission inputs (integrations/graph_directory.py), never ontology records."},
+  {"resources": ["subscription"],
+   "not_business_data": "infrastructure", "decision": "docs/decisions/2026-10-08-gen-graph-not-business-data.md",
+   "note": "Change-notification subscriptions of the upstream sync engines."},
+  {"resources": ["thumbnailSet", "workbookRangeFormat", "workbookRangeFont"],
+   "not_business_data": "presentation", "decision": "docs/decisions/2026-10-08-gen-graph-not-business-data.md",
+   "note": "Rendering and formatting of a file, not its content."},
+  {"resources": ["event", "onlineMeeting", "callTranscript"],
+   "not_business_data": "calendar_meetings", "decision": "docs/decisions/2026-10-08-gen-graph-not-business-data.md",
+   "note": "Calendars and meeting transcripts of the agent tooling (agentic-swarm); default until decided, reversal: a capture and a family."},
+  {"resources": ["todoTaskList", "todoTask", "plannerTask"],
+   "not_business_data": "personal_tasks", "decision": "docs/decisions/2026-10-08-gen-graph-not-business-data.md",
+   "note": "To Do and Planner tasks the agent tooling writes; Mission Control is the task system of record."}
+ ],
+ "operations": {
+  "action": {"not_business_data": "write_operation", "decision": "docs/decisions/2026-10-07-rec03-production-writes.md"},
+  "ref": {"not_business_data": "write_operation", "decision": "docs/decisions/2026-10-07-rec03-production-writes.md"},
+  "write_method": {"not_business_data": "write_operation", "decision": "docs/decisions/2026-10-07-rec03-production-writes.md"}
+ },
+ "templates": {
+  "/drives/{}/{}/{}": {"as": "/drives/{}/root:/{}", "evidence": "PLX_MC:scripts/provision-sharepoint.py@5bf29d2ebb37:370",
+   "note": "drives/<id>/root:<parent_path>/<name>: the folded values are path addressing under the drive root (a folder by path)."}
+ },
+ "generate": {
+  "graph_teams": {
+   "source": "teams",
+   "description": "Generated by ontology/generator/graph.py from the pinned Graph v1.0 CSDL subset (chatMessage) and the Teams capture's row fields. Do not edit.",
+   "lineage": "mail",
+   "capture": "integrations/capture_teams.py",
+   "csdl_type": "chatMessage",
+   "fields": {
+    "id": "id",
+    "reply_to_id": "replyToId",
+    "message_type": "messageType",
+    "created_at": "createdDateTime",
+    "last_modified": "lastModifiedDateTime",
+    "last_edited": "lastEditedDateTime",
+    "deleted_at": "deletedDateTime",
+    "subject": "subject",
+    "importance": "importance",
+    "from": "from",
+    "body_content_type": "body/contentType",
+    "attachments": "attachments",
+    "mentions": "mentions",
+    "original_url": "webUrl"
+   },
+   "types": {
+    "TeamsChannelMessage": {
+     "relation": "channelMessages", "binding": "gen.teams.channel_messages",
+     "key": ["team_id", "channel_id", "id"],
+     "fields": {"team_id": "channelIdentity/teamId", "channel_id": "channelIdentity/channelId"},
+     "description": "One captured Teams channel message or reply version (Graph chatMessage; lineage mail until the Teams lineage decision, docs/decisions/2026-10-07-ovs-teams-capture.md item 1). Readers are trimmed per channel and by the channel's captured membership. Source text is untrusted; the body is cited, not projected."
+    },
+    "TeamsChatMessage": {
+     "relation": "chatMessages", "binding": "gen.teams.chat_messages",
+     "key": ["chat_id", "id"],
+     "fields": {"chat_id": "chatId"},
+     "description": "One captured Teams chat message version (Graph chatMessage; lineage mail, docs/decisions/2026-10-07-ovs-teams-capture.md item 1). The chats of every account on the mail allowlist are captured (item 2); readers are trimmed per chat and by the chat's captured membership, and a chat without a captured membership is not projected (docs/decisions/2026-10-10-followup-decisions.md item 6). Source text is untrusted; the body is cited, not projected."
+    }
+   }
+  },
+  "graph_sharepoint_lists": {
+   "source": "sharepoint",
+   "description": "Generated by ontology/generator/graph.py from the pinned Graph v1.0 CSDL subset (listItem). Row fields are the Graph listItem JSON (fields expanded). Do not edit.",
+   "lineage": "sharepoint",
+   "capture": "integrations/capture_sharepoint_lists.py",
+   "csdl_type": "listItem",
+   "fields": {
+    "id": "id",
+    "createdDateTime": "createdDateTime",
+    "lastModifiedDateTime": "lastModifiedDateTime",
+    "createdBy": "createdBy",
+    "lastModifiedBy": "lastModifiedBy",
+    "eTag": "eTag",
+    "webUrl": "webUrl",
+    "contentType": "contentType",
+    "parentReference.siteId": "parentReference/siteId",
+    "sharepointIds.listId": "sharepointIds/listId",
+    "fields": "fields"
+   },
+   "types": {
+    "SharePointListItem": {
+     "relation": "listItems", "binding": "gen.sharepoint.list_items",
+     "key": ["parentReference.siteId", "sharepointIds.listId", "id"],
+     "description": "One item of a SharePoint list that is not a document library (Graph listItem, its column values in fields: only the columns the capture scope names, numbers as exact decimal text), captured by integrations/capture_sharepoint_lists.py for the lists its scope names. Readers are trimmed per list and by the item permissions captured with each version."
+    }
+   }
+  }
+ }
+}

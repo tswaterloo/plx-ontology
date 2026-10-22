@@ -1,0 +1,76 @@
+{
+ "id": "case.exposed_mail",
+ "description": "The Receiving mail originals the exposed real-case eval items cite (evals/exposed/sources.json mail_messages and mail_attachments: eight messages, four attachments) read through the GET-only Graph mail reader (GraphMailReader) under a probe audience, in the mailbox PLX_EVAL_EXPOSED_MAILBOX names (the source records do not record it). The pinned ids are REST ids and the reader returns immutable ids, so each message is located by its exact received time (one listing GET, oldest first, from that second) and each attachment by name, then its bytes are read and the SHA-256 compared; id_matches_pinned is informational. Output: counts, booleans, row indexes and error classes only. Read-only: GET only, token POST only. Live-unverified until the live check records a result.",
+ "disabled": "Pending a human-only value: the mailbox that received the Receiving mails (Dandylion P-02289 / PO-00269 and PO5455 cases) is not recorded in source record R; the operator sets PLX_EVAL_EXPOSED_MAILBOX (a UPN or object id). Enable by deleting this field once that value is configured.",
+ "command": [
+  "python3",
+  "-m",
+  "scripts.eval_exposed_sources",
+  "mail"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "check",
+   "configured",
+   "ok",
+   "messages",
+   "located",
+   "attachments_pinned",
+   "attachments_match",
+   "id_matches_pinned",
+   "read_errors",
+   "read_only_guard"
+  ],
+  "json_equals": {
+   "check": "case.exposed_mail",
+   "configured": true,
+   "ok": true,
+   "read_errors": 0,
+   "read_only_guard": "GET-only; token POST only"
+  },
+  "json_min": {
+   "messages": 8,
+   "located": 8,
+   "attachments_pinned": 4,
+   "attachments_match": 4
+  }
+ },
+ "source": "microsoft-graph",
+ "cadence": "daily",
+ "timeout_seconds": 600,
+ "requires_env": [
+  "MICROSOFT_GRAPH_TENANT_ID",
+  "MICROSOFT_GRAPH_CLIENT_ID",
+  "MICROSOFT_GRAPH_CLIENT_SECRET",
+  "PLX_EVAL_EXPOSED_MAILBOX"
+ ],
+ "record": [
+  "messages",
+  "located",
+  "attachments_pinned",
+  "attachments_match",
+  "id_matches_pinned",
+  "read_errors",
+  "requests_sent",
+  "rows[*].index",
+  "rows[*].status",
+  "rows[*].id_matches_pinned",
+  "rows[*].attachments_match",
+  "rows[*].attachments[*].status",
+  "rows[*].attachments[*].sha256_match",
+  "rows[*].attachments[*].bytes_match",
+  "rows[*].error_class",
+  "rows[*].http_status",
+  "rows[*].error_code",
+  "rows[*].detail"
+ ],
+ "record_enums": [
+  "rows[*].status",
+  "rows[*].attachments[*].status",
+  "rows[*].error_class",
+  "rows[*].error_code",
+  "rows[*].detail"
+ ],
+ "notes": "R records the route as the connected Outlook of the exact Receiving inbox but not the mailbox address, so the operator sets PLX_EVAL_EXPOSED_MAILBOX (a UPN or object id; configuration, not a credential); without it the check is skipped. Message bodies are not compared: R's body SHA-256 is the connector's full body, not the reader's text body. Attachment byte sizes differ from Graph's stored size (R records both); bytes_match compares the decoded bytes with R's downloaded size. Injected-transport tested (tests/test_eval_exposed_cases.py)."
+}

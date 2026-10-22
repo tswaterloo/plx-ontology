@@ -1,0 +1,82 @@
+{
+ "id": "profile.graph_mail",
+ "description": "Data-shape profile of Graph mail message metadata (no bodies) in the allowlisted shared operational inbox over 90 days, up to 500 messages, through GraphMailReader.",
+ "source": "microsoft-graph",
+ "profile": true,
+ "command": [
+  "python3",
+  "-m",
+  "verify.data_profile",
+  "mail",
+  "--mailbox",
+  "purchase-order@petrasoap.com",
+  "--folder",
+  "inbox",
+  "--days",
+  "90",
+  "--page-size",
+  "50",
+  "--max-pages",
+  "10",
+  "--label",
+  "purchase-order-inbox"
+ ],
+ "timeout_seconds": 600,
+ "requires_env": [
+  "MICROSOFT_GRAPH_TENANT_ID",
+  "MICROSOFT_GRAPH_CLIENT_ID",
+  "MICROSOFT_GRAPH_CLIENT_SECRET"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "targets",
+   "target_count",
+   "errors_count"
+  ],
+  "json_equals": {
+   "schema": "plx-data-profile/v1",
+   "valid": true,
+   "errors_count": 0,
+   "evidence_label": "live-read"
+  },
+  "json_min": {
+   "target_count": 1
+  }
+ },
+ "expect_blocked": {
+  "exit_code": 0,
+  "json_fields": [
+   "blocked_upstream",
+   "target_count",
+   "errors_count"
+  ],
+  "json_equals": {
+   "schema": "plx-data-profile/v1",
+   "valid": true,
+   "errors_count": 0,
+   "evidence_label": "live-read"
+  }
+ },
+ "record": [
+  "source_kind",
+  "evidence_label",
+  "target_count",
+  "errors_count",
+  "requests_sent",
+  "companies_count",
+  "targets_truncated",
+  "sanitizer_dropped",
+  "errors[*].name",
+  "errors[*].error",
+  "skipped[*].reason"
+ ],
+ "record_enums": [
+  "source_kind",
+  "evidence_label",
+  "errors[*].name",
+  "errors[*].error",
+  "skipped[*].reason"
+ ],
+ "notes": "Live-unverified until the live check runs it. Publishes the profile inline, or as results/profiles/<id>.json (one file per spec, overwritten each run; the check carries profile_file and counts) when run with --output results/... or --profiles-dir (plx-data-profile/v1, rebuilt by verify.data_profile.sanitize_profile): names, counts, null/absence rates, type and string-class counts, distinct-count and length buckets, AAA-9999 shape masks of single-token code values (a digit, no whitespace, no @) shared by >= 5 rows, nested JSON key names only when reviewed (verify/profile-nested-keys.json) or source-declared (other keys as counted shape masks), declared column names only (other row keys counted), declared key uniqueness and join resolution rates. Never values, names, emails, amounts, subjects, file names or ids. A non-zero errors_count fails the check but the partial profile is still published. Blocked: a read Graph answers 403 with its permission-refusal code (Authorization_RequestDenied or ErrorAccessDenied, integrations.graph_read.probe_block) is a top-level blocked_upstream part in capture_mail.graph_block's shape (error_code missing_permission, cause host_misconfiguration, the application permission it needs); expect_blocked then applies and the check reads blocked, never pass. Any other failure (401, a 403 with another code or none, 5xx, transport, a malformed answer) still fails. The refused part: the mailbox's directory lookup (mail.mailbox_lookup, User.Read.All) or its folder and message reads (mail.folder_read, Mail.Read), integrations.graph_read.mail_block; the refused target is not an error, so errors_count 0 in expect_blocked keeps any other failure a fail; the empty profile is still published (exit 0). Expected while consent graph-mail-directory-consent is outstanding (live 2026-10-19: errors SourceUnavailable after 2 requests, the lookup): blocked_upstream [{part mail.mailbox_lookup, http_status 403, error_code missing_permission, permission User.Read.All}]. People guard: with PLX_EXCLUDED_PEOPLE_OIDS unset or invalid the mailbox read is refused before any request for it and the profile carries a blocked_upstream part {source people-exclusion, cause later_ask, later_ask excluded-people-oids, error_code the guard's code}, not an error: errors_count stays 0 and the check reads blocked."
+}

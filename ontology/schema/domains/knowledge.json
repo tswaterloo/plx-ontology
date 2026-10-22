@@ -1,0 +1,236 @@
+{
+ "$schema": "../_format.schema.json",
+ "format": "plx-ontology-domain/v1",
+ "domain": "knowledge",
+ "origin": "curated",
+ "description": "Engineering/agent knowledge (GOV-13): brain memory items captured read-only from the brain's agent/items route (integrations/knowledge_source.py, the knowledge the Portal Knowledge Service serves as namespace knowledge.graph), cited brain://<namespaceKey>/<id>@<generation>-<capture>. Every reader is trimmed per brain namespace (audience brain:<namespaceKey>, granted by the Workbench's namespace authority; an unnamed namespace grants nobody; personal namespaces are never captured). Items are untrusted T3 leads, never business facts: the type has no identifier property and no link to a business record, and its text is untrusted source text.",
+ "object_types": [
+  {
+   "id": "KnowledgeItem",
+   "description": "One captured brain memory item version, keyed by the brain item id (memory.items uuid). Title and snippet are untrusted source text; updated_at is the brain's own edit time, never a business date.",
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "brain.items",
+     "source": "brain",
+     "relation": "items",
+     "key": [
+      "id"
+     ],
+     "lineage": {
+      "default": "brain"
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.knowledge_source"
+      },
+      {
+       "kind": "ref",
+       "id": "up.vmc_items"
+      }
+     ],
+     "note": "One object per brain item id; one version per captured updatedAt (capture store kind brain). The same memory items plx-brain brain_timeline lists (readMemoryItems, order recent, personal namespaces excluded) and brain_get_node loads as memory_item nodes (agentic-swarm@e228067 apps/vmc-web/src/lib/vmc/knowledge/mcp-http-tools.ts runTimeline, runGetNode); other graph node kinds, facts and edges are not typed.",
+     "registry_entries": [
+      "plx-brain.mcp_tool:brain_get_node",
+      "plx-brain.mcp_tool:brain_timeline"
+     ]
+    }
+   ],
+   "properties": [
+    {
+     "name": "title",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "brain.items",
+       "path": "title",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.knowledge_source"
+      }
+     ]
+    },
+    {
+     "name": "snippet",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "brain.items",
+       "path": "snippet",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.knowledge_source"
+      }
+     ]
+    },
+    {
+     "name": "namespace",
+     "description": "The brain namespaceKey (the reader's audience unit).",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "brain.items",
+       "path": "namespace",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.knowledge_source"
+      }
+     ]
+    },
+    {
+     "name": "memory_type",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "brain.items",
+       "path": "memory_type",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.knowledge_source"
+      }
+     ]
+    },
+    {
+     "name": "project_slug",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "brain.items",
+       "path": "project_slug",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.knowledge_source"
+      }
+     ]
+    },
+    {
+     "name": "source_type",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "brain.items",
+       "path": "source_type",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.knowledge_source"
+      }
+     ]
+    },
+    {
+     "name": "external_url",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "brain.items",
+       "path": "external_url",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.knowledge_source"
+      }
+     ]
+    },
+    {
+     "name": "updated_at",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "brain.items",
+       "path": "updated_at",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.knowledge_source"
+      }
+     ]
+    },
+    {
+     "name": "created_at",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "brain.items",
+       "path": "created_at",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.knowledge_source"
+      }
+     ]
+    }
+   ],
+   "display": [
+    "title"
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "wb.knowledge_source"
+    },
+    {
+     "kind": "ref",
+     "id": "ctx.brain"
+    }
+   ]
+  }
+ ],
+ "link_types": [],
+ "event_types": [],
+ "evidence_catalog": {
+  "wb.knowledge_source": {
+   "kind": "workbench_code",
+   "path": "integrations/knowledge_source.py",
+   "note": "NamespaceAuthority (caller/namespace authority before retrieval) and the GET-only agent/items capture into the versioned capture store (kind brain)."
+  },
+  "up.vmc_items": {
+   "kind": "upstream_code",
+   "repo": "agentic-swarm",
+   "path": "apps/vmc-web/src/lib/vmc/knowledge/items-core.ts",
+   "commit": "e228067c19",
+   "symbol": "mapMemoryItemsRow",
+   "lines": "70-91",
+   "note": "KnowledgeMemoryItemV1: id, title, snippet, namespaceKey, memoryType, projectSlug, updatedAt."
+  },
+  "ctx.brain": {
+   "kind": "context_pack",
+   "ref": "docs/reference/vmc-brain-tools.md#7.1",
+   "note": "Brain hits are leads (derived_knowledge/T3), never cited facts about business records; trim before showing."
+  }
+ }
+}

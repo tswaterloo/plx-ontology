@@ -1,0 +1,142 @@
+{
+ "id": "tools.investigate_bc_claims",
+ "description": "plx.investigate on fresh BC roots passes the claim checker for an authorized MANAGER. operating.host cycles (Host.cycle: a GET-only BC capture of the named entity sets into a throwaway host state in {tmp}, then the projection build) on a BC-only host configuration the module writes beside that state: no Portal, mail or SharePoint configured; the capture principal and the reader granted the BC environment, the reader also the Portal relations (a MANAGER holds the Portal too). The tools are the ones the host's mcp serves over that state (Host.served_tools), called as the reader staff:manager with the clearance the Portal MANAGER role bootstraps under examples/employee_permission_policy.example.json (recorded with clearance_source naming that example file: an example mapping, never a production clearance). Three cycles on the same state (sales orders and shipments; purchase orders, receipts, invoices and items; then the vendor payment journals and G/L entries, the landed-cost deposit and G/L stages, last so a ledger cut by its budget never costs a document), so the last projection holds them all. Then plx.investigate on up to 3 roots per family (projected objects of the plan's root types, those with the most distinct incoming link types first, ties by SHA-256 of the object id; never an eval item). The families run in a rotation, oldest evidence first (families_age: runs since each last ran to the end of its roots, carried from the previous daily report; a family it does not age first, then the oldest, ties by plan id), so a budget stop cuts a different family each run. The families (families_run) are the ontology/plans plans the host loads with a root type the capture holds (one the projection holds or a BC entity set of a cycle binds), so a new plan runs with no script edit; on these cycles they include three_way_match, customer_po_status and landed_cost (LOG-09: the generic landed-cost walk on sampled BC purchase orders). No claim check failure claim_uncited, every checked root passes (roots_failed 0), no answer is a tool error, every family reaches a root and some family checks a cited value; three_way_match, customer_po_status and landed_cost each check at least one (families.*.claims >= 1; a family whose roots answer no claim on BC alone, such as decision_evidence without Mission Control, is recorded, not asserted). Each family records its count evidence by name (stages: records reached summed over its roots; stages_reached: roots reaching each; for landed_cost the confirmation, forwarder quote, receipt, purchase invoice, payment/deposit and G/L stages, a stage nothing reached absent, never zero) and the typed codes of its gaps (gap_codes; stage_gaps: <plan step>:<reason> of each gap on a link a plan step walks, e.g. a stage withheld by its marking) and answerability reasons (reason_codes), codes and counts only; the same roots asked by a principal with no grant give no value and no claim (outsider_leaks 0). With no BC record projected because BC did not answer the check names sources_blocked. A family that reaches no root because BC holds no record of it (every captured entity set binding its root types read to completion in every pinned company, holding none: root_source_empty) is blocked, not failed: when it is the only shortfall the check names sources_blocked no_root_records; a pinned company the capture left unread (a stop before its turn) is named by its book in bc_companies_unread, and then no family is root_source_empty; a set the capture holds records of that the projection does not still fails. A BC cycle that did not answer is a blocked_upstream part (blocked, never a pass). A BC throttle (429/503: a cycle that failed with one, or a capture it stopped part-way) is one blocked_upstream part per entity set it left unread, typed error_code upstream_throttled with its http_status, and summed in upstream_throttled (entity_sets, http_statuses): such a cycle never passes. When the only shortfall is reach (a family with no root or no claim) and every BC read left incomplete traces to that throttle (no other outage, budget stop or failed unit), the check names sources_blocked upstream_throttled; a wrong, uncited or leaked answer, a tool error or a contract failure still fails (exit 1). Every answer is validated against its frozen contract. Output is counts, booleans, codes and states only; never a value, number, name, identifier or citation.",
+ "source": "business-central",
+ "cadence": "daily",
+ "tier": "deterministic_tools",
+ "command": [
+  "python3",
+  "-m",
+  "scripts.live_employee_tools",
+  "investigate",
+  "--state-dir",
+  "{tmp}/state",
+  "--cycle",
+  "salesOrders,salesShipments",
+  "--cycle",
+  "purchaseOrders,purchaseReceipts,purchaseInvoices,items",
+  "--cycle",
+  "vendorPaymentJournals,generalLedgerEntries",
+  "--budget-seconds",
+  "1080",
+  "--sample",
+  "3",
+  "--previous-report={daily_report}"
+ ],
+ "timeout_seconds": 1380,
+ "requires_env": [
+  "BC_TENANT_ID",
+  "BC_CLIENT_ID",
+  "BC_CLIENT_SECRET",
+  "BC_ENVIRONMENT"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "families",
+   "bc_capture",
+   "blocked_upstream",
+   "families_run"
+  ],
+  "json_equals": {
+   "contract_failures": 0,
+   "capture_errors": 0,
+   "projection_failed": 0,
+   "budget_exhausted": false,
+   "portal_state": "not_configured",
+   "claim_uncited": 0,
+   "roots_failed": 0,
+   "outsider_leaks": 0,
+   "families.three_way_match.errors": 0,
+   "families.customer_po_status.errors": 0,
+   "families.landed_cost.errors": 0
+  },
+  "json_min": {
+   "families.three_way_match.roots": 1,
+   "families.three_way_match.claims": 1,
+   "families.customer_po_status.roots": 1,
+   "families.customer_po_status.claims": 1,
+   "outsider_probed": 2,
+   "families.landed_cost.roots": 1,
+   "families.landed_cost.claims": 1
+  }
+ },
+ "expect_blocked": {
+  "exit_code": 0,
+  "json_fields": [
+   "families",
+   "blocked_upstream"
+  ],
+  "json_equals": {
+   "contract_failures": 0,
+   "capture_errors": 0,
+   "projection_failed": 0,
+   "budget_exhausted": false,
+   "portal_state": "not_configured",
+   "claim_uncited": 0,
+   "roots_failed": 0,
+   "outsider_leaks": 0
+  },
+  "json_min": {
+   "roots_investigated": 1
+  }
+ },
+ "blocked_when": "sources_blocked",
+ "record": [
+  "claim_uncited",
+  "roots_failed",
+  "roots_investigated",
+  "outsider_probed",
+  "outsider_leaks",
+  "outsider_states",
+  "sources_blocked",
+  "bc_companies_unread",
+  "objects",
+  "object_types_held",
+  "bc_capture",
+  "bc_capture.reasons",
+  "blocked_upstream",
+  "upstream_throttled",
+  "portal_state",
+  "reader_clearance",
+  "clearance_source",
+  "role",
+  "calls",
+  "contract_failures",
+  "error_codes",
+  "capture_errors",
+  "projection_failed",
+  "budget_exhausted",
+  "seconds",
+  "families_run",
+  "families_age",
+  "families.landed_cost",
+  "families.three_way_match.roots",
+  "families.three_way_match.claims",
+  "families.three_way_match.errors",
+  "families.three_way_match.value_checks",
+  "families.customer_po_status.roots",
+  "families.customer_po_status.claims",
+  "families.customer_po_status.errors",
+  "families.customer_po_status.value_checks"
+ ],
+ "record_keys": [
+  "families",
+  "outsider_states",
+  "bc_capture",
+  "error_codes",
+  "families_age"
+ ],
+ "record_enums": [
+  "portal_state",
+  "reader_clearance",
+  "clearance_source",
+  "role",
+  "bc_capture.reasons",
+  "sources_blocked",
+  "bc_companies_unread",
+  "upstream_throttled",
+  "families_run"
+ ],
+ "notes": "Live-unverified until the live check records a result. Daily (~23 min, too long for the oversubscribed hourly set). Each family's code maps fold their rarest codes into other within 1600 chars (codes_folded) and only landed_cost is recorded whole, so the detail stays under the 4000-char cap; the first live result must still be read for fields_truncated. Module tests: injected-transport (tests/test_live_employee_tools.py runs this spec's own argv over the BC fake of integrations/tests/test_bc_capture.py and checks it with live_verify.check_expectations; only the live size floors may miss there, and each check is also run against a reproduction of the defect it guards, which it must fail). Each cycle's BC capture gets 20% of the 1080 s budget (60% split between the three: the 216 s the two document cycles had under 720 s) and may stop at it; the tool calls get the rest (seven plan families since LOG-09, not two); what it holds is projected (the host's own behaviour), so roots with receipts and invoices are preferred but not required. Values checked 'unverified' (claim_role_unverified: a quantity role no BC role contract grounds yet) are recorded in families.*.value_checks, not failures. The price verdict stays undecided (unit costs carry the finance marking no case-host reader holds); answerability is recorded, not asserted. Payments and G/L entries carry the finance marking: for this reader the deposit and G/L stages are expected withheld (stage_gaps payments:marking_withheld, gl_entries:marking_withheld), a typed gap, never a count."
+}

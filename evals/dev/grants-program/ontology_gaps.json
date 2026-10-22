@@ -1,0 +1,238 @@
+{
+ "format": "plx-case-ontology-gaps/v1",
+ "case": "stephen-grants",
+ "status": "What the ontology lacks to answer evals/dev/grants-program/proposed_items.json. Sources are named, never read here; 'source unknown' carries the question that would find one. A brief reference names who asked, not the system of record.",
+ "advisory": "advisory:4db485a7f2e6",
+ "gaps": [
+  {
+   "id": "GP-GAP-01",
+   "kind": "object",
+   "name": "Grant (funding program and project: NGen 14091, FedDev, AMIC, ISED AI-CAF) with its agreement, periods and status",
+   "ontology_today": "No grant or funding-program type; nothing in Portal, Sage relations or the BC grammar names a grant.",
+   "needed_by": [
+    "GP-01",
+    "GP-07",
+    "GP-10",
+    "GP-11"
+   ],
+   "sources": [
+    {
+     "system": "sharepoint",
+     "relation": "Grants Program brief",
+     "ref": "OntologyProject:examples/case_originals.json@2003e14a91ee co-81d7ee151c6e"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Where are the NGen project 14091 agreement, budget and claim periods kept (SharePoint site and library, funder portal), and who owns them?"
+  },
+  {
+   "id": "GP-GAP-02",
+   "kind": "object",
+   "name": "Eligible cost row (the shared Purchase / Cost Line, from the claim workbook)",
+   "ontology_today": "Purchase objects exist (Sage PO, BC purchase invoices, Portal PO) but no Cost Line; the asset case records the same missing edge (evals/dev/asset-tracker/ontology_gaps.json AT-GAP-10).",
+   "needed_by": [
+    "GP-02",
+    "GP-03",
+    "GP-07",
+    "GP-08"
+   ],
+   "sources": [
+    {
+     "system": "sharepoint",
+     "relation": "Grants Program brief",
+     "ref": "OntologyProject:examples/case_originals.json@2003e14a91ee co-81d7ee151c6e"
+    },
+    {
+     "system": "sharepoint",
+     "relation": "Asset Tracker brief (shared entity)",
+     "ref": "OntologyProject:examples/case_originals.json@2003e14a91ee co-2b32fe4f123c"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Where is the NGen Q10 claim workbook (site, library, file name) and which revision was submitted to the funder?"
+  },
+  {
+   "id": "GP-GAP-03",
+   "kind": "object",
+   "name": "Eligibility ruling (per invoice line: ruling, decider, date, cited source)",
+   "ontology_today": "No ruling or decision object for funder eligibility; mail is readable but no mailbox is known to hold rulings.",
+   "needed_by": [
+    "GP-04",
+    "GP-05"
+   ],
+   "sources": [
+    {
+     "system": "microsoft-graph",
+     "relation": "mail (candidate only)",
+     "ref": "OntologyProject:docs/reference/live-sources.md@2003e14a91ee:19"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Where do NGen eligibility rulings such as the Q9 review arrive (funder portal message, letter, mail to which mailbox), and who at PLX keeps them?"
+  },
+  {
+   "id": "GP-GAP-04",
+   "kind": "object",
+   "name": "Funder claim (claim period, claimed and reimbursed amounts per cost)",
+   "ontology_today": "No claim object; no reader for any funder portal.",
+   "needed_by": [
+    "GP-07",
+    "GP-11"
+   ],
+   "source": "source unknown",
+   "open_question": "Which funder portal and cadence does NGen use for claims, can its submitted claims and reimbursements be exported read-only, and who is the contact?"
+  },
+  {
+   "id": "GP-GAP-05",
+   "kind": "object",
+   "name": "Hours (person, period, project, hours) charged to a grant project",
+   "ontology_today": "No time-entry type. Portal holds employee rates, not hours, and they are not served; the BC grammar excludes employees and payroll; the reporting API excludes wages and person names.",
+   "needed_by": [
+    "GP-06",
+    "GP-09"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "public.app_employee_rate (rates, not hours; not served)",
+     "ref": "plx-customer-portal:portal/prisma/schema.prisma@b8f6e2231860:7599-7610"
+    },
+    {
+     "system": "portal-reporting-api",
+     "relation": "decision D3 (excludes wages and person names)",
+     "ref": "plx-customer-portal:services/workbench-api/manifest/allowlist.json@b8f6e2231860:14"
+    },
+    {
+     "system": "business-central",
+     "relation": "BC_ENTITY_SETS (no employees or payroll)",
+     "ref": "OntologyProject:integrations/live_source_grammar.py@2003e14a91ee:72-83"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Which system records hours worked on NGen 14091 by person and period (payroll project coding, a timesheet workbook), and can hours be read without wages?"
+  },
+  {
+   "id": "GP-GAP-06",
+   "kind": "link",
+   "name": "Cost row to invoice and payment proof",
+   "ontology_today": "Invoice and payment objects are readable in BC and Sage PO relations are served, but no key from a cost row to them is known.",
+   "needed_by": [
+    "GP-03"
+   ],
+   "sources": [
+    {
+     "system": "business-central",
+     "relation": "purchaseInvoices, purchaseInvoiceLines, vendorPaymentJournals, vendorPayments",
+     "ref": "OntologyProject:integrations/live_source_grammar.py@2003e14a91ee:72-83"
+    },
+    {
+     "system": "portal-reporting-api",
+     "relation": "sage.po_header, sage.po_detail, sage.po_receipt_header",
+     "ref": "plx-customer-portal:services/workbench-api/manifest/allowlist.json@b8f6e2231860:2891,3008,3313"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Which key does a Q10 cost row carry to its invoice and payment (vendor invoice number, BC document number, Sage PO, cheque or EFT reference)?"
+  },
+  {
+   "id": "GP-GAP-07",
+   "kind": "link",
+   "name": "Cost row to funder claims (one cost, many claims)",
+   "ontology_today": "No claim object, so no edge; the asset case records the same funder-claim edge as missing (AT-GAP-10).",
+   "needed_by": [
+    "GP-07",
+    "GP-08"
+   ],
+   "sources": [
+    {
+     "system": "sharepoint",
+     "relation": "Grants Program brief",
+     "ref": "OntologyProject:examples/case_originals.json@2003e14a91ee co-81d7ee151c6e"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "When one cost is claimed to more than one funder, where is that split recorded and which cost key does each claim line carry?"
+  },
+  {
+   "id": "GP-GAP-08",
+   "kind": "link",
+   "name": "Cost or hours to deliverable and partner delivery",
+   "ontology_today": "No deliverable object or link.",
+   "needed_by": [
+    "GP-09"
+   ],
+   "source": "source unknown",
+   "open_question": "Where are NGen 14091 deliverables and partner deliveries tracked, and which key ties a cost or an hours entry to one?"
+  },
+  {
+   "id": "GP-GAP-09",
+   "kind": "link",
+   "name": "Purchase or invoice line to grant project coding",
+   "ontology_today": "BC dimensions are readable, but whether any dimension codes a grant project is unverified; Sage AP/G-L relations are not served.",
+   "needed_by": [
+    "GP-03",
+    "GP-06"
+   ],
+   "sources": [
+    {
+     "system": "business-central",
+     "relation": "dimensions, dimensionValues",
+     "ref": "OntologyProject:integrations/live_source_grammar.py@2003e14a91ee:72-83"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Does PLX code NGen 14091 costs and payroll to the project in BC (a dimension), in Sage (a job or G/L segment) or only in the claim workbook?"
+  },
+  {
+   "id": "GP-GAP-10",
+   "kind": "reader",
+   "name": "Claim workbooks and invoice PDFs as originals",
+   "ontology_today": "The brief is the only registered grants original; the Q10 workbook, the over-$500 PDFs and the Q9 review are not captured, so nothing can be recounted or cited.",
+   "needed_by": [
+    "GP-02",
+    "GP-03",
+    "GP-05"
+   ],
+   "sources": [
+    {
+     "system": "sharepoint",
+     "relation": "Grants Program brief",
+     "ref": "OntologyProject:examples/case_originals.json@2003e14a91ee co-81d7ee151c6e"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Which SharePoint site and library hold the NGen claim workbooks and supporting invoice PDFs, and may the Workbench capture them read-only?"
+  },
+  {
+   "id": "GP-GAP-11",
+   "kind": "reader",
+   "name": "Sage AP and G/L (invoice and payment coding)",
+   "ontology_today": "The reporting API serves Sage PO, order and invoice-to-customer relations but no AP or G/L relation.",
+   "needed_by": [
+    "GP-03"
+   ],
+   "sources": [
+    {
+     "system": "portal-reporting-api",
+     "relation": "allowlist (no Sage AP or G/L entries)",
+     "ref": "plx-customer-portal:services/workbench-api/manifest/allowlist.json@b8f6e2231860"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Which Sage AP or G/L tables hold the vendor invoices and payments claimed to NGen, and can the reporting API serve them read-only?"
+  },
+  {
+   "id": "GP-GAP-12",
+   "kind": "reader",
+   "name": "Funder portal (submitted claims, rulings, reimbursements)",
+   "ontology_today": "No reader; the brief forbids writes to funder portals, so any reader would be read-only exports.",
+   "needed_by": [
+    "GP-04",
+    "GP-07",
+    "GP-11"
+   ],
+   "source": "source unknown",
+   "open_question": "Does the NGen funder portal offer a read-only export or API for submitted claims, rulings and reimbursements, and who holds access?"
+  }
+ ]
+}

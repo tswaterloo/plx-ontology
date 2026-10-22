@@ -1,0 +1,82 @@
+{
+  "tool": "plx.process",
+  "examples": [
+    {
+      "name": "missing stage",
+      "input": {
+        "from": "SalesOrder:portal.app_sales_order:ex-so-1",
+        "process": "order_to_cash"
+      },
+      "output": {
+        "process": "order_to_cash",
+        "stages": [
+          {
+            "stage": "confirmed",
+            "state": "present",
+            "events": [
+              "ev-1248b7c394ca6689"
+            ]
+          },
+          {
+            "stage": "shipped",
+            "state": "missing",
+            "events": [],
+            "missing": {
+              "state": "not_ingested",
+              "reason": "not_served",
+              "subject": "Shipment"
+            }
+          }
+        ],
+        "quantity_checks": [
+          {
+            "roles": [
+              "ordered",
+              "shipped"
+            ],
+            "values": [
+              {
+                "property": "ordered_quantity",
+                "value_type": "quantity",
+                "value": "1920",
+                "unit": "each",
+                "quantity_role": "ordered",
+                "citation": {
+                  "l1_handle": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42",
+                  "field_path": "row.custom_fields.totalQuantity",
+                  "digest": "146d17af168f5260311952fff1a5ab31eb9a141a29fb93f8a2b753d963fad7ed",
+                  "lineage": "gold_etl_from_fm"
+                },
+                "authority_rank": 0,
+                "markings": []
+              }
+            ],
+            "agree": null,
+            "note": "No shipped quantity is served."
+          }
+        ],
+        "gaps": [],
+        "completeness": {
+          "complete": true,
+          "truncated": false,
+          "returned": 2,
+          "total": 2,
+          "next_cursor": null
+        },
+        "meta": {
+          "schema_digest": "df0ad6e43880f09c90ebf95f19110178aba6890df0010ebda7485029e2b543b4",
+          "as_known_at": "2099-01-02T03:04:05Z",
+          "freshness": [
+            {
+              "source": "portal_api",
+              "captured_at": "2099-01-02T03:00:00Z",
+              "lag_seconds": 245,
+              "completeness": "complete",
+              "stale": false
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

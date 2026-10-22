@@ -1,0 +1,26 @@
+{
+ "schema": "plx-teams-capture-scope/v1",
+ "note": "Teams capture scope (integrations/capture_teams; the requirement \"Teams everything\", 2026-10-21). Which conversations: every channel of every team the census enumerates and the people guard clears (teams all_census_cleared: not only the teams a member joined), and the chats of every account on the canonical mail allowlist, operating/case_mail_scope.json (member_chats mail_allowlist: chats are decided, docs/decisions/2026-10-07-ovs-teams-capture.md item 2). Content of that set is read only once the operator's own all_census_cleared confirmation (the operator's name, the date, the record id) sits beside the census file; code never writes it. The member cos@ (joined_teams) is the member-joined baseline the census is compared with, and what TeamsCapture.run, which takes no census, still reads. Those chat accounts are read from the allowlist on every run, never listed here: a change to the allowlist changes whose chats are read. A member named here must be on the same allowlist, or it is set aside before anything is requested. This file grants nothing: the capture principal still needs the live-source audience, and every reader is re-gated per conversation and per message on the membership captured with it.",
+ "members": [
+  {"address": "cos@petrasoap.com", "joined_teams": true}
+ ],
+ "member_chats": "mail_allowlist",
+ "teams": "all_census_cleared",
+ "chats": [],
+ "page_size": 50,
+ "max_pages_per_run": 20,
+ "max_items_per_run": 1000,
+ "max_replies_per_message": 500,
+ "max_conversations": 100,
+ "census": {
+  "note": "Census (TeamsCapture.census): every team and channel of the tenant and the chats of the chat accounts, names and 30-day counts only, read once the people guard cleared their members. The keywords below propose a channel or chat to the operator by its name, for purchasing, QA and R&D; a proposal, never a grant. Content is read only of what the operator confirms in content-confirmation.json beside the census file in the state directory.",
+  "message_counts": "teams_activity_report",
+  "max_teams": 500,
+  "max_chats": 200,
+  "proposals": {
+   "purchasing": ["purchas", "procure", "buying", "buyer", "supplier", "vendor"],
+   "qa": ["qa", "qc", "quality", "hand-off", "handoff", "hand off"],
+   "rnd": ["r&d", "rnd", "research", "development", "kb board", "formulation"]
+  }
+ }
+}

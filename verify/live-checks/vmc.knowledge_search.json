@@ -1,0 +1,63 @@
+{
+ "id": "vmc.knowledge_search",
+ "description": "Brain/VMC agent knowledge search (GET /api/vmc/knowledge/agent/search, fixed query, limit 3) through the guarded brain client; counts, key names and the components the response flags degraded (from its *Degraded keys) only.",
+ "source": "vmc",
+ "command": [
+  "python3",
+  "-m",
+  "scripts.live_read_probes",
+  "vmc-search"
+ ],
+ "timeout_seconds": 120,
+ "requires_env_any": [
+  "VMC_API_KEY",
+  "BRAIN_API_KEY"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "result_count",
+   "total",
+   "top_keys"
+  ],
+  "json_equals": {
+   "partial": false,
+   "trust_label": "untrusted_lead"
+  },
+  "json_min": {
+   "result_count": 1
+  }
+ },
+ "expect_blocked": {
+  "exit_code": 0,
+  "json_fields": [
+   "top_keys",
+   "degraded",
+   "blocked_upstream"
+  ],
+  "json_equals": {
+   "trust_label": "untrusted_lead"
+  }
+ },
+ "record": [
+  "pair",
+  "top_keys",
+  "data_keys",
+  "result_count",
+  "total",
+  "partial",
+  "degraded",
+  "blocked_upstream",
+  "result_keys",
+  "trust_label"
+ ],
+ "record_enums": [
+  "pair",
+  "top_keys",
+  "data_keys",
+  "result_keys",
+  "trust_label",
+  "degraded"
+ ],
+ "notes": "Blocked, not failed (live since 05:00Z: VMC answered partial true with semanticDegraded): each component the response flags degraded through a *Degraded key (a value not plainly false) is listed in blocked_upstream (part = component, error_code upstream_degraded) and expect_blocked applies: the check is blocked naming the component, never pass. A partial answer with no degraded flag still fails the full expect (partial != expected)."
+}

@@ -1,0 +1,492 @@
+{
+  "$schema": "../_format.schema.json",
+  "format": "plx-ontology-domain/v1",
+  "domain": "bc_entity_map",
+  "origin": "curated",
+  "description": "PENDING (not loaded by default; ontology.schema load_schema(include_pending=True)). Portal <-> BC identity through app_bc_entity_map, the only verified link for records BC renumbered. Declared ahead of the upstream ask Q3 so the bindings are reviewed and tested; when the reporting API serves public.app_bc_entity_map, move BcEntityMapping into domains/bc_finance.json (replacing its not_served placeholder) and these links next to it.",
+  "upstream_pins": {
+    "plx-customer-portal": "c3ffda3"
+  },
+  "object_types": [
+    {
+      "id": "BcEntityMapping",
+      "description": "Portal's identity bridge app_bc_entity_map: (entity_type, source_system, source_id) -> BC systemId + No., written only by the BC drain from the BC response. Pending: the reporting API does not serve it (Q3); these bindings are reviewed and tested now and move to domains/bc_finance.json when it is served. The joins below go through bc_system_id (the GUID the Portal resolves by), so they name one BC record of one company.",
+      "availability": {
+        "state": "partial",
+        "reason": "Pending: public.app_bc_entity_map is outside the reporting-API allowlist (services/workbench-api/manifest/allowlist.json@c3ffda3); distribution-book clones ('{id}::distribution') do not join a Portal id; only LINKED rows of the joined entity types are bound.",
+        "upstream_ask": "Q3"
+      },
+      "bindings": [
+        {
+          "id": "portal.app_bc_entity_map",
+          "source": "portal_api",
+          "relation": "public.app_bc_entity_map",
+          "key": [
+            "id"
+          ],
+          "where": [
+            {
+              "path": "source_system",
+              "op": "eq",
+              "value": "portal"
+            },
+            {
+              "path": "status",
+              "op": "eq",
+              "value": "LINKED"
+            },
+            {
+              "path": "entity_type",
+              "op": "in",
+              "value": [
+                "item",
+                "purchaseOrder",
+                "salesInvoice",
+                "salesOrder"
+              ]
+            }
+          ],
+          "lineage": {
+            "default": "gold_native_staging"
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "portal.bc_entity_map_table"
+            },
+            {
+              "kind": "ref",
+              "id": "portal.bc_entity_map_upsert"
+            },
+            {
+              "kind": "ref",
+              "id": "context.portal.4.10"
+            },
+            {
+              "kind": "ref",
+              "id": "portal.bc_entity_map_linked_joins"
+            }
+          ],
+          "note": "Only the rows the Portal's own entity-map joins read: source_system 'portal', status 'LINKED' and an entity type a link below joins through (document-finance-queries.ts, po-queries.ts, ensure-line-prices.ts; plx-customer-portal@c3ffda3). ARCHIVED/BLOCKED rows and other entity types are not projected. C0 `via` has no row predicate, so the entity type of each link is not tested per link: every link joins on bc_system_id against one BC entity set (salesOrders, salesInvoices, purchaseOrders, items), and a BC systemId names one record of one entity set, so a row of another entity type cannot reach that set. The reporting API is a replica of the staging primary, while the deployed BC drain writes from the UAT database (docs/reference/portal-code-map.md s2/s6 trap 1): whether served rows point at the captured BC Production records is to be checked when the relation is served."
+        }
+      ],
+      "properties": [
+        {
+          "name": "entity_type",
+          "value_type": "text",
+          "description": "BC entity the row maps; bound only for the entity types a link joins through (salesOrder, salesInvoice, purchaseOrder, item).",
+          "sources": [
+            {
+              "binding": "portal.app_bc_entity_map",
+              "path": "entity_type",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "source_system",
+          "value_type": "text",
+          "description": "portal | fm | sage; only portal rows are bound.",
+          "sources": [
+            {
+              "binding": "portal.app_bc_entity_map",
+              "path": "source_system",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "source_id",
+          "value_type": "text",
+          "description": "The Portal record id ('{id}::distribution' / '{id}::manufacturing' for book slices).",
+          "sources": [
+            {
+              "binding": "portal.app_bc_entity_map",
+              "path": "source_id",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "bc_system_id",
+          "value_type": "identifier",
+          "description": "BC systemId GUID of the mapped record (company of the drain).",
+          "sources": [
+            {
+              "binding": "portal.app_bc_entity_map",
+              "path": "bc_system_id",
+              "parser": "identifier"
+            }
+          ],
+          "identifier_kind": "bc_system_id"
+        },
+        {
+          "name": "bc_number",
+          "value_type": "identifier",
+          "description": "BC No. of the mapped record after the drain's refresh (the renumbered document No.).",
+          "sources": [
+            {
+              "binding": "portal.app_bc_entity_map",
+              "path": "bc_number",
+              "parser": "identifier"
+            }
+          ],
+          "identifier_kind": "bc_document_no"
+        },
+        {
+          "name": "status",
+          "value_type": "enum",
+          "description": "LINKED | ARCHIVED (cancelled in BC) | BLOCKED; only LINKED rows are bound (the Portal's joins read no other).",
+          "sources": [
+            {
+              "binding": "portal.app_bc_entity_map",
+              "path": "status",
+              "parser": "trim"
+            }
+          ],
+          "enum_values": [
+            "LINKED",
+            "ARCHIVED",
+            "BLOCKED"
+          ]
+        },
+        {
+          "name": "last_synced_at",
+          "value_type": "timestamp",
+          "description": "Last drain write of this row.",
+          "sources": [
+            {
+              "binding": "portal.app_bc_entity_map",
+              "path": "last_synced_at",
+              "parser": "iso_timestamp"
+            }
+          ]
+        }
+      ],
+      "identity_keys": [
+        {
+          "name": "source",
+          "properties": [
+            "entity_type",
+            "source_system",
+            "source_id"
+          ],
+          "tier": "verified",
+          "unique": true,
+          "scope": "within_binding",
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "portal.bc_entity_map_table"
+            }
+          ]
+        }
+      ],
+      "display": [
+        "entity_type",
+        "bc_number"
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "portal.bc_entity_map_table"
+        },
+        {
+          "kind": "ref",
+          "id": "portal.bc_entity_map_upsert"
+        },
+        {
+          "kind": "ref",
+          "id": "context.portal.4.10"
+        }
+      ]
+    }
+  ],
+  "link_types": [
+    {
+      "id": "SalesOrder.bc_posted_as",
+      "from": "SalesOrder",
+      "to": "SalesOrder",
+      "name": "bc_posted_as",
+      "reverse_name": "bc_posted_from",
+      "cardinality": "1:1",
+      "description": "The BC sales order the Portal posted this gold order as (entity map salesOrder row). Survives BC renumbering: the map holds the BC systemId, whatever No. either side shows.",
+      "bindings": [
+        {
+          "kind": "same_record",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_sales_order",
+          "to_binding": "bc.sales_orders",
+          "via": {
+            "binding": "portal.app_bc_entity_map",
+            "from_pairs": [
+              {
+                "from": "id",
+                "to": "source_id",
+                "compare": "text_id"
+              }
+            ],
+            "to_pairs": [
+              {
+                "from": "bc_system_id",
+                "to": "id",
+                "compare": "identifier",
+                "identifier_kind": "bc_system_id"
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "portal.bc_sync_sales_order"
+            },
+            {
+              "kind": "ref",
+              "id": "portal.bc_book_slice"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_systemid_scope"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "SalesInvoice.posted_for_order",
+      "from": "SalesInvoice",
+      "to": "SalesOrder",
+      "name": "posted_for_order",
+      "reverse_name": "bc_invoices_posted",
+      "cardinality": "N:1",
+      "description": "The gold order a BC sales invoice was posted for (entity map salesInvoice or salesOrder row whose bc_system_id is the invoice systemId): the Portal's most authoritative invoice -> order path.",
+      "bindings": [
+        {
+          "kind": "same_record",
+          "tier_ceiling": "verified",
+          "from_binding": "bc.sales_invoices",
+          "to_binding": "portal.app_sales_order",
+          "via": {
+            "binding": "portal.app_bc_entity_map",
+            "from_pairs": [
+              {
+                "from": "id",
+                "to": "bc_system_id",
+                "compare": "identifier",
+                "identifier_kind": "bc_system_id"
+              }
+            ],
+            "to_pairs": [
+              {
+                "from": "source_id",
+                "to": "id",
+                "compare": "text_id"
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "portal.bc_resolve_invoice_order"
+            },
+            {
+              "kind": "ref",
+              "id": "portal.bc_sync_sales_invoice"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_systemid_scope"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "PurchaseOrder.bc_posted_as",
+      "from": "PurchaseOrder",
+      "to": "PurchaseOrder",
+      "name": "bc_posted_as",
+      "reverse_name": "bc_posted_from",
+      "cardinality": "1:1",
+      "description": "The BC purchase order the Portal posted this gold PO as (entity map purchaseOrder row), through BC renumbering.",
+      "bindings": [
+        {
+          "kind": "same_record",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_purchase_order",
+          "to_binding": "bc.purchase_orders",
+          "via": {
+            "binding": "portal.app_bc_entity_map",
+            "from_pairs": [
+              {
+                "from": "id",
+                "to": "source_id",
+                "compare": "text_id"
+              }
+            ],
+            "to_pairs": [
+              {
+                "from": "bc_system_id",
+                "to": "id",
+                "compare": "identifier",
+                "identifier_kind": "bc_system_id"
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "portal.bc_sync_purchase_order"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_systemid_scope"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "Product.bc_posted_as",
+      "from": "Product",
+      "to": "Product",
+      "name": "bc_posted_as",
+      "reverse_name": "bc_posted_from",
+      "cardinality": "N:M",
+      "description": "The BC item the Portal created for this product (entity map item row). Manufacturing-book rows only until book slices join (distribution clones are '{id}::distribution').",
+      "bindings": [
+        {
+          "kind": "same_record",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_product",
+          "to_binding": "bc.items",
+          "via": {
+            "binding": "portal.app_bc_entity_map",
+            "from_pairs": [
+              {
+                "from": "id",
+                "to": "source_id",
+                "compare": "text_id"
+              }
+            ],
+            "to_pairs": [
+              {
+                "from": "bc_system_id",
+                "to": "id",
+                "compare": "identifier",
+                "identifier_kind": "bc_system_id"
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "portal.bc_item_number"
+            },
+            {
+              "kind": "ref",
+              "id": "portal.bc_book_slice"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_systemid_scope"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "evidence_catalog": {
+    "portal.bc_entity_map_table": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "scripts/migrations/20260615_create_app_bc_integration.sql",
+      "commit": "c3ffda3",
+      "symbol": "app_bc_entity_map",
+      "lines": "67-93",
+      "note": "app_bc_entity_map: id PK; unique (entity_type, source_system, source_id); source_system portal|fm|sage; bc_system_id = BC systemId GUID; bc_number = BC No.; bc_external_document_number (defined, never written); status LINKED|ARCHIVED|BLOCKED. No company column."
+    },
+    "portal.bc_entity_map_upsert": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/src/lib/business-central/outbox-drain.ts",
+      "commit": "c3ffda3",
+      "symbol": "upsertEntityMap",
+      "lines": "387-414",
+      "note": "Only the drain writes it: source_system 'portal', source_id = the outbox entity_id, bc_system_id / bc_number from the BC response of the company the drain posted to; lookupSystemId resolves by (entity_type, 'portal', source_id) with no status filter (the read joins in document-finance-queries.ts and po-queries.ts do require status 'LINKED')."
+    },
+    "portal.bc_sync_sales_order": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/src/lib/business-central/outbox-drain.ts",
+      "commit": "c3ffda3",
+      "symbol": "syncSalesOrder",
+      "lines": "850-1009",
+      "note": "salesOrder row: source_id = gold SO id (distribution book: '{id}::distribution', posted to PLX Distribution); bc_system_id = BC salesOrder id; bc_number = the BC document No. after refresh; then alignPortalSoNumberToBc rewrites order_number to it."
+    },
+    "portal.bc_sync_sales_invoice": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/src/lib/business-central/outbox-drain.ts",
+      "commit": "c3ffda3",
+      "symbol": "syncSalesInvoice",
+      "lines": "560-618",
+      "note": "salesInvoice row (direct path): source_id = gold SO id, bc_system_id = BC salesInvoice id, bc_number = BC invoice No. (historical, before TASK-2271 removed ship-invoice mode: rows were keyed by the shipment slice id instead, syncSalesShipment 620-764)."
+    },
+    "portal.bc_sync_purchase_order": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/src/lib/business-central/outbox-drain.ts",
+      "commit": "c3ffda3",
+      "symbol": "syncPurchaseOrder",
+      "lines": "1011-1115",
+      "note": "purchaseOrder row: source_id = gold PO id, bc_system_id = BC purchaseOrder id, bc_number = BC No.; alignPortalPoNumberToBc then rewrites po_number."
+    },
+    "portal.bc_resolve_invoice_order": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/src/lib/orders/order-identity.ts",
+      "commit": "c3ffda3",
+      "symbol": "resolveOrderFromBcInvoiceId",
+      "lines": "142-185",
+      "note": "Strategy A (most authoritative): entity_type IN ('salesInvoice','salesOrder'), source_system 'portal', bc_system_id = the BC invoice systemId -> source_id is the gold SO id."
+    },
+    "portal.bc_book_slice": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/src/lib/business-central/book-routing.ts",
+      "commit": "c3ffda3",
+      "symbol": "masterBookSliceId",
+      "lines": "96-110",
+      "note": "Distribution clones are keyed '{id}::distribution' (parseMasterBookSlice: no suffix = manufacturing). The book is encoded in source_id only; C0 cannot derive a company from it, so clones do not join a Portal id."
+    },
+    "portal.bc_item_number": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/src/lib/business-central/serializers.ts",
+      "commit": "c3ffda3",
+      "symbol": "serializeItem",
+      "lines": "852-880",
+      "note": "item row: source_id = app_product id; BC Item No. = bcItemNumber(code). Product.erpCode is the Sage IC key, stamped into BC only as an Item Reference by AL (item-search-refs.ts), which api/v2.0 items does not serve."
+    },
+    "workbench.bc_systemid_scope": {
+      "kind": "workbench_code",
+      "path": "ontology/project.py",
+      "note": "The join is on the BC systemId GUID the drain stored, not on a number, so it names one record of one company. BC bindings key a record by its systemId alone, so a GUID that answers in two companies (a copied company) is two records under one binding key: the projector drops both (gap binding_key_not_unique) and no entity-map link reaches either; it never guesses which company is meant. A number answering in two companies is the other case: an ambiguous lead that lists the companies."
+    },
+    "context.portal.4.10": {
+      "kind": "context_pack",
+      "ref": "docs/reference/portal-code-map.md#4.10",
+      "note": "BC posting / sync semantics; app_bc_entity_map and every bc_* snapshot are outside the reporting-API allowlist (s6 'Not served')."
+    },
+    "portal.bc_entity_map_linked_joins": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/src/lib/business-central/document-finance-queries.ts",
+      "commit": "c3ffda3",
+      "symbol": "resolveBcPoNumbers",
+      "lines": "88-220",
+      "note": "The Portal's entity-map read joins name the entity_type and require source_system 'portal' and status 'LINKED': salesOrder by SO id and salesShipment/salesInvoice by shipment id (resolveSalesOrderFinanceMatchKeys, lines 88-100), purchaseOrder by PO id (resolveBcPoNumbers, 210-220); po-queries.ts:243-247, ensure-line-prices.ts:98-100 (item) and warehouse-transfer-sync.ts:127-130 (item) join the same way. order-identity.ts resolveOrderFromBcInvoiceId (entity_type IN ('salesInvoice','salesOrder'), no status filter) is the one identity resolver without it."
+    }
+  }
+}

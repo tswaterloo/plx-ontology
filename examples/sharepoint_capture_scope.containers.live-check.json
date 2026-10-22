@@ -1,0 +1,16 @@
+{
+ "schema": "plx-sharepoint-capture-scope/v1",
+ "note": "Live-check scope of capture.sharepoint_containers (gap-e10f050d25a3, ING-17): the AGENTS site's '/Ontology UseCases' folder only, where the use-case container originals (zip/.msg/.eml packets) live. max_content_bytes is the guard's one-download bound (100 MB): the use-case packets exceed the 20 MB default (a ~31 MB zip, docs/reference/cases-and-artifacts.md 1.11); a file over it stays exceeds_cap, and a container is read member by member, each member within its own 20 MB bound. Configuration, never a grant. Read-only.",
+ "max_content_bytes": 100000000,
+ "targets": [
+  {
+   "id": "agents.ontology-use-cases",
+   "site": "AGENTS",
+   "folders": [
+    "/Ontology UseCases"
+   ],
+   "max_depth": 4,
+   "max_folders": 200
+  }
+ ]
+}

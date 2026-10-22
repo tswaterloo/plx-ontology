@@ -1,0 +1,99 @@
+{
+ "id": "ontology.document_fields_coa",
+ "description": "Supplier certificates of analysis read from live SharePoint captures (DOC-01): one GET-only capture run of the Portal's raw-material receiving folder Receiving/Raw/{supplier}/{rawcode} on the PLXCUSTOMERS library (integrations/capture_sharepoint.py through the GET-only Graph client; scanned PDFs OCR-read locally, never a network service) into the check's temporary Workbench state, a projection of that capture alone, then for every CertificateOfAnalysis the document-field extractor projected (ontology/document_fields.py, class certificate_of_analysis): fields stated, gaps by reason (each blank or unreadable test-table cell is a line_items gap), and whether every page/span citation of its evidence, test-table cells included, resolves against the captured bytes (and OCR text); per field the denominators extracted / blank / unreadable / ambiguous / not_stated and its extracted share of the documents (field_shares, rounded down; scripts/eval_document_fields_live.py), of which lot, supplier and expiry_date must each be read on at least 2 of 3 certificates (json_min 0.6666), never a pass on any one stated field; accuracy only against operator-interpreted items, 'no_operator_items' until one exists; the stage funnel (ontology/document_fields.py stages). Zero documents fails (--min-documents 1), never a pass over none; a document left unread because the host has no OCR engine makes it blocked with ocr_unavailable. Counts, booleans and enums only; no names, paths, ids, identifiers, values or text.",
+ "source": "sharepoint",
+ "command": [
+  "python3",
+  "-m",
+  "scripts.eval_document_fields_live",
+  "--state-dir",
+  "{tmp}/state",
+  "--scope",
+  "examples/sharepoint_capture_scope.receiving_coa.live-check.json",
+  "--live-audience",
+  "examples/sharepoint_capture_audience.live-check.json",
+  "--document-class",
+  "certificate_of_analysis",
+  "--min-documents",
+  "1",
+  "--capture-budget-seconds",
+  "900"
+ ],
+ "cadence": "daily",
+ "timeout_seconds": 1500,
+ "requires_env": [
+  "MICROSOFT_GRAPH_TENANT_ID",
+  "MICROSOFT_GRAPH_CLIENT_ID",
+  "MICROSOFT_GRAPH_CLIENT_SECRET",
+  "SHAREPOINT_SITE_ID"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "documents",
+   "fields_stated",
+   "citations",
+   "citations_resolved",
+   "gaps",
+   "capture.files_current",
+   "field_outcomes",
+   "accuracy.status",
+   "capture_complete",
+   "funnel.evaluated",
+   "funnel.excluded",
+   "funnel.classified"
+  ],
+  "json_equals": {
+   "ok": true,
+   "check": "ontology.document_fields_sharepoint",
+   "object_type": "CertificateOfAnalysis",
+   "funnel.sums": true
+  },
+  "json_min": {
+   "documents": 1,
+   "fields_stated": 1,
+   "citations": 1,
+   "field_shares.lot": 0.6666,
+   "field_shares.supplier": 0.6666,
+   "field_shares.expiry_date": 0.6666
+  }
+ },
+ "record": [
+  "ok",
+  "evidence_label",
+  "documents",
+  "documents_ocr",
+  "fields_stated",
+  "citations",
+  "citations_resolved",
+  "gaps",
+  "links",
+  "capture",
+  "requests_sent",
+  "capture_complete",
+  "funnel",
+  "funnel.dropped_at",
+  "blocked",
+  "field_outcomes",
+  "field_shares",
+  "accuracy",
+  "accuracy.status"
+ ],
+ "record_keys": [
+  "gaps",
+  "links",
+  "capture",
+  "field_outcomes",
+  "field_shares",
+  "accuracy",
+  "funnel"
+ ],
+ "record_enums": [
+  "evidence_label",
+  "accuracy.status",
+  "blocked",
+  "funnel.dropped_at"
+ ],
+ "notes": "Live-unverified until the live check runs it; its test is injected-transport (ontology/tests/test_document_fields.py CoaLiveCheckTests runs operating.sharepoint_host_check --document-class certificate_of_analysis with scripts.eval_document_fields_live over the in-process FakeDrive, checks this spec's expectations on that output, and checks that the same run over a drive holding no certificate fails them). Captured files live only in {tmp}/state and are deleted with the check's temporary directory. Unverified live assumptions: the Portal's code-default folder Receiving/Raw holds the vendor CoAs (an admin storage location may route them elsewhere; a folder the walk does not find leaves the capture incomplete, never absent) as PDFs whose text (or OCR text) starts a line with a title the certificate_of_analysis profile knows ('Certificate of Analysis'); how many fields and test lines they yield, and how often a test table's cells line up, is measured here, never assumed (a PDF text layer that puts each cell on its own line yields no test lines, never guesses). The capture walk is bounded (--capture-budget-seconds 900: a root it cuts is incomplete, capture_complete false). Test results are a supplier's statements, compared with no record (the profile declares no attests rule); accuracy stays unmeasured until an operator-interpreted unit exists.",
+ "blocked_when": "blocked"
+}

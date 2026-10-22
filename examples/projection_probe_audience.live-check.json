@@ -1,0 +1,24 @@
+{
+ "schema": "plx-live-source-audience/v1",
+ "tenant": "plx",
+ "note": "EXAMPLE ONLY, not a PLX-confirmed grant: the principal of the ontology.mentions live check (scripts/ontology_projection_probe.py --capture-principal), which captures the one mailbox its capture scope names (examples/case_mail_capture_scope.live-check.json) and BC, and reads the probe's served host as the host's capture principal does; and the mention check's mail-withheld reader (probe:mail-withheld-reader), granted BC but never the mail, so the mention links it is served (must be none) are measured on objects it may read. SharePoint (workspace.object_view's --sharepoint-capture-scope, examples/sharepoint_capture_scope.qcqa_aos.live-check.json): the QCQA library's '/AOs/2026 - AOs' folder (exact key) and everything under '/AOs/2026 - AOs/' (anchored by its slash), granted to the capture principal only, which captures it and reads it served; the mail-withheld reader is granted none of it. Default deny. The check's denied principal has no grant, so it must be served nothing.",
+ "default_classification": "confidential",
+ "audiences": {
+  "mail:purchase-order@petrasoap.com": [
+   "svc:mail-capture"
+  ],
+  "sharepoint:b!ubhBC91PLkOOCpyUeCUJMLOi0jT3ADZHi0QxVdjuwxvq6wHrgPmdQqNrzbAMxVqk:/AOs/2026 - AOs": [
+   "svc:mail-capture"
+  ],
+  "sharepoint:b!ubhBC91PLkOOCpyUeCUJMLOi0jT3ADZHi0QxVdjuwxvq6wHrgPmdQqNrzbAMxVqk:/AOs/2026 - AOs/*": [
+   "svc:mail-capture"
+  ],
+  "bc:production:*": [
+   "svc:mail-capture",
+   "probe:mail-withheld-reader"
+  ]
+ },
+ "classifications": {
+  "mail:*": "restricted"
+ }
+}

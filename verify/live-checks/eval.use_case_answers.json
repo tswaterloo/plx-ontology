@@ -1,0 +1,99 @@
+{
+ "id": "eval.use_case_answers",
+ "description": "The product's answers to the use-case items of one captured document (docs/decisions/2026-10-07-use-case-answer-scoring.md, option 3): Vince's 'Related Release Order Map.md' Draft 8 is captured through the guarded shared-link reader exactly as eval.use_case_proposal does (GET only, pinned sha256 2d8b51b6...0fbb), its 26 proposed items are written and admitted, then every admitted item runs through evals.runner with one headless Claude Code session (evals.runner.ClaudeCodeAgent behind the tool gate, read-only plx.* tools only, k=1) as the employee principal staff:operations on a disposable fixture host seeded from the RECORDED capture through OriginalStore.store_source (the capture's provenance and source ACL, no second read of the source). The agent must find and read the original itself (plx.documents, plx.read); if the reader cannot reach it every item is blocked with the reason and no session starts. Results are bucketed by label provenance: scored (label human_audited; the only accuracy), agreement_with_proposed (oracle_only arithmetic whose proposed result recomputes from figures on its anchored lines; agreement, never accuracy) and unscored (everything else, comprehension without a human-audited quote or gap and admission-refused items included); per layer and in total gap_only, blocked, refused and coverage. Every result carries discovery seeded_from_capture. Counts, rates and enums only; transcripts stay in {tmp}.",
+ "source": "claude-code",
+ "tier": "real_agent",
+ "cadence": "daily",
+ "command": [
+  "python3",
+  "-m",
+  "scripts.eval_use_case_items",
+  "proposal",
+  "run",
+  "--cards",
+  "evals/dev/rro/proposed_items.json",
+  "--state-dir",
+  "{tmp}/state",
+  "--evidence-label",
+  "live-captures",
+  "--capture",
+  "--answer",
+  "--reader",
+  "staff:operations",
+  "--out",
+  "{tmp}/runs",
+  "--timeout",
+  "300",
+  "--max-turns",
+  "25"
+ ],
+ "timeout_seconds": 6000,
+ "requires_env": [
+  "MICROSOFT_GRAPH_TENANT_ID",
+  "MICROSOFT_GRAPH_CLIENT_ID",
+  "MICROSOFT_GRAPH_CLIENT_SECRET",
+  "SHAREPOINT_SITE_ID"
+ ],
+ "requires_env_any": [
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "PLX_CLAUDE_CODE_OAUTH_TOKEN"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "answers.totals",
+   "answers.by_layer.comprehension",
+   "answers.by_layer.arithmetic",
+   "answers.scored",
+   "answers.agreement_with_proposed",
+   "answers.totals.coverage"
+  ],
+  "json_equals": {
+   "original.sha256": "2d8b51b6fd493e7704955ff0064dd23e23bb7a0863812862a29de836ec110fbb",
+   "original.bytes": 93039,
+   "original.body_read": "proven_by_recorded_capture",
+   "items.loaded": 26,
+   "answers.status": "run",
+   "answers.discovery": "seeded_from_capture",
+   "answers.per_item[*].discovery": "seeded_from_capture",
+   "answers.totals.items": 26
+  },
+  "json_min": {
+   "answers.scored.runs": 1,
+   "answers.scored.accuracy": 0.8,
+   "answers.scored.coverage": 0.8
+  }
+ },
+ "expect_blocked": {
+  "exit_code": 0,
+  "json_fields": [
+   "blocked_upstream",
+   "answers.blocked_reason"
+  ],
+  "json_equals": {
+   "original.body_read": "proven_by_recorded_capture",
+   "items.loaded": 26,
+   "answers.discovery": "seeded_from_capture",
+   "answers.totals.items": 26
+  }
+ },
+ "record": [
+  "answers.status",
+  "answers.blocked_reason",
+  "answers.totals",
+  "answers.by_layer",
+  "answers.scored",
+  "answers.agreement_with_proposed"
+ ],
+ "record_keys": [
+  "answers.totals",
+  "answers.by_layer",
+  "answers.scored",
+  "answers.agreement_with_proposed"
+ ],
+ "record_enums": [
+  "answers.status",
+  "answers.blocked_reason"
+ ],
+ "notes": "Spec only: live-unverified until the live check records a result; no live answer number exists before that. It passes only on scored items (answers.scored.runs >= 1, accuracy over human-audited items only): the Draft 8 cards carry no human audit yet, so the answers run and are recorded but the command reports blocked_upstream part use_case_answers_scored (error_code no_human_audited_items, cause later_ask) and the check is blocked, never a pass, until the document's author or the PLX owner of the release-order process records audited quotes, gaps or results on the cards (card 'audit': audited_by, audited_at); once any card is audited the part is gone and the full expectation decides (a miss is a fail). agreement_with_proposed and unscored never make it pass. expect_blocked holds both blocked shapes (no audited card; a reader that cannot reach the original) to the capture and the 26 items, without the pinned sha256. With today's cards the expected shape is 14 comprehension items unscored (11 refused empty_outcome + 3 gap-only), 12 arithmetic agreement_with_proposed when each proposed result recomputes from figures on its anchored lines. Unscored is recorded, never asserted (fewer unscored items is an improvement); the scored items meet B1's accuracy >= 0.8 and coverage >= 0.8. The reader reaches the original through the recorded permissions only while the capture is younger than operating.capture_age.MAX_CAPTURE_AGE (48 h; the check captures first, so it always is); a reader that cannot list or read it makes the check blocked (capture_gap), never a pass. The reader is a fixture principal on a disposable host: an employee's own item ACL is applied only where a host resolves employee:<oid> actors, which this host does not. Keyless tests: tests/test_rro_eval.py drives the same command over a synthetic stand-in original through an injected Graph transport with a scripted agent (injected-transport), never the real Draft 8 body. Budget: one session per admitted item (15 today), 300 s and 25 turns each, inside 6000 s; daily at most, it spends the operator's Claude Code plan. The Claude Code login is CLAUDE_CODE_OAUTH_TOKEN or its alias PLX_CLAUDE_CODE_OAUTH_TOKEN (requires_env_any; operating.agent_environment gives the agent session the alias's value as CLAUDE_CODE_OAUTH_TOKEN when the canonical name is absent or empty, for an environment whose Claude Code session hides its own token from tool subprocesses)."
+}

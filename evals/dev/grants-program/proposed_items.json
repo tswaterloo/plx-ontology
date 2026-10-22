@@ -1,0 +1,267 @@
+{
+ "format": "plx-eval-case-card-proposals/v1",
+ "status": "PROPOSED dev cards for lead triage, never gold. Stephen's Grants Program brief is a stakeholder proposal; its counts, the Q9 review outcome and the weak links are source-reported and not rechecked. The brief body read by the Workbench is not proven (case_originals record_body_status not_verified_in_checked_evidence), and the claim workbooks, invoices, rulings and funder claims it names are not registered originals, so the cards carry no line anchors and no expected values.",
+ "case": "stephen-grants",
+ "source": {
+  "advisory": {
+   "id": "advisory:4db485a7f2e6",
+   "ref": "source-records@cf368716f54543848b4d5499b53781cb5d3eb88b",
+   "path": "context/4db485a7f2e63ce6ab2d57e451f625fc3630e0ab2a7b1bcbe6d8ca448a86572d.json",
+   "record_sha256": "9c4f090903fc315d43c059bce96d188db15e2d6be3ad4f1cc729e7786f8415b7",
+   "source_revision": "a2f2250e52a7649bac30fe3285d27da0c10d108001bbd121ce4bba94cdfc0979",
+   "created_at": "2026-10-05T21:04:46.170454Z"
+  },
+  "originals_registry": {
+   "path": "examples/case_originals.json",
+   "rows": {
+    "co-81d7ee151c6e": "the brief, Grants Program - Context Ontology Use Case (NGen, FedDev, AMIC).md (pinned, 21,488 bytes; sha256 equals the source_revision)",
+    "co-2b32fe4f123c": "Stephen's Asset Tracker brief, which defines the shared Purchase / Cost Line entity the grants brief reuses"
+   }
+  }
+ },
+ "live_sources": [
+  {
+   "id": "sharepoint.grants_brief",
+   "system": "sharepoint",
+   "relation": "Stephen's OneDrive, Microsoft Teams Chat Files, the brief (co-81d7ee151c6e)",
+   "reader": "case_originals",
+   "evidence": "OntologyProject:examples/case_originals.json@2003e14a91ee co-81d7ee151c6e"
+  },
+  {
+   "id": "bc.purchase_invoices",
+   "system": "business-central",
+   "relation": "purchaseInvoices, purchaseInvoiceLines",
+   "reader": "served",
+   "evidence": "OntologyProject:integrations/live_source_grammar.py@2003e14a91ee:72-83"
+  },
+  {
+   "id": "bc.vendor_payments",
+   "system": "business-central",
+   "relation": "vendorPaymentJournals, vendorPayments",
+   "reader": "served",
+   "evidence": "OntologyProject:integrations/live_source_grammar.py@2003e14a91ee:72-83"
+  },
+  {
+   "id": "bc.dimensions",
+   "system": "business-central",
+   "relation": "dimensions, dimensionValues (whether any codes grant projects is unverified)",
+   "reader": "served",
+   "evidence": "OntologyProject:integrations/live_source_grammar.py@2003e14a91ee:72-83"
+  },
+  {
+   "id": "sage.po",
+   "system": "portal-reporting-api",
+   "relation": "sage.po_header, sage.po_detail, sage.po_receipt_header",
+   "reader": "served",
+   "evidence": "plx-customer-portal:services/workbench-api/manifest/allowlist.json@b8f6e2231860:2891,3008,3313"
+  },
+  {
+   "id": "portal.app_purchase_order",
+   "system": "portal-reporting-api",
+   "relation": "public.app_purchase_order",
+   "reader": "served",
+   "evidence": "plx-customer-portal:services/workbench-api/manifest/allowlist.json@b8f6e2231860:522"
+  },
+  {
+   "id": "graph.mail",
+   "system": "microsoft-graph",
+   "relation": "mail (app-only, read only); which mailbox holds funder correspondence is unknown",
+   "reader": "served",
+   "evidence": "OntologyProject:docs/reference/live-sources.md@2003e14a91ee:19"
+  }
+ ],
+ "layers": {
+  "comprehension": "what the brief says, attributed, with qualifiers and its boundaries",
+  "tracing": "joins from a cost row to purchase, invoice, payment proof, hours, ruling and funder claim; an unseen join is a gap, never a match",
+  "actual_case_answerability": "UNSCORED until the brief is read through scripts.case_originals and the missing objects and readers exist (ontology_gaps.json)"
+ },
+ "open_questions": [
+  "funder portal, claim cadence and contact",
+  "payroll project coding",
+  "tracker format"
+ ],
+ "non_goals": [
+  "writes to Sage, BC, funder portals or SharePoint",
+  "duplicate PDFs",
+  "inferred or hard-coded eligibility rules",
+  "grant submission or outreach"
+ ],
+ "real_example": {
+  "batch_id": "grants-program-brief",
+  "exposure": "dev-exposed",
+  "split": "dev",
+  "as_of": "2026-10-05T21:04:46Z",
+  "cards": [
+   {
+    "id": "GP-01",
+    "layer": "comprehension",
+    "question": "What does Stephen's Grants Program brief ask for first, and what does it rule out?",
+    "criterion": "Attribute to the brief: trace NGen project 14091 (LightsOut) first, producing a stages/status map, keys/crosswalk, weak links, a tracer and minimal entities, with unseen joins marked as gaps. State the boundaries (no writes to Sage, BC, funder portals or SharePoint; no duplicate PDFs; no inferred or hard-coded eligibility rules) and the questions Stephen wants answered before starting. Call it a stakeholder proposal, not implemented capability or grant-submission authority.",
+    "originals": [
+     "co-81d7ee151c6e"
+    ],
+    "live_sources": [
+     "sharepoint.grants_brief"
+    ],
+    "cites": [
+     "advisory:4db485a7f2e6",
+     "co-81d7ee151c6e"
+    ]
+   },
+   {
+    "id": "GP-02",
+    "layer": "comprehension",
+    "question": "How many cost rows are in the NGen Q10 claim, and how many of them need an invoice PDF over $500?",
+    "criterion": "Report the brief's two counts as source-reported, not rechecked. A recount needs the Q10 claim workbook read at a named revision; it is not a registered original, so say where it would be read from is unknown rather than presenting the brief's figures as verified.",
+    "originals": [
+     "co-81d7ee151c6e"
+    ],
+    "live_sources": [
+     "sharepoint.grants_brief"
+    ],
+    "cites": [
+     "advisory:4db485a7f2e6",
+     "co-81d7ee151c6e"
+    ]
+   },
+   {
+    "id": "GP-03",
+    "layer": "tracing",
+    "question": "Which invoice and which payment proof support this NGen cost row?",
+    "criterion": "Link the cost row to its invoice and payment proof only on a named key (BC purchase invoice, BC vendor payment, Sage PO or receipt, Portal PO), citing each record and the original PDF in place, never a copy. A vendor, amount or date coincidence is a candidate, never a match; a join not seen is reported as a gap with the keys tried. Amounts are Decimal with currency stated.",
+    "originals": [
+     "co-81d7ee151c6e"
+    ],
+    "live_sources": [
+     "bc.purchase_invoices",
+     "bc.vendor_payments",
+     "sage.po",
+     "portal.app_purchase_order",
+     "bc.dimensions"
+    ],
+    "cites": [
+     "advisory:4db485a7f2e6",
+     "co-81d7ee151c6e"
+    ]
+   },
+   {
+    "id": "GP-04",
+    "layer": "tracing",
+    "question": "Is this invoice line eligible under NGen, and which ruling says so?",
+    "criterion": "Give eligibility only with a cited ruling: who ruled, when and in which source. Without a recorded ruling the answer is open. Never infer eligibility from an expense category, amount, vendor or a rule (inferred or hard-coded eligibility rules are a boundary of the brief).",
+    "originals": [
+     "co-81d7ee151c6e"
+    ],
+    "live_sources": [
+     "graph.mail"
+    ],
+    "cites": [
+     "advisory:4db485a7f2e6",
+     "co-81d7ee151c6e"
+    ]
+   },
+   {
+    "id": "GP-05",
+    "layer": "comprehension",
+    "question": "What did the NGen Q9 review reject or question, and which cost rows did it affect?",
+    "criterion": "Attribute to the brief: the Q9 review rejected statement references and questioned project dedication. That is source-reported; the review itself was not read, so the rows it affected are unknown until the ruling is a cited original. Never mark rows rejected from the brief's summary.",
+    "originals": [
+     "co-81d7ee151c6e"
+    ],
+    "live_sources": [
+     "graph.mail"
+    ],
+    "cites": [
+     "advisory:4db485a7f2e6",
+     "co-81d7ee151c6e"
+    ]
+   },
+   {
+    "id": "GP-06",
+    "layer": "tracing",
+    "question": "How many hours did each person charge to NGen project 14091 in a claim period, and where are they recorded?",
+    "criterion": "Hours come only from a cited source naming person, period and project. Payroll project coding is an open question in the brief and no served reader carries hours (BC payroll and employees are outside the GET-only grammar; the reporting API excludes wages and person names), so the answer today is a named gap. Never estimate hours from rates or cost, and never expose wages.",
+    "originals": [
+     "co-81d7ee151c6e"
+    ],
+    "live_sources": [],
+    "cites": [
+     "advisory:4db485a7f2e6",
+     "co-81d7ee151c6e"
+    ]
+   },
+   {
+    "id": "GP-07",
+    "layer": "tracing",
+    "question": "Under which funder claims was this cost claimed, and how much was claimed and reimbursed in each?",
+    "criterion": "Per the brief one cost can carry several funder claims, each with its own claimed and reimbursed amount. List each claim separately with its source, Decimal amounts and currency; never merge claims or sum across funders. Without a claim record the answer is open.",
+    "originals": [
+     "co-81d7ee151c6e"
+    ],
+    "live_sources": [],
+    "cites": [
+     "advisory:4db485a7f2e6",
+     "co-81d7ee151c6e"
+    ]
+   },
+   {
+    "id": "GP-08",
+    "layer": "comprehension",
+    "question": "Is a grant cost row a separate record from the purchase it pays for?",
+    "criterion": "No: the brief reuses the shared Purchase / Cost Line entity from the asset brief, one record with funder-claim edges (and an asset edge where it is equipment), never two records reconciled after the fact.",
+    "originals": [
+     "co-81d7ee151c6e",
+     "co-2b32fe4f123c"
+    ],
+    "live_sources": [],
+    "cites": [
+     "advisory:4db485a7f2e6",
+     "co-81d7ee151c6e",
+     "co-2b32fe4f123c"
+    ]
+   },
+   {
+    "id": "GP-09",
+    "layer": "tracing",
+    "question": "Which deliverable or partner delivery does this cost or these hours support?",
+    "criterion": "The brief asks for stable links from costs and hours to deliverables. Give the link only with its source; a link not recorded anywhere is a gap, never inferred from dates, vendor or description.",
+    "originals": [
+     "co-81d7ee151c6e"
+    ],
+    "live_sources": [],
+    "cites": [
+     "advisory:4db485a7f2e6",
+     "co-81d7ee151c6e"
+    ]
+   },
+   {
+    "id": "GP-10",
+    "layer": "comprehension",
+    "question": "Can the Workbench trace FedDev and AMIC claims yet, and where does ISED AI-CAF stand?",
+    "criterion": "Attribute to the brief: FedDev and AMIC stay untraced until NGen closes, and ISED AI-CAF is pending. Answer that no trace exists for them, without attempting one or inventing a status.",
+    "originals": [
+     "co-81d7ee151c6e"
+    ],
+    "live_sources": [],
+    "cites": [
+     "advisory:4db485a7f2e6",
+     "co-81d7ee151c6e"
+    ]
+   },
+   {
+    "id": "GP-11",
+    "layer": "comprehension",
+    "question": "Which funder portal, claim cadence and contact apply to NGen, and how is grant work coded in payroll?",
+    "criterion": "These are open questions in the brief. Answer that they are unknown and name what would settle each (the funder portal record, the payroll project coding source); never guess from mail or past claims.",
+    "originals": [
+     "co-81d7ee151c6e"
+    ],
+    "live_sources": [],
+    "cites": [
+     "advisory:4db485a7f2e6",
+     "co-81d7ee151c6e"
+    ]
+   }
+  ]
+ }
+}

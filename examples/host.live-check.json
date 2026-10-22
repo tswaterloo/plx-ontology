@@ -1,0 +1,35 @@
+{
+ "schema": "plx-host-config/v1",
+ "note": "Host config of the host.cycles live check (verify/live-checks/host.cycles.json): the scope the retired ingest.live_sources/ingest.worker_cycles checks read, through the host's capture modules. Portal: two relations through the source mirror (persisted for outages). BC: purchaseOrders of every pinned company. Mail: the shared purchase-order inbox (examples/mail_capture_scope.live-check.json). SharePoint: the whole QA/QC Department (QCQA) library from its root (examples/sharepoint_capture_scope.qcqa_library.json), incremental: the first cycle walks, later cycles follow the change feed; budget_seconds bounds each cycle's capture and a walk it cuts resumes in the next cycle, so the library completes over cycles of a persistent host; the check's coverage listing has its own bound, operating/host.py CENSUS_BUDGET_SECONDS (900 s; this config sets no census_budget_seconds), never the capture's. The capture.qcqa_library check runs the same SharePoint scope from examples/host.qcqa_library.live-check.json, with a budget its timeout bounds. Configuration, never a grant: the audiences below decide what the capture principal may read. case_coworker (check only): the probe case is opened for the group with the capture principal and re-read after the restart by the co-worker, whose principals hold the group; example principals, granted no source here, so what the probe cites from the capture shows the co-worker a withheld marker.",
+ "tenant": "plx",
+ "capture_audience": "host_capture_audience.live-check.json",
+ "live_audience": "host_capture_audience.live-check.json",
+ "mirror_audience": "host_mirror_audience.live-check.json",
+ "portal": {
+  "relations": [
+   "public.app_sales_order",
+   "public.assembly_order"
+  ],
+  "budget_seconds": 300
+ },
+ "bc": {
+  "entity_sets": [
+   "purchaseOrders"
+  ],
+  "budget_seconds": 600
+ },
+ "mail": {
+  "scope": "mail_capture_scope.live-check.json"
+ },
+ "sharepoint": {
+  "scope": "sharepoint_capture_scope.qcqa_library.json",
+  "budget_seconds": 1000
+ },
+ "case_coworker": {
+  "group": "group:host-check-case",
+  "principal": "staff:host-check-coworker",
+  "member_of": [
+   "group:host-check-case"
+  ]
+ }
+}

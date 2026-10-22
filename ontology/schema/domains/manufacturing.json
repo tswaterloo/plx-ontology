@@ -1,0 +1,4855 @@
+{
+  "$schema": "../_format.schema.json",
+  "format": "plx-ontology-domain/v1",
+  "domain": "manufacturing",
+  "origin": "curated",
+  "description": "Assembly orders (AOs) with components, damage, stage updates and labour tasks; bulk batches with QC results; manufacturing jobs; FG component lists; AO/batch allocations to order lines. FM bronze is authoritative for AOs and batches; gold copies are linked by code, never merged. Planned, produced, manufactured, accepted, retained and damaged quantities keep distinct roles. Formulas, BOMs and quality/eQMS records are declared not_served (Q3).",
+  "upstream_pins": {
+    "plx-customer-portal": "b46934a"
+  },
+  "object_types": [
+    {
+      "id": "AssemblyOrder",
+      "description": "An assembly order (AO): fills a finished product from a bulk batch. FM assembly_order is authoritative; gold app_manufacturing_order is the same AO (by code) or a Portal-native MO.",
+      "anchor": true,
+      "availability": {
+        "state": "served"
+      },
+      "bindings": [
+        {
+          "id": "portal.fm_assembly_order",
+          "source": "portal_api",
+          "relation": "public.assembly_order",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "default": "fm_bronze"
+          },
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "services/workbench-api/manifest/allowlist.json",
+              "commit": "b46934a",
+              "note": "Reporting API allowlist entry public.assembly_order: the cited columns are served. totalprodqty_c, qtyacc_c, qtymfgleftoe_c, statusqc and idbatch_pre are NOT served.",
+              "symbol": "public.assembly_order"
+            },
+            {
+              "kind": "ref",
+              "id": "context-pack.03-portal-md-3-8.8b1656"
+            }
+          ]
+        },
+        {
+          "id": "portal.app_manufacturing_order",
+          "source": "portal_api",
+          "relation": "public.app_manufacturing_order",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "default": "gold_native_staging",
+            "rules": [
+              {
+                "when": [
+                  {
+                    "path": "mo_code",
+                    "op": "prefix",
+                    "value": "AO-"
+                  }
+                ],
+                "lineage": "gold_etl_from_fm",
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlmanufacturingorders.cdba79"
+                  }
+                ]
+              },
+              {
+                "when": [
+                  {
+                    "path": "mo_code",
+                    "op": "prefix",
+                    "value": "UAT-AO-"
+                  }
+                ],
+                "lineage": "gold_etl_from_fm",
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlmanufacturingorders.cdba79"
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "services/workbench-api/manifest/allowlist.json",
+              "commit": "b46934a",
+              "note": "Reporting API allowlist entry public.app_manufacturing_order: the cited columns are served.",
+              "symbol": "public.app_manufacturing_order"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.manufacturingorder.42f88d"
+            }
+          ],
+          "note": "Portal-native MOs (MO-{base36}) live only here."
+        }
+      ],
+      "properties": [
+        {
+          "name": "ao_code",
+          "value_type": "identifier",
+          "identifier_kind": "ao_code",
+          "description": "The FM assembly order name AO-{YY}{doy}{letter}: declared as an identifier so plx.find reaches the FM AO row by the code a case names. The Portal manufacturing order's own codes are mo_code.",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order",
+              "path": "nameamo_c",
+              "parser": "identifier"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.fetchassemblyorders.9aa7f9"
+            }
+          ]
+        },
+        {
+          "name": "mo_code",
+          "value_type": "identifier",
+          "identifier_kind": "mo_code",
+          "description": "The Portal manufacturing order code: MO-{base36} (Portal-native), MO-FM-{id} (FM migration), or the FM AO name the ETL copies, each optionally behind an environment prefix (UAT-).",
+          "sources": [
+            {
+              "binding": "portal.app_manufacturing_order",
+              "path": "mo_code",
+              "parser": "identifier"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.manufacturingorder.42f88d"
+            }
+          ]
+        },
+        {
+          "name": "code",
+          "value_type": "text",
+          "description": "AO-{YY}{doy}{letter} (FM) or MO-{base36} (Portal-native).",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order",
+              "path": "nameamo_c",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.app_manufacturing_order",
+              "path": "mo_code",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context-pack.03-portal-md-3-8.8b1656"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.fetchassemblyorders.9aa7f9"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlmanufacturingorders.cdba79"
+                  }
+                ]
+              }
+            ],
+            "note": "The Portal reads AO detail from FM; the gold copy is ETL output. Native MO rows have no confirmed authority."
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-manufacturing-orders.9d477f"
+            }
+          ]
+        },
+        {
+          "name": "status",
+          "value_type": "text",
+          "description": "FM status text; canonical stages Generated -> Allocated -> Committed -> Realized (+ Cancelled; Completed = Realized).",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order",
+              "path": "status",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.app_manufacturing_order",
+              "path": "status",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context-pack.03-portal-md-3-8.8b1656"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.fetchassemblyorders.9aa7f9"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlmanufacturingorders.cdba79"
+                  }
+                ]
+              }
+            ],
+            "note": "The Portal reads AO detail from FM; the gold copy is ETL output. Native MO rows have no confirmed authority."
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.canonicalizestatus.9cfff9"
+            }
+          ]
+        },
+        {
+          "name": "ordered_quantity",
+          "value_type": "quantity",
+          "description": "Quantity ordered at AO creation: FM qtytotal (unit in units), gold MO quantity (unit in uom; the only figure for Portal-native MOs).",
+          "quantity_role": "ordered",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order",
+              "path": "qtytotal",
+              "parser": "decimal_text",
+              "unit_from": "units"
+            },
+            {
+              "binding": "portal.app_manufacturing_order",
+              "path": "quantity",
+              "parser": "decimal_text",
+              "unit_from": "uom"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context-pack.03-portal-md-3-8.8b1656"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.fetchassemblyorders.9aa7f9"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlmanufacturingorders.cdba79"
+                  }
+                ]
+              }
+            ],
+            "note": "The Portal reads AO detail from FM; the gold copy is ETL output. Native MO rows have no confirmed authority."
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "context-pack.03-portal-md-4-8.915e1d"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.fetchassemblyorders.9aa7f9"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.etlmanufacturingorders.cdba79"
+            }
+          ]
+        },
+        {
+          "name": "ordered_pieces",
+          "value_type": "quantity",
+          "unit": "each",
+          "quantity_role": "ordered",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order",
+              "path": "sizepieces",
+              "parser": "decimal_text"
+            },
+            {
+              "binding": "portal.app_manufacturing_order",
+              "path": "size_pieces",
+              "parser": "decimal_text"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context-pack.03-portal-md-3-8.8b1656"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.fetchassemblyorders.9aa7f9"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlmanufacturingorders.cdba79"
+                  }
+                ]
+              }
+            ],
+            "note": "The Portal reads AO detail from FM; the gold copy is ETL output. Native MO rows have no confirmed authority."
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "context-pack.03-portal-md-4-8.915e1d"
+            }
+          ]
+        },
+        {
+          "name": "ordered_boxes",
+          "value_type": "quantity",
+          "unit": "box",
+          "quantity_role": "ordered",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order",
+              "path": "sizeboxes",
+              "parser": "decimal_text"
+            },
+            {
+              "binding": "portal.app_manufacturing_order",
+              "path": "size_boxes",
+              "parser": "decimal_text"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context-pack.03-portal-md-3-8.8b1656"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.fetchassemblyorders.9aa7f9"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlmanufacturingorders.cdba79"
+                  }
+                ]
+              }
+            ],
+            "note": "The Portal reads AO detail from FM; the gold copy is ETL output. Native MO rows have no confirmed authority."
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "context-pack.03-portal-md-4-8.915e1d"
+            }
+          ]
+        },
+        {
+          "name": "produced_quantity",
+          "value_type": "quantity",
+          "unit": "each",
+          "quantity_role": "produced",
+          "availability": "not_served",
+          "availability_reason": "FM totalprodqty_c (total produced incl. samples) is not in the reporting API allowlist (Q3); derive produced units from status entries or component consumption and label the derivation.",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order",
+              "path": "totalprodqty_c",
+              "parser": "decimal_text"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.canonicalizestatus.9cfff9"
+            },
+            {
+              "kind": "ref",
+              "id": "context-pack.03-portal-md-4-8.915e1d"
+            }
+          ]
+        },
+        {
+          "name": "accepted_quantity",
+          "value_type": "quantity",
+          "unit": "each",
+          "quantity_role": "accepted",
+          "availability": "not_served",
+          "availability_reason": "FM qtyacc_c (= produced - samples, posted to inventory and BC output) is not served (Q3).",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order",
+              "path": "qtyacc_c",
+              "parser": "decimal_text"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.canonicalizestatus.9cfff9"
+            },
+            {
+              "kind": "ref",
+              "id": "context-pack.03-portal-md-4-8.915e1d"
+            }
+          ]
+        },
+        {
+          "name": "sample_quantity",
+          "value_type": "quantity",
+          "description": "Units kept as samples (included in the produced total).",
+          "unit": "each",
+          "quantity_role": "retained",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order",
+              "path": "qtysample",
+              "parser": "decimal_text"
+            },
+            {
+              "binding": "portal.app_manufacturing_order",
+              "path": "qty_sample",
+              "parser": "decimal_text"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context-pack.03-portal-md-3-8.8b1656"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.fetchassemblyorders.9aa7f9"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlmanufacturingorders.cdba79"
+                  }
+                ]
+              }
+            ],
+            "note": "The Portal reads AO detail from FM; the gold copy is ETL output. Native MO rows have no confirmed authority."
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.canonicalizestatus.9cfff9"
+            }
+          ]
+        },
+        {
+          "name": "final_quantity",
+          "value_type": "quantity",
+          "description": "FM finalqty (silver yield_actual). The Portal uses it as a fallback for qty manufactured; its exact meaning is not documented in Portal code, so it is an 'actual' figure, never 'produced' or 'filled'.",
+          "unit": "each",
+          "quantity_role": "actual",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order",
+              "path": "finalqty",
+              "parser": "decimal_text"
+            },
+            {
+              "binding": "portal.app_manufacturing_order",
+              "path": "yield_actual",
+              "parser": "decimal_text"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context-pack.03-portal-md-3-8.8b1656"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.fetchassemblyorders.9aa7f9"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlmanufacturingorders.cdba79"
+                  }
+                ]
+              }
+            ],
+            "note": "The Portal reads AO detail from FM; the gold copy is ETL output. Native MO rows have no confirmed authority."
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.fetchassemblyorders.9aa7f9"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-manufacturing-orders.9d477f"
+            }
+          ]
+        },
+        {
+          "name": "expected_quantity",
+          "value_type": "quantity",
+          "unit": "each",
+          "quantity_role": "planned",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order",
+              "path": "qtymanufold",
+              "parser": "decimal_text"
+            },
+            {
+              "binding": "portal.app_manufacturing_order",
+              "path": "yield_expected",
+              "parser": "decimal_text"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context-pack.03-portal-md-3-8.8b1656"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.fetchassemblyorders.9aa7f9"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlmanufacturingorders.cdba79"
+                  }
+                ]
+              }
+            ],
+            "note": "The Portal reads AO detail from FM; the gold copy is ETL output. Native MO rows have no confirmed authority."
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-manufacturing-orders.9d477f"
+            }
+          ]
+        },
+        {
+          "name": "damaged_fg_quantity",
+          "value_type": "quantity",
+          "description": "Finished units damaged (gold only); good output = produced - this. Component damage is on AssemblyOrderDamage and is never summed with it.",
+          "unit": "each",
+          "quantity_role": "damaged",
+          "sources": [
+            {
+              "binding": "portal.app_manufacturing_order",
+              "path": "qty_damaged",
+              "parser": "decimal_text"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.manufacturingorder.42f88d"
+            },
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "portal/src/lib/business-central/production-cost.ts",
+              "commit": "b46934a",
+              "note": "goodOutputQty: FG output posted to BC = produced - qtyDamaged.",
+              "symbol": "goodOutputQty",
+              "lines": "196"
+            }
+          ]
+        },
+        {
+          "name": "lot_number",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order",
+              "path": "lotno",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.app_manufacturing_order",
+              "path": "lot_number",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context-pack.03-portal-md-3-8.8b1656"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.fetchassemblyorders.9aa7f9"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlmanufacturingorders.cdba79"
+                  }
+                ]
+              }
+            ],
+            "note": "The Portal reads AO detail from FM; the gold copy is ETL output. Native MO rows have no confirmed authority."
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-manufacturing-orders.9d477f"
+            }
+          ]
+        },
+        {
+          "name": "po_reference",
+          "value_type": "text",
+          "description": "Free text on the gold MO; not a customer PO identifier until a normalizer accepts it.",
+          "sources": [
+            {
+              "binding": "portal.app_manufacturing_order",
+              "path": "po_reference",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.manufacturingorder.42f88d"
+            }
+          ]
+        },
+        {
+          "name": "customer_order_fm_id",
+          "value_type": "identifier",
+          "description": "FM customer-order id on the AO header (the AO <-> order-line links are AssemblyOrderAllocation rows).",
+          "identifier_kind": "fm_id",
+          "identifies": "reference",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order",
+              "path": "idcustomerorderassembly",
+              "parser": "identifier"
+            },
+            {
+              "binding": "portal.app_manufacturing_order",
+              "path": "customer_order_id",
+              "parser": "identifier"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context-pack.03-portal-md-3-8.8b1656"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.fetchassemblyorders.9aa7f9"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlmanufacturingorders.cdba79"
+                  }
+                ]
+              }
+            ],
+            "note": "The Portal reads AO detail from FM; the gold copy is ETL output. Native MO rows have no confirmed authority."
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-manufacturing-orders.9d477f"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.etlmanufacturingorders.cdba79"
+            }
+          ]
+        },
+        {
+          "name": "quality_status",
+          "value_type": "text",
+          "markings": [
+            "quality_controlled"
+          ],
+          "availability": "not_served",
+          "availability_reason": "FM assembly_order.statusqc is not in the allowlist (Q3); the Portal reads it from bronze to release FG lots.",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order",
+              "path": "statusqc",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.syncfplotonqc.74b2f9"
+            },
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "portal/src/app/mrp/assembly/assembly-queries.ts",
+              "commit": "b46934a",
+              "note": "AO detail: customer via finished product idcust; bc_number via silver.batches on idbatch (or idbatch_pre); totalprodqty_c, qtyleftpieces_c, statusqc read from bronze assembly_order.",
+              "symbol": "AO_DETAIL_SQL_FULL",
+              "lines": "475-550"
+            }
+          ]
+        },
+        {
+          "name": "pick_request_status",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.app_manufacturing_order",
+              "path": "pick_request_status",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.fetchassemblyorders.9aa7f9"
+            }
+          ]
+        },
+        {
+          "name": "deleted_at",
+          "value_type": "timestamp",
+          "sources": [
+            {
+              "binding": "portal.app_manufacturing_order",
+              "path": "deleted_at",
+              "parser": "iso_timestamp"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.manufacturingorder.42f88d"
+            }
+          ]
+        }
+      ],
+      "identity_keys": [
+        {
+          "name": "ao_code",
+          "properties": [
+            "code"
+          ],
+          "tier": "verified",
+          "unique": true,
+          "scope": "cross_binding",
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-manufacturing-orders.9d477f"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.etlmanufacturingorders.cdba79"
+            }
+          ],
+          "identifier_kind": "ao_code"
+        },
+        {
+          "name": "mo_code",
+          "properties": [
+            "code"
+          ],
+          "tier": "verified",
+          "unique": true,
+          "scope": "within_binding",
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.manufacturingorder.42f88d"
+            }
+          ],
+          "identifier_kind": "mo_code"
+        }
+      ],
+      "display": [
+        "code"
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "context-pack.03-portal-md-3-8.8b1656"
+        },
+        {
+          "kind": "ref",
+          "id": "upstream-code.fetchassemblyorders.9aa7f9"
+        },
+        {
+          "kind": "ref",
+          "id": "context-pack.02-cases-and-artifacts-md.b99b18"
+        }
+      ]
+    },
+    {
+      "id": "AssemblyOrderComponent",
+      "description": "One component line of an AO (bulk or packaging): planned quantity and consumption. Gold app_manufacturing_order_line is not bound: ETL copies are unlinked (buildMoFmIdMap).",
+      "availability": {
+        "state": "partial",
+        "reason": "Lines of Portal-native MOs (gold only) are not projected; FM qtydamage_c/totalqty_c are not served."
+      },
+      "bindings": [
+        {
+          "id": "portal.fm_assembly_order_item",
+          "source": "portal_api",
+          "relation": "public.assembly_order_item",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "default": "fm_bronze"
+          },
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "services/workbench-api/manifest/allowlist.json",
+              "commit": "b46934a",
+              "note": "Reporting API allowlist entry public.assembly_order_item: the cited columns are served. qtydamage_c, totalqty_c, comments are NOT served.",
+              "symbol": "public.assembly_order_item"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.fetchassemblyorderitems.f2113b"
+            }
+          ]
+        }
+      ],
+      "properties": [
+        {
+          "name": "planned_quantity",
+          "value_type": "quantity",
+          "description": "Planned component quantity.",
+          "unit_unknown": {
+            "reason": "FM assembly_order_item / assembly_order_damage / order_entry_item_batch store no unit, and the component cards differ by family (packaging units_c, bulk none), so no single path holds it; read Product.uom of the linked component and say so.",
+            "evidence": [
+              {
+                "kind": "ref",
+                "id": "context-pack.03-portal-md-4-8.915e1d"
+              }
+            ]
+          },
+          "quantity_role": "planned",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order_item",
+              "path": "qty_c",
+              "parser": "decimal_text"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "context-pack.03-portal-md-4-8.915e1d"
+            }
+          ]
+        },
+        {
+          "name": "consumed_quantity",
+          "value_type": "quantity",
+          "description": "Consumption = quantity per unit x total produced (incl. samples).",
+          "unit_unknown": {
+            "reason": "FM assembly_order_item / assembly_order_damage / order_entry_item_batch store no unit, and the component cards differ by family (packaging units_c, bulk none), so no single path holds it; read Product.uom of the linked component and say so.",
+            "evidence": [
+              {
+                "kind": "ref",
+                "id": "context-pack.03-portal-md-4-8.915e1d"
+              }
+            ]
+          },
+          "quantity_role": "actual",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order_item",
+              "path": "actualamount",
+              "parser": "decimal_text"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.canonicalizestatus.9cfff9"
+            }
+          ]
+        },
+        {
+          "name": "quantity_per_unit",
+          "value_type": "decimal",
+          "description": "Component per finished unit (a ratio, not a quantity of any role).",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order_item",
+              "path": "qtybatch",
+              "parser": "decimal_text"
+            }
+          ]
+        },
+        {
+          "name": "quantity_per_box",
+          "value_type": "decimal",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order_item",
+              "path": "qtybatchbox",
+              "parser": "decimal_text"
+            }
+          ]
+        },
+        {
+          "name": "damaged_quantity",
+          "value_type": "quantity",
+          "unit_unknown": {
+            "reason": "FM assembly_order_item / assembly_order_damage / order_entry_item_batch store no unit, and the component cards differ by family (packaging units_c, bulk none), so no single path holds it; read Product.uom of the linked component and say so.",
+            "evidence": [
+              {
+                "kind": "ref",
+                "id": "context-pack.03-portal-md-4-8.915e1d"
+              }
+            ]
+          },
+          "quantity_role": "damaged",
+          "availability": "not_served",
+          "availability_reason": "assembly_order_item.qtydamage_c is not served; use AssemblyOrderDamage rows.",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order_item",
+              "path": "qtydamage_c",
+              "parser": "decimal_text"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.fetchassemblyorderitems.f2113b"
+            }
+          ]
+        },
+        {
+          "name": "lot_number",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order_item",
+              "path": "lotno",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "pack_price",
+          "value_type": "decimal",
+          "markings": [
+            "finance"
+          ],
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order_item",
+              "path": "pricepack",
+              "parser": "decimal_text"
+            }
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.fetchassemblyorderitems.f2113b"
+        },
+        {
+          "kind": "upstream_code",
+          "repo": "plx-customer-portal",
+          "path": "portal/scripts/etl-silver-to-gold.ts",
+          "commit": "b46934a",
+          "note": "buildMoFmIdMap keys gold MOs by mo_code LIKE 'MO-FM-%', but FM AO codes are AO-...: the gold child copies (lines, damage, statuses, production tasks, batch mo_id) get a fresh cuid per run and usually no MO link, so they are not bound; the FM bronze children are.",
+          "symbol": "buildMoFmIdMap",
+          "lines": "117-122"
+        },
+        {
+          "kind": "ref",
+          "id": "context-pack.03-portal-md-4-8.915e1d"
+        }
+      ]
+    },
+    {
+      "id": "AssemblyOrderDamage",
+      "description": "A damage entry against an AO, usually against one component. Per-component damage is never summed across components. Gold app_assembly_order_damage copies are not bound (buildMoFmIdMap).",
+      "availability": {
+        "state": "served"
+      },
+      "bindings": [
+        {
+          "id": "portal.fm_assembly_order_damage",
+          "source": "portal_api",
+          "relation": "public.assembly_order_damage",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "default": "fm_bronze",
+            "rules": [
+              {
+                "when": [
+                  {
+                    "path": "id",
+                    "op": "gte",
+                    "value": 1000000000
+                  }
+                ],
+                "lineage": "gold_native_staging",
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.portal-id-offset.887e71"
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "services/workbench-api/manifest/allowlist.json",
+              "commit": "b46934a",
+              "note": "Reporting API allowlist entry public.assembly_order_damage: the cited columns are served.",
+              "symbol": "public.assembly_order_damage"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.fetchassemblyorderdamage.046acc"
+            }
+          ]
+        }
+      ],
+      "properties": [
+        {
+          "name": "damaged_quantity",
+          "value_type": "quantity",
+          "description": "Damaged quantity of the component.",
+          "unit_unknown": {
+            "reason": "FM assembly_order_item / assembly_order_damage / order_entry_item_batch store no unit, and the component cards differ by family (packaging units_c, bulk none), so no single path holds it; read Product.uom of the linked component and say so.",
+            "evidence": [
+              {
+                "kind": "ref",
+                "id": "context-pack.03-portal-md-4-8.915e1d"
+              }
+            ]
+          },
+          "quantity_role": "damaged",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order_damage",
+              "path": "qtydamaged",
+              "parser": "decimal_text"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "context-pack.03-portal-md-4-8.915e1d"
+            }
+          ]
+        },
+        {
+          "name": "raw_or_pack",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order_damage",
+              "path": "rawpack",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "damage_type",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order_damage",
+              "path": "type",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "category",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order_damage",
+              "path": "category",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "description",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order_damage",
+              "path": "description",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "status",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order_damage",
+              "path": "status",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "entered_by",
+          "value_type": "text",
+          "markings": [
+            "pii"
+          ],
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order_damage",
+              "path": "userentered",
+              "parser": "trim"
+            }
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.fetchassemblyorderdamage.046acc"
+        },
+        {
+          "kind": "ref",
+          "id": "context-pack.03-portal-md-4-8.915e1d"
+        }
+      ]
+    },
+    {
+      "id": "AssemblyOrderStatusEntry",
+      "description": "A production stage update on an AO (manufactured so far, left, people). The Portal sums qtymanuf over these rows for 'qty manufactured'.",
+      "availability": {
+        "state": "served"
+      },
+      "bindings": [
+        {
+          "id": "portal.fm_assembly_order_status",
+          "source": "portal_api",
+          "relation": "public.assembly_order_status",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "default": "fm_bronze",
+            "rules": [
+              {
+                "when": [
+                  {
+                    "path": "id",
+                    "op": "gte",
+                    "value": 1000000000
+                  }
+                ],
+                "lineage": "gold_native_staging",
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.portal-id-offset.887e71"
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "services/workbench-api/manifest/allowlist.json",
+              "commit": "b46934a",
+              "note": "Reporting API allowlist entry public.assembly_order_status: the cited columns are served.",
+              "symbol": "public.assembly_order_status"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.fetchassemblyorders.9aa7f9"
+            }
+          ]
+        }
+      ],
+      "properties": [
+        {
+          "name": "status",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order_status",
+              "path": "status",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "manufactured_quantity",
+          "value_type": "quantity",
+          "unit_from": "units",
+          "quantity_role": "manufactured",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order_status",
+              "path": "qtymanuf",
+              "parser": "decimal_text"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.fetchassemblyorders.9aa7f9"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.portal-id-offset.887e71"
+            }
+          ]
+        },
+        {
+          "name": "manufactured_boxes",
+          "value_type": "quantity",
+          "unit": "box",
+          "quantity_role": "manufactured",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order_status",
+              "path": "qtymanufbox",
+              "parser": "decimal_text"
+            }
+          ]
+        },
+        {
+          "name": "left_quantity",
+          "value_type": "decimal",
+          "description": "Quantity left to make at this update (no quantity role fits a remainder).",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order_status",
+              "path": "qtyleft_c",
+              "parser": "decimal_text"
+            }
+          ]
+        },
+        {
+          "name": "entered_by",
+          "value_type": "text",
+          "markings": [
+            "pii"
+          ],
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order_status",
+              "path": "userentered",
+              "parser": "trim"
+            }
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.portal-id-offset.887e71"
+        },
+        {
+          "kind": "ref",
+          "id": "upstream-code.fetchassemblyorders.9aa7f9"
+        }
+      ]
+    },
+    {
+      "id": "ProductionTask",
+      "description": "A labour/production task on an AO (categorymo AO) or a bulk batch (categorymo BC), FM public.production.",
+      "availability": {
+        "state": "served"
+      },
+      "bindings": [
+        {
+          "id": "portal.fm_production_ao",
+          "source": "portal_api",
+          "relation": "public.production",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "default": "fm_bronze",
+            "rules": [
+              {
+                "when": [
+                  {
+                    "path": "id",
+                    "op": "gte",
+                    "value": 1000000000
+                  }
+                ],
+                "lineage": "gold_native_staging",
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.portal-id-offset.887e71"
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.public-production.545c3f"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.portal-id-offset.887e71"
+            }
+          ],
+          "where": [
+            {
+              "path": "categorymo",
+              "op": "eq",
+              "value": "AO"
+            }
+          ]
+        },
+        {
+          "id": "portal.fm_production_batch",
+          "source": "portal_api",
+          "relation": "public.production",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "default": "fm_bronze",
+            "rules": [
+              {
+                "when": [
+                  {
+                    "path": "id",
+                    "op": "gte",
+                    "value": 1000000000
+                  }
+                ],
+                "lineage": "gold_native_staging",
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.portal-id-offset.887e71"
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.public-production.545c3f"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.portal-id-offset.887e71"
+            }
+          ],
+          "where": [
+            {
+              "path": "categorymo",
+              "op": "eq",
+              "value": "BC"
+            }
+          ]
+        }
+      ],
+      "properties": [
+        {
+          "name": "task_type",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.fm_production_ao",
+              "path": "type",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.fm_production_batch",
+              "path": "type",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.portal-id-offset.887e71"
+                  }
+                ]
+              }
+            ],
+            "note": "Each row is read by exactly one of the two bindings."
+          }
+        },
+        {
+          "name": "quantity",
+          "value_type": "quantity",
+          "description": "Quantity processed in the task.",
+          "unit_from": "uom_c",
+          "quantity_role": "actual",
+          "sources": [
+            {
+              "binding": "portal.fm_production_ao",
+              "path": "qty",
+              "parser": "decimal_text"
+            },
+            {
+              "binding": "portal.fm_production_batch",
+              "path": "qty",
+              "parser": "decimal_text"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.portal-id-offset.887e71"
+                  }
+                ]
+              }
+            ],
+            "note": "Each row is read by exactly one binding."
+          }
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.portal-id-offset.887e71"
+        },
+        {
+          "kind": "workbench_code",
+          "path": "operating/link_contracts.json",
+          "commit": "0615a02",
+          "note": "fm-production-task-to-assembly-order (category AO)."
+        }
+      ]
+    },
+    {
+      "id": "Batch",
+      "description": "A bulk batch (BC-{YY}{doy}{letter}) and its QC results. AOs fill finished goods from it.",
+      "anchor": true,
+      "availability": {
+        "state": "served"
+      },
+      "bindings": [
+        {
+          "id": "portal.fm_batch",
+          "source": "portal_api",
+          "relation": "public.batch",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "default": "fm_bronze",
+            "rules": [
+              {
+                "when": [
+                  {
+                    "path": "id",
+                    "op": "gte",
+                    "value": 9000000
+                  }
+                ],
+                "lineage": "gold_native_staging",
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context-pack.03-portal-md-4-6.test-batch"
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "services/workbench-api/manifest/allowlist.json",
+              "commit": "b46934a",
+              "note": "Reporting API allowlist entry public.batch: the cited columns are served.",
+              "symbol": "public.batch"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-batches.a4b3a1"
+            }
+          ],
+          "note": "Rows with id >= 9000000 are Portal staging test batches (TEST-BC- numbers, test lots), never FileMaker rows."
+        },
+        {
+          "id": "portal.app_batch_record",
+          "source": "portal_api",
+          "relation": "public.app_batch_record",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "default": "gold_native_staging",
+            "rules": [
+              {
+                "when": [
+                  {
+                    "path": "batch_name",
+                    "op": "prefix",
+                    "value": "TEST-BC-"
+                  }
+                ],
+                "lineage": "gold_native_staging",
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context-pack.03-portal-md-4-6.test-batch"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.silver-batches.a4b3a1"
+                  }
+                ]
+              },
+              {
+                "when": [
+                  {
+                    "path": "batch_name",
+                    "op": "present"
+                  }
+                ],
+                "lineage": "gold_etl_from_fm",
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlbatches.49da4d"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.silver-batches.a4b3a1"
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "services/workbench-api/manifest/allowlist.json",
+              "commit": "b46934a",
+              "note": "Reporting API allowlist entry public.app_batch_record: the cited columns are served.",
+              "symbol": "public.app_batch_record"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.batchrecord.c3a320"
+            }
+          ],
+          "note": "Operations batch records (POST /api/operations/batch-records) are Portal-native."
+        }
+      ],
+      "properties": [
+        {
+          "name": "batch_code",
+          "value_type": "identifier",
+          "identifier_kind": "batch_code",
+          "sources": [
+            {
+              "binding": "portal.fm_batch",
+              "path": "namebatch_c",
+              "parser": "identifier"
+            },
+            {
+              "binding": "portal.app_batch_record",
+              "path": "batch_name",
+              "parser": "identifier"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.silver-batches.a4b3a1"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlbatches.49da4d"
+                  }
+                ]
+              }
+            ],
+            "note": "Batching reads and writes FM bronze; gold app_batch_record is the ETL copy."
+          },
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "portal/src/lib/inventory/batch-lot-number.ts",
+              "commit": "b46934a",
+              "note": "Batch name BC-{YY}{doy}{letter}.",
+              "symbol": "regenerateBatchLotNumber",
+              "lines": "41"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-batches.a4b3a1"
+            }
+          ]
+        },
+        {
+          "name": "batch_number",
+          "value_type": "text",
+          "description": "Gold display number = COALESCE(namebatch_c, lotno_c, FM id).",
+          "sources": [
+            {
+              "binding": "portal.app_batch_record",
+              "path": "batch_number",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-batches.a4b3a1"
+            }
+          ]
+        },
+        {
+          "name": "fm_batch_number",
+          "value_type": "integer",
+          "sources": [
+            {
+              "binding": "portal.fm_batch",
+              "path": "number",
+              "parser": "integer_text"
+            }
+          ]
+        },
+        {
+          "name": "lot_number",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.fm_batch",
+              "path": "lotno_c",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.app_batch_record",
+              "path": "lot_number",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.silver-batches.a4b3a1"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlbatches.49da4d"
+                  }
+                ]
+              }
+            ],
+            "note": "Batching reads and writes FM bronze; gold app_batch_record is the ETL copy."
+          }
+        },
+        {
+          "name": "status",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.fm_batch",
+              "path": "status",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.app_batch_record",
+              "path": "status",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.silver-batches.a4b3a1"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlbatches.49da4d"
+                  }
+                ]
+              }
+            ],
+            "note": "Batching reads and writes FM bronze; gold app_batch_record is the ETL copy."
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.canonicalizestatus.cfd7e9"
+            }
+          ]
+        },
+        {
+          "name": "planned_quantity",
+          "value_type": "quantity",
+          "description": "Planned bulk quantity.",
+          "quantity_role": "planned",
+          "sources": [
+            {
+              "binding": "portal.fm_batch",
+              "path": "qty",
+              "parser": "decimal_text",
+              "unit_unknown": {
+                "reason": "FM batch rows and bulk_product cards store no unit of measure.",
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context-pack.03-portal-md-4-8.915e1d"
+                  }
+                ]
+              }
+            },
+            {
+              "binding": "portal.app_batch_record",
+              "path": "planned_qty",
+              "parser": "decimal_text",
+              "unit_from": {
+                "via_link": "Batch.makes_bulk",
+                "path": "uom"
+              }
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.silver-batches.a4b3a1"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlbatches.49da4d"
+                  }
+                ]
+              }
+            ],
+            "note": "Batching reads and writes FM bronze; gold app_batch_record is the ETL copy."
+          }
+        },
+        {
+          "name": "produced_quantity",
+          "value_type": "quantity",
+          "description": "Bulk actually made (qtyactual).",
+          "quantity_role": "produced",
+          "sources": [
+            {
+              "binding": "portal.fm_batch",
+              "path": "qtyactual",
+              "parser": "decimal_text",
+              "unit_unknown": {
+                "reason": "FM batch rows and bulk_product cards store no unit of measure.",
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context-pack.03-portal-md-4-8.915e1d"
+                  }
+                ]
+              }
+            },
+            {
+              "binding": "portal.app_batch_record",
+              "path": "actual_qty",
+              "parser": "decimal_text",
+              "unit_from": {
+                "via_link": "Batch.makes_bulk",
+                "path": "uom"
+              }
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.silver-batches.a4b3a1"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlbatches.49da4d"
+                  }
+                ]
+              }
+            ],
+            "note": "Batching reads and writes FM bronze; gold app_batch_record is the ETL copy."
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.canonicalizestatus.cfd7e9"
+            }
+          ]
+        },
+        {
+          "name": "po_number",
+          "value_type": "text",
+          "description": "Free text on the batch.",
+          "sources": [
+            {
+              "binding": "portal.fm_batch",
+              "path": "ponumber",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.app_batch_record",
+              "path": "po_number",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.silver-batches.a4b3a1"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlbatches.49da4d"
+                  }
+                ]
+              }
+            ],
+            "note": "Batching reads and writes FM bronze; gold app_batch_record is the ETL copy."
+          }
+        },
+        {
+          "name": "order_list",
+          "value_type": "text",
+          "description": "FM computed list of order entries (text, not links).",
+          "sources": [
+            {
+              "binding": "portal.fm_batch",
+              "path": "oelist_c",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.app_batch_record",
+              "path": "oe_list",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.silver-batches.a4b3a1"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlbatches.49da4d"
+                  }
+                ]
+              }
+            ],
+            "note": "Batching reads and writes FM bronze; gold app_batch_record is the ETL copy."
+          }
+        },
+        {
+          "name": "production_line",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.fm_batch",
+              "path": "line",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.app_batch_record",
+              "path": "line",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.silver-batches.a4b3a1"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlbatches.49da4d"
+                  }
+                ]
+              }
+            ],
+            "note": "Batching reads and writes FM bronze; gold app_batch_record is the ETL copy."
+          }
+        },
+        {
+          "name": "quality_status",
+          "value_type": "text",
+          "description": "FM QC status (On-Hold, Released, Rejected).",
+          "markings": [
+            "quality_controlled"
+          ],
+          "sources": [
+            {
+              "binding": "portal.fm_batch",
+              "path": "statusqc",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.app_batch_record",
+              "path": "status_qc",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.silver-batches.a4b3a1"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlbatches.49da4d"
+                  }
+                ]
+              }
+            ],
+            "note": "Batching reads and writes FM bronze; gold app_batch_record is the ETL copy."
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-batches.a4b3a1"
+            }
+          ]
+        },
+        {
+          "name": "tested_by",
+          "value_type": "text",
+          "markings": [
+            "quality_controlled"
+          ],
+          "sources": [
+            {
+              "binding": "portal.fm_batch",
+              "path": "testedby",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.app_batch_record",
+              "path": "tested_by",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.silver-batches.a4b3a1"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlbatches.49da4d"
+                  }
+                ]
+              }
+            ],
+            "note": "Batching reads and writes FM bronze; gold app_batch_record is the ETL copy."
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-batches.a4b3a1"
+            }
+          ]
+        },
+        {
+          "name": "checked_by",
+          "value_type": "text",
+          "markings": [
+            "quality_controlled"
+          ],
+          "sources": [
+            {
+              "binding": "portal.fm_batch",
+              "path": "checkedby",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.app_batch_record",
+              "path": "checked_by",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.silver-batches.a4b3a1"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlbatches.49da4d"
+                  }
+                ]
+              }
+            ],
+            "note": "Batching reads and writes FM bronze; gold app_batch_record is the ETL copy."
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-batches.a4b3a1"
+            }
+          ]
+        },
+        {
+          "name": "qc_ph",
+          "value_type": "text",
+          "markings": [
+            "quality_controlled"
+          ],
+          "sources": [
+            {
+              "binding": "portal.fm_batch",
+              "path": "phtr",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.app_batch_record",
+              "path": "qc_ph",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.silver-batches.a4b3a1"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlbatches.49da4d"
+                  }
+                ]
+              }
+            ],
+            "note": "Batching reads and writes FM bronze; gold app_batch_record is the ETL copy."
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-batches.a4b3a1"
+            }
+          ]
+        },
+        {
+          "name": "qc_viscosity",
+          "value_type": "text",
+          "markings": [
+            "quality_controlled"
+          ],
+          "sources": [
+            {
+              "binding": "portal.fm_batch",
+              "path": "viscotr",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.app_batch_record",
+              "path": "qc_viscosity",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.silver-batches.a4b3a1"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlbatches.49da4d"
+                  }
+                ]
+              }
+            ],
+            "note": "Batching reads and writes FM bronze; gold app_batch_record is the ETL copy."
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-batches.a4b3a1"
+            }
+          ]
+        },
+        {
+          "name": "qc_appearance",
+          "value_type": "text",
+          "markings": [
+            "quality_controlled"
+          ],
+          "sources": [
+            {
+              "binding": "portal.fm_batch",
+              "path": "apptexttr",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.app_batch_record",
+              "path": "qc_appearance",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.silver-batches.a4b3a1"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlbatches.49da4d"
+                  }
+                ]
+              }
+            ],
+            "note": "Batching reads and writes FM bronze; gold app_batch_record is the ETL copy."
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-batches.a4b3a1"
+            }
+          ]
+        },
+        {
+          "name": "qc_odour",
+          "value_type": "text",
+          "description": "FM fragtr is mapped to qc_odour by the silver view.",
+          "markings": [
+            "quality_controlled"
+          ],
+          "sources": [
+            {
+              "binding": "portal.fm_batch",
+              "path": "fragtr",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.app_batch_record",
+              "path": "qc_odour",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.silver-batches.a4b3a1"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlbatches.49da4d"
+                  }
+                ]
+              }
+            ],
+            "note": "Batching reads and writes FM bronze; gold app_batch_record is the ETL copy."
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-batches.a4b3a1"
+            }
+          ]
+        },
+        {
+          "name": "qc_solids",
+          "value_type": "text",
+          "markings": [
+            "quality_controlled"
+          ],
+          "sources": [
+            {
+              "binding": "portal.fm_batch",
+              "path": "solidtr",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.app_batch_record",
+              "path": "qc_solids",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.silver-batches.a4b3a1"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlbatches.49da4d"
+                  }
+                ]
+              }
+            ],
+            "note": "Batching reads and writes FM bronze; gold app_batch_record is the ETL copy."
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-batches.a4b3a1"
+            }
+          ]
+        },
+        {
+          "name": "qc_ph_24h",
+          "value_type": "text",
+          "markings": [
+            "quality_controlled"
+          ],
+          "sources": [
+            {
+              "binding": "portal.fm_batch",
+              "path": "sampleph24",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.app_batch_record",
+              "path": "qc_ph_24",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.silver-batches.a4b3a1"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlbatches.49da4d"
+                  }
+                ]
+              }
+            ],
+            "note": "Batching reads and writes FM bronze; gold app_batch_record is the ETL copy."
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-batches.a4b3a1"
+            }
+          ]
+        },
+        {
+          "name": "qc_viscosity_24h",
+          "value_type": "text",
+          "markings": [
+            "quality_controlled"
+          ],
+          "sources": [
+            {
+              "binding": "portal.fm_batch",
+              "path": "samplevisc24",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.app_batch_record",
+              "path": "qc_viscosity_24",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.silver-batches.a4b3a1"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlbatches.49da4d"
+                  }
+                ]
+              }
+            ],
+            "note": "Batching reads and writes FM bronze; gold app_batch_record is the ETL copy."
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-batches.a4b3a1"
+            }
+          ]
+        },
+        {
+          "name": "qc_tpc_yeast",
+          "value_type": "text",
+          "markings": [
+            "quality_controlled"
+          ],
+          "sources": [
+            {
+              "binding": "portal.fm_batch",
+              "path": "sampletpcyeast",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.app_batch_record",
+              "path": "qc_tpc_yeast",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.silver-batches.a4b3a1"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlbatches.49da4d"
+                  }
+                ]
+              }
+            ],
+            "note": "Batching reads and writes FM bronze; gold app_batch_record is the ETL copy."
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-batches.a4b3a1"
+            }
+          ]
+        },
+        {
+          "name": "released_at",
+          "value_type": "timestamp",
+          "markings": [
+            "quality_controlled"
+          ],
+          "sources": [
+            {
+              "binding": "portal.fm_batch",
+              "path": "timestampreleased",
+              "parser": "iso_timestamp"
+            },
+            {
+              "binding": "portal.app_batch_record",
+              "path": "released_at",
+              "parser": "iso_timestamp"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.silver-batches.a4b3a1"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlbatches.49da4d"
+                  }
+                ]
+              }
+            ],
+            "note": "Batching reads and writes FM bronze; gold app_batch_record is the ETL copy."
+          }
+        }
+      ],
+      "identity_keys": [
+        {
+          "name": "batch_code",
+          "properties": [
+            "batch_code"
+          ],
+          "tier": "verified",
+          "unique": false,
+          "scope": "cross_binding",
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-batches.a4b3a1"
+            }
+          ],
+          "identifier_kind": "batch_code"
+        }
+      ],
+      "display": [
+        "batch_code"
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.silver-batches.a4b3a1"
+        },
+        {
+          "kind": "ref",
+          "id": "upstream-code.batchrecord.c3a320"
+        }
+      ]
+    },
+    {
+      "id": "ManufacturingJob",
+      "description": "Portal production demand (MJ-{yyyy}-{b36}): make-to-stock or make-to-ship.",
+      "anchor": true,
+      "availability": {
+        "state": "served"
+      },
+      "bindings": [
+        {
+          "id": "portal.app_manufacturing_job",
+          "source": "portal_api",
+          "relation": "public.app_manufacturing_job",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "default": "gold_native_staging"
+          },
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "services/workbench-api/manifest/allowlist.json",
+              "commit": "b46934a",
+              "note": "Reporting API allowlist entry public.app_manufacturing_job: the cited columns are served.",
+              "symbol": "public.app_manufacturing_job"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.manufacturingjob.7b6ba9"
+            }
+          ]
+        }
+      ],
+      "properties": [
+        {
+          "name": "code",
+          "value_type": "identifier",
+          "identifier_kind": "manufacturing_job",
+          "sources": [
+            {
+              "binding": "portal.app_manufacturing_job",
+              "path": "job_code",
+              "parser": "identifier"
+            }
+          ]
+        },
+        {
+          "name": "status",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.app_manufacturing_job",
+              "path": "status",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "fulfillment_mode",
+          "value_type": "enum",
+          "enum_values": [
+            "MAKE_TO_STOCK",
+            "MAKE_TO_SHIP"
+          ],
+          "sources": [
+            {
+              "binding": "portal.app_manufacturing_job",
+              "path": "fulfillment_mode"
+            }
+          ]
+        },
+        {
+          "name": "deleted_at",
+          "value_type": "timestamp",
+          "sources": [
+            {
+              "binding": "portal.app_manufacturing_job",
+              "path": "deleted_at",
+              "parser": "iso_timestamp"
+            }
+          ]
+        }
+      ],
+      "identity_keys": [
+        {
+          "name": "job_code",
+          "properties": [
+            "code"
+          ],
+          "tier": "verified",
+          "unique": true,
+          "scope": "within_binding",
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.manufacturingjob.7b6ba9"
+            }
+          ],
+          "identifier_kind": "manufacturing_job"
+        }
+      ],
+      "display": [
+        "code"
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.manufacturingjob.7b6ba9"
+        }
+      ]
+    },
+    {
+      "id": "ProductComponent",
+      "description": "A finished product's component (packaging or bulk) with quantity per unit: the FM FG component list. It is not a versioned BOM (app_bill_of_materials is not served).",
+      "availability": {
+        "state": "served"
+      },
+      "bindings": [
+        {
+          "id": "portal.fm_finished_product_item",
+          "source": "portal_api",
+          "relation": "public.finished_product_item",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "default": "fm_bronze"
+          },
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "services/workbench-api/manifest/allowlist.json",
+              "commit": "b46934a",
+              "note": "Reporting API allowlist entry public.finished_product_item: the cited columns are served.",
+              "symbol": "public.finished_product_item"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-finished-product-items.10d3c0"
+            }
+          ]
+        }
+      ],
+      "properties": [
+        {
+          "name": "part_type",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.fm_finished_product_item",
+              "path": "parttype",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "component_code",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.fm_finished_product_item",
+              "path": "prodcode",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "quantity_per_unit",
+          "value_type": "decimal",
+          "description": "Component per finished unit (ratio).",
+          "sources": [
+            {
+              "binding": "portal.fm_finished_product_item",
+              "path": "qty",
+              "parser": "decimal_text"
+            }
+          ]
+        },
+        {
+          "name": "quantity_per_box",
+          "value_type": "decimal",
+          "sources": [
+            {
+              "binding": "portal.fm_finished_product_item",
+              "path": "qtybox",
+              "parser": "decimal_text"
+            }
+          ]
+        },
+        {
+          "name": "tolerance",
+          "value_type": "decimal",
+          "sources": [
+            {
+              "binding": "portal.fm_finished_product_item",
+              "path": "tolerance",
+              "parser": "decimal_text"
+            }
+          ]
+        },
+        {
+          "name": "item_cost",
+          "value_type": "decimal",
+          "markings": [
+            "finance"
+          ],
+          "sources": [
+            {
+              "binding": "portal.fm_finished_product_item",
+              "path": "itemcost_c",
+              "parser": "decimal_text"
+            }
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.silver-finished-product-items.10d3c0"
+        },
+        {
+          "kind": "context_pack",
+          "ref": "docs/reference/portal-code-map.md#3.7",
+          "note": "Only finished_product_item / bulk_product are served of the product structure."
+        }
+      ]
+    },
+    {
+      "id": "AssemblyOrderAllocation",
+      "description": "FM order_entry_item_assembly: the many-to-many link of an AO to customer order lines, with FM plan/manufactured calculations no Portal code reads. Its link to the order line belongs to the orders domain.",
+      "availability": {
+        "state": "served"
+      },
+      "bindings": [
+        {
+          "id": "portal.fm_order_entry_item_assembly",
+          "source": "portal_api",
+          "relation": "public.order_entry_item_assembly",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "default": "fm_bronze"
+          },
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "services/workbench-api/manifest/allowlist.json",
+              "commit": "b46934a",
+              "note": "Reporting API allowlist entry public.order_entry_item_assembly: the cited columns are served. Full-reload relation (no since).",
+              "symbol": "public.order_entry_item_assembly"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.route-ts.c15ac0"
+            }
+          ]
+        }
+      ],
+      "properties": [
+        {
+          "name": "order_line_fm_id",
+          "value_type": "identifier",
+          "identifier_kind": "fm_id",
+          "identifies": "reference",
+          "sources": [
+            {
+              "binding": "portal.fm_order_entry_item_assembly",
+              "path": "idoeitem",
+              "parser": "identifier"
+            }
+          ]
+        },
+        {
+          "name": "planned_quantity",
+          "value_type": "quantity",
+          "description": "FM link-table calculation; no Portal code reads it (03 s4.8).",
+          "unit": "each",
+          "quantity_role": "planned",
+          "sources": [
+            {
+              "binding": "portal.fm_order_entry_item_assembly",
+              "path": "qtyplan_c",
+              "parser": "decimal_text"
+            }
+          ]
+        },
+        {
+          "name": "manufactured_quantity",
+          "value_type": "quantity",
+          "description": "FM link-table calculation; no Portal code reads it.",
+          "unit": "each",
+          "quantity_role": "manufactured",
+          "sources": [
+            {
+              "binding": "portal.fm_order_entry_item_assembly",
+              "path": "qtymfg_c",
+              "parser": "decimal_text"
+            }
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.route-ts.c15ac0"
+        },
+        {
+          "kind": "ref",
+          "id": "context-pack.03-portal-md-4-8.915e1d"
+        }
+      ]
+    },
+    {
+      "id": "BatchAllocation",
+      "description": "FM order_entry_item_batch: a bulk batch allocated to a customer order line.",
+      "availability": {
+        "state": "served"
+      },
+      "bindings": [
+        {
+          "id": "portal.fm_order_entry_item_batch",
+          "source": "portal_api",
+          "relation": "public.order_entry_item_batch",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "default": "fm_bronze"
+          },
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "services/workbench-api/manifest/allowlist.json",
+              "commit": "b46934a",
+              "note": "Reporting API allowlist entry public.order_entry_item_batch: the cited columns are served. Full-reload relation (no since).",
+              "symbol": "public.order_entry_item_batch"
+            }
+          ]
+        }
+      ],
+      "properties": [
+        {
+          "name": "order_line_fm_id",
+          "value_type": "identifier",
+          "identifier_kind": "fm_id",
+          "identifies": "reference",
+          "sources": [
+            {
+              "binding": "portal.fm_order_entry_item_batch",
+              "path": "idoeitem",
+              "parser": "identifier"
+            }
+          ]
+        },
+        {
+          "name": "quantity",
+          "value_type": "quantity",
+          "description": "Bulk quantity allocated to the line.",
+          "unit_unknown": {
+            "reason": "FM batch rows and bulk_product cards store no unit of measure.",
+            "evidence": [
+              {
+                "kind": "ref",
+                "id": "context-pack.03-portal-md-4-8.915e1d"
+              }
+            ]
+          },
+          "quantity_role": "committed",
+          "sources": [
+            {
+              "binding": "portal.fm_order_entry_item_batch",
+              "path": "qty",
+              "parser": "decimal_text"
+            }
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.public-order-entry-item-batch.2cfd98"
+        }
+      ]
+    }
+  ],
+  "link_types": [
+    {
+      "id": "AssemblyOrder.same_record_as",
+      "from": "AssemblyOrder",
+      "to": "AssemblyOrder",
+      "name": "same_record_as",
+      "reverse_name": "same_record_as",
+      "cardinality": "1:1",
+      "description": "Gold MO and FM AO are one AO: gold mo_code = FM nameamo_c (ETL upserts on mo_code).",
+      "bindings": [
+        {
+          "kind": "same_record",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_manufacturing_order",
+          "to_binding": "portal.fm_assembly_order",
+          "pairs": [
+            {
+              "from": "mo_code",
+              "to": "nameamo_c",
+              "compare": "identifier",
+              "identifier_kind": "ao_code"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.etlmanufacturingorders.cdba79"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-manufacturing-orders.9d477f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "AssemblyOrder.makes",
+      "from": "AssemblyOrder",
+      "to": "Product",
+      "name": "makes",
+      "reverse_name": "made_by_orders",
+      "cardinality": "N:1",
+      "description": "The finished product the AO fills.",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_assembly_order",
+          "to_binding": "portal.fm_finished_product",
+          "pairs": [
+            {
+              "from": "idfinprod",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-manufacturing-orders.9d477f"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.fetchassemblyorders.9aa7f9"
+            }
+          ]
+        },
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_manufacturing_order",
+          "to_binding": "portal.app_product",
+          "pairs": [
+            {
+              "from": "finished_product_id",
+              "to": "id",
+              "compare": "text_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.manufacturingorder.42f88d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "AssemblyOrder.fills_from",
+      "from": "AssemblyOrder",
+      "to": "Batch",
+      "name": "fills_from",
+      "reverse_name": "filled_into_orders",
+      "cardinality": "N:1",
+      "description": "The bulk batch the AO fills from (FM idbatch; the Portal also falls back to idbatch_pre, which is not served).",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_assembly_order",
+          "to_binding": "portal.fm_batch",
+          "pairs": [
+            {
+              "from": "idbatch",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.fetchassemblyorders.9aa7f9"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-manufacturing-orders.9d477f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "AssemblyOrder.for_customer",
+      "from": "AssemblyOrder",
+      "to": "Customer",
+      "name": "for_customer",
+      "reverse_name": "assembly_orders",
+      "cardinality": "N:1",
+      "description": "Gold MO customer_id (set on Portal-native MOs; no DB foreign key). FM AOs reach the customer through AssemblyOrder.makes -> Product.owned_by, as the Portal AO detail does.",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_manufacturing_order",
+          "to_binding": "portal.app_customer",
+          "pairs": [
+            {
+              "from": "customer_id",
+              "to": "id",
+              "compare": "text_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.manufacturingorder.42f88d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "AssemblyOrder.part_of_job",
+      "from": "AssemblyOrder",
+      "to": "ManufacturingJob",
+      "name": "part_of_job",
+      "reverse_name": "assembly_orders",
+      "cardinality": "N:1",
+      "description": "Gold MO -> its manufacturing job.",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_manufacturing_order",
+          "to_binding": "portal.app_manufacturing_job",
+          "pairs": [
+            {
+              "from": "manufacturing_job_id",
+              "to": "id",
+              "compare": "text_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.manufacturingorder.42f88d"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.manufacturingjob.7b6ba9"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "AssemblyOrderComponent.component_of",
+      "from": "AssemblyOrderComponent",
+      "to": "AssemblyOrder",
+      "name": "component_of",
+      "reverse_name": "components",
+      "cardinality": "N:1",
+      "description": "AO item -> its AO.",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_assembly_order_item",
+          "to_binding": "portal.fm_assembly_order",
+          "pairs": [
+            {
+              "from": "idassem",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.fetchassemblyorderitems.f2113b"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench-code.link-contracts-json.1d543d"
+            }
+          ],
+          "link_contract": "fm-ao-item-to-assembly-order"
+        }
+      ]
+    },
+    {
+      "id": "AssemblyOrderComponent.uses_item",
+      "from": "AssemblyOrderComponent",
+      "to": "Product",
+      "name": "uses_item",
+      "reverse_name": "used_in_ao_lines",
+      "cardinality": "N:1",
+      "description": "The packaging or bulk consumed.",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_assembly_order_item",
+          "to_binding": "portal.fm_packaging",
+          "pairs": [
+            {
+              "from": "idpack",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.fetchassemblyorderitems.f2113b"
+            }
+          ]
+        },
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_assembly_order_item",
+          "to_binding": "portal.fm_bulk_product",
+          "pairs": [
+            {
+              "from": "idbulk",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.fetchassemblyorderitems.f2113b"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "AssemblyOrderComponent.per_component",
+      "from": "AssemblyOrderComponent",
+      "to": "ProductComponent",
+      "name": "per_component",
+      "reverse_name": "ao_lines",
+      "cardinality": "N:1",
+      "description": "The FG component-list row this AO line instantiates.",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_assembly_order_item",
+          "to_binding": "portal.fm_finished_product_item",
+          "pairs": [
+            {
+              "from": "idfinproditem",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-manufacturing-orders.9d477f"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-finished-product-items.10d3c0"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "AssemblyOrderDamage.damage_of",
+      "from": "AssemblyOrderDamage",
+      "to": "AssemblyOrder",
+      "name": "damage_of",
+      "reverse_name": "damage",
+      "cardinality": "N:1",
+      "description": "Damage entry -> its AO.",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_assembly_order_damage",
+          "to_binding": "portal.fm_assembly_order",
+          "pairs": [
+            {
+              "from": "idassembly",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.fetchassemblyorderdamage.046acc"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench-code.link-contracts-json.1d543d"
+            }
+          ],
+          "link_contract": "fm-damage-to-assembly-order"
+        }
+      ]
+    },
+    {
+      "id": "AssemblyOrderDamage.damage_to",
+      "from": "AssemblyOrderDamage",
+      "to": "AssemblyOrderComponent",
+      "name": "damage_to",
+      "reverse_name": "damage",
+      "cardinality": "N:1",
+      "description": "The component damaged (NULL for pre-pick or 'not specific' rows).",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_assembly_order_damage",
+          "to_binding": "portal.fm_assembly_order_item",
+          "pairs": [
+            {
+              "from": "idassemblyitem",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.fetchassemblyorderdamage.046acc"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "AssemblyOrderStatusEntry.update_of",
+      "from": "AssemblyOrderStatusEntry",
+      "to": "AssemblyOrder",
+      "name": "update_of",
+      "reverse_name": "status_entries",
+      "cardinality": "N:1",
+      "description": "Stage update -> its AO.",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_assembly_order_status",
+          "to_binding": "portal.fm_assembly_order",
+          "pairs": [
+            {
+              "from": "idassembly",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.portal-id-offset.887e71"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ProductionTask.task_of_order",
+      "from": "ProductionTask",
+      "to": "AssemblyOrder",
+      "name": "task_of_order",
+      "reverse_name": "production_tasks",
+      "cardinality": "N:1",
+      "description": "AO labour task (categorymo AO).",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_production_ao",
+          "to_binding": "portal.fm_assembly_order",
+          "pairs": [
+            {
+              "from": "idmo",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.portal-id-offset.887e71"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench-code.link-contracts-json.1d543d"
+            }
+          ],
+          "link_contract": "fm-production-task-to-assembly-order"
+        }
+      ]
+    },
+    {
+      "id": "ProductionTask.task_of_batch",
+      "from": "ProductionTask",
+      "to": "Batch",
+      "name": "task_of_batch",
+      "reverse_name": "production_tasks",
+      "cardinality": "N:1",
+      "description": "Batch labour task (categorymo BC).",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_production_batch",
+          "to_binding": "portal.fm_batch",
+          "pairs": [
+            {
+              "from": "idmo",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.portal-id-offset.887e71"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "Batch.same_record_as",
+      "from": "Batch",
+      "to": "Batch",
+      "name": "same_record_as",
+      "reverse_name": "fm_batches",
+      "cardinality": "N:1",
+      "description": "FM batch -> the gold batch record the silver-to-gold ETL upserted it into: namebatch_c = batch_name. The ETL upserts ON CONFLICT (batch_number) with batch_number = COALESCE(namebatch_c, lotno_c, id) (etl-silver-to-gold.ts:923 @b46934a; silver.batches display_batch_number), so FM batches sharing a name collapse into one gold row (insert-time columns from the lowest FM id, status/QC from the last upsert). A gold row can therefore have several FM batches; its values are not attributable to any one of them.",
+      "bindings": [
+        {
+          "kind": "same_record",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_batch",
+          "to_binding": "portal.app_batch_record",
+          "pairs": [
+            {
+              "from": "namebatch_c",
+              "to": "batch_name",
+              "compare": "identifier",
+              "identifier_kind": "batch_code"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.etlbatches.49da4d"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-batches.a4b3a1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "Batch.makes_bulk",
+      "from": "Batch",
+      "to": "Product",
+      "name": "makes_bulk",
+      "reverse_name": "batches",
+      "cardinality": "N:1",
+      "description": "The bulk product a batch makes.",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_batch",
+          "to_binding": "portal.fm_bulk_product",
+          "pairs": [
+            {
+              "from": "idbulk",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-batches.a4b3a1"
+            }
+          ]
+        },
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_batch_record",
+          "to_binding": "portal.app_product",
+          "pairs": [
+            {
+              "from": "bulk_product_id",
+              "to": "id",
+              "compare": "text_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.etlbatches.49da4d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "Batch.requested_by",
+      "from": "Batch",
+      "to": "AssemblyOrder",
+      "name": "requested_by",
+      "reverse_name": "requested_batches",
+      "cardinality": "N:1",
+      "description": "FM batch.idmoreq (silver mo_id): the AO that requested the batch.",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_batch",
+          "to_binding": "portal.fm_assembly_order",
+          "pairs": [
+            {
+              "from": "idmoreq",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-batches.a4b3a1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ManufacturingJob.for_customer",
+      "from": "ManufacturingJob",
+      "to": "Customer",
+      "name": "for_customer",
+      "reverse_name": "manufacturing_jobs",
+      "cardinality": "N:1",
+      "description": "Job -> customer (Prisma relation).",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_manufacturing_job",
+          "to_binding": "portal.app_customer",
+          "pairs": [
+            {
+              "from": "customer_id",
+              "to": "id",
+              "compare": "text_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.manufacturingjob.7b6ba9"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ProductComponent.component_of_product",
+      "from": "ProductComponent",
+      "to": "Product",
+      "name": "component_of_product",
+      "reverse_name": "components",
+      "cardinality": "N:1",
+      "description": "Component row -> finished product.",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_finished_product_item",
+          "to_binding": "portal.fm_finished_product",
+          "pairs": [
+            {
+              "from": "idfinprod",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-finished-product-items.10d3c0"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ProductComponent.component_item",
+      "from": "ProductComponent",
+      "to": "Product",
+      "name": "component_item",
+      "reverse_name": "component_in",
+      "cardinality": "N:1",
+      "description": "The packaging or bulk the row names.",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_finished_product_item",
+          "to_binding": "portal.fm_packaging",
+          "pairs": [
+            {
+              "from": "idpack",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-finished-product-items.10d3c0"
+            }
+          ]
+        },
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_finished_product_item",
+          "to_binding": "portal.fm_bulk_product",
+          "pairs": [
+            {
+              "from": "idbulk",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-finished-product-items.10d3c0"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "AssemblyOrderAllocation.allocates",
+      "from": "AssemblyOrderAllocation",
+      "to": "AssemblyOrder",
+      "name": "allocates",
+      "reverse_name": "allocations",
+      "cardinality": "N:1",
+      "description": "Allocation row -> its AO (the order-line side is in the orders domain).",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_order_entry_item_assembly",
+          "to_binding": "portal.fm_assembly_order",
+          "pairs": [
+            {
+              "from": "idassembly",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.route-ts.c15ac0"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench-code.link-contracts-json.1d543d"
+            }
+          ],
+          "link_contract": "fm-ao-link-to-assembly-order"
+        }
+      ]
+    },
+    {
+      "id": "BatchAllocation.allocates",
+      "from": "BatchAllocation",
+      "to": "Batch",
+      "name": "allocates",
+      "reverse_name": "allocations",
+      "cardinality": "N:1",
+      "description": "Allocation row -> its batch.",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_order_entry_item_batch",
+          "to_binding": "portal.fm_batch",
+          "pairs": [
+            {
+              "from": "idbatch",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.public-order-entry-item-batch.2cfd98"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "AssemblyOrderAllocation.for_order_line",
+      "from": "AssemblyOrderAllocation",
+      "to": "SalesOrderLine",
+      "name": "for_order_line",
+      "reverse_name": "assembly_allocations",
+      "cardinality": "N:1",
+      "description": "The FM customer order line the AO is allocated to (orders domain).",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_order_entry_item_assembly",
+          "to_binding": "portal.fm_order_entry_item",
+          "pairs": [
+            {
+              "from": "idoeitem",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.route-ts.c15ac0"
+            },
+            {
+              "kind": "workbench_code",
+              "path": "operating/link_contracts.json",
+              "commit": "0615a02",
+              "note": "fm-ao-link-to-order-line: order_entry_item_assembly.idoeitem = order_entry_item.id."
+            }
+          ],
+          "link_contract": "fm-ao-link-to-order-line"
+        }
+      ]
+    },
+    {
+      "id": "BatchAllocation.for_order_line",
+      "from": "BatchAllocation",
+      "to": "SalesOrderLine",
+      "name": "for_order_line",
+      "reverse_name": "batch_allocations",
+      "cardinality": "N:1",
+      "description": "The FM customer order line the batch is allocated to (orders domain).",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_order_entry_item_batch",
+          "to_binding": "portal.fm_order_entry_item",
+          "pairs": [
+            {
+              "from": "idoeitem",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.public-order-entry-item-batch.2cfd98"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "AssemblyOrder.for_order_line",
+      "from": "AssemblyOrder",
+      "to": "SalesOrderLine",
+      "name": "for_order_line",
+      "reverse_name": "assembly_orders",
+      "cardinality": "N:1",
+      "description": "Gold MO -> the sales order line it produces (Portal-native SO Produce lines; FM AOs use AssemblyOrderAllocation, and since Portal 57bd403 (TASK-2711, staging 38cd3f3) an FM-born AO linked to a portal order line also carries it here: linkAoToPortalLine sets salesOrderLineId on the gold MO whose mo_code is the AO's nameamo_c, for an open MAKE line of the same product and customer, because a MAKE order confirmed after 898e084 TASK-2638 has no FileMaker order_entry line to put in order_entry_item_assembly). At most one live MO per sales order line: the Portal refuses to create or tag an MO onto a line while another MO on it is neither CANCELLED nor soft-deleted (409; code SOL_ALREADY_HAS_MO on tag), and shows that one live MO on the line (liveLinkedMo, portal/src/lib/mrp/mo-so-line-link.ts@549f6f0; portal/src/lib/mrp/api-handlers/manufacturing-orders.ts@549f6f0 resolveLinkedSalesOrderLine and tagExistingSalesOrderLine). The rule is an API-handler check, not a unique index, and cancelled or soft-deleted MOs keep their line id: the raw link stays N:1, so a line can list several MOs of which at most one is live.",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_manufacturing_order",
+          "to_binding": "portal.app_sales_order_line",
+          "pairs": [
+            {
+              "from": "sales_order_line_id",
+              "to": "id",
+              "compare": "text_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "portal/prisma/schema.prisma",
+              "commit": "b46934a",
+              "note": "ManufacturingOrder.salesOrderLineId -> SalesOrderLine (SO Produce line -> MO); ManufacturingJob.salesOrderId -> SalesOrder.",
+              "symbol": "ManufacturingOrder",
+              "lines": "2443-2568"
+            },
+            {
+              "kind": "workbench_code",
+              "path": "verify/upstream-pins.json",
+              "note": "One live MO per sales order line, read at plx-customer-portal@549f6f0 (newer than this domain's b46934a pin; pinned and drift-watched in verify/upstream-pins.json): portal/src/lib/mrp/mo-so-line-link.ts:13-16 liveLinkedMo (the one not-CANCELLED MO on a line, TASK-2397 568f69c8); portal/src/lib/mrp/api-handlers/manufacturing-orders.ts:154-168 resolveLinkedSalesOrderLine (create: 409) and :815-834 tagExistingSalesOrderLine (tag: 409 SOL_ALREADY_HAS_MO), each while another MO on the line is not CANCELLED and deletedAt is null."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ManufacturingJob.for_sales_order",
+      "from": "ManufacturingJob",
+      "to": "SalesOrder",
+      "name": "for_sales_order",
+      "reverse_name": "manufacturing_jobs",
+      "cardinality": "N:1",
+      "description": "Make-to-ship job -> its sales order (Prisma relation).",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_manufacturing_job",
+          "to_binding": "portal.app_sales_order",
+          "pairs": [
+            {
+              "from": "sales_order_id",
+              "to": "id",
+              "compare": "text_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.manufacturingjob.7b6ba9"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "event_types": [
+    {
+      "id": "AssemblyOrder.created",
+      "object_type": "AssemblyOrder",
+      "description": "FM AO creation date.",
+      "time_basis": "source_recorded",
+      "time": {
+        "binding": "portal.fm_assembly_order",
+        "path": "datecreation",
+        "parser": "iso_date"
+      },
+      "qualifiers": [
+        {
+          "qualifier": "order",
+          "object_type": "AssemblyOrder",
+          "via": "self"
+        },
+        {
+          "qualifier": "item",
+          "object_type": "Product",
+          "via": "AssemblyOrder.makes"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.silver-manufacturing-orders.9d477f"
+        }
+      ]
+    },
+    {
+      "id": "AssemblyOrder.scheduled",
+      "object_type": "AssemblyOrder",
+      "description": "Scheduled production date: a plan, never an occurrence.",
+      "time_basis": "planned",
+      "time": {
+        "binding": "portal.fm_assembly_order",
+        "path": "datescheduled",
+        "parser": "iso_date"
+      },
+      "qualifiers": [
+        {
+          "qualifier": "order",
+          "object_type": "AssemblyOrder",
+          "via": "self"
+        },
+        {
+          "qualifier": "item",
+          "object_type": "Product",
+          "via": "AssemblyOrder.makes"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.silver-manufacturing-orders.9d477f"
+        }
+      ]
+    },
+    {
+      "id": "AssemblyOrder.allocated",
+      "object_type": "AssemblyOrder",
+      "description": "Stage Allocated (components reserved).",
+      "time_basis": "source_business_date",
+      "time": {
+        "binding": "portal.fm_assembly_order",
+        "path": "dateallocated",
+        "parser": "iso_date"
+      },
+      "qualifiers": [
+        {
+          "qualifier": "order",
+          "object_type": "AssemblyOrder",
+          "via": "self"
+        },
+        {
+          "qualifier": "item",
+          "object_type": "Product",
+          "via": "AssemblyOrder.makes"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.canonicalizestatus.9cfff9"
+        },
+        {
+          "kind": "ref",
+          "id": "upstream-code.fetchassemblyorders.9aa7f9"
+        }
+      ]
+    },
+    {
+      "id": "AssemblyOrder.committed",
+      "object_type": "AssemblyOrder",
+      "description": "Stage Committed.",
+      "time_basis": "source_business_date",
+      "time": {
+        "binding": "portal.fm_assembly_order",
+        "path": "datecommitted",
+        "parser": "iso_date"
+      },
+      "qualifiers": [
+        {
+          "qualifier": "order",
+          "object_type": "AssemblyOrder",
+          "via": "self"
+        },
+        {
+          "qualifier": "item",
+          "object_type": "Product",
+          "via": "AssemblyOrder.makes"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.canonicalizestatus.9cfff9"
+        },
+        {
+          "kind": "ref",
+          "id": "upstream-code.fetchassemblyorders.9aa7f9"
+        }
+      ]
+    },
+    {
+      "id": "AssemblyOrder.manufactured",
+      "object_type": "AssemblyOrder",
+      "description": "Manufacture date entered in FM. Paper AO records can state a different production date: compare, never overwrite.",
+      "time_basis": "source_business_date",
+      "time": {
+        "binding": "portal.fm_assembly_order",
+        "path": "datemanuf",
+        "parser": "iso_date"
+      },
+      "qualifiers": [
+        {
+          "qualifier": "order",
+          "object_type": "AssemblyOrder",
+          "via": "self"
+        },
+        {
+          "qualifier": "item",
+          "object_type": "Product",
+          "via": "AssemblyOrder.makes"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.silver-manufacturing-orders.9d477f"
+        },
+        {
+          "kind": "ref",
+          "id": "context-pack.02-cases-and-artifacts-md.b99b18"
+        }
+      ]
+    },
+    {
+      "id": "AssemblyOrder.realized",
+      "object_type": "AssemblyOrder",
+      "description": "Stage Realized (inventory ledger written).",
+      "time_basis": "source_business_date",
+      "time": {
+        "binding": "portal.fm_assembly_order",
+        "path": "daterealized",
+        "parser": "iso_date"
+      },
+      "qualifiers": [
+        {
+          "qualifier": "order",
+          "object_type": "AssemblyOrder",
+          "via": "self"
+        },
+        {
+          "qualifier": "item",
+          "object_type": "Product",
+          "via": "AssemblyOrder.makes"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.canonicalizestatus.9cfff9"
+        },
+        {
+          "kind": "ref",
+          "id": "upstream-code.fetchassemblyorders.9aa7f9"
+        }
+      ]
+    },
+    {
+      "id": "AssemblyOrder.cancelled",
+      "object_type": "AssemblyOrder",
+      "description": "Stage Cancelled.",
+      "time_basis": "source_business_date",
+      "time": {
+        "binding": "portal.fm_assembly_order",
+        "path": "datecancelled",
+        "parser": "iso_date"
+      },
+      "qualifiers": [
+        {
+          "qualifier": "order",
+          "object_type": "AssemblyOrder",
+          "via": "self"
+        },
+        {
+          "qualifier": "item",
+          "object_type": "Product",
+          "via": "AssemblyOrder.makes"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.canonicalizestatus.9cfff9"
+        }
+      ]
+    },
+    {
+      "id": "AssemblyOrder.portal_scheduled_start",
+      "object_type": "AssemblyOrder",
+      "description": "Portal MO scheduled start (native MOs).",
+      "time_basis": "planned",
+      "time": {
+        "binding": "portal.app_manufacturing_order",
+        "path": "scheduled_start_date",
+        "parser": "iso_timestamp"
+      },
+      "qualifiers": [
+        {
+          "qualifier": "order",
+          "object_type": "AssemblyOrder",
+          "via": "self"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.manufacturingorder.42f88d"
+        }
+      ]
+    },
+    {
+      "id": "AssemblyOrder.portal_completed",
+      "object_type": "AssemblyOrder",
+      "description": "Portal MO completed_at (native MOs).",
+      "time_basis": "source_recorded",
+      "time": {
+        "binding": "portal.app_manufacturing_order",
+        "path": "completed_at",
+        "parser": "iso_timestamp"
+      },
+      "qualifiers": [
+        {
+          "qualifier": "order",
+          "object_type": "AssemblyOrder",
+          "via": "self"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.manufacturingorder.42f88d"
+        }
+      ]
+    },
+    {
+      "id": "AssemblyOrder.status_changed",
+      "object_type": "AssemblyOrder",
+      "description": "AO status changed between two captures.",
+      "time_basis": "capture_observed",
+      "observed_property": "status",
+      "qualifiers": [
+        {
+          "qualifier": "order",
+          "object_type": "AssemblyOrder",
+          "via": "self"
+        },
+        {
+          "qualifier": "item",
+          "object_type": "Product",
+          "via": "AssemblyOrder.makes"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.canonicalizestatus.9cfff9"
+        }
+      ]
+    },
+    {
+      "id": "AssemblyOrderDamage.entered",
+      "object_type": "AssemblyOrderDamage",
+      "description": "Date the damage was entered.",
+      "time_basis": "source_recorded",
+      "time": {
+        "binding": "portal.fm_assembly_order_damage",
+        "path": "dateentered",
+        "parser": "iso_date"
+      },
+      "qualifiers": [
+        {
+          "qualifier": "damage",
+          "object_type": "AssemblyOrderDamage",
+          "via": "self"
+        },
+        {
+          "qualifier": "order",
+          "object_type": "AssemblyOrder",
+          "via": "AssemblyOrderDamage.damage_of"
+        },
+        {
+          "qualifier": "component",
+          "object_type": "AssemblyOrderComponent",
+          "via": "AssemblyOrderDamage.damage_to"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.fetchassemblyorderdamage.046acc"
+        }
+      ]
+    },
+    {
+      "id": "AssemblyOrderStatusEntry.entered",
+      "object_type": "AssemblyOrderStatusEntry",
+      "description": "Production stage update entered.",
+      "time_basis": "source_recorded",
+      "time": {
+        "binding": "portal.fm_assembly_order_status",
+        "path": "dateentered",
+        "parser": "iso_date"
+      },
+      "qualifiers": [
+        {
+          "qualifier": "update",
+          "object_type": "AssemblyOrderStatusEntry",
+          "via": "self"
+        },
+        {
+          "qualifier": "order",
+          "object_type": "AssemblyOrder",
+          "via": "AssemblyOrderStatusEntry.update_of"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.portal-id-offset.887e71"
+        }
+      ]
+    },
+    {
+      "id": "ProductionTask.started",
+      "object_type": "ProductionTask",
+      "description": "Task start date (AO tasks).",
+      "time_basis": "source_business_date",
+      "time": {
+        "binding": "portal.fm_production_ao",
+        "path": "datestart",
+        "parser": "iso_date"
+      },
+      "qualifiers": [
+        {
+          "qualifier": "task",
+          "object_type": "ProductionTask",
+          "via": "self"
+        },
+        {
+          "qualifier": "order",
+          "object_type": "AssemblyOrder",
+          "via": "ProductionTask.task_of_order"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.portal-id-offset.887e71"
+        }
+      ]
+    },
+    {
+      "id": "ProductionTask.batch_task_started",
+      "object_type": "ProductionTask",
+      "description": "Task start date (batch tasks).",
+      "time_basis": "source_business_date",
+      "time": {
+        "binding": "portal.fm_production_batch",
+        "path": "datestart",
+        "parser": "iso_date"
+      },
+      "qualifiers": [
+        {
+          "qualifier": "task",
+          "object_type": "ProductionTask",
+          "via": "self"
+        },
+        {
+          "qualifier": "batch",
+          "object_type": "Batch",
+          "via": "ProductionTask.task_of_batch"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.portal-id-offset.887e71"
+        }
+      ]
+    },
+    {
+      "id": "Batch.scheduled",
+      "object_type": "Batch",
+      "description": "Batch scheduled date.",
+      "time_basis": "planned",
+      "time": {
+        "binding": "portal.fm_batch",
+        "path": "datesche",
+        "parser": "iso_date"
+      },
+      "qualifiers": [
+        {
+          "qualifier": "batch",
+          "object_type": "Batch",
+          "via": "self"
+        },
+        {
+          "qualifier": "bulk",
+          "object_type": "Product",
+          "via": "Batch.makes_bulk"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.silver-batches.a4b3a1"
+        }
+      ]
+    },
+    {
+      "id": "Batch.manufactured",
+      "object_type": "Batch",
+      "description": "Batch manufacture date.",
+      "time_basis": "source_business_date",
+      "time": {
+        "binding": "portal.fm_batch",
+        "path": "datemfg_c",
+        "parser": "iso_date"
+      },
+      "qualifiers": [
+        {
+          "qualifier": "batch",
+          "object_type": "Batch",
+          "via": "self"
+        },
+        {
+          "qualifier": "bulk",
+          "object_type": "Product",
+          "via": "Batch.makes_bulk"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.silver-batches.a4b3a1"
+        }
+      ]
+    },
+    {
+      "id": "Batch.realized",
+      "object_type": "Batch",
+      "description": "Batch realized (completed).",
+      "time_basis": "source_business_date",
+      "time": {
+        "binding": "portal.fm_batch",
+        "path": "daterealized",
+        "parser": "iso_date"
+      },
+      "qualifiers": [
+        {
+          "qualifier": "batch",
+          "object_type": "Batch",
+          "via": "self"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.silver-batches.a4b3a1"
+        },
+        {
+          "kind": "ref",
+          "id": "upstream-code.canonicalizestatus.cfd7e9"
+        }
+      ]
+    },
+    {
+      "id": "Batch.tested",
+      "object_type": "Batch",
+      "description": "QC test date.",
+      "time_basis": "source_business_date",
+      "time": {
+        "binding": "portal.fm_batch",
+        "path": "datetested",
+        "parser": "iso_date"
+      },
+      "qualifiers": [
+        {
+          "qualifier": "batch",
+          "object_type": "Batch",
+          "via": "self"
+        }
+      ],
+      "markings": [
+        "quality_controlled"
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.silver-batches.a4b3a1"
+        }
+      ]
+    },
+    {
+      "id": "Batch.released",
+      "object_type": "Batch",
+      "description": "QC release timestamp.",
+      "time_basis": "source_recorded",
+      "time": {
+        "binding": "portal.fm_batch",
+        "path": "timestampreleased",
+        "parser": "iso_timestamp"
+      },
+      "qualifiers": [
+        {
+          "qualifier": "batch",
+          "object_type": "Batch",
+          "via": "self"
+        }
+      ],
+      "markings": [
+        "quality_controlled"
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.silver-batches.a4b3a1"
+        },
+        {
+          "kind": "ref",
+          "id": "upstream-code.syncfplotonqc.74b2f9"
+        }
+      ]
+    },
+    {
+      "id": "Batch.quality_status_changed",
+      "object_type": "Batch",
+      "description": "QC status changed between two captures.",
+      "time_basis": "capture_observed",
+      "observed_property": "quality_status",
+      "qualifiers": [
+        {
+          "qualifier": "batch",
+          "object_type": "Batch",
+          "via": "self"
+        }
+      ],
+      "markings": [
+        "quality_controlled"
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.syncfplotonqc.74b2f9"
+        }
+      ]
+    }
+  ],
+  "evidence_catalog": {
+    "context-pack.02-cases-and-artifacts-md.b99b18": {
+      "kind": "context_pack",
+      "ref": "docs/reference/cases-and-artifacts.md",
+      "note": "Ricardo's AO material: planned, produced, filled and damaged quantities differ and are never summed across components; AO header quantities can be empty."
+    },
+    "context-pack.03-portal-md-3-8.8b1656": {
+      "kind": "context_pack",
+      "ref": "docs/reference/portal-code-map.md#3.8",
+      "note": "Authoritative AO = FM bronze assembly_order; gold app_manufacturing_order is the AO copy; AO <-> order lines are many-to-many in FM."
+    },
+    "context-pack.03-portal-md-4-8.915e1d": {
+      "kind": "context_pack",
+      "ref": "docs/reference/portal-code-map.md#4.8",
+      "note": "AO quantity fields: qtytotal ordered, totalprodqty_c produced incl. samples, qtyacc_c accepted, finalqty/qtymanufold silver yields, component qty_c planned / actualamount consumed, damage per component."
+    },
+    "upstream-code.batchrecord.c3a320": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "b46934a",
+      "note": "model BatchRecord @@map(\"app_batch_record\"): unique batchNumber, 1:1 manufacturingOrderId, QC result columns, statusQc, releasedAt.",
+      "symbol": "BatchRecord",
+      "lines": "2642-2776"
+    },
+    "upstream-code.canonicalizestatus.9cfff9": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/src/lib/inventory/assembly-lifecycle.ts",
+      "commit": "b46934a",
+      "note": "canonicalizeStatus: Generated/Allocated/Committed/Realized/Cancelled (Completed = Realized); totalprodqty_c already includes samples and qtyacc_c = totalprodqty_c - qtysample; component consumption = qty per unit x totalprodqty_c; the AO code is the FG lot number.",
+      "symbol": "canonicalizeStatus",
+      "lines": "125-200"
+    },
+    "upstream-code.canonicalizestatus.cfd7e9": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/src/lib/inventory/batch-lifecycle.ts",
+      "commit": "b46934a",
+      "note": "Batch status canonicalizeStatus (same vocabulary as AO); produced bulk = qtyactual, falling back to qty.",
+      "symbol": "canonicalizeStatus",
+      "lines": "115-135"
+    },
+    "upstream-code.etlbatches.49da4d": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/scripts/etl-silver-to-gold.ts",
+      "commit": "b46934a",
+      "note": "etlBatches: silver.batches -> app_batch_record ON CONFLICT (batch_number); batch_number = display_batch_number; mo_id via buildMoFmIdMap (usually NULL).",
+      "symbol": "etlBatches",
+      "lines": "887-1004"
+    },
+    "upstream-code.etlmanufacturingorders.cdba79": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/scripts/etl-silver-to-gold.ts",
+      "commit": "b46934a",
+      "note": "etlManufacturingOrders: silver.manufacturing_orders -> app_manufacturing_order ON CONFLICT (mo_code); finished_product_id via app_product external_id fm-fp-{idfinprod}; batch_id and customer_order_id keep the FM integer ids as text.",
+      "symbol": "etlManufacturingOrders",
+      "lines": "674-748"
+    },
+    "upstream-code.fetchassemblyorderdamage.046acc": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/src/app/mrp/assembly/assembly-queries.ts",
+      "commit": "b46934a",
+      "note": "AO damage: silver.assembly_order_damage joined to assembly_order_item on idassemblyitem; NULL item = pre-pick or 'not specific' damage.",
+      "symbol": "fetchAssemblyOrderDamage",
+      "lines": "709-750"
+    },
+    "upstream-code.fetchassemblyorderitems.f2113b": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/src/app/mrp/assembly/assembly-queries.ts",
+      "commit": "b46934a",
+      "note": "AO items: silver.assembly_order_items (idassem, idpack/idbulk/idfinproduct, qty_c, actualamount, qtybatch) joined to bronze assembly_order_item for qtydamage_c/totalqty_c; part_type Bulk/Pack/FP.",
+      "symbol": "fetchAssemblyOrderItems",
+      "lines": "656-705"
+    },
+    "upstream-code.fetchassemblyorders.9aa7f9": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/src/app/mrp/assembly/assembly-queries.ts",
+      "commit": "b46934a",
+      "note": "Portal AO list reads FM silver/bronze (gold MO joined only by mo_code for pick status): quantity = qtytotal (else boxes x pieces); qty_manufactured = SUM(status qty_manufactured), else yield_actual, else qtyacc_c, else totalprodqty_c; status_date from the status-specific date.",
+      "symbol": "fetchAssemblyOrders",
+      "lines": "177-285"
+    },
+    "upstream-code.manufacturingjob.7b6ba9": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "b46934a",
+      "note": "model ManufacturingJob @@map(\"app_manufacturing_job\"): unique code (job_code MJ-{yyyy}-{b36}), customerId -> Customer, salesOrderId, fulfillmentMode MAKE_TO_STOCK|MAKE_TO_SHIP.",
+      "symbol": "ManufacturingJob",
+      "lines": "2443-2466"
+    },
+    "upstream-code.manufacturingorder.42f88d": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "b46934a",
+      "note": "model ManufacturingOrder @@map(\"app_manufacturing_order\") IS the AO: unique code (mo_code) = FM nameamo_c or Portal-native MO-{base36}; quantity + uom, qtySample, qtyDamaged (FG units; good = produced - damaged), yieldExpected/yieldActual, manufacturingJobId, salesOrderLineId, customerId (no FK).",
+      "symbol": "ManufacturingOrder",
+      "lines": "2469-2568"
+    },
+    "upstream-code.portal-id-offset.887e71": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/src/lib/inventory/assembly-entries.ts",
+      "commit": "b46934a",
+      "note": "Portal writes FM bronze assembly_order_status / assembly_order_damage / production rows with ids >= PORTAL_ID_OFFSET (1e9); production is shared by AO and batch rows, discriminated by categorymo 'AO'|'BC'.",
+      "symbol": "PORTAL_ID_OFFSET",
+      "lines": "15-49"
+    },
+    "upstream-code.public-order-entry-item-batch.2cfd98": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "services/workbench-api/manifest/allowlist.json",
+      "commit": "b46934a",
+      "note": "Reporting API allowlist entry public.order_entry_item_batch: the cited columns are served.",
+      "symbol": "public.order_entry_item_batch"
+    },
+    "upstream-code.public-production.545c3f": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "services/workbench-api/manifest/allowlist.json",
+      "commit": "b46934a",
+      "note": "Reporting API allowlist entry public.production: the cited columns are served.",
+      "symbol": "public.production"
+    },
+    "upstream-code.route-ts.c15ac0": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/src/app/api/mrp/assembly/[id]/route.ts",
+      "commit": "b46934a",
+      "note": "POST link_oe_item_id maintains FM order_entry_item_assembly(idoeitem, idassembly); rejects when the OE line product differs from the AO's.",
+      "lines": "474-495"
+    },
+    "upstream-code.silver-batches.a4b3a1": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "scripts/migrations/20260410_enhance_batching_detail.sql",
+      "commit": "b46934a",
+      "note": "silver.batches: display_batch_number = COALESCE(namebatch_c, lotno_c, id); namebatch_c batch_name, statusqc, idmoreq mo_id, idbulk, qty planned, qtyactual actual, QC results (phtr->qc_ph, fragtr->qc_odour, viscotr, solidtr, apptexttr, sample*24).",
+      "symbol": "silver.batches",
+      "lines": "18-110"
+    },
+    "upstream-code.silver-finished-product-items.10d3c0": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "scripts/migrations/20260407_add_silver_finished_product_items.sql",
+      "commit": "b46934a",
+      "note": "silver.finished_product_items = FM finished_product_item: the finished product's component list (idfinprod, idpack, idbulk, qty per unit, qtybox per box, parttype).",
+      "symbol": "silver.finished_product_items"
+    },
+    "upstream-code.silver-manufacturing-orders.9d477f": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "scripts/migrations/20260403_enhance_silver_views.sql",
+      "commit": "b46934a",
+      "note": "silver.manufacturing_orders = FM assembly_order: nameamo_c->mo_code, lotno, qtytotal->quantity, units->uom, finalqty->yield_actual, qtymanufold->yield_expected, idbatch, idcustomerorderassembly, idfinprod.",
+      "symbol": "silver.manufacturing_orders",
+      "lines": "209-240"
+    },
+    "upstream-code.syncfplotonqc.74b2f9": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/src/lib/wms/fp-bridge.ts",
+      "commit": "b46934a",
+      "note": "FM statusqc On-Hold -> Released/Rejected drives finished-goods lot release (syncFpLotOnQc).",
+      "symbol": "syncFpLotOnQc",
+      "lines": "966-1100"
+    },
+    "workbench-code.link-contracts-json.1d543d": {
+      "kind": "workbench_code",
+      "path": "operating/link_contracts.json",
+      "commit": "0615a02",
+      "note": "Link contracts this file absorbs (FM AO children -> assembly_order)."
+    },
+    "context-pack.03-portal-md-4-6.test-batch": {
+      "kind": "context_pack",
+      "ref": "docs/reference/portal-code-map.md#4.6",
+      "note": "Portal acc0c53 (TASK-2351, portal/src/lib/mrp/test-receiving/batch-ids.ts:29-31, pinned in verify/upstream-pins.json): off the live customer site a batch that uses a staging test lot takes public.batch/batch_item ids >= 9000000 and a TEST-BC- number; FileMaker never issues either. silver.batches selects every public.batch row, so etlBatches copies them to app_batch_record."
+    }
+  }
+}

@@ -1,0 +1,1110 @@
+{
+  "schema": "plx-action-catalog/v1",
+  "version": 4,
+  "note": "The typed action catalog. Data only; operating/action_catalog.py validates it and runs the generic checks. Two kinds: workbench_internal actions execute now as one Workbench store write (no approval: they write only the Workbench's own case store, never a source system) and are verified by re-reading that store as the acting reader; owner_system_proposal actions are only ever proposed: operating/action_path.py registers them (this catalog is its registration hook), MC approval gates them, dispatch is refused for every real owning system unless the type declares a real_capability dispatched through a reviewed adapter (executor dispatch gated_adapter) and every gate of the action path holds (MC approval read back at dispatch, decided by someone other than the subject; the adapter registered; the explicit allow switch PLX_WORKBENCH_REAL_DISPATCH, off by default), and the owner's record is read back by a GET. Every parameter is typed and traced: to a cited value, a cited field, a citation, the case objective, argument provenance (the dispatched value, traced by operating/injection_guard.py), an existing case record, a declared set, the expected effect, or (internal actions only) the acting person's own statement, which is recorded as their words and is never a target value or a fact. Preconditions are one entry shape ({id, check, ...}). An owner-system proposal's preconditions include its capability guards (generic checks in operating/capability_guards.py, run by plx.case_propose, ActionPath.register (the one registration enforcement point: plx.act in propose mode and every other caller) and the playbook evaluator on the cited rows as they are now; this file is their one source, decision action-catalog-format option b). A person_confirms precondition (statement, optional evidence_link label) is a condition a person must confirm: plx.case_propose records it as a prose precondition on every proposal of the type, and the evaluator counts a proposal without it as a violation. Every owner-system proposal binds the relations it may write (target_relations: exact names, or fixture.* for the isolated owner) and the hosts that offer it (hosts: case_host, the production case host; test, a host built with test capabilities over a fixture session only). The test-host proposals owned by the isolated owner are the action path's FIXTURE_CAPABILITIES. A proposal type may be declared for recording and guards while its registration is refused (registration.refused) until the owner's write surface sets its fields. Every value an owner-system proposal writes declares its role (value type plus identifier kind, quantity role or money measure, or owner_declared: the role the owning record declares for the written field); a type with an undeclared one does not load, and registration fails closed: a written target field or a cited cell that declares no role, or one of another role, refuses (operating/action_catalog.py; only a fixture:// row whose test owner declares no roles at all is exempt; trace roles in operating/injection_guard.py, customer-PO columns by their identifiers.json carriers). One real owner is written: Mission Control itself (owner_system mc, executor dispatch mc_write_door, 2026-10-04 P6). Its mc_call names the exact MC tool and, per argument, its source (a traced parameter, host configuration or the intent: its idempotency key, its reference and its cited sources: each record the proposal cites, with its citation, and its text as the requester resolves it unchanged only where every member of the target bucket's audience reads that exact content through the Workbench's own citation read, else the reason it is withheld; the description within MC's 32,000-character limit, a cut stated) and its role; every argument declares one, or the type does not load. It is sent once through the MC client's write door only after a person's per-call approval of that exact call (operating/action_path.py prepare_call, approve_call, send_call) and verified only by an mc_get_task read-back that holds every read_back argument (read_back_call). A trace kind case_gap reads a parameter from a field (missing, why) of a gap recorded on the case. A real_capability (types with dispatch gated_adapter or mc_write_door, and only they) names the owner's existing capability: target system, adapter (a code constant per target), the write and its read-back (method, path, path keys, field mapping; MC: the tools), the entitlement the owner checks and the Workbench identity it needs, the idempotency key rule and write condition, the owner state the write needs (owner_state, optional: a field of the owner's record and the owner's own predicate on it, the field neither blank nor one of its locked values, checked on the adapter's pre-write read and by the twin), the risk tier, and its upstream source. On the owner's own pre-write read, a gated adapter sends nothing while any written field named by one of the type's no-overwrite guards (target_fields_empty, target_fields_hold_no_shape) holds a value, whatever its shape: those guards are checked on the cited row at registration and again, strictly, on the owner just before the write. Every mapping in this file is closed: a key the loader does not read does not load.",
+  "shapes": {
+    "po_like": {
+      "pattern": "^(?=.{3,40}$)(?=.*[0-9])(?!0+$)[A-Za-z0-9](?:[A-Za-z0-9_/.#-]*[A-Za-z0-9])?$",
+      "rule": "after trimming, 3..40 characters from A-Z a-z 0-9 - _ / . #, starting and ending with a letter or digit, at least one digit, not only zeros",
+      "upstream": "operating/customer_po_coverage.py PO_SHAPE_RULE (tests assert the two agree)"
+    }
+  },
+  "actions": {
+    "workbench.identity_link.record": {
+      "kind": "workbench_internal",
+      "summary": "Identity review decision: check two cited records against a declared link contract and record the outcome on the case. The contract decides (verified / contradicted / stored_by_text_join / lead); a text match stays a lead and nothing is merged.",
+      "parameters": {
+        "from_citation": {
+          "type": "citation",
+          "required": true,
+          "trace": {
+            "kind": "citation"
+          }
+        },
+        "to_citation": {
+          "type": "citation",
+          "required": true,
+          "trace": {
+            "kind": "citation"
+          }
+        },
+        "contract_id": {
+          "type": "identifier",
+          "required": true,
+          "trace": {
+            "kind": "declared_set",
+            "set_ref": "link_contracts",
+            "checked_by": "store"
+          }
+        }
+      },
+      "preconditions": [
+        {
+          "id": "case_open",
+          "check": "case_open"
+        },
+        {
+          "id": "two_different_records",
+          "check": "parameters_differ",
+          "parameters": [
+            "from_citation",
+            "to_citation"
+          ]
+        }
+      ],
+      "approval": {
+        "required": "none",
+        "why": "writes only the Workbench case store; the outcome is the contract's, not the caller's"
+      },
+      "executor": {
+        "kind": "workbench_store",
+        "store": "cases",
+        "operation": "link",
+        "arguments": {
+          "from_citation": "param:from_citation",
+          "to_citation": "param:to_citation",
+          "contract_id": "param:contract_id"
+        },
+        "recorded_when": {
+          "receipt": "recorded",
+          "equals": true
+        }
+      },
+      "read_back": {
+        "kind": "case_view",
+        "collection": "links",
+        "record": "receipt:link_id",
+        "expect": [
+          {
+            "path": "outcome",
+            "equals": "receipt:outcome"
+          },
+          {
+            "path": "contract.id",
+            "equals": "param:contract_id"
+          },
+          {
+            "path": "recorded_by",
+            "equals": "actor_label"
+          }
+        ]
+      },
+      "upstream": "operating/cases.py CaseStore.link, operating/case_links.py LinkContracts, operating/link_contracts.json"
+    },
+    "workbench.finding.correct": {
+      "kind": "workbench_internal",
+      "summary": "Correction record: supersede one recorded finding with the reason (and optionally the finding that replaces it). History is kept; nothing is deleted.",
+      "parameters": {
+        "finding_id": {
+          "type": "record_id",
+          "required": true,
+          "trace": {
+            "kind": "case_record",
+            "collection": "findings",
+            "state": "not_superseded"
+          }
+        },
+        "reason": {
+          "type": "text",
+          "required": true,
+          "trace": {
+            "kind": "actor_statement"
+          }
+        },
+        "replaced_by": {
+          "type": "record_id",
+          "required": false,
+          "trace": {
+            "kind": "case_record",
+            "collection": "findings"
+          }
+        }
+      },
+      "preconditions": [
+        {
+          "id": "case_open",
+          "check": "case_open"
+        },
+        {
+          "id": "finding_exists_and_current",
+          "check": "record_exists",
+          "parameter": "finding_id",
+          "collection": "findings",
+          "state": "not_superseded"
+        },
+        {
+          "id": "replacement_is_another_finding",
+          "check": "parameters_differ",
+          "parameters": [
+            "finding_id",
+            "replaced_by"
+          ]
+        }
+      ],
+      "approval": {
+        "required": "none",
+        "why": "writes only the Workbench case store"
+      },
+      "executor": {
+        "kind": "workbench_store",
+        "store": "cases",
+        "operation": "supersede",
+        "arguments": {
+          "finding_id": "param:finding_id",
+          "reason": "param:reason",
+          "replaced_by": "param:replaced_by"
+        }
+      },
+      "read_back": {
+        "kind": "case_view",
+        "collection": "findings",
+        "record": "receipt:finding_id",
+        "expect": [
+          {
+            "path": "superseded.reason",
+            "equals": "param:reason"
+          },
+          {
+            "path": "superseded.replaced_by",
+            "equals": "param:replaced_by"
+          },
+          {
+            "path": "superseded.by",
+            "equals": "actor_label"
+          }
+        ]
+      },
+      "upstream": "operating/cases.py CaseStore.supersede"
+    },
+    "workbench.follow_up.record": {
+      "kind": "workbench_internal",
+      "summary": "Follow-up task: record a visible unknown on the case with who can answer it and why it is open.",
+      "parameters": {
+        "missing": {
+          "type": "text",
+          "required": true,
+          "trace": {
+            "kind": "actor_statement"
+          }
+        },
+        "why": {
+          "type": "text",
+          "required": true,
+          "trace": {
+            "kind": "actor_statement"
+          }
+        },
+        "who_can_answer": {
+          "type": "text_list",
+          "required": true,
+          "max_items": 10,
+          "trace": {
+            "kind": "actor_statement"
+          }
+        },
+        "state": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "absent_in_source",
+            "inaccessible",
+            "stale",
+            "not_ingested",
+            "unknown"
+          ],
+          "trace": {
+            "kind": "declared_set"
+          }
+        },
+        "citations": {
+          "type": "citation_list",
+          "required": false,
+          "max_items": 20,
+          "trace": {
+            "kind": "citation"
+          }
+        },
+        "property": {
+          "type": "schema_names",
+          "required": false,
+          "trace": {
+            "kind": "declared_set",
+            "set_ref": "plx.schema: <Type>.<property>, <Type>.<link> or <Type>",
+            "checked_by": "gap_guard"
+          }
+        }
+      },
+      "preconditions": [
+        {
+          "id": "case_open",
+          "check": "case_open"
+        },
+        {
+          "id": "absence_shown",
+          "check": "gap_guard",
+          "parameters": {
+            "state": "state",
+            "property": "property",
+            "citations": "citations"
+          }
+        }
+      ],
+      "approval": {
+        "required": "none",
+        "why": "writes only the Workbench case store"
+      },
+      "executor": {
+        "kind": "workbench_store",
+        "store": "cases",
+        "operation": "gap",
+        "arguments": {
+          "missing": "param:missing",
+          "why": "param:why",
+          "who_can_answer": "param:who_can_answer",
+          "state": "param:state",
+          "citations": "param:citations",
+          "about_property": "param:property"
+        }
+      },
+      "read_back": {
+        "kind": "case_view",
+        "collection": "gaps",
+        "record": "receipt:gap_id",
+        "expect": [
+          {
+            "path": "missing",
+            "equals": "param:missing"
+          },
+          {
+            "path": "who_can_answer",
+            "equals": "param:who_can_answer"
+          },
+          {
+            "path": "state",
+            "equals": "param:state"
+          },
+          {
+            "path": "recorded_by",
+            "equals": "actor_label"
+          }
+        ]
+      },
+      "upstream": "operating/cases.py CaseStore.gap (GAP_STATES)"
+    },
+    "workbench.draft.record": {
+      "kind": "workbench_internal",
+      "summary": "Draft: a working note on the case, recorded as an interpretation with status unknown. It is never a fact and supports nothing.",
+      "parameters": {
+        "statement": {
+          "type": "text",
+          "required": true,
+          "trace": {
+            "kind": "actor_statement"
+          }
+        },
+        "citations": {
+          "type": "citation_list",
+          "required": false,
+          "max_items": 20,
+          "trace": {
+            "kind": "citation"
+          }
+        }
+      },
+      "preconditions": [
+        {
+          "id": "case_open",
+          "check": "case_open"
+        }
+      ],
+      "approval": {
+        "required": "none",
+        "why": "writes only the Workbench case store"
+      },
+      "executor": {
+        "kind": "workbench_store",
+        "store": "cases",
+        "operation": "finding",
+        "arguments": {
+          "statement": "param:statement",
+          "citations": "param:citations",
+          "kind": "literal:interpretation",
+          "status": "literal:unknown"
+        }
+      },
+      "read_back": {
+        "kind": "case_view",
+        "collection": "findings",
+        "record": "receipt:finding_id",
+        "expect": [
+          {
+            "path": "statement",
+            "equals": "param:statement"
+          },
+          {
+            "path": "kind",
+            "equals": "literal:interpretation"
+          },
+          {
+            "path": "status",
+            "equals": "literal:unknown"
+          },
+          {
+            "path": "recorded_by",
+            "equals": "actor_label"
+          }
+        ]
+      },
+      "upstream": "operating/cases.py CaseStore.finding"
+    },
+    "portal.sales_order.set_customer_po": {
+      "kind": "owner_system_proposal",
+      "summary": "Propose setting the customer PO on a Portal sales order from a value held in cited evidence. Proposal only: the Portal owns the write.",
+      "owner_system": "portal",
+      "target_relations": [
+        "public.app_sales_order"
+      ],
+      "hosts": [
+        "case_host"
+      ],
+      "parameters": {
+        "proposed_customer_po": {
+          "type": "string",
+          "role": "identifier:customer_po",
+          "required": true,
+          "trace": {
+            "kind": "cited_value",
+            "citation": "evidence_citation",
+            "field": "evidence_field"
+          }
+        },
+        "evidence_citation": {
+          "type": "citation",
+          "required": true,
+          "trace": {
+            "kind": "citation"
+          }
+        },
+        "evidence_field": {
+          "type": "field_path",
+          "required": true,
+          "trace": {
+            "kind": "cited_field",
+            "citation": "evidence_citation"
+          }
+        }
+      },
+      "effect": {
+        "value_parameter": "proposed_customer_po"
+      },
+      "preconditions": [
+        {
+          "id": "case_open",
+          "check": "case_open"
+        },
+        {
+          "id": "structured_preconditions_hold",
+          "check": "proposal_preconditions",
+          "checked_by": "operating/action_path.py register, prepare_gate, request_gate, dispatch"
+        },
+        {
+          "id": "effect_fields_writable",
+          "check": "effect_fields_within",
+          "fields": [
+            "po_reference",
+            "custom_fields.custPoCode"
+          ]
+        },
+        {
+          "id": "effect_sets_the_value",
+          "check": "effect_equals_payload_value",
+          "value": "proposed_customer_po"
+        },
+        {
+          "id": "value_is_po_shaped",
+          "check": "payload_value_matches_shape",
+          "value": "proposed_customer_po",
+          "shape": "po_like"
+        },
+        {
+          "id": "value_in_cited_evidence",
+          "check": "payload_value_in_cited_field",
+          "value": "proposed_customer_po",
+          "citation": "evidence_citation",
+          "field": "evidence_field"
+        },
+        {
+          "id": "evidence_value_is_not_its_own_number",
+          "check": "payload_value_not_in_cited_fields",
+          "value": "proposed_customer_po",
+          "citation": "evidence_citation",
+          "fields": [
+            "order_number",
+            "erpcode",
+            "ordnumber",
+            "custom_fields.fmOeNumber",
+            "custom_fields.renumberedTo"
+          ]
+        },
+        {
+          "id": "target_has_no_po",
+          "check": "target_fields_hold_no_shape",
+          "shape": "po_like",
+          "fields": [
+            "po_reference",
+            "custom_fields.custPoCode"
+          ],
+          "ignore_equal_to": [
+            "order_number",
+            "custom_fields.fmOeNumber",
+            "custom_fields.renumberedTo"
+          ]
+        },
+        {
+          "id": "value_is_not_the_order_number",
+          "check": "payload_value_not_in_target_fields",
+          "value": "proposed_customer_po",
+          "fields": [
+            "order_number",
+            "custom_fields.fmOeNumber",
+            "custom_fields.renumberedTo"
+          ]
+        },
+        {
+          "id": "person_confirms_evidence_belongs_to_order",
+          "check": "person_confirms",
+          "statement": "a person at PLX confirms the evidence belongs to this order",
+          "evidence_link": "asserted_by_proposer_not_verified"
+        }
+      ],
+      "approval": {
+        "required": "mc_gate",
+        "tool": "mc_request_approval",
+        "per_call_human_approval": true,
+        "decider": "a human MC admin/owner other than the requester, on the approver roster"
+      },
+      "executor": {
+        "kind": "owner_dispatch",
+        "dispatch": "gated_adapter",
+        "owner_interface": "PATCH /api/mrp/sales-orders/{id} {poReference} -> updateSalesOrderHeader (po_reference; until the first shipment or cancel)"
+      },
+      "read_back": {
+        "kind": "owner_record",
+        "relation": "public.app_sales_order",
+        "fields": "expected_effect.fields",
+        "values": "expected_effect.values"
+      },
+      "upstream": "plx-customer-portal service.ts:665 @ 5cb95e1302b3",
+      "real_capability": {
+        "target_system": "portal",
+        "adapter": "portal_http",
+        "write": {
+          "method": "PATCH",
+          "path": "/api/mrp/sales-orders/{id}",
+          "path_keys": {
+            "id": "id"
+          },
+          "fields": {
+            "po_reference": "poReference"
+          }
+        },
+        "read_back": {
+          "method": "GET",
+          "path": "/api/mrp/sales-orders/{id}",
+          "path_keys": {
+            "id": "id"
+          },
+          "fields": {
+            "po_reference": "poReference"
+          }
+        },
+        "entitlement": {
+          "owner_check": "Portal requireRole(\"STAFF\") on both PATCH and GET (a signed-in Portal session whose role reaches the STAFF floor, resolveRuntimeAccess)",
+          "workbench_identity": "none exists: a Portal service identity scoped to this one route, distinct from the MC key and from any person, is a go-live step"
+        },
+        "idempotency": {
+          "key": "intent",
+          "owner_support": "none",
+          "conditional": "read_before_write",
+          "rule": "the route takes no idempotency key and no compare-and-set: the action path sends the intent's key at most once (dispatch.started is committed first; an unknown answer is reconciled only by read-back, never re-sent) and the adapter re-reads the order by GET just before the PATCH and sends nothing unless, on that read, every structured precondition on a written field still holds, po_reference (named by the no-overwrite guard target_has_no_po) holds nothing and the order is in owner_state (not atomic: a save between that GET and the PATCH is not caught)"
+        },
+        "owner_state": {
+          "api_field": "status",
+          "edit_lock": {
+            "api_field": "editLock",
+            "flag": "editable",
+            "reason": "SHIPPED",
+            "refusal": "order_locked_shipped"
+          },
+          "locked": [
+            "PARTIALLY_SHIPPED",
+            "SHIPPED",
+            "COMPLETE",
+            "CANCELLED"
+          ],
+          "rule": "updateSalesOrderHeader refuses a poReference edit when canEditSalesOrderUntilShipped is false: a blank status (null or whitespace only), or one in EDIT_LOCKED, is HTTP 409 code ORDER_NOT_EDITABLE 'Order edits are locked after the first shipment or cancel'. The Workbench mirrors that predicate exactly, not a list of statuses: any other status is writable (DRAFT, CONFIRMED, Open, FM status text such as OPEN). The comparison is the Portal's: exact and case-sensitive on the status as stored; normalizeSalesOrderStatus maps only Open and READY, and neither lands in EDIT_LOCKED, so it never changes the answer. The Portal also locks the order once a shipment linked to it is SHIPPED or DELIVERED (any case; CANCELLED ignored) or a line has an allocation on such a shipment (getSalesOrderEditability over loadEditabilityForOrder), the same 409. Its GET reports that lock with the same function (editable false, editLock {reason: SHIPPED}), so the pre-write GET refuses it before any send as order_locked_shipped (edit_lock); an editLock absent, of another reason, or not null with editable true refuses as owner_state_refused:editLock=<reason|absent|unreadable>. A shipment made between that GET and the PATCH is the owner's 409, kept as a definite rejection",
+          "upstream": "plx-customer-portal@31a2623 portal/src/lib/sales-order/status.ts:8-12 (normalizeSalesOrderStatus), :20-33 (EDIT_LOCKED, canEditSalesOrderUntilShipped), byte-identical to the pinned eb964b99; portal/src/lib/sales-order/service.ts:620-630@eb964b99 (updateSalesOrderHeader); plx-customer-portal@5cb95e1 portal/src/lib/sales-order/editability.ts:42-67 (isShippedShipmentStatus, getSalesOrderEditability), :113-157 (loadEditabilityForOrder), called by service.ts@5cb95e1:634-641 (updateSalesOrderHeader) and the GET of portal/src/app/api/mrp/sales-orders/[id]/route.ts@5cb95e1:88-111 (editable, editLock); re-read at plx-customer-portal@38cd3f3: status.ts:8-33 byte-identical (999dac8 TASK-2396 only adds SO_TRANSITIONS moves into PARTIALLY_SHIPPED, SHIPPED and COMPLETE, which only the close-out evaluator writes and which locked already lists), editability.ts:45-70 and :116-160 byte-identical (f17cb54 TASK-2703 adds ORDER_LINES_RELEASED_ERROR for line edits only), updateSalesOrderHeader service.ts:663 (lock :696, poReference stored as sent :725) also takes releaseRequired, which this action never sends"
+        },
+        "owner_warnings": [
+          {
+            "id": "po_reused_by_customer",
+            "field": "po_reference",
+            "same": [
+              "customer_id"
+            ],
+            "skip": {
+              "field": "status",
+              "values": [
+                "CANCELLED"
+              ]
+            },
+            "normalize": "trim_collapse_upper",
+            "rule": "the Portal warns, never blocks, when the same customer already used this PO on another order that is not cancelled (PO compared trimmed, inner whitespace collapsed, upper case); ActionPath.register flags the same reuse on the intent and in the gate reason before approval",
+            "upstream": "plx-customer-portal@40f7802 portal/src/lib/orders/customer-po.ts (findCustomerPoReuse, salesOrderPoWarnings), portal/src/app/api/mrp/sales-orders/[id]/route.ts (poWarningsFor)"
+          }
+        ],
+        "risk_tier": "high",
+        "downstream": "the BC sales order externalDocumentNumber follows po_reference through the Portal outbox (serializers.ts); the Workbench never writes BC",
+        "upstream": "plx-customer-portal@790256c portal/src/app/api/mrp/sales-orders/[id]/route.ts:65-82 (GET), :84-200 (PATCH -> updateSalesOrderHeader), portal/src/lib/auth/api-auth.ts:99-124 (requireRole); re-read at 38cd3f3: GET :89-111, PATCH :114 (requireRole STAFF), PATCH also accepts releaseRequired (1e40b64 TASK-2400)"
+      }
+    },
+    "fixture.record.set_field": {
+      "kind": "owner_system_proposal",
+      "summary": "Set one field on a record of an isolated owner the Workbench runs itself (goal2_exec_owner.IsolatedOwnerSystem or the in-memory FixtureSystem). Never a PLX system.",
+      "owner_system": "fixture",
+      "target_relations": [
+        "fixture.*"
+      ],
+      "hosts": [
+        "test"
+      ],
+      "parameters": {
+        "field": {
+          "type": "field_path",
+          "required": true,
+          "trace": {
+            "kind": "effect",
+            "effect_key": "fields"
+          }
+        },
+        "value": {
+          "type": "scalar",
+          "role": "owner_declared",
+          "required": true,
+          "trace": {
+            "kind": "argument_provenance",
+            "checked_by": "operating/injection_guard.py check_registration (ActionPath.register, after this catalog): a typed cell of a cited structured record or a literal of the human-written case question"
+          }
+        }
+      },
+      "effect": {
+        "value_parameter": "value"
+      },
+      "preconditions": [
+        {
+          "id": "case_open",
+          "check": "case_open"
+        },
+        {
+          "id": "structured_preconditions_hold",
+          "check": "proposal_preconditions",
+          "checked_by": "operating/action_path.py register, prepare_gate, request_gate, dispatch"
+        }
+      ],
+      "approval": {
+        "required": "mc_gate",
+        "tool": "mc_request_approval",
+        "per_call_human_approval": true,
+        "decider": "a human MC admin/owner other than the requester, on the approver roster"
+      },
+      "executor": {
+        "kind": "owner_dispatch",
+        "dispatch": "isolated_owner_only",
+        "owner_interface": "operating/goal2_exec_owner.py dispatch(payload, idempotency_key)"
+      },
+      "read_back": {
+        "kind": "owner_record",
+        "relation": "expected_effect.relation",
+        "fields": "expected_effect.fields",
+        "values": "expected_effect.values"
+      },
+      "upstream": "operating/action_path.py FixtureDispatcher, operating/goal2_exec_owner.py"
+    },
+    "fixture.record.set_cited_value": {
+      "kind": "owner_system_proposal",
+      "summary": "Set one field on a record of an isolated owner the Workbench runs itself to a value read from a field of a cited record (goal2_exec_owner.IsolatedOwnerSystem or the in-memory FixtureSystem). Every parameter traces to cited evidence; the target record is cited by the expected effect. Never a PLX system.",
+      "owner_system": "fixture",
+      "target_relations": [
+        "fixture.*"
+      ],
+      "hosts": [
+        "test"
+      ],
+      "parameters": {
+        "field": {
+          "type": "field_path",
+          "required": true,
+          "trace": {
+            "kind": "effect",
+            "effect_key": "fields"
+          }
+        },
+        "value": {
+          "type": "scalar",
+          "role": "owner_declared",
+          "required": true,
+          "trace": {
+            "kind": "cited_value",
+            "citation": "evidence_citation",
+            "field": "evidence_field"
+          }
+        },
+        "evidence_citation": {
+          "type": "citation",
+          "required": true,
+          "trace": {
+            "kind": "citation"
+          }
+        },
+        "evidence_field": {
+          "type": "field_path",
+          "required": true,
+          "trace": {
+            "kind": "cited_field",
+            "citation": "evidence_citation"
+          }
+        }
+      },
+      "effect": {
+        "value_parameter": "value"
+      },
+      "preconditions": [
+        {
+          "id": "case_open",
+          "check": "case_open"
+        },
+        {
+          "id": "structured_preconditions_hold",
+          "check": "proposal_preconditions",
+          "checked_by": "operating/action_path.py register, prepare_gate, request_gate, dispatch"
+        }
+      ],
+      "approval": {
+        "required": "mc_gate",
+        "tool": "mc_request_approval",
+        "per_call_human_approval": true,
+        "decider": "a human MC admin/owner other than the requester, on the approver roster"
+      },
+      "executor": {
+        "kind": "owner_dispatch",
+        "dispatch": "isolated_owner_only",
+        "owner_interface": "operating/goal2_exec_owner.py dispatch(payload, idempotency_key)"
+      },
+      "read_back": {
+        "kind": "owner_record",
+        "relation": "expected_effect.relation",
+        "fields": "expected_effect.fields",
+        "values": "expected_effect.values"
+      },
+      "upstream": "operating/action_path.py FixtureDispatcher, operating/goal2_exec_owner.py"
+    },
+    "portal.assembly_order.set_header_quantities": {
+      "kind": "owner_system_proposal",
+      "summary": "Propose setting the AO header planned (qtytotal) and produced (finalqty) quantities from cited evidence. Recorded and guarded only: registration is refused until the Portal's write surface sets these fields.",
+      "owner_system": "portal",
+      "target_relations": [
+        "public.assembly_order"
+      ],
+      "hosts": [
+        "case_host"
+      ],
+      "registration": {
+        "refused": "owner_write_surface_does_not_set_these_fields",
+        "why": "the Portal's PATCH /api/mrp/assembly/[id] (plx-customer-portal@c3ffda3 portal/src/app/api/mrp/assembly/[id]/route.ts:115-143) writes totalprodqty_c/qtysample, not qtytotal/finalqty (decision action-catalog-format, also open 3)"
+      },
+      "parameters": {
+        "qtytotal": {
+          "type": "scalar",
+          "role": "owner_declared",
+          "required": false,
+          "trace": {
+            "kind": "argument_provenance",
+            "checked_by": "operating/injection_guard.py check_registration and the values_in_cited_evidence guard"
+          }
+        },
+        "finalqty": {
+          "type": "scalar",
+          "role": "owner_declared",
+          "required": false,
+          "trace": {
+            "kind": "argument_provenance",
+            "checked_by": "operating/injection_guard.py check_registration and the values_in_cited_evidence guard"
+          }
+        },
+        "evidence": {
+          "type": "evidence_map",
+          "required": true,
+          "trace": {
+            "kind": "cited_evidence",
+            "checked_by": "capability guard values_in_cited_evidence (payload_fields_in_cited_evidence)"
+          }
+        },
+        "assembly_order": {
+          "type": "string",
+          "required": false,
+          "trace": {
+            "kind": "effect",
+            "effect_key": "key"
+          }
+        }
+      },
+      "effect": {
+        "field_parameters": {
+          "qtytotal": "qtytotal",
+          "finalqty": "finalqty"
+        }
+      },
+      "preconditions": [
+        {
+          "id": "case_open",
+          "check": "case_open"
+        },
+        {
+          "id": "structured_preconditions_hold",
+          "check": "proposal_preconditions",
+          "checked_by": "operating/action_path.py register, prepare_gate, request_gate, dispatch"
+        },
+        {
+          "id": "effect_fields_writable",
+          "check": "effect_fields_within",
+          "fields": [
+            "qtytotal",
+            "finalqty"
+          ]
+        },
+        {
+          "id": "effect_targets_cited_ao",
+          "check": "effect_targets_cited_row"
+        },
+        {
+          "id": "target_quantities_empty",
+          "check": "target_fields_empty",
+          "fields": [
+            "qtytotal",
+            "finalqty"
+          ]
+        },
+        {
+          "id": "payload_carries_the_written_values",
+          "check": "effect_values_match_payload",
+          "numeric": [
+            "qtytotal",
+            "finalqty"
+          ]
+        },
+        {
+          "id": "values_in_cited_evidence",
+          "check": "payload_fields_in_cited_evidence",
+          "evidence": "evidence",
+          "numeric": [
+            "qtytotal",
+            "finalqty"
+          ],
+          "sources": {
+            "qtytotal": [
+              {
+                "relation": "silver.assembly_order_items",
+                "when": {
+                  "qty_per_batch": "1"
+                },
+                "join": {
+                  "field": "assembly_order_id",
+                  "target_field": "id"
+                },
+                "field": "quantity"
+              },
+              {
+                "relation": "public.app_manufacturing_order",
+                "join": {
+                  "field": "mo_code",
+                  "target_field": "nameamo_c"
+                },
+                "field": "quantity"
+              },
+              {
+                "relation": "public.app_manufacturing_order",
+                "join": {
+                  "field": "mo_code",
+                  "target_field": "nameamo_c"
+                },
+                "field": "size_pieces"
+              }
+            ],
+            "finalqty": [
+              {
+                "relation": "silver.assembly_order_items",
+                "when": {
+                  "qty_per_batch": "1"
+                },
+                "join": {
+                  "field": "assembly_order_id",
+                  "target_field": "id"
+                },
+                "field": "actual_amount"
+              }
+            ]
+          }
+        }
+      ],
+      "approval": {
+        "required": "mc_gate",
+        "tool": "mc_request_approval",
+        "per_call_human_approval": true,
+        "decider": "a human MC admin/owner other than the requester, on the approver roster"
+      },
+      "executor": {
+        "kind": "owner_dispatch",
+        "dispatch": "refused",
+        "refusal": "no_typed_write_surface",
+        "later_ask": "goal2-real-capability"
+      },
+      "read_back": {
+        "kind": "owner_record",
+        "relation": "public.assembly_order",
+        "fields": "expected_effect.fields",
+        "values": "expected_effect.values"
+      },
+      "evidence_note": "payload.evidence maps each written field to {citation, field}: planned (qtytotal) from the AO's one-per-unit component line quantity (qty_per_batch 1) or its Portal manufacturing order quantity / size_pieces; produced (finalqty) from that component line's actual_amount. The FM link-table qtymfg_c is not a source (ao_quantity_reconciliation v3). The signed packet itself (original://) is not machine-checked here: a person confirms it (a human precondition).",
+      "upstream": "Quality AO case (docs/reference/cases-and-artifacts.md section 3.4): the AO header qtytotal/finalqty are empty while the AO's one-per-unit component line and the signed packet hold the planned and produced figures; no Portal write capability exists (operating/action_path.py refuses every real target)"
+    },
+    "test.record.set_field": {
+      "kind": "owner_system_proposal",
+      "summary": "Test hosts only: exercises the generic proposal, read-back and action-path mechanics on mirrored rows. Never offered on the production case host; never dispatched (the action path's hard guard refuses every non-fixture target).",
+      "owner_system": "test",
+      "target_relations": [
+        "public.*",
+        "sage.*",
+        "silver.*"
+      ],
+      "hosts": [
+        "test"
+      ],
+      "parameters": {
+        "field": {
+          "type": "field_path",
+          "required": false,
+          "trace": {
+            "kind": "effect",
+            "effect_key": "fields"
+          }
+        },
+        "value": {
+          "type": "scalar",
+          "role": "owner_declared",
+          "required": false,
+          "trace": {
+            "kind": "argument_provenance",
+            "checked_by": "operating/injection_guard.py check_registration"
+          }
+        }
+      },
+      "effect": {
+        "value_parameter": "value"
+      },
+      "preconditions": [
+        {
+          "id": "case_open",
+          "check": "case_open"
+        },
+        {
+          "id": "structured_preconditions_hold",
+          "check": "proposal_preconditions",
+          "checked_by": "operating/action_path.py register, prepare_gate, request_gate, dispatch"
+        }
+      ],
+      "approval": {
+        "required": "mc_gate",
+        "tool": "mc_request_approval",
+        "per_call_human_approval": true,
+        "decider": "a human MC admin/owner other than the requester, on the approver roster"
+      },
+      "executor": {
+        "kind": "owner_dispatch",
+        "dispatch": "refused",
+        "refusal": "test_host_only",
+        "later_ask": "none: test host only"
+      },
+      "read_back": {
+        "kind": "owner_record",
+        "relation": "expected_effect.relation",
+        "fields": "expected_effect.fields",
+        "values": "expected_effect.values"
+      },
+      "upstream": "operating/tests (MCPServer(test_capabilities=True) over a fixture session)"
+    },
+    "mc.task.create_follow_up": {
+      "kind": "owner_system_proposal",
+      "summary": "Create one Mission Control follow-up task for a visible unknown recorded on the case (a case gap): its title is what is missing, its description why it is open and each record the proposal cites, with its citation, so approvers see the sources (the proposal cites every citation of the gap); a record's text only when every member of the bucket's audience may read it, else the reason it is withheld. Sent once through the MC client's write door (mc_create_task, the intent's idempotency key as MC's idempotencyKey) only after a person's per-call approval of the exact call, then read back with mc_get_task and verified only when the task holds what was sent.",
+      "owner_system": "mc",
+      "target_relations": [
+        "mc.task"
+      ],
+      "hosts": [
+        "case_host"
+      ],
+      "parameters": {
+        "gap_id": {
+          "type": "record_id",
+          "required": true,
+          "trace": {
+            "kind": "case_record",
+            "collection": "gaps"
+          }
+        },
+        "title": {
+          "type": "text",
+          "max_length": 500,
+          "role": "text",
+          "required": true,
+          "trace": {
+            "kind": "case_gap",
+            "record": "gap_id",
+            "field": "missing"
+          }
+        },
+        "description": {
+          "type": "text",
+          "role": "text",
+          "required": true,
+          "trace": {
+            "kind": "case_gap",
+            "record": "gap_id",
+            "field": "why"
+          }
+        },
+        "priority": {
+          "type": "enum",
+          "role": "enum",
+          "values": [
+            "urgent",
+            "high",
+            "medium",
+            "low"
+          ],
+          "required": true,
+          "trace": {
+            "kind": "declared_set"
+          }
+        }
+      },
+      "effect": {
+        "field_parameters": {
+          "title": "title",
+          "description": "description",
+          "priority": "priority"
+        }
+      },
+      "preconditions": [
+        {
+          "id": "case_open",
+          "check": "case_open"
+        },
+        {
+          "id": "gap_on_case",
+          "check": "record_exists",
+          "parameter": "gap_id",
+          "collection": "gaps"
+        }
+      ],
+      "approval": {
+        "required": "per_call_human_approval",
+        "tool": "mc_create_task",
+        "per_call_human_approval": true,
+        "approver": "a configured human call approver who is none of the intent's subjects (opener, proposal author, registrant), matched by email and Entra oid; never the MC operator"
+      },
+      "executor": {
+        "kind": "owner_dispatch",
+        "dispatch": "mc_write_door",
+        "owner_interface": "integrations/mc.py MissionControlMcpClient.call_write_tool (opted-in mc_create_task, McWriteAuthorization from the per-call approval, durable single-use ledger)"
+      },
+      "mc_call": {
+        "tool": "mc_create_task",
+        "arguments": {
+          "title": {
+            "from": [
+              "param:title"
+            ],
+            "role": "text",
+            "read_back": true
+          },
+          "description": {
+            "from": [
+              "param:description",
+              "intent:cited_sources",
+              "intent:reference"
+            ],
+            "role": "text",
+            "read_back": true
+          },
+          "priority": {
+            "from": [
+              "param:priority"
+            ],
+            "role": "enum",
+            "read_back": true
+          },
+          "bucket": {
+            "from": [
+              "host:mc_follow_up_bucket"
+            ],
+            "role": "text",
+            "read_back": true
+          },
+          "reporter": {
+            "from": [
+              "host:mc_operator"
+            ],
+            "role": "text",
+            "read_back": false
+          },
+          "idempotencyKey": {
+            "from": [
+              "intent:idempotency_key"
+            ],
+            "role": "text",
+            "read_back": false
+          }
+        }
+      },
+      "read_back": {
+        "kind": "mc_task",
+        "tool": "mc_get_task",
+        "fields": "mc_call arguments with read_back true"
+      },
+      "upstream": "PLX_MC @ 073f192: src/lib/mcp/create-http-server.ts:267-296 (mc_create_task input schema), src/lib/mcp/actions.ts:226-307 (actionCreateTask: reporter set from the operator, idempotent replay), src/lib/mcp/task-create-idempotency.ts:28-66 (key grammar, payload hash without reporter and key), src/lib/sync/state.ts:454-540 (createTask: title and description trimmed, bucket must exist), src/lib/mcp/read-actions.ts:89-114,197-202 (mc_get_task)",
+      "real_capability": {
+        "target_system": "mc",
+        "adapter": "mc_write_door",
+        "write": {
+          "tool": "mc_create_task"
+        },
+        "read_back": {
+          "tool": "mc_get_task"
+        },
+        "entitlement": {
+          "owner_check": "an MCP key whose principal holds task.create (PLX_MC MCP_TOOL_ALLOWLISTS) and a reporter on PLX_MC_ALLOWED_USERS",
+          "workbench_identity": "none issued: sp_mcp_workbench with task.read and task.create and its MC_MCP_API_KEY; the shared sp_mcp_cursor key is never borrowed for writes"
+        },
+        "idempotency": {
+          "key": "intent",
+          "owner_support": "native",
+          "header": "idempotencyKey",
+          "conditional": "none",
+          "rule": "the intent's key is MC's idempotencyKey argument: MC returns the original task for a repeated key (PLX_MC src/lib/mcp/task-create-idempotency.ts), and the action path sends it once (send_call)"
+        },
+        "risk_tier": "medium",
+        "upstream": "PLX_MC@073f192 src/lib/mcp/create-http-server.ts:267-296, src/lib/mcp/actions.ts:226-307, src/lib/mcp/task-create-idempotency.ts:28-66, src/lib/mcp/read-actions.ts:89-114"
+      }
+    }
+  }
+}

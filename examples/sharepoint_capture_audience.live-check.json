@@ -1,0 +1,11 @@
+{
+ "schema": "plx-live-source-audience/v1",
+ "tenant": "plx",
+ "note": "EXAMPLE ONLY, not a PLX-confirmed grant: the SharePoint capture service principal of the capture.sharepoint live check. It holds every SharePoint key because the AGENTS site's drive id is resolved by name at run time and cannot be named here; what is read is bounded by the capture scope (examples/sharepoint_capture_scope.live-check.json: two folders), never by this grant. Default deny for everything else (no mailbox, no BC company). The withheld principal of the check has no grant, so reading the capture store as it must return 0 roots, 0 rows and 0 counts.",
+ "default_classification": "confidential",
+ "audiences": {
+  "sharepoint:*": [
+   "svc:sharepoint-capture"
+  ]
+ }
+}

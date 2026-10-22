@@ -1,0 +1,1097 @@
+{
+ "$schema": "../_format.schema.json",
+ "format": "plx-ontology-domain/v1",
+ "domain": "quotes",
+ "origin": "curated",
+ "description": "Portal quotes and their offer lines. Quotes are Portal-native (gold_native_staging); money is Decimal text with the tax basis of lib/quote/totals.ts; the soft stdCost declares unknown currency and denominator. Links: customer, the sales order an accepted quote converted to, lines and the picked product. BC salesQuotes are not bound: the GET-only BC grammar does not read that entity set.",
+ "upstream_pins": {
+  "plx-customer-portal": "790256ca43"
+ },
+ "object_types": [
+  {
+   "id": "Quote",
+   "description": "A Portal sales quote (QUO-<year>-NNNN) to one customer, optionally linked to a product-development project by its key. Quotes exist only in the Portal (no FM, Sage or BC writer); an ACCEPTED quote converts to one sales order.",
+   "interfaces": [
+    "Document"
+   ],
+   "anchor": true,
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "portal.app_quote",
+     "source": "portal_api",
+     "relation": "public.app_quote",
+     "key": [
+      "id"
+     ],
+     "lineage": {
+      "default": "gold_native_staging"
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "allowlist.public.app_quote"
+      },
+      {
+       "kind": "ref",
+       "id": "prisma.quote"
+      },
+      {
+       "kind": "ref",
+       "id": "context.portal.3.12"
+      }
+     ],
+     "note": "Portal-native rows of the served staging replica: gold_native_staging, never authority without a human confirmation."
+    }
+   ],
+   "properties": [
+    {
+     "name": "quote_number",
+     "value_type": "identifier",
+     "identifier_kind": "quote_number",
+     "description": "The quote's own number QUO-<year>-NNNN (unique).",
+     "sources": [
+      {
+       "binding": "portal.app_quote",
+       "path": "quote_number",
+       "parser": "identifier"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.quote_number"
+      }
+     ]
+    },
+    {
+     "name": "status",
+     "value_type": "enum",
+     "enum_values": [
+      "DRAFT",
+      "SENT",
+      "NEGOTIATION",
+      "ACCEPTED",
+      "REJECTED",
+      "EXPIRED"
+     ],
+     "sources": [
+      {
+       "binding": "portal.app_quote",
+       "path": "status",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.quote_status"
+      },
+      {
+       "kind": "ref",
+       "id": "portal.quote_status_transitions"
+      }
+     ]
+    },
+    {
+     "name": "project_key",
+     "value_type": "identifier",
+     "identifier_kind": "project_key",
+     "identifies": "reference",
+     "description": "The linked project's key (column project_id; no FK, any string accepted). Mutable in place while DRAFT/SENT/NEGOTIATION, with no history: the lines may be priced for an earlier project.",
+     "sources": [
+      {
+       "binding": "portal.app_quote",
+       "path": "project_id",
+       "parser": "identifier"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.quote"
+      },
+      {
+       "kind": "ref",
+       "id": "context.portal.3.12"
+      }
+     ]
+    },
+    {
+     "name": "issue_date",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "portal.app_quote",
+       "path": "issue_date",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.quote"
+      }
+     ]
+    },
+    {
+     "name": "valid_until",
+     "value_type": "timestamp",
+     "description": "Offer expiry; null means none stated. Status EXPIRED is set by a person, not by this date.",
+     "sources": [
+      {
+       "binding": "portal.app_quote",
+       "path": "valid_until",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.quote"
+      }
+     ]
+    },
+    {
+     "name": "accepted_at",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "portal.app_quote",
+       "path": "accepted_at",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.quote"
+      }
+     ]
+    },
+    {
+     "name": "rejected_at",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "portal.app_quote",
+       "path": "rejected_at",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.quote"
+      }
+     ]
+    },
+    {
+     "name": "rejection_reason",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "portal.app_quote",
+       "path": "rejection_reason",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.quote"
+      }
+     ]
+    },
+    {
+     "name": "currency",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "portal.app_quote",
+       "path": "currency",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.quote"
+      }
+     ]
+    },
+    {
+     "name": "subtotal",
+     "value_type": "money",
+     "currency_from": "currency",
+     "money_measure": "amount",
+     "markings": [
+      "finance"
+     ],
+     "description": "round2 of the sum of line totals, before tax.",
+     "sources": [
+      {
+       "binding": "portal.app_quote",
+       "path": "subtotal",
+       "parser": "decimal_text",
+       "tax_basis": "excl_tax"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.quote_totals"
+      },
+      {
+       "kind": "ref",
+       "id": "context.portal.4.2"
+      }
+     ]
+    },
+    {
+     "name": "tax_amount",
+     "value_type": "money",
+     "currency_from": "currency",
+     "money_measure": "amount",
+     "markings": [
+      "finance"
+     ],
+     "sources": [
+      {
+       "binding": "portal.app_quote",
+       "path": "tax_amount",
+       "parser": "decimal_text",
+       "tax_basis": "tax_only"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.quote_totals"
+      }
+     ]
+    },
+    {
+     "name": "total_amount",
+     "value_type": "money",
+     "currency_from": "currency",
+     "money_measure": "amount",
+     "markings": [
+      "finance"
+     ],
+     "description": "round2(subtotal + tax).",
+     "sources": [
+      {
+       "binding": "portal.app_quote",
+       "path": "total_amount",
+       "parser": "decimal_text",
+       "tax_basis": "incl_tax"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.quote_totals"
+      }
+     ]
+    },
+    {
+     "name": "converted_sales_order_number",
+     "value_type": "identifier",
+     "identifier_kind": "so_number",
+     "identifies": "reference",
+     "description": "The number of the sales order this quote converted to, as stamped at conversion (the order may be renumbered to its BC number later).",
+     "sources": [
+      {
+       "binding": "portal.app_quote",
+       "path": "custom_fields.convertedSalesOrderNumber",
+       "parser": "identifier"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.quote_convert"
+      },
+      {
+       "kind": "ref",
+       "id": "portal.quote_custom_fields"
+      }
+     ]
+    },
+    {
+     "name": "notes",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "portal.app_quote",
+       "path": "notes",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.quote"
+      }
+     ]
+    },
+    {
+     "name": "terms",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "portal.app_quote",
+       "path": "terms",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.quote"
+      }
+     ]
+    }
+   ],
+   "identity_keys": [
+    {
+     "name": "quote_number",
+     "properties": [
+      "quote_number"
+     ],
+     "identifier_kind": "quote_number",
+     "tier": "verified",
+     "unique": true,
+     "scope": "within_binding",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.quote"
+      }
+     ]
+    }
+   ],
+   "display": [
+    "quote_number"
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "prisma.quote"
+    },
+    {
+     "kind": "ref",
+     "id": "context.portal.3.12"
+    }
+   ]
+  },
+  {
+   "id": "QuoteLine",
+   "description": "One offer line of a quote: description, quantity in a free-text uom, price and line total in the quote's currency. The product is a soft reference (customFields.productId / fpCode); there is no Product FK.",
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "portal.app_quote_line",
+     "source": "portal_api",
+     "relation": "public.app_quote_line",
+     "key": [
+      "id"
+     ],
+     "lineage": {
+      "default": "gold_native_staging",
+      "inherit": "QuoteLine.line_of"
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "allowlist.public.app_quote_line"
+      },
+      {
+       "kind": "ref",
+       "id": "prisma.quote_line"
+      }
+     ],
+     "note": "Lines inherit their quote's lineage (QuoteLine.line_of). A PATCH with lines deletes and recreates every line, so line ids are not stable across edits."
+    }
+   ],
+   "properties": [
+    {
+     "name": "description",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "portal.app_quote_line",
+       "path": "description",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.quote_line"
+      }
+     ]
+    },
+    {
+     "name": "product_name",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "portal.app_quote_line",
+       "path": "product_name",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.quote_line"
+      }
+     ]
+    },
+    {
+     "name": "fp_code",
+     "value_type": "identifier",
+     "identifier_kind": "item_code",
+     "identifies": "reference",
+     "description": "The finished-product code the line was picked for (soft field).",
+     "sources": [
+      {
+       "binding": "portal.app_quote_line",
+       "path": "custom_fields.fpCode",
+       "parser": "identifier"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.quote_custom_fields"
+      }
+     ]
+    },
+    {
+     "name": "quantity",
+     "value_type": "decimal",
+     "description": "Quoted quantity in the line's uom. No quantity role: it is an offer, not an ordered quantity until the quote converts.",
+     "sources": [
+      {
+       "binding": "portal.app_quote_line",
+       "path": "quantity",
+       "parser": "decimal_text",
+       "unit_from": "uom"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.quote_line"
+      }
+     ]
+    },
+    {
+     "name": "uom",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "portal.app_quote_line",
+       "path": "uom",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.quote_line"
+      }
+     ]
+    },
+    {
+     "name": "unit_price",
+     "value_type": "money",
+     "money_measure": "unit_price",
+     "markings": [
+      "finance"
+     ],
+     "sources": [
+      {
+       "binding": "portal.app_quote_line",
+       "path": "unit_price",
+       "parser": "decimal_text",
+       "currency_from": {
+        "via_link": "QuoteLine.line_of",
+        "path": "currency"
+       },
+       "tax_basis": "excl_tax",
+       "per_unit_from": "uom"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.quote_totals"
+      }
+     ]
+    },
+    {
+     "name": "line_total",
+     "value_type": "money",
+     "money_measure": "amount",
+     "markings": [
+      "finance"
+     ],
+     "description": "round2(unit_price x quantity), before tax.",
+     "sources": [
+      {
+       "binding": "portal.app_quote_line",
+       "path": "total_price",
+       "parser": "decimal_text",
+       "currency_from": {
+        "via_link": "QuoteLine.line_of",
+        "path": "currency"
+       },
+       "tax_basis": "excl_tax"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.quote_totals"
+      }
+     ]
+    },
+    {
+     "name": "tooling_cost",
+     "value_type": "money",
+     "money_measure": "amount",
+     "markings": [
+      "finance"
+     ],
+     "description": "One-off tooling charge; not part of the line total, and no writer states its tax basis.",
+     "sources": [
+      {
+       "binding": "portal.app_quote_line",
+       "path": "tooling_cost",
+       "parser": "decimal_text",
+       "currency_from": {
+        "via_link": "QuoteLine.line_of",
+        "path": "currency"
+       },
+       "tax_basis": "unknown"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.quote_line"
+      }
+     ]
+    },
+    {
+     "name": "std_cost",
+     "value_type": "money",
+     "money_measure": "unit_price",
+     "markings": [
+      "finance"
+     ],
+     "description": "Frozen standard cost the price was derived from (soft field, no source tag).",
+     "sources": [
+      {
+       "binding": "portal.app_quote_line",
+       "path": "custom_fields.stdCost",
+       "parser": "decimal_text",
+       "tax_basis": "unknown",
+       "currency_unknown": {
+        "reason": "stdCost is a soft JSON number with no currency field (portal-code-map.md 3.12).",
+        "evidence": [
+         {
+          "kind": "ref",
+          "id": "context.portal.3.12"
+         }
+        ]
+       },
+       "per_unit_unknown": {
+        "reason": "No writer states the unit the cost is per; the engine, the matrix fallback, a Theoretical FG seed and a manual edit are indistinguishable.",
+        "evidence": [
+         {
+          "kind": "ref",
+          "id": "context.portal.3.12"
+         }
+        ]
+       }
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.quote_custom_fields"
+      },
+      {
+       "kind": "ref",
+       "id": "context.portal.3.12"
+      }
+     ]
+    },
+    {
+     "name": "fill_weight",
+     "value_type": "decimal",
+     "description": "Grams per unit (Prisma comment).",
+     "sources": [
+      {
+       "binding": "portal.app_quote_line",
+       "path": "fill_weight",
+       "parser": "decimal_text",
+       "unit": "g"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.quote_line"
+      }
+     ]
+    },
+    {
+     "name": "annual_volume",
+     "value_type": "decimal",
+     "sources": [
+      {
+       "binding": "portal.app_quote_line",
+       "path": "annual_volume",
+       "parser": "decimal_text",
+       "unit_unknown": {
+        "reason": "Expected annual volume; no writer states its unit.",
+        "evidence": [
+         {
+          "kind": "ref",
+          "id": "prisma.quote_line"
+         }
+        ]
+       }
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.quote_line"
+      }
+     ]
+    },
+    {
+     "name": "notes",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "portal.app_quote_line",
+       "path": "notes",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.quote_line"
+      }
+     ]
+    }
+   ],
+   "display": [
+    "description"
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "prisma.quote_line"
+    },
+    {
+     "kind": "ref",
+     "id": "context.portal.3.12"
+    }
+   ]
+  }
+ ],
+ "link_types": [
+  {
+   "id": "Quote.for_customer",
+   "from": "Quote",
+   "to": "Customer",
+   "name": "for_customer",
+   "reverse_name": "quotes",
+   "cardinality": "N:1",
+   "description": "The customer the quote is addressed to (app_quote.customer_id FK).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "portal.app_quote",
+     "to_binding": "portal.app_customer",
+     "pairs": [
+      {
+       "from": "customer_id",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.quote"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "Quote.converted_to",
+   "from": "Quote",
+   "to": "SalesOrder",
+   "name": "converted_to",
+   "reverse_name": "converted_from_quote",
+   "cardinality": "1:1",
+   "description": "The sales order an ACCEPTED quote was converted to (customFields.convertedSalesOrderId, stamped in the conversion transaction).",
+   "bindings": [
+    {
+     "kind": "json_path",
+     "tier_ceiling": "verified",
+     "from_binding": "portal.app_quote",
+     "to_binding": "portal.app_sales_order",
+     "pairs": [
+      {
+       "from": "custom_fields.convertedSalesOrderId",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.quote_convert"
+      }
+     ],
+     "link_contract": "portal-quote-to-sales-order-by-converted-id"
+    }
+   ]
+  },
+  {
+   "id": "SalesOrder.created_from_quote",
+   "from": "SalesOrder",
+   "to": "Quote",
+   "name": "created_from_quote",
+   "reverse_name": "source_quote_of",
+   "cardinality": "N:1",
+   "description": "The Portal quote a sales order was created from (customFields.sourceQuoteId, stamped by convertAcceptedQuote when it creates the order). The order-side half of Quote.converted_to: either side alone links the pair.",
+   "bindings": [
+    {
+     "kind": "json_path",
+     "tier_ceiling": "verified",
+     "from_binding": "portal.app_sales_order",
+     "to_binding": "portal.app_quote",
+     "pairs": [
+      {
+       "from": "custom_fields.sourceQuoteId",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.quote_convert"
+      }
+     ],
+     "link_contract": "portal-sales-order-to-quote-by-source-id"
+    }
+   ]
+  },
+  {
+   "id": "QuoteLine.line_of",
+   "from": "QuoteLine",
+   "to": "Quote",
+   "name": "line_of",
+   "reverse_name": "lines",
+   "cardinality": "N:1",
+   "description": "A line belongs to its quote.",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "portal.app_quote_line",
+     "to_binding": "portal.app_quote",
+     "pairs": [
+      {
+       "from": "quote_id",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.quote_line"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "QuoteLine.for_item",
+   "from": "QuoteLine",
+   "to": "Product",
+   "name": "for_item",
+   "reverse_name": "quote_lines",
+   "cardinality": "N:1",
+   "description": "The gold product the line was picked for (customFields.productId; the only line field that crosses to BC on acceptance).",
+   "bindings": [
+    {
+     "kind": "json_path",
+     "tier_ceiling": "verified",
+     "from_binding": "portal.app_quote_line",
+     "to_binding": "portal.app_product",
+     "pairs": [
+      {
+       "from": "custom_fields.productId",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.quote_custom_fields"
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "event_types": [
+  {
+   "id": "Quote.issued",
+   "object_type": "Quote",
+   "description": "Quote issue date.",
+   "time_basis": "source_business_date",
+   "time": {
+    "binding": "portal.app_quote",
+    "path": "issue_date",
+    "parser": "iso_timestamp"
+   },
+   "qualifiers": [
+    {
+     "qualifier": "quote",
+     "object_type": "Quote",
+     "via": "self"
+    },
+    {
+     "qualifier": "customer",
+     "object_type": "Customer",
+     "via": "Quote.for_customer"
+    }
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "prisma.quote"
+    }
+   ]
+  },
+  {
+   "id": "Quote.expires",
+   "object_type": "Quote",
+   "description": "End of the offer's validity (valid_until).",
+   "time_basis": "planned",
+   "time": {
+    "binding": "portal.app_quote",
+    "path": "valid_until",
+    "parser": "iso_timestamp"
+   },
+   "qualifiers": [
+    {
+     "qualifier": "quote",
+     "object_type": "Quote",
+     "via": "self"
+    },
+    {
+     "qualifier": "customer",
+     "object_type": "Customer",
+     "via": "Quote.for_customer"
+    }
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "prisma.quote"
+    }
+   ]
+  },
+  {
+   "id": "Quote.accepted",
+   "object_type": "Quote",
+   "description": "Quote accepted.",
+   "time_basis": "source_recorded",
+   "time": {
+    "binding": "portal.app_quote",
+    "path": "accepted_at",
+    "parser": "iso_timestamp"
+   },
+   "qualifiers": [
+    {
+     "qualifier": "quote",
+     "object_type": "Quote",
+     "via": "self"
+    },
+    {
+     "qualifier": "customer",
+     "object_type": "Customer",
+     "via": "Quote.for_customer"
+    }
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "prisma.quote"
+    },
+    {
+     "kind": "ref",
+     "id": "portal.quote_status_transitions"
+    }
+   ]
+  },
+  {
+   "id": "Quote.rejected",
+   "object_type": "Quote",
+   "description": "Quote rejected.",
+   "time_basis": "source_recorded",
+   "time": {
+    "binding": "portal.app_quote",
+    "path": "rejected_at",
+    "parser": "iso_timestamp"
+   },
+   "qualifiers": [
+    {
+     "qualifier": "quote",
+     "object_type": "Quote",
+     "via": "self"
+    },
+    {
+     "qualifier": "customer",
+     "object_type": "Customer",
+     "via": "Quote.for_customer"
+    }
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "prisma.quote"
+    },
+    {
+     "kind": "ref",
+     "id": "portal.quote_status_transitions"
+    }
+   ]
+  }
+ ],
+ "evidence_catalog": {
+  "allowlist.public.app_quote": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "services/workbench-api/manifest/allowlist.json",
+   "commit": "790256ca43",
+   "note": "Reporting API allowlist entry public.app_quote: every cited column is served.",
+   "symbol": "public.app_quote"
+  },
+  "allowlist.public.app_quote_line": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "services/workbench-api/manifest/allowlist.json",
+   "commit": "790256ca43",
+   "note": "Reporting API allowlist entry public.app_quote_line: every cited column is served. margin_percent and app_quote_volume are NOT served.",
+   "symbol": "public.app_quote_line"
+  },
+  "prisma.quote": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/prisma/schema.prisma",
+   "commit": "790256ca43",
+   "note": "Quote -> app_quote: unique quoteNumber, customerId FK to Customer, projectId a plain string (the project KEY, no FK), status QuoteStatus, Float subtotal/taxAmount/totalAmount, currency default CAD, issueDate/validUntil/acceptedAt/rejectedAt, customFields Json.",
+   "symbol": "Quote",
+   "lines": "5257-5290"
+  },
+  "prisma.quote_status": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/prisma/schema.prisma",
+   "commit": "790256ca43",
+   "note": "enum QuoteStatus: DRAFT, SENT, NEGOTIATION, ACCEPTED, REJECTED, EXPIRED.",
+   "symbol": "QuoteStatus",
+   "lines": "677-684"
+  },
+  "prisma.quote_line": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/prisma/schema.prisma",
+   "commit": "790256ca43",
+   "note": "QuoteLine -> app_quote_line: quoteId FK (cascade), description, productName, Float quantity, free-string uom, Float unitPrice/totalPrice, fillWeight (grams per unit), annualVolume, toolingCost, quoteVolumeId, customFields Json; no Product FK.",
+   "symbol": "QuoteLine",
+   "lines": "5319-5352"
+  },
+  "portal.quote_number": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/src/lib/quote/service.ts",
+   "commit": "790256ca43",
+   "note": "generateQuoteNumber: QUO-<year>-NNNN (MAX+1 over existing numbers, no lock, no environment prefix).",
+   "symbol": "generateQuoteNumber",
+   "lines": "123-134"
+  },
+  "portal.quote_totals": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/src/lib/quote/totals.ts",
+   "commit": "790256ca43",
+   "note": "unitPrice = round2(stdCost / (1 - margin)) or the entered price; lineTotal = round2(price x qty); subtotal = round2(sum of line totals); tax = round2(subtotal x rate); total = round2(subtotal + tax). Line money is before tax, the header total includes it.",
+   "symbol": "computeQuoteTotals",
+   "lines": "1-60"
+  },
+  "portal.quote_status_transitions": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/src/lib/quote/status.ts",
+   "commit": "790256ca43",
+   "note": "QUOTE_TRANSITIONS: DRAFT->SENT|REJECTED; SENT->NEGOTIATION|ACCEPTED|REJECTED|EXPIRED; NEGOTIATION->SENT|ACCEPTED|REJECTED|EXPIRED; ACCEPTED final; REJECTED/EXPIRED->DRAFT.",
+   "symbol": "QUOTE_TRANSITIONS",
+   "lines": "7-14"
+  },
+  "portal.quote_custom_fields": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/src/lib/quote/custom-fields.ts",
+   "commit": "790256ca43",
+   "note": "readQuoteLineCustomFields reads marginPercent, stdCost, fpCode, productId; readQuoteCustomFields reads convertedSalesOrderId/Number, convertedAt, projectName, accountManager, envelope and margin-ladder fields.",
+   "symbol": "readQuoteCustomFields",
+   "lines": "35-79"
+  },
+  "portal.quote_convert": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/src/lib/sales-order/convert.ts",
+   "commit": "790256ca43",
+   "note": "convertAcceptedQuote locks the ACCEPTED quote FOR UPDATE, creates the sales order (customFields.sourceQuoteId/Number) and stamps the quote's customFields.convertedSalesOrderId/Number/convertedAt in the same transaction.",
+   "symbol": "stampQuoteConverted",
+   "lines": "104-176"
+  },
+  "context.portal.3.12": {
+   "kind": "context_pack",
+   "ref": "docs/reference/portal-code-map.md#3.12",
+   "note": "Quote/QuoteLine, mutable projectId (TASK-2182), stdCost is a soft JSON field with no currency, cost unit or source tag; matrix fallback (TASK-2175)."
+  },
+  "context.portal.4.2": {
+   "kind": "context_pack",
+   "ref": "docs/reference/portal-code-map.md#4.2",
+   "note": "Quote totals mirror lib/quote/totals.ts."
+  }
+ }
+}

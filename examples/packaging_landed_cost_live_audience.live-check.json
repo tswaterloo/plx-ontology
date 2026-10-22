@@ -1,0 +1,12 @@
+{
+ "schema": "plx-live-source-audience/v1",
+ "tenant": "plx",
+ "note": "EXAMPLE ONLY, not a PLX-confirmed grant: the host capture principal and the operations investigator of the case.packaging_landed_cost live check. Every SharePoint key, because the AGENTS site's drive id is resolved by name at run time and cannot be named here; what is read is bounded by the capture scope (examples/sharepoint_capture_scope.containers.live-check.json: the '/Ontology UseCases' folder), never by this grant. Default deny for everything else (no mailbox, no BC company).",
+ "default_classification": "confidential",
+ "audiences": {
+  "sharepoint:*": [
+   "staff:operations",
+   "svc:workbench-host"
+  ]
+ }
+}

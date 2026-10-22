@@ -1,0 +1,214 @@
+{
+ "id": "process.impact_chain",
+ "description": "Impact chain: over live captures the L7 probe (scripts.ontology_projection_probe --build-only) builds or reuses the session projection; then, offline and with no client, scripts.impact_chain_probe runs operating.impact_chain.scan as the served host's capture principal: recorded links only (PO line, item twins, FileMaker assembly component and order, allocation or order line, customer order) among records its policy grants, each PO's lateness asked of plx.process po_delivery_window, order values through plx.object; then the stored impact_chain plan (F16) on up to 3 sample POs, every answer validated against the tool contracts. Recorded: late POs considered, chains found, orders at risk, orders with a value and the currencies of the value at risk (amounts printed, never recorded), the share of chains broken by a missing link and the missing links by count, and up to 3 sample chains as link type, tier, from and to type and relation, and whether the link is cited (never a key, identifier, value or l1 handle). Also recorded: missing_links, the links that stop most POs, each typed (link name, POs it stops, stage, link types, the relations the schema binds them to, and the blocked_upstream parts of the build covering one of them; the source text that would hold it is printed, not recorded); when no chain is found, no_chain keyed by each missing link, so the failure names the link (json_absent no_chain.<link> present), never a silent 0. Lead time 0: days at risk is a lower bound, no assembly lead time is recorded (days_at_risk_basis). Pass = no contract failure, no process or investigate error, budget held, at least one late PO considered, one chain found and one order at risk, and no no_chain. Live-unverified until the live check records a result.",
+ "source": "portal-workbench-api+business-central",
+ "cadence": "daily",
+ "tier": "deterministic_tools",
+ "command": [
+  "python3",
+  "-m",
+  "scripts.impact_chain_probe",
+  "--db",
+  "{session_state}/mirror.sqlite",
+  "--store",
+  "{tmp}/ontology.sqlite",
+  "--session-projection",
+  "{session_state}/projection",
+  "--budget-seconds",
+  "2600",
+  "--impact-budget-seconds",
+  "900",
+  "--workers",
+  "3",
+  "--scan",
+  "500",
+  "--live-audience",
+  "examples/projection_probe_audience.live-check.json",
+  "--bc-capture",
+  "--previous-report={daily_report}"
+ ],
+ "timeout_seconds": 4200,
+ "requires_env": [
+  "BC_TENANT_ID",
+  "BC_CLIENT_ID",
+  "BC_CLIENT_SECRET",
+  "BC_ENVIRONMENT"
+ ],
+ "optional_env": [
+  "PLX_WORKBENCH_API_URL",
+  "PLX_WORKBENCH_API_KEY"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "late_pos_considered",
+   "chains_found",
+   "chains_broken",
+   "broken_by_reason",
+   "top_missing_links",
+   "orders_at_risk",
+   "orders_with_value",
+   "value_at_risk",
+   "samples",
+   "headline",
+   "sources",
+   "blocked_upstream",
+   "missing_links",
+   "days_at_risk_basis"
+  ],
+  "json_equals": {
+   "contract_failures": 0,
+   "process_errors": 0,
+   "investigate_errors": 0,
+   "budget_exhausted": false,
+   "bc_capture.evidence_label": "live-read",
+   "bc_capture.environment_is_production": true,
+   "days_at_risk_basis": "days at risk is a lower bound: no assembly lead time is recorded, so 0 days are counted from component arrival to shipment"
+  },
+  "json_min": {
+   "late_pos_considered": 1,
+   "chains_found": 1,
+   "orders_at_risk": 1
+  },
+  "json_absent": [
+   "no_chain.allocation_without_order_line",
+   "no_chain.assembly_order_not_linked_to_order_line",
+   "no_chain.component_without_assembly_order",
+   "no_chain.item_not_used_by_assembly_order",
+   "no_chain.lateness_undetermined",
+   "no_chain.line_item_not_recorded",
+   "no_chain.link_lead_only",
+   "no_chain.no_late_purchase_order",
+   "no_chain.order_line_not_linked_to_order",
+   "no_chain.po_line_not_recorded",
+   "no_chain.no_missing_link_recorded"
+  ]
+ },
+ "expect_blocked": {
+  "exit_code": 0,
+  "json_fields": [
+   "roots_scanned",
+   "sources",
+   "blocked_upstream"
+  ],
+  "json_equals": {
+   "contract_failures": 0,
+   "process_errors": 0,
+   "budget_exhausted": false
+  }
+ },
+ "blocked_when": "sources_blocked",
+ "record": [
+  "late_pos_considered",
+  "late_pos_with_orders_at_risk",
+  "pos_checked",
+  "pos_not_checked",
+  "pos_not_reaching_assembly",
+  "lateness_undetermined",
+  "chains_found",
+  "chains_broken",
+  "broken_share_percent",
+  "broken_by_reason",
+  "top_missing_links",
+  "missing_links[*].link",
+  "missing_links[*].pos",
+  "missing_links[*].stage",
+  "missing_links[*].link_types",
+  "missing_links[*].relations",
+  "missing_links[*].blocked_upstream",
+  "no_chain",
+  "days_at_risk_basis",
+  "orders_affected",
+  "orders_at_risk",
+  "orders_excluded",
+  "orders_with_value",
+  "value_at_risk",
+  "truncated",
+  "investigated",
+  "contract_failures",
+  "process_errors",
+  "investigate_errors",
+  "error_codes",
+  "budget_exhausted",
+  "seconds",
+  "mirror_complete",
+  "sources",
+  "sources_blocked",
+  "blocked_upstream",
+  "bc_capture",
+  "bc_capture.evidence_label",
+  "bc_capture.stopped_reason",
+  "bc_capture.reason",
+  "session_projection.mode",
+  "samples[*].days_at_risk",
+  "samples[*].links[*].link_type",
+  "samples[*].links[*].tier",
+  "samples[*].links[*].from",
+  "samples[*].links[*].to",
+  "samples[*].links[*].cited"
+ ],
+ "record_keys": [
+  "error_codes",
+  "broken_by_reason",
+  "orders_excluded",
+  "value_at_risk",
+  "bc_capture",
+  "no_chain"
+ ],
+ "record_enums": [
+  "top_missing_links",
+  "missing_links[*].link",
+  "missing_links[*].stage",
+  "missing_links[*].link_types",
+  "missing_links[*].relations",
+  "missing_links[*].blocked_upstream",
+  "broken_share_percent",
+  "sources",
+  "sources_blocked",
+  "blocked_upstream",
+  "bc_capture.evidence_label",
+  "bc_capture.stopped_reason",
+  "bc_capture.reason",
+  "session_projection.mode",
+  "samples[*].links[*].link_type",
+  "samples[*].links[*].tier",
+  "samples[*].links[*].from",
+  "samples[*].links[*].to"
+ ],
+ "notes": "Registered, live-unverified: no live-check result yet. Module test: injected-transport (verify/tests/test_live_impact_chain.py runs this spec's own argv over the fixture world with the Portal and BC transports injected and checks it with live_verify.check_expectations; there the run must fail by the missing link's name, and only the live-read label may miss besides). value_at_risk is recorded by its currency keys only: the amounts are in the probe's output, never in the daily report. broken_share_percent is null when no chain was walked (a share of nothing). The fixture world records no FileMaker assembly component rows, so its run walks no chain and fails by name (chains_found < 1, orders_at_risk < 1, no_chain.item_not_used_by_assembly_order present): chains are exercised by operating/tests/test_impact_chain.py and the stand-in host test (isolated-fixture). Lead time 0: days at risk is a lower bound (no assembly lead time is recorded). A Portal relation the Portal stops serving (e.g. public.production, public.batch since 2026-10-20 00:31Z) is a blocked_upstream part; a missing link names it under blocked_upstream only when the schema binds one of its link types to that relation (public.production and public.batch carry none of the walk's links). Session projection, disk and timing as process.po_lateness (same build, same session reads).",
+ "requires": [
+  "mirror.full_coverage",
+  "ontology.session_projection"
+ ],
+ "session_audience": {
+  "/mirror.sqlite": {
+   "sources": [
+    "portal-workbench-api"
+   ],
+   "env": [
+    "PLX_WORKBENCH_API_KEY",
+    "PLX_WORKBENCH_API_URL"
+   ],
+   "reader": "service"
+  },
+  "/projection": {
+   "sources": [
+    "business-central",
+    "portal-workbench-api"
+   ],
+   "env": [
+    "BC_CLIENT_ID",
+    "BC_CLIENT_SECRET",
+    "BC_ENVIRONMENT",
+    "BC_TENANT_ID",
+    "PLX_WORKBENCH_API_KEY",
+    "PLX_WORKBENCH_API_URL"
+   ],
+   "reader": "service"
+  }
+ },
+ "session_reads": [
+  "/mirror.sqlite",
+  "/projection"
+ ]
+}

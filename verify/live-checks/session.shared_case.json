@@ -1,0 +1,57 @@
+{
+ "id": "session.shared_case",
+ "description": "B5: concurrent sessions on one case, on a fixture case store in a temporary directory (python3 -m scripts.session_shared_case; offline, no client, no business-system network, nothing outside the temporary directory is written). It drives the case store's own functions that the MCP case tools call: finding (plx.case_add_finding), get and read_tail (the journal block of plx.case_get). One session records a fact and a second records the same fact with different case and spacing: it is not recorded again (merged, same finding id). Then four sessions, each its own OS process released at one start time, record the same ten shared findings and ten distinct ones each against the one store file: every distinct finding is stored exactly once (shared ones created once each, none lost or duplicated, hash chain intact). A session that had opened the case earlier opens it again and reads exactly what was written since (resumed), and a session opening for the first time reads the journal tail. Counts and booleans only; no finding text, case id or session reference is printed. Blocked, with the exception class as blocked_reason, only if the fixture cannot be built or run.",
+ "source": "console-journal",
+ "cadence": "daily",
+ "tier": "deterministic_tools",
+ "command": [
+  "python3",
+  "-m",
+  "scripts.session_shared_case"
+ ],
+ "timeout_seconds": 120,
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "sessions",
+   "findings_expected",
+   "findings_stored",
+   "findings_distinct"
+  ],
+  "json_equals": {
+   "duplicate_merged": true,
+   "created_once_each": true,
+   "chain_ok": true,
+   "tail_read_on_open": true,
+   "resumed_unread": true
+  },
+  "json_same": {
+   "findings_stored": "findings_expected",
+   "findings_distinct": "findings_expected"
+  },
+  "json_min": {
+   "findings_stored": 1
+  }
+ },
+ "record": [
+  "blocked_reason",
+  "sessions",
+  "findings_expected",
+  "findings_stored",
+  "findings_distinct",
+  "created_once_each",
+  "chain_ok",
+  "duplicate_merged",
+  "tail_read_on_open",
+  "resumed_unread"
+ ],
+ "notes": "Registered, live-unverified. Evidence label: isolated-fixture. A pass proves the case store (operating.cases.CaseStore) merges a repeated plain finding, loses no write under concurrent processes on the host's filesystem, and returns the journal tail and unread findings to a session that opens a case. It does not prove that the console (operator_ui/server.py, which does not yet call read_tail) shows the tail to a person, that an agent session did so over MCP (operating/tests/test_mcp_case_tools.py covers that route with injected transport), or anything about real cases or sources. Module tests: operating/tests/test_case_shared_sessions.py (also runs this spec's argv through live_verify.check_expectations).",
+ "blocked_when": "blocked_reason",
+ "blocked_cause": "source_gap",
+ "optional_env": [
+  "TMPDIR"
+ ],
+ "record_enums": [
+  "blocked_reason"
+ ]
+}

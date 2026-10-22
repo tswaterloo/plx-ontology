@@ -1,0 +1,99 @@
+{
+ "id": "mirror.persisted_fallback",
+ "description": "plx.find through a Portal Workbench API outage. The probe syncs the Portal relations plx.find reads (every portal_api identifier carrier of the compiled schema) GET-only into the capture store's working mirror outside Git (integrations/mirror_capture.py: $PLX_WORKBENCH_STATE_DIR/mirror-capture, a durable directory the runner keeps between runs) and persists the copy when every relation is complete. When GET /v1/health (or the sync) answers non-2xx or the API is unreachable, it serves the last complete persisted copy instead, labelled 'source-mirror captures as of <captures_as_of>, live source unavailable (<http_status>, <error_code>)': plx.find's meta.freshness states portal_api served_from persisted_capture, stale, with that label as its first gap, never live (decision docs/decisions/2026-10-04-scope-freshness.md). When the store holds no copy of these relations and the source is out, the copy the runner last published on the private non-branch ref refs/verify/mirror (integrations/mirror_branch_store.py: one parentless commit, xz parts, sha256-checked) is installed into the store and served the same way (branch_status restored), only when its commit and copy sha256 are the ones the runner attested in results/mirror-attestation.json; a ref copy that is unattested or does not verify is a fail (branch_status refused, branch_reason unattested or the digest/stream reason), never blocked. It then asks plx.find for identifiers drawn from the served mirror, as the probe principal and as a principal the audience withholds. Pass = finds answered with candidates, every answered find labelled for how it was served, the withheld principal given no candidate, and no row value in the output. Blocked (result blocked, cause upstream_outage, reason 'upstream portal-workbench-api <blocked>'; red after 24 h): the source is out and the store's history shows no complete copy of these relations was ever published in it (a copy of another scope, e.g. the host's, cannot answer them) (never_synced_new_store: its first run, or a state directory that does not survive between runs; never_synced: earlier runs all met the outage). A copy published in this store earlier that cannot be served now is a fail. It has no 'requires': it must run, and pass, while portal.health_catalog fails. Output is counts, booleans and enums only; never an identifier, key, citation or row value.",
+ "source": "portal-workbench-api",
+ "cadence": "daily",
+ "command": [
+  "python3",
+  "-m",
+  "scripts.live_read_probes",
+  "mirror-fallback",
+  "--budget-seconds",
+  "900",
+  "--sample",
+  "20",
+  "--workers",
+  "3",
+  "--mirror-ref",
+  "refs/verify/mirror"
+ ],
+ "timeout_seconds": 1200,
+ "requires_env": [
+  "PLX_WORKBENCH_API_URL",
+  "PLX_WORKBENCH_API_KEY"
+ ],
+ "optional_env": [
+  "PLX_WORKBENCH_STATE_DIR"
+ ],
+ "blocked_when": "blocked",
+ "blocked_causes": {
+  "state_dir_unset": "host_misconfiguration"
+ },
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "served_from",
+   "relation_count",
+   "finds",
+   "finds_with_candidates",
+   "persisted"
+  ],
+  "json_equals": {
+   "answered": true,
+   "label_ok": true,
+   "never_live_when_failed": true,
+   "permission_trim_ok": true,
+   "row_data_leaked": 0
+  },
+  "json_min": {
+   "finds_with_candidates": 1
+  }
+ },
+ "record": [
+  "blocked",
+  "missing_settings",
+  "store_persists_between_runs",
+  "store_runs_seen",
+  "store_persisted_count",
+  "served_from",
+  "error_code",
+  "complete",
+  "persisted",
+  "persist_reason",
+  "relation_count",
+  "captured_count",
+  "http_status",
+  "upstream_error_code",
+  "captures_age_hours",
+  "finds",
+  "finds_with_candidates",
+  "finds_labelled",
+  "find_errors",
+  "carriers_unreadable",
+  "withheld_candidates",
+  "answered",
+  "label_ok",
+  "never_live_when_failed",
+  "permission_trim_ok",
+  "row_data_leaked",
+  "evidence_label",
+  "adapter_status",
+  "branch_status",
+  "branch_source",
+  "branch_reason"
+ ],
+ "record_enums": [
+  "blocked",
+  "missing_settings",
+  "served_from",
+  "error_code",
+  "persist_reason",
+  "upstream_error_code",
+  "evidence_label",
+  "adapter_status",
+  "branch_status",
+  "branch_source",
+  "branch_reason"
+ ],
+ "notes": "The credentialed runner must set PLX_WORKBENCH_STATE_DIR to a directory outside every git work tree that survives between runs; until it is set the check is blocked (blocked state_dir_unset, cause host_misconfiguration, missing_settings naming PLX_WORKBENCH_STATE_DIR): the probe reads nothing, never a pass and never a silent skip. The same setting holds the runner's warm store (operating/warm_store.py: <STATE>/live-verify-warm), so one durable directory serves this store and the session producers' mirror and projection. A per-check {tmp} store is never used: it is discarded after each run, so the fallback could never be measured there (live failure 2026-10-04T20:56Z on b047200: served_from none, missing_mirror, every run a fresh store). store_persists_between_runs is the store's own history (history.json, counts and timestamps only), true only when an earlier run's note survived; store_runs_seen stuck at 1 across runner results means the configured directory is not durable. The capture never goes to logs or the results branch; the one exception: the runner publishes the newest complete copy of its store, after the daily checks and with its own git credentials, to the private ref refs/verify/mirror, not a branch, so a default git fetch never downloads it (python3 -m integrations.mirror_branch_store publish --attest <results checkout>/results/mirror-attestation.json: complete copies only, refused when a credential-shaped value or token shape is in a decoded value, the raw bytes or the manifest, compare-and-swap push that never replaces a later capture; the attestation, commit and copy sha256, is committed in the published results), and fetches that ref by name before the checks (python3 -m integrations.mirror_branch_store fetch) because a check does not hold the git credentials; the probe reads the remote head when it can, else that local ref (branch_source remote / local_ref; unavailable when neither), and restores it only when the attestation names that head. Until a copy has been published and attested there, a store that holds none stays blocked as before (no ref) or fails (an unattested ref). live-unverified until a live-check result exists; module tests are injected-transport (integrations/tests/test_mirror_branch_store.py over a local bare repository for the branch; integrations/tests/test_source_mirror_persisted.py: HTTP 500 internal injected on /v1/health, FakeWorkbench rows; LiveCheckSpecTests there run this spec's command and expectations over an injected client and run_spec's blocked handling over a stub probe). Until the API answers again and one complete sync has been persisted in the durable store, the check is blocked (never_synced*), never a pass: an absent or incomplete copy is never served. The working mirror resumes across runs (the store persists), so a carrier set larger than one 900 s budget completes over several runs; a sync that captured some relations but not all is served live and incomplete and is not persisted. The probe audience grants a service principal the carrier relations because it measures the store, not an employee's view; the withheld principal proves the per-employee trimming still applies to the persisted copy."
+}

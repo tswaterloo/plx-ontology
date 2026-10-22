@@ -1,0 +1,293 @@
+{
+ "id": "workspace.object_view",
+ "description": "The employee object workspace (operator_ui/object_workspace.py) over live captures, measured as per-panel denominators for sampled real roots (requirements WS-01, WS-02, WS-04, WS-05, WS-06, WS-08, WS-12, WS-14's explanation part, WS-15's case evaluation part; also next steps for WS-09): the L7 probe (scripts.ontology_projection_probe) makes a GET-only sync of the Portal reporting API into a throwaway mirror, one GET-only BC capture pass and one bounded Graph-delta capture of the allowlisted purchase-order@ mailbox and the bounded SharePoint capture ontology.document_links runs (examples/sharepoint_capture_scope.qcqa_aos.live-check.json, the QCQA '2026 - AOs' packets), projects them under the curated schema and lays them out as the served host state; then, offline and with no client, scripts.object_workspace_probe opens up to 40 roots (at most 4 per object type, lowest SHA-256 of the object id first) through the console's object workspace (operator_ui.case_console.object_workspace_for: the case host's tools, grants, item gates and L1 resolver) as the served host's capture principal, and each of them again as a principal with no grant. Recorded per panel a WS row cites (panels: items shown and roots non-empty, counts only): timeline events with a citation (WS-02), originals opened through the workspace's source route and its audience check (WS-04), relationship edges with an evidence tier (WS-05), cited money, quantity and enum card values (WS-06), gaps, conflicts, leads (edges below corroborated) and withheld markers shown, each counted apart (WS-07: panels.markers_gaps, markers_conflicts, markers_leads, markers_withheld) and related mail and documents opened through the same route, plx.read for mail and SharePoint (WS-08); and per panel: timeline events; originals listed, openable and withheld, up to 5 per root opened through the workspace's source route with each opened Portal row re-hashed (SHA-256 of its canonical JSON, the mirror's row digest) against the digest its citation carries; relationships (link types, hops, edges by tier); card values by value type (quantity, money and enum among them) with unit and currency gaps; related mail and documents listed, openable and withheld; process stages and gaps by state; withheld markers; Find & open (the employee's entry path, operator_ui.object_workspace find) searched with each opened root's own identifier values (the card values whose property the schema types with an identifier kind for the root's type, foreign-key identifies=reference properties excluded, at most 3 per root), per type found_top1, found_top5, found_lower, not_found and ambiguous (find_by_type, and summed over types as find_totals; an ambiguous answer listing the root first is no top-1 hit, the employee still chooses among several: it counts in found_top5 and apart in found_top1_ambiguous), a root with nothing to search by counted by why (no_identifier_property: the schema declares no own identifier for its type; identifier_invalid: the card gaps the value as not a typed identifier of its kind; unparsed: the card gaps it value_unparsed, the record holds a value the projection could not parse, an identifier no find reaches; unread: gapped value_unread, absent or unparsed and the build report cannot tell; no_value: the record holds no value for any own identifier), and the same searches as the no-grant reader, which must return no candidate (find_denied_leaks); the next steps an open offers (its registered intents) and the follow-up proposals among them, explained when the step states a why and cites at least one record (next_steps_explained, status measured; with no action store in the served state none are offered and it reads status unmeasured, reason intents_not_configured, never zero counts); the cases the reader may read whose shown citations name one of each opened root's records, counted by the evaluation the object view shows for each (case_evaluations: current, stale, unknown, withheld, none, not_configured, integrity_error, from the case workspace's one evaluator, operator_ui.case_workspace.CaseWorkspace.evaluation, over the served state's playbook report store when it holds one, else not_configured; roots_with_cases, and listing_full for opens whose case listing hit its bound). The store is sampled whatever the reader's grant, so a root whose open raises is classified by the host's own access decision (its plx.object for the reader, the call the workspace's card makes): a root the reader may not read counts withheld_roots, never an error; a root it may read that still raises, or one the host gives no decision on, is a workspace error typed by class in open_errors (workspace_<Class>). Pass = no workspace error, no re-hash mismatch, the no-grant reader gets not found for every opened root and no candidate from any of its identifier searches, at least one root was searched as that reader (find_denied_probed >= 1, so find_denied_leaks 0 is never vacuous), the view budget holds, at least 10 roots open, at least one sampled root a stored link joins to a SharePoint document read live (documents_linked_roots_sharepoint >= 1, sharepoint_capture.evidence_label live-read), and a reader granted the records but not the SharePoint folder reads at least one such root (sharepoint_withheld_read >= 1) and is named or opened none of its SharePoint documents (sharepoint_withheld_leaks 0). A Portal outage blocks parts, not the check: with the Portal down or not configured the build reports blocked_upstream and the views run over BC and mail: the store records no Portal mirror generation and is served with portal_api not_projected (operator_ui.object_workspace.StoreStatus: a store is the served state's only when it records a Portal mirror or BC capture generation and every generation it records matches that capture there; a mismatch, a missing recorded capture or no such generation refuses it, which fails the check) (blocked, never a pass; expect_blocked keeps the find floor over the roots of the sources still up: find_denied_probed_unblocked >= 1 counts the no-grant reader's searches on roots whose binding source no blocked part names, so a Portal outage drops it for Portal-bound roots only and a BC outage for BC-bound roots only; find_denied_probed_by_source records them per source); with no record source the probe names sources_blocked. Counts, booleans, object type names and enums only; never a value, key, identifier or citation. Live-unverified until the live check records a result.",
+ "source": "portal-workbench-api+business-central+microsoft-graph",
+ "cadence": "daily",
+ "tier": "deterministic_tools",
+ "requires": [
+  "mirror.full_coverage",
+  "ontology.session_projection"
+ ],
+ "command": [
+  "python3",
+  "-m",
+  "scripts.object_workspace_probe",
+  "--db",
+  "{session_state}/mirror.sqlite",
+  "--store",
+  "{session_state}/ontology.sqlite",
+  "--session-projection",
+  "{session_state}/projection",
+  "--budget-seconds",
+  "2600",
+  "--view-budget-seconds",
+  "600",
+  "--workers",
+  "3",
+  "--sample",
+  "40",
+  "--per-type",
+  "4",
+  "--max-opens",
+  "5",
+  "--mail-capture-scope",
+  "examples/case_mail_capture_scope.live-check.json",
+  "--live-audience",
+  "examples/projection_probe_audience.live-check.json",
+  "--capture-page-budget",
+  "4",
+  "--sharepoint-capture-scope",
+  "examples/sharepoint_capture_scope.qcqa_aos.live-check.json",
+  "--sharepoint-state",
+  "{tmp}/sharepoint",
+  "--sharepoint-budget-seconds",
+  "600",
+  "--bc-capture",
+  "--previous-report={daily_report}"
+ ],
+ "timeout_seconds": 2400,
+ "requires_env": [
+  "BC_TENANT_ID",
+  "BC_CLIENT_ID",
+  "BC_CLIENT_SECRET",
+  "BC_ENVIRONMENT",
+  "MICROSOFT_GRAPH_TENANT_ID",
+  "MICROSOFT_GRAPH_CLIENT_ID",
+  "MICROSOFT_GRAPH_CLIENT_SECRET",
+  "SHAREPOINT_SITE_ID"
+ ],
+ "optional_env": [
+  "PLX_WORKBENCH_API_URL",
+  "PLX_WORKBENCH_API_KEY"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "panels",
+   "roots_sampled",
+   "roots_by_type",
+   "timeline.events",
+   "originals.listed",
+   "relationships.hops",
+   "values",
+   "documents",
+   "next_steps",
+   "withheld",
+   "sources",
+   "blocked_upstream",
+   "find_totals",
+   "next_steps_explained",
+   "case_evaluations",
+   "open_errors",
+   "withheld_roots"
+  ],
+  "json_equals": {
+   "workspace_errors": 0,
+   "denied_leaks": 0,
+   "budget_exhausted": false,
+   "originals.rehash_mismatch": 0,
+   "bc_capture.evidence_label": "live-read",
+   "bc_capture.environment_is_production": true,
+   "find_denied_leaks": 0,
+   "sharepoint_capture.evidence_label": "live-read",
+   "sharepoint_withheld_leaks": 0
+  },
+  "json_same": {
+   "denied_not_found": "denied_probed"
+  },
+  "json_min": {
+   "panels.timeline_cited.roots": 1,
+   "panels.originals_opened.roots": 1,
+   "panels.relationships_tiered.roots": 1,
+   "panels.values_cited.roots": 1,
+   "panels.markers_gaps.roots": 1,
+   "documents_linked_roots": 1,
+   "panels.documents_opened.roots": 1,
+   "roots_opened": 10,
+   "denied_probed": 10,
+   "find_denied_probed": 1,
+   "documents_linked_roots_sharepoint": 1,
+   "sharepoint_withheld_read": 1
+  }
+ },
+ "expect_blocked": {
+  "exit_code": 0,
+  "json_fields": [
+   "roots_sampled",
+   "timeline.events",
+   "originals.listed",
+   "relationships.hops",
+   "sources",
+   "blocked_upstream",
+   "open_errors",
+   "withheld_roots"
+  ],
+  "json_equals": {
+   "workspace_errors": 0,
+   "denied_leaks": 0,
+   "budget_exhausted": false,
+   "originals.rehash_mismatch": 0,
+   "find_denied_leaks": 0,
+   "sharepoint_withheld_leaks": 0
+  },
+  "json_same": {
+   "denied_not_found": "denied_probed"
+  },
+  "json_min": {
+   "roots_opened": 1,
+   "find_denied_probed_unblocked": 1
+  }
+ },
+ "blocked_when": "sources_blocked",
+ "record": [
+  "roots_sampled",
+  "roots_opened",
+  "workspace_errors",
+  "withheld_roots",
+  "open_errors",
+  "panels",
+  "documents_linked_roots",
+  "documents_linked_roots_sharepoint",
+  "sharepoint_withheld_probed",
+  "sharepoint_withheld_read",
+  "sharepoint_withheld_leaks",
+  "roots_by_type",
+  "denied_probed",
+  "denied_not_found",
+  "denied_leaks",
+  "find_totals",
+  "find_by_type",
+  "find_denied_probed",
+  "find_denied_leaks",
+  "find_denied_probed_by_source",
+  "find_denied_probed_unblocked",
+  "next_steps_explained",
+  "case_evaluations",
+  "budget_exhausted",
+  "view_seconds",
+  "build_seconds",
+  "mirror_complete",
+  "timeline",
+  "originals",
+  "originals_by_scheme",
+  "relationships",
+  "relationships_by_tier",
+  "values",
+  "value_gaps",
+  "documents",
+  "next_steps",
+  "gaps_by_state",
+  "withheld",
+  "mail_capture_complete",
+  "mail_capture_reasons",
+  "mail_messages_seen",
+  "mention_documents",
+  "mention_links",
+  "sources",
+  "sources_blocked",
+  "blocked_upstream",
+  "partial_upstream",
+  "bc_capture",
+  "bc_capture.evidence_label",
+  "bc_capture.stopped_reason",
+  "bc_capture.reason",
+  "session_projection.mode",
+  "session_projection.units_rebuilt",
+  "session_projection.mail_capture",
+  "sharepoint_capture",
+  "sharepoint_capture.evidence_label",
+  "sharepoint_capture.incomplete_reasons"
+ ],
+ "record_keys": [
+  "panels",
+  "roots_by_type",
+  "find_totals",
+  "find_by_type",
+  "find_denied_probed_by_source",
+  "next_steps_explained",
+  "case_evaluations",
+  "timeline",
+  "originals",
+  "originals_by_scheme",
+  "open_errors",
+  "relationships",
+  "relationships_by_tier",
+  "values",
+  "value_gaps",
+  "documents",
+  "next_steps",
+  "gaps_by_state",
+  "withheld",
+  "bc_capture",
+  "sharepoint_capture"
+ ],
+ "record_enums": [
+  "mail_capture_reasons",
+  "sources",
+  "sources_blocked",
+  "blocked_upstream",
+  "partial_upstream",
+  "bc_capture.evidence_label",
+  "bc_capture.stopped_reason",
+  "bc_capture.reason",
+  "next_steps_explained",
+  "session_projection.mode",
+  "session_projection.mail_capture",
+  "sharepoint_capture.evidence_label",
+  "sharepoint_capture.incomplete_reasons"
+ ],
+ "notes": "Registered, live-unverified: no live-check result yet. Module test: injected-transport (tests/test_object_workspace_http.py ObjectViewLiveCheckTest runs this spec's own argv over the fixture world with the Portal, BC and Graph transports injected and checks it with live_verify.check_expectations; only the live size floors and the live-read label may miss there; with the Portal not configured, and with it answering 503, the same argv exits 0 with a portal_mirror blocked part and passes expect_blocked). Other denominators are recorded, not asserted: a count that reads 0 (no related mail for one root, no money value) is data for the WS rows, never a pass or a failure; only the panel minimums below are asserted. The opened-originals re-hash covers Portal rows (SHA-256 of the row's canonical JSON against the cited row digest) and attached originals (the SHA-256 the case runtime re-hashes on the read against the cited one); a BC or mail record opened through plx.read returns the digest of what it read, not the capture's, so it is counted rehash_not_applicable, never matched. The reader is the served host's capture principal under examples/projection_probe_audience.live-check.json with no marking held, so marked values count as withheld (withheld.card_properties). The mail capture is the same bounded allowlisted-mailbox capture as ontology.mentions (--capture-page-budget 4). Timing (forecast, unmeasured): one projection build, never two: the probe runs the L7 build with --build-only (no rebuild, no claim checks), so the whole 2,600 s budget (ontology.mentions' figure, sized there for two builds and its checks) goes to the captures and that one build; a budget stop inside it records only the build's allowlisted counts and codes (scripts.ontology_projection_probe.PARTIAL_FIELDS); the views get 600 s for 40 roots; the first run measures view_seconds. WS-01 recall decision: recall@1 is found_top1 (an unambiguous rank 1) over searched; an ambiguous rank 1 (found_top1_ambiguous) is reported apart and counts only toward recall@5. WS-14 with no action store is unmeasured (next_steps_explained.status), not 0 explained. Session state (verify/live_verify.py): it tops up mirror.full_coverage's {session_state}/mirror.sqlite (its only requires, which never blocks it; session_state.shared_store records whether it was shared) and is the session producer of {session_state}/ontology.sqlite and the served state beside it (the BC capture ontology.mentions tops up, and the mail capture each mail consumer reuses when the session producer made it under its identity, else makes itself). Budget unchanged (2,600 s, timeout 4,200 s): with the mirror shared, its Portal share refreshes complete relations instead of a cold sync. Session projection: it also requires ontology.session_projection, its session producer of {session_state}/projection (Portal and BC, service reader), which never blocks it: when this session committed that generation it neither syncs nor captures BC, captures its mail and projects only the units that mail changes on top of that generation (session_projection.mode incremental; reused when nothing differs); else it builds cold as before (mode cold). When that producer captured BC and stopped before it committed (a budget stop in its projection), the cold build's empty BC capture starts as a copy of the producer's (bc_capture.session_seeded) and reuses every unit this session completed (bc_capture.units_reused), reading only the rest. Failed opens: workspace_errors, withheld_roots and open_errors lead the record, so the typed cause of a failed open survives the verdict's detail cap (a live run truncated 35 paths and lost open_errors), and json_fields requires open_errors and withheld_roots in every verdict. Panel minimums: expect asserts each of the six panels non-empty on at least one opened root (panels.<panel>.roots >= 1; for the markers only panels.markers_gaps, so withheld markers alone never pass; the conflict, lead and withheld counts are recorded in panels, not asserted), listed first in json_fields and json_min so the capped record keeps panels (live_verify._cap keeps asserted paths first); expect_blocked asserts none of them (an outage may empty a panel). A withheld root opens no panel and adds nothing. Detail cap (owner order 42ad51823f9c): live_verify._cap keeps each asserted path even when its top-level field is too long, projected out of it (panels.<panel>.roots, timeline.events, originals.listed, relationships.hops), smallest first, before any unasserted field. Per-type find counts over 33 live types run about 9,000 characters, past the 4,000-character cap on their own, so expect asserts find_totals (the same counts summed over types) and find_by_type is recorded, unasserted, when it fits. Documents panel: mail was the panel's only input and the hash sample over all types almost never hit a document-linked root, so the sample takes first up to 4 roots a current stored link joins to a document (a type with the schema's Document interface bound to a document source, mail or SharePoint, documents themselves excluded; lowest SHA-256 of the object id first), recorded as documents_linked_roots. expect asserts panels.documents_opened.roots >= 1 beside documents_linked_roots >= 1, and only a run with a document-linked root sampled reaches expect: with none, the probe adds a blocked part, so the run reads blocked, never pass: the build's refused mail parts when Graph refused every bound mailbox (scripts.ontology_projection_probe carries capture_mail.refused_parts, mail.mailbox_lookup or mail.folder_read, cause host_misconfiguration, as operating.case_mail does), else documents.linked_roots (source microsoft-graph, error_code no_document_links, cause source_gap: mail was read but names no record). That part is added after find_denied_probed_unblocked, so it drops no record source's find floor. The build's mail and mention counts (mail_capture_complete, mail_capture_reasons, mail_messages_seen, mention_documents, mention_links) are recorded. SharePoint input: one bounded mailbox held no message naming a record (mention_links 0), so the build also captures the SharePoint scope ontology.document_links reads (examples/sharepoint_capture_scope.qcqa_aos.live-check.json, the QCQA '2026 - AOs' assembly-order packets) with that check's capture (capture_sharepoint.run_cli, GET only, as the capture principal, at most 600 s and the sync share of what is left) into {tmp}/sharepoint, projects it in the same build (source sharepoint, its documents read by the same build_steps document_fields and mentions steps) and names it in the served state (served-state/sharepoint-capture, where object_workspace_probe finds sharepoint_capture_dir), granted to the capture principal only by examples/projection_probe_audience.live-check.json. The capture is not a session store (it lives in {tmp}, read by this check alone), so /ontology.sqlite's session audience is unchanged. sharepoint_capture records its evidence label, completeness, incomplete_reasons and counts; read_back_leaks (what its read-back as the no-grant reader was served) above 0 makes the probe exit 1, whatever the verdict asserts; its evidence label is asserted live-read in expect (a run with no SharePoint reads blocked through its part, where expect_blocked does not assert it). A capture that raises (its class only, never its message), holds no file and is incomplete, or has no SHAREPOINT_SITE_ID (nothing read) is a sharepoint_capture blocked part (Graph), which drops no mail or record source's find floor. A capture that ends incomplete (time_budget, say) holding files is projected and served as far as it got and named in partial_upstream (the same part shape, its first incomplete reason as error_code): recorded, never blocking, so it never fails or blocks the run by itself. The served state's sharepoint-capture is a link this probe lays out for its own run and removes on a run without SharePoint; any other entry there (a directory or file it did not link) is refused (build_error ServedCaptureConflict, code served_capture_not_a_link, exit 1), never served or removed. documents_linked_roots_sharepoint counts the sampled roots a stored link joins to a SharePoint document (the share of documents_linked_roots SharePoint gave; mail links alone leave it 0). SharePoint required: expect asserts documents_linked_roots_sharepoint >= 1 and sharepoint_capture.evidence_label live-read, so a run whose SharePoint capture reached the view with no document naming a record, or whose capture was not read live, fails (a mail-linked root alone no longer passes); a capture that could not run is its sharepoint_capture blocked part, so expect_blocked applies, never this floor. SharePoint refusal: each opened SharePoint-linked root is opened again as probe:mail-withheld-reader (scripts.ontology_projection_probe.MAIL_WITHHELD_PRINCIPAL; examples/projection_probe_audience.live-check.json grants it BC, the served mirror audience the Portal, neither the mail nor the SharePoint folder): sharepoint_withheld_probed such roots, sharepoint_withheld_read of them it reads (asserted >= 1: it sees the record, so the refusal is not vacuous) and sharepoint_withheld_leaks, each SharePoint document the capture principal was shown there that this reader's view names (its citation anywhere in the view) or that opens for it through the workspace's source route (asserted 0 in expect and expect_blocked; any leak exits 1). The capture's read-back (read_back_leaks) reads as DENIED_PRINCIPAL (withheld, granted nothing) and as probe:sharepoint-folder-only-reader (granted the captured folders only), two principals. Timing (forecast, unmeasured here): document_links' live capture of this scope took about 270 s of its 600 s; it comes out of the 2,600 s build budget. The first live run measures it: sharepoint_capture.seconds (the capture) and build_seconds (the projection build), both recorded. Live-unverified for this input until the live check records a result. A document-linked root sampled and the panel still empty is a fail; the next suspect is operator_ui/object_workspace.py ObjectWorkspace._documents. Answer-first: every open also builds the view's answers (what is missing, who supplies it) from the same card, relationships and process stages, citing only handles the reader's own view cites; an error there fails the open, so workspace_errors 0 covers it.",
+ "session_audience": {
+  "/mirror.sqlite": {
+   "sources": [
+    "portal-workbench-api"
+   ],
+   "env": [
+    "PLX_WORKBENCH_API_KEY",
+    "PLX_WORKBENCH_API_URL"
+   ],
+   "reader": "service"
+  },
+  "/ontology.sqlite": {
+   "sources": [
+    "business-central",
+    "microsoft-graph",
+    "portal-workbench-api"
+   ],
+   "env": [
+    "BC_CLIENT_ID",
+    "BC_CLIENT_SECRET",
+    "BC_ENVIRONMENT",
+    "BC_TENANT_ID",
+    "MICROSOFT_GRAPH_CLIENT_ID",
+    "MICROSOFT_GRAPH_CLIENT_SECRET",
+    "MICROSOFT_GRAPH_TENANT_ID",
+    "PLX_WORKBENCH_API_KEY",
+    "PLX_WORKBENCH_API_URL"
+   ],
+   "reader": [
+    "examples/case_mail_capture_scope.live-check.json",
+    "examples/projection_probe_audience.live-check.json"
+   ]
+  },
+  "/projection": {
+   "sources": [
+    "business-central",
+    "portal-workbench-api"
+   ],
+   "env": [
+    "BC_CLIENT_ID",
+    "BC_CLIENT_SECRET",
+    "BC_ENVIRONMENT",
+    "BC_TENANT_ID",
+    "PLX_WORKBENCH_API_KEY",
+    "PLX_WORKBENCH_API_URL"
+   ],
+   "reader": "service"
+  }
+ },
+ "session_reads": [
+  "/mirror.sqlite",
+  "/projection"
+ ]
+}

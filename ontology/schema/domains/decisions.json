@@ -1,0 +1,294 @@
+{
+ "$schema": "../_format.schema.json",
+ "format": "plx-ontology-domain/v1",
+ "domain": "decisions",
+ "origin": "curated",
+ "description": "Recorded decisions: one generic DecisionRecord type for approvals, releases, sign-offs, rulings and authorisations written in documents (QC release, customer and QA proof approval, capitalisation, cost-policy and eligibility decisions, quote approval), fed by captured mail attachments and SharePoint files through the document-field extractor (ontology/document_fields.py, class decision_record). Every value is a page/span-cited machine-read lead; each record links to the records it names (lead mentions). With Mission Control approval gates and task decisions (mission_control domain) it feeds the decision-evidence plan, which answers 'what was decided about this record, by whom, when, on what basis' with citations or a typed gap (no_recorded_decision, decision_actor_not_recorded, decision_time_not_recorded, decision_basis_not_recorded). No per-case type: a new decision kind is a new title cue of the profile.",
+ "upstream_pins": {},
+ "object_types": [
+  {
+   "id": "DecisionRecord",
+   "description": "A recorded decision about some record, projected from captured mail attachments and SharePoint files the document-field extractor recognises as an approval, release, sign-off, ruling or authorisation document (ontology/document_fields.py, class decision_record). One generic type for every kind of decision (the kind is the document's title cue and its decision_type as written, never a per-case type): its subject (what it names: the records it links to as lead mentions and the subject as written), the decider and signature (personal data), the date, the outcome and checked outcome boxes, and the basis the decider wrote, each a machine-read lead cited to the original bytes (page and span). A blank signature, date or outcome is that field's gap: a form whose approval fields are empty records no decision. Mission Control approval gates and task decisions stay MCApproval and MCTaskEvent; the decision-evidence plan (ontology/plans/decision_evidence.json, plx.investigate F11) reads all three as one ordered list of decisions with time, actor, outcome and basis, or a typed gap.",
+   "anchor": true,
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "graph_mail.decision_records",
+     "source": "graph_mail",
+     "relation": "documentFields",
+     "key": [
+      "source_key"
+     ],
+     "where": [
+      {
+       "path": "profile",
+       "op": "eq",
+       "value": "decision_record"
+      }
+     ],
+     "lineage": {
+      "default": "mail"
+     },
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ],
+     "note": "One object per captured mail attachment version recognised as class decision_record (ontology/schema/document_fields.json); keyed by the source record, cited by its byte-pinned handle, same audience and validity interval as the source version."
+    },
+    {
+     "id": "sharepoint.decision_records",
+     "source": "sharepoint",
+     "relation": "documentFields",
+     "key": [
+      "source_key"
+     ],
+     "where": [
+      {
+       "path": "profile",
+       "op": "eq",
+       "value": "decision_record"
+      }
+     ],
+     "lineage": {
+      "default": "sharepoint"
+     },
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ],
+     "note": "One object per captured SharePoint file version recognised as class decision_record (ontology/schema/document_fields.json); keyed by the source record, cited by its byte-pinned handle, same audience and validity interval as the source version."
+    }
+   ],
+   "properties": [
+    {
+     "name": "tier",
+     "value_type": "enum",
+     "enum_values": [
+      "lead"
+     ],
+     "description": "Evidence tier of every field of this object: a machine-read lead, never verified.",
+     "sources": [
+      {
+       "binding": "graph_mail.decision_records",
+       "path": "tier",
+       "parser": "trim"
+      },
+      {
+       "binding": "sharepoint.decision_records",
+       "path": "tier",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ],
+     "authority": {
+      "precedence": [
+       {
+        "lineage": [
+         "mail",
+         "sharepoint"
+        ],
+        "evidence": [
+         {
+          "kind": "workbench_code",
+          "path": "ontology/document_fields.py"
+         }
+        ]
+       }
+      ],
+      "note": "Each object is projected from one binding (one captured document), so the two sources never meet on one object; no record value is compared with it (the profile declares no attests rule)."
+     }
+    },
+    {
+     "name": "evidence",
+     "value_type": "json",
+     "description": "The extraction (ontology/document_fields.py extract_fields): class cue, every field with its citations (byte-pinned handle, source_sha256, the OCR text_sha256 for a scan, page, start/end, literal), every gap with its reason, and the identifier references. Untrusted document text.",
+     "sources": [
+      {
+       "binding": "graph_mail.decision_records",
+       "path": "evidence",
+       "parser": "as_is"
+      },
+      {
+       "binding": "sharepoint.decision_records",
+       "path": "evidence",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ],
+     "authority": {
+      "precedence": [
+       {
+        "lineage": [
+         "mail",
+         "sharepoint"
+        ],
+        "evidence": [
+         {
+          "kind": "workbench_code",
+          "path": "ontology/document_fields.py"
+         }
+        ]
+       }
+      ],
+      "note": "Each object is projected from one binding (one captured document), so the two sources never meet on one object; no record value is compared with it (the profile declares no attests rule)."
+     }
+    }
+   ],
+   "display": [
+    "subject"
+   ],
+   "evidence": [
+    {
+     "kind": "workbench_code",
+     "path": "ontology/document_fields.py"
+    }
+   ]
+  }
+ ],
+ "link_types": [
+  {
+   "id": "DecisionRecord.for_purchase_order",
+   "from": "DecisionRecord",
+   "to": "PurchaseOrder",
+   "name": "for_purchase_order",
+   "reverse_name": "decision_records",
+   "cardinality": "N:M",
+   "description": "A decision record names this PurchaseOrder: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion); the decision is about what the document says, never about a record it merely mentions.",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "DecisionRecord.for_sales_order",
+   "from": "DecisionRecord",
+   "to": "SalesOrder",
+   "name": "for_sales_order",
+   "reverse_name": "decision_records",
+   "cardinality": "N:M",
+   "description": "A decision record names this SalesOrder: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion); the decision is about what the document says, never about a record it merely mentions.",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "DecisionRecord.for_quote",
+   "from": "DecisionRecord",
+   "to": "Quote",
+   "name": "for_quote",
+   "reverse_name": "decision_records",
+   "cardinality": "N:M",
+   "description": "A decision record names this Quote: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion); the decision is about what the document says, never about a record it merely mentions.",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "DecisionRecord.for_assembly_order",
+   "from": "DecisionRecord",
+   "to": "AssemblyOrder",
+   "name": "for_assembly_order",
+   "reverse_name": "decision_records",
+   "cardinality": "N:M",
+   "description": "A decision record names this AssemblyOrder: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion); the decision is about what the document says, never about a record it merely mentions.",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "DecisionRecord.for_batch",
+   "from": "DecisionRecord",
+   "to": "Batch",
+   "name": "for_batch",
+   "reverse_name": "decision_records",
+   "cardinality": "N:M",
+   "description": "A decision record names this Batch: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion); the decision is about what the document says, never about a record it merely mentions.",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "DecisionRecord.for_purchase_requisition",
+   "from": "DecisionRecord",
+   "to": "PurchaseRequisition",
+   "name": "for_purchase_requisition",
+   "reverse_name": "decision_records",
+   "cardinality": "N:M",
+   "description": "A decision record names this PurchaseRequisition: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion); the decision is about what the document says, never about a record it merely mentions.",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "event_types": [],
+ "evidence_catalog": {}
+}

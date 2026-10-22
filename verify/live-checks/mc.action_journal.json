@@ -1,0 +1,48 @@
+{
+ "id": "mc.action_journal",
+ "description": "plx.act verify's Mission Control journal read (operating.goal2_mc_approval.read_journal): one mc_get_task through a MissionControlMcpClient with no write tool; prints the task stage (MC StageKey), pending gate count and whether the client holds any write tool. Reads only (MC appends its own mcp.tool.invoked audit row).",
+ "source": "mission-control-mcp",
+ "disabled": "waits on the sp_mcp_workbench MC principal; once it exists, set MC_ACTION_JOURNAL_TASK_ID to its task",
+ "command": [
+  "python3",
+  "-m",
+  "operating.action_tools",
+  "mc-journal",
+  "--operator-email-default",
+  "cos@petrasoap.com"
+ ],
+ "timeout_seconds": 120,
+ "requires_env": [
+  "MC_MCP_API_KEY",
+  "MC_ACTION_JOURNAL_TASK_ID"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "readable",
+   "stage_known",
+   "pending_gates",
+   "write_tools"
+  ],
+  "json_equals": {
+   "readable": true,
+   "stage_known": true
+  },
+  "json_empty": [
+   "write_tools"
+  ]
+ },
+ "record": [
+  "readable",
+  "stage_known",
+  "pending_gates",
+  "write_tools",
+  "stage",
+  "reason"
+ ],
+ "record_enums": [
+  "stage",
+  "reason"
+ ],
+ "notes": "Evidence until it runs: injected-transport only (operating/tests/test_mcp_action_tools.py PlxActTests over the real MissionControlMcpClient and a fake MC sender). Field names mirror PLX_MC src/lib/mc-data/types.ts:9-18,289-306, src/lib/compliance/approvals.ts, src/lib/compliance/repo.ts eventsForTask @ 1fba083. The operator alias default follows mc.initialize_tools_list."
+}

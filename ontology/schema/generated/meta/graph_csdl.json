@@ -1,0 +1,799 @@
+{
+ "format": "plx-graph-csdl/v1",
+ "description": "Pinned subset of Microsoft Graph v1.0 metadata (written by python3 -m ontology.generator.graph pin): what resolving the source registry's Graph templates and typing the generated Graph families read. Do not edit.",
+ "source": {
+  "repo": "microsoftgraph/msgraph-metadata",
+  "path": "clean_v10_metadata/cleanMetadataWithDescriptionsv1.0.xml",
+  "commit": "fd42f0e5bcd96b0c5edd5e62e2956a1dc1c5d17a",
+  "sha256": "ff4f707d562dd1aa1dfaa591f4e17f4e6f50d517dc65b0278d216fb4fc4e547b"
+ },
+ "entity_sets": {
+  "agreementAcceptances": "agreementAcceptance",
+  "agreements": "agreement",
+  "applicationTemplates": "applicationTemplate",
+  "applications": "application",
+  "authenticationMethodConfigurations": "authenticationMethodConfiguration",
+  "certificateBasedAuthConfiguration": "certificateBasedAuthConfiguration",
+  "chats": "chat",
+  "connections": "externalConnectors.externalConnection",
+  "contacts": "orgContact",
+  "contracts": "contract",
+  "dataPolicyOperations": "dataPolicyOperation",
+  "devices": "device",
+  "directoryObjects": "directoryObject",
+  "directoryRoleTemplates": "directoryRoleTemplate",
+  "directoryRoles": "directoryRole",
+  "domainDnsRecords": "domainDnsRecord",
+  "domains": "domain",
+  "drives": "drive",
+  "filterOperators": "filterOperatorSchema",
+  "functions": "attributeMappingFunctionSchema",
+  "groupLifecyclePolicies": "groupLifecyclePolicy",
+  "groupSettingTemplates": "groupSettingTemplate",
+  "groupSettings": "groupSetting",
+  "groups": "group",
+  "identityProviders": "identityProvider",
+  "invitations": "invitation",
+  "oauth2PermissionGrants": "oAuth2PermissionGrant",
+  "organization": "organization",
+  "permissionGrants": "resourceSpecificPermissionGrant",
+  "places": "place",
+  "schemaExtensions": "schemaExtension",
+  "scopedRoleMemberships": "scopedRoleMembership",
+  "servicePrincipals": "servicePrincipal",
+  "shares": "sharedDriveItem",
+  "sites": "site",
+  "subscribedSkus": "subscribedSku",
+  "subscriptions": "subscription",
+  "teams": "team",
+  "teamsTemplates": "teamsTemplate",
+  "users": "user"
+ },
+ "singletons": {
+  "admin": "admin",
+  "appCatalogs": "appCatalogs",
+  "auditLogs": "auditLogRoot",
+  "authenticationMethodsPolicy": "authenticationMethodsPolicy",
+  "communications": "cloudCommunications",
+  "compliance": "compliance",
+  "copilot": "copilotRoot",
+  "deviceAppManagement": "deviceAppManagement",
+  "deviceManagement": "deviceManagement",
+  "directory": "directory",
+  "drive": "drive",
+  "education": "educationRoot",
+  "employeeExperience": "employeeExperience",
+  "external": "externalConnectors.external",
+  "identity": "identityContainer",
+  "identityGovernance": "identityGovernance",
+  "identityProtection": "identityProtectionRoot",
+  "informationProtection": "informationProtection",
+  "me": "user",
+  "planner": "planner",
+  "policies": "policyRoot",
+  "print": "print",
+  "privacy": "privacy",
+  "reports": "reportRoot",
+  "roleManagement": "roleManagement",
+  "search": "searchEntity",
+  "security": "security",
+  "solutions": "solutionsRoot",
+  "storage": "storage",
+  "teamwork": "teamwork",
+  "tenantRelationships": "tenantRelationship"
+ },
+ "entity_types": {
+  "baseItem": {
+   "base": "entity",
+   "key": [],
+   "navigation": {},
+   "properties": {
+    "createdBy": "graph.identitySet",
+    "createdDateTime": "Edm.DateTimeOffset",
+    "description": "Edm.String",
+    "eTag": "Edm.String",
+    "lastModifiedBy": "graph.identitySet",
+    "lastModifiedDateTime": "Edm.DateTimeOffset",
+    "name": "Edm.String",
+    "parentReference": "graph.itemReference",
+    "webUrl": "Edm.String"
+   }
+  },
+  "callTranscript": {
+   "base": "entity",
+   "key": [],
+   "navigation": {},
+   "properties": {
+    "content": "Edm.Stream"
+   }
+  },
+  "channel": {
+   "base": "entity",
+   "key": [],
+   "navigation": {
+    "messages": {
+     "type": "chatMessage",
+     "collection": true
+    },
+    "tabs": {
+     "type": "teamsTab",
+     "collection": true
+    }
+   },
+   "properties": {}
+  },
+  "chat": {
+   "base": "entity",
+   "key": [],
+   "navigation": {
+    "messages": {
+     "type": "chatMessage",
+     "collection": true
+    }
+   },
+   "properties": {}
+  },
+  "chatMessage": {
+   "base": "entity",
+   "key": [],
+   "navigation": {},
+   "properties": {
+    "attachments": "Collection(graph.chatMessageAttachment)",
+    "body": "graph.itemBody",
+    "channelIdentity": "graph.channelIdentity",
+    "chatId": "Edm.String",
+    "createdDateTime": "Edm.DateTimeOffset",
+    "deletedDateTime": "Edm.DateTimeOffset",
+    "etag": "Edm.String",
+    "eventDetail": "graph.eventMessageDetail",
+    "from": "graph.chatMessageFromIdentitySet",
+    "importance": "graph.chatMessageImportance",
+    "lastEditedDateTime": "Edm.DateTimeOffset",
+    "lastModifiedDateTime": "Edm.DateTimeOffset",
+    "locale": "Edm.String",
+    "mentions": "Collection(graph.chatMessageMention)",
+    "messageHistory": "Collection(graph.chatMessageHistoryItem)",
+    "messageType": "graph.chatMessageType",
+    "policyViolation": "graph.chatMessagePolicyViolation",
+    "reactions": "Collection(graph.chatMessageReaction)",
+    "replyToId": "Edm.String",
+    "subject": "Edm.String",
+    "summary": "Edm.String",
+    "webUrl": "Edm.String"
+   }
+  },
+  "columnDefinition": {
+   "base": "entity",
+   "key": [],
+   "navigation": {},
+   "properties": {}
+  },
+  "directoryObject": {
+   "base": "entity",
+   "key": [],
+   "navigation": {},
+   "properties": {}
+  },
+  "drive": {
+   "base": "baseItem",
+   "key": [],
+   "navigation": {
+    "items": {
+     "type": "driveItem",
+     "collection": true
+    },
+    "list": {
+     "type": "list",
+     "collection": false
+    },
+    "root": {
+     "type": "driveItem",
+     "collection": false
+    }
+   },
+   "properties": {}
+  },
+  "driveItem": {
+   "base": "baseItem",
+   "key": [],
+   "navigation": {
+    "children": {
+     "type": "driveItem",
+     "collection": true
+    },
+    "listItem": {
+     "type": "listItem",
+     "collection": false
+    },
+    "thumbnails": {
+     "type": "thumbnailSet",
+     "collection": true
+    },
+    "workbook": {
+     "type": "workbook",
+     "collection": false
+    }
+   },
+   "properties": {
+    "content": "Edm.Stream"
+   }
+  },
+  "entity": {
+   "base": null,
+   "key": [
+    "id"
+   ],
+   "navigation": {},
+   "properties": {
+    "id": "Edm.String"
+   }
+  },
+  "event": {
+   "base": "outlookItem",
+   "key": [],
+   "navigation": {},
+   "properties": {}
+  },
+  "fieldValueSet": {
+   "base": "entity",
+   "key": [],
+   "navigation": {},
+   "properties": {}
+  },
+  "group": {
+   "base": "directoryObject",
+   "key": [],
+   "navigation": {
+    "members": {
+     "type": "directoryObject",
+     "collection": true
+    }
+   },
+   "properties": {}
+  },
+  "list": {
+   "base": "baseItem",
+   "key": [],
+   "navigation": {
+    "columns": {
+     "type": "columnDefinition",
+     "collection": true
+    },
+    "drive": {
+     "type": "drive",
+     "collection": false
+    },
+    "items": {
+     "type": "listItem",
+     "collection": true
+    }
+   },
+   "properties": {}
+  },
+  "listItem": {
+   "base": "baseItem",
+   "key": [],
+   "navigation": {
+    "fields": {
+     "type": "fieldValueSet",
+     "collection": false
+    },
+    "versions": {
+     "type": "listItemVersion",
+     "collection": true
+    }
+   },
+   "properties": {
+    "contentType": "graph.contentTypeInfo",
+    "deleted": "graph.deleted",
+    "sharepointIds": "graph.sharepointIds"
+   }
+  },
+  "listItemVersion": {
+   "base": "baseItemVersion",
+   "key": [],
+   "navigation": {},
+   "properties": {}
+  },
+  "mailFolder": {
+   "base": "entity",
+   "key": [],
+   "navigation": {
+    "childFolders": {
+     "type": "mailFolder",
+     "collection": true
+    },
+    "messages": {
+     "type": "message",
+     "collection": true
+    }
+   },
+   "properties": {}
+  },
+  "message": {
+   "base": "outlookItem",
+   "key": [],
+   "navigation": {},
+   "properties": {}
+  },
+  "onlineMeeting": {
+   "base": "onlineMeetingBase",
+   "key": [],
+   "navigation": {
+    "transcripts": {
+     "type": "callTranscript",
+     "collection": true
+    }
+   },
+   "properties": {}
+  },
+  "organization": {
+   "base": "directoryObject",
+   "key": [],
+   "navigation": {},
+   "properties": {}
+  },
+  "outlookItem": {
+   "base": "entity",
+   "key": [],
+   "navigation": {},
+   "properties": {}
+  },
+  "planner": {
+   "base": "entity",
+   "key": [],
+   "navigation": {
+    "tasks": {
+     "type": "plannerTask",
+     "collection": true
+    }
+   },
+   "properties": {}
+  },
+  "plannerTask": {
+   "base": "entity",
+   "key": [],
+   "navigation": {},
+   "properties": {}
+  },
+  "sharedDriveItem": {
+   "base": "baseItem",
+   "key": [],
+   "navigation": {
+    "driveItem": {
+     "type": "driveItem",
+     "collection": false
+    }
+   },
+   "properties": {}
+  },
+  "site": {
+   "base": "baseItem",
+   "key": [],
+   "navigation": {
+    "drive": {
+     "type": "drive",
+     "collection": false
+    },
+    "drives": {
+     "type": "drive",
+     "collection": true
+    },
+    "lists": {
+     "type": "list",
+     "collection": true
+    }
+   },
+   "properties": {}
+  },
+  "subscription": {
+   "base": "entity",
+   "key": [],
+   "navigation": {},
+   "properties": {}
+  },
+  "team": {
+   "base": "entity",
+   "key": [],
+   "navigation": {
+    "channels": {
+     "type": "channel",
+     "collection": true
+    }
+   },
+   "properties": {}
+  },
+  "teamsTab": {
+   "base": "entity",
+   "key": [],
+   "navigation": {},
+   "properties": {}
+  },
+  "thumbnailSet": {
+   "base": "entity",
+   "key": [],
+   "navigation": {},
+   "properties": {}
+  },
+  "todo": {
+   "base": "entity",
+   "key": [],
+   "navigation": {
+    "lists": {
+     "type": "todoTaskList",
+     "collection": true
+    }
+   },
+   "properties": {}
+  },
+  "todoTask": {
+   "base": "entity",
+   "key": [],
+   "navigation": {},
+   "properties": {}
+  },
+  "todoTaskList": {
+   "base": "entity",
+   "key": [],
+   "navigation": {
+    "tasks": {
+     "type": "todoTask",
+     "collection": true
+    }
+   },
+   "properties": {}
+  },
+  "user": {
+   "base": "directoryObject",
+   "key": [],
+   "navigation": {
+    "calendarView": {
+     "type": "event",
+     "collection": true
+    },
+    "drive": {
+     "type": "drive",
+     "collection": false
+    },
+    "events": {
+     "type": "event",
+     "collection": true
+    },
+    "mailFolders": {
+     "type": "mailFolder",
+     "collection": true
+    },
+    "messages": {
+     "type": "message",
+     "collection": true
+    },
+    "onlineMeetings": {
+     "type": "onlineMeeting",
+     "collection": true
+    },
+    "todo": {
+     "type": "todo",
+     "collection": false
+    }
+   },
+   "properties": {}
+  },
+  "workbook": {
+   "base": "entity",
+   "key": [],
+   "navigation": {
+    "worksheets": {
+     "type": "workbookWorksheet",
+     "collection": true
+    }
+   },
+   "properties": {}
+  },
+  "workbookRange": {
+   "base": "entity",
+   "key": [],
+   "navigation": {
+    "format": {
+     "type": "workbookRangeFormat",
+     "collection": false
+    }
+   },
+   "properties": {}
+  },
+  "workbookRangeFont": {
+   "base": "entity",
+   "key": [],
+   "navigation": {},
+   "properties": {}
+  },
+  "workbookRangeFormat": {
+   "base": "entity",
+   "key": [],
+   "navigation": {
+    "font": {
+     "type": "workbookRangeFont",
+     "collection": false
+    }
+   },
+   "properties": {}
+  },
+  "workbookTable": {
+   "base": "entity",
+   "key": [],
+   "navigation": {},
+   "properties": {}
+  },
+  "workbookWorksheet": {
+   "base": "entity",
+   "key": [],
+   "navigation": {
+    "tables": {
+     "type": "workbookTable",
+     "collection": true
+    }
+   },
+   "properties": {}
+  }
+ },
+ "complex_types": {
+  "channelIdentity": {
+   "base": null,
+   "properties": {
+    "channelId": "Edm.String",
+    "teamId": "Edm.String"
+   }
+  },
+  "chatMessageAttachment": {
+   "base": null,
+   "properties": {
+    "content": "Edm.String",
+    "contentType": "Edm.String",
+    "contentUrl": "Edm.String",
+    "id": "Edm.String",
+    "name": "Edm.String",
+    "teamsAppId": "Edm.String",
+    "thumbnailUrl": "Edm.String"
+   }
+  },
+  "chatMessageFromIdentitySet": {
+   "base": "identitySet",
+   "properties": {}
+  },
+  "chatMessageHistoryItem": {
+   "base": null,
+   "properties": {
+    "actions": "graph.chatMessageActions",
+    "modifiedDateTime": "Edm.DateTimeOffset",
+    "reaction": "graph.chatMessageReaction"
+   }
+  },
+  "chatMessageMention": {
+   "base": null,
+   "properties": {
+    "id": "Edm.Int32",
+    "mentionText": "Edm.String",
+    "mentioned": "graph.chatMessageMentionedIdentitySet"
+   }
+  },
+  "chatMessageMentionedIdentitySet": {
+   "base": "identitySet",
+   "properties": {
+    "conversation": "graph.teamworkConversationIdentity"
+   }
+  },
+  "chatMessagePolicyViolation": {
+   "base": null,
+   "properties": {
+    "dlpAction": "graph.chatMessagePolicyViolationDlpActionTypes",
+    "justificationText": "Edm.String",
+    "policyTip": "graph.chatMessagePolicyViolationPolicyTip",
+    "userAction": "graph.chatMessagePolicyViolationUserActionTypes",
+    "verdictDetails": "graph.chatMessagePolicyViolationVerdictDetailsTypes"
+   }
+  },
+  "chatMessagePolicyViolationPolicyTip": {
+   "base": null,
+   "properties": {
+    "complianceUrl": "Edm.String",
+    "generalText": "Edm.String",
+    "matchedConditionDescriptions": "Collection(Edm.String)"
+   }
+  },
+  "chatMessageReaction": {
+   "base": null,
+   "properties": {
+    "createdDateTime": "Edm.DateTimeOffset",
+    "displayName": "Edm.String",
+    "reactionContentUrl": "Edm.String",
+    "reactionType": "Edm.String",
+    "user": "graph.chatMessageReactionIdentitySet"
+   }
+  },
+  "chatMessageReactionIdentitySet": {
+   "base": "identitySet",
+   "properties": {}
+  },
+  "contentTypeInfo": {
+   "base": null,
+   "properties": {
+    "id": "Edm.String",
+    "name": "Edm.String"
+   }
+  },
+  "deleted": {
+   "base": null,
+   "properties": {
+    "state": "Edm.String"
+   }
+  },
+  "eventMessageDetail": {
+   "base": null,
+   "properties": {}
+  },
+  "identity": {
+   "base": null,
+   "properties": {
+    "displayName": "Edm.String",
+    "id": "Edm.String"
+   }
+  },
+  "identitySet": {
+   "base": null,
+   "properties": {
+    "application": "graph.identity",
+    "device": "graph.identity",
+    "user": "graph.identity"
+   }
+  },
+  "itemBody": {
+   "base": null,
+   "properties": {
+    "content": "Edm.String",
+    "contentType": "graph.bodyType"
+   }
+  },
+  "itemReference": {
+   "base": null,
+   "properties": {
+    "driveId": "Edm.String",
+    "driveType": "Edm.String",
+    "id": "Edm.String",
+    "name": "Edm.String",
+    "path": "Edm.String",
+    "shareId": "Edm.String",
+    "sharepointIds": "graph.sharepointIds",
+    "siteId": "Edm.String"
+   }
+  },
+  "sharepointIds": {
+   "base": null,
+   "properties": {
+    "listId": "Edm.String",
+    "listItemId": "Edm.String",
+    "listItemUniqueId": "Edm.String",
+    "siteId": "Edm.String",
+    "siteUrl": "Edm.String",
+    "tenantId": "Edm.String",
+    "webId": "Edm.String"
+   }
+  },
+  "teamworkConversationIdentity": {
+   "base": "identity",
+   "properties": {
+    "conversationIdentityType": "graph.teamworkConversationIdentityType"
+   }
+  }
+ },
+ "enum_types": {
+  "bodyType": [
+   "text",
+   "html"
+  ],
+  "chatMessageActions": [
+   "reactionAdded",
+   "reactionRemoved",
+   "actionUndefined",
+   "unknownFutureValue"
+  ],
+  "chatMessageImportance": [
+   "normal",
+   "high",
+   "urgent",
+   "unknownFutureValue"
+  ],
+  "chatMessagePolicyViolationDlpActionTypes": [
+   "none",
+   "notifySender",
+   "blockAccess",
+   "blockAccessExternal"
+  ],
+  "chatMessagePolicyViolationUserActionTypes": [
+   "none",
+   "override",
+   "reportFalsePositive"
+  ],
+  "chatMessagePolicyViolationVerdictDetailsTypes": [
+   "none",
+   "allowFalsePositiveOverride",
+   "allowOverrideWithoutJustification",
+   "allowOverrideWithJustification"
+  ],
+  "chatMessageType": [
+   "message",
+   "chatEvent",
+   "typing",
+   "unknownFutureValue",
+   "systemEventMessage"
+  ],
+  "teamworkConversationIdentityType": [
+   "team",
+   "channel",
+   "chat",
+   "unknownFutureValue"
+  ]
+ },
+ "operations": {
+  "Collection(directoryObject)": {
+   "delta": {
+    "kind": "function",
+    "returns": "Collection(directoryObject)"
+   }
+  },
+  "Collection(group)": {
+   "delta": {
+    "kind": "function",
+    "returns": "Collection(group)"
+   }
+  },
+  "Collection(listItem)": {
+   "delta": {
+    "kind": "function",
+    "returns": "Collection(listItem)"
+   }
+  },
+  "Collection(workbookTable)": {
+   "add": {
+    "kind": "action",
+    "returns": "workbookTable"
+   }
+  },
+  "channel": {
+   "archive": {
+    "kind": "action",
+    "returns": null
+   }
+  },
+  "driveItem": {
+   "createUploadSession": {
+    "kind": "action",
+    "returns": "uploadSession"
+   },
+   "delta": {
+    "kind": "function",
+    "returns": "Collection(driveItem)"
+   },
+   "search": {
+    "kind": "function",
+    "returns": "Collection(driveItem)"
+   }
+  },
+  "message": {
+   "move": {
+    "kind": "action",
+    "returns": "message"
+   }
+  },
+  "user": {
+   "sendMail": {
+    "kind": "action",
+    "returns": null
+   }
+  },
+  "workbookWorksheet": {
+   "range": {
+    "kind": "function",
+    "returns": "workbookRange"
+   }
+  }
+ }
+}

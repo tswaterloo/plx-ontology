@@ -1,0 +1,112 @@
+{
+ "$schema": "_process.schema.json",
+ "format": "plx-process-graph/v1",
+ "id": "ao_packet",
+ "description": "Ricardo's quality AO packet as its paper records the run (Form 072B AO form p1, shop-floor sheet p3, FG inspection / release sheet Form 010 p11): the AO issued with its lot, production recorded, QA/QC checked, and finished goods released by QA, each read from the packet's own machine-read fields (leads cited to the scan). A blank field is unknown, never a no (document_fields: a blank is never zero or a match). The release is due by the packet's own required date. Where the paper and FileMaker disagree is reported as the answer's conflicts (document_fields attests), never resolved; the FM side of the run is the manufacturing_order process.",
+ "root_type": "AssemblyOrderPacket",
+ "tier_floor": "stored_by_text_join",
+ "stages": [
+  {
+   "id": "ao_issued",
+   "label": "AO issued",
+   "description": "The AO form names its AO lot (AO LOT#).",
+   "owner_role": "OPS",
+   "evidence": [
+    {
+     "object_type": "AssemblyOrderPacket",
+     "paths": [
+      []
+     ],
+     "predicate": {
+      "kind": "present",
+      "property": "ao_lot",
+      "blank": "unknown"
+     }
+    }
+   ]
+  },
+  {
+   "id": "production_recorded",
+   "label": "Production recorded",
+   "description": "The shop-floor sheet records a production date or a filled quantity.",
+   "owner_role": "PROD",
+   "evidence": [
+    {
+     "object_type": "AssemblyOrderPacket",
+     "paths": [
+      []
+     ],
+     "predicate": {
+      "kind": "present",
+      "property": "production_date",
+      "blank": "unknown"
+     }
+    },
+    {
+     "object_type": "AssemblyOrderPacket",
+     "paths": [
+      []
+     ],
+     "predicate": {
+      "kind": "present",
+      "property": "filled_quantity",
+      "blank": "unknown"
+     }
+    }
+   ]
+  },
+  {
+   "id": "qc_checked",
+   "label": "QA/QC checked",
+   "description": "The shop-floor sheet's QA/QC checked box is initialled.",
+   "owner_role": "QC",
+   "evidence": [
+    {
+     "object_type": "AssemblyOrderPacket",
+     "paths": [
+      []
+     ],
+     "predicate": {
+      "kind": "present",
+      "property": "qc_checked",
+      "blank": "unknown"
+     }
+    }
+   ]
+  },
+  {
+   "id": "fg_released",
+   "label": "FG released",
+   "description": "The FG inspection / release sheet carries QA's release date.",
+   "owner_role": "QA",
+   "evidence": [
+    {
+     "object_type": "AssemblyOrderPacket",
+     "paths": [
+      []
+     ],
+     "predicate": {
+      "kind": "present",
+      "property": "qa_release_date",
+      "blank": "unknown"
+     }
+    }
+   ],
+   "due": {
+    "object_type": "AssemblyOrderPacket",
+    "paths": [
+     []
+    ],
+    "property": "required_date",
+    "note": "The REQUIRED DATE printed on the AO form (often blank: then no due date is stated)."
+   }
+  }
+ ],
+ "evidence": [
+  "docs/reference/cases-and-artifacts.md (3.2 the AO packet structure, 3.3 what each document shows, 3.6 Ricardo's process maps)",
+  "ontology/schema/document_fields.json (class ao_packet fields and attests)",
+  "ontology/schema/domains/quality.json (AssemblyOrderPacket)",
+  "plx-customer-portal:portal/src/lib/policies/seed-rules.ts@48d76e835 (ROUTING_DEPARTMENTS: owner_role is a Portal Department code, what a rule's PolicyApprovalTypeDepartment rows route a WorkItem to, portal/prisma/schema.prisma@48d76e835 :1099, :8467)",
+  "Every other stage owner is this graph's declaration pending PLX review."
+ ]
+}

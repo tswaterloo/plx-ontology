@@ -1,0 +1,743 @@
+{
+ "$schema": "_process.schema.json",
+ "format": "plx-process-graph/v1",
+ "id": "purchase_to_invoice",
+ "description": "Procure-to-pay as Portal and BC run it (BC transaction mapping brief, P2P; Vince's Packaging Procure-to-GL Map stages 11, 13, 16, 17 and 19): purchase order, supplier confirmation (document-derived, optional), warehouse receipt(s) (BC purchase receipt, receive-only), vendor invoice posted in BC, and its G/L entries. Three-way match is the quantity check below: PO line vs receipt quantity, receipt vs invoice quantity, PO vs invoice unit price. Payment is the last stage: BC marks a posted invoice Paid once payments and applied credit memos settle it (posted vendor payments and vendor ledger entries are not captured; vendor payment journal lines are captured as pending Payment objects, never proof of a payment: docs/decisions/2026-10-07-bc-finance-2-payment-ledger.md); a credit memo applied to the PO's invoices is the optional vendor_credit stage.",
+ "root_type": "PurchaseOrder",
+ "tier_floor": "stored_by_text_join",
+ "stages": [
+  {
+   "id": "purchase_order",
+   "label": "Purchase order",
+   "description": "The PO is issued by the shared purchase-order status definition (operating.po_status: a gold or BC draft is not issued, a cancelled PO is not live, an unmapped word is unknown), or an FM or Sage purchase order record.",
+   "owner_role": "PROC",
+   "evidence": [
+    {
+     "object_type": "PurchaseOrder",
+     "bindings": [
+      "portal.app_purchase_order"
+     ],
+     "paths": [
+      []
+     ],
+     "predicate": {
+      "kind": "po_status",
+      "quantifier": "all"
+     },
+     "events": [
+      "PurchaseOrder.created",
+      "PurchaseOrder.approved"
+     ]
+    },
+    {
+     "object_type": "PurchaseOrder",
+     "bindings": [
+      "bc.purchase_orders"
+     ],
+     "paths": [
+      []
+     ],
+     "predicate": {
+      "kind": "po_status",
+      "quantifier": "all"
+     },
+     "events": [
+      "PurchaseOrder.issued"
+     ],
+     "note": "BC API v2.0 purchaseOrder status (captured: integrations/bc_purchase.py SELECT) read by the shared definition: Draft is a PO not yet released, so not issued, as a gold DRAFT is not; an unreadable status leaves the stage unknown, never issued."
+    },
+    {
+     "object_type": "PurchaseOrder",
+     "bindings": [
+      "portal.fm_generated_purchase_order"
+     ],
+     "paths": [
+      []
+     ],
+     "predicate": {
+      "kind": "po_status",
+      "quantifier": "all"
+     },
+     "events": [
+      "PurchaseOrder.issued"
+     ],
+     "note": "FileMaker generated_purchase_order header read by the shared definition (operating.po_status), never by existence: DRAFT is not issued, Cancel is ignored, an unmapped or null word leaves the stage unknown. Legacy only for FileMaker: since staging 38cd3f3 Generate PO writes app_purchase_order and no generated_purchase_order (359e2f0 TASK-2651)."
+    },
+    {
+     "object_type": "PurchaseOrder",
+     "bindings": [
+      "portal.sage_po_header"
+     ],
+     "paths": [
+      []
+     ],
+     "predicate": {
+      "kind": "exists"
+     },
+     "events": [
+      "PurchaseOrder.sage_ordered"
+     ],
+     "note": "Sage PO header: its existence evidences the PO (Sage iscomplete is not mapped by the shared definition)."
+    }
+   ]
+  },
+  {
+   "id": "supplier_confirmation",
+   "label": "Supplier confirmation",
+   "optional": true,
+   "description": "The supplier confirmed the PO (order confirmation / proforma invoice). Portal and BC record none (runner.ts po.sent_unconfirmed_3d; map stage 13: vendor confirmation and PI number are Missing), so the evidence is a document-derived SupplierConfirmation read from captured mail attachments and SharePoint files (ontology/document_fields.py) and linked to the PO it names. Such a link is a lead: reported in the stage's gap, never counted as present; a reviewed link counts. Optional: receiving never waits on it.",
+   "owner_role": "PROC",
+   "evidence": [
+    {
+     "object_type": "SupplierConfirmation",
+     "paths": [
+      [
+       {
+        "link": "SupplierConfirmation.confirms",
+        "direction": "reverse"
+       }
+      ]
+     ],
+     "predicate": {
+      "kind": "exists"
+     },
+     "note": "Document-field links (SupplierConfirmation.confirms, ontology/document_fields.py store_document_links) and recorded reviews; a machine-read reference alone is a lead, never evidence.",
+     "fallback_paths": [
+      [
+       {
+        "link": "PurchaseOrder.same_record_as",
+        "direction": "forward"
+       },
+       {
+        "link": "SupplierConfirmation.confirms",
+        "direction": "reverse"
+       }
+      ],
+      [
+       {
+        "link": "PurchaseOrder.same_record_as",
+        "direction": "reverse"
+       },
+       {
+        "link": "SupplierConfirmation.confirms",
+        "direction": "reverse"
+       }
+      ]
+     ]
+    }
+   ],
+   "requires": {
+    "*": [
+     "stage:purchase_order"
+    ]
+   },
+   "source_note": "plx-customer-portal:portal/src/lib/work-routing/runner.ts@c3ffda3 (po.sent_unconfirmed_3d: \"The portal records no vendor confirmation and no sent-at\"); operating/process_stage_map.json stage 13."
+  },
+  {
+   "id": "receipt",
+   "label": "Receipt",
+   "description": "Goods were received against the PO (a receipt record of the PO; of its verified twin only when the PO's own system holds none, as the received side reads it).",
+   "owner_role": "WH",
+   "evidence": [
+    {
+     "object_type": "Receipt",
+     "paths": [
+      [
+       {
+        "link": "Receipt.receives",
+        "direction": "reverse"
+       }
+      ]
+     ],
+     "predicate": {
+      "kind": "exists"
+     },
+     "fallback_paths": [
+      [
+       {
+        "link": "PurchaseOrder.same_record_as",
+        "direction": "forward"
+       },
+       {
+        "link": "Receipt.receives",
+        "direction": "reverse"
+       }
+      ],
+      [
+       {
+        "link": "PurchaseOrder.same_record_as",
+        "direction": "reverse"
+       },
+       {
+        "link": "Receipt.receives",
+        "direction": "reverse"
+       }
+      ]
+     ],
+     "note": "Since staging 38cd3f3 a packaging receipt is a portal app_receipt (PO_RECEIPT, receipt_number = the RP lab id, PO by exact po_number) with its line and quarantine lot, never a FileMaker receiptpack row (5cade1b TASK-2652); raw receipts are still FileMaker rows copied by upsertGoldReceipt."
+    }
+   ],
+   "requires": {
+    "*": [
+     "stage:purchase_order"
+    ]
+   }
+  },
+  {
+   "id": "vendor_invoice",
+   "label": "Vendor invoice",
+   "description": "A BC purchase invoice for the PO (or, only when the PO's own system holds none, for its verified BC twin, or naming the PO's number as the Portal matches invoices: PurchaseInvoice.names_order, counted only when one company's records name it) exists and is not a draft or cancelled.",
+   "owner_role": "FIN",
+   "evidence": [
+    {
+     "object_type": "PurchaseInvoice",
+     "paths": [
+      [
+       {
+        "link": "PurchaseInvoice.invoices",
+        "direction": "reverse"
+       }
+      ]
+     ],
+     "predicate": {
+      "kind": "status",
+      "property": "status",
+      "compare": "upper",
+      "not_done": [
+       "DRAFT"
+      ],
+      "ignore": [
+       "CANCELED",
+       "CANCELLED"
+      ],
+      "quantifier": "any"
+     },
+     "fallback_paths": [
+      [
+       {
+        "link": "PurchaseOrder.same_record_as",
+        "direction": "forward"
+       },
+       {
+        "link": "PurchaseInvoice.invoices",
+        "direction": "reverse"
+       }
+      ],
+      [
+       {
+        "link": "PurchaseOrder.same_record_as",
+        "direction": "reverse"
+       },
+       {
+        "link": "PurchaseInvoice.invoices",
+        "direction": "reverse"
+       }
+      ],
+      [
+       {
+        "link": "PurchaseInvoice.names_order",
+        "direction": "reverse"
+       }
+      ]
+     ]
+    }
+   ],
+   "requires": {
+    "*": [
+     "stage:purchase_order"
+    ]
+   }
+  },
+  {
+   "id": "gl_posting",
+   "label": "G/L posting",
+   "description": "The vendor invoice reached the general ledger (G/L entries with its document number).",
+   "owner_role": "FIN",
+   "evidence": [
+    {
+     "object_type": "GeneralLedgerEntry",
+     "paths": [
+      [
+       {
+        "link": "PurchaseInvoice.invoices",
+        "direction": "reverse"
+       },
+       {
+        "link": "GeneralLedgerEntry.for_purchase_invoice",
+        "direction": "reverse"
+       }
+      ]
+     ],
+     "predicate": {
+      "kind": "exists"
+     },
+     "events": [
+      "GeneralLedgerEntry.posted"
+     ],
+     "fallback_paths": [
+      [
+       {
+        "link": "PurchaseOrder.same_record_as",
+        "direction": "forward"
+       },
+       {
+        "link": "PurchaseInvoice.invoices",
+        "direction": "reverse"
+       },
+       {
+        "link": "GeneralLedgerEntry.for_purchase_invoice",
+        "direction": "reverse"
+       }
+      ],
+      [
+       {
+        "link": "PurchaseInvoice.names_order",
+        "direction": "reverse"
+       },
+       {
+        "link": "GeneralLedgerEntry.for_purchase_invoice",
+        "direction": "reverse"
+       }
+      ]
+     ]
+    }
+   ],
+   "requires": {
+    "*": [
+     "stage:vendor_invoice"
+    ]
+   }
+  },
+  {
+   "id": "vendor_credit",
+   "label": "Vendor credit",
+   "optional": true,
+   "description": "A posted BC purchase credit memo is applied to an invoice of the PO (PurchaseCreditMemo.applies_to: invoiceId, else a number naming one invoice of the same company). Its amount is netted by its document type, never its sign. A memo naming no invoice reaches no PO and is never netted into one; it is reached from its vendor (PurchaseCreditMemo.credited_by). Optional: most invoices are never credited, so it never positions current_stage.",
+   "owner_role": "FIN",
+   "evidence": [
+    {
+     "object_type": "PurchaseCreditMemo",
+     "paths": [
+      [
+       {
+        "link": "PurchaseInvoice.invoices",
+        "direction": "reverse"
+       },
+       {
+        "link": "PurchaseCreditMemo.applies_to",
+        "direction": "reverse"
+       }
+      ]
+     ],
+     "predicate": {
+      "kind": "status",
+      "property": "status",
+      "compare": "upper",
+      "not_done": [
+       "DRAFT",
+       "IN REVIEW"
+      ],
+      "ignore": [
+       "CANCELED",
+       "CANCELLED",
+       "CORRECTIVE"
+      ],
+      "quantifier": "any"
+     },
+     "fallback_paths": [
+      [
+       {
+        "link": "PurchaseOrder.same_record_as",
+        "direction": "forward"
+       },
+       {
+        "link": "PurchaseInvoice.invoices",
+        "direction": "reverse"
+       },
+       {
+        "link": "PurchaseCreditMemo.applies_to",
+        "direction": "reverse"
+       }
+      ],
+      [
+       {
+        "link": "PurchaseOrder.same_record_as",
+        "direction": "reverse"
+       },
+       {
+        "link": "PurchaseInvoice.invoices",
+        "direction": "reverse"
+       },
+       {
+        "link": "PurchaseCreditMemo.applies_to",
+        "direction": "reverse"
+       }
+      ],
+      [
+       {
+        "link": "PurchaseInvoice.names_order",
+        "direction": "reverse"
+       },
+       {
+        "link": "PurchaseCreditMemo.applies_to",
+        "direction": "reverse"
+       }
+      ]
+     ],
+     "events": [
+      "PurchaseCreditMemo.posted"
+     ]
+    }
+   ],
+   "requires": {
+    "*": [
+     "stage:vendor_invoice"
+    ]
+   }
+  },
+  {
+   "id": "vendor_payment",
+   "label": "Vendor payment",
+   "description": "Every posted, live BC purchase invoice of the PO (or, only when the PO's own system holds none, of its verified BC twin) is Paid: settled by payments and applied credit memos. An Open invoice is not paid; how much is still owed is its remaining_amount (plx.aggregate, per currency), a gap where BC serves none.",
+   "owner_role": "FIN",
+   "evidence": [
+    {
+     "object_type": "PurchaseInvoice",
+     "paths": [
+      [
+       {
+        "link": "PurchaseInvoice.invoices",
+        "direction": "reverse"
+       }
+      ]
+     ],
+     "predicate": {
+      "kind": "status",
+      "property": "status",
+      "compare": "upper",
+      "done": [
+       "PAID"
+      ],
+      "ignore": [
+       "DRAFT",
+       "IN REVIEW",
+       "CANCELED",
+       "CANCELLED",
+       "CORRECTIVE"
+      ],
+      "quantifier": "all"
+     },
+     "note": "BC API v2.0 purchaseInvoice status: Draft and In Review are not posted, Canceled and Corrective were reversed by a corrective credit memo; Open is posted and not settled, Paid is settled (plx-customer-portal@790256c portal/src/lib/business-central/inbound.ts projectPurchaseInvoice: status=Paid is authoritative)",
+     "fallback_paths": [
+      [
+       {
+        "link": "PurchaseOrder.same_record_as",
+        "direction": "forward"
+       },
+       {
+        "link": "PurchaseInvoice.invoices",
+        "direction": "reverse"
+       }
+      ],
+      [
+       {
+        "link": "PurchaseOrder.same_record_as",
+        "direction": "reverse"
+       },
+       {
+        "link": "PurchaseInvoice.invoices",
+        "direction": "reverse"
+       }
+      ],
+      [
+       {
+        "link": "PurchaseInvoice.names_order",
+        "direction": "reverse"
+       }
+      ]
+     ],
+     "events": [
+      "PurchaseInvoice.due"
+     ]
+    }
+   ],
+   "requires": {
+    "*": [
+     "stage:vendor_invoice"
+    ]
+   }
+  }
+ ],
+ "quantity_checks": [
+  {
+   "id": "three_way_match",
+   "description": "Per item (records joined only by verified/reviewed Product.same_record_as): ordered vs received quantity (one-sided, as Portal), received vs invoiced quantity, PO unit price vs invoice unit cost. Each side's quantities come from one system of record: the PO's own records, or its twin's only when the PO's own system has none (never summed together). Several receipts of one PO are summed; a Sage receipt that may cover several POs is cited, never attributed. Draft and cancelled invoices do not count. Units and currencies must agree; nothing is converted.",
+   "group_by": {
+    "object_type": "Product",
+    "identity_link": "Product.same_record_as"
+   },
+   "sides": [
+    {
+     "role": "ordered",
+     "stage": "purchase_order",
+     "object_type": "PurchaseOrderLine",
+     "paths": [
+      [
+       {
+        "link": "PurchaseOrderLine.line_of",
+        "direction": "reverse"
+       }
+      ]
+     ],
+     "group_link": "PurchaseOrderLine.for_item",
+     "quantity": "ordered_quantity",
+     "price": [
+      "unit_price",
+      "bc_direct_unit_cost",
+      "fm_item_cost"
+     ],
+     "ignore_through": [
+      {
+       "object_type": "PurchaseOrderLine",
+       "property": "line_type",
+       "compare": "upper",
+       "values": [
+        "COMMENT",
+        "ACCOUNT",
+        "CHARGE"
+       ],
+       "evidence": "BC API v2.0 lineType: a Comment, Account (G/L), or Charge (item charge) line names no item and carries no goods quantity; Portal posts freight/landed G/L lines as lineType Account beside Item lines (plx-customer-portal:portal/src/lib/business-central/outbox-drain.ts@8e3a951)"
+      }
+     ]
+    },
+    {
+     "role": "received",
+     "stage": "receipt",
+     "object_type": "ReceiptLine",
+     "paths": [
+      [
+       {
+        "link": "Receipt.receives",
+        "direction": "reverse"
+       },
+       {
+        "link": "ReceiptLine.line_of",
+        "direction": "reverse"
+       }
+      ]
+     ],
+     "group_link": "ReceiptLine.for_item",
+     "quantity": "received_quantity",
+     "fallback_paths": [
+      [
+       {
+        "link": "PurchaseOrder.same_record_as",
+        "direction": "forward"
+       },
+       {
+        "link": "Receipt.receives",
+        "direction": "reverse"
+       },
+       {
+        "link": "ReceiptLine.line_of",
+        "direction": "reverse"
+       }
+      ],
+      [
+       {
+        "link": "PurchaseOrder.same_record_as",
+        "direction": "reverse"
+       },
+       {
+        "link": "Receipt.receives",
+        "direction": "reverse"
+       },
+       {
+        "link": "ReceiptLine.line_of",
+        "direction": "reverse"
+       }
+      ]
+     ],
+     "not_attributable": [
+      {
+       "link": "Receipt.receives",
+       "from_binding": "portal.sage_po_receipt_header",
+       "reason": "a Sage receipt header can cover several POs (multipor/pors) but names one, and its detail lines carry no PO key"
+      }
+     ],
+     "recorded_on": {
+      "role": "ordered",
+      "quantity": "received_quantity",
+      "evidence": "plx-customer-portal:portal/src/lib/mrp/apply-po-line-receive.ts@0dab896 applyPoLineReceive: each PO-linked receipt adds receiveQtyToPurchaseUom's purchase-UoM delta to app_purchase_order_line.quantity_received (which po-fulfillment-status.ts reads)",
+      "measure_id": "po_line_recorded",
+      "measure_evidence": "plx-customer-portal:portal/src/lib/mrp/apply-po-line-receive.ts@0dab896 refreshPurchaseOrderFulfillmentStatus: derivePoFulfillmentCode(SUM(quantity), SUM(quantity_received)) of the PO lines, both in purchase UoM"
+     },
+     "absent_by": {
+      "role": "ordered",
+      "quantity": "received_quantity",
+      "evidence": "BC API v2.0 purchaseOrderLine.receivedQuantity: BC raises it when a receipt of the line posts, so zero on every Item line of a completely read PO, beside a complete read of its posted receipts, proves none (docs/decisions/2026-10-14-three-way-absence-proven.md)"
+     },
+     "ignore_through": [
+      {
+       "object_type": "ReceiptLine",
+       "property": "line_type",
+       "compare": "upper",
+       "values": [
+        "COMMENT",
+        "ACCOUNT",
+        "CHARGE"
+       ],
+       "evidence": "BC API v2.0 lineType: a Comment, Account (G/L), or Charge (item charge) line names no item and carries no goods quantity; Portal posts freight/landed G/L lines as lineType Account beside Item lines (plx-customer-portal:portal/src/lib/business-central/outbox-drain.ts@8e3a951)"
+      }
+     ]
+    },
+    {
+     "role": "invoiced",
+     "stage": "vendor_invoice",
+     "object_type": "PurchaseInvoiceLine",
+     "paths": [
+      [
+       {
+        "link": "PurchaseInvoice.invoices",
+        "direction": "reverse"
+       },
+       {
+        "link": "PurchaseInvoiceLine.line_of",
+        "direction": "reverse"
+       }
+      ]
+     ],
+     "group_link": "PurchaseInvoiceLine.for_item",
+     "quantity": "invoiced_quantity",
+     "price": [
+      "unit_cost"
+     ],
+     "absent_by": {
+      "role": "ordered",
+      "quantity": "invoiced_quantity",
+      "evidence": "BC API v2.0 purchaseOrderLine.invoicedQuantity: BC raises it when an invoice of the line posts, so zero on every Item line of a completely read PO, beside a complete read of its invoices, proves none (docs/decisions/2026-10-14-three-way-absence-proven.md)"
+     },
+     "fallback_paths": [
+      [
+       {
+        "link": "PurchaseOrder.same_record_as",
+        "direction": "forward"
+       },
+       {
+        "link": "PurchaseInvoice.invoices",
+        "direction": "reverse"
+       },
+       {
+        "link": "PurchaseInvoiceLine.line_of",
+        "direction": "reverse"
+       }
+      ],
+      [
+       {
+        "link": "PurchaseOrder.same_record_as",
+        "direction": "reverse"
+       },
+       {
+        "link": "PurchaseInvoice.invoices",
+        "direction": "reverse"
+       },
+       {
+        "link": "PurchaseInvoiceLine.line_of",
+        "direction": "reverse"
+       }
+      ],
+      [
+       {
+        "link": "PurchaseInvoice.names_order",
+        "direction": "reverse"
+       },
+       {
+        "link": "PurchaseInvoiceLine.line_of",
+        "direction": "reverse"
+       }
+      ]
+     ],
+     "ignore_through": [
+      {
+       "object_type": "PurchaseInvoice",
+       "property": "status",
+       "compare": "upper",
+       "values": [
+        "DRAFT"
+       ],
+       "evidence": "plx-customer-portal:portal/src/lib/business-central/document-finance.ts@c3ffda3 summarizeDocumentFinance/classifyInvoice: status 'draft' (lower-cased) and any status containing 'cancel' are not invoiced"
+      },
+      {
+       "object_type": "PurchaseInvoice",
+       "property": "status",
+       "match": "contains_ci",
+       "values": [
+        "cancel"
+       ],
+       "evidence": "plx-customer-portal:portal/src/lib/business-central/document-finance.ts@c3ffda3 summarizeDocumentFinance/classifyInvoice: status 'draft' (lower-cased) and any status containing 'cancel' are not invoiced"
+      },
+      {
+       "object_type": "PurchaseInvoiceLine",
+       "property": "line_type",
+       "compare": "upper",
+       "values": [
+        "COMMENT",
+        "ACCOUNT",
+        "CHARGE"
+       ],
+       "evidence": "BC API v2.0 lineType: a Comment, Account (G/L), or Charge (item charge) line names no item and carries no goods quantity; Portal posts freight/landed G/L lines as lineType Account beside Item lines (plx-customer-portal:portal/src/lib/business-central/outbox-drain.ts@8e3a951)"
+      }
+     ]
+    }
+   ],
+   "compare": [
+    {
+     "roles": [
+      "ordered",
+      "received"
+     ],
+     "measure": "quantity",
+     "tolerance": "0.0001",
+     "tolerance_evidence": "plx-customer-portal:portal/src/lib/mrp/po-fulfillment-status.ts@c3ffda3 EPS = 0.0001, one-sided: received + EPS < ordered is PARTIAL, more is RECEIVED (over-receipt reported, not a mismatch)",
+     "rule": "covers"
+    },
+    {
+     "roles": [
+      "received",
+      "invoiced"
+     ],
+     "measure": "quantity",
+     "tolerance": "0",
+     "tolerance_evidence": "No receipt-vs-invoice tolerance in Portal or BC code read at c3ffda3: exact."
+    },
+    {
+     "roles": [
+      "ordered",
+      "invoiced"
+     ],
+     "measure": "price",
+     "tolerance": "0",
+     "tolerance_evidence": "No price tolerance in Portal or BC code read at c3ffda3 (purchase-line-cost.ts CLOSE_TOLERANCE picks a UoM, it is not a match tolerance): exact."
+    }
+   ]
+  }
+ ],
+ "evidence": [
+  "plx-customer-portal:docs/projects/business-central-erp-modernization/Manufacturing-BC-Transaction-Mapping-Brief.md@c3ffda3 (section 3, P2P and three-way match)",
+  "plx-customer-portal:portal/src/lib/mrp/po-fulfillment-status.ts@c3ffda3 (derivePoFulfillmentCode, EPS)",
+  "plx-customer-portal:portal/src/lib/mrp/apply-po-line-receive.ts@c3ffda3 (receipt quantity rolls onto PO lines in purchase UoM)",
+  "plx-customer-portal:portal/src/lib/business-central/document-finance.ts@c3ffda3 (classifyInvoice)",
+  "plx-customer-portal:portal/src/lib/business-central/enqueue-purchase-invoice.ts@c3ffda3 (vendor invoice from a receipt)",
+  "plx-customer-portal:portal/prisma/schema.prisma@c3ffda3 (PurchaseOrderStatus, ReceiptStatus)",
+  "plx-customer-portal:portal/src/lib/work-routing/runner.ts@c3ffda3 (po.sent_unconfirmed_3d, po.confirmed: no vendor confirmation is recorded)",
+  "plx-customer-portal:portal/src/app/mrp/purchase-orders/[id]/purchase-order-detail.tsx@c3ffda3 (ORDER_CONFIRMATION is an attachment category only)",
+  "plx-customer-portal:portal/src/lib/business-central/document-finance.ts@c3ffda3 (summarizeDocumentFinance: canceled and draft invoices excluded)",
+  "operating/process_stage_map.json (Vince's Packaging Procure-to-GL Map, stages 11 PO, 13 production complete and vendor confirmation, 16 receive, 17 landed cost, 19 BC and G/L)",
+  "plx-customer-portal:portal/src/lib/mrp/create-portal-purchase-order.ts@38cd3f3 and pack-receipt-portal.ts@38cd3f3 (359e2f0 TASK-2651 Generate PO writes app_purchase_order only; 5cade1b TASK-2652 pack receipt, QC and release on app_receipt + InventoryLot, receiptpack read-only)",
+  "sage-multi-po-receipts (Receipt.receives Sage pair capped at corroborated; never the receipt's only PO)",
+  "plx-customer-portal:portal/src/lib/business-central/inbound.ts@790256c (projectPurchaseInvoice: status=Paid is authoritative; shouldSkipMissingPostedCollection: ledger entries not published on api/v2.0)",
+  "plx-customer-portal:portal/src/lib/policies/seed-rules.ts@48d76e835 (ROUTING_DEPARTMENTS: owner_role is a Portal Department code, what a rule's PolicyApprovalTypeDepartment rows route a WorkItem to, portal/prisma/schema.prisma@48d76e835 :1099, :8467)",
+  "seed-rules.ts@48d76e835: Portal routes purchase_order to PROC (bc.purchase_approval), supplier_confirmation to PROC (procurement.po_awaiting_confirmation), receipt discrepancies to WH (wms.cycle_count). Every other stage owner is this graph's declaration pending PLX review.",
+  "plx-customer-portal:portal/src/lib/business-central/document-finance-queries.ts@b46934a (fetchPurchaseOrderFinance: a PO's invoices by TRIM(order_number); PurchaseInvoice.names_order)"
+ ]
+}

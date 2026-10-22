@@ -1,0 +1,216 @@
+{
+ "format": "plx-eval-case-card-proposals/v1",
+ "status": "PROPOSED dev cards for lead triage, never gold. Ricardo's October 2 process-map packages (ontology-file-intake, order-lifecycle-cost, po-delivery-window) and the original-backed anchors QRM-26037, Dandylion P-02289/PO-00269, PO5455, PO-00349/MIDAS2 and F-18-0025, source-conditioned on docs/reference/cases-and-artifacts.md section 3.6 and the pinned packets. Only the 12 map files are rows of examples/case_originals.json; the anchor originals (QRM files, Receiving messages, attachments, helper) are not registry rows, so those cards cite the packet. Each card names its missing outcome as missing. No amounts or expected values beyond the quoted source figures.",
+ "case": "ricardo-maps",
+ "source": {
+  "advisory": {
+   "id": "advisory:4c1fe69b043e",
+   "ref": "OntologyProject@f24406777645c071e5a5928968cdd5b3a5a7b406",
+   "path": "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json"
+  },
+  "related_advisories": [
+   {
+    "id": "advisory:006786de5454",
+    "role": "Development batch 01: these anchors plus SoapBox PO5447, 10 questions, zero clean holdout, zero host runs",
+    "ref": "OntologyProject@f24406777645c071e5a5928968cdd5b3a5a7b406",
+    "path": "context/006786de5454dcb66a83cfdd2fad4974b2545e5f61a24a75aad1b74bc288b23e.json"
+   },
+   {
+    "id": "advisory:d3bea46a055a",
+    "role": "communications-hub design context (PR1791 documents at Portal staging 59b05489)",
+    "ref": "OntologyProject@f24406777645c071e5a5928968cdd5b3a5a7b406",
+    "path": "context/d3bea46a055a85072014ba7138f76d746b3627da1e46c6d100e7fa78d9d02ec0.json"
+   },
+   {
+    "id": "advisory:5f2b9ba6bfd2",
+    "role": "Ricardo outcome review (gap-a9470d3ca26f): Q1-Q4 not_answered, Q5 missing_from_ontology; stakeholder_description_claim, not independently verified; evidence cutoff Oct 1, no fresh source queries",
+    "ref": "OntologyProject@a754848a41a492275a7c2c77aa4eb227b01a82c0",
+    "path": "context/5f2b9ba6bfd2893f9be31457479d0ebff788fbefc7727bae34c0ee7251fcb23a.json"
+   }
+  ]
+ },
+ "live_sources": [
+  {
+   "id": "qc.qrm26037_release",
+   "system": "unverified",
+   "relation": "approval or release record for QRM-26037 (signature/date fields are blank in the read DOCX)",
+   "reader": "none",
+   "evidence": "OntologyProject:docs/reference/cases-and-artifacts.md@df2c16a88bd3"
+  },
+  {
+   "id": "receiving.po5455_receipt",
+   "system": "unverified",
+   "relation": "actual receipt of PO5455 and the item received (ES-2 or Thamesurf SLES-30)",
+   "reader": "none",
+   "evidence": "OntologyProject:docs/reference/cases-and-artifacts.md@df2c16a88bd3"
+  },
+  {
+   "id": "receiving.po00349_arrival",
+   "system": "unverified",
+   "relation": "actual arrival of PO-00349 / MIDAS2 against shipment 228524",
+   "reader": "none",
+   "evidence": "OntologyProject:docs/reference/cases-and-artifacts.md@df2c16a88bd3"
+  },
+  {
+   "id": "dandylion.complaint_resolution",
+   "system": "unverified",
+   "relation": "resolution of Dandylion's October 2 missing-inventory complaint",
+   "reader": "none",
+   "evidence": "OntologyProject:docs/reference/cases-and-artifacts.md@df2c16a88bd3"
+  },
+  {
+   "id": "inventory.dandylion_posting",
+   "system": "unverified",
+   "relation": "actual inventory posting for Dandylion P-02289 / PO-00269",
+   "reader": "none",
+   "evidence": "OntologyProject:docs/reference/cases-and-artifacts.md@df2c16a88bd3"
+  },
+  {
+   "id": "qc.receiving_inspection_release",
+   "system": "unverified",
+   "relation": "receiving inspection result, accept/reject/rework decision, signer and stock disposition",
+   "reader": "none",
+   "evidence": "OntologyProject:docs/reference/cases-and-artifacts.md@df2c16a88bd3"
+  }
+ ],
+ "layers": {
+  "comprehension": "what the packages and anchors say, attributed, with partial extraction and unverified retrieval kept visible",
+  "tracing": "cost contribution from the helper; coverage is partial mass, not cost",
+  "actual_case_answerability": "UNANSWERED: each card's outcome is missing from the sources and must be named as missing, not inferred"
+ },
+ "non_goals": [
+  "Portal or BC writes",
+  "repairing a contested date or resolving an alias",
+  "treating packet replay as live original retrieval"
+ ],
+ "real_example": {
+  "batch_id": "ricardo-maps",
+  "exposure": "dev-exposed",
+  "split": "dev",
+  "as_of": "2026-10-02",
+  "cards": [
+   {
+    "id": "RM-01",
+    "layer": "comprehension",
+    "question": "What do Ricardo's three October 2 process-map packages cover, and what kind of evidence are they?",
+    "criterion": "Attribute to Ricardo Savelli Fuzito: ontology-file-intake, order-lifecycle-cost and po-delivery-window under Operations/Ricardo/process-maps, each as HTML, CSV, ontology JSON and spec.json (12 files), with 21, 18 and 15 stage records agreeing across formats. They are process documents: the originals they describe were retrieved separately, not embedded, and Claude-host retrieval of each exact original is unverified. Packet replay is not live original retrieval.",
+    "originals": [
+     "co-ad0e361eb696",
+     "co-92c5d4ce3611",
+     "co-43309f2c499d",
+     "co-b22dd5b014dd",
+     "co-4fc10ada2d57",
+     "co-f6d23ca5c12f",
+     "co-74d5ba693f2f",
+     "co-959986861c24",
+     "co-4b5768fdfd91",
+     "co-30a1e5932e2c",
+     "co-a232eeb23b8e",
+     "co-a2f708fabbc5"
+    ],
+    "live_sources": [],
+    "cites": [
+     "advisory:4c1fe69b043e"
+    ]
+   },
+   {
+    "id": "RM-02",
+    "layer": "actual_case_answerability",
+    "question": "Is QRM-26037 approved and released?",
+    "criterion": "Missing outcome: the sources do not establish signed approval or release. Report only that the populated DOCX XML and three PDFs distinguish liquid RMP-0425 from granulate, the recorded risk is 4/25 (likelihood 2 x severity 2), the signature and date fields are blank and the SDS is only page 3/7. Name the approval or release record as absent; do not infer it.",
+    "originals": [],
+    "live_sources": [
+     "qc.qrm26037_release"
+    ],
+    "cites": [
+     "advisory:4c1fe69b043e",
+     "advisory:006786de5454",
+     "advisory:5f2b9ba6bfd2"
+    ]
+   },
+   {
+    "id": "RM-03",
+    "layer": "actual_case_answerability",
+    "question": "Was Dandylion's October 2 missing-inventory complaint on P-02289 (customer reference PO-00269) resolved, and was the inventory posted?",
+    "criterion": "Missing outcome: resolution and inventory posting are unverified. Report that a 31-row/29-box workbook and 2485.pdf support the receipt-confirmation communication, that September 30's sent attachment does not resolve the October 2 complaint, and that the component join and handwriting remain unverified. Keep the customer reference PO-00269 distinct from P-02289.",
+    "originals": [],
+    "live_sources": [
+     "dandylion.complaint_resolution",
+     "inventory.dandylion_posting"
+    ],
+    "cites": [
+     "advisory:4c1fe69b043e",
+     "advisory:006786de5454",
+     "advisory:5f2b9ba6bfd2"
+    ]
+   },
+   {
+    "id": "RM-04",
+    "layer": "actual_case_answerability",
+    "question": "Was PO5455 actually received, and is the ingredient ES-2 or Thamesurf SLES-30?",
+    "criterion": "Missing outcomes: actual receipt is unverified and ES-2 versus Thamesurf SLES-30 is an unresolved alias; do not merge the two names. Report that mail and PDF support a September 18 expected arrival and 10 totes / 10,000 kg.",
+    "originals": [],
+    "live_sources": [
+     "receiving.po5455_receipt"
+    ],
+    "cites": [
+     "advisory:4c1fe69b043e",
+     "advisory:006786de5454",
+     "advisory:5f2b9ba6bfd2"
+    ]
+   },
+   {
+    "id": "RM-05",
+    "layer": "actual_case_answerability",
+    "question": "When did PO-00349 (MIDAS2) arrive?",
+    "criterion": "Missing outcome: real arrival is not established. Report that mail and slip 228524 support a September 15 shipment and 375 kg while the slip's August 26 expected delivery conflicts; present both dates and do not repair the ETA.",
+    "originals": [],
+    "live_sources": [
+     "receiving.po00349_arrival"
+    ],
+    "cites": [
+     "advisory:4c1fe69b043e",
+     "advisory:006786de5454",
+     "advisory:5f2b9ba6bfd2"
+    ]
+   },
+   {
+    "id": "RM-08",
+    "layer": "actual_case_answerability",
+    "question": "For received material, what was the inspection result, was it accepted, rejected or sent to rework, who signed, and what was the stock disposition?",
+    "criterion": "Missing outcome: inspection result, accept/reject/rework decision, signer and stock disposition are missing from the ontology and the sources (stakeholder_description_claim, not independently verified; Ricardo's outcome review, evidence cutoff Oct 1, no fresh source queries). Name each as absent; do not infer a result, decision, signer or disposition.",
+    "originals": [],
+    "live_sources": [
+     "qc.receiving_inspection_release"
+    ],
+    "cites": [
+     "advisory:4c1fe69b043e",
+     "advisory:5f2b9ba6bfd2"
+    ]
+   },
+   {
+    "id": "RM-06",
+    "layer": "tracing",
+    "question": "What does the F-18-0025 helper establish about cost?",
+    "criterion": "Report that the helper at 3d15ff87 records SLES 8% to 9% changing the contribution from 0.1184 to 0.1332, and that the three rows cover 58.79% of mass. State that this is not full cost and not a quote-to-cash outcome.",
+    "originals": [],
+    "live_sources": [],
+    "cites": [
+     "advisory:4c1fe69b043e",
+     "advisory:006786de5454"
+    ]
+   },
+   {
+    "id": "RM-07",
+    "layer": "comprehension",
+    "question": "Which identities must stay distinct when answering the Ricardo anchors, and what is not yet observed?",
+    "criterion": "Keep customer reference, ownership, receipt authority, QC release and accounting distinct. TASK-2299, TASK-2275 and TASK-2276 are documented prerequisites, not observed completion. The interim at-item-cost option is not an approved off-book rule. The communications-hub design (PR1791 documents at Portal staging 59b05489) is not implementation proof.",
+    "originals": [],
+    "live_sources": [],
+    "cites": [
+     "advisory:d3bea46a055a"
+    ]
+   }
+  ]
+ }
+}

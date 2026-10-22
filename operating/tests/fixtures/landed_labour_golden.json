@@ -1,0 +1,3675 @@
+{
+ "portal_commit": "d4d1bb247708052ddacf78ed4f47bcba0a27c375",
+ "portal_src_files": {
+  "portal/src/lib/costing/fg-routing.ts": "f2acff651f5c65c3ef15a07b7d1535aa931a18ff35177b0bc6d290a32ae32062",
+  "portal/src/lib/costing/template-cost-matrix.ts": "8d1f446f6f212b38fecdaca668e9b93f176214570b93fa4a0deb8c9d04a9e941",
+  "portal/src/lib/costing/setup-standards.ts": "e1c43408b6839a18f0eb0ceac243c5463fde8c56f53a3ae3b1002802be445502",
+  "portal/src/lib/costing/setup-standards-store.ts": "c91a198ebd5a41d1c1041f8db24a3f3cfcfcb3b58d0c42795df2e72787cd69d8",
+  "portal/src/lib/costing/fg-routing-store.ts": "00e161cae83e614bf29ceb472b9e9c9ebb8625e65eac8486565cb91c61ee45e9",
+  "portal/src/lib/costing/draft-cost-overrides.ts": "55d912bfd218833c8df868c5529e0abcfc732a99e09df41a563f57361a73ab1a",
+  "portal/src/lib/assembly-bom/draft-cost-persist.ts": "e92d0493ca17834a2d91248260e4827950a23a03ad18c4903ebb8c2811d35d63",
+  "portal/src/lib/costing/formulation-resolution.ts": "107839bcfd33795e195c9197549d9613fd40597058756aa8ba6493fa9bd6ccdc",
+  "portal/src/lib/costing/raw-cost.ts": "ac98b29bc97143ca158cb0ea4cdcf8675fbc062841e871a08b2dec0457ff06fa",
+  "portal/src/lib/costing/bom-total.ts": "25601ecc777453b3d790f6e2a699750f345995162d745bb15fb18ee2ea3b212e",
+  "portal/src/lib/costing/volume-tiers.ts": "0e3380708edcd31adcbb75a257c21b747d7e5a5f556fe952c81f3de9d526fd9b",
+  "portal/src/lib/costing/project-landed-quote.ts": "37fe87758eb9c7fde72080b2e29510d73b734199a08c5dd7fb2fe4163c1e5b4c"
+ },
+ "functions": {
+  "quoteLabourFromRouting": [
+   {
+    "args": {
+     "routing": null,
+     "assemblyRate": 22.5,
+     "opts": {
+      "runQty": 12000
+     }
+    },
+    "result": {
+     "status": "unrouted",
+     "assemblyHoursPerUnit": null,
+     "assemblyLabourPerUnit": null,
+     "reason": "no-routing"
+    }
+   },
+   {
+    "args": {
+     "routing": {
+      "standardHoursPerUnit": 0
+     },
+     "assemblyRate": 22.5
+    },
+    "result": {
+     "status": "unrouted",
+     "assemblyHoursPerUnit": null,
+     "assemblyLabourPerUnit": null,
+     "reason": "hours-missing"
+    }
+   },
+   {
+    "args": {
+     "routing": {
+      "standardHoursPerUnit": "0.004"
+     },
+     "assemblyRate": 22.5
+    },
+    "result": {
+     "status": "unrouted",
+     "assemblyHoursPerUnit": null,
+     "assemblyLabourPerUnit": null,
+     "reason": "hours-missing"
+    }
+   },
+   {
+    "args": {
+     "routing": {
+      "standardHoursPerUnit": 0.0042
+     },
+     "assemblyRate": 22.5
+    },
+    "result": {
+     "status": "routed",
+     "assemblyHoursPerUnit": 0.0042,
+     "assemblyLabourPerUnit": 0.0945,
+     "reason": "ok"
+    }
+   },
+   {
+    "args": {
+     "routing": {
+      "standardHoursPerUnit": 0.0042,
+      "standardSetupMinutes": 90,
+      "totalOperators": 3
+     },
+     "assemblyRate": 22.5,
+     "opts": {
+      "runQty": 12000
+     }
+    },
+    "result": {
+     "status": "routed",
+     "assemblyHoursPerUnit": 0.004575,
+     "assemblyLabourPerUnit": 0.1029375,
+     "reason": "ok"
+    }
+   },
+   {
+    "args": {
+     "routing": {
+      "standardHoursPerUnit": 0.0042,
+      "standardSetupMinutes": 90,
+      "totalOperators": 3
+     },
+     "assemblyRate": 22.5,
+     "opts": {
+      "runQty": null
+     }
+    },
+    "result": {
+     "status": "routed",
+     "assemblyHoursPerUnit": 0.0042,
+     "assemblyLabourPerUnit": 0.0945,
+     "reason": "ok"
+    }
+   },
+   {
+    "args": {
+     "routing": {
+      "standardHoursPerUnit": 0.0042,
+      "standardSetupMinutes": 90,
+      "totalOperators": 3
+     },
+     "assemblyRate": null,
+     "opts": {
+      "runQty": 7000
+     }
+    },
+    "result": {
+     "status": "routed",
+     "assemblyHoursPerUnit": 0.004842857142857143,
+     "assemblyLabourPerUnit": 0.10121571428571427,
+     "reason": "ok"
+    }
+   },
+   {
+    "args": {
+     "routing": {
+      "standardHoursPerUnit": 0.0042,
+      "standardSetupMinutes": 90,
+      "totalOperators": 3
+     },
+     "assemblyRate": 0,
+     "opts": {
+      "runQty": 7000
+     }
+    },
+    "result": {
+     "status": "routed",
+     "assemblyHoursPerUnit": 0.004842857142857143,
+     "assemblyLabourPerUnit": null,
+     "reason": "ok"
+    }
+   },
+   {
+    "args": {
+     "routing": {
+      "standardHoursPerUnit": 0.003,
+      "standardSetupMinutes": 30,
+      "totalOperators": 0
+     },
+     "assemblyRate": 20,
+     "opts": {
+      "runQty": 1000
+     }
+    },
+    "result": {
+     "status": "routed",
+     "assemblyHoursPerUnit": 0.003,
+     "assemblyLabourPerUnit": 0.06,
+     "reason": "ok"
+    }
+   },
+   {
+    "args": {
+     "routing": {
+      "standardHoursPerUnit": 0.003,
+      "standardSetupMinutes": 45,
+      "totalOperators": 4
+     },
+     "assemblyRate": 22.5,
+     "opts": {
+      "runQty": 30000
+     }
+    },
+    "result": {
+     "status": "routed",
+     "assemblyHoursPerUnit": 0.0031,
+     "assemblyLabourPerUnit": 0.06974999999999999,
+     "reason": "ok"
+    }
+   }
+  ],
+  "assemblyLabourPerUnit": [
+   {
+    "args": {
+     "headcount": 4,
+     "rateBpm": 50
+    },
+    "result": 0.0013333333333333333
+   },
+   {
+    "args": {
+     "headcount": 6,
+     "rateBpm": 50
+    },
+    "result": 0.002
+   },
+   {
+    "args": {
+     "headcount": 3,
+     "rateBpm": 37.5
+    },
+    "result": 0.0013333333333333333
+   },
+   {
+    "args": {
+     "headcount": 0,
+     "rateBpm": 50
+    },
+    "result": {
+     "error": "assembly labour requires positive headcount and rateBpm"
+    }
+   },
+   {
+    "args": {
+     "headcount": 4,
+     "rateBpm": 0
+    },
+    "result": {
+     "error": "assembly labour requires positive headcount and rateBpm"
+    }
+   },
+   {
+    "args": {
+     "headcount": 4,
+     "rateBpm": null
+    },
+    "result": {
+     "error": "assembly labour requires positive headcount and rateBpm"
+    }
+   }
+  ],
+  "compoundingLabourPerUnit": [
+   {
+    "args": {
+     "compounderCount": 2,
+     "hours": 6,
+     "yieldUnits": 9000
+    },
+    "result": 0.0013333333333333333
+   },
+   {
+    "args": {
+     "compounderCount": 3,
+     "hours": 7.5,
+     "yieldUnits": 12000
+    },
+    "result": 0.001875
+   },
+   {
+    "args": {
+     "compounderCount": 1,
+     "hours": 0.1,
+     "yieldUnits": 3
+    },
+    "result": 0.03333333333333333
+   },
+   {
+    "args": {
+     "compounderCount": 0,
+     "hours": 6,
+     "yieldUnits": 9000
+    },
+    "result": {
+     "error": "compounding labour requires positive compounders, hours, and yield"
+    }
+   },
+   {
+    "args": {
+     "compounderCount": 2,
+     "hours": 6,
+     "yieldUnits": null
+    },
+    "result": {
+     "error": "compounding labour requires positive compounders, hours, and yield"
+    }
+   }
+  ],
+  "amortiseSetupHours": [
+   {
+    "args": {
+     "setupMinutes": 90,
+     "changeoverMinutes": null,
+     "charges": 1,
+     "askedUnits": 12000,
+     "crew": 3
+    },
+    "result": {
+     "setupHoursPerUnit": 0.000375,
+     "perRunSetupHours": 4.5,
+     "perChargeChangeoverHours": 0,
+     "charges": 1,
+     "reasons": []
+    }
+   },
+   {
+    "args": {
+     "setupMinutes": null,
+     "changeoverMinutes": 60,
+     "charges": 3,
+     "askedUnits": 5000,
+     "crew": 2
+    },
+    "result": {
+     "setupHoursPerUnit": 0.0008,
+     "perRunSetupHours": 0,
+     "perChargeChangeoverHours": 2,
+     "charges": 3,
+     "reasons": [
+      "setup-minutes-missing"
+     ]
+    }
+   },
+   {
+    "args": {
+     "setupMinutes": 45,
+     "changeoverMinutes": null,
+     "charges": 2,
+     "askedUnits": 5000
+    },
+    "result": {
+     "setupHoursPerUnit": 0.00015,
+     "perRunSetupHours": 0.75,
+     "perChargeChangeoverHours": 0,
+     "charges": 2,
+     "reasons": [
+      "changeover-minutes-missing-multi-charge"
+     ]
+    }
+   },
+   {
+    "args": {
+     "setupMinutes": 45,
+     "changeoverMinutes": 20,
+     "charges": 2.5,
+     "askedUnits": null,
+     "crew": 4
+    },
+    "result": {
+     "setupHoursPerUnit": null,
+     "perRunSetupHours": 3,
+     "perChargeChangeoverHours": 1.3333333333333333,
+     "charges": 3,
+     "reasons": [
+      "asked-units-missing-no-amortisation-basis"
+     ]
+    }
+   },
+   {
+    "args": {
+     "setupMinutes": 45,
+     "changeoverMinutes": 20,
+     "charges": 2.5,
+     "askedUnits": 7000,
+     "crew": 4
+    },
+    "result": {
+     "setupHoursPerUnit": 0.0008095238095238095,
+     "perRunSetupHours": 3,
+     "perChargeChangeoverHours": 1.3333333333333333,
+     "charges": 3,
+     "reasons": []
+    }
+   },
+   {
+    "args": {
+     "setupMinutes": 45,
+     "changeoverMinutes": 20,
+     "charges": 0,
+     "askedUnits": 7000,
+     "crew": 0
+    },
+    "result": {
+     "setupHoursPerUnit": 0.00010714285714285714,
+     "perRunSetupHours": 0.75,
+     "perChargeChangeoverHours": 0.3333333333333333,
+     "charges": 1,
+     "reasons": []
+    }
+   }
+  ],
+  "compoundingCrewHoursPerUnit": [
+   {
+    "args": {
+     "compounderCount": 3,
+     "hoursPerCharge": 7.5,
+     "charges": 2,
+     "askedUnits": 30000
+    },
+    "result": 0.0015
+   },
+   {
+    "args": {
+     "compounderCount": null,
+     "hoursPerCharge": 7.5,
+     "charges": 2,
+     "askedUnits": 30000
+    },
+    "result": null
+   },
+   {
+    "args": {
+     "compounderCount": 3,
+     "hoursPerCharge": 7.5,
+     "charges": 0,
+     "askedUnits": 30000
+    },
+    "result": null
+   },
+   {
+    "args": {
+     "compounderCount": 2,
+     "hoursPerCharge": 6,
+     "charges": 3,
+     "askedUnits": 7000
+    },
+    "result": 0.005142857142857143
+   }
+  ],
+  "resolveSetupStandard": [
+   {
+    "args": {
+     "rows": [],
+     "query": {}
+    },
+    "result": {
+     "setupMinutes": 150,
+     "changeoverMinutes": 60,
+     "source": "seed",
+     "matched": [
+      {
+       "lineNumber": 0,
+       "groupCode": "*",
+       "actionKey": "*",
+       "setupMinutes": 150,
+       "changeoverMinutes": 60,
+       "source": "seed"
+      }
+     ]
+    }
+   },
+   {
+    "args": {
+     "rows": [
+      {
+       "lineNumber": 3,
+       "groupCode": "*",
+       "actionKey": "*",
+       "setupMinutes": 45,
+       "changeoverMinutes": 20,
+       "source": "confirmed"
+      },
+      {
+       "lineNumber": 0,
+       "groupCode": "*",
+       "actionKey": "*",
+       "setupMinutes": 150,
+       "changeoverMinutes": 60,
+       "source": "seed"
+      },
+      {
+       "lineNumber": 5,
+       "groupCode": "*",
+       "actionKey": "*",
+       "setupMinutes": 10,
+       "changeoverMinutes": 5,
+       "source": "confirmed"
+      }
+     ],
+     "query": {
+      "lineNumber": 3
+     }
+    },
+    "result": {
+     "setupMinutes": 45,
+     "changeoverMinutes": 20,
+     "source": "confirmed",
+     "matched": [
+      {
+       "lineNumber": 3,
+       "groupCode": "*",
+       "actionKey": "*",
+       "setupMinutes": 45,
+       "changeoverMinutes": 20,
+       "source": "confirmed"
+      }
+     ]
+    }
+   },
+   {
+    "args": {
+     "rows": [
+      {
+       "lineNumber": 3,
+       "groupCode": "*",
+       "actionKey": "*",
+       "setupMinutes": 45,
+       "changeoverMinutes": 20,
+       "source": "confirmed"
+      },
+      {
+       "lineNumber": 0,
+       "groupCode": "*",
+       "actionKey": "*",
+       "setupMinutes": 150,
+       "changeoverMinutes": 60,
+       "source": "seed"
+      },
+      {
+       "lineNumber": 5,
+       "groupCode": "*",
+       "actionKey": "*",
+       "setupMinutes": 10,
+       "changeoverMinutes": 5,
+       "source": "confirmed"
+      }
+     ],
+     "query": {}
+    },
+    "result": {
+     "setupMinutes": 150,
+     "changeoverMinutes": 60,
+     "source": "seed",
+     "matched": [
+      {
+       "lineNumber": 0,
+       "groupCode": "*",
+       "actionKey": "*",
+       "setupMinutes": 150,
+       "changeoverMinutes": 60,
+       "source": "seed"
+      }
+     ]
+    }
+   },
+   {
+    "args": {
+     "rows": [
+      {
+       "lineNumber": 3,
+       "groupCode": "*",
+       "actionKey": "*",
+       "setupMinutes": 45,
+       "changeoverMinutes": 20,
+       "source": "confirmed"
+      },
+      {
+       "lineNumber": 0,
+       "groupCode": "*",
+       "actionKey": "*",
+       "setupMinutes": 150,
+       "changeoverMinutes": 60,
+       "source": "seed"
+      },
+      {
+       "lineNumber": 5,
+       "groupCode": "*",
+       "actionKey": "*",
+       "setupMinutes": 10,
+       "changeoverMinutes": 5,
+       "source": "confirmed"
+      }
+     ],
+     "query": {
+      "lineNumber": 0
+     }
+    },
+    "result": {
+     "setupMinutes": 150,
+     "changeoverMinutes": 60,
+     "source": "seed",
+     "matched": [
+      {
+       "lineNumber": 0,
+       "groupCode": "*",
+       "actionKey": "*",
+       "setupMinutes": 150,
+       "changeoverMinutes": 60,
+       "source": "seed"
+      }
+     ]
+    }
+   },
+   {
+    "args": {
+     "rows": [
+      {
+       "lineNumber": 3,
+       "groupCode": "*",
+       "actionKey": "*",
+       "setupMinutes": 45,
+       "changeoverMinutes": 20,
+       "source": "confirmed"
+      },
+      {
+       "lineNumber": 0,
+       "groupCode": "*",
+       "actionKey": "*",
+       "setupMinutes": 150,
+       "changeoverMinutes": 60,
+       "source": "seed"
+      },
+      {
+       "lineNumber": 5,
+       "groupCode": "*",
+       "actionKey": "*",
+       "setupMinutes": 10,
+       "changeoverMinutes": 5,
+       "source": "confirmed"
+      },
+      {
+       "lineNumber": 3,
+       "groupCode": "*",
+       "actionKey": "*",
+       "setupMinutes": 50,
+       "changeoverMinutes": 15,
+       "source": "confirmed"
+      }
+     ],
+     "query": {
+      "lineNumber": 3
+     }
+    },
+    "result": {
+     "setupMinutes": 50,
+     "changeoverMinutes": 20,
+     "source": "confirmed",
+     "matched": [
+      {
+       "lineNumber": 3,
+       "groupCode": "*",
+       "actionKey": "*",
+       "setupMinutes": 45,
+       "changeoverMinutes": 20,
+       "source": "confirmed"
+      },
+      {
+       "lineNumber": 3,
+       "groupCode": "*",
+       "actionKey": "*",
+       "setupMinutes": 50,
+       "changeoverMinutes": 15,
+       "source": "confirmed"
+      }
+     ]
+    }
+   },
+   {
+    "args": {
+     "rows": [
+      {
+       "lineNumber": 3,
+       "groupCode": "D301",
+       "actionKey": "*",
+       "setupMinutes": 30,
+       "changeoverMinutes": 10,
+       "source": "draft"
+      },
+      {
+       "lineNumber": 3,
+       "groupCode": "*",
+       "actionKey": "*",
+       "setupMinutes": 45,
+       "changeoverMinutes": 20,
+       "source": "confirmed"
+      }
+     ],
+     "query": {
+      "lineNumber": 3,
+      "groupCode": "D301"
+     }
+    },
+    "result": {
+     "setupMinutes": 45,
+     "changeoverMinutes": 20,
+     "source": "confirmed",
+     "matched": [
+      {
+       "lineNumber": 3,
+       "groupCode": "*",
+       "actionKey": "*",
+       "setupMinutes": 45,
+       "changeoverMinutes": 20,
+       "source": "confirmed"
+      }
+     ]
+    }
+   },
+   {
+    "args": {
+     "rows": [
+      {
+       "lineNumber": 0,
+       "groupCode": "*",
+       "actionKey": "fill:x",
+       "setupMinutes": 12,
+       "changeoverMinutes": 6,
+       "source": "inferred"
+      },
+      {
+       "lineNumber": 0,
+       "groupCode": "*",
+       "actionKey": "*",
+       "setupMinutes": 150,
+       "changeoverMinutes": 60,
+       "source": "seed"
+      }
+     ],
+     "query": {
+      "actionKeys": [
+       " fill:x ",
+       ""
+      ]
+     }
+    },
+    "result": {
+     "setupMinutes": 12,
+     "changeoverMinutes": 6,
+     "source": "inferred",
+     "matched": [
+      {
+       "lineNumber": 0,
+       "groupCode": "*",
+       "actionKey": "fill:x",
+       "setupMinutes": 12,
+       "changeoverMinutes": 6,
+       "source": "inferred"
+      }
+     ]
+    }
+   },
+   {
+    "args": {
+     "rows": [
+      {
+       "lineNumber": 0,
+       "groupCode": "*",
+       "actionKey": "*",
+       "setupMinutes": 20,
+       "changeoverMinutes": 9,
+       "source": "Manual"
+      },
+      {
+       "lineNumber": 0,
+       "groupCode": "*",
+       "actionKey": "*",
+       "setupMinutes": 25,
+       "changeoverMinutes": 8,
+       "source": "EXCEL"
+      }
+     ],
+     "query": {}
+    },
+    "result": {
+     "setupMinutes": 25,
+     "changeoverMinutes": 8,
+     "source": "EXCEL",
+     "matched": [
+      {
+       "lineNumber": 0,
+       "groupCode": "*",
+       "actionKey": "*",
+       "setupMinutes": 25,
+       "changeoverMinutes": 8,
+       "source": "EXCEL"
+      }
+     ]
+    }
+   },
+   {
+    "args": {
+     "rows": [
+      {
+       "lineNumber": 7,
+       "groupCode": "*",
+       "actionKey": "*",
+       "setupMinutes": 20,
+       "changeoverMinutes": 9,
+       "source": "confirmed"
+      }
+     ],
+     "query": {
+      "lineNumber": 3
+     }
+    },
+    "result": {
+     "setupMinutes": 150,
+     "changeoverMinutes": 60,
+     "source": "seed",
+     "matched": [
+      {
+       "lineNumber": 0,
+       "groupCode": "*",
+       "actionKey": "*",
+       "setupMinutes": 150,
+       "changeoverMinutes": 60,
+       "source": "seed"
+      }
+     ]
+    }
+   }
+  ],
+  "resolveQuoteHours": [
+   {
+    "args": {
+     "projectKey": "PK-1",
+     "drafts": null,
+     "routing": {
+      "standardHoursPerUnit": 0.0042,
+      "standardSetupMinutes": 90,
+      "totalOperators": 3
+     },
+     "runQty": 12000,
+     "fgTargetQty": 7000,
+     "assemblyRate": 22.5
+    },
+    "result": {
+     "labour": {
+      "source": "routing",
+      "assemblySource": "routing",
+      "compoundingSource": "routing",
+      "pricedTierCode": null,
+      "pricedQtyBasis": 12000,
+      "assemblyRunHoursPerUnit": 0.0042,
+      "assemblyHoursPerUnit": 0.004575,
+      "compoundingHoursPerUnit": 0.004575,
+      "reasons": []
+     },
+     "hasDraftOverrides": false
+    }
+   },
+   {
+    "args": {
+     "projectKey": "PK-1",
+     "drafts": [
+      {
+       "projectKey": "PK-1",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "10k",
+       "templateId": null,
+       "source": "seed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": 3000,
+       "labourPerUnit": 0.0035,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": 4,
+       "rateBpm": null,
+       "uptimeHours": 7,
+       "setupMinutes": 60,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-1",
+       "fgItemId": null,
+       "process": "compounding",
+       "runVolumeTierCode": "10k",
+       "templateId": null,
+       "source": "seed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": 2,
+       "hours": 6,
+       "yieldUnits": 9000,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      }
+     ],
+     "routing": {
+      "standardHoursPerUnit": 0.0042,
+      "standardSetupMinutes": 90,
+      "totalOperators": 3
+     },
+     "runQty": 12000,
+     "fgTargetQty": 7000,
+     "assemblyRate": 22.5
+    },
+    "result": {
+     "labour": {
+      "source": "draft_tier",
+      "assemblySource": "draft_tier",
+      "compoundingSource": "draft_tier",
+      "pricedTierCode": "10k",
+      "pricedQtyBasis": 12000,
+      "assemblyRunHoursPerUnit": 0.0035,
+      "assemblyHoursPerUnit": 0.0038333333333333336,
+      "compoundingHoursPerUnit": 0.0013333333333333333,
+      "reasons": []
+     },
+     "hasDraftOverrides": true
+    }
+   },
+   {
+    "args": {
+     "projectKey": "PK-1",
+     "drafts": [
+      {
+       "projectKey": "PK-1",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "10k",
+       "templateId": null,
+       "source": "seed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": 3000,
+       "labourPerUnit": 0.0035,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": 4,
+       "rateBpm": null,
+       "uptimeHours": 7,
+       "setupMinutes": 60,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-1",
+       "fgItemId": null,
+       "process": "compounding",
+       "runVolumeTierCode": "10k",
+       "templateId": null,
+       "source": "seed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": 2,
+       "hours": 6,
+       "yieldUnits": 9000,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      }
+     ],
+     "routing": null,
+     "runQty": null,
+     "fgTargetQty": null,
+     "assemblyRate": 22.5
+    },
+    "result": {
+     "labour": {
+      "source": "missing",
+      "assemblySource": "missing",
+      "compoundingSource": "missing",
+      "pricedTierCode": "5k",
+      "pricedQtyBasis": null,
+      "assemblyRunHoursPerUnit": null,
+      "assemblyHoursPerUnit": null,
+      "compoundingHoursPerUnit": null,
+      "reasons": [
+       "tier-defaulted-no-qty-basis",
+       "assembly-hours-missing:no-routing",
+       "compounding-hours-missing:no-routing"
+      ]
+     },
+     "hasDraftOverrides": true
+    }
+   },
+   {
+    "args": {
+     "projectKey": "PK-1",
+     "drafts": [
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "25k",
+       "templateId": null,
+       "source": "draft",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": 5,
+       "rateBpm": 40,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "25k",
+       "templateId": null,
+       "source": "confirmed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": 2400,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": 6,
+       "rateBpm": 50,
+       "uptimeHours": 0,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "compounding",
+       "runVolumeTierCode": "25k",
+       "templateId": null,
+       "source": "confirmed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": 3,
+       "hours": 7.5,
+       "yieldUnits": 12000,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "compounding",
+       "runVolumeTierCode": "5k",
+       "templateId": null,
+       "source": "draft",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": 0,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-9",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "5k",
+       "templateId": null,
+       "source": "confirmed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": 0.5,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      }
+     ],
+     "routing": null,
+     "runQty": 30000,
+     "fgTargetQty": null,
+     "assemblyRate": 22.5
+    },
+    "result": {
+     "labour": {
+      "source": "missing",
+      "assemblySource": "missing",
+      "compoundingSource": "missing",
+      "pricedTierCode": null,
+      "pricedQtyBasis": 30000,
+      "assemblyRunHoursPerUnit": null,
+      "assemblyHoursPerUnit": null,
+      "compoundingHoursPerUnit": null,
+      "reasons": [
+       "assembly-hours-missing:no-routing",
+       "compounding-hours-missing:no-routing"
+      ]
+     },
+     "hasDraftOverrides": false
+    }
+   },
+   {
+    "args": {
+     "projectKey": "PK-4",
+     "drafts": [
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "25k",
+       "templateId": null,
+       "source": "draft",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": 5,
+       "rateBpm": 40,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "25k",
+       "templateId": null,
+       "source": "confirmed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": 2400,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": 6,
+       "rateBpm": 50,
+       "uptimeHours": 0,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "compounding",
+       "runVolumeTierCode": "25k",
+       "templateId": null,
+       "source": "confirmed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": 3,
+       "hours": 7.5,
+       "yieldUnits": 12000,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "compounding",
+       "runVolumeTierCode": "5k",
+       "templateId": null,
+       "source": "draft",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": 0,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-9",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "5k",
+       "templateId": null,
+       "source": "confirmed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": 0.5,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      }
+     ],
+     "routing": null,
+     "runQty": 30000,
+     "fgTargetQty": null,
+     "assemblyRate": 22.5
+    },
+    "result": {
+     "labour": {
+      "source": "draft_tier",
+      "assemblySource": "draft_tier",
+      "compoundingSource": "draft_tier",
+      "pricedTierCode": "25k",
+      "pricedQtyBasis": 30000,
+      "assemblyRunHoursPerUnit": 0.002,
+      "assemblyHoursPerUnit": 0.002,
+      "compoundingHoursPerUnit": 0.001875,
+      "reasons": []
+     },
+     "hasDraftOverrides": true
+    }
+   },
+   {
+    "args": {
+     "projectKey": "PK-4",
+     "drafts": [
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "25k",
+       "templateId": null,
+       "source": "draft",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": 5,
+       "rateBpm": 40,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "25k",
+       "templateId": null,
+       "source": "confirmed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": 2400,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": 6,
+       "rateBpm": 50,
+       "uptimeHours": 0,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "compounding",
+       "runVolumeTierCode": "25k",
+       "templateId": null,
+       "source": "confirmed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": 3,
+       "hours": 7.5,
+       "yieldUnits": 12000,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "compounding",
+       "runVolumeTierCode": "5k",
+       "templateId": null,
+       "source": "draft",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": 0,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-9",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "5k",
+       "templateId": null,
+       "source": "confirmed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": 0.5,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      }
+     ],
+     "routing": {
+      "standardHoursPerUnit": 0.0042,
+      "standardSetupMinutes": 90,
+      "totalOperators": 3
+     },
+     "runQty": null,
+     "fgTargetQty": 8000,
+     "assemblyRate": 22.5
+    },
+    "result": {
+     "labour": {
+      "source": "routing",
+      "assemblySource": "routing",
+      "compoundingSource": "routing",
+      "pricedTierCode": "5k",
+      "pricedQtyBasis": 8000,
+      "assemblyRunHoursPerUnit": 0.0042,
+      "assemblyHoursPerUnit": 0.0042,
+      "compoundingHoursPerUnit": 0.0042,
+      "reasons": []
+     },
+     "hasDraftOverrides": true
+    }
+   },
+   {
+    "args": {
+     "projectKey": "PK-4",
+     "drafts": [
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "25k",
+       "templateId": null,
+       "source": "draft",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": 5,
+       "rateBpm": 40,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "25k",
+       "templateId": null,
+       "source": "confirmed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": 2400,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": 6,
+       "rateBpm": 50,
+       "uptimeHours": 0,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "compounding",
+       "runVolumeTierCode": "25k",
+       "templateId": null,
+       "source": "confirmed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": 3,
+       "hours": 7.5,
+       "yieldUnits": 12000,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "compounding",
+       "runVolumeTierCode": "5k",
+       "templateId": null,
+       "source": "draft",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": 0,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-9",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "5k",
+       "templateId": null,
+       "source": "confirmed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": 0.5,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      }
+     ],
+     "routing": null,
+     "runQty": 8000,
+     "fgTargetQty": null,
+     "assemblyRate": 22.5
+    },
+    "result": {
+     "labour": {
+      "source": "missing",
+      "assemblySource": "missing",
+      "compoundingSource": "missing",
+      "pricedTierCode": "5k",
+      "pricedQtyBasis": 8000,
+      "assemblyRunHoursPerUnit": null,
+      "assemblyHoursPerUnit": null,
+      "compoundingHoursPerUnit": null,
+      "reasons": [
+       "assembly-hours-missing:no-routing",
+       "compounding-hours-missing:no-routing"
+      ]
+     },
+     "hasDraftOverrides": true
+    }
+   },
+   {
+    "args": {
+     "projectKey": null,
+     "drafts": [
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "25k",
+       "templateId": null,
+       "source": "draft",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": 5,
+       "rateBpm": 40,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "25k",
+       "templateId": null,
+       "source": "confirmed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": 2400,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": 6,
+       "rateBpm": 50,
+       "uptimeHours": 0,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "compounding",
+       "runVolumeTierCode": "25k",
+       "templateId": null,
+       "source": "confirmed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": 3,
+       "hours": 7.5,
+       "yieldUnits": 12000,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "compounding",
+       "runVolumeTierCode": "5k",
+       "templateId": null,
+       "source": "draft",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": 0,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-9",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "5k",
+       "templateId": null,
+       "source": "confirmed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": 0.5,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      }
+     ],
+     "routing": {
+      "standardHoursPerUnit": 0
+     },
+     "runQty": 8000,
+     "fgTargetQty": null,
+     "assemblyRate": 22.5
+    },
+    "result": {
+     "labour": {
+      "source": "missing",
+      "assemblySource": "missing",
+      "compoundingSource": "missing",
+      "pricedTierCode": null,
+      "pricedQtyBasis": 8000,
+      "assemblyRunHoursPerUnit": null,
+      "assemblyHoursPerUnit": null,
+      "compoundingHoursPerUnit": null,
+      "reasons": [
+       "assembly-hours-missing:hours-missing",
+       "compounding-hours-missing:hours-missing"
+      ]
+     },
+     "hasDraftOverrides": false
+    }
+   },
+   {
+    "args": {
+     "projectKey": "PK-5",
+     "drafts": [
+      {
+       "projectKey": "PK-5",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "5k",
+       "templateId": null,
+       "source": "confirmed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": 0.003,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-5",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "5k",
+       "templateId": null,
+       "source": "draft",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": 0.004,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-5",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "5k",
+       "templateId": null,
+       "source": "seed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": 0.009,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-5",
+       "fgItemId": null,
+       "process": "compounding",
+       "runVolumeTierCode": "5k",
+       "templateId": null,
+       "source": "Manual",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": 0.002,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-5",
+       "fgItemId": null,
+       "process": "compounding",
+       "runVolumeTierCode": "5k",
+       "templateId": null,
+       "source": "inferred",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": 0.0025,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-5",
+       "fgItemId": null,
+       "process": "compounding",
+       "runVolumeTierCode": "5k",
+       "templateId": null,
+       "source": "",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": 0.003,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      }
+     ],
+     "routing": null,
+     "runQty": 4000,
+     "fgTargetQty": null,
+     "assemblyRate": 22.5
+    },
+    "result": {
+     "labour": {
+      "source": "draft_tier",
+      "assemblySource": "draft_tier",
+      "compoundingSource": "draft_tier",
+      "pricedTierCode": "5k",
+      "pricedQtyBasis": 4000,
+      "assemblyRunHoursPerUnit": 0.003,
+      "assemblyHoursPerUnit": 0.003,
+      "compoundingHoursPerUnit": 0.0025,
+      "reasons": []
+     },
+     "hasDraftOverrides": true
+    }
+   },
+   {
+    "args": {
+     "projectKey": "PK-1",
+     "drafts": [
+      {
+       "projectKey": "PK-1",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "5k",
+       "templateId": null,
+       "source": "draft",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": 0.002,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": 2,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": 30,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      }
+     ],
+     "routing": {
+      "standardHoursPerUnit": 0.0042,
+      "standardSetupMinutes": 90,
+      "totalOperators": 3
+     },
+     "runQty": 900,
+     "fgTargetQty": null,
+     "assemblyRate": 22.5
+    },
+    "result": {
+     "labour": {
+      "source": "mixed",
+      "assemblySource": "draft_tier",
+      "compoundingSource": "routing",
+      "pricedTierCode": "5k",
+      "pricedQtyBasis": 900,
+      "assemblyRunHoursPerUnit": 0.002,
+      "assemblyHoursPerUnit": 0.0031111111111111114,
+      "compoundingHoursPerUnit": 0.0092,
+      "reasons": []
+     },
+     "hasDraftOverrides": true
+    }
+   }
+  ],
+  "resolveExpectedUnitsOverride": [
+   {
+    "args": {
+     "drafts": [
+      {
+       "projectKey": "PK-1",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "10k",
+       "templateId": null,
+       "source": "seed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": 3000,
+       "labourPerUnit": 0.0035,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": 4,
+       "rateBpm": null,
+       "uptimeHours": 7,
+       "setupMinutes": 60,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-1",
+       "fgItemId": null,
+       "process": "compounding",
+       "runVolumeTierCode": "10k",
+       "templateId": null,
+       "source": "seed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": 2,
+       "hours": 6,
+       "yieldUnits": 9000,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      }
+     ],
+     "projectKey": "PK-1",
+     "pricedTierCode": "10k"
+    },
+    "result": {
+     "expectedUnitsPerShift": 3000,
+     "uptimeHours": 7
+    }
+   },
+   {
+    "args": {
+     "drafts": [
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "25k",
+       "templateId": null,
+       "source": "draft",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": 5,
+       "rateBpm": 40,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "25k",
+       "templateId": null,
+       "source": "confirmed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": 2400,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": 6,
+       "rateBpm": 50,
+       "uptimeHours": 0,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "compounding",
+       "runVolumeTierCode": "25k",
+       "templateId": null,
+       "source": "confirmed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": 3,
+       "hours": 7.5,
+       "yieldUnits": 12000,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "compounding",
+       "runVolumeTierCode": "5k",
+       "templateId": null,
+       "source": "draft",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": 0,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-9",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "5k",
+       "templateId": null,
+       "source": "confirmed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": 0.5,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      }
+     ],
+     "projectKey": "PK-4",
+     "pricedTierCode": "25k"
+    },
+    "result": {
+     "expectedUnitsPerShift": 2400,
+     "uptimeHours": null
+    }
+   },
+   {
+    "args": {
+     "drafts": [
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "25k",
+       "templateId": null,
+       "source": "draft",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": 5,
+       "rateBpm": 40,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "25k",
+       "templateId": null,
+       "source": "confirmed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": 2400,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": 6,
+       "rateBpm": 50,
+       "uptimeHours": 0,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "compounding",
+       "runVolumeTierCode": "25k",
+       "templateId": null,
+       "source": "confirmed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": 3,
+       "hours": 7.5,
+       "yieldUnits": 12000,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "compounding",
+       "runVolumeTierCode": "5k",
+       "templateId": null,
+       "source": "draft",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": 0,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-9",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "5k",
+       "templateId": null,
+       "source": "confirmed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": 0.5,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      }
+     ],
+     "projectKey": "PK-4",
+     "pricedTierCode": null
+    },
+    "result": null
+   },
+   {
+    "args": {
+     "drafts": [
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "25k",
+       "templateId": null,
+       "source": "draft",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": 5,
+       "rateBpm": 40,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "25k",
+       "templateId": null,
+       "source": "confirmed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": 2400,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": 6,
+       "rateBpm": 50,
+       "uptimeHours": 0,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "compounding",
+       "runVolumeTierCode": "25k",
+       "templateId": null,
+       "source": "confirmed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": 3,
+       "hours": 7.5,
+       "yieldUnits": 12000,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "compounding",
+       "runVolumeTierCode": "5k",
+       "templateId": null,
+       "source": "draft",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": 0,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-9",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "5k",
+       "templateId": null,
+       "source": "confirmed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": 0.5,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      }
+     ],
+     "projectKey": "PK-9",
+     "pricedTierCode": "5k"
+    },
+    "result": null
+   },
+   {
+    "args": {
+     "drafts": null,
+     "projectKey": "PK-1",
+     "pricedTierCode": "10k"
+    },
+    "result": null
+   }
+  ],
+  "buildVolumeMatrixColumn": [
+   {
+    "args": {
+     "askedUnits": 5000,
+     "projectKey": "PK-1",
+     "drafts": null,
+     "routing": {
+      "standardHoursPerUnit": 0.0042,
+      "standardSetupMinutes": 90,
+      "totalOperators": 3
+     },
+     "setupStandard": {
+      "setupMinutes": 150,
+      "changeoverMinutes": 60,
+      "source": "seed",
+      "matched": []
+     },
+     "standard": null,
+     "fillMassKg": 0.25,
+     "assemblyRate": 22.5,
+     "rates": {
+      "overheadPerProductionHour": 35,
+      "marginPercent": 35
+     }
+    },
+    "result": {
+     "labour": {
+      "assemblySource": "routing",
+      "compoundingSource": "routing",
+      "tierCode": "5k",
+      "assemblyRunHoursPerUnit": 0.0042,
+      "assemblyHoursPerUnit": 0.0050999999999999995,
+      "compoundingHoursPerUnit": 0.0050999999999999995,
+      "compoundingBasis": "per_unit_fallback",
+      "setupSource": "routing",
+      "reasons": []
+     },
+     "charges": null,
+     "overhead": {
+      "hourlyRate": 35,
+      "uptimeHours": null,
+      "expectedUnitsPerShift": null,
+      "hoursPerUnit": 0.0050999999999999995,
+      "perUnit": 0.1785,
+      "source": "assembly_hours",
+      "hoursSource": "routing",
+      "appliesTo": "assembly",
+      "reasons": []
+     }
+    }
+   },
+   {
+    "args": {
+     "askedUnits": 30000,
+     "projectKey": "PK-4",
+     "drafts": [
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "25k",
+       "templateId": null,
+       "source": "draft",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": 5,
+       "rateBpm": 40,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "25k",
+       "templateId": null,
+       "source": "confirmed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": 2400,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": 6,
+       "rateBpm": 50,
+       "uptimeHours": 0,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "compounding",
+       "runVolumeTierCode": "25k",
+       "templateId": null,
+       "source": "confirmed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": 3,
+       "hours": 7.5,
+       "yieldUnits": 12000,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "compounding",
+       "runVolumeTierCode": "5k",
+       "templateId": null,
+       "source": "draft",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": 0,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-9",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "5k",
+       "templateId": null,
+       "source": "confirmed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": 0.5,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      }
+     ],
+     "routing": {
+      "standardHoursPerUnit": 0.0042,
+      "standardSetupMinutes": 90,
+      "totalOperators": 4
+     },
+     "setupStandard": {
+      "setupMinutes": 150,
+      "changeoverMinutes": 60,
+      "source": "seed",
+      "matched": []
+     },
+     "standard": {
+      "formulationId": "form-x",
+      "fmFormulaId": null,
+      "vesselCodes": [
+       "T1"
+      ],
+      "minChargeKg": null,
+      "batchInstructions": null,
+      "confirmed": true,
+      "confirmedAt": "2026-09-01T00:00:00Z",
+      "vessels": [
+       {
+        "code": "T1",
+        "name": "Tank 1",
+        "capacityKg": 1000,
+        "minWorkingVolumeKg": 0,
+        "isActive": true
+       }
+      ],
+      "missingData": []
+     },
+     "fillMassKg": 0.25,
+     "assemblyRate": 22.5,
+     "rates": {
+      "overheadPerProductionHour": 35,
+      "marginPercent": 35
+     }
+    },
+    "result": {
+     "labour": {
+      "assemblySource": "draft_tier",
+      "compoundingSource": "draft_tier",
+      "tierCode": "25k",
+      "assemblyRunHoursPerUnit": 0.002,
+      "assemblyHoursPerUnit": 0.0037,
+      "compoundingHoursPerUnit": 0.006,
+      "compoundingBasis": "crew_per_charge",
+      "setupSource": "routing",
+      "reasons": []
+     },
+     "charges": 8,
+     "overhead": {
+      "hourlyRate": 35,
+      "uptimeHours": 6.5,
+      "expectedUnitsPerShift": 2400,
+      "hoursPerUnit": 0.0027083333333333334,
+      "perUnit": 0.09479166666666666,
+      "source": "expected_units_override",
+      "hoursSource": "draft_tier",
+      "appliesTo": "assembly",
+      "reasons": [
+       "uptime-defaulted-workbook-wedge"
+      ]
+     }
+    }
+   },
+   {
+    "args": {
+     "askedUnits": 8000,
+     "projectKey": "PK-4",
+     "drafts": [
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "25k",
+       "templateId": null,
+       "source": "draft",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": 5,
+       "rateBpm": 40,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "25k",
+       "templateId": null,
+       "source": "confirmed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": 2400,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": 6,
+       "rateBpm": 50,
+       "uptimeHours": 0,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "compounding",
+       "runVolumeTierCode": "25k",
+       "templateId": null,
+       "source": "confirmed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": 3,
+       "hours": 7.5,
+       "yieldUnits": 12000,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-4",
+       "fgItemId": null,
+       "process": "compounding",
+       "runVolumeTierCode": "5k",
+       "templateId": null,
+       "source": "draft",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": 0,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-9",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "5k",
+       "templateId": null,
+       "source": "confirmed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": null,
+       "labourPerUnit": 0.5,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      }
+     ],
+     "routing": {
+      "standardHoursPerUnit": 0.0042,
+      "standardSetupMinutes": null,
+      "totalOperators": 3
+     },
+     "setupStandard": {
+      "setupMinutes": 150,
+      "changeoverMinutes": 60,
+      "source": "seed",
+      "matched": []
+     },
+     "standard": {
+      "formulationId": "form-x",
+      "fmFormulaId": null,
+      "vesselCodes": [
+       "T1"
+      ],
+      "minChargeKg": null,
+      "batchInstructions": null,
+      "confirmed": true,
+      "confirmedAt": "2026-09-01T00:00:00Z",
+      "vessels": [
+       {
+        "code": "T1",
+        "name": "Tank 1",
+        "capacityKg": 1000,
+        "minWorkingVolumeKg": 0,
+        "isActive": true
+       }
+      ],
+      "missingData": []
+     },
+     "fillMassKg": 0.25,
+     "assemblyRate": 22.5,
+     "rates": {
+      "overheadPerProductionHour": 35,
+      "marginPercent": 35
+     }
+    },
+    "result": {
+     "labour": {
+      "assemblySource": "routing",
+      "compoundingSource": "routing",
+      "tierCode": "5k",
+      "assemblyRunHoursPerUnit": 0.0042,
+      "assemblyHoursPerUnit": 0.0055125,
+      "compoundingHoursPerUnit": 0.0042,
+      "compoundingBasis": "per_unit_fallback",
+      "setupSource": "setup-standard:seed",
+      "reasons": [
+       "compounding-hours-per-unit-basis-no-charge-scaling (crew-per-charge facts missing)"
+      ]
+     },
+     "charges": 2,
+     "overhead": {
+      "hourlyRate": 35,
+      "uptimeHours": null,
+      "expectedUnitsPerShift": null,
+      "hoursPerUnit": 0.0055125,
+      "perUnit": 0.1929375,
+      "source": "assembly_hours",
+      "hoursSource": "routing",
+      "appliesTo": "assembly",
+      "reasons": []
+     }
+    }
+   },
+   {
+    "args": {
+     "askedUnits": 12000,
+     "projectKey": "PK-1",
+     "drafts": [
+      {
+       "projectKey": "PK-1",
+       "fgItemId": null,
+       "process": "assembly",
+       "runVolumeTierCode": "10k",
+       "templateId": null,
+       "source": "seed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": null,
+       "hours": null,
+       "yieldUnits": 3000,
+       "labourPerUnit": 0.0035,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": 4,
+       "rateBpm": null,
+       "uptimeHours": 7,
+       "setupMinutes": 60,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      },
+      {
+       "projectKey": "PK-1",
+       "fgItemId": null,
+       "process": "compounding",
+       "runVolumeTierCode": "10k",
+       "templateId": null,
+       "source": "seed",
+       "tankCode": null,
+       "batchType": null,
+       "compounderCount": 2,
+       "hours": 6,
+       "yieldUnits": 9000,
+       "labourPerUnit": null,
+       "lineNumber": null,
+       "lineCode": null,
+       "headcount": null,
+       "rateBpm": null,
+       "uptimeHours": null,
+       "setupMinutes": null,
+       "teardownMinutes": null,
+       "overheadPerUnit": null
+      }
+     ],
+     "routing": null,
+     "setupStandard": {
+      "setupMinutes": 150,
+      "changeoverMinutes": 60,
+      "source": "seed",
+      "matched": []
+     },
+     "standard": {
+      "formulationId": "form-x",
+      "fmFormulaId": null,
+      "vesselCodes": [
+       "T1"
+      ],
+      "minChargeKg": null,
+      "batchInstructions": null,
+      "confirmed": true,
+      "confirmedAt": "2026-09-01T00:00:00Z",
+      "vessels": [
+       {
+        "code": "T1",
+        "name": "Tank 1",
+        "capacityKg": 1000,
+        "minWorkingVolumeKg": 0,
+        "isActive": true
+       }
+      ],
+      "missingData": []
+     },
+     "fillMassKg": 0.25,
+     "assemblyRate": 22.5,
+     "rates": {
+      "overheadPerProductionHour": 35,
+      "marginPercent": 35
+     }
+    },
+    "result": {
+     "labour": {
+      "assemblySource": "draft_tier",
+      "compoundingSource": "draft_tier",
+      "tierCode": "10k",
+      "assemblyRunHoursPerUnit": 0.0035,
+      "assemblyHoursPerUnit": 0.0045000000000000005,
+      "compoundingHoursPerUnit": 0.003,
+      "compoundingBasis": "crew_per_charge",
+      "setupSource": "draft_tier",
+      "reasons": []
+     },
+     "charges": 3,
+     "overhead": {
+      "hourlyRate": 35,
+      "uptimeHours": 7,
+      "expectedUnitsPerShift": 3000,
+      "hoursPerUnit": 0.0023333333333333335,
+      "perUnit": 0.08166666666666668,
+      "source": "expected_units_override",
+      "hoursSource": "draft_tier",
+      "appliesTo": "assembly",
+      "reasons": []
+     }
+    }
+   },
+   {
+    "args": {
+     "askedUnits": 7000,
+     "projectKey": "PK-2",
+     "drafts": null,
+     "routing": null,
+     "setupStandard": {
+      "setupMinutes": 150,
+      "changeoverMinutes": 60,
+      "source": "seed",
+      "matched": []
+     },
+     "standard": null,
+     "fillMassKg": 0,
+     "assemblyRate": 22.5,
+     "rates": null
+    },
+    "result": {
+     "labour": {
+      "assemblySource": "missing",
+      "compoundingSource": "missing",
+      "tierCode": "5k",
+      "assemblyRunHoursPerUnit": null,
+      "assemblyHoursPerUnit": null,
+      "compoundingHoursPerUnit": null,
+      "compoundingBasis": "missing",
+      "setupSource": "setup-standard:seed",
+      "reasons": [
+       "assembly-hours-missing:no-routing",
+       "compounding-hours-missing:no-routing",
+       "compounding-hours-missing-for-volume"
+      ]
+     },
+     "charges": null,
+     "overhead": {
+      "hourlyRate": 31.3,
+      "uptimeHours": null,
+      "expectedUnitsPerShift": null,
+      "hoursPerUnit": null,
+      "perUnit": null,
+      "source": "missing",
+      "hoursSource": "missing",
+      "appliesTo": "assembly",
+      "reasons": [
+       "overhead-basis-missing:no-assembly-hours"
+      ]
+     }
+    }
+   },
+   {
+    "args": {
+     "askedUnits": 7000,
+     "projectKey": "PK-1",
+     "drafts": null,
+     "routing": {
+      "standardHoursPerUnit": 0.0042
+     },
+     "setupStandard": null,
+     "standard": {
+      "formulationId": "form-x",
+      "fmFormulaId": null,
+      "vesselCodes": [
+       "T1"
+      ],
+      "minChargeKg": null,
+      "batchInstructions": null,
+      "confirmed": true,
+      "confirmedAt": "2026-09-01T00:00:00Z",
+      "vessels": [
+       {
+        "code": "T1",
+        "name": "Tank 1",
+        "capacityKg": 1000,
+        "minWorkingVolumeKg": 0,
+        "isActive": true
+       }
+      ],
+      "missingData": []
+     },
+     "fillMassKg": 0.5,
+     "assemblyRate": 22.5,
+     "rates": {
+      "overheadPerProductionHour": 35,
+      "marginPercent": 35
+     }
+    },
+    "result": {
+     "labour": {
+      "assemblySource": "routing",
+      "compoundingSource": "routing",
+      "tierCode": "5k",
+      "assemblyRunHoursPerUnit": 0.0042,
+      "assemblyHoursPerUnit": 0.0042,
+      "compoundingHoursPerUnit": 0.0042,
+      "compoundingBasis": "per_unit_fallback",
+      "setupSource": "missing",
+      "reasons": [
+       "setup-minutes-missing",
+       "changeover-minutes-missing-multi-charge",
+       "compounding-hours-per-unit-basis-no-charge-scaling (crew-per-charge facts missing)"
+      ]
+     },
+     "charges": 4,
+     "overhead": {
+      "hourlyRate": 35,
+      "uptimeHours": null,
+      "expectedUnitsPerShift": null,
+      "hoursPerUnit": 0.0042,
+      "perUnit": 0.147,
+      "source": "assembly_hours",
+      "hoursSource": "routing",
+      "appliesTo": "assembly",
+      "reasons": []
+     }
+    }
+   }
+  ],
+  "rawCostPerKg": [
+   {
+    "args": {
+     "unitCost": 2.25,
+     "supplierProducts": [
+      {
+       "systemCost": 9,
+       "isPreferred": true,
+       "isActive": true
+      }
+     ]
+    },
+    "result": 2.25
+   },
+   {
+    "args": {
+     "unitCost": 0,
+     "supplierProducts": [
+      {
+       "systemCost": 4.2,
+       "isPreferred": true,
+       "isActive": true
+      }
+     ]
+    },
+    "result": 4.2
+   },
+   {
+    "args": {
+     "unitCost": null,
+     "supplierProducts": [
+      {
+       "systemCost": 4.2,
+       "isPreferred": true,
+       "isActive": true
+      }
+     ]
+    },
+    "result": 4.2
+   },
+   {
+    "args": {
+     "unitCost": 0,
+     "supplierProducts": [
+      {
+       "systemCost": null,
+       "isPreferred": true,
+       "isActive": true
+      },
+      {
+       "systemCost": 0,
+       "isPreferred": true,
+       "isActive": true
+      }
+     ]
+    },
+    "result": 0
+   },
+   {
+    "args": {
+     "unitCost": 0,
+     "supplierProducts": [
+      {
+       "systemCost": 7,
+       "isPreferred": false,
+       "isActive": true
+      },
+      {
+       "systemCost": 8,
+       "isPreferred": true,
+       "isActive": false
+      }
+     ]
+    },
+    "result": 0
+   },
+   {
+    "args": {
+     "unitCost": 0,
+     "supplierProducts": [
+      {
+       "systemCost": null,
+       "isPreferred": true,
+       "isActive": true
+      },
+      {
+       "systemCost": 5.1,
+       "isPreferred": true,
+       "isActive": true
+      },
+      {
+       "systemCost": 6,
+       "isPreferred": true,
+       "isActive": true
+      }
+     ]
+    },
+    "result": 5.1
+   },
+   {
+    "args": {
+     "unitCost": 0,
+     "supplierProducts": []
+    },
+    "result": 0
+   },
+   {
+    "args": {
+     "unitCost": 0
+    },
+    "result": 0
+   },
+   {
+    "args": {
+     "unitCost": null,
+     "supplierProducts": null
+    },
+    "result": 0
+   },
+   {
+    "args": {
+     "unitCost": -1,
+     "supplierProducts": [
+      {
+       "systemCost": 3.3,
+       "isPreferred": true,
+       "isActive": true
+      }
+     ]
+    },
+    "result": 3.3
+   },
+   {
+    "args": {
+     "unitCost": "2.5",
+     "supplierProducts": [
+      {
+       "systemCost": 1.5,
+       "isPreferred": true,
+       "isActive": true
+      }
+     ]
+    },
+    "result": 1.5
+   },
+   {
+    "args": {
+     "unitCost": 0,
+     "supplierProducts": [
+      {
+       "systemCost": "3",
+       "isPreferred": true,
+       "isActive": true
+      }
+     ]
+    },
+    "result": 0
+   }
+  ],
+  "rollupBomTotal": [
+   {
+    "args": {
+     "lines": [
+      {
+       "quantity": 1,
+       "cost": 0.3,
+       "estimatedUnitCost": null
+      },
+      {
+       "quantity": 2,
+       "cost": 0,
+       "estimatedUnitCost": 0.04
+      },
+      {
+       "quantity": null,
+       "cost": 1,
+       "estimatedUnitCost": null
+      },
+      {
+       "quantity": 3,
+       "cost": null,
+       "estimatedUnitCost": null
+      }
+     ]
+    },
+    "result": 0.38
+   },
+   {
+    "args": {
+     "lines": [
+      {
+       "quantity": 0.1,
+       "cost": 0.2,
+       "estimatedUnitCost": null
+      },
+      {
+       "quantity": 0.2,
+       "cost": 0.1,
+       "estimatedUnitCost": null
+      }
+     ]
+    },
+    "result": 0.04
+   },
+   {
+    "args": {
+     "lines": []
+    },
+    "result": 0
+   }
+  ]
+ },
+ "records": {
+  "project_pin_wins_and_pinned_bom": {
+   "results": {
+    "resolveQuoteFormulation": {
+     "source": "project_pin",
+     "formulationId": "form-a",
+     "rawCostPerKg": [
+      2.5,
+      4.2,
+      0,
+      3.3
+     ]
+    },
+    "gatherQuoteFacts": {
+     "project": {
+      "id": "proj-1",
+      "projectKey": "PK-1",
+      "customerId": "cust-1",
+      "goldId": "proj-1"
+     },
+     "resolutionSource": "project_pin",
+     "formulationId": "form-a",
+     "specificGravity": 1.05,
+     "fillWeightG": 236.6,
+     "bomTotal": 0.08,
+     "rawMaterials": [
+      {
+       "name": "fm costed",
+       "inclusionPct": 50,
+       "costPerKg": 2.5
+      },
+      {
+       "name": "new raw",
+       "inclusionPct": 30,
+       "costPerKg": 4.2
+      },
+      {
+       "name": "uncosted",
+       "inclusionPct": 15,
+       "costPerKg": 0
+      },
+      {
+       "name": "negative fm",
+       "inclusionPct": 5,
+       "costPerKg": 3.3
+      }
+     ],
+     "componentLines": [
+      {
+       "lineKey": "bom-pinned-label",
+       "lineName": "label",
+       "qtyPerUnit": 2,
+       "linked": false,
+       "pricedUnitCost": 0.04
+      }
+     ],
+     "fgTargetQty": 7000,
+     "unsourcedLineCount": 1,
+     "linkedLineCount": 0
+    },
+    "getPrimaryRouting": {
+     "id": "rt-1",
+     "standardHoursPerUnit": 0.0042,
+     "standardSetupMinutes": 45,
+     "standardChangeoverMinutes": 20,
+     "totalOperators": 3
+    },
+    "loadDraftCostStore": [
+     {
+      "projectKey": "PK-1",
+      "fgItemId": null,
+      "process": "assembly",
+      "runVolumeTierCode": "10k",
+      "templateId": null,
+      "source": "confirmed",
+      "tankCode": null,
+      "batchType": null,
+      "compounderCount": null,
+      "hours": null,
+      "yieldUnits": null,
+      "labourPerUnit": 0.003,
+      "lineNumber": null,
+      "lineCode": null,
+      "headcount": 4,
+      "rateBpm": null,
+      "uptimeHours": null,
+      "setupMinutes": null,
+      "teardownMinutes": null,
+      "overheadPerUnit": null
+     },
+     {
+      "projectKey": "PK-1",
+      "fgItemId": null,
+      "process": "compounding",
+      "runVolumeTierCode": "25k",
+      "templateId": null,
+      "source": "seed",
+      "tankCode": null,
+      "batchType": null,
+      "compounderCount": null,
+      "hours": 2,
+      "yieldUnits": null,
+      "labourPerUnit": null,
+      "lineNumber": null,
+      "lineCode": null,
+      "headcount": null,
+      "rateBpm": null,
+      "uptimeHours": null,
+      "setupMinutes": null,
+      "teardownMinutes": null,
+      "overheadPerUnit": null
+     },
+     {
+      "projectKey": "PK-1",
+      "fgItemId": null,
+      "process": "assembly",
+      "runVolumeTierCode": "5k",
+      "templateId": null,
+      "source": "draft",
+      "tankCode": null,
+      "batchType": null,
+      "compounderCount": null,
+      "hours": null,
+      "yieldUnits": null,
+      "labourPerUnit": 0.001,
+      "lineNumber": null,
+      "lineCode": null,
+      "headcount": null,
+      "rateBpm": null,
+      "uptimeHours": null,
+      "setupMinutes": null,
+      "teardownMinutes": null,
+      "overheadPerUnit": null
+     }
+    ]
+   },
+   "db_calls": [
+    "$queryRawUnsafe.",
+    "assemblySourcingRequest.findMany",
+    "billOfMaterials.findFirst",
+    "bomLine.findMany",
+    "customer.findFirst",
+    "draftCostOverride.findMany",
+    "fgItem.findUnique",
+    "fgRouting.findFirst",
+    "formulation.findFirst",
+    "formulation.findUnique",
+    "lineActionSetupStandard.findMany",
+    "project.findFirst",
+    "projectLocal.findUnique",
+    "projectSubAssembly.findFirst",
+    "rateSettings.findFirst"
+   ]
+  },
+  "fg_pin_and_stamped_bom": {
+   "results": {
+    "resolveQuoteFormulation": {
+     "source": "fg_pin",
+     "formulationId": "form-b",
+     "rawCostPerKg": [
+      1.5
+     ]
+    },
+    "gatherQuoteFacts": {
+     "project": {
+      "id": "proj-2",
+      "projectKey": "PK-2",
+      "customerId": "cust-1",
+      "goldId": "proj-2"
+     },
+     "resolutionSource": "fg_pin",
+     "formulationId": "form-b",
+     "specificGravity": null,
+     "fillWeightG": 61,
+     "bomTotal": 0.08,
+     "rawMaterials": [
+      {
+       "name": "form-b base",
+       "inclusionPct": 100,
+       "costPerKg": 1.5
+      }
+     ],
+     "componentLines": [
+      {
+       "lineKey": "bom-v2b-label",
+       "lineName": "label",
+       "qtyPerUnit": 2,
+       "linked": false,
+       "pricedUnitCost": 0.04
+      }
+     ],
+     "fgTargetQty": null,
+     "unsourcedLineCount": 1,
+     "linkedLineCount": 0
+    },
+    "getPrimaryRouting": {
+     "id": "rt-2",
+     "standardHoursPerUnit": 0.0042,
+     "standardSetupMinutes": 90,
+     "standardChangeoverMinutes": 60,
+     "totalOperators": 3
+    }
+   },
+   "db_calls": [
+    "$queryRawUnsafe.",
+    "assemblySourcingRequest.findMany",
+    "billOfMaterials.findFirst",
+    "bomLine.findMany",
+    "customer.findFirst",
+    "fgItem.findUnique",
+    "fgRouting.findFirst",
+    "formulation.findFirst",
+    "formulation.findUnique",
+    "lineActionSetupStandard.findMany",
+    "project.findFirst",
+    "projectLocal.findUnique",
+    "projectSubAssembly.findFirst",
+    "rateSettings.findFirst"
+   ]
+  },
+  "pin_to_obsolete_formula_is_unresolved": {
+   "results": {
+    "resolveQuoteFormulation": {
+     "source": "pin_unresolved",
+     "formulationId": null,
+     "rawCostPerKg": []
+    },
+    "gatherQuoteFacts": {
+     "project": {
+      "id": "proj-3",
+      "projectKey": "PK-3",
+      "customerId": "cust-1",
+      "goldId": "proj-3"
+     },
+     "resolutionSource": "pin_unresolved",
+     "formulationId": null,
+     "specificGravity": null,
+     "fillWeightG": null,
+     "bomTotal": 0,
+     "rawMaterials": [],
+     "componentLines": [],
+     "fgTargetQty": 5000,
+     "unsourcedLineCount": 0,
+     "linkedLineCount": 0
+    }
+   },
+   "db_calls": [
+    "$queryRawUnsafe.",
+    "billOfMaterials.findFirst",
+    "fgItem.findUnique",
+    "formulation.findFirst",
+    "project.findFirst",
+    "projectLocal.findUnique",
+    "projectSubAssembly.findFirst",
+    "rateSettings.findFirst"
+   ]
+  },
+  "pinned_formula_deleted_is_unresolved": {
+   "results": {
+    "resolveQuoteFormulation": {
+     "source": "pin_unresolved",
+     "formulationId": null,
+     "rawCostPerKg": []
+    }
+   },
+   "db_calls": [
+    "fgItem.findUnique",
+    "formulation.findFirst",
+    "projectSubAssembly.findFirst"
+   ]
+  },
+  "fm_gold_key_matches_the_bare_pin": {
+   "results": {
+    "resolveQuoteFormulation": {
+     "source": "project_pin",
+     "formulationId": "form-b",
+     "rawCostPerKg": [
+      1.5
+     ]
+    },
+    "gatherQuoteFacts": {
+     "project": {
+      "id": "fm-proj-77",
+      "projectKey": "fm-proj-77",
+      "customerId": "cust-1",
+      "goldId": "fm-proj-77"
+     },
+     "resolutionSource": "project_pin",
+     "formulationId": "form-b",
+     "specificGravity": 1,
+     "fillWeightG": null,
+     "bomTotal": 0,
+     "rawMaterials": [
+      {
+       "name": "form-b base",
+       "inclusionPct": 100,
+       "costPerKg": 1.5
+      }
+     ],
+     "componentLines": [],
+     "fgTargetQty": null,
+     "unsourcedLineCount": 0,
+     "linkedLineCount": 0
+    }
+   },
+   "db_calls": [
+    "$queryRawUnsafe.",
+    "billOfMaterials.findFirst",
+    "fgItem.findUnique",
+    "formulation.findFirst",
+    "formulation.findUnique",
+    "project.findFirst",
+    "projectLocal.findUnique",
+    "projectSubAssembly.findFirst",
+    "rateSettings.findFirst"
+   ]
+  },
+  "no_pin_prices_no_formula": {
+   "results": {
+    "resolveQuoteFormulation": {
+     "source": "none",
+     "formulationId": null,
+     "rawCostPerKg": []
+    },
+    "gatherQuoteFacts": {
+     "project": {
+      "id": "proj-5",
+      "projectKey": "PK-5",
+      "customerId": "cust-1",
+      "goldId": "proj-5"
+     },
+     "resolutionSource": "none",
+     "formulationId": null,
+     "specificGravity": null,
+     "fillWeightG": null,
+     "bomTotal": 0,
+     "rawMaterials": [],
+     "componentLines": [],
+     "fgTargetQty": null,
+     "unsourcedLineCount": 0,
+     "linkedLineCount": 0
+    },
+    "getPrimaryRouting": null,
+    "loadDraftCostStore": []
+   },
+   "db_calls": [
+    "$queryRawUnsafe.",
+    "billOfMaterials.findFirst",
+    "draftCostOverride.findMany",
+    "fgItem.findUnique",
+    "fgRouting.findFirst",
+    "project.findFirst",
+    "projectLocal.findUnique",
+    "projectSubAssembly.findFirst",
+    "rateSettings.findFirst"
+   ]
+  },
+  "fg_pin_read_failed": {
+   "results": {
+    "resolveQuoteFormulation": {
+     "source": "pin_unresolved",
+     "formulationId": null,
+     "rawCostPerKg": []
+    },
+    "gatherQuoteFacts": {
+     "project": {
+      "id": "proj-7",
+      "projectKey": "PK-7",
+      "customerId": "cust-1",
+      "goldId": "proj-7"
+     },
+     "resolutionSource": "pin_unresolved",
+     "formulationId": null,
+     "specificGravity": null,
+     "fillWeightG": null,
+     "bomTotal": 0,
+     "rawMaterials": [],
+     "componentLines": [],
+     "fgTargetQty": null,
+     "unsourcedLineCount": 0,
+     "linkedLineCount": 0
+    },
+    "getPrimaryRouting": {
+     "id": "rt-7",
+     "standardHoursPerUnit": 0.0042,
+     "standardSetupMinutes": 150,
+     "standardChangeoverMinutes": 40,
+     "totalOperators": 3
+    }
+   },
+   "db_calls": [
+    "$queryRawUnsafe.",
+    "billOfMaterials.findFirst",
+    "fgItem.findUnique",
+    "fgRouting.findFirst",
+    "lineActionSetupStandard.findMany",
+    "project.findFirst",
+    "projectLocal.findUnique",
+    "projectSubAssembly.findFirst",
+    "rateSettings.findFirst"
+   ]
+  },
+  "project_pin_read_failed": {
+   "results": {
+    "resolveQuoteFormulation": {
+     "source": "pin_unresolved",
+     "formulationId": null,
+     "rawCostPerKg": []
+    }
+   },
+   "db_calls": [
+    "projectSubAssembly.findFirst"
+   ]
+  },
+  "formulation_read_failed": {
+   "results": {
+    "resolveQuoteFormulation": {
+     "source": "pin_unresolved",
+     "formulationId": null,
+     "rawCostPerKg": []
+    },
+    "gatherQuoteFacts": {
+     "project": {
+      "id": "proj-10",
+      "projectKey": "PK-10",
+      "customerId": "cust-1",
+      "goldId": "proj-10"
+     },
+     "resolutionSource": "pin_unresolved",
+     "formulationId": null,
+     "specificGravity": null,
+     "fillWeightG": null,
+     "bomTotal": 0,
+     "rawMaterials": [],
+     "componentLines": [],
+     "fgTargetQty": 1,
+     "unsourcedLineCount": 0,
+     "linkedLineCount": 0
+    }
+   },
+   "db_calls": [
+    "$queryRawUnsafe.",
+    "billOfMaterials.findFirst",
+    "fgItem.findUnique",
+    "formulation.findFirst",
+    "project.findFirst",
+    "projectLocal.findUnique",
+    "projectSubAssembly.findFirst",
+    "rateSettings.findFirst"
+   ]
+  },
+  "local_project_and_its_stamped_bom": {
+   "results": {
+    "resolveQuoteFormulation": {
+     "source": "project_pin",
+     "formulationId": "form-b",
+     "rawCostPerKg": [
+      1.5
+     ]
+    },
+    "gatherQuoteFacts": {
+     "project": {
+      "id": "loc-9",
+      "projectKey": "loc-9",
+      "customerId": null,
+      "goldId": null
+     },
+     "resolutionSource": "project_pin",
+     "formulationId": "form-b",
+     "specificGravity": 1,
+     "fillWeightG": 90,
+     "bomTotal": 0.08,
+     "rawMaterials": [
+      {
+       "name": "form-b base",
+       "inclusionPct": 100,
+       "costPerKg": 1.5
+      }
+     ],
+     "componentLines": [
+      {
+       "lineKey": "bom-loc-pid-label",
+       "lineName": "label",
+       "qtyPerUnit": 2,
+       "linked": false,
+       "pricedUnitCost": 0.04
+      }
+     ],
+     "fgTargetQty": null,
+     "unsourcedLineCount": 1,
+     "linkedLineCount": 0
+    }
+   },
+   "db_calls": [
+    "assemblySourcingRequest.findMany",
+    "billOfMaterials.findFirst",
+    "bomLine.findMany",
+    "fgItem.findUnique",
+    "formulation.findFirst",
+    "formulation.findUnique",
+    "project.findFirst",
+    "projectLocal.findUnique",
+    "projectSubAssembly.findFirst",
+    "rateSettings.findFirst"
+   ]
+  }
+ }
+}

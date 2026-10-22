@@ -1,0 +1,27 @@
+{
+ "schema": "plx-case-originals-caveats/v1",
+ "directive": "642494a1e893",
+ "advisory_record_sha256": "f2cd062d2ad182dbc8efc6024d89e0aa8b11702275a9b0b22b45e81693181276",
+ "caveats": [
+  {
+   "id": "a",
+   "text": "the issue index's lotion re-approval and the customer's concentrate cancellation are index claims only; the supplied transcripts don't support them (lotion ends pending; no cancellation in the 142-line concentrate transcript), and neither is disproven"
+  },
+  {
+   "id": "b",
+   "text": "a full read of a supplied file is not complete email-thread coverage (truncated or omitted messages, photos and attachments excluded)"
+  },
+  {
+   "id": "c",
+   "text": "B1 approve/pause and B3 lotion share identical bytes, so keep both identities and count one payload"
+  },
+  {
+   "id": "d",
+   "text": "the 6 embedded DOCX differ in bytes from the same-subject archived DOCX, so keep both provenances and infer no text change"
+  },
+  {
+   "id": "e",
+   "text": "Form012, Form072A and Form117 examples, lot evidence, damage attachments and the root-cause report are missing in the source, which is not an access denial"
+  }
+ ]
+}

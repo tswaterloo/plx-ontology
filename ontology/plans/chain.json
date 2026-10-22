@@ -1,0 +1,1665 @@
+{
+ "$schema": "_plan.schema.json",
+ "format": "plx-investigate-plan/v1",
+ "id": "chain",
+ "families": [
+  "F1"
+ ],
+ "title": "Records linked to a transaction across systems",
+ "description": "The transaction chain around one root record: every declared link from the root's type (from a receipt's or invoice's order too, as the order's own chain), and one more hop from its lines, shipments, receipts and twins, along the Portal FKs and the FM/Sage/BC same-record links the ontology declares (docs/reference/portal-code-map.md 3.1-3.11), and the typed documents that name the root or its twins along every mention link the schema declares into their types (supplier confirmations, packing slips, freight bills ... of a purchase order; customer PO documents of a sales order; AO packets of an assembly order; a document type the schema adds is followed with no plan edit). Counts are of distinct visible records the walk reached, one count per system binding (a Portal order and its FileMaker twin are one sales order and one FM order entry, never two sales orders); a document is one record however it was captured (its mailed and filed copies with the same bytes count once); a type nothing reached is not counted as zero. Links below the default tier floor (every machine-read document reference today) are followed only at lead tier and labelled.",
+ "root": {
+  "object_types": [
+   "SalesOrder",
+   "PurchaseOrder",
+   "Receipt",
+   "AssemblyOrder",
+   "SalesInvoice",
+   "PurchaseInvoice"
+  ],
+  "fallback_filters": [
+   {
+    "object_type": "PurchaseOrder",
+    "property": "po_number"
+   },
+   {
+    "object_type": "Receipt",
+    "property": "receipt_number"
+   },
+   {
+    "object_type": "SalesOrder",
+    "property": "order_number"
+   }
+  ]
+ },
+ "step_budget": 128,
+ "steps": [
+  {
+   "id": "root_read",
+   "tool": "plx.object",
+   "from": "root",
+   "bind": "object_id"
+  },
+  {
+   "id": "si_order",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesInvoice.bills",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "rc_order",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Receipt.receives",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "pi_order",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseInvoice.invoices",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "pi_named_order",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseInvoice.names_order",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   },
+   "description": "The Portal purchase order a BC purchase invoice names by its order number (the BC PO it was created from is often gone once posted)."
+  },
+  {
+   "id": "so_customer",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "si_order"
+   ],
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrder.ordered_by",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "so_lines",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "si_order"
+   ],
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrderLine.line_of",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "so_shipments",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "si_order"
+   ],
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Shipment.ships",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "so_invoices",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "si_order"
+   ],
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesInvoice.bills",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "so_twin",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "si_order"
+   ],
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrder.same_record_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "so_twin_of",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "si_order"
+   ],
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrder.same_record_as",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "twin_lines",
+   "description": "The lines of the root's same-record twins (a FileMaker order entry's items).",
+   "tool": "plx.around",
+   "from": [
+    "so_twin",
+    "so_twin_of"
+   ],
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrderLine.line_of",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "twin_line_allocations",
+   "description": "The assembly allocations of the twins' lines (FileMaker order_entry_item_assembly).",
+   "tool": "plx.around",
+   "from": "twin_lines",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "AssemblyOrderAllocation.for_order_line",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "allocation_assemblies",
+   "description": "The assembly orders those allocations allocate.",
+   "tool": "plx.around",
+   "from": "twin_line_allocations",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "AssemblyOrderAllocation.allocates",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "ao_order_line",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "AssemblyOrder.for_order_line",
+      "direction": "forward"
+     },
+     {
+      "link_type": "SalesOrderLine.line_of",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "ao_line",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "AssemblyOrder.for_order_line",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "ao_product",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "AssemblyOrder.makes",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "ao_twin",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "AssemblyOrder.same_record_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "ao_twin_of",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "AssemblyOrder.same_record_as",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "ao_alloc_lines",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "AssemblyOrderAllocation.allocates",
+      "direction": "reverse"
+     },
+     {
+      "link_type": "AssemblyOrderAllocation.for_order_line",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "ao_alloc_orders",
+   "tool": "plx.around",
+   "from": "ao_alloc_lines",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrderLine.line_of",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "ao_alloc_customers",
+   "tool": "plx.around",
+   "from": "ao_alloc_orders",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrder.ordered_by",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "si_customer",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesInvoice.billed_to",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "line_products",
+   "tool": "plx.around",
+   "from": "so_lines",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrderLine.for_item",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "line_assemblies",
+   "tool": "plx.around",
+   "from": "so_lines",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "AssemblyOrder.for_order_line",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "assembly_twins",
+   "tool": "plx.around",
+   "from": "line_assemblies",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "AssemblyOrder.same_record_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "shipment_lines",
+   "tool": "plx.around",
+   "from": "so_shipments",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "ShipmentLine.line_of",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "po_supplier",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "rc_order",
+    "pi_order",
+    "pi_named_order"
+   ],
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrder.ordered_from",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "po_lines",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "rc_order",
+    "pi_order",
+    "pi_named_order"
+   ],
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrderLine.line_of",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "po_receipts",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "rc_order",
+    "pi_order",
+    "pi_named_order"
+   ],
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Receipt.receives",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "po_twin",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "rc_order",
+    "pi_order",
+    "pi_named_order"
+   ],
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrder.same_record_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "po_twin_of",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "rc_order",
+    "pi_order",
+    "pi_named_order"
+   ],
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrder.same_record_as",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "po_invoices",
+   "tool": "plx.around",
+   "from": "po_twin",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseInvoice.invoices",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "po_named_invoices",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "rc_order",
+    "pi_order",
+    "pi_named_order"
+   ],
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseInvoice.names_order",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   },
+   "party_check": {}
+  },
+  {
+   "id": "rc_supplier",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Receipt.supplied_by",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "rc_lines",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "ReceiptLine.line_of",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "rc_invoices",
+   "description": "The BC purchase invoices of the root receipt, or of the purchase order's receipts (their vendor invoice number), each checked against the receipt's or purchase order's vendor: one of another vendor that shares the number is a gap, never in the chain.",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "po_receipts"
+   ],
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseInvoice.invoices_receipt",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   },
+   "party_check": {
+    "against": [
+     "root",
+     "rc_order",
+     "pi_order",
+     "pi_named_order"
+    ]
+   }
+  },
+  {
+   "id": "pi_supplier",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseInvoice.billed_by",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "po_line_items",
+   "tool": "plx.around",
+   "from": "po_lines",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrderLine.for_item",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "receipt_lines",
+   "tool": "plx.around",
+   "from": "po_receipts",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "ReceiptLine.line_of",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "documents",
+   "description": "The typed documents that name the root: every mention link the schema declares into the root's type from a document-field type (a supplier confirmation, packing slip, freight bill ... of a purchase order; a customer PO document of a sales order; an AO packet of an assembly order), read from the schema when the step runs.",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "links": {
+    "binding_kind": "mention",
+    "direction": "reverse",
+    "far_relation": "documentFields"
+   },
+   "args": {
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "twin_documents",
+   "description": "The same for the root's same-record twins in other systems (a document may name only the FileMaker or BC number).",
+   "tool": "plx.around",
+   "from": [
+    "so_twin",
+    "po_twin",
+    "ao_twin"
+   ],
+   "bind": "from",
+   "links": {
+    "binding_kind": "mention",
+    "direction": "reverse",
+    "far_relation": "documentFields"
+   },
+   "args": {
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "twin_of_documents",
+   "description": "The same for the records the root is the twin of.",
+   "tool": "plx.around",
+   "from": [
+    "so_twin_of",
+    "po_twin_of",
+    "ao_twin_of"
+   ],
+   "bind": "from",
+   "links": {
+    "binding_kind": "mention",
+    "direction": "reverse",
+    "far_relation": "documentFields"
+   },
+   "args": {
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "supplier_read",
+   "tool": "plx.object",
+   "from": [
+    "po_supplier",
+    "rc_supplier",
+    "pi_supplier"
+   ],
+   "bind": "object_id",
+   "object_types": [
+    "Supplier"
+   ],
+   "description": "The suppliers the chain reached, read so the answer names them (a count alone names no one).",
+   "max_each": 8
+  },
+  {
+   "id": "customer_read",
+   "tool": "plx.object",
+   "from": [
+    "so_customer",
+    "si_customer"
+   ],
+   "bind": "object_id",
+   "object_types": [
+    "Customer"
+   ],
+   "description": "The customers the chain reached, read so the answer names them.",
+   "max_each": 8
+  }
+ ],
+ "evidence": [
+  {
+   "name": "root_record_count",
+   "kind": "count",
+   "from": "root",
+   "description": "How many root records the question resolved to (a root's twins in other systems are not roots), each cited."
+  },
+  {
+   "name": "sales_order_count",
+   "kind": "count",
+   "object_type": "SalesOrder",
+   "bindings": [
+    "portal.app_sales_order"
+   ]
+  },
+  {
+   "name": "fm_order_entry_count",
+   "kind": "count",
+   "object_type": "SalesOrder",
+   "bindings": [
+    "portal.fm_order_entry"
+   ]
+  },
+  {
+   "name": "sage_order_count",
+   "kind": "count",
+   "object_type": "SalesOrder",
+   "bindings": [
+    "portal.sage_oe_order_header"
+   ]
+  },
+  {
+   "name": "bc_sales_order_count",
+   "kind": "count",
+   "object_type": "SalesOrder",
+   "bindings": [
+    "bc.sales_orders"
+   ]
+  },
+  {
+   "name": "sales_order_line_count",
+   "kind": "count",
+   "object_type": "SalesOrderLine",
+   "bindings": [
+    "portal.app_sales_order_line"
+   ]
+  },
+  {
+   "name": "fm_order_entry_item_count",
+   "kind": "count",
+   "object_type": "SalesOrderLine",
+   "bindings": [
+    "portal.fm_order_entry_item"
+   ]
+  },
+  {
+   "name": "fm_order_entry_item_assembly_count",
+   "kind": "count",
+   "object_type": "AssemblyOrderAllocation",
+   "bindings": [
+    "portal.fm_order_entry_item_assembly"
+   ]
+  },
+  {
+   "name": "sage_order_line_count",
+   "kind": "count",
+   "object_type": "SalesOrderLine",
+   "bindings": [
+    "portal.sage_oe_order_detail"
+   ]
+  },
+  {
+   "name": "bc_sales_order_line_count",
+   "kind": "count",
+   "object_type": "SalesOrderLine",
+   "bindings": [
+    "bc.sales_order_lines"
+   ]
+  },
+  {
+   "name": "customer_count",
+   "kind": "count",
+   "object_type": "Customer",
+   "bindings": [
+    "portal.app_customer"
+   ]
+  },
+  {
+   "name": "fm_customer_count",
+   "kind": "count",
+   "object_type": "Customer",
+   "bindings": [
+    "portal.fm_customer"
+   ]
+  },
+  {
+   "name": "sage_customer_count",
+   "kind": "count",
+   "object_type": "Customer",
+   "bindings": [
+    "portal.sage_ar_customer"
+   ]
+  },
+  {
+   "name": "bc_customer_count",
+   "kind": "count",
+   "object_type": "Customer",
+   "bindings": [
+    "bc.customers"
+   ]
+  },
+  {
+   "name": "shipment_count",
+   "kind": "count",
+   "object_type": "Shipment",
+   "bindings": [
+    "portal.app_shipment"
+   ]
+  },
+  {
+   "name": "silver_shipment_count",
+   "kind": "count",
+   "object_type": "Shipment",
+   "bindings": [
+    "portal.silver_shipments"
+   ]
+  },
+  {
+   "name": "sage_shipment_count",
+   "kind": "count",
+   "object_type": "Shipment",
+   "bindings": [
+    "portal.sage_oe_shipment_header"
+   ]
+  },
+  {
+   "name": "bc_sales_shipment_count",
+   "kind": "count",
+   "object_type": "Shipment",
+   "bindings": [
+    "bc.sales_shipments"
+   ]
+  },
+  {
+   "name": "shipment_line_count",
+   "kind": "count",
+   "object_type": "ShipmentLine",
+   "bindings": [
+    "portal.app_shipment_line"
+   ]
+  },
+  {
+   "name": "sage_shipment_line_count",
+   "kind": "count",
+   "object_type": "ShipmentLine",
+   "bindings": [
+    "portal.sage_oe_shipment_detail"
+   ]
+  },
+  {
+   "name": "sage_sales_invoice_count",
+   "kind": "count",
+   "object_type": "SalesInvoice",
+   "bindings": [
+    "portal.sage_oe_invoice_header"
+   ]
+  },
+  {
+   "name": "bc_sales_invoice_count",
+   "kind": "count",
+   "object_type": "SalesInvoice",
+   "bindings": [
+    "bc.sales_invoices"
+   ]
+  },
+  {
+   "name": "product_count",
+   "kind": "count",
+   "object_type": "Product",
+   "bindings": [
+    "portal.app_product"
+   ]
+  },
+  {
+   "name": "fm_product_count",
+   "kind": "count",
+   "object_type": "Product",
+   "bindings": [
+    "portal.fm_raw_material",
+    "portal.fm_packaging",
+    "portal.fm_bulk_product",
+    "portal.fm_finished_product"
+   ]
+  },
+  {
+   "name": "sage_item_count",
+   "kind": "count",
+   "object_type": "Product",
+   "bindings": [
+    "portal.sage_ic_item"
+   ]
+  },
+  {
+   "name": "bc_item_count",
+   "kind": "count",
+   "object_type": "Product",
+   "bindings": [
+    "bc.items"
+   ]
+  },
+  {
+   "name": "assembly_order_count",
+   "kind": "count",
+   "object_type": "AssemblyOrder",
+   "bindings": [
+    "portal.app_manufacturing_order"
+   ]
+  },
+  {
+   "name": "fm_assembly_order_count",
+   "kind": "count",
+   "object_type": "AssemblyOrder",
+   "bindings": [
+    "portal.fm_assembly_order"
+   ]
+  },
+  {
+   "name": "purchase_order_count",
+   "kind": "count",
+   "object_type": "PurchaseOrder",
+   "bindings": [
+    "portal.app_purchase_order"
+   ]
+  },
+  {
+   "name": "fm_purchase_order_count",
+   "kind": "count",
+   "object_type": "PurchaseOrder",
+   "bindings": [
+    "portal.fm_generated_purchase_order"
+   ]
+  },
+  {
+   "name": "sage_purchase_order_count",
+   "kind": "count",
+   "object_type": "PurchaseOrder",
+   "bindings": [
+    "portal.sage_po_header"
+   ]
+  },
+  {
+   "name": "bc_purchase_order_count",
+   "kind": "count",
+   "object_type": "PurchaseOrder",
+   "bindings": [
+    "bc.purchase_orders"
+   ]
+  },
+  {
+   "name": "purchase_order_line_count",
+   "kind": "count",
+   "object_type": "PurchaseOrderLine",
+   "bindings": [
+    "portal.app_purchase_order_line"
+   ]
+  },
+  {
+   "name": "fm_purchase_order_item_count",
+   "kind": "count",
+   "object_type": "PurchaseOrderLine",
+   "bindings": [
+    "portal.fm_generated_purchase_order_item"
+   ]
+  },
+  {
+   "name": "sage_purchase_order_line_count",
+   "kind": "count",
+   "object_type": "PurchaseOrderLine",
+   "bindings": [
+    "portal.sage_po_detail"
+   ]
+  },
+  {
+   "name": "bc_purchase_order_line_count",
+   "kind": "count",
+   "object_type": "PurchaseOrderLine",
+   "bindings": [
+    "bc.purchase_order_lines"
+   ]
+  },
+  {
+   "name": "supplier",
+   "kind": "property",
+   "object_type": "Supplier",
+   "properties": [
+    "name",
+    "code"
+   ],
+   "numbering": "value",
+   "omit_empty": true,
+   "description": "Each supplier the chain reached by name (its code when no name is recorded), cited, as this reader may read it (a withheld value is not stated)."
+  },
+  {
+   "name": "customer",
+   "kind": "property",
+   "object_type": "Customer",
+   "properties": [
+    "name",
+    "code"
+   ],
+   "numbering": "value",
+   "omit_empty": true,
+   "description": "Each customer the chain reached by name (its code when no name is recorded), cited, as this reader may read it."
+  },
+  {
+   "name": "supplier_count",
+   "kind": "count",
+   "object_type": "Supplier",
+   "bindings": [
+    "portal.app_supplier"
+   ]
+  },
+  {
+   "name": "fm_supplier_count",
+   "kind": "count",
+   "object_type": "Supplier",
+   "bindings": [
+    "portal.fm_supplier"
+   ]
+  },
+  {
+   "name": "bc_vendor_count",
+   "kind": "count",
+   "object_type": "Supplier",
+   "bindings": [
+    "bc.vendors"
+   ]
+  },
+  {
+   "name": "receipt_count",
+   "kind": "count",
+   "object_type": "Receipt",
+   "bindings": [
+    "portal.app_receipt"
+   ]
+  },
+  {
+   "name": "fm_receipt_count",
+   "kind": "count",
+   "object_type": "Receipt",
+   "bindings": [
+    "portal.fm_receipt"
+   ]
+  },
+  {
+   "name": "sage_receipt_count",
+   "kind": "count",
+   "object_type": "Receipt",
+   "bindings": [
+    "portal.sage_po_receipt_header"
+   ]
+  },
+  {
+   "name": "bc_purchase_receipt_count",
+   "kind": "count",
+   "object_type": "Receipt",
+   "bindings": [
+    "bc.purchase_receipts"
+   ]
+  },
+  {
+   "name": "receipt_line_count",
+   "kind": "count",
+   "object_type": "ReceiptLine",
+   "bindings": [
+    "portal.app_receipt_line"
+   ]
+  },
+  {
+   "name": "fm_receipt_line_count",
+   "kind": "count",
+   "object_type": "ReceiptLine",
+   "bindings": [
+    "portal.fm_receipt_raw_material",
+    "portal.fm_receipt_packaging"
+   ]
+  },
+  {
+   "name": "sage_receipt_line_count",
+   "kind": "count",
+   "object_type": "ReceiptLine",
+   "bindings": [
+    "portal.sage_po_receipt_detail"
+   ]
+  },
+  {
+   "name": "bc_purchase_receipt_line_count",
+   "kind": "count",
+   "object_type": "ReceiptLine",
+   "bindings": [
+    "bc.purchase_receipt_lines"
+   ]
+  },
+  {
+   "name": "bc_purchase_invoice_count",
+   "kind": "count",
+   "object_type": "PurchaseInvoice",
+   "bindings": [
+    "bc.purchase_invoices"
+   ]
+  },
+  {
+   "name": "supplier_confirmation_count",
+   "kind": "count",
+   "object_type": "SupplierConfirmation",
+   "bindings": [
+    "graph_mail.supplier_confirmations",
+    "sharepoint.supplier_confirmations"
+   ],
+   "distinct": "content"
+  },
+  {
+   "name": "packing_slip_count",
+   "kind": "count",
+   "object_type": "PackingSlip",
+   "bindings": [
+    "graph_mail.packing_slips",
+    "sharepoint.packing_slips"
+   ],
+   "distinct": "content"
+  },
+  {
+   "name": "supplier_invoice_count",
+   "kind": "count",
+   "object_type": "SupplierInvoice",
+   "bindings": [
+    "graph_mail.supplier_invoices",
+    "sharepoint.supplier_invoices"
+   ],
+   "distinct": "content"
+  },
+  {
+   "name": "freight_bill_count",
+   "kind": "count",
+   "object_type": "FreightBill",
+   "bindings": [
+    "graph_mail.freight_bills",
+    "sharepoint.freight_bills"
+   ],
+   "distinct": "content"
+  },
+  {
+   "name": "forwarder_quote_count",
+   "kind": "count",
+   "object_type": "ForwarderQuote",
+   "bindings": [
+    "graph_mail.forwarder_quotes",
+    "sharepoint.forwarder_quotes"
+   ],
+   "distinct": "content"
+  },
+  {
+   "name": "delivery_receipt_count",
+   "kind": "count",
+   "object_type": "DeliveryReceipt",
+   "bindings": [
+    "graph_mail.delivery_receipts",
+    "sharepoint.delivery_receipts"
+   ],
+   "distinct": "content"
+  },
+  {
+   "name": "certificate_of_analysis_count",
+   "kind": "count",
+   "object_type": "CertificateOfAnalysis",
+   "bindings": [
+    "graph_mail.certificates_of_analysis",
+    "sharepoint.certificates_of_analysis"
+   ],
+   "distinct": "content"
+  },
+  {
+   "name": "customer_po_document_count",
+   "kind": "count",
+   "object_type": "CustomerPoDocument",
+   "bindings": [
+    "graph_mail.customer_pos",
+    "sharepoint.customer_pos"
+   ],
+   "distinct": "content"
+  },
+  {
+   "name": "assembly_order_packet_count",
+   "kind": "count",
+   "object_type": "AssemblyOrderPacket",
+   "bindings": [
+    "sharepoint.ao_packets"
+   ],
+   "distinct": "content"
+  }
+ ]
+}

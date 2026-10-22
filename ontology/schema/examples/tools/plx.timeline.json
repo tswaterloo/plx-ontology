@@ -1,0 +1,87 @@
+{
+  "tool": "plx.timeline",
+  "examples": [
+    {
+      "name": "planned date and capture window",
+      "input": {
+        "from": "SalesOrder:portal.app_sales_order:ex-so-1"
+      },
+      "output": {
+        "events": [
+          {
+            "event_id": "ev-b0c82a3ade349796",
+            "event_type": "SalesOrder.required",
+            "time_basis": "planned",
+            "time": "2099-01-01",
+            "objects": [
+              {
+                "object_id": "SalesOrder:portal.app_sales_order:ex-so-1",
+                "qualifier": "order"
+              },
+              {
+                "object_id": "Customer:portal.app_customer:fm-cust-7",
+                "qualifier": "customer"
+              }
+            ],
+            "citation": {
+              "l1_handle": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42",
+              "field_path": "row.required_date",
+              "digest": "e6525adfae871a047816adb9d4fc8c4482bce22263a8e71e5e96cd07eb81e151",
+              "lineage": "gold_etl_from_fm"
+            },
+            "markings": []
+          },
+          {
+            "event_id": "ev-1248b7c394ca6689",
+            "event_type": "SalesOrder.status_changed",
+            "time_basis": "capture_observed",
+            "time": null,
+            "window": {
+              "start": "2099-01-01T00:00:00Z",
+              "end": "2099-01-01T06:00:00Z"
+            },
+            "objects": [
+              {
+                "object_id": "SalesOrder:portal.app_sales_order:ex-so-1",
+                "qualifier": "order"
+              }
+            ],
+            "citation": {
+              "l1_handle": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42",
+              "field_path": "row.status",
+              "digest": "c5818ad045f5a83f149b07ad9115371da535518355634cae4f853ce3520780c8",
+              "lineage": "gold_etl_from_fm"
+            }
+          }
+        ],
+        "conflicts": [],
+        "gaps": [],
+        "completeness": {
+          "complete": true,
+          "truncated": false,
+          "returned": 2,
+          "total": 2,
+          "next_cursor": null
+        },
+        "freshness_coverage": {
+          "total": 1,
+          "listed": 1,
+          "truncated": false
+        },
+        "meta": {
+          "schema_digest": "df0ad6e43880f09c90ebf95f19110178aba6890df0010ebda7485029e2b543b4",
+          "as_known_at": "2099-01-02T03:04:05Z",
+          "freshness": [
+            {
+              "source": "portal_api",
+              "captured_at": "2099-01-02T03:00:00Z",
+              "lag_seconds": 245,
+              "completeness": "complete",
+              "stale": false
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

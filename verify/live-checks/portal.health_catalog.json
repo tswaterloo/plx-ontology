@@ -1,0 +1,75 @@
+{
+ "id": "portal.health_catalog",
+ "description": "Portal Workbench reporting API GET /v1/health (recovery, lag, no unavailable relations or missing columns) and the relation catalog: counts per schema. health_ok is recorded, not required: the probe exits 0 only when health admits the body, so ok false there is a login early warning (warnings: expiry instant, days left, count of keys expiring soon), never a failure; an expired login fails closed. Degraded (relations the API names unavailable, the rest served): blocked in part, one relation_unavailable part per relation with the upstream reason, the served rest measured; dependents still run.",
+ "source": "portal-workbench-api",
+ "legacy_ids": [
+  "portal.api"
+ ],
+ "command": [
+  "python3",
+  "-m",
+  "scripts.live_read_probes",
+  "portal-health"
+ ],
+ "timeout_seconds": 120,
+ "requires_env": [
+  "PLX_WORKBENCH_API_URL",
+  "PLX_WORKBENCH_API_KEY"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "relations_by_schema",
+   "replay_lag_seconds",
+   "warnings"
+  ],
+  "json_equals": {
+   "recovery": true,
+   "degraded": false,
+   "unavailable_count": 0,
+   "missing_columns_count": 0
+  },
+  "json_min": {
+   "relation_count": 1
+  }
+ },
+ "record": [
+  "health_ok",
+  "recovery",
+  "degraded",
+  "warnings",
+  "replay_lag_seconds",
+  "unavailable_count",
+  "missing_columns_count",
+  "unavailable_relation_count",
+  "available_relation_count",
+  "unavailable_relations",
+  "relation_count",
+  "relations_by_schema",
+  "relations_with_since"
+ ],
+ "record_keys": [
+  "relations_by_schema",
+  "unavailable_relations",
+  "warnings"
+ ],
+ "expect_blocked": {
+  "exit_code": 0,
+  "json_fields": [
+   "relations_by_schema",
+   "replay_lag_seconds",
+   "unavailable_relations",
+   "blocked_upstream"
+  ],
+  "json_equals": {
+   "recovery": true,
+   "degraded": true
+  },
+  "json_min": {
+   "available_relation_count": 1
+  }
+ },
+ "record_enums": [
+  "warnings"
+ ]
+}

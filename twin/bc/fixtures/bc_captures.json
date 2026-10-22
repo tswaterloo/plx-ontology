@@ -1,0 +1,129 @@
+{
+ "format": "plx-twin-bc-captures/v1",
+ "evidence_label": "isolated-fixture",
+ "note": "Synthetic BC API v2.0 records that seed twin.bc.BcTwin (test mode only). Not business data: every id, number, vendor and company is made up; properties are the ones ontology/schema/generated/meta/bc_metadata.json declares. Two companies: company A's purchase orders take the BC lifecycle scenarios (twin.bc.lifecycle), company B's must stay invisible from company A. workbench_readers is the twin world's audience map (which Workbench principals read a company), not BC data. Money stays decimal text.",
+ "companies": [
+  {
+   "row": {
+    "id": "0000b0c0-0000-4000-8000-00000000000a",
+    "name": "TWIN-A",
+    "displayName": "Twin Company A"
+   },
+   "workbench_readers": [
+    "ops"
+   ]
+  },
+  {
+   "row": {
+    "id": "0000b0c0-0000-4000-8000-00000000000b",
+    "name": "TWIN-B",
+    "displayName": "Twin Company B"
+   },
+   "workbench_readers": [
+    "ops-b"
+   ]
+  }
+ ],
+ "records": [
+  {
+   "company_id": "0000b0c0-0000-4000-8000-00000000000a",
+   "entity_set": "purchaseOrders",
+   "row": {
+    "id": "0000b0c1-0000-4000-8000-0000000000a1",
+    "number": "PO-TWIN-A1",
+    "orderDate": "2026-09-01",
+    "vendorNumber": "V-TWIN-1",
+    "vendorName": "Twin Vendor 1",
+    "payToVendorNumber": "V-TWIN-1",
+    "currencyCode": "CAD",
+    "status": "Draft",
+    "requestedReceiptDate": null,
+    "purchaser": null,
+    "totalAmountIncludingTax": "120.50",
+    "lastModifiedDateTime": "2026-09-01T00:00:00Z"
+   }
+  },
+  {
+   "company_id": "0000b0c0-0000-4000-8000-00000000000a",
+   "entity_set": "purchaseOrders",
+   "row": {
+    "id": "0000b0c1-0000-4000-8000-0000000000a2",
+    "number": "PO-TWIN-A2",
+    "orderDate": "2026-09-01",
+    "vendorNumber": "V-TWIN-1",
+    "vendorName": "Twin Vendor 1",
+    "payToVendorNumber": "V-TWIN-1",
+    "currencyCode": "CAD",
+    "status": "Draft",
+    "requestedReceiptDate": null,
+    "purchaser": null,
+    "totalAmountIncludingTax": "120.50",
+    "lastModifiedDateTime": "2026-09-01T00:00:00Z"
+   }
+  },
+  {
+   "company_id": "0000b0c0-0000-4000-8000-00000000000a",
+   "entity_set": "purchaseOrders",
+   "row": {
+    "id": "0000b0c1-0000-4000-8000-0000000000a3",
+    "number": "PO-TWIN-A3",
+    "orderDate": "2026-09-01",
+    "vendorNumber": "V-TWIN-1",
+    "vendorName": "Twin Vendor 1",
+    "payToVendorNumber": "V-TWIN-1",
+    "currencyCode": "CAD",
+    "status": "Draft",
+    "requestedReceiptDate": null,
+    "purchaser": null,
+    "totalAmountIncludingTax": "120.50",
+    "lastModifiedDateTime": "2026-09-01T00:00:00Z"
+   }
+  },
+  {
+   "company_id": "0000b0c0-0000-4000-8000-00000000000a",
+   "entity_set": "purchaseOrderLines",
+   "row": {
+    "id": "0000b0c2-0000-4000-8000-0000000000a1",
+    "documentId": "0000b0c1-0000-4000-8000-0000000000a1",
+    "sequence": 10000,
+    "lineType": "Item",
+    "description": "Twin item",
+    "quantity": 12,
+    "directUnitCost": "10.0417",
+    "amountIncludingTax": "120.50"
+   }
+  },
+  {
+   "company_id": "0000b0c0-0000-4000-8000-00000000000b",
+   "entity_set": "purchaseOrders",
+   "row": {
+    "id": "0000b0c1-0000-4000-8000-0000000000b1",
+    "number": "PO-TWIN-B1",
+    "orderDate": "2026-09-01",
+    "vendorNumber": "V-TWIN-2",
+    "vendorName": "Twin Vendor 2",
+    "payToVendorNumber": "V-TWIN-2",
+    "currencyCode": "CAD",
+    "status": "Draft",
+    "requestedReceiptDate": null,
+    "purchaser": null,
+    "totalAmountIncludingTax": "75.00",
+    "lastModifiedDateTime": "2026-09-01T00:00:00Z"
+   }
+  },
+  {
+   "company_id": "0000b0c0-0000-4000-8000-00000000000b",
+   "entity_set": "purchaseOrderLines",
+   "row": {
+    "id": "0000b0c2-0000-4000-8000-0000000000b1",
+    "documentId": "0000b0c1-0000-4000-8000-0000000000b1",
+    "sequence": 10000,
+    "lineType": "Item",
+    "description": "Twin item",
+    "quantity": 3,
+    "directUnitCost": "25.00",
+    "amountIncludingTax": "75.00"
+   }
+  }
+ ]
+}

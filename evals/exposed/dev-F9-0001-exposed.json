@@ -1,0 +1,184 @@
+{
+ "format": "plx-eval-item/v1",
+ "id": "dev-F9-0001-exposed",
+ "family": "F9",
+ "split": "dev",
+ "variant": "standard",
+ "question": {
+  "text": "For PO-00349 / MIDAS2, when was shipment reported, what quantity is on packing slip 228524, and can an arrival be asserted?"
+ },
+ "root": {
+  "identifier": "PO-00349",
+  "identifier_kind": "po_number",
+  "object_type": "PurchaseOrder"
+ },
+ "as_known_at": {
+  "time": "2026-10-02T18:07:03Z",
+  "l1_generations": {
+   "advisory_r": "a5f4e154a62be713c0ac19421c1716212f85d25d08939203dfcc5ac9ec3e6949"
+  }
+ },
+ "closed_transaction": false,
+ "lineage_stratum": "mail",
+ "known_outcome": {
+  "answerability": "partial",
+  "values": [
+   {
+    "name": "shipment_reported_date",
+    "object_type": "SourceMessage",
+    "value": "2026-09-15",
+    "citations": [
+     {
+      "l1_handle": "graph-mail://unrecorded-mailbox/AAMkADY4MDc2NWY4LWMwMjgtNDM5Mi1iNTY2LWIwMGNmYzAxZWYwNABGAAAAAABi-q754syHRLp6yXpvmvMcBwA8fZBoqIkCSpe7VTTiwa8yAAAAAAEMAAA8fZBoqIkCSpe7VTTiwa8yAASVtQegAAA%3D#received_at=2026-09-16T13:52:55Z",
+      "field_path": "row.body"
+     }
+    ]
+   },
+   {
+    "name": "packing_slip_number",
+    "object_type": "SourceDocument",
+    "value": "228524",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/58f6d1690a0a3f1c8245f4e4643bf48bd6c397bcbc9d9924b8d88f5909eba9b3",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "packing_slip_shipment_date",
+    "object_type": "SourceDocument",
+    "value": "2026-09-15",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/58f6d1690a0a3f1c8245f4e4643bf48bd6c397bcbc9d9924b8d88f5909eba9b3",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "packing_slip_expected_delivery",
+    "object_type": "SourceDocument",
+    "value": "2026-08-26",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/58f6d1690a0a3f1c8245f4e4643bf48bd6c397bcbc9d9924b8d88f5909eba9b3",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "item_number",
+    "object_type": "SourceDocument",
+    "value": "R25-1803",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/58f6d1690a0a3f1c8245f4e4643bf48bd6c397bcbc9d9924b8d88f5909eba9b3",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "item_name",
+    "object_type": "SourceDocument",
+    "value": "MIDAS2",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/58f6d1690a0a3f1c8245f4e4643bf48bd6c397bcbc9d9924b8d88f5909eba9b3",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "shipped_quantity",
+    "object_type": "SourceDocument",
+    "unit": "kg",
+    "quantity_role": "shipped",
+    "value": "375",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/58f6d1690a0a3f1c8245f4e4643bf48bd6c397bcbc9d9924b8d88f5909eba9b3",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "lot",
+    "object_type": "SourceDocument",
+    "value": "W5223088",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/58f6d1690a0a3f1c8245f4e4643bf48bd6c397bcbc9d9924b8d88f5909eba9b3",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "manufactured_date",
+    "object_type": "SourceDocument",
+    "value": "2026-09-10",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/58f6d1690a0a3f1c8245f4e4643bf48bd6c397bcbc9d9924b8d88f5909eba9b3",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "best_before_date",
+    "object_type": "SourceDocument",
+    "value": "2027-09-10",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/58f6d1690a0a3f1c8245f4e4643bf48bd6c397bcbc9d9924b8d88f5909eba9b3",
+      "field_path": "row.text"
+     }
+    ]
+   }
+  ],
+  "gaps": [
+   {
+    "state": "unknown",
+    "subject": "authoritative expected arrival: the slip's 2026-08-26 precedes the 2026-09-15 shipment",
+    "reason": "conflicting_sources"
+   },
+   {
+    "state": "unknown",
+    "subject": "actual delivery and receipt",
+    "reason": "not_established"
+   },
+   {
+    "state": "unknown",
+    "subject": "internal PO mapping of PO-00349",
+    "reason": "not_established"
+   }
+  ]
+ },
+ "must_not": [
+  "propose_action",
+  "claim_uncited_number",
+  "invent_absent_value"
+ ],
+ "oracle": {
+  "id": "oracle:advisory-dev-batch-01@f2438ec3002e3917c5634a9d4e6a93e6e95dc129d648319fdff33fac61547996",
+  "interface": "plx-eval-oracle/v1",
+  "derived_from": [
+   "context/006786de5454dcb66a83cfdd2fad4974b2545e5f61a24a75aad1b74bc288b23e.json#/evaluation_batch/cases/3",
+   "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/case_acceptance/3",
+   "docs/reference/cases-and-artifacts.md#3.6",
+   "evals/exposed/sources.json#midas-shipment-mail",
+   "evals/exposed/sources.json#midas-packing-slip"
+  ],
+  "computed_at": "2026-10-03T21:18:48Z"
+ },
+ "label": {
+  "status": "oracle_only",
+  "note": "Exposed real case (source batch existing-packets-development-batch-01 unit DEV-004, cluster po00349-midas): dev/regression only, never held-out. Expected values are the source-backed claims of the source records (oracle.derived_from), not a Workbench oracle run and not a human audit; every claim the records do not establish is a gap with state unknown. Pending human label: a person checks known_outcome against the originals in evals/exposed/sources.json, then sets human_audited (audited_by, audited_at) or disputed."
+ },
+ "scoring": {
+  "exact_values": true,
+  "gap_honesty": true,
+  "citations_required": true
+ },
+ "created_at": "2026-10-04"
+}

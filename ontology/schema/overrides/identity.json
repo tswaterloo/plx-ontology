@@ -1,0 +1,9 @@
+{
+ "format": "plx-generator-overrides/v1",
+ "kind": "identity",
+ "description": "The identity key of a generated raw type: the relation's key, scoped to its binding. It is verified and unique only when the source declares the key a key (key_source in verified_key_sources: a primary key, a NOT NULL unique constraint, or a single-column unique constraint the API pages on); any other key (a bare id column the API falls back to) is a lead and not unique.",
+ "key_name": "source_key",
+ "scope": "within_binding",
+ "verified_key_sources": ["primary-key", "unique", "nullable-unique"],
+ "unverified_tier": "lead"
+}

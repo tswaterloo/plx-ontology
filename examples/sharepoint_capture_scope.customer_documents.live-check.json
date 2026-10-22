@@ -1,0 +1,17 @@
+{
+ "schema": "plx-sharepoint-capture-scope/v1",
+ "note": "Live-check scope of ontology.document_fields_customer_po: the PLXCUSTOMERS site's 'Customer Documents' folder (its default library, resolved by site name at run time on the SHAREPOINT_SITE_ID host; the same target as integrations/sharepoint_capture_scope.json), where customers' purchase orders are filed. The Portal-taxonomy columns are read per version (list_item_columns 'portal_taxonomy' = operating/doc_metadata_taxonomy.py COLUMNS, GET listItem; SharePointFile.portal_metadata, counted by the check's portal_metadata block); DocumentCategory among them: a confirmed issued-purchase-order category is the provenance that PLX issued that file, so it is no customer PO (ontology/document_fields.py Direction). Configuration, never a grant. Read-only.",
+ "max_content_bytes": 20000000,
+ "list_item_columns": "portal_taxonomy",
+ "targets": [
+  {
+   "id": "plxcustomers.customer-documents",
+   "site": "PLXCUSTOMERS",
+   "folders": [
+    "/Customer Documents"
+   ],
+   "max_depth": 8,
+   "max_folders": 5000
+  }
+ ]
+}

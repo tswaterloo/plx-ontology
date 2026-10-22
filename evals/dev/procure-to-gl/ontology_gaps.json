@@ -1,0 +1,200 @@
+{
+ "format": "plx-case-ontology-gaps/v1",
+ "case": "procure-to-gl",
+ "status": "What the ontology lacks to answer evals/dev/procure-to-gl/proposed_items.json (screening decision, conversion step, G/L posting lineage and the links and readers around them). Sources are named, never read here; 'source unknown' carries the question that would find one. OntologyProject refs on context/ paths are source records.",
+ "advisory": "advisory:4f8c497adb40",
+ "gaps": [
+  {
+   "id": "PTG-GAP-01",
+   "kind": "object",
+   "name": "ScreeningJob (blank and screened SKUs, quantities, screener, artwork version, rate-card PO, proof and counts, transfers, conversion, invoice, G/L)",
+   "ontology_today": "No screening job type, and no Portal model at 1f2d42d records one; the map proposes it as a target.",
+   "needed_by": ["SP-05", "SP-06", "SP-07"],
+   "sources": [
+    {
+     "system": "advisory",
+     "relation": "Screening Process Map descriptor (proposed Screening Job fields)",
+     "ref": "OntologyProject:context/4f8c497adb409f2785be205012121535ed513326e36bde79007cb0309995656d.json@9d6e7933636e"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Where is an outside screening job recorded today (FileMaker layout, Portal page, spreadsheet or email), and who owns the screener's proof and counts?"
+  },
+  {
+   "id": "PTG-GAP-02",
+   "kind": "object",
+   "name": "Screening decision (approval of the screen proof and the accepted and rejected counts that make units good)",
+   "ontology_today": "No screening decision; the nearest records are Portal artwork proof-version decisions (not served), which carry no screening counts.",
+   "needed_by": ["SP-02", "SP-06"],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "public.app_artwork_version_decision (proof-version decisions; no screening counts)",
+     "ref": "plx-customer-portal:portal/prisma/schema.prisma@1f2d42d1e832:9349-9370"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Who approves a screen proof and records the good and rejected counts from the screener, and where is that record kept?"
+  },
+  {
+   "id": "PTG-GAP-03",
+   "kind": "object",
+   "name": "ConversionStep (blank SKU consumed, screened SKU produced, cost rolled under conversion option (a))",
+   "ontology_today": "No conversion event; ItemLedgerEntry links only to its item and to receipts, shipments and credit memos by document No.",
+   "needed_by": ["SP-03", "SP-05", "SP-08"],
+   "sources": [
+    {
+     "system": "ontology",
+     "relation": "ItemLedgerEntry link types (for_item, posted_by_receipt, posted_by_shipment, posted_by_credit_memo)",
+     "ref": "OntologyProject:ontology/schema/domains/bc_finance.json@d32fde5fd440:89"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Which Business Central document performs the blank-to-screened conversion under option (a) (assembly order, item reclassification journal or production order), and in which company?"
+  },
+  {
+   "id": "PTG-GAP-04",
+   "kind": "object",
+   "name": "Cost policy decision (the ERP-D-015 exception for screening blanks and the screening clearing account, with approver and date)",
+   "ontology_today": "No decision or policy object; ERP-D-015 appears only as schema comments and as a GeneralLedgerEntry description.",
+   "needed_by": ["SP-02", "SP-03", "PG-05"],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "app_receipt.freight_cost / duties_cost comments (ERP-D-015: expense G/L, not item cost)",
+     "ref": "plx-customer-portal:portal/prisma/schema.prisma@1f2d42d1e832:3835-3838"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Has the ERP-D-015 exception for screening blanks and the screening clearing account been approved, by whom, and where is that decision recorded?"
+  },
+  {
+   "id": "PTG-GAP-05",
+   "kind": "link",
+   "name": "Product.screened_from (screened SKU -> the blank SKU it is made from)",
+   "ontology_today": "No link between two items; the map reports the blank-to-screened SKU link missing.",
+   "needed_by": ["SP-05"],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "public.app_product",
+     "ref": "plx-customer-portal:portal/prisma/schema.prisma@1f2d42d1e832:1826-1965"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Does any field or table name the blank SKU a screened SKU is made from (Portal product, FileMaker packaging or BC item), and is it filled for current screened items?"
+  },
+  {
+   "id": "PTG-GAP-06",
+   "kind": "link",
+   "name": "G/L posting lineage (receipt, item ledger entry or conversion -> GeneralLedgerEntry)",
+   "ontology_today": "GeneralLedgerEntry links only to its account and, corroborated by document No., to posted purchase and sales invoices; BC value entries are not in the read grammar, so nothing ties item movements to G/L entries.",
+   "needed_by": ["SP-08", "PG-07"],
+   "sources": [
+    {
+     "system": "ontology",
+     "relation": "GeneralLedgerEntry and its links on_account, for_purchase_invoice",
+     "ref": "OntologyProject:ontology/schema/domains/bc_finance.json@d32fde5fd440:285"
+    },
+    {
+     "system": "business-central",
+     "relation": "BC_ENTITY_SETS (no valueEntries)",
+     "ref": "OntologyProject:integrations/live_source_grammar.py@d32fde5fd440:72-83"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Does the Business Central tenant expose Value Entries or the G/L - Item Ledger Relation through any API page (standard v2.0 or a custom page), and under which name?"
+  },
+  {
+   "id": "PTG-GAP-07",
+   "kind": "link",
+   "name": "Portal purchase order and receipt -> Business Central document (entity map)",
+   "ontology_today": "BcEntityMapping is declared but unserved; Portal-to-BC links fall back to renumbering and number matches, which are leads.",
+   "needed_by": ["SP-04", "SP-07", "PG-03", "PG-06"],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "public.app_bc_entity_map",
+     "ref": "OntologyProject:ontology/schema/domains/bc_finance.json@d32fde5fd440:1371-1375"
+    },
+    {
+     "system": "portal",
+     "relation": "public.app_bc_entity_map joined by the PO and receipt drain",
+     "ref": "plx-customer-portal:portal/src/lib/business-central/outbox-producer.ts@1f2d42d1e832:589-596"
+    }
+   ]
+  },
+  {
+   "id": "PTG-GAP-08",
+   "kind": "link",
+   "name": "Supplier deposit -> purchase order or proforma invoice",
+   "ontology_today": "Payment links only to a posted purchase invoice (applies_to_purchase_invoice); a deposit paid before any invoice has no link to its PO or PI.",
+   "needed_by": ["PG-04"],
+   "sources": [
+    {
+     "system": "ontology",
+     "relation": "Payment and applies_to_purchase_invoice",
+     "ref": "OntologyProject:ontology/schema/domains/bc_finance.json@d32fde5fd440:989"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "How is a supplier deposit recorded in Business Central (prepayment invoice, or a vendor payment line with which applies-to or external document number), and does it name the PO?"
+  },
+  {
+   "id": "PTG-GAP-09",
+   "kind": "reader",
+   "name": "Warehouse transfers of blanks to and from the screener",
+   "ontology_today": "RelPublicAppWarehouseTransfer and its lines are generated not_served types; no reader.",
+   "needed_by": ["SP-06"],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "public.app_warehouse_transfer, public.app_warehouse_transfer_line",
+     "ref": "plx-customer-portal:portal/prisma/schema.prisma@1f2d42d1e832:3034-3096"
+    }
+   ]
+  },
+  {
+   "id": "PTG-GAP-10",
+   "kind": "reader",
+   "name": "Incoming QC records of received packaging",
+   "ontology_today": "RelPublicAppIncomingQcRecord is a generated not_served type; no reader.",
+   "needed_by": ["PG-06"],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "public.app_incoming_qc_record",
+     "ref": "plx-customer-portal:portal/prisma/schema.prisma@1f2d42d1e832:3920-3948"
+    }
+   ]
+  },
+  {
+   "id": "PTG-GAP-11",
+   "kind": "reader",
+   "name": "Screening Process Map originals (the ZIP's HTML, spec JSON and ontology CSV/JSON members)",
+   "ontology_today": "Not a row of examples/case_originals.json; only the source descriptor with member hashes is pinned, and the Workbench has no verified read of the members.",
+   "needed_by": ["SP-01", "SP-02", "SP-03"],
+   "sources": [
+    {
+     "system": "sharepoint",
+     "relation": "AGENTS/Ontology UseCases/Screening Process Map.zip version 1.0 (descriptor with member hashes)",
+     "ref": "OntologyProject:context/4f8c497adb409f2785be205012121535ed513326e36bde79007cb0309995656d.json@9d6e7933636e"
+    }
+   ]
+  },
+  {
+   "id": "PTG-GAP-12",
+   "kind": "reader",
+   "name": "Packaging map examples archive members (quotes, PO, PI, deposit, freight)",
+   "ontology_today": "The archive row is pinned with extraction incomplete and its members' bodies are not verified, so documents the cards need cannot be cited by content.",
+   "needed_by": ["PG-02", "PG-04", "PG-05"],
+   "sources": [
+    {
+     "system": "sharepoint",
+     "relation": "soapbox-packaging-examples.zip",
+     "ref": "OntologyProject:examples/case_originals.json@d32fde5fd440 co-8fabde0ade07"
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,39 @@
+{
+ "schema": "plx-live-source-audience/v1",
+ "tenant": "plx",
+ "note": "EXAMPLE ONLY, not a PLX-confirmed grant: the host capture principal and the purchasing investigator of the case.po_document_chain live check, narrowed to what examples/po_document_chain_host.live-check.json captures: the six operational mailboxes of examples/case_mail_purchasing_capture_scope.live-check.json (purchasing staff reading purchasing mail is in role) and the BC purchase orders. Default deny. The check's narrower reader (staff:operations) has no grant here, so it must see none of the case.",
+ "default_classification": "confidential",
+ "audiences": {
+  "mail:order-confirmation@petrasoap.com": [
+   "staff:purchasing",
+   "svc:workbench-host"
+  ],
+  "mail:ship@petrasoap.com": [
+   "staff:purchasing",
+   "svc:workbench-host"
+  ],
+  "mail:torontowh@petrasoap.com": [
+   "staff:purchasing",
+   "svc:workbench-host"
+  ],
+  "mail:ap@petrasoap.com": [
+   "staff:purchasing",
+   "svc:workbench-host"
+  ],
+  "mail:receiving@petrasoap.com": [
+   "staff:purchasing",
+   "svc:workbench-host"
+  ],
+  "mail:qclabresults@petrasoap.com": [
+   "staff:purchasing",
+   "svc:workbench-host"
+  ],
+  "bc:production:*": [
+   "staff:purchasing",
+   "svc:workbench-host"
+  ]
+ },
+ "classifications": {
+  "mail:*": "restricted"
+ }
+}

@@ -1,0 +1,197 @@
+{
+  "tool": "plx.object",
+  "examples": [
+    {
+      "name": "per-source values and a conflict",
+      "input": {
+        "object_id": "SalesOrder:portal.app_sales_order:ex-so-1",
+        "response_format": "detailed"
+      },
+      "output": {
+        "object": {
+          "object_id": "SalesOrder:portal.app_sales_order:ex-so-1",
+          "object_type": "SalesOrder",
+          "display": {
+            "untrusted_text": "SO-2099-0001",
+            "origin": {
+              "citation": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42",
+              "field_path": "row.order_number"
+            }
+          },
+          "lineage": "gold_etl_from_fm"
+        },
+        "values": [
+          {
+            "property": "total_amount",
+            "value_type": "money",
+            "value": "1250.50",
+            "currency": "CAD",
+            "citation": {
+              "l1_handle": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42",
+              "field_path": "row.total_amount",
+              "digest": "9bdd1080c047baefbeff07851d548876b8bc65d1d3dbd1574d7f11aeecc2e339",
+              "lineage": "gold_etl_from_fm"
+            },
+            "authority_rank": 0,
+            "markings": [
+              "finance"
+            ]
+          },
+          {
+            "property": "customer_po",
+            "value_type": "text",
+            "value": {
+              "untrusted_text": "Jane at receiving",
+              "origin": {
+                "citation": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42",
+                "field_path": "row.po_reference"
+              }
+            },
+            "citation": {
+              "l1_handle": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42",
+              "field_path": "row.po_reference",
+              "digest": "e953fc5ab080fdcbf88df010ba92d74f33af85288b639a36a452409bebf3c1be",
+              "lineage": "gold_etl_from_fm"
+            },
+            "authority_rank": 1,
+            "markings": []
+          },
+          {
+            "property": "ordered_quantity",
+            "value_type": "quantity",
+            "value": "1920",
+            "unit": "each",
+            "quantity_role": "ordered",
+            "citation": {
+              "l1_handle": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42",
+              "field_path": "row.custom_fields.totalQuantity",
+              "digest": "146d17af168f5260311952fff1a5ab31eb9a141a29fb93f8a2b753d963fad7ed",
+              "lineage": "gold_etl_from_fm"
+            },
+            "authority_rank": 0,
+            "markings": []
+          }
+        ],
+        "conflicts": [
+          {
+            "kind": "value_disagreement",
+            "subject": "SalesOrder.customer_po",
+            "values": [
+              {
+                "property": "customer_po",
+                "value_type": "text",
+                "value": {
+                  "untrusted_text": "Jane at receiving",
+                  "origin": {
+                    "citation": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42",
+                    "field_path": "row.po_reference"
+                  }
+                },
+                "citation": {
+                  "l1_handle": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42",
+                  "field_path": "row.po_reference",
+                  "digest": "e953fc5ab080fdcbf88df010ba92d74f33af85288b639a36a452409bebf3c1be",
+                  "lineage": "gold_etl_from_fm"
+                },
+                "authority_rank": 1,
+                "markings": []
+              },
+              {
+                "property": "customer_po",
+                "value_type": "text",
+                "value": {
+                  "untrusted_text": "PO 90001",
+                  "origin": {
+                    "citation": "api://public.order_entry/%7B%22id%22%3A900123%7D@0123456789abcdef-44",
+                    "field_path": "row.custpocode"
+                  }
+                },
+                "citation": {
+                  "l1_handle": "api://public.order_entry/%7B%22id%22%3A900123%7D@0123456789abcdef-44",
+                  "field_path": "row.custpocode",
+                  "digest": "c50a76dcf8bc334bf2145a39707b7f8d09bc9008ec4f332230bcc215ab9fdf70",
+                  "lineage": "gold_native_staging"
+                },
+                "authority_rank": null,
+                "markings": []
+              }
+            ],
+            "note": "Gold po_reference holds free text; the FM bridge row holds a PO-shaped value."
+          }
+        ],
+        "identity": [
+          {
+            "link_id": "lnk-ac0f09c0f8bf5e7a",
+            "link_type": "SalesOrder.same_record_as",
+            "from": "SalesOrder:portal.app_sales_order:ex-so-1",
+            "to": "SalesOrder:portal.fm_order_entry:900123",
+            "tier": "verified",
+            "reason": [
+              {
+                "feature": "custom_fields_fm_id",
+                "agrees": true,
+                "citations": [
+                  {
+                    "l1_handle": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42",
+                    "field_path": "row.custom_fields.fmId",
+                    "digest": "10d9bfc42f399164177f8125646ee81f5988e2152835bd576d32cf4dad4d8e36",
+                    "lineage": "gold_etl_from_fm"
+                  },
+                  {
+                    "l1_handle": "api://public.order_entry/%7B%22id%22%3A900123%7D@0123456789abcdef-44",
+                    "field_path": "row.id",
+                    "digest": "0e14e085a9008dbe9ae5f9a3ce3ab0687dc8baf1cbe8290e83a912d38f90fa84",
+                    "lineage": "gold_native_staging"
+                  }
+                ]
+              }
+            ],
+            "why_not": [
+              {
+                "feature": "bc_number_text_match",
+                "agrees": null,
+                "weight": 2.0
+              }
+            ]
+          }
+        ],
+        "linked_counts": [
+          {
+            "link_type": "SalesOrder.ordered_by",
+            "direction": "forward",
+            "count": 1,
+            "tiers": {
+              "verified": 1
+            }
+          }
+        ],
+        "gaps": [],
+        "withheld": {
+          "properties": 1,
+          "objects": 0,
+          "reason": "marking"
+        },
+        "completeness": {
+          "complete": true,
+          "truncated": false,
+          "returned": 3,
+          "total": 3,
+          "next_cursor": null
+        },
+        "meta": {
+          "schema_digest": "df0ad6e43880f09c90ebf95f19110178aba6890df0010ebda7485029e2b543b4",
+          "as_known_at": "2099-01-02T03:04:05Z",
+          "freshness": [
+            {
+              "source": "portal_api",
+              "captured_at": "2099-01-02T03:00:00Z",
+              "lag_seconds": 245,
+              "completeness": "complete",
+              "stale": false
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+ "schema": "plx-live-source-audience/v1",
+ "tenant": "plx",
+ "note": "EXAMPLE ONLY, not a PLX-confirmed grant. Default deny: a mailbox, SharePoint path or BC entity not matched here is invisible. Most specific pattern wins; an empty list denies inside a granted family. A mailbox is judged over every address it has (object id, UPN, mail, SMTP proxies); any denying address denies. SharePoint keys are drive-relative server paths (/Customers/..., not /Shared Documents/...).",
+ "default_classification": "confidential",
+ "audiences": {
+  "mail:vince@petralabx.com": ["staff:vince"],
+  "sharepoint:<drive-id>:/Customers/*": ["staff:operations", "staff:quality"],
+  "sharepoint:<drive-id>:/Customer Documents/*": ["staff:operations"],
+  "bc:production:companies": ["staff:operations"],
+  "bc:production:*": ["staff:finance"]
+ },
+ "classifications": {"mail:*": "restricted"},
+ "identities": {"staff:vince": ["vince@petralabx.com"]},
+ "source_acl_required": ["mail:*"]
+}

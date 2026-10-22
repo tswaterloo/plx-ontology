@@ -1,0 +1,22 @@
+{
+ "schema": "plx-host-config/v1",
+ "note": "Host config of the case.po_status live check (verify/live-checks/case.po_status.json): one capture cycle of the purchase-order Portal relations (Portal and FileMaker purchase orders, their lines, suppliers and receipts) through the source mirror, then status cards offline (operating.status_card); the po_status.vocabulary live check (operating.po_status) reads the same cycle, with the Sage PO headers for its iscomplete cross-tab. Configuration, never a grant: the audiences decide what the capture principal may read. It reuses the case.unfamiliar_order audiences (read only).",
+ "tenant": "plx",
+ "capture_audience": "unfamiliar_case_live_audience.live-check.json",
+ "live_audience": "unfamiliar_case_live_audience.live-check.json",
+ "mirror_audience": "unfamiliar_case_audience.example.json",
+ "portal": {
+  "relations": [
+   "public.app_purchase_order",
+   "public.app_purchase_order_line",
+   "public.app_supplier",
+   "public.app_receipt",
+   "public.generated_purchase_order",
+   "public.generated_purchase_order_item",
+   "public.receipt_packaging",
+   "public.receipt_raw_material",
+   "sage.po_header"
+  ],
+  "budget_seconds": 900
+ }
+}

@@ -1,0 +1,106 @@
+{
+  "tool": "plx.read",
+  "examples": [
+    {
+      "name": "row",
+      "input": {
+        "citation": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42"
+      },
+      "output": {
+        "citation": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42",
+        "status": "resolved",
+        "digest": "ccf5366a8a99ea473edbacf8322b91fc62934cc7cc77de70fda66649e9f9003d",
+        "lineage": "gold_etl_from_fm",
+        "fields": {
+          "id": {
+            "untrusted_text": "ex-so-1",
+            "origin": {
+              "citation": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42",
+              "field_path": "row.id"
+            }
+          },
+          "total_amount": "1250.50",
+          "po_reference": {
+            "untrusted_text": "Jane at receiving",
+            "origin": {
+              "citation": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42",
+              "field_path": "row.po_reference"
+            }
+          },
+          "required_date": {
+            "untrusted_text": "2099-01-01",
+            "origin": {
+              "citation": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42",
+              "field_path": "row.required_date"
+            }
+          },
+          "deleted": null
+        },
+        "markings": [
+          "finance"
+        ],
+        "gaps": [],
+        "completeness": {
+          "complete": true,
+          "truncated": false,
+          "returned": 5,
+          "total": 5,
+          "next_cursor": null
+        },
+        "meta": {
+          "schema_digest": "df0ad6e43880f09c90ebf95f19110178aba6890df0010ebda7485029e2b543b4",
+          "as_known_at": "2099-01-02T03:04:05Z",
+          "freshness": [
+            {
+              "source": "portal_api",
+              "captured_at": "2099-01-02T03:00:00Z",
+              "lag_seconds": 245,
+              "completeness": "complete",
+              "stale": false
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "changed",
+      "input": {
+        "citation": "bc://company-example/salesOrders/00000000-0000-0000-0000-000000000001@capture-3"
+      },
+      "output": {
+        "citation": "bc://company-example/salesOrders/00000000-0000-0000-0000-000000000001@capture-3",
+        "status": "changed_since",
+        "current_citation": "bc://company-example/salesOrders/00000000-0000-0000-0000-000000000001@capture-4",
+        "digest": "4f0837bd6e688f84b3f651072c32746c9bcb9c5c8e57ad4f115da412dca058a7",
+        "lineage": "bc_example_company",
+        "content": {
+          "untrusted_text": "{\"number\": \"S-ORD-1\"}",
+          "origin": {
+            "citation": "bc://company-example/salesOrders/00000000-0000-0000-0000-000000000001@capture-3"
+          }
+        },
+        "gaps": [],
+        "completeness": {
+          "complete": true,
+          "truncated": false,
+          "returned": 1,
+          "total": 1,
+          "next_cursor": null
+        },
+        "meta": {
+          "schema_digest": "df0ad6e43880f09c90ebf95f19110178aba6890df0010ebda7485029e2b543b4",
+          "as_known_at": "2099-01-02T03:04:05Z",
+          "freshness": [
+            {
+              "source": "portal_api",
+              "captured_at": "2099-01-02T03:00:00Z",
+              "lag_seconds": 245,
+              "completeness": "complete",
+              "stale": false
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+ "schema": "plx-live-source-audience/v1",
+ "tenant": "plx",
+ "note": "EXAMPLE ONLY, not a PLX-confirmed grant: the Teams capture principal of the graph.teams_capture live check and its three readers. staff:teams-member stands for cos@ and vince@ (it sees what they are members of), staff:teams-outsider is granted every Teams conversation but is a member of none (membership trimming: it must see 0 messages), staff:teams-withheld has no grant (0 of everything). Default deny; every teams: resource also needs the message's captured membership.",
+ "default_classification": "confidential",
+ "audiences": {
+  "teams:*": [
+   "svc:teams-capture",
+   "staff:teams-member",
+   "staff:teams-outsider"
+  ]
+ },
+ "classifications": {
+  "teams:*": "restricted"
+ },
+ "identities": {
+  "staff:teams-member": ["cos@petrasoap.com", "vince@petrasoap.com"],
+  "staff:teams-outsider": ["teams-outsider.live-check@petrasoap.com"]
+ }
+}

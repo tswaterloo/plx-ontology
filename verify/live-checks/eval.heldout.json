@@ -1,0 +1,165 @@
+{
+ "id": "eval.heldout",
+ "description": "Hidden held-out evaluation set (10-DECISION 8): the independent oracle (evals/oracle, never imports ontology/operating) samples 120 closed transactions from the held-out half of the root partition over F1-F6 (F5 supplier invoices unmatched to receipts and F6 orders shipped short have no plan), from raw Portal API rows, BC documents and mail/SharePoint identifiers (GET only). A Portal outage blocks parts, not the run (portal-indep pattern): the Portal strata, or on reuse the frozen items whose labels read the Portal, are listed in blocked_upstream and counted counts.blocked_upstream (never label drift), BC and the documents still measure (counts.measured), and a generation with blocked parts is never frozen (frozen.deferred). The run also checks that no held-out answer chain touches a root or chain record of the dev set: the committed (fixture) dev manifest plus every live dev manifest the daily eval.dev_baseline run leaves in the same host state directory (digests only; live_dev_manifests counts them). Related documents and near-duplicates stay in one partition (bb664f58910f section 2, evals/partition.py): a fresh generation drops every item whose group (shared document, root or identifier) touches a live dev run's key digests, the frozen set keeps its own key digests for the dev runs to exclude, and counts.dev_key_overlap re-checks it. disjointness_vacuous stays true until a live dev manifest exists. The first run of run id heldout-v2 (v1 was frozen before the variants) freezes the items and their digest list in the host state directory (<$PLX_EVAL_HELDOUT_DIR or $XDG_STATE_HOME/plx-workbench/eval-heldout>/live/heldout-v2, keyed by source so a fixture run never shares it; outside the repository, never committed or printed); later runs re-check that frozen set (integrity, schema, label drift against the current source, dev disjointness) and never resample. Each sampled item also gets one metamorphic variant (evals/oracle/perturb.py, the transforms in turn: shifted dates, scaled quantities, same-name party twins, repeated events, conflicting units, a failed source), answered by the oracle over the run's own reads perturbed, frozen with its parent and scored like every item over the reads it was answered from (schema, determinism, label drift); counts.variants and by_variant count them, by_family counts the sampled items. stdout is the held-out manifest: counts, families, variant labels, 16-hex content hashes and the set hash (no item id). Product scoring is not part of this check.",
+ "source": "portal-workbench-api+business-central+microsoft-graph",
+ "cadence": "daily",
+ "command": [
+  "python3",
+  "-m",
+  "scripts.eval_oracle_dev",
+  "heldout",
+  "--run-id",
+  "heldout-v2",
+  "--count",
+  "120",
+  "--budget-seconds",
+  "3000",
+  "--mailbox",
+  "purchase-order@petrasoap.com",
+  "--folder",
+  "inbox",
+  "--sharepoint-path",
+  "/Documents",
+  "--sharepoint-path",
+  "/Customer Documents"
+ ],
+ "timeout_seconds": 3600,
+ "requires_env": [
+  "BC_TENANT_ID",
+  "BC_CLIENT_ID",
+  "BC_CLIENT_SECRET",
+  "BC_ENVIRONMENT"
+ ],
+ "optional_env": [
+  "PLX_WORKBENCH_API_URL",
+  "PLX_WORKBENCH_API_KEY",
+  "MICROSOFT_GRAPH_CLIENT_SECRET"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "run_id",
+   "counts.items",
+   "counts.schema_valid",
+   "counts.deterministic",
+   "counts.dev_root_overlap",
+   "counts.partition_violations",
+   "by_family",
+   "strata",
+   "set_sha256",
+   "counts.dev_chain_overlap",
+   "counts.label_drift",
+   "frozen.reused",
+   "dev_manifest_evidence_label",
+   "disjointness_vacuous",
+   "counts.dev_key_overlap",
+   "counts.blocked_upstream",
+   "counts.measured",
+   "blocked_upstream",
+   "live_dev_manifests",
+   "counts.variants",
+   "by_variant"
+  ],
+  "json_equals": {
+   "adapter_status": "live-unverified",
+   "evidence_label": "live-read",
+   "values_published": false,
+   "set": "heldout",
+   "counts.dev_root_overlap": 0,
+   "counts.partition_violations": 0,
+   "budget.exhausted": false,
+   "counts.dev_chain_overlap": 0,
+   "counts.dev_key_overlap": 0
+  },
+  "json_min": {
+   "counts.items": 60,
+   "counts.root_resolves": 60,
+   "by_variant.standard": 60,
+   "counts.variants": 1
+  },
+  "json_max": {
+   "counts.families_without_plan": 2
+  }
+ },
+ "record": [
+  "run_id",
+  "set",
+  "sources",
+  "counts",
+  "by_family",
+  "strata",
+  "unexplained_strata",
+  "partition_dropped",
+  "read_failures",
+  "budget",
+  "dev_roots_excluded",
+  "set_sha256",
+  "items[*].family",
+  "items[*].hash16",
+  "items[*].answerability",
+  "frozen",
+  "dev_records_excluded",
+  "dev_manifest_evidence_label",
+  "disjointness_vacuous",
+  "refused",
+  "blocked_upstream",
+  "live_dev_manifests",
+  "outage_unmeasured",
+  "by_variant",
+  "items[*].variant"
+ ],
+ "record_keys": [
+  "counts",
+  "by_family",
+  "strata",
+  "partition_dropped",
+  "budget",
+  "frozen",
+  "by_variant"
+ ],
+ "record_enums": [
+  "run_id",
+  "set",
+  "sources",
+  "strata",
+  "unexplained_strata",
+  "read_failures",
+  "set_sha256",
+  "items[*].family",
+  "items[*].hash16",
+  "items[*].answerability",
+  "dev_manifest_evidence_label",
+  "refused",
+  "blocked_upstream",
+  "outage_unmeasured",
+  "items[*].variant"
+ ],
+ "notes": "live-unverified until a passing live-check result. Daily and bounded: one read budget (--budget-seconds 3000) inside a 3600 s timeout; a spent budget fails the run (exit 3, budget.exhausted true). Exit 0 also requires every item schema-valid, no root or chain record shared with the frozen dev manifest and no root outside the held-out partition; a fresh generation must also be deterministic, and only a clean first generation is frozen. label_drift counts frozen items whose label differs on today's source (Portal read generations ignored); more than 10% of items fails the run. A frozen set whose stored source, evidence label or id suffix differs from this run is refused (exit 3, refused heldout_frozen_source_mismatch). root_resolves is recomputed on reuse. disjointness_vacuous true is expected on live until the first live dev manifest exists; it does not fail the run. During a Portal outage the check is blocked in part (expect_blocked: at least one item measured on BC or the documents, no partition overlap), never a pass, and an unfrozen generation waits for a run without blocked parts. A run with blocked parts and nothing left to measure (every frozen label reads the Portal) says outage_unmeasured portal_outage and is blocked whole (blocked_when). frozen.reused false on a later day means the host state directory did not persist and the set was generated again: set_sha256 then shows whether it moved. A new set needs an explicit version bump (the next is --run-id heldout-v3). Fewer than 120 sampled items (by_variant.standard) means a family's pool was short (F5 needs BC purchase invoices). The variants are perturbed reads, never live values: their labels are the oracle's answers over the run's reads perturbed as each item's perturbation records, and a set frozen before them (heldout-v1) has none, hence the run id heldout-v2. unexplained_strata names strata a run sampled with no candidate and no reason (recorded, not gated: a set frozen before the strata fix keeps its old report; sample a new run id to draw over every stratum).",
+ "expect_blocked": {
+  "exit_code": 0,
+  "json_fields": [
+   "run_id",
+   "counts.items",
+   "counts.measured",
+   "counts.blocked_upstream",
+   "blocked_upstream",
+   "frozen.reused",
+   "set_sha256"
+  ],
+  "json_equals": {
+   "adapter_status": "live-unverified",
+   "evidence_label": "live-read",
+   "values_published": false,
+   "set": "heldout",
+   "counts.dev_root_overlap": 0,
+   "counts.dev_chain_overlap": 0,
+   "counts.dev_key_overlap": 0,
+   "counts.partition_violations": 0,
+   "budget.exhausted": false
+  },
+  "json_min": {
+   "counts.measured": 1
+  }
+ },
+ "blocked_when": "outage_unmeasured"
+}

@@ -1,0 +1,74 @@
+{
+ "id": "workspace.console_question_one_path",
+ "description": "The console question box's one path (operator_ui.objective_box.answer, the only path the box posts: POST /api/objective) as one named reader: a two-part question about one purchase order by its number (\"Why is <number> late, and what is missing?\"), the order taken from the reader's own home gaps and resolved by the reader's plx.find to that one record, on the object workspace the console builds for the reader of the persistent host's own session start-up (scripts.eval_real_agent.ask_workspace), with a headless Claude Code planner. The server answers both parts for the order (the late_po plan's verdict and the record page's missing-steps answer), each exactly what GET /api/investigate and GET /api/object show the same reader, and the agent runs beside it. Counts and enums only.",
+ "source": "claude-code",
+ "tier": "employee_usable",
+ "cadence": "daily",
+ "command": [
+  "python3",
+  "-m",
+  "scripts.eval_console_question",
+  "--planner-timeout",
+  "120",
+  "--max-steps",
+  "8"
+ ],
+ "timeout_seconds": 1800,
+ "requires_env_any": [
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "PLX_CLAUDE_CODE_OAUTH_TOKEN"
+ ],
+ "optional_env": [
+  "PLX_EVAL_READER",
+  "PLX_WORKBENCH_SESSION_SECRET",
+  "PLX_WORKBENCH_STATE_DIR",
+  "PLX_WORKBENCH_HOST_CONFIG",
+  "MICROSOFT_GRAPH_TENANT_ID",
+  "MICROSOFT_GRAPH_CLIENT_ID",
+  "MICROSOFT_GRAPH_CLIENT_SECRET"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "console_question.parts_asked",
+   "console_question.parts_covered",
+   "console_question.matches_server",
+   "console_question.verdict_states"
+  ],
+  "json_equals": {
+   "adapter_status": "live-unverified",
+   "values_published": false,
+   "blocked": null,
+   "console_question.ran": 1,
+   "console_question.agent_called": true,
+   "console_question.parts_asked": "late,missing",
+   "console_question.unanswered_parts": 0
+  },
+  "json_min": {
+   "console_question.roots_answered": 1,
+   "console_question.parts_covered": 2
+  },
+  "json_empty": [
+   "console_question.parts_left_to_agent",
+   "console_question.fail_reasons"
+  ]
+ },
+ "blocked_when": "blocked",
+ "blocked_cause": "host_misconfiguration",
+ "blocked_causes": {
+  "no_employee_identity": "later_ask",
+  "no_readable_order": "source_gap"
+ },
+ "record": [
+  "blocked",
+  "console_question"
+ ],
+ "record_enums": [
+  "blocked",
+  "console_question"
+ ],
+ "record_keys": [
+  "console_question"
+ ],
+ "notes": "live-unverified until a passing live-check result; nothing the question box answered is recorded until this check runs. A keyless test (operator_ui/tests/test_console_answer_first.py ConsoleQuestionLiveCheckTest) drives scripts.eval_console_question.main on the fixture world with the scripted planner (injected transport, never live) and holds check_expectations to this spec on its real output, and its blocked output without a reader. Preflight before any read is scripts.eval_objective_box's: the claude binary (binary_not_found), the reader in PLX_EVAL_READER (no_employee_identity: later_ask), the session secret, host state and config, the host's acceptance of the reader and its projection store; each refusal blocks with its code, never a pass. No purchase order in the reader's home gaps whose number resolves to it blocks no_readable_order. Pass: both parts asked and answered by the server for the order, none left to the agent, every server part equal to the reader's own investigate/workspace answer (matches_server == parts_covered, else verdict_differs_from_server), the agent called. Budget: one question, at most 8 planner turns of at most 120 s (960 s), inside the 1800 s timeout. Daily at most: it spends the operator's Claude Code plan."
+}

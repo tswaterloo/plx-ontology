@@ -1,0 +1,102 @@
+{
+ "id": "po_status.vocabulary",
+ "description": "The one purchase-order status definition (operating/po_status.py, docs/decisions/2026-10-21-po-open-sage-fm.md) over the real status words: one host capture cycle of the purchase-order Portal relations plus the Sage PO headers (examples/po_status_host.live-check.json), then offline every captured Portal header (app_purchase_order, its lines summed per PO) and FileMaker header (generated_purchase_order) classed open, closed, draft or unknown by the shared rule, per raw status word; unknown rows counted by word and by reason; the old engine rule (header codes only) counted beside it; and Sage iscomplete values crossed with linescmpl >= lines. Passes when every header lands in one of the four classes, the Portal headers hold at least one open or closed PO, and the four relations were read complete. Counts and status words only, never a PO number or other value.",
+ "source": "portal-workbench-api",
+ "cadence": "daily",
+ "command": [
+  "python3",
+  "-m",
+  "operating.po_status",
+  "--state-dir",
+  "{tmp}/state",
+  "--mirror-audience",
+  "examples/unfamiliar_case_audience.example.json",
+  "--host-config",
+  "examples/po_status_host.live-check.json",
+  "--principal",
+  "staff:purchasing",
+  "--clearance",
+  "restricted"
+ ],
+ "timeout_seconds": 1800,
+ "requires_env": [
+  "PLX_WORKBENCH_API_URL",
+  "PLX_WORKBENCH_API_KEY"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "capture.sources",
+   "words.portal_po",
+   "words.fm_po",
+   "classes.portal_po",
+   "classes.fm_po",
+   "unknown_words.portal_po",
+   "unknown_reasons.portal_po",
+   "sage_iscomplete",
+   "blocked_upstream"
+  ],
+  "json_equals": {
+   "capture.exit_code": 0,
+   "unmapped_rows": 0,
+   "relations.portal_po.complete": true,
+   "relations.portal_line.complete": true,
+   "relations.fm_po.complete": true,
+   "relations.sage_po.complete": true
+  },
+  "json_min": {
+   "open_plus_closed": 1
+  }
+ },
+ "expect_blocked": {
+  "exit_code": 0,
+  "json_fields": [
+   "capture.sources",
+   "blocked_upstream"
+  ],
+  "json_equals": {
+   "capture.exit_code": 0,
+   "unmapped_rows": 0
+  }
+ },
+ "record": [
+  "capture.state",
+  "capture.sources",
+  "evidence",
+  "relations",
+  "words.portal_po",
+  "words.fm_po",
+  "classes.portal_po",
+  "classes.fm_po",
+  "unknown_words.portal_po",
+  "unknown_words.fm_po",
+  "unknown_reasons.portal_po",
+  "unknown_reasons.fm_po",
+  "before_engine_rule.portal_po",
+  "before_engine_rule.fm_po",
+  "unmapped_rows",
+  "open_plus_closed",
+  "sage_iscomplete",
+  "blocked_upstream"
+ ],
+ "record_keys": [
+  "capture.sources",
+  "relations",
+  "classes.portal_po",
+  "classes.fm_po",
+  "unknown_reasons.portal_po",
+  "unknown_reasons.fm_po",
+  "before_engine_rule.portal_po",
+  "before_engine_rule.fm_po"
+ ],
+ "record_enums": [
+  "evidence",
+  "words.portal_po",
+  "words.fm_po",
+  "unknown_words.portal_po",
+  "unknown_words.fm_po",
+  "sage_iscomplete",
+  "blocked_upstream"
+ ],
+ "notes": "Live-unverified until the live check runs it; the module test is injected-transport (operating/tests/test_po_status.py LiveCheckTest: the spec's own command over a FakeWorkbench holding the real words on synthetic POs, the network refused, its expectations checked on the real summary; a new word is counted by name and still passes; nothing open or closed fails; a Portal answering HTTP 500 at capture meets expect_blocked). An unknown word or reason is reported, never a failure: unknown is a class. A relation read incomplete is a truthful red. The Sage cross-tab decides whether iscomplete may be mapped (the decision's reverse trigger): until then a Sage-only PO stays unknown. Status words are recorded as the source writes them, other characters as _, a null as _null_."
+}

@@ -1,0 +1,178 @@
+{
+ "format": "plx-eval-item/v1",
+ "id": "dev-F1-0001-fixture",
+ "family": "F1",
+ "split": "dev",
+ "variant": "standard",
+ "question": {
+  "text": "Which records across Portal, FileMaker, Sage and Business Central are linked to Business Central document FXPI400002?"
+ },
+ "root": {
+  "identifier": "FXPI400002",
+  "identifier_kind": "bc_number",
+  "object_type": "BcPurchaseInvoice",
+  "relation": "bc.purchase_invoices",
+  "key": {
+   "company_id": "11111111-1111-1111-1111-111111111111",
+   "id": "cccccccc-0000-0000-0000-000000000402"
+  }
+ },
+ "as_known_at": {
+  "time": "2099-01-02T03:04:05Z",
+  "l1_generations": {
+   "portal_api": "8a5851cbdc2e491a",
+   "bc": "351e14132c64b2a3"
+  }
+ },
+ "closed_transaction": true,
+ "lineage_stratum": "bc_fx_company_one",
+ "known_outcome": {
+  "answerability": "partial",
+  "values": [
+   {
+    "name": "root_record_count",
+    "value": 1
+   },
+   {
+    "name": "bc_purchase_invoice_count",
+    "object_type": "BcPurchaseInvoice",
+    "value": 1
+   },
+   {
+    "name": "fm_purchase_order_count",
+    "object_type": "FmPurchaseOrder",
+    "value": 1
+   },
+   {
+    "name": "purchase_order_count",
+    "object_type": "PurchaseOrder",
+    "value": 1
+   },
+   {
+    "name": "purchase_order_line_count",
+    "object_type": "PurchaseOrderLine",
+    "value": 1
+   },
+   {
+    "name": "receipt_count",
+    "object_type": "Receipt",
+    "value": 1
+   },
+   {
+    "name": "receipt_line_count",
+    "object_type": "ReceiptLine",
+    "value": 1
+   },
+   {
+    "name": "supplier_count",
+    "object_type": "Supplier",
+    "value": 1
+   }
+  ],
+  "gaps": [
+   {
+    "state": "unknown",
+    "subject": "1 bc:purchaseInvoices records share the number but belong to another vendor",
+    "reason": "bc_vendor_differs"
+   }
+  ],
+  "chain": [
+   {
+    "object_type": "BcPurchaseInvoice",
+    "relation": "bc.purchase_invoices",
+    "key": {
+     "company_id": "11111111-1111-1111-1111-111111111111",
+     "id": "cccccccc-0000-0000-0000-000000000402"
+    }
+   },
+   {
+    "object_type": "PurchaseOrder",
+    "relation": "public.app_purchase_order",
+    "key": {
+     "id": "fx-po-2"
+    },
+    "hop_from": 0,
+    "fk": "bc_purchase_invoice.po"
+   },
+   {
+    "object_type": "Supplier",
+    "relation": "public.app_supplier",
+    "key": {
+     "id": "fx-supp-3"
+    },
+    "hop_from": 1,
+    "fk": "po.supplier"
+   },
+   {
+    "object_type": "PurchaseOrderLine",
+    "relation": "public.app_purchase_order_line",
+    "key": {
+     "id": "fx-pol-2-1"
+    },
+    "hop_from": 1,
+    "fk": "po.lines"
+   },
+   {
+    "object_type": "Receipt",
+    "relation": "public.app_receipt",
+    "key": {
+     "id": "fx-rcpt-2"
+    },
+    "hop_from": 1,
+    "fk": "po.receipts"
+   },
+   {
+    "object_type": "FmPurchaseOrder",
+    "relation": "public.generated_purchase_order",
+    "key": {
+     "id": 6002
+    },
+    "hop_from": 1,
+    "fk": "po.fm_po"
+   },
+   {
+    "object_type": "ReceiptLine",
+    "relation": "public.app_receipt_line",
+    "key": {
+     "id": "fx-rcl-2-1"
+    },
+    "hop_from": 4,
+    "fk": "receipt.lines"
+   }
+  ]
+ },
+ "must_not": [
+  "claim_uncited_number",
+  "invent_absent_value"
+ ],
+ "oracle": {
+  "id": "oracle:f1_chain@1c117db7f628",
+  "interface": "plx-eval-oracle/v1",
+  "derived_from": [
+   "docs/reference/portal-code-map.md#3.2/3.5 BC document No. (BC API v2.0 number, exact)",
+   "docs/reference/portal-code-map.md#3.11 BC purchase invoices by orderNumber (document-finance-queries.ts)",
+   "docs/reference/portal-code-map.md#3.5 app_purchase_order.supplier_id -> app_supplier.id (P:prisma/schema.prisma:3394)",
+   "docs/reference/portal-code-map.md#3.5 app_purchase_order_line.purchase_order_id -> app_purchase_order.id (P:prisma/schema.prisma:3449)",
+   "docs/reference/portal-code-map.md#3.5 app_receipt.purchase_order_id -> app_purchase_order.id (P:prisma/schema.prisma:3565)",
+   "docs/reference/portal-code-map.md#3.5 app_purchase_order.custom_fields.fmPoNumber = FM generated_purchase_order.ponumber",
+   "docs/reference/source-notes.md BC number lookups are leads; identity needs one company and, for purchase invoices, the PO's vendor",
+   "docs/reference/portal-code-map.md#3.5 BC Vendor No. = app_supplier.code when Sage-style (P:src/lib/business-central/serializers.ts:156,208)",
+   "docs/reference/portal-code-map.md#3.5 app_receipt_line.receipt_id -> app_receipt.id (P:prisma/schema.prisma:3620)",
+   "docs/reference/portal-code-map.md#3.5 app_receipt.vendor_invoice_number = BC purchase invoice vendorInvoiceNumber (document-finance-queries.ts:290-300)",
+   "docs/reference/portal-code-map.md#3.5 app_purchase_order.custom_fields.fmGeneratedPoId = FM generated_purchase_order.id (Portal script etl-silver-to-gold.ts:776-780 @c3ffda3)",
+   "BC API v2.0 purchaseInvoices status Paid"
+  ],
+  "computed_at": "2099-01-02T04:00:00Z",
+  "query_digest": "ce26e7dbced221251ced852c9ef71646a5cbeb3d1d9a38334c5252f14d39787e"
+ },
+ "label": {
+  "status": "oracle_only",
+  "note": "evidence: injected-transport fixture (synthetic FX rows from evals/oracle/fixture_world.py), not live PLX data. audit_requested: a person checks known_outcome against the sources, then sets status human_audited (audited_by, audited_at) or disputed."
+ },
+ "scoring": {
+  "exact_values": true,
+  "gap_honesty": true,
+  "citations_required": true
+ },
+ "created_at": "2099-01-02T04:00:00Z"
+}

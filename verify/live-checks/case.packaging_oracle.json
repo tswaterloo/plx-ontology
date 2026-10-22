@@ -1,0 +1,92 @@
+{
+ "id": "case.packaging_oracle",
+ "description": "The purchase order the retired case.packaging_case_script opened (PO5447) opened the way every case opens (operating.ingestion fills the source mirror, GET only; operating.case_workspace_live opens petra_po=PO5447 offline through plx.find, plx.object, plx.around and plx.investigate), then checked against the evaluation oracle's own reading (scripts/eval_packaging_oracle_check.py: the root row plx.find rooted the case on must be the one row the oracle's own lookup of the number finds, compared in the normal form plx.find searches by (ontology.identifiers.normalize: PO#5447 is PO5447), and the case must cite as many of that root's lines as the oracle's line edge gives; the case's checks are recorded, never trusted). A case that does not open reports its typed code in case.missing (e.g. missing_data:not_found, ambiguous_identifier) and fails. A Portal relation the ingestion could not read (e.g. sage.po_header or sage.po_receipt_header unavailable, error_code mirror.relation_unavailable, until the wb_api grants are restored) is a blocked_upstream part, never absence: the check is then blocked, never a pass, and expect_blocked checks what still ran (exit 0, the case opened with at least one line, the oracle agreeing on root and lines), so the check records the measured fields (blocked.measured) and a disagreement beside a blocked part still fails. Trade-off: a Portal outage that stops the case from opening (exit 3, case.missing blocked_upstream) fails, not blocks; portal.health_catalog (requires) blocks a whole-Portal outage first. When the oracle cannot confirm the root because no served row carries the number (oracle_gap requested_po_not_in_portal) or only an other-relation row carries it with no served link to the root relation (requested_po_served_unlinked), and the case cites as many lines as the oracle reads, the command exits 0 with the top-level oracle_gap and the check is blocked (blocked_when) with cause source_gap (blocked_cause: the source lacks the data, not an outage), never a pass; a gap beside a line count that differs, and a case rooted on another purchase order, still fail.",
+ "source": "portal-workbench-api",
+ "requires": [
+  "portal.health_catalog"
+ ],
+ "legacy_ids": [
+  "case.packaging_case_script",
+  "queue3.packaging_case_script"
+ ],
+ "command": [
+  "python3",
+  "-m",
+  "scripts.eval_packaging_oracle_check",
+  "--state-dir",
+  "{tmp}/state",
+  "--mirror-audience",
+  "examples/packaging_case_audience.example.json",
+  "--ingest-sources",
+  "examples/packaging_case_sources.live-check.json",
+  "--principal",
+  "staff:operations",
+  "--po",
+  "PO5447"
+ ],
+ "timeout_seconds": 900,
+ "requires_env": [
+  "PLX_WORKBENCH_API_URL",
+  "PLX_WORKBENCH_API_KEY"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "case.root_relation",
+   "case.lines",
+   "case.checks",
+   "oracle_check.status"
+  ],
+  "json_equals": {
+   "case.ok": true,
+   "oracle_check.status": "agree",
+   "oracle_check.root_agrees": true,
+   "oracle_check.lines_agree": true
+  }
+ },
+ "expect_blocked": {
+  "exit_code": 0,
+  "json_fields": [
+   "blocked_upstream",
+   "case.root_relation",
+   "case.lines",
+   "case.checks",
+   "oracle_check.status"
+  ],
+  "json_equals": {
+   "case.ok": true,
+   "oracle_check.status": "agree",
+   "oracle_check.root_agrees": true,
+   "oracle_check.lines_agree": true
+  },
+  "json_min": {
+   "case.lines": 1
+  }
+ },
+ "blocked_when": "oracle_gap",
+ "blocked_cause": "source_gap",
+ "record": [
+  "oracle_check",
+  "oracle_check.status",
+  "oracle_check.reasons",
+  "case",
+  "case.root_relation",
+  "case.root_selected_by",
+  "case.missing",
+  "blocked_upstream",
+  "oracle_gap"
+ ],
+ "record_keys": [
+  "oracle_check",
+  "case"
+ ],
+ "record_enums": [
+  "oracle_check.status",
+  "oracle_check.reasons",
+  "case.root_relation",
+  "case.root_selected_by",
+  "case.missing",
+  "oracle_gap"
+ ],
+ "notes": "Live-unverified until the live check runs it; module tests are injected-transport (operating/tests/test_packaging_po_case.py: the spec's own command over the in-process FakeWorkbench, the oracle reading the same fake through its own Portal port; tests/test_packaging_oracle_count.py: the comparison; verify/tests/test_live_verify.py: this spec through run_spec over the producer's own report; verify/tests/test_live_verify_packaging_blocked.py: run_spec over the producer's report from a FakeWorkbench serving every relation (pass) or marking sage relations unavailable (blocked, measured; a disagreement beside it fails)). The blocked state for the live outage from 2026-10-14 20:34Z is live-unverified. Its blocked sage.po_header and sage.po_receipt_header parts record cause relation_unavailable under later_ask portal-sage-regrant. Replaces case.packaging_case_script (legacy id), whose command ran the retired operating.packaging_case_script."
+}

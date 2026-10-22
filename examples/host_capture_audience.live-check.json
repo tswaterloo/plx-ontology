@@ -1,0 +1,20 @@
+{
+ "schema": "plx-live-source-audience/v1",
+ "tenant": "plx",
+ "note": "EXAMPLE ONLY, not a PLX-confirmed grant: the host capture principal of the host.cycles live check, narrowed to what examples/host.live-check.json captures. Default deny. The check's withheld principal has no grant, so the projection read as it must show 0 objects.",
+ "default_classification": "confidential",
+ "audiences": {
+  "mail:purchase-order@petrasoap.com": [
+   "svc:workbench-host"
+  ],
+  "sharepoint:b!ubhBC91PLkOOCpyUeCUJMLOi0jT3ADZHi0QxVdjuwxvq6wHrgPmdQqNrzbAMxVqk:*": [
+   "svc:workbench-host"
+  ],
+  "bc:production:*": [
+   "svc:workbench-host"
+  ]
+ },
+ "classifications": {
+  "mail:*": "restricted"
+ }
+}

@@ -1,0 +1,88 @@
+{
+  "schema_version": "plx-transaction-evidence/v1",
+  "source": "sharepoint-drive",
+  "tenant": "fixture:transaction",
+  "stream_id": "drive:fixture-records",
+  "page_id": "synthetic-page-1",
+  "observed_at": "2026-09-24T12:00:00Z",
+  "next_cursor": "isolated-fixture:done",
+  "items": [
+    {
+      "kind": "SourceDocument",
+      "id": "fixture-records:customer-po",
+      "revision": "customer-po-v1",
+      "acl": ["staff:operations"],
+      "classification": "restricted",
+      "attributes": {
+        "title": "Synthetic customer purchase order",
+        "text": "Example customer orders 100,000 bottles. This is invented test data.",
+        "occurred_at": "2026-01-04T09:00:00Z",
+        "original_url": "https://example.invalid/fixture/customer-po.pdf",
+        "mime_type": "application/pdf",
+        "source_container": "fixture-records",
+        "identifiers": [
+          {"type": "customer_po", "value": "CPO-100", "scope": "Example Customer", "provenance": "https://example.invalid/fixture/customer-po.pdf#field=customer-po"},
+          {"type": "petra_po", "value": "PPO-200", "provenance": "https://example.invalid/fixture/customer-po.pdf#field=petra-po"}
+        ],
+        "quantities": [{"value": 100000, "unit": "bottle", "context": "ordered quantity", "provenance": "https://example.invalid/fixture/customer-po.pdf#field=quantity"}]
+      }
+    },
+    {
+      "kind": "SourceDocument",
+      "id": "fixture-records:vendor-confirmation",
+      "revision": "vendor-confirmation-v1",
+      "acl": ["staff:operations"],
+      "classification": "restricted",
+      "attributes": {
+        "title": "Synthetic vendor confirmation",
+        "text": "Example supplier confirmation for an invented Petra PO.",
+        "occurred_at": "2026-01-09T10:00:00Z",
+        "original_url": "https://example.invalid/fixture/vendor-confirmation.pdf",
+        "mime_type": "application/pdf",
+        "source_container": "fixture-records",
+        "identifiers": [
+          {"type": "petra_po", "value": "PPO-200", "provenance": "https://example.invalid/fixture/vendor-confirmation.pdf#field=petra-po"},
+          {"type": "vendor_confirmation", "value": "VC-300", "scope": "Example Supplier", "provenance": "https://example.invalid/fixture/vendor-confirmation.pdf#field=confirmation"}
+        ],
+        "quantities": [{"value": 100000, "unit": "bottle", "context": "confirmed quantity", "provenance": "https://example.invalid/fixture/vendor-confirmation.pdf#field=quantity"}]
+      }
+    },
+    {
+      "kind": "SourceDocument",
+      "id": "fixture-records:packing-slip",
+      "revision": "packing-slip-v1",
+      "acl": ["staff:operations"],
+      "classification": "restricted",
+      "attributes": {
+        "title": "Synthetic packing slip",
+        "text": "Invented carton and pallet arrangement for the fixture order.",
+        "occurred_at": "2026-02-14T07:00:00Z",
+        "original_url": "https://example.invalid/fixture/packing-slip.pdf",
+        "mime_type": "application/pdf",
+        "source_container": "fixture-records",
+        "identifiers": [
+          {"type": "vendor_confirmation", "value": "VC-300", "scope": "Example Supplier", "provenance": "https://example.invalid/fixture/packing-slip.pdf#field=confirmation"},
+          {"type": "shipment_reference", "value": "SHIP-400", "provenance": "https://example.invalid/fixture/packing-slip.pdf#field=shipment"}
+        ],
+        "packaging": [{"product_id": "bottle", "units_per_carton": 100, "cartons_per_pallet": 20, "gross_kg_per_carton": 12, "provenance": "https://example.invalid/fixture/packing-slip.pdf#table=cartons"}]
+      }
+    },
+    {
+      "kind": "SourceDocument",
+      "id": "fixture-records:freight-quote",
+      "revision": "freight-quote-v1",
+      "acl": ["staff:operations"],
+      "classification": "restricted",
+      "attributes": {
+        "title": "Synthetic historical freight quote",
+        "text": "Historical example only; not a current price or service commitment.",
+        "occurred_at": "2026-02-18T15:00:00Z",
+        "original_url": "https://example.invalid/fixture/freight-quote.pdf",
+        "mime_type": "application/pdf",
+        "source_container": "fixture-records",
+        "identifiers": [{"type": "shipment_reference", "value": "SHIP-400", "provenance": "https://example.invalid/fixture/freight-quote.pdf#field=shipment"}],
+        "freight_offers": [{"as_of": "2026-02-18", "valid_until": "2026-03-01", "origin": "China", "destination": "United States", "mode": "air", "amount": 25000, "currency": "USD", "lead_time_days": 14, "capacity_units": 100000, "provenance": "https://example.invalid/fixture/freight-quote.pdf#table=quote"}]
+      }
+    }
+  ]
+}

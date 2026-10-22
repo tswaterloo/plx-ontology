@@ -1,0 +1,772 @@
+{
+ "$schema": "_plan.schema.json",
+ "format": "plx-investigate-plan/v1",
+ "id": "item_lineage",
+ "families": [
+  "F13"
+ ],
+ "title": "An item's records, what uses and buys it, and its screening job",
+ "description": "Which recorded link joins an item to its records in other systems (the Portal product, FileMaker raw material, packaging, bulk and finished product and the Business Central item copy each other's code), to the finished products and FileMaker assembly orders that use it, to its supplier offers and its purchase, receipt, invoice and ledger lines, and an FG item to the products it was minted as, references and adopted; each link the item-lineage, screening and procure-to-G/L questions need and no source the Workbench reads records (BC entity map, artwork version to item, replaced item, FG revision, BC assembly consumption, item aliases, blank to screened item, the screening job, its decision and good units, the conversion step, transfers to the screener, G/L posting lineage, the cost policy) is a typed gap with the question for the source's owner. No link is inferred from a shared code prefix, supplier, date or quantity, and cost per good unit stays null without a recorded good-unit count (operating/item_lineage.py).",
+ "root": {
+  "object_types": [
+   "Product",
+   "FgItem"
+  ],
+  "fallback_filters": [
+   {
+    "object_type": "Product",
+    "property": "code"
+   },
+   {
+    "object_type": "FgItem",
+    "property": "code"
+   }
+  ]
+ },
+ "step_budget": 128,
+ "steps": [
+  {
+   "id": "root_read",
+   "tool": "plx.object",
+   "from": "root",
+   "bind": "object_id"
+  },
+  {
+   "id": "twins",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Product.same_record_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   },
+   "description": "The item's records in other systems (Portal product, FileMaker raw material, packaging, bulk or finished product, Business Central item) by stored code."
+  },
+  {
+   "id": "twins_named",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Product.same_record_as",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   },
+   "description": "The same twins where the other record holds the link."
+  },
+  {
+   "id": "twins_of_twins",
+   "tool": "plx.around",
+   "from": [
+    "twins",
+    "twins_named"
+   ],
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Product.same_record_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   },
+   "description": "A twin's twins: a Business Central item reaches FileMaker packaging through the Portal product both copy their code from."
+  },
+  {
+   "id": "twins_of_twins_named",
+   "tool": "plx.around",
+   "from": [
+    "twins",
+    "twins_named"
+   ],
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Product.same_record_as",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   },
+   "description": "The same, where the other record holds the link."
+  },
+  {
+   "id": "used_in_products",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "twins",
+    "twins_named",
+    "twins_of_twins",
+    "twins_of_twins_named"
+   ],
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "ProductComponent.component_item",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   },
+   "description": "Finished-product bill-of-material rows (FileMaker) that use the item."
+  },
+  {
+   "id": "assembly_lines",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "twins",
+    "twins_named",
+    "twins_of_twins",
+    "twins_of_twins_named"
+   ],
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "AssemblyOrderComponent.uses_item",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   },
+   "description": "Assembly order lines (FileMaker) that consumed the item."
+  },
+  {
+   "id": "supplier_offers",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "twins",
+    "twins_named",
+    "twins_of_twins",
+    "twins_of_twins_named"
+   ],
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SupplierItem.for_item",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   },
+   "description": "Supplier offers of the item (Portal and FileMaker supplier rows)."
+  },
+  {
+   "id": "purchase_lines",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "twins",
+    "twins_named",
+    "twins_of_twins",
+    "twins_of_twins_named"
+   ],
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrderLine.for_item",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   },
+   "description": "Purchase order lines that ordered the item (Portal, Business Central)."
+  },
+  {
+   "id": "receipt_lines",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "twins",
+    "twins_named",
+    "twins_of_twins",
+    "twins_of_twins_named"
+   ],
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "ReceiptLine.for_item",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   },
+   "description": "Receipt lines that received the item."
+  },
+  {
+   "id": "invoice_lines",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "twins",
+    "twins_named",
+    "twins_of_twins",
+    "twins_of_twins_named"
+   ],
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseInvoiceLine.for_item",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   },
+   "description": "Purchase invoice lines that billed the item."
+  },
+  {
+   "id": "ledger_entries",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "twins",
+    "twins_named",
+    "twins_of_twins",
+    "twins_of_twins_named"
+   ],
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "ItemLedgerEntry.for_item",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 20
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   },
+   "description": "Business Central item ledger entries of the item (most recent first, capped)."
+  },
+  {
+   "id": "fg_minted",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "FgItem.minted_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   },
+   "description": "The product an FG item was minted as at activation."
+  },
+  {
+   "id": "fg_reference",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "FgItem.reference_product",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   },
+   "description": "The reference product an FG item's costs are anchored on."
+  },
+  {
+   "id": "fg_adopts",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "FgItem.adopts",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   },
+   "description": "The FileMaker finished product an FG item adopted."
+  }
+ ],
+ "evidence": [
+  {
+   "name": "lineage_roots",
+   "kind": "count",
+   "from": "root",
+   "description": "The items the question resolved to."
+  },
+  {
+   "name": "item_links",
+   "kind": "compute",
+   "engine": "item_lineage",
+   "description": "The item's recorded twins, uses and FG links, and a typed gap per item link no source records.",
+   "engine_args": {
+    "roots": "lineage_roots",
+    "hops": [
+     {
+      "label": "item_twins",
+      "from_types": [
+       "Product"
+      ],
+      "link_types": [
+       "Product.same_record_as"
+      ],
+      "gap": "item_twin_not_recorded",
+      "question": "Is this item kept under another code in FileMaker or Business Central, and where is that alias recorded?",
+      "who_can_answer": "purchasing (who keeps the item master)"
+     },
+     {
+      "label": "entity_map",
+      "from_types": [
+       "Product"
+      ],
+      "unbound": {
+       "reason": "entity_map_not_served",
+       "state": "inaccessible",
+       "detail": "the Portal's BC entity map (app_bc_entity_map) that records which BC item a Portal product was posted as is not served by the reporting API, so a renamed or truncated BC item number is not joined"
+      },
+      "question": "Can the reporting API serve the BC entity map (Portal product to BC item No.)?",
+      "who_can_answer": "operations (who keeps the source)"
+     },
+     {
+      "label": "proof_to_item",
+      "from_types": [
+       "Product"
+      ],
+      "unbound": {
+       "reason": "artwork_item_link_not_served",
+       "state": "inaccessible",
+       "detail": "the artwork version to packaging item link (app_artwork_version_packaging_item) is not served by the reporting API"
+      },
+      "question": "Can the reporting API serve which packaging item each artwork version was approved for?",
+      "who_can_answer": "operations (who keeps the source)"
+     },
+     {
+      "label": "replaced_item",
+      "from_types": [
+       "Product"
+      ],
+      "unbound": {
+       "reason": "previous_item_not_served",
+       "state": "inaccessible",
+       "detail": "the item an artwork version's item replaced (previous_product_id on the artwork version item link) is not served by the reporting API"
+      },
+      "question": "When a new artwork version mints a new packaging item, where is the item it replaces recorded, and can it be served?",
+      "who_can_answer": "operations (who keeps the source)"
+     },
+     {
+      "label": "fg_revision",
+      "from_types": [
+       "FgItem"
+      ],
+      "unbound": {
+       "reason": "fg_revision_not_served",
+       "state": "inaccessible",
+       "detail": "FG item revisions (app_fg_item_revision) are not served by the reporting API"
+      },
+      "question": "Can the reporting API serve FG item revisions, so a finished good's revision can be tied to the packaging item it uses?",
+      "who_can_answer": "operations (who keeps the source)"
+     },
+     {
+      "label": "used_in_products",
+      "from_types": [
+       "Product"
+      ],
+      "link_types": [
+       "ProductComponent.component_item"
+      ],
+      "through": [
+       "Product.same_record_as"
+      ],
+      "depth": 2,
+      "gap": "item_not_in_any_bom"
+     },
+     {
+      "label": "assembly_consumption",
+      "from_types": [
+       "Product"
+      ],
+      "link_types": [
+       "AssemblyOrderComponent.uses_item"
+      ],
+      "through": [
+       "Product.same_record_as"
+      ],
+      "depth": 2,
+      "gap": "item_not_consumed_in_fm_assembly"
+     },
+     {
+      "label": "bc_assembly_consumption",
+      "from_types": [
+       "Product"
+      ],
+      "unbound": {
+       "reason": "bc_assembly_consumption_not_ingested",
+       "state": "not_ingested",
+       "detail": "Business Central assembly order consumption is not in the BC grammar the Workbench reads, so consumption posted only in BC is not seen"
+      },
+      "question": "Which Business Central pages or ledger entries record assembly consumption of a component, and may the Workbench read them?",
+      "who_can_answer": "operations (who keeps the source)"
+     },
+     {
+      "label": "supplier_offers",
+      "from_types": [
+       "Product"
+      ],
+      "link_types": [
+       "SupplierItem.for_item"
+      ],
+      "through": [
+       "Product.same_record_as"
+      ],
+      "depth": 2,
+      "gap": "supplier_offer_not_recorded"
+     },
+     {
+      "label": "alias_confirmed",
+      "from_types": [
+       "Product"
+      ],
+      "unbound": {
+       "reason": "item_alias_not_recorded",
+       "state": "unknown",
+       "detail": "two item codes that look alike (a shared prefix, a supplier's own code) are not the same item unless a source records it; no source the Workbench reads records item aliases beyond stored code copies"
+      },
+      "question": "Where are supplier item codes and internal item aliases kept, and who confirms that two codes are the same item?",
+      "who_can_answer": "purchasing (who keeps the item master)"
+     },
+     {
+      "label": "fg_minted",
+      "from_types": [
+       "FgItem"
+      ],
+      "link_types": [
+       "FgItem.minted_as"
+      ],
+      "gap": "fg_item_not_minted"
+     },
+     {
+      "label": "fg_reference",
+      "from_types": [
+       "FgItem"
+      ],
+      "link_types": [
+       "FgItem.reference_product"
+      ],
+      "gap": "fg_reference_not_recorded"
+     },
+     {
+      "label": "fg_adopts",
+      "from_types": [
+       "FgItem"
+      ],
+      "link_types": [
+       "FgItem.adopts"
+      ],
+      "gap": "fg_adoption_not_recorded"
+     }
+    ]
+   }
+  },
+  {
+   "name": "screening_job",
+   "kind": "compute",
+   "engine": "item_lineage",
+   "description": "The purchase, receipt, invoice and ledger lines of the item, and a typed gap per piece of the screening job and its cost no source records.",
+   "engine_args": {
+    "roots": "lineage_roots",
+    "hops": [
+     {
+      "label": "purchase_lines",
+      "from_types": [
+       "Product"
+      ],
+      "link_types": [
+       "PurchaseOrderLine.for_item"
+      ],
+      "through": [
+       "Product.same_record_as"
+      ],
+      "depth": 2,
+      "gap": "item_not_purchased"
+     },
+     {
+      "label": "receipt_lines",
+      "from_types": [
+       "Product"
+      ],
+      "link_types": [
+       "ReceiptLine.for_item"
+      ],
+      "through": [
+       "Product.same_record_as"
+      ],
+      "depth": 2,
+      "gap": "item_receipt_not_recorded"
+     },
+     {
+      "label": "invoice_lines",
+      "from_types": [
+       "Product"
+      ],
+      "link_types": [
+       "PurchaseInvoiceLine.for_item"
+      ],
+      "through": [
+       "Product.same_record_as"
+      ],
+      "depth": 2,
+      "gap": "item_invoice_not_recorded"
+     },
+     {
+      "label": "ledger_entries",
+      "from_types": [
+       "Product"
+      ],
+      "link_types": [
+       "ItemLedgerEntry.for_item"
+      ],
+      "through": [
+       "Product.same_record_as"
+      ],
+      "depth": 2,
+      "gap": "item_ledger_not_recorded"
+     },
+     {
+      "label": "screened_from",
+      "from_types": [
+       "Product"
+      ],
+      "unbound": {
+       "reason": "screened_from_not_recorded",
+       "state": "unknown",
+       "detail": "no source the Workbench reads records which blank item a screened item was made from; a blank and a screened item sharing a code prefix or supplier are not linked by that"
+      },
+      "question": "When a blank item is sent out for screening and comes back as a printed item, where is the blank-to-screened item link recorded?",
+      "who_can_answer": "operations (who keeps the source)"
+     },
+     {
+      "label": "screening_job",
+      "from_types": [
+       "Product"
+      ],
+      "unbound": {
+       "reason": "screening_job_source_unknown",
+       "state": "unknown",
+       "detail": "no source the Workbench reads is known to hold a screening job as one record (blank out, screened in, the screener's PO and invoice together)"
+      },
+      "question": "Is a screening job recorded as one record anywhere (a BC assembly or production order, a FileMaker job, a spreadsheet), and which number ties its pieces?",
+      "who_can_answer": "operations (who keeps the source)"
+     },
+     {
+      "label": "screening_decision",
+      "from_types": [
+       "Product"
+      ],
+      "unbound": {
+       "reason": "screening_decision_not_recorded",
+       "state": "unknown",
+       "detail": "no source the Workbench reads records the screening decision or the good and rejected unit counts, so cost per good unit is not computed (it stays null; it is never estimated from ordered or received quantities)"
+      },
+      "question": "Where are the good and rejected unit counts of a screening run recorded, and who records them?",
+      "who_can_answer": "operations (who keeps the source)"
+     },
+     {
+      "label": "conversion_step",
+      "from_types": [
+       "Product"
+      ],
+      "unbound": {
+       "reason": "conversion_step_not_recorded",
+       "state": "unknown",
+       "detail": "no source the Workbench reads records the conversion of one item into another (blank consumed, screened item produced) as a step with quantities"
+      },
+      "question": "Is the blank-to-screened conversion posted in Business Central (assembly, reclassification or item journal), and with which document number?",
+      "who_can_answer": "operations (who keeps the source)"
+     },
+     {
+      "label": "screener_transfers",
+      "from_types": [
+       "Product"
+      ],
+      "unbound": {
+       "reason": "warehouse_transfers_not_served",
+       "state": "inaccessible",
+       "detail": "warehouse transfers (stock sent to and returned from the screener) are not served to the Workbench"
+      },
+      "question": "Can the transfers of blanks to the screener and of screened goods back be served to the Workbench, and from which system?",
+      "who_can_answer": "operations (who keeps the source)"
+     },
+     {
+      "label": "gl_lineage",
+      "from_types": [
+       "Product"
+      ],
+      "unbound": {
+       "reason": "gl_posting_lineage_not_ingested",
+       "state": "not_ingested",
+       "detail": "Business Central value entries and G/L entries that carry an item's cost to the ledger are not in the BC grammar the Workbench reads"
+      },
+      "question": "May the Workbench read BC value entries and their G/L entries for item costs, and which accounts receive screening and conversion costs?",
+      "who_can_answer": "finance (who owns the cost policy)"
+     },
+     {
+      "label": "cost_policy",
+      "from_types": [
+       "Product"
+      ],
+      "unbound": {
+       "reason": "cost_policy_not_recorded",
+       "state": "unknown",
+       "detail": "the policy for how screening and freight costs are capitalised onto the screened item (decision ERP-D-015) is not recorded as data the Workbench reads"
+      },
+      "question": "How are screening, freight and rejected-unit costs assigned to the screened item, and where is that policy recorded?",
+      "who_can_answer": "finance (who owns the cost policy)"
+     }
+    ]
+   }
+  }
+ ]
+}

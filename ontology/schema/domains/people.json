@@ -1,0 +1,43 @@
+{
+ "$schema": "../_format.schema.json",
+ "format": "plx-ontology-domain/v1",
+ "domain": "people",
+ "origin": "curated",
+ "description": "Persons (Portal users), declared not_served until the reporting API serves app_user. Every Person value is pii-marked.",
+ "upstream_pins": {
+  "plx-customer-portal": "790256ca43"
+ },
+ "object_types": [
+  {
+   "id": "Person",
+   "description": "A Portal user: an employee (ADMIN .. ACCOUNTING roles) or a customer/supplier portal login (CUSTOMER, SUPPLIER). Bindings and links are declared and tested in ontology/schema/pending/people_lots.json, which replaces this placeholder when loaded with include_pending. BC contacts stay the Contact type.",
+   "availability": {
+    "state": "not_served",
+    "reason": "Pending: the reporting-API allowlist (services/workbench-api/manifest/allowlist.json@790256ca43) does not serve public.app_user (nor app_person/people): Portal users are not readable, so a person appears only as an id or a name typed in another record.",
+    "upstream_ask": "Q3"
+   },
+   "markings": [
+    "pii"
+   ],
+   "bindings": [],
+   "properties": [],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "prisma.user"
+    }
+   ]
+  }
+ ],
+ "evidence_catalog": {
+  "prisma.user": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/prisma/schema.prisma",
+   "commit": "790256ca43",
+   "note": "User -> app_user: unique email, name/firstName/lastName, phone, jobTitle, userRole UserRole, departmentId, isActive, Entra ids, password/2FA/reset secrets.",
+   "symbol": "User",
+   "lines": "778-940"
+  }
+ }
+}

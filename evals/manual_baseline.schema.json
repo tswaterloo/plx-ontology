@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "plx-eval-manual-baseline/v1",
+  "title": "PLX manual-process baseline (ENG-11)",
+  "description": "One human-timed manual investigation of an eval item: a person answers the item's question the way the work is done today (Portal, BC, Outlook, SharePoint, FileMaker, paper), with a stopwatch, and records what it took. evals.measure.compare pairs it with the Workbench's runs of the same item_id; an item without a record is reported as unmeasured, never given an assumed time. Times only, never a business value: the record names no identifier, quantity or citation. Validated with ontology/json_contract.py.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "item_id",
+    "measured_on",
+    "measured_by",
+    "method",
+    "systems_used",
+    "time_to_first_evidence_seconds",
+    "time_to_answer_seconds",
+    "resolution"
+  ],
+  "properties": {
+    "format": {
+      "const": "plx-eval-manual-baseline/v1"
+    },
+    "item_id": {
+      "type": "string",
+      "pattern": "^(?:dev|ho)-F[1-9][0-9]?-[0-9]{4}(?:-[a-z0-9]{1,16})?$",
+      "description": "The eval item the person investigated (its question, as known at its time)."
+    },
+    "measured_on": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "measured_by": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "Role or initials of the person who did the manual investigation."
+    },
+    "method": {
+      "const": "human_timed",
+      "description": "Wall-clock time measured while a person worked; never an estimate."
+    },
+    "systems_used": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": ["portal", "business_central", "filemaker", "outlook", "sharepoint", "paper",
+                 "spreadsheet", "phone_or_chat", "other"]
+      }
+    },
+    "time_to_first_evidence_seconds": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "description": "Seconds until the person opened the first record or document that supports the answer; null when none was found."
+    },
+    "time_to_answer_seconds": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Seconds until the person stated an answer or stopped (gave up)."
+    },
+    "resolution": {
+      "enum": ["answered", "justified_abstention", "unanswered"]
+    },
+    "unsupported_assertions": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "Statements in the person's answer they could not point to a record or document for."
+    },
+    "review_items": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "Open points the person left for someone else to check (an identity, a conflict, a follow-up)."
+    },
+    "notes": {
+      "type": "string",
+      "maxLength": 600
+    }
+  }
+}

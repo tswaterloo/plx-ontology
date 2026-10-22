@@ -1,0 +1,106 @@
+{
+ "id": "eval.case_cards_answers",
+ "description": "The product's answers to ALL twelve committed use-case card sets (scripts/eval_case_cards.py): evals/dev/<case>/proposed_items.json for rro (Draft 8, plx-eval-case-cards/v1, 26 cards) and the eleven proposal sets amazon-fba, artwork-lifecycle, asset-tracker, brand-requirements, expired-disposition, grants-program, packaging-sourcing, procure-to-gl, quote-to-order, ricardo-maps and screening (plx-eval-case-card-proposals/v1, 147 cards): 173 cards, each compiled to one dev exposed plx-eval-item/v1 item (proposal cards: F23 comprehension, F24 tracing, F25 actual_case_answerability, known_outcome partial, label oracle_only: a rubric, never gold); a card that does not compile or fails the item schema is refused with its reason. One run takes about half the cards by rotation (never-recorded cases first, then the oldest cases_age read from the previous report), so every case runs within two consecutive runs; each selected card runs through evals.runner with one headless Claude Code session (read-only plx.* tools behind the tool gate, k=1) on the persistent host as one named employee (PLX_EVAL_READER claims, the session ticket secret, PLX_WORKBENCH_STATE_DIR, PLX_WORKBENCH_HOST_CONFIG), or with PLX_EVAL_READER unset as the declared eval principal (operating.eval_principal, examples/eval_principal.json: staff:operations and staff:sales, no marking, no action path), labelled reader eval_principal in the result; the A6 permission proof (denied_leaks) is never made by it and still requires PLX_EVAL_READER; the report's reader block names which. Without them, or when the host refuses the reader, the run is blocked with the reason and no session starts. Per case, per layer and in total: cards, refused, run, not_run, answered, abstained, blocked, gap_only, coverage, confident_unsupported; RRO arithmetic agreement_with_proposed. Passes when no card is refused (each refused card is a card_refused:<case>:<card>:<reason> failure and counts in its case's coverage, answered over run plus refused) and every case that ran has coverage >= 0.8; accuracy is never a criterion. Counts, rates and enums only; transcripts stay in {tmp}.",
+ "source": "claude-code",
+ "tier": "real_agent",
+ "cadence": "daily",
+ "command": [
+  "python3",
+  "-m",
+  "scripts.eval_case_cards",
+  "run",
+  "--work-dir",
+  "{tmp}/work",
+  "--previous-report={daily_report}",
+  "--workers",
+  "3",
+  "--budget-seconds",
+  "6300",
+  "--timeout",
+  "300",
+  "--max-turns",
+  "25"
+ ],
+ "timeout_seconds": 6900,
+ "requires_env_any": [
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "PLX_CLAUDE_CODE_OAUTH_TOKEN"
+ ],
+ "optional_env": [
+  "PLX_EVAL_READER",
+  "PLX_WORKBENCH_SESSION_SECRET",
+  "PLX_WORKBENCH_STATE_DIR",
+  "PLX_WORKBENCH_HOST_CONFIG",
+  "BC_TENANT_ID",
+  "BC_CLIENT_ID",
+  "BC_CLIENT_SECRET",
+  "BC_ENVIRONMENT",
+  "MICROSOFT_GRAPH_TENANT_ID",
+  "MICROSOFT_GRAPH_CLIENT_ID",
+  "MICROSOFT_GRAPH_CLIENT_SECRET",
+  "SHAREPOINT_DRIVE_ID",
+  "PLX_WORKBENCH_API_URL",
+  "PLX_WORKBENCH_API_KEY"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "cases",
+   "cases_age",
+   "cases_run",
+   "totals",
+   "totals.coverage",
+   "by_layer",
+   "verdict"
+  ],
+  "json_equals": {
+   "schema": "plx-eval-case-card-answers/v1",
+   "status": "run",
+   "agent_evidence": "real-claude-session",
+   "card_sets": 12,
+   "cards": 173,
+   "verdict.passed": true
+  }
+ },
+ "expect_blocked": {
+  "exit_code": 0,
+  "json_fields": [
+   "blocked_upstream",
+   "blocked_reason",
+   "cases_age"
+  ],
+  "json_equals": {
+   "status": "blocked",
+   "card_sets": 12,
+   "cards": 173
+  }
+ },
+ "record": [
+  "status",
+  "blocked_reason",
+  "cases",
+  "cases_age",
+  "cases_run",
+  "totals",
+  "by_layer",
+  "refused",
+  "refused_reasons",
+  "verdict.passed",
+  "verdict.fail_reasons"
+ ],
+ "record_keys": [
+  "cases",
+  "cases_age",
+  "by_layer",
+  "totals",
+  "refused_reasons"
+ ],
+ "carry_previous_measured": true,
+ "record_enums": [
+  "status",
+  "blocked_reason",
+  "cases_run",
+  "verdict.fail_reasons"
+ ],
+ "notes": "Spec only until the live check records a result. Coverage, never accuracy: a proposal card carries no expected value, so an answer counts as answered unless it abstains without justification; agreement_with_proposed on RRO arithmetic is agreement, never accuracy. cases_age is recorded so the next run's --previous-report rotation picks the oldest cases first: every case runs within two consecutive daily runs, and a blocked or budget-cut case keeps ageing so it leads the next run; carry_previous_measured keeps the rotation's memory across a timed-out or refused run. Keyless tests: tests/test_eval_case_cards.py drives the same command with an injected agent transport (ClaudeCodeAgent with an injected spawn, and a scripted agent) over a stand-in host, never a real session. Budget: about 79 sessions per run, 3 at once, 300 s and 25 turns each, none started after 6300 s, inside 6900 s; daily at most, it spends the operator's Claude Code plan. The reader is a named employee, else the eval principal, on the persistent host (scripts.eval_real_agent.LiveHost), as eval.ask_agent; the live sources' credentials are optional_env because the host reads through them only when its config serves them."
+}

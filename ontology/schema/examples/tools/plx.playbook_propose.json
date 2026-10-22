@@ -1,0 +1,29 @@
+{
+  "tool": "plx.playbook_propose",
+  "examples": [
+    {
+      "name": "propose a reworded version of a current playbook",
+      "input": {
+        "file": "customer_po_enrichment_v4.json",
+        "content": {
+          "schema": "plx-playbook/v1",
+          "id": "customer_po_enrichment",
+          "version": 4
+        },
+        "rationale": "the question pattern reads clearer",
+        "evidence": [
+          "case-0123456789abcdef0123456789abcdef",
+          "api://portal/public.app_sales_order/7#po_reference"
+        ]
+      },
+      "output": {
+        "proposal_id": "sp-0123456789abcdef01234567",
+        "proposal_status": "proposed",
+        "playbook_id": "customer_po_enrichment",
+        "version": 4,
+        "file": "customer_po_enrichment_v4.json",
+        "business_system_writes": 0
+      }
+    }
+  ]
+}

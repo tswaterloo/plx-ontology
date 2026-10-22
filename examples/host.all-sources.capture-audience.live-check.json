@@ -1,0 +1,35 @@
+{
+ "schema": "plx-live-source-audience/v1",
+ "tenant": "plx",
+ "note": "EXAMPLE ONLY, not a PLX-confirmed grant: the host capture principal of the host.all_sources live check: the six granted mailboxes, every SharePoint drive the scope reads (the AGENTS site's drive id is resolved by name at run time and cannot be named here) and the Production BC company. Default deny; the people-exclusion guard still applies to mail whatever this grants.",
+ "default_classification": "confidential",
+ "audiences": {
+  "mail:order-confirmation@petrasoap.com": [
+   "svc:workbench-host"
+  ],
+  "mail:ship@petrasoap.com": [
+   "svc:workbench-host"
+  ],
+  "mail:torontowh@petrasoap.com": [
+   "svc:workbench-host"
+  ],
+  "mail:ap@petrasoap.com": [
+   "svc:workbench-host"
+  ],
+  "mail:receiving@petrasoap.com": [
+   "svc:workbench-host"
+  ],
+  "mail:qclabresults@petrasoap.com": [
+   "svc:workbench-host"
+  ],
+  "sharepoint:*": [
+   "svc:workbench-host"
+  ],
+  "bc:production:*": [
+   "svc:workbench-host"
+  ]
+ },
+ "classifications": {
+  "mail:*": "restricted"
+ }
+}

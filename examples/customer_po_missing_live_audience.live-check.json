@@ -1,0 +1,12 @@
+{
+ "schema": "plx-live-source-audience/v1",
+ "tenant": "plx",
+ "note": "EXAMPLE ONLY, not a PLX-confirmed grant: the host capture principal and the sales investigator of the case.customer_po_missing live check, narrowed to what it reads. Default deny. SharePoint: every key, because the PLXCUSTOMERS drive id is resolved by site name at run time and cannot be named here; what is read is bounded by examples/sharepoint_capture_scope.customer_documents.live-check.json. staff:operations reads the orders (the mirror audience) but no document, so a missing-in-record lead citing one is withheld from it.",
+ "default_classification": "confidential",
+ "audiences": {
+  "sharepoint:*": [
+   "staff:sales",
+   "svc:workbench-host"
+  ]
+ }
+}

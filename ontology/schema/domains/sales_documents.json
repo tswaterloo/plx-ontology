@@ -1,0 +1,414 @@
+{
+ "$schema": "../_format.schema.json",
+ "format": "plx-ontology-domain/v1",
+ "domain": "sales_documents",
+ "origin": "curated",
+ "description": "Document-derived sales-side records: customer purchase orders and delivery receipts / proofs of delivery the document-field extractor reads from captured mail attachments and SharePoint files (ontology/document_fields.py, classes customer_po and delivery_receipt). Every value is a page/span-cited machine-read lead; each document links to the SalesOrder or Shipment it names (lead mentions), and plx.object compares what it attests with the record (attests in ontology/schema/document_fields.json): a disagreement is a conflict, a value the record holds empty a missing_in_record lead, never a pick and never a write.",
+ "upstream_pins": {
+  "plx-customer-portal": "b46934a"
+ },
+ "object_types": [
+  {
+   "id": "CustomerPoDocument",
+   "description": "A customer's purchase order to PLX, projected from captured mail attachments and SharePoint files the document-field extractor recognises (ontology/document_fields.py, class customer_po): PO number, dates, parties, shipping terms and line items, each a machine-read lead cited to the original bytes (page and span). Linked to the SalesOrder it names; plx.object reports a PO number the order holds empty as a missing_in_record lead (operating/attested_conflicts.py), never a write.",
+   "anchor": true,
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "graph_mail.customer_pos",
+     "source": "graph_mail",
+     "relation": "documentFields",
+     "key": [
+      "source_key"
+     ],
+     "where": [
+      {
+       "path": "profile",
+       "op": "eq",
+       "value": "customer_po"
+      }
+     ],
+     "lineage": {
+      "default": "mail"
+     },
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ],
+     "note": "One object per captured mail attachments version recognised as class customer_po (ontology/schema/document_fields.json); keyed by the source record, cited by its byte-pinned handle, same audience and validity interval as the source version."
+    },
+    {
+     "id": "sharepoint.customer_pos",
+     "source": "sharepoint",
+     "relation": "documentFields",
+     "key": [
+      "source_key"
+     ],
+     "where": [
+      {
+       "path": "profile",
+       "op": "eq",
+       "value": "customer_po"
+      }
+     ],
+     "lineage": {
+      "default": "sharepoint"
+     },
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ],
+     "note": "One object per captured SharePoint files version recognised as class customer_po (ontology/schema/document_fields.json); keyed by the source record, cited by its byte-pinned handle, same audience and validity interval as the source version."
+    }
+   ],
+   "properties": [
+    {
+     "name": "tier",
+     "value_type": "enum",
+     "enum_values": [
+      "lead"
+     ],
+     "description": "Evidence tier of every field of this object: a machine-read lead, never verified.",
+     "sources": [
+      {
+       "binding": "graph_mail.customer_pos",
+       "path": "tier",
+       "parser": "trim"
+      },
+      {
+       "binding": "sharepoint.customer_pos",
+       "path": "tier",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ],
+     "authority": {
+      "precedence": [
+       {
+        "lineage": [
+         "mail",
+         "sharepoint"
+        ],
+        "evidence": [
+         {
+          "kind": "workbench_code",
+          "path": "ontology/document_fields.py"
+         }
+        ]
+       }
+      ],
+      "note": "Each object is projected from one binding (one captured document), so the two sources never meet on one object."
+     }
+    },
+    {
+     "name": "evidence",
+     "value_type": "json",
+     "description": "The extraction (ontology/document_fields.py extract_fields): class cue, every field and line item with its citations (byte-pinned handle, source_sha256, page, start/end in that page's extracted text, literal), every gap with its reason, and the identifier references. Untrusted document text.",
+     "markings": [
+      "finance"
+     ],
+     "sources": [
+      {
+       "binding": "graph_mail.customer_pos",
+       "path": "evidence",
+       "parser": "as_is"
+      },
+      {
+       "binding": "sharepoint.customer_pos",
+       "path": "evidence",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ],
+     "authority": {
+      "precedence": [
+       {
+        "lineage": [
+         "mail",
+         "sharepoint"
+        ],
+        "evidence": [
+         {
+          "kind": "workbench_code",
+          "path": "ontology/document_fields.py"
+         }
+        ]
+       }
+      ],
+      "note": "Each object is projected from one binding (one captured document), so the two sources never meet on one object."
+     }
+    }
+   ],
+   "display": [
+    "po_number"
+   ],
+   "evidence": [
+    {
+     "kind": "workbench_code",
+     "path": "ontology/document_fields.py"
+    }
+   ]
+  },
+  {
+   "id": "DeliveryReceipt",
+   "description": "A delivery receipt or proof of delivery, projected from captured mail attachments and SharePoint files the document-field extractor recognises (ontology/document_fields.py, class delivery_receipt): when, to whom and how much was delivered and in what condition, each a machine-read lead cited to the original bytes (page and span). A signature on paper is an external assertion, never a verified receipt.",
+   "anchor": true,
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "graph_mail.delivery_receipts",
+     "source": "graph_mail",
+     "relation": "documentFields",
+     "key": [
+      "source_key"
+     ],
+     "where": [
+      {
+       "path": "profile",
+       "op": "eq",
+       "value": "delivery_receipt"
+      }
+     ],
+     "lineage": {
+      "default": "mail"
+     },
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ],
+     "note": "One object per captured mail attachments version recognised as class delivery_receipt (ontology/schema/document_fields.json); keyed by the source record, cited by its byte-pinned handle, same audience and validity interval as the source version."
+    },
+    {
+     "id": "sharepoint.delivery_receipts",
+     "source": "sharepoint",
+     "relation": "documentFields",
+     "key": [
+      "source_key"
+     ],
+     "where": [
+      {
+       "path": "profile",
+       "op": "eq",
+       "value": "delivery_receipt"
+      }
+     ],
+     "lineage": {
+      "default": "sharepoint"
+     },
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ],
+     "note": "One object per captured SharePoint files version recognised as class delivery_receipt (ontology/schema/document_fields.json); keyed by the source record, cited by its byte-pinned handle, same audience and validity interval as the source version."
+    }
+   ],
+   "properties": [
+    {
+     "name": "tier",
+     "value_type": "enum",
+     "enum_values": [
+      "lead"
+     ],
+     "description": "Evidence tier of every field of this object: a machine-read lead, never verified.",
+     "sources": [
+      {
+       "binding": "graph_mail.delivery_receipts",
+       "path": "tier",
+       "parser": "trim"
+      },
+      {
+       "binding": "sharepoint.delivery_receipts",
+       "path": "tier",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ],
+     "authority": {
+      "precedence": [
+       {
+        "lineage": [
+         "mail",
+         "sharepoint"
+        ],
+        "evidence": [
+         {
+          "kind": "workbench_code",
+          "path": "ontology/document_fields.py"
+         }
+        ]
+       }
+      ],
+      "note": "Each object is projected from one binding (one captured document), so the two sources never meet on one object."
+     }
+    },
+    {
+     "name": "evidence",
+     "value_type": "json",
+     "description": "The extraction (ontology/document_fields.py extract_fields): class cue, every field and line item with its citations (byte-pinned handle, source_sha256, page, start/end in that page's extracted text, literal), every gap with its reason, and the identifier references. Untrusted document text.",
+     "markings": [
+      "finance"
+     ],
+     "sources": [
+      {
+       "binding": "graph_mail.delivery_receipts",
+       "path": "evidence",
+       "parser": "as_is"
+      },
+      {
+       "binding": "sharepoint.delivery_receipts",
+       "path": "evidence",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ],
+     "authority": {
+      "precedence": [
+       {
+        "lineage": [
+         "mail",
+         "sharepoint"
+        ],
+        "evidence": [
+         {
+          "kind": "workbench_code",
+          "path": "ontology/document_fields.py"
+         }
+        ]
+       }
+      ],
+      "note": "Each object is projected from one binding (one captured document), so the two sources never meet on one object."
+     }
+    }
+   ],
+   "display": [
+    "tracking_number"
+   ],
+   "evidence": [
+    {
+     "kind": "workbench_code",
+     "path": "ontology/document_fields.py"
+    }
+   ]
+  }
+ ],
+ "link_types": [
+  {
+   "id": "CustomerPoDocument.for_sales_order",
+   "from": "CustomerPoDocument",
+   "to": "SalesOrder",
+   "name": "for_sales_order",
+   "reverse_name": "customer_po_documents",
+   "cardinality": "N:M",
+   "description": "A customer purchase order names this SalesOrder: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "DeliveryReceipt.for_shipment",
+   "from": "DeliveryReceipt",
+   "to": "Shipment",
+   "name": "for_shipment",
+   "reverse_name": "delivery_receipts",
+   "cardinality": "N:M",
+   "description": "A delivery receipt names this Shipment: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "DeliveryReceipt.for_sales_order",
+   "from": "DeliveryReceipt",
+   "to": "SalesOrder",
+   "name": "for_sales_order",
+   "reverse_name": "delivery_receipts",
+   "cardinality": "N:M",
+   "description": "A delivery receipt names this SalesOrder: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "DeliveryReceipt.for_purchase_order",
+   "from": "DeliveryReceipt",
+   "to": "PurchaseOrder",
+   "name": "for_purchase_order",
+   "reverse_name": "delivery_receipts",
+   "cardinality": "N:M",
+   "description": "A delivery receipt names this PurchaseOrder: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "event_types": [],
+ "evidence_catalog": {}
+}

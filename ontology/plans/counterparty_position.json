@@ -1,0 +1,363 @@
+{
+ "$schema": "_plan.schema.json",
+ "format": "plx-investigate-plan/v1",
+ "id": "counterparty_position",
+ "families": [
+  "F15"
+ ],
+ "title": "A supplier's position",
+ "description": "Where we stand with a supplier, each value cited: its purchase orders (each one's status and expected arrival in the system that holds it; whether each is open or late is read from those cited values by a person or the status card, never guessed here), the balance owed with its currency (BC vendor balance, the aged-payables row, each open purchase invoice's remaining amount and due date), and the supplier confirmations of those orders (their document and delivery dates). The supplier's same-record twins are followed; a link below the default tier floor is a lead (lead_basis). A balance the reader may not see or the sources do not hold is a typed gap, never zero.",
+ "root": {
+  "object_types": [
+   "Supplier"
+  ],
+  "fallback_filters": [
+   {
+    "object_type": "Supplier",
+    "property": "code"
+   },
+   {
+    "object_type": "Supplier",
+    "property": "name"
+   }
+  ]
+ },
+ "step_budget": 64,
+ "steps": [
+  {
+   "id": "root_read",
+   "tool": "plx.object",
+   "from": "root",
+   "bind": "object_id",
+   "required": true
+  },
+  {
+   "id": "twin",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "description": "The same supplier in another system (BC vendor, FileMaker supplier).",
+   "args": {
+    "path": [
+     {
+      "link_type": "Supplier.same_record_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "twin_of",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Supplier.same_record_as",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "twin_read",
+   "tool": "plx.object",
+   "from": "twin",
+   "bind": "object_id"
+  },
+  {
+   "id": "twin_of_read",
+   "tool": "plx.object",
+   "from": "twin_of",
+   "bind": "object_id"
+  },
+  {
+   "id": "orders",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "twin",
+    "twin_of"
+   ],
+   "bind": "from",
+   "description": "The supplier's purchase orders in every system.",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrder.ordered_from",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   },
+   "required": true
+  },
+  {
+   "id": "order_read",
+   "tool": "plx.object",
+   "from": "orders",
+   "bind": "object_id"
+  },
+  {
+   "id": "invoices",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "twin",
+    "twin_of"
+   ],
+   "bind": "from",
+   "description": "The supplier's BC purchase invoices.",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseInvoice.billed_by",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "invoice_read",
+   "tool": "plx.object",
+   "from": "invoices",
+   "bind": "object_id"
+  },
+  {
+   "id": "aged",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "twin",
+    "twin_of"
+   ],
+   "bind": "from",
+   "description": "The supplier's aged-payables row in BC.",
+   "args": {
+    "path": [
+     {
+      "link_type": "AgedPayable.of_supplier",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "aged_read",
+   "tool": "plx.object",
+   "from": "aged",
+   "bind": "object_id"
+  },
+  {
+   "id": "confirmations",
+   "tool": "plx.around",
+   "from": "orders",
+   "bind": "from",
+   "description": "Confirmations of the supplier's orders.",
+   "args": {
+    "path": [
+     {
+      "link_type": "SupplierConfirmation.confirms",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "confirmation_read",
+   "tool": "plx.object",
+   "from": "confirmations",
+   "bind": "object_id"
+  }
+ ],
+ "evidence": [
+  {
+   "name": "supplier_name",
+   "kind": "property",
+   "required": true,
+   "object_type": "Supplier",
+   "properties": [
+    "name"
+   ]
+  },
+  {
+   "name": "order_count",
+   "kind": "count",
+   "object_type": "PurchaseOrder",
+   "bindings": [
+    "portal.app_purchase_order"
+   ]
+  },
+  {
+   "name": "fm_order_count",
+   "kind": "count",
+   "object_type": "PurchaseOrder",
+   "bindings": [
+    "portal.fm_generated_purchase_order"
+   ]
+  },
+  {
+   "name": "sage_order_count",
+   "kind": "count",
+   "object_type": "PurchaseOrder",
+   "bindings": [
+    "portal.sage_po_header"
+   ]
+  },
+  {
+   "name": "bc_order_count",
+   "kind": "count",
+   "object_type": "PurchaseOrder",
+   "bindings": [
+    "bc.purchase_orders"
+   ]
+  },
+  {
+   "name": "order_status",
+   "kind": "property",
+   "object_type": "PurchaseOrder",
+   "properties": [
+    "status",
+    "bc_status",
+    "fm_status"
+   ],
+   "if_null": "absent_in_source",
+   "description": "Each order's status in the system that holds it, cited as that system's own value, never mapped."
+  },
+  {
+   "name": "order_expected_date",
+   "kind": "property",
+   "object_type": "PurchaseOrder",
+   "properties": [
+    "expected_date"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "balance",
+   "kind": "property",
+   "required": true,
+   "object_type": "Supplier",
+   "properties": [
+    "bc_balance"
+   ],
+   "if_null": "absent_in_source",
+   "description": "The BC vendor balance (in the vendor's currency)."
+  },
+  {
+   "name": "currency",
+   "kind": "property",
+   "object_type": "Supplier",
+   "properties": [
+    "currency"
+   ],
+   "if_null": "absent_in_source"
+  },
+  {
+   "name": "aged_balance",
+   "kind": "property",
+   "object_type": "AgedPayable",
+   "properties": [
+    "balance_due"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "aged_currency",
+   "kind": "property",
+   "object_type": "AgedPayable",
+   "properties": [
+    "currency"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "invoice_remaining",
+   "kind": "property",
+   "object_type": "PurchaseInvoice",
+   "properties": [
+    "remaining_amount"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "invoice_due_date",
+   "kind": "property",
+   "object_type": "PurchaseInvoice",
+   "properties": [
+    "due_date"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "last_confirmation_date",
+   "kind": "property",
+   "object_type": "SupplierConfirmation",
+   "properties": [
+    "document_date",
+    "delivery_date"
+   ],
+   "omit_empty": true
+  }
+ ]
+}

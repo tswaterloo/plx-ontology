@@ -1,0 +1,33 @@
+{
+  "tool": "plx.playbook_adopt",
+  "examples": [
+    {
+      "name": "the steward is sent the adoption form",
+      "input": {
+        "proposal_id": "sp-0123456789abcdef01234567"
+      },
+      "output": {
+        "proposal_id": "sp-0123456789abcdef01234567",
+        "proposal_status": "evaluated",
+        "confirmation": "awaiting_steward_confirmation",
+        "playbook_id": "customer_po_enrichment",
+        "version": 4,
+        "file": "customer_po_enrichment_v4.json",
+        "business_system_writes": 0
+      }
+    },
+    {
+      "name": "status after the steward's answer",
+      "input": {
+        "proposal_id": "sp-0123456789abcdef01234567",
+        "mode": "status"
+      },
+      "output": {
+        "proposal_id": "sp-0123456789abcdef01234567",
+        "proposal_status": "adopted",
+        "last_answer": "adopted",
+        "business_system_writes": 0
+      }
+    }
+  ]
+}

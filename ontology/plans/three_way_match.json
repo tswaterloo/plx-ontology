@@ -1,0 +1,478 @@
+{
+ "$schema": "_plan.schema.json",
+ "format": "plx-investigate-plan/v1",
+ "id": "three_way_match",
+ "families": [
+  "F4"
+ ],
+ "title": "Purchase order, receipt and supplier invoice agreement",
+ "description": "Ordered (PO lines), received (receipt lines of the PO's receipts) and invoiced (BC purchase invoice lines of the PO itself when it is a BC purchase order, else of its BC twin, and of the BC invoices naming its number: PurchaseInvoice.names_order, a lead) quantities per item, each a cited source value, as context. Every match verdict is plx.process purchase_to_invoice's own (ontology/schema/process/purchase_to_invoice.json: unit equivalence, summed receipts, ignored drafts, one system of record, leads never counted); the plan never compares quantities itself, and when the host does not serve plx.process the verdicts are step_unavailable gaps. Upstream: docs/reference/portal-code-map.md 3.5, 3.6, 3.11.",
+ "root": {
+  "object_types": [
+   "PurchaseOrder"
+  ],
+  "fallback_filters": [
+   {
+    "object_type": "PurchaseOrder",
+    "property": "po_number"
+   }
+  ]
+ },
+ "step_budget": 32,
+ "steps": [
+  {
+   "id": "match",
+   "tool": "plx.process",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "process": "purchase_to_invoice",
+    "include_groups": true
+   },
+   "description": "The declared purchase-to-invoice process graph decides every three-way verdict (ordered vs received, received vs invoiced, PO vs invoice price per item). Run first, so a step budget a long PO exhausts on its line reads never costs the verdicts.",
+   "required": true
+  },
+  {
+   "id": "po_lines",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrderLine.line_of",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   },
+   "required": true
+  },
+  {
+   "id": "po_line_read",
+   "tool": "plx.object",
+   "from": "po_lines",
+   "bind": "object_id",
+   "required": true
+  },
+  {
+   "id": "po_line_items",
+   "tool": "plx.around",
+   "from": "po_lines",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrderLine.for_item",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "item_read",
+   "tool": "plx.object",
+   "from": "po_line_items",
+   "bind": "object_id"
+  },
+  {
+   "id": "receipt_lines",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Receipt.receives",
+      "direction": "reverse"
+     },
+     {
+      "link_type": "ReceiptLine.line_of",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   },
+   "required": true
+  },
+  {
+   "id": "receipt_line_read",
+   "tool": "plx.object",
+   "from": "receipt_lines",
+   "bind": "object_id",
+   "required": true
+  },
+  {
+   "id": "receipt_line_items",
+   "tool": "plx.around",
+   "from": "receipt_lines",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "ReceiptLine.for_item",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "own_invoice_lines",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "description": "Invoice lines of the root's own BC purchase invoices, when the root is itself a BC purchase order (its system holds the invoices; it has no BC twin).",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseInvoice.invoices",
+      "direction": "reverse"
+     },
+     {
+      "link_type": "PurchaseInvoiceLine.line_of",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "own_invoice_line_read",
+   "tool": "plx.object",
+   "from": "own_invoice_lines",
+   "bind": "object_id"
+  },
+  {
+   "id": "own_invoice_line_items",
+   "tool": "plx.around",
+   "from": "own_invoice_lines",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseInvoiceLine.for_item",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "bc_twin",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrder.same_record_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "invoice_lines",
+   "tool": "plx.around",
+   "from": "bc_twin",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseInvoice.invoices",
+      "direction": "reverse"
+     },
+     {
+      "link_type": "PurchaseInvoiceLine.line_of",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "invoice_line_read",
+   "tool": "plx.object",
+   "from": "invoice_lines",
+   "bind": "object_id"
+  },
+  {
+   "id": "invoice_line_items",
+   "tool": "plx.around",
+   "from": "invoice_lines",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseInvoiceLine.for_item",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "named_invoice_lines",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "description": "Invoice lines of the BC purchase invoices that name the root's PO number (PurchaseInvoice.names_order, the way the Portal finds a PO's invoices: TRIM(order_number)). BC deletes a fully invoiced PO once posted, so a closed Portal PO has no BC PO and no BC twin left and is reached only so. The link is a lead (the Portal row does not carry the BC company): its lines are cited context labelled lead_basis; plx.process counts it only through company_by_reader and keeps its cross_system_unchecked label (docs/decisions/2026-10-05-bc-only-portal-hops.md).",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseInvoice.names_order",
+      "direction": "reverse"
+     },
+     {
+      "link_type": "PurchaseInvoiceLine.line_of",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "named_invoice_line_read",
+   "tool": "plx.object",
+   "from": "named_invoice_lines",
+   "bind": "object_id"
+  },
+  {
+   "id": "named_invoice_line_items",
+   "tool": "plx.around",
+   "from": "named_invoice_lines",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseInvoiceLine.for_item",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  }
+ ],
+ "evidence": [
+  {
+   "name": "item",
+   "kind": "property",
+   "object_type": "Product",
+   "properties": [
+    "code"
+   ],
+   "numbering": "value"
+  },
+  {
+   "name": "ordered",
+   "kind": "property",
+   "required": true,
+   "object_type": "PurchaseOrderLine",
+   "properties": [
+    "ordered_quantity"
+   ],
+   "quantity_role": "ordered"
+  },
+  {
+   "name": "received",
+   "kind": "property",
+   "required": true,
+   "object_type": "ReceiptLine",
+   "properties": [
+    "received_quantity"
+   ],
+   "quantity_role": "received"
+  },
+  {
+   "name": "invoiced",
+   "kind": "property",
+   "required": true,
+   "object_type": "PurchaseInvoiceLine",
+   "properties": [
+    "invoiced_quantity"
+   ],
+   "quantity_role": "invoiced"
+  },
+  {
+   "name": "ordered_vs_received",
+   "kind": "select",
+   "required": true,
+   "description": "plx.process's ordered vs received verdicts over every item, false when any item disagrees.",
+   "step": "match",
+   "path": "quantity_checks.*.agree",
+   "where": {
+    "roles": [
+     "ordered",
+     "received"
+    ]
+   },
+   "reduce": "all"
+  },
+  {
+   "name": "received_vs_invoiced",
+   "kind": "select",
+   "required": true,
+   "description": "plx.process's received vs invoiced verdicts over every item.",
+   "step": "match",
+   "path": "quantity_checks.*.agree",
+   "where": {
+    "roles": [
+     "received",
+     "invoiced"
+    ]
+   },
+   "reduce": "all"
+  },
+  {
+   "name": "price_ordered_vs_invoiced",
+   "kind": "select",
+   "required": false,
+   "description": "plx.process's PO unit price vs invoice unit cost verdicts over every item.",
+   "step": "match",
+   "path": "quantity_checks.*.agree",
+   "where": {
+    "roles": [
+     "ordered",
+     "invoiced"
+    ]
+   },
+   "reduce": "all"
+  },
+  {
+   "name": "match",
+   "kind": "select",
+   "required": true,
+   "description": "Per item (plx.process's check group, numbered as the item entries): its ordered vs received and received vs invoiced quantity verdicts all agree, with the cells plx.process compared.",
+   "step": "match",
+   "path": "quantity_checks.*.agree",
+   "where_any": [
+    {
+     "roles": [
+      "ordered",
+      "received"
+     ]
+    },
+    {
+     "roles": [
+      "received",
+      "invoiced"
+     ]
+    }
+   ],
+   "reduce": "all",
+   "per": "group",
+   "number_as": "item"
+  },
+  {
+   "name": "three_way_match",
+   "kind": "select",
+   "required": true,
+   "description": "Every plx.process quantity and price check agrees.",
+   "step": "match",
+   "path": "quantity_checks.*.agree",
+   "reduce": "all"
+  }
+ ]
+}

@@ -1,0 +1,181 @@
+{
+ "format": "plx-eval-item/v1",
+ "id": "dev-F9-0003-exposed",
+ "family": "F9",
+ "split": "dev",
+ "variant": "standard",
+ "question": {
+  "text": "For SoapBox PO5447, what is ordered versus expected ready, and do the dates establish a pickup or delivery?"
+ },
+ "root": {
+  "identifier": "PO5447",
+  "identifier_kind": "po_number",
+  "object_type": "PurchaseOrder"
+ },
+ "as_known_at": {
+  "time": "2026-10-02T18:07:03Z",
+  "l1_generations": {
+   "advisory_r": "a5f4e154a62be713c0ac19421c1716212f85d25d08939203dfcc5ac9ec3e6949",
+   "advisory_s": "d58dff9b872e1401ca3ac80f4e08896beaa26486728fe6f414c85a4d94f9652b"
+  }
+ },
+ "closed_transaction": false,
+ "lineage_stratum": "original",
+ "known_outcome": {
+  "answerability": "partial",
+  "values": [
+   {
+    "name": "ordered_per_sku",
+    "object_type": "SourceDocument",
+    "quantity_role": "ordered",
+    "value": 12500,
+    "citations": [
+     {
+      "l1_handle": "original://sha256/1c8df689c766e08041ab1c4ce1b55287d778c9822e96b74ba0cf8e86cf781254",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "ready_per_design",
+    "object_type": "SourceMessage",
+    "value": 11500,
+    "citations": [
+     {
+      "l1_handle": "original://sha256/f10591a2e33ecdba8452054c2faeaef4af4431984f4b592b195e474064df5f0c",
+      "field_path": "row.text"
+     },
+     {
+      "l1_handle": "original://sha256/5714131642de242417f412ef2a24fbf034fdf345562d3289eca4b05791c16a69",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "ready_window_start",
+    "object_type": "SourceMessage",
+    "value": "2026-10-25",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/f10591a2e33ecdba8452054c2faeaef4af4431984f4b592b195e474064df5f0c",
+      "field_path": "row.text"
+     },
+     {
+      "l1_handle": "original://sha256/5714131642de242417f412ef2a24fbf034fdf345562d3289eca4b05791c16a69",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "ready_window_end",
+    "object_type": "SourceMessage",
+    "value": "2026-10-30",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/f10591a2e33ecdba8452054c2faeaef4af4431984f4b592b195e474064df5f0c",
+      "field_path": "row.text"
+     },
+     {
+      "l1_handle": "original://sha256/5714131642de242417f412ef2a24fbf034fdf345562d3289eca4b05791c16a69",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "pi_lead_time_days_after_deposit_min",
+    "object_type": "SourceDocument",
+    "unit": "day",
+    "value": 40,
+    "citations": [
+     {
+      "l1_handle": "original://sha256/442664a40f5d38eeebd547e9f1425683624a28e7f34aa0797cd096e29f0edf5a",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "pi_lead_time_days_after_deposit_max",
+    "object_type": "SourceDocument",
+    "unit": "day",
+    "value": 45,
+    "citations": [
+     {
+      "l1_handle": "original://sha256/442664a40f5d38eeebd547e9f1425683624a28e7f34aa0797cd096e29f0edf5a",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "requested_pickup",
+    "object_type": "SourceMessage",
+    "value": "2026-10-25",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/855712bf88c59e429cee1d79b849db41d5fdd6f6a61230cd360942b74f6fe54f",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "requested_delivery",
+    "object_type": "SourceMessage",
+    "value": "2026-11-15",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/855712bf88c59e429cee1d79b849db41d5fdd6f6a61230cd360942b74f6fe54f",
+      "field_path": "row.text"
+     }
+    ]
+   }
+  ],
+  "gaps": [
+   {
+    "state": "unknown",
+    "subject": "actual completion, pickup, BOL and delivered quantity",
+    "reason": "not_established"
+   },
+   {
+    "state": "unknown",
+    "subject": "approved superseding shipping plan",
+    "reason": "not_established"
+   },
+   {
+    "state": "unknown",
+    "subject": "ownership transfer and native receipt, AP, ledger and G/L records",
+    "reason": "no_native_erp_read"
+   }
+  ]
+ },
+ "must_not": [
+  "propose_action",
+  "claim_uncited_number",
+  "invent_absent_value"
+ ],
+ "oracle": {
+  "id": "oracle:advisory-dev-batch-01@f2438ec3002e3917c5634a9d4e6a93e6e95dc129d648319fdff33fac61547996",
+  "interface": "plx-eval-oracle/v1",
+  "derived_from": [
+   "context/006786de5454dcb66a83cfdd2fad4974b2545e5f61a24a75aad1b74bc288b23e.json#/evaluation_batch/cases/9",
+   "docs/reference/cases-and-artifacts.md#1.11 F04",
+   "docs/reference/cases-and-artifacts.md#1.11 F06",
+   "docs/reference/cases-and-artifacts.md#1.11 F07",
+   "evals/exposed/sources.json#soap-po-pdf",
+   "evals/exposed/sources.json#soap-pricing-mail",
+   "evals/exposed/sources.json#soap-pi-updated-mail",
+   "evals/exposed/sources.json#soap-pi-pdf",
+   "evals/exposed/sources.json#soap-freight-mail",
+   "evals/exposed/sources.json#soap-index"
+  ],
+  "computed_at": "2026-10-03T21:18:48Z"
+ },
+ "label": {
+  "status": "oracle_only",
+  "note": "Exposed real case (source batch existing-packets-development-batch-01 unit DEV-010, cluster soapbox-po5447): dev/regression only, never held-out. Expected values are the source-backed claims of the source records (oracle.derived_from), not a Workbench oracle run and not a human audit; every claim the records do not establish is a gap with state unknown. Pending human label: a person checks known_outcome against the originals in evals/exposed/sources.json, then sets human_audited (audited_by, audited_at) or disputed."
+ },
+ "scoring": {
+  "exact_values": true,
+  "gap_honesty": true,
+  "citations_required": true
+ },
+ "created_at": "2026-10-04"
+}

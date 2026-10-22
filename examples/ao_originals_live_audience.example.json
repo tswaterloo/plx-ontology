@@ -1,0 +1,14 @@
+{
+ "schema": "plx-live-source-audience/v1",
+ "tenant": "plx",
+ "note": "EXAMPLE ONLY, not a PLX-confirmed grant and no real identities: the staff:quality principal label may read Ricardo's Quality AO packets (QCQA drive, folder '/AOs/2026 - AOs' itself (exact key) and everything under '/AOs/2026 - AOs/' (a trailing * is a raw prefix, so the folder is anchored by its slash and a sibling such as '/AOs/2026 - AOs archive' is not granted)) at classification confidential, so the reader needs --clearance confidential. Default deny: nothing else in any drive, mailbox or BC company is granted. Used by python3 -m operating.case_workspace_live --sharepoint-original --originals-expected evals/dev/cases/ao_originals_expected.json --live-source-audience <this file> (verify/live-checks/case.workspace_live.json).",
+ "default_classification": "confidential",
+ "audiences": {
+  "sharepoint:b!ubhBC91PLkOOCpyUeCUJMLOi0jT3ADZHi0QxVdjuwxvq6wHrgPmdQqNrzbAMxVqk:/AOs/2026 - AOs": [
+   "staff:quality"
+  ],
+  "sharepoint:b!ubhBC91PLkOOCpyUeCUJMLOi0jT3ADZHi0QxVdjuwxvq6wHrgPmdQqNrzbAMxVqk:/AOs/2026 - AOs/*": [
+   "staff:quality"
+  ]
+ }
+}

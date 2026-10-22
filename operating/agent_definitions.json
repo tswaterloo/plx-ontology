@@ -1,0 +1,198 @@
+{
+  "schema": "plx-agent-definitions/v1",
+  "note": "AGT-06. The Workbench's agents: each MCP session runs exactly one, loaded and enforced by operating/agent_definitions.py through operating/mcp_server.py (tools listed and callable, action types, limits, stop, escalation); data_scopes must be every scope (narrowing is not enforced on every read path, so a narrower definition is refused). A new version is a new number; every answer carries the effective id, version and digest in _meta plx/agent. Agents are never principals and never approve: escalation targets are Mission Control approval (a human MC admin/owner) or a human.",
+  "default_agent": "plx.agent.act",
+  "agents": [
+    {
+      "id": "plx.agent.investigate",
+      "version": 1,
+      "role": "Reconstruct the business context of a question from cited sources into a durable case; never acts.",
+      "responsibilities": [
+        "read sources and the projection as the session employee, citing every value",
+        "record findings, Decimal calculations, visible gaps and owner-system proposals on cases",
+        "run declarative investigation plans (plx.investigate) and report what stayed unknown",
+        "stop at its limits and hand the case to a person"
+      ],
+      "tools": [
+        "plx.schema",
+        "plx.find",
+        "plx.object",
+        "plx.around",
+        "plx.timeline",
+        "plx.identity",
+        "plx.documents",
+        "plx.read",
+        "plx.aggregate",
+        "plx.compare",
+        "plx.process",
+        "plx.investigate",
+        "plx.case_open",
+        "plx.case_get",
+        "plx.case_add_finding",
+        "plx.case_compute",
+        "plx.case_record_gap",
+        "plx.case_propose",
+        "plx.case_attach_original",
+        "plx.case_close",
+        "plx.document_fields"
+      ],
+      "action_types": [
+        "portal.sales_order.set_customer_po",
+        "fixture.record.set_field",
+        "fixture.record.set_cited_value",
+        "portal.assembly_order.set_header_quantities",
+        "test.record.set_field",
+        "mc.task.create_follow_up"
+      ],
+      "data_scopes": [
+        "api",
+        "original",
+        "graph-mail",
+        "sharepoint",
+        "bc"
+      ],
+      "limits": {
+        "max_tool_calls": 1000,
+        "max_consecutive_errors": 25
+      },
+      "stop": {
+        "when": [
+          "max_tool_calls",
+          "max_consecutive_errors"
+        ],
+        "escalate_to": "human"
+      },
+      "escalation": {
+        "mc_gate": "mc_approval",
+        "per_call_human_approval": "human"
+      },
+      "forbidden": [
+        "approve",
+        "dispatch",
+        "mc_write",
+        "business_write",
+        "plx.act"
+      ]
+    },
+    {
+      "id": "plx.agent.act",
+      "version": 1,
+      "role": "Investigate as plx.agent.investigate does, then carry authorized existing PLX capabilities through the action path: register proposals as intents parked for approval, run approval-free Workbench-internal actions, and verify outcomes by read-back.",
+      "responsibilities": [
+        "everything plx.agent.investigate does",
+        "register recorded owner-system proposals as intents (plx.act propose); they wait for Mission Control or a human",
+        "run workbench_internal catalog actions whose approval rule is none, then read them back",
+        "verify intent outcomes only through the independent read step (plx.act verify)",
+        "stop at its limits and hand the case to a person"
+      ],
+      "tools": [
+        "plx.schema",
+        "plx.find",
+        "plx.object",
+        "plx.around",
+        "plx.timeline",
+        "plx.identity",
+        "plx.documents",
+        "plx.read",
+        "plx.aggregate",
+        "plx.compare",
+        "plx.process",
+        "plx.investigate",
+        "plx.case_open",
+        "plx.case_get",
+        "plx.case_add_finding",
+        "plx.case_compute",
+        "plx.case_record_gap",
+        "plx.case_propose",
+        "plx.case_attach_original",
+        "plx.case_close",
+        "plx.document_fields",
+        "plx.act"
+      ],
+      "action_types": [
+        "workbench.identity_link.record",
+        "workbench.finding.correct",
+        "workbench.follow_up.record",
+        "workbench.draft.record",
+        "portal.sales_order.set_customer_po",
+        "fixture.record.set_field",
+        "fixture.record.set_cited_value",
+        "portal.assembly_order.set_header_quantities",
+        "test.record.set_field",
+        "mc.task.create_follow_up"
+      ],
+      "data_scopes": [
+        "api",
+        "original",
+        "graph-mail",
+        "sharepoint",
+        "bc"
+      ],
+      "limits": {
+        "max_tool_calls": 1000,
+        "max_consecutive_errors": 25
+      },
+      "stop": {
+        "when": [
+          "max_tool_calls",
+          "max_consecutive_errors"
+        ],
+        "escalate_to": "human"
+      },
+      "escalation": {
+        "mc_gate": "mc_approval",
+        "per_call_human_approval": "human"
+      },
+      "forbidden": [
+        "approve",
+        "dispatch",
+        "mc_write",
+        "business_write"
+      ]
+    },
+    {
+      "id": "plx.agent.playbook",
+      "version": 1,
+      "role": "Carry a proposed playbook version through the one adoption path (operating.semantic_proposals): propose it with evidence, evaluate it on the host's frozen cases, or ask the human steward to adopt it; never adopts or investigates.",
+      "responsibilities": [
+        "propose a new playbook version with a rationale and evidence the session can read (plx.playbook_propose)",
+        "evaluate another principal's proposal on every frozen case, reading each case as the session (plx.playbook_evaluate)",
+        "send the host-configured human steward the adoption form and report its outcome (plx.playbook_adopt); only the person's answer adopts",
+        "stop at its limits and hand the proposal to a person"
+      ],
+      "tools": [
+        "plx.case_get",
+        "plx.playbook_propose",
+        "plx.playbook_evaluate",
+        "plx.playbook_adopt"
+      ],
+      "action_types": [],
+      "data_scopes": [
+        "api",
+        "original",
+        "graph-mail",
+        "sharepoint",
+        "bc"
+      ],
+      "limits": {
+        "max_tool_calls": 200,
+        "max_consecutive_errors": 10
+      },
+      "stop": {
+        "when": [
+          "max_tool_calls",
+          "max_consecutive_errors"
+        ],
+        "escalate_to": "human"
+      },
+      "escalation": {},
+      "forbidden": [
+        "approve",
+        "dispatch",
+        "mc_write",
+        "business_write",
+        "plx.act"
+      ]
+    }
+  ]
+}

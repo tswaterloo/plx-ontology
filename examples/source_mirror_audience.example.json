@@ -1,0 +1,31 @@
+{
+  "schema": "plx-source-mirror-audience/v1",
+  "note": "EXAMPLE configuration, not authority. The plxwb_ key is one shared login, so integrations/source_mirror.py enforces this relation-family audience itself: default deny, the most specific pattern wins (exact name, then longest 'prefix*'), an empty list denies. Principals and grants must be confirmed by PLX before use; the file is re-read on every mirror operation, so removing a grant hides rows and citations immediately.",
+  "tenant": "plx",
+  "default_classification": "internal",
+  "audiences": {
+    "public.assembly_order": ["staff:operations"],
+    "public.assembly_order_item": ["staff:operations"],
+    "public.assembly_order_status": ["staff:operations"],
+    "public.assembly_order_damage": ["staff:operations", "staff:quality"],
+    "public.order_entry": ["staff:operations"],
+    "public.order_entry_item": ["staff:operations"],
+    "public.order_entry_item_assembly": ["staff:operations"],
+    "public.finished_product": ["staff:operations"],
+    "public.bulk_product": ["staff:operations"],
+    "public.packaging": ["staff:operations"],
+    "public.production": ["staff:operations"],
+    "public.app_sales_order": ["staff:operations"],
+    "public.app_sales_order_line": ["staff:operations"],
+    "public.app_shipment": ["staff:operations", "staff:warehouse"],
+    "public.app_purchase_order": ["staff:purchasing"],
+    "public.app_purchase_order_line": ["staff:purchasing"],
+    "public.app_receipt": ["staff:purchasing", "staff:warehouse"],
+    "public.app_receipt_line": ["staff:purchasing", "staff:warehouse"],
+    "sage.*": ["staff:finance"],
+    "sage.ar_customer": []
+  },
+  "classifications": {
+    "sage.*": "confidential"
+  }
+}

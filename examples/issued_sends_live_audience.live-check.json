@@ -1,0 +1,23 @@
+{
+ "schema": "plx-live-source-audience/v1",
+ "tenant": "plx",
+ "note": "EXAMPLE ONLY, not a PLX-confirmed grant: the purchasing principal of the case.po_sent_chain live check, narrowed to what it reads. Default deny. Mail: the Sent Items of purchase-order@ and vince@ (examples/issued_sends_mail_capture_scope.live-check.json), read by staff:purchasing and captured by svc:mail-capture. SharePoint: every key, because the PLXCUSTOMERS drive id is resolved by site name at run time and cannot be named here; what is read is bounded by examples/issued_sends_sharepoint_capture_scope.live-check.json.",
+ "default_classification": "confidential",
+ "audiences": {
+  "mail:purchase-order@petrasoap.com": [
+   "staff:purchasing",
+   "svc:mail-capture"
+  ],
+  "mail:vince@petrasoap.com": [
+   "staff:purchasing",
+   "svc:mail-capture"
+  ],
+  "sharepoint:*": [
+   "staff:purchasing",
+   "svc:sharepoint-capture"
+  ]
+ },
+ "classifications": {
+  "mail:*": "restricted"
+ }
+}

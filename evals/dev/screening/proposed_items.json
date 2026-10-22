@@ -1,0 +1,168 @@
+{
+ "format": "plx-eval-case-card-proposals/v1",
+ "status": "PROPOSED dev cards for lead triage, never gold. Conditioned only on the advisory descriptor of Vince's Screening Process Map.zip (original hash verified by intake, member bodies not read here, original read receipt false). The map's gaps, targets and decisions are source-reported, not verified. The cards carry no line anchors and no expected values.",
+ "case": "vince-screening",
+ "source": {
+  "advisory": {
+   "id": "advisory:4f8c497adb40",
+   "ref": "advisory@9d6e7933636e883c243b9b4b20b854c658539fa7",
+   "path": "context/4f8c497adb409f2785be205012121535ed513326e36bde79007cb0309995656d.json",
+   "record_sha256": "b899c6dd75984938d7cb967d4b7a01119b402fae7867c8231c2fb50b04a9170d",
+   "source_revision": "1.0:c3bbec44baba86a761b4442854f5522820c9c5cc46598e899acde6e53c456707",
+   "created_at": "2026-10-14T21:49:21Z"
+  },
+  "original_zip": {
+   "name": "Screening Process Map.zip",
+   "location": "AGENTS/Ontology UseCases (SharePoint)",
+   "drive_id": "b!W4ssx17NiUipzjgFW2Rt1fW8RXEL_4xBgKvtLTtDIYNO-gr9fxAMQ7PHzLrczCuH",
+   "item_id": "01RVPYB2AB5YDYYHEAWVEYHWTPX4X2ET3Z",
+   "bytes": 122321,
+   "sha256": "c3bbec44baba86a761b4442854f5522820c9c5cc46598e899acde6e53c456707",
+   "members": {
+    "Screening Process Map/2026-10-14 Screening Process Map.html": "42cc8364936f63c110b36b8152d0c47d492bbb7deee0c32ca619e66662f85e4e",
+    "Screening Process Map/data/screening-map-spec.json": "40b48fec9481d6dba0cf29f8c66ad0387079c200c90d165868a50294e4244f3f",
+    "Screening Process Map/data/screening-process-map-ontology.csv": "623bd9c01d3c79bbfd8990ef8c1dde25be4042d23d62a9b9db6baf3c651bba6a",
+    "Screening Process Map/data/screening-process-map-ontology.json": "9529342d87d4faa4bfe76603f720df3a22205cf79284a5cd7b202454373f1825"
+   },
+   "read_status": "members not in this repository; cards condition on the advisory descriptor only"
+  },
+  "originals_registry": {
+   "path": "examples/case_originals.json",
+   "rows": {
+    "gap-93ce2c66fc20": "Screening Bottles offered, not submitted in checked sources (the zip itself has no registry row)"
+   }
+  },
+  "related_advisories": [
+   {
+    "id": "advisory:ba9e462b022e",
+    "role": "Vince's Teams message 1792014384225 reporting another use case for screening bottles",
+    "ref": "advisory@41da02a000982a90c8d0691031088ad6ee8a4018",
+    "path": "context/ba9e462b022edc69bf4eda416857ce32609f5401f800e004c45e991235a79cdc.json",
+    "record_sha256": "2e4903565a2d2088a1623790c11b1b5821c4d1ad7d995e3b255916670d775cd5"
+   },
+   {
+    "id": "advisory:6d4918ddaffe",
+    "role": "classification supplement: project-input/use-case, stakeholder_description_claim",
+    "ref": "advisory@54b47488f",
+    "path": "context/6d4918ddaffe605d3baabf6aa0c9cdc367af8e01e0d70896a3f03c712b1ae0e0.json"
+   }
+  ]
+ },
+ "live_sources": [],
+ "layers": {
+  "comprehension": "what the map says, attributed, with source-reported gaps, targets and open decisions kept apart",
+  "tracing": "joins from blank to screened item, job counts, cost and invoice; an unseen join is a gap, never a match",
+  "actual_case_answerability": "UNSCORED until the originals below are supplied and the missing objects exist (ontology_gaps.json)"
+ },
+ "open_questions": [
+  "the actual screening job numbers",
+  "the good units per job",
+  "the final unit cost per job",
+  "the approved ERP-D-015 treatment for screening blanks",
+  "the approved screening clearing account",
+  "whether the map's portal and BC assertions (staging commit 1f2d42d) hold in the deployed systems"
+ ],
+ "non_goals": [
+  "Portal or BC writes",
+  "approving or granting the ERP-D-015 exception or the clearing account",
+  "choosing a unit cost or a conversion treatment",
+  "reading the zip members from this repository"
+ ],
+ "real_example": {
+  "batch_id": "screening-process-map",
+  "exposure": "dev-exposed",
+  "split": "dev",
+  "as_of": "2026-10-14T21:49:21Z",
+  "cards": [
+   {
+    "id": "SC-01",
+    "layer": "comprehension",
+    "question": "What does Vince's Screening Process Map (Draft 6) propose for outside bottle and towel screening, from blank purchase order through conversion and GL?",
+    "criterion": "Attribute to the map: a proposed Screening Job tying blank and screened SKUs, quantities, screener, artwork version, rate-card PO, proof and counts, transfers, conversion, invoice and GL. Call it a stakeholder use-case map whose portal analysis traces staging commit 1f2d42d by reading code, not running it; implementation and business assertions are not independently verified.",
+    "originals": [],
+    "live_sources": [],
+    "cites": [
+     "advisory:4f8c497adb40"
+    ]
+   },
+   {
+    "id": "SC-02",
+    "layer": "comprehension",
+    "question": "How does the map say the value of a sellable screened unit is set?",
+    "criterion": "Attribute to the map's stated target only: good units valued at total blank, landed, screening and two-way freight cost divided by good units. Label it a document target, not a verified implementation, and give no figure.",
+    "originals": [],
+    "live_sources": [],
+    "cites": [
+     "advisory:4f8c497adb40"
+    ]
+   },
+   {
+    "id": "SC-03",
+    "layer": "comprehension",
+    "question": "Which conversion option did the owner choose for turning blank items into screened items, and what does the map still leave open?",
+    "criterion": "Attribute to the map: option (a) reported chosen in owner answers dated 14 Oct 2026; an ERP-D-015 exception for screening blanks and a screening clearing account still need approval. These are source-reported decision statuses, not approvals and not independently verified. Never treat either as granted.",
+    "originals": [],
+    "live_sources": [],
+    "cites": [
+     "advisory:4f8c497adb40"
+    ]
+   },
+   {
+    "id": "SC-04",
+    "layer": "comprehension",
+    "question": "Which current gaps does the map report between the purchase order, the Business Central sync, and the screened item?",
+    "criterion": "Attribute to the map as reported, unverified: DPO and receipt exclusions from the BC sync, missing blank-to-screened SKU links, missing job conversion, and missing quantity-to-invoice reconciliation.",
+    "originals": [],
+    "live_sources": [],
+    "cites": [
+     "advisory:4f8c497adb40"
+    ]
+   },
+   {
+    "id": "SC-05",
+    "layer": "tracing",
+    "question": "For one actual screening job, which blank item became which screened item, with what quantities and which screener?",
+    "criterion": "Answer only from a joined record linking blank SKU, screened SKU, quantities and screener. No Screening Job object or blank-to-screened link exists today (ontology_gaps.json); an unseen join is a gap, never a match. Name the actual job number as the missing original.",
+    "originals": [],
+    "live_sources": [],
+    "cites": [
+     "advisory:4f8c497adb40",
+     "gap-93ce2c66fc20"
+    ]
+   },
+   {
+    "id": "SC-06",
+    "layer": "tracing",
+    "question": "For one actual screening job, how many units were good, and what is the final unit cost?",
+    "criterion": "Compute good units and cost per good unit only from sourced counts and sourced blank, landed, screening and freight costs, with Decimal arithmetic and cited inputs. The actual job numbers, good-unit counts and final unit cost are not in the checked sources: say so and give no value.",
+    "originals": [],
+    "live_sources": [],
+    "cites": [
+     "advisory:4f8c497adb40"
+    ]
+   },
+   {
+    "id": "SC-07",
+    "layer": "tracing",
+    "question": "Does the screening invoice quantity reconcile to the proof counts and the good units for a job?",
+    "criterion": "Report a reconciliation only when invoice, proof count and good-unit sources are all read for one job. The map reports quantity and invoice reconciliation as missing; without those sources the answer is unresolved, not matched.",
+    "originals": [],
+    "live_sources": [],
+    "cites": [
+     "advisory:4f8c497adb40"
+    ]
+   },
+   {
+    "id": "SC-08",
+    "layer": "actual_case_answerability",
+    "question": "Which accounting treatment applies to the screening blanks under ERP-D-015, and where does the cost sit before conversion?",
+    "criterion": "Do not choose a treatment. The approved ERP-D-015 treatment and the screening clearing account are open decisions in the map; report them as unapproved and name the approver as the missing original.",
+    "originals": [],
+    "live_sources": [],
+    "cites": [
+     "advisory:4f8c497adb40"
+    ]
+   }
+  ]
+ }
+}

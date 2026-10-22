@@ -1,0 +1,11 @@
+{
+ "schema": "plx-ingest-sources/v1",
+ "tenant": "plx",
+ "note": "Live-check scope for operating.case_mail (verify/live-checks/case.mail_evidence.json): one allowlisted shared operational inbox (purchase-order@, ACCESS-DELTA L54, ING-13), the two weeks up to the folder's newest message (initial_window_anchor newest_message: one newest-first metadata GET, so the check reads real mail however long ago the last message arrived; never a hardcoded date), capped at 2 pages / 100 messages. A capped source is reported incomplete, never complete. Read-only.",
+ "actor": {"principals": ["svc:ingest"], "clearance": "restricted"},
+ "sources": [
+  {"id": "mail.purchase-order.inbox", "kind": "mail_folder", "mailbox": "purchase-order@petrasoap.com",
+   "folder": "inbox", "initial_window_days": 14, "initial_window_anchor": "newest_message",
+   "overlap_seconds": 900, "page_size": 50, "max_pages": 2, "max_items": 100}
+ ]
+}

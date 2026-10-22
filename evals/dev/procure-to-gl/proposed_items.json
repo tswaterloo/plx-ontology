@@ -1,0 +1,332 @@
+{
+ "format": "plx-eval-case-card-proposals/v1",
+ "status": "PROPOSED dev cards for lead triage, never gold. Two stakeholder procure-to-GL maps: the Screening Process Map (Draft 6, outside bottle/towel screening from blank PO through conversion to GL; cards SP-*) and Vince's Packaging Procure-to-GL Map (brief to GL with one partial real example; cards PG-*). Both are process syntheses whose code readings, decisions and gaps are source-reported and not rechecked here. The screening ZIP is pinned by its source descriptor only (it is not a row of examples/case_originals.json and its members were not read by the Workbench); the packaging map is read only through its pinned rendered text and the source assessment. Cards carry no line anchors, no amounts and no expected values; those come after a verified read through scripts.case_originals read.",
+ "case": "procure-to-gl",
+ "maps": {
+  "SP": {
+   "title": "Screening Process Map (Draft 6)",
+   "gap": "gap-25d6764d61b3",
+   "advisories": ["advisory:4f8c497adb40", "advisory:6d4918ddaffe"]
+  },
+  "PG": {
+   "title": "Packaging Procure-to-GL Map",
+   "gap": "gap-894ce0e4f47d",
+   "advisories": ["advisory:1a0ce08d8937", "advisory:2fa3c0aa13ed"]
+  }
+ },
+ "source": {
+  "advisory": {
+   "id": "advisory:4f8c497adb40",
+   "ref": "source-records@9d6e7933636e883c243b9b4b20b854c658539fa7",
+   "path": "context/4f8c497adb409f2785be205012121535ed513326e36bde79007cb0309995656d.json",
+   "record_sha256": "b899c6dd75984938d7cb967d4b7a01119b402fae7867c8231c2fb50b04a9170d",
+   "source_revision": "1.0:c3bbec44baba86a761b4442854f5522820c9c5cc46598e899acde6e53c456707",
+   "created_at": "2026-10-14T21:49:21Z"
+  },
+  "related_advisories": [
+   {
+    "id": "advisory:6d4918ddaffe",
+    "role": "classification supplement of advisory:4f8c497adb40 (project-input/use-case)",
+    "ref": "source-records@54b47488f73ad4d384344c376b0a6f90538f1e42",
+    "path": "context/6d4918ddaffe605d3baabf6aa0c9cdc367af8e01e0d70896a3f03c712b1ae0e0.json",
+    "record_sha256": "58497ac8884385d9b53d83484c5b66778bf9ef64980ce44b6c43594c0274bd05",
+    "source_revision": "7639478241d1662a618c65fc51748555cc5eb404b194e3cf3ec0809783b730ab",
+    "created_at": "2026-10-14T22:03:58Z"
+   },
+   {
+    "id": "advisory:1a0ce08d8937",
+    "role": "Vince's submission of the Packaging Procure-to-GL Map (messages only, artifact unread)",
+    "ref": "source-records@c3ece3159141817fda6bb48100d59740c5e3a7d1",
+    "path": "context/1a0ce08d89377190523c59558cd904e236973f70f081d62201296ac1bcdb8cd9.json",
+    "record_sha256": "df31dbf1fcb2d44611edf04e02874988ce55508350a5284573797613fed45007",
+    "source_revision": "e4ce201806d55cebaaba96aa6d69f11242c552d5346f65f3dfc7112ea213c2c8",
+    "created_at": "2026-09-30T21:18:52Z"
+   },
+   {
+    "id": "advisory:2fa3c0aa13ed",
+    "role": "assessment of the map's contents; updates advisory:1a0ce08d8937",
+    "ref": "source-records@0a1656d869054b80f451428f171e340722c1f9b4",
+    "path": "context/2fa3c0aa13eddff533ff5d6bb098a51732ae9d2fbdc811f2f3ac1cac89d29134.json",
+    "record_sha256": "f7ee7bd84596c3d9c89062ae4e05181d4e9f4293c70f9e9511ed9c49a38fef21",
+    "source_revision": "7620a5340e13a5cc73cc61310edb35907ce6278bad408d3907b37b249dc70b66",
+    "created_at": "2026-09-30T21:56:38Z"
+   }
+  ],
+  "originals_registry": {
+   "path": "examples/case_originals.json",
+   "rows": {
+    "co-9b95f4c321f9": "the packaging map, historical rendered text (derived representation, full text verified)",
+    "co-8fabde0ade07": "soapbox-packaging-examples.zip, the map's supplied examples archive (extraction incomplete)",
+    "co-de109eb8bf44": "the examples archive index",
+    "co-a25f893307d9": "QT.280426.01 quote sheet extract",
+    "co-b6d353bc1e06": "a supplier samples thread to proof approval",
+    "co-56a58fa6ea28": "PO5447 as a Portal PO (PDF)",
+    "co-bb57a5397aba": "the email issuing PO5447 internally",
+    "co-1387a7609039": "the PO5447 PDF attached to that email",
+    "co-2eb7a4f4b60a": "the email sending PO5447 to the supplier",
+    "co-4d36a3d164e3": "a supplier pricing, pack-out and lead-time message",
+    "co-707cc1b0ead2": "a proforma invoice whose file name and title name different PI numbers",
+    "co-c9d8f7e30cd4": "a supplier message with an updated PI",
+    "co-e899693cdd01": "a deposit email (wire report removed)",
+    "co-b748fae544b6": "a forwarder air quote",
+    "co-fce402cf438c": "a forwarder FCL quote",
+    "co-861de144bcee": "a forwarder freight-options RFQ thread",
+    "co-050d7af98258": "a PO5470 air-ship request"
+   }
+  }
+ },
+ "live_sources": [
+  {
+   "id": "portal.app_purchase_order",
+   "system": "portal-reporting-api",
+   "relation": "public.app_purchase_order (fulfillment_mode MAKE|DISTRIBUTE, the DPO numbering), public.app_purchase_order_line",
+   "reader": "served",
+   "evidence": "plx-customer-portal:services/workbench-api/manifest/allowlist.json@1f2d42d1e832:522,560; plx-customer-portal:portal/prisma/schema.prisma@1f2d42d1e832:3564-3649"
+  },
+  {
+   "id": "portal.app_receipt",
+   "system": "portal-reporting-api",
+   "relation": "public.app_receipt (vendor_invoice_number, freight_cost, duties_cost), public.app_receipt_line",
+   "reader": "served",
+   "evidence": "plx-customer-portal:services/workbench-api/manifest/allowlist.json@1f2d42d1e832:654,691; plx-customer-portal:portal/prisma/schema.prisma@1f2d42d1e832:3812-3912"
+  },
+  {
+   "id": "portal.receipt_cost_policy",
+   "system": "portal",
+   "relation": "ERP-D-015 cost policy as written in the schema: receipt freight is expense G/L, not item cost",
+   "reader": "none",
+   "evidence": "plx-customer-portal:portal/prisma/schema.prisma@1f2d42d1e832:3835-3838"
+  },
+  {
+   "id": "portal.bc_outbox_producer",
+   "system": "portal",
+   "relation": "Portal-to-BC drain of purchase orders and receipts (excludes fulfillment_mode DISTRIBUTE; receipts go-forward PO10/DPO10 numbers only)",
+   "reader": "none",
+   "evidence": "plx-customer-portal:portal/src/lib/business-central/outbox-producer.ts@1f2d42d1e832:589-596; plx-customer-portal:portal/src/lib/business-central/outbox-producer.ts@1f2d42d1e832:700-712"
+  },
+  {
+   "id": "portal.app_bc_entity_map",
+   "system": "portal",
+   "relation": "public.app_bc_entity_map (Portal entity -> BC systemId and No.)",
+   "reader": "not_served",
+   "evidence": "OntologyProject:ontology/schema/domains/bc_finance.json@d32fde5fd440:1371-1375; plx-customer-portal:portal/src/lib/business-central/outbox-producer.ts@1f2d42d1e832:591-593"
+  },
+  {
+   "id": "portal.app_warehouse_transfer",
+   "system": "portal",
+   "relation": "public.app_warehouse_transfer, public.app_warehouse_transfer_line (shipments of blanks to and from a site)",
+   "reader": "not_served",
+   "evidence": "plx-customer-portal:portal/prisma/schema.prisma@1f2d42d1e832:3034-3096; OntologyProject:ontology/schema/generated/portal_not_served_s_z.json@d32fde5fd440 RelPublicAppWarehouseTransfer"
+  },
+  {
+   "id": "portal.app_incoming_qc_record",
+   "system": "portal",
+   "relation": "public.app_incoming_qc_record",
+   "reader": "not_served",
+   "evidence": "plx-customer-portal:portal/prisma/schema.prisma@1f2d42d1e832:3920-3948; OntologyProject:ontology/schema/generated/portal_not_served_f_o.json@d32fde5fd440 RelPublicAppIncomingQcRecord"
+  },
+  {
+   "id": "portal.app_product",
+   "system": "portal-reporting-api",
+   "relation": "public.app_product",
+   "reader": "served",
+   "evidence": "plx-customer-portal:services/workbench-api/manifest/allowlist.json@1f2d42d1e832:428"
+  },
+  {
+   "id": "fm.packaging",
+   "system": "portal-reporting-api",
+   "relation": "public.packaging, public.receipt_packaging",
+   "reader": "served",
+   "evidence": "plx-customer-portal:services/workbench-api/manifest/allowlist.json@1f2d42d1e832:1362,1529"
+  },
+  {
+   "id": "bc.purchasing",
+   "system": "business-central",
+   "relation": "purchaseOrders, purchaseOrderLines, purchaseReceipts, purchaseReceiptLines, purchaseInvoices, purchaseInvoiceLines",
+   "reader": "served",
+   "evidence": "OntologyProject:integrations/live_source_grammar.py@d32fde5fd440:72-83"
+  },
+  {
+   "id": "bc.gl",
+   "system": "business-central",
+   "relation": "generalLedgerEntries, accounts, itemLedgerEntries (no value entries)",
+   "reader": "served",
+   "evidence": "OntologyProject:integrations/live_source_grammar.py@d32fde5fd440:72-83; OntologyProject:ontology/schema/domains/bc_finance.json@d32fde5fd440:285-300"
+  },
+  {
+   "id": "bc.vendor_payments",
+   "system": "business-central",
+   "relation": "vendorPaymentJournals, vendorPayments",
+   "reader": "served",
+   "evidence": "OntologyProject:integrations/live_source_grammar.py@d32fde5fd440:72-83"
+  }
+ ],
+ "layers": {
+  "comprehension": "what each map says, attributed, with its evidence types (code reading, target, proposed fix, real excerpt, reported decision) kept apart",
+  "tracing": "joins from blank or packaging PO through receipt, screening, conversion and invoice to G/L; an unseen join is a gap, never a match",
+  "actual_case_answerability": "UNSCORED until the maps and their originals are read and the missing objects, links and readers exist (ontology_gaps.json)"
+ },
+ "open_questions": [
+  "whether the ERP-D-015 exception for screening blanks and the screening clearing account are approved",
+  "which BC document performs the blank-to-screened conversion under option (a)",
+  "which proforma invoice governs the packaging order price and deposit, in which currency and unit",
+  "whether any BC API page exposes value entries or the G/L to item ledger relation"
+ ],
+ "non_goals": [
+  "Portal or BC writes",
+  "approving an accounting exception, clearing account or payment",
+  "choosing between a map's inconsistent or unresolved statements"
+ ],
+ "real_example": {
+  "batch_id": "procure-to-gl-maps",
+  "exposure": "dev-exposed",
+  "split": "dev",
+  "as_of": "2026-10-14T22:03:58Z",
+  "cards": [
+   {
+    "id": "SP-01",
+    "layer": "comprehension",
+    "question": "What does the Screening Process Map cover, and what kind of evidence is it?",
+    "criterion": "Attribute to the map (Draft 6, version 1.0 of the ZIP in AGENTS/Ontology UseCases): outside bottle and towel screening from the blank PO through conversion and G/L, with source-reported current gaps, targets and open accounting decisions kept apart. Its Portal analysis reads staging commit 1f2d42d code and does not run it. Call it a stakeholder use-case capture, not a verified report of deployed systems or approved accounting.",
+    "originals": [],
+    "live_sources": [],
+    "cites": ["advisory:4f8c497adb40", "advisory:6d4918ddaffe"]
+   },
+   {
+    "id": "SP-02",
+    "layer": "comprehension",
+    "question": "How does the screening map propose to cost a screened unit that can be sold?",
+    "criterion": "Attribute the target to the map: total blank, landed, screening and two-way freight cost divided by good units. It is a target, not current practice. Any figure is Decimal with its currency and a per-good-unit unit, computed only from cost lines read; an unread part makes the total unknown, never zero.",
+    "originals": [],
+    "live_sources": ["portal.receipt_cost_policy"],
+    "cites": ["advisory:4f8c497adb40"]
+   },
+   {
+    "id": "SP-03",
+    "layer": "comprehension",
+    "question": "Is the conversion approach for screened goods and the screening clearing account approved?",
+    "criterion": "The map reports conversion option (a) chosen in owner answers dated Oct 14, while an ERP-D-015 exception for screening blanks and a screening clearing account still need approval. These are source-reported statuses; never present either as approved. The schema pin records ERP-D-015 as receipt freight to expense G/L, not item cost, which is the rule the exception would change.",
+    "originals": [],
+    "live_sources": ["portal.receipt_cost_policy"],
+    "cites": ["advisory:4f8c497adb40", "portal.receipt_cost_policy"]
+   },
+   {
+    "id": "SP-04",
+    "layer": "tracing",
+    "question": "Did this drop-ship (DPO) blank purchase order and its receipt reach Business Central?",
+    "criterion": "The map reports DPO and receipt exclusions from the BC sync; the pinned drain code skips fulfillment mode DISTRIBUTE for purchase orders and their receipts. That is a code reading, not deployed behaviour. For one PO, name the keys tried in BC purchase orders and receipts; the Portal-to-BC entity map is not served, so a PO absent in BC is 'not found under the keys checked', never 'never posted'.",
+    "originals": [],
+    "live_sources": ["portal.app_purchase_order", "portal.bc_outbox_producer", "portal.app_bc_entity_map", "bc.purchasing"],
+    "cites": ["advisory:4f8c497adb40", "portal.bc_outbox_producer"]
+   },
+   {
+    "id": "SP-05",
+    "layer": "tracing",
+    "question": "Which screened SKU was made from which blank SKU in this screening job?",
+    "criterion": "Needs a recorded blank-to-screened link or a screening job naming both. The map reports that link missing, and no Portal model at 1f2d42d records a screening job. Report the gap; never match a blank to a screened SKU by description, name, artwork or date.",
+    "originals": [],
+    "live_sources": ["portal.app_product", "fm.packaging"],
+    "cites": ["advisory:4f8c497adb40"]
+   },
+   {
+    "id": "SP-06",
+    "layer": "tracing",
+    "question": "Do the blanks sent to the screener reconcile with the screened units returned and the screener's counts?",
+    "criterion": "Use transfer lines out and back and the screener's proof and counts, each with its source; quantities are Decimal with their unit, and the balance is computed only from lines read. Transfers are not served and the counts are documents, so while they are unreadable report the gap; never derive a balance from the PO quantity alone.",
+    "originals": [],
+    "live_sources": ["portal.app_warehouse_transfer", "portal.app_purchase_order"],
+    "cites": ["advisory:4f8c497adb40", "portal.app_warehouse_transfer"]
+   },
+   {
+    "id": "SP-07",
+    "layer": "tracing",
+    "question": "Does the screener's invoice match the rate-card PO and the good units screened?",
+    "criterion": "Compare the posted purchase invoice lines with the rate-card PO lines and the good-unit count, Decimal money with its currency. An invoice is tied to the PO only by a recorded link (BC order reference or the entity map); a number in invoice text is a lead. The map reports quantity and invoice reconciliation missing; answer with the keys tried and the gap.",
+    "originals": [],
+    "live_sources": ["bc.purchasing", "portal.app_purchase_order", "portal.app_receipt"],
+    "cites": ["advisory:4f8c497adb40", "bc.purchasing"]
+   },
+   {
+    "id": "SP-08",
+    "layer": "tracing",
+    "question": "Which G/L entries did the blank purchase, the screening charge and the conversion post, and to which accounts?",
+    "criterion": "G/L entries tie to a posted purchase invoice only by document No. (corroborated, not typed). No served source ties item ledger entries, a receipt or a conversion to G/L entries, and the clearing account is not approved. Name the entries found with their keys and report the G/L lineage gap; never assign an entry to the job by amount, date or account.",
+    "originals": [],
+    "live_sources": ["bc.gl", "bc.purchasing"],
+    "cites": ["advisory:4f8c497adb40", "bc.gl"]
+   },
+   {
+    "id": "PG-01",
+    "layer": "comprehension",
+    "question": "What does Vince's Packaging Procure-to-GL Map cover, and what kind of evidence is it?",
+    "criterion": "Attribute to the assessment: 19 stages from brief, procurement, PO, deposit, freight, receipt and QC to landed cost and BC/GL; the map says no database or BC execution was done. It mixes current-code and process descriptions, proposed fixes and sanitized real SoapBox excerpts; keep these types apart. Vince described it as brief to GL with one real example.",
+    "originals": ["co-9b95f4c321f9"],
+    "live_sources": [],
+    "cites": ["advisory:1a0ce08d8937", "advisory:2fa3c0aa13ed", "co-9b95f4c321f9"]
+   },
+   {
+    "id": "PG-02",
+    "layer": "comprehension",
+    "question": "Is the packaging map's real example one completed transaction from brief to G/L?",
+    "criterion": "No. The retail/gallon examples and the Lifetime bottles are partial anchors, not a completed chain. Quote, PO, P-number and PI references are document anchors; no case-native Portal or FileMaker row id, BC GUID, receipt lot or G/L entry number links them. Say so; never present the chain as complete.",
+    "originals": ["co-9b95f4c321f9", "co-8fabde0ade07", "co-de109eb8bf44"],
+    "live_sources": [],
+    "cites": ["advisory:2fa3c0aa13ed", "advisory:1a0ce08d8937"]
+   },
+   {
+    "id": "PG-03",
+    "layer": "tracing",
+    "question": "Which Portal purchase order and lines is PO5447, and which Business Central purchase order is it?",
+    "criterion": "Root the case on the served Portal purchase order found by the normalised number (PO#5447 is PO5447), with its lines cited. The Portal-to-BC link needs the entity map (not served) or a recorded renumbering; a BC order with a similar number is a lead. The supplied PO PDF and emails are documents that name the PO, not links.",
+    "originals": ["co-56a58fa6ea28", "co-bb57a5397aba", "co-1387a7609039", "co-2eb7a4f4b60a"],
+    "live_sources": ["portal.app_purchase_order", "portal.app_bc_entity_map", "bc.purchasing"],
+    "cites": ["advisory:1a0ce08d8937", "advisory:2fa3c0aa13ed", "portal.app_purchase_order"]
+   },
+   {
+    "id": "PG-04",
+    "layer": "tracing",
+    "question": "Which proforma invoice governs the packaging price and the deposit, and how was the deposit worked out?",
+    "criterion": "The assessment finds a plausible deposit basis but leaves document version, currency, basis and the governing PI unresolved, and calls none of it an approved payment. Name the candidate PIs and the deposit email as unresolved; a payment ties to the order only by a recorded applies-to or document reference. Money is Decimal with currency; never pick a PI or a basis.",
+    "originals": ["co-707cc1b0ead2", "co-c9d8f7e30cd4", "co-4d36a3d164e3", "co-e899693cdd01"],
+    "live_sources": ["bc.vendor_payments"],
+    "cites": ["advisory:1a0ce08d8937", "advisory:2fa3c0aa13ed", "co-707cc1b0ead2"]
+   },
+   {
+    "id": "PG-05",
+    "layer": "tracing",
+    "question": "What is the landed cost per unit of this packaging, freight and duties included?",
+    "criterion": "Per unit landed cost is (goods + freight + duty + other) / quantity in one currency, Decimal, with explicit FX (operating.landed_cost). Forwarder quotes are options, not actuals; receipt freight and duties are actuals, and ERP-D-015 sends receipt freight to expense G/L, so the BC item cost can differ from the landed cost. Any unknown part makes the total unknown.",
+    "originals": ["co-a25f893307d9", "co-b748fae544b6", "co-fce402cf438c", "co-861de144bcee"],
+    "live_sources": ["portal.app_receipt", "portal.receipt_cost_policy", "bc.purchasing"],
+    "cites": ["advisory:1a0ce08d8937", "advisory:2fa3c0aa13ed", "portal.receipt_cost_policy"]
+   },
+   {
+    "id": "PG-06",
+    "layer": "tracing",
+    "question": "Was this packaging received and checked by incoming QC, and against which PO line?",
+    "criterion": "Read the served Portal receipt and receipt lines tied to the PO, and the BC posted receipt only through a recorded link. Incoming QC records are not served: report the gap, never 'passed'. The assessment found no receipt lot id for the example, so an answer without a read receipt is 'not found under the keys checked'.",
+    "originals": ["co-b6d353bc1e06"],
+    "live_sources": ["portal.app_receipt", "portal.app_incoming_qc_record", "bc.purchasing"],
+    "cites": ["advisory:1a0ce08d8937", "advisory:2fa3c0aa13ed", "portal.app_receipt"]
+   },
+   {
+    "id": "PG-07",
+    "layer": "tracing",
+    "question": "Which G/L entries did this packaging purchase post, and to which accounts?",
+    "criterion": "Only G/L entries carrying a posted purchase invoice No. are tied, and only as corroborated. Nothing served ties the receipt or item ledger entries to G/L entries. The assessment found no G/L entry numbers for the example. Name the keys tried and report the G/L lineage gap; never match entries by amount or date.",
+    "originals": ["co-9b95f4c321f9"],
+    "live_sources": ["bc.gl", "bc.purchasing"],
+    "cites": ["advisory:1a0ce08d8937", "advisory:2fa3c0aa13ed", "bc.gl"]
+   },
+   {
+    "id": "PG-08",
+    "layer": "comprehension",
+    "question": "What did Vince ask about the map's structure, and what must people clarify before more cases?",
+    "criterion": "Vince asked whether the map's structure is what is needed before he, Ricardo and others submit more use cases. The assessment asks people to clarify document precedence and roles (specifier, procurer, payer, owner, approver), currency, UOM, cost allocation and authority, not to write the ontology. Its read answers make it dev-exposed, never a held-out case.",
+    "originals": [],
+    "live_sources": [],
+    "cites": ["advisory:1a0ce08d8937", "advisory:2fa3c0aa13ed"]
+   }
+  ]
+ }
+}

@@ -1,0 +1,93 @@
+{
+ "schema": "plx-ingest-sources/v1",
+ "tenant": "plx",
+ "note": "Live-check scope for operating.case_workspace_live (verify/live-checks/case.workspace_live.json): the Portal relations the AO and purchase-order case scripts read, filled into the source mirror by operating.ingestion (the only Portal Workbench API reader; GET only, paged, non-atomic). The workspace then opens and renders the cases offline over these captures.",
+ "actor": {
+  "principals": [
+   "svc:ingest"
+  ],
+  "clearance": "internal"
+ },
+ "sources": [
+  {
+   "id": "portal.public-app-manufacturing-order",
+   "kind": "portal_relation",
+   "relation": "public.app_manufacturing_order"
+  },
+  {
+   "id": "portal.public-app-purchase-order",
+   "kind": "portal_relation",
+   "relation": "public.app_purchase_order"
+  },
+  {
+   "id": "portal.public-app-purchase-order-line",
+   "kind": "portal_relation",
+   "relation": "public.app_purchase_order_line"
+  },
+  {
+   "id": "portal.public-app-receipt",
+   "kind": "portal_relation",
+   "relation": "public.app_receipt"
+  },
+  {
+   "id": "portal.public-app-supplier",
+   "kind": "portal_relation",
+   "relation": "public.app_supplier"
+  },
+  {
+   "id": "portal.public-assembly-order",
+   "kind": "portal_relation",
+   "relation": "public.assembly_order"
+  },
+  {
+   "id": "portal.public-generated-purchase-order",
+   "kind": "portal_relation",
+   "relation": "public.generated_purchase_order"
+  },
+  {
+   "id": "portal.public-generated-purchase-order-item",
+   "kind": "portal_relation",
+   "relation": "public.generated_purchase_order_item"
+  },
+  {
+   "id": "portal.public-order-entry",
+   "kind": "portal_relation",
+   "relation": "public.order_entry"
+  },
+  {
+   "id": "portal.public-order-entry-item",
+   "kind": "portal_relation",
+   "relation": "public.order_entry_item"
+  },
+  {
+   "id": "portal.public-order-entry-item-assembly",
+   "kind": "portal_relation",
+   "relation": "public.order_entry_item_assembly"
+  },
+  {
+   "id": "portal.public-packaging",
+   "kind": "portal_relation",
+   "relation": "public.packaging"
+  },
+  {
+   "id": "portal.public-receipt-packaging",
+   "kind": "portal_relation",
+   "relation": "public.receipt_packaging"
+  },
+  {
+   "id": "portal.silver-assembly-order-damage",
+   "kind": "portal_relation",
+   "relation": "silver.assembly_order_damage"
+  },
+  {
+   "id": "portal.silver-assembly-order-items",
+   "kind": "portal_relation",
+   "relation": "silver.assembly_order_items"
+  },
+  {
+   "id": "portal.silver-production-tasks",
+   "kind": "portal_relation",
+   "relation": "silver.production_tasks"
+  }
+ ]
+}

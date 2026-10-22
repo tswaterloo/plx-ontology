@@ -1,0 +1,527 @@
+{
+ "format": "plx-eval-case-card-proposals/v1",
+ "status": "PROPOSED dev cards for lead triage, never gold. QC's Expired-Material Disposition Map (Draft 3, 16 Oct 2026: twelve stages, rules A1 to A10, two worked examples, nine balance checks, ten gaps; cards EMD-*). The map is read through its pinned advisory record and its archive, pinned by item id and SHA-256 and watched in /Ontology UseCases; its ten members are pinned by path, bytes and SHA-256 from a local hash of the pinned archive bytes. Every claim a card attributes to the map is the map's: its review notes say the portal code was not verified and its Portal and BC lanes come from the system map of 30 Sep 2026 and standard BC item tracking, so Portal and BC statements are unverified expectations, never findings about deployed systems. The waiver's lot and batch identifiers are unverified (waiver_identifiers). Cards carry no prices, no message bodies, no signatory names and no personal details.",
+ "case": "expired-disposition",
+ "source": {
+  "advisory": {
+   "id": "advisory:28a8482d8ba0",
+   "ref": "advisory@c8fcb26d00c8fdeaddab0d874e6428b5e396750c",
+   "path": "context/28a8482d8ba0dec0ecf02871caab3fdfba9ac1aa5b02f3e288ec40a4fdbf64d1.json",
+   "record_sha256": "7d12ca6eca3730f564f08133a6998d0fe932ba9e28e0f4c75d342af3307675d7",
+   "source_revision": "1.0;sha256:be191416464ca330efa8185e5d2b43c474aa6b5c34372debd6193594f28ee888",
+   "created_at": "2026-10-16T17:06:35Z"
+  },
+  "originals_registry": "examples/case_originals.json",
+  "watched_originals": {
+   "note": "The map's archive, pinned from the advisory record (source_id item, source_revision sha256, source_bytes) and equal to the discovered read receipt (entry nr-07cff10e7f17, 17 Oct 2026). A read receipt of the watched file matches when its source.item_id and sha256 equal this pin. Name only, no contents.",
+   "folders": {
+    "Ontology UseCases": "wf-a672d852ff20"
+   },
+   "files": [
+    {
+     "case": "Ontology UseCases",
+     "name": "Expired-Material-Disposition-Map.zip",
+     "item_id": "01RVPYB2FOE7GHDI64NJA3ZXKPTNFK2W3Z",
+     "sha256": "be191416464ca330efa8185e5d2b43c474aa6b5c34372debd6193594f28ee888",
+     "bytes": 950529,
+     "advisory": "advisory:28a8482d8ba0"
+    }
+   ]
+  },
+  "original_archive": {
+   "name": "Expired-Material-Disposition-Map.zip",
+   "drive_id": "b!W4ssx17NiUipzjgFW2Rt1fW8RXEL_4xBgKvtLTtDIYNO-gr9fxAMQ7PHzLrczCuH",
+   "item_id": "01RVPYB2FOE7GHDI64NJA3ZXKPTNFK2W3Z",
+   "bytes": 950529,
+   "sha256": "be191416464ca330efa8185e5d2b43c474aa6b5c34372debd6193594f28ee888",
+   "members": [
+    {
+     "path": "Expired Material Disposition Map/Sources/B R-0030 arginine waiver (Sep 2026)/01 Signed waiver/2026-09-16 Waiver R-0030 lot 52174440 for BC-26267D.pdf",
+     "bytes": 842924,
+     "sha256": "faeea3dba48b2756aa70e5aa6aa6721eac34953d2c835b1ee061ad9ba7f72e39",
+     "kind": "pdf",
+     "role": "source: example B, the signed batch-scoped waiver (identifiers in its name unverified)"
+    },
+    {
+     "path": "Expired Material Disposition Map/Sources/A R-0663 camellia oil (Oct 2026)/01 Form 063/2026-10-02 Form 063 R-0663 lot PCJ2400200J.pdf",
+     "bytes": 130263,
+     "sha256": "44a5b5bb14ab57ec8534a017f522963f6f5d207a58d840f8e2c14d78ee436d23",
+     "kind": "pdf",
+     "role": "source: example A, Form 063 (SOP QC-002) expiry extension record"
+    },
+    {
+     "path": "Expired Material Disposition Map/Data model/expired-material-disposition-map-ontology.csv",
+     "bytes": 2293,
+     "sha256": "b5f26ab6a61643402117bb92fb6e541ff584f7f8518c6e9d8c1c730900313f49",
+     "kind": "csv",
+     "role": "map: records per stage"
+    },
+    {
+     "path": "Expired Material Disposition Map/Data model/expired-material-disposition-map-ontology.json",
+     "bytes": 29423,
+     "sha256": "5871f67a7ac08aaaa846b158284f59baaa6b002e9ed0308ac3b3b2fe7dbb0e56",
+     "kind": "json",
+     "role": "map: data model"
+    },
+    {
+     "path": "Expired Material Disposition Map/Data model/expired-material-disposition-map-relations.csv",
+     "bytes": 393,
+     "sha256": "7ef62263405f99bd46be7883fb628191b34ef92b50ec40fe38bff8c3901dd54d",
+     "kind": "csv",
+     "role": "map: relations"
+    },
+    {
+     "path": "Expired Material Disposition Map/Data model/map-spec.json",
+     "bytes": 49990,
+     "sha256": "8f0ba58400e8694dd02809434915542a8db1941254efb4cc86e04f3bad053447",
+     "kind": "json",
+     "role": "map: stages, rules, checks and gaps"
+    },
+    {
+     "path": "Expired Material Disposition Map/Data model/label.jpg",
+     "bytes": 38634,
+     "sha256": "abf7b176d06235bb3f79ff0593b6f3eda13d6341886ff05c2522d921266b7c32",
+     "kind": "image",
+     "role": "map: the reissued container label of example A"
+    },
+    {
+     "path": "Expired Material Disposition Map/REVIEW-NOTES.md",
+     "bytes": 1992,
+     "sha256": "f73b3ce0f6c78c575af640b1039002f0d39a7a111dc071bb1ef7c1b7776081f4",
+     "kind": "markdown",
+     "role": "map: review notes (portal code not verified; open design decision)"
+    },
+    {
+     "path": "Expired Material Disposition Map/00 Index - start here.html",
+     "bytes": 1639,
+     "sha256": "b63b69642f9a41cf2043451a486562204cdeea5b8e981dffb0359ff0b847ebd1",
+     "kind": "html",
+     "role": "map: index"
+    },
+    {
+     "path": "Expired Material Disposition Map/Expired Material Disposition Map.html",
+     "bytes": 132145,
+     "sha256": "e7c8b744de9d042a09b0629a54a59ba43b02641f8e2fe29e24fa818e42911d4b",
+     "kind": "html",
+     "role": "map: rendered map"
+    }
+   ],
+   "note": "The archive's member manifest: every file member (directories omitted), hashed from the archive bytes whose SHA-256 equals the pin; three of them also appear in the advisory record's source_member_hashes. The registry's generator makes archive_member rows only from a baseline or manifest record or a full-read receipt of a registered row, none of which exists for this archive, so the members are registered here and reach examples/case_originals.json through this file's crosswalk input hash. Member paths are file names as uploaded, not verified identifiers."
+  }
+ },
+ "waiver_identifiers": {
+  "member": "Expired Material Disposition Map/Sources/B R-0030 arginine waiver (Sep 2026)/01 Signed waiver/2026-09-16 Waiver R-0030 lot 52174440 for BC-26267D.pdf",
+  "lot": {
+   "claimed": "52174440",
+   "verified": false
+  },
+  "batch": {
+   "claimed": "BC-26267D",
+   "verified": false
+  },
+  "claimed_by": [
+   "the map (worked example B, stage 7)",
+   "the PDF's file name",
+   "the PDF's OCR text"
+  ],
+  "basis": "The PDF's text layer reads different digits in both identifiers than its OCR text and its file name; the intake record (advisory:28a8482d8ba0 limitations) says the waiver's identifiers remain unverified. Only a visual read of the signed page verifies them."
+ },
+ "missing_originals": [
+  {
+   "id": "MO-01",
+   "kind": "email",
+   "item": "Requests, priorities and route correspondence between QC, account managers, Production and the manufacturer",
+   "example": "R-0663",
+   "state": "not_provided",
+   "gap": "EMD-GAP-02"
+  },
+  {
+   "id": "MO-02",
+   "kind": "log",
+   "item": "QC spreadsheet log entries for the extended lots",
+   "example": "R-0663",
+   "state": "not_provided",
+   "gap": "EMD-GAP-10"
+  },
+  {
+   "id": "MO-03",
+   "kind": "receipt",
+   "item": "FileMaker raw-material receipt rows and their comments (the new expiry)",
+   "example": "R-0663",
+   "state": "not_provided",
+   "gap": "EMD-GAP-10"
+  },
+  {
+   "id": "MO-04",
+   "kind": "coa",
+   "item": "A manufacturer CoA revision (stage 5 example)",
+   "example": null,
+   "state": "pending_example",
+   "gap": "EMD-GAP-06"
+  },
+  {
+   "id": "MO-05",
+   "kind": "disposal",
+   "item": "A rejected and disposed lot (stage 12 example)",
+   "example": null,
+   "state": "pending_example",
+   "gap": "EMD-GAP-11"
+  },
+  {
+   "id": "MO-06",
+   "kind": "batch",
+   "item": "The batch record and pick list of the batch the R-0030 waiver names",
+   "example": "R-0030",
+   "state": "not_provided",
+   "gap": "EMD-GAP-01"
+  }
+ ],
+ "missing_originals_note": "Typed here because the registry generator makes gap rows only from the baseline and delta source-pin records. not_provided: the map describes the record as today's practice but the archive does not include it; pending_example: the map lists it as a pending example. None was read; a card never infers their content.",
+ "live_sources": [
+  {
+   "id": "fm.receipt_raw_material",
+   "system": "portal-reporting-api",
+   "relation": "public.receipt_raw_material (FM raw-material receipt detail: Lab ID, lot number, expirydate; ReceiptLine.expiry_date also reads public.app_receipt_line). The map says QC release writes only the FileMaker receipt row and that a new expiry goes into its comment field; that is the map's claim, not checked here",
+   "reader": "served",
+   "evidence": "OntologyProject:ontology/schema/domains/purchasing.json@c11ad1ed5732:2139-2143; OntologyProject:ontology/schema/domains/purchasing.json@c11ad1ed5732:2450-2468; OntologyProject:ontology/source_registry.json@c11ad1ed5732:451"
+  },
+  {
+   "id": "portal.app_inventory_lot",
+   "system": "portal",
+   "relation": "public.app_inventory_lot (Lot: lot number, supplier lot, status, ownership, expiry; Lot.expires); not served by the reporting API (upstream ask Q3)",
+   "reader": "not_served",
+   "evidence": "OntologyProject:ontology/schema/domains/items.json@c11ad1ed5732:427-445; OntologyProject:ontology/schema/pending/people_lots.json@c11ad1ed5732:169-175; OntologyProject:ontology/schema/pending/people_lots.json@c11ad1ed5732:615-622"
+  },
+  {
+   "id": "bc.item_ledger_entries",
+   "system": "bc",
+   "relation": "itemLedgerEntries (ItemLedgerEntry; partial until the bc.ledgers live check passes). Its select allowlist has no lot number and no expiration date, so the Workbench cannot read a lot's BC expiry today",
+   "reader": "partial",
+   "evidence": "OntologyProject:ontology/schema/domains/bc_finance.json@c11ad1ed5732:89-100; OntologyProject:integrations/live_source_grammar.py@c11ad1ed5732:558-560"
+  },
+  {
+   "id": "bc.lot_no_information",
+   "system": "bc",
+   "relation": "Lot No. Information (6505), Item Tracking Code (6502) with Strict Expiration Posting, Item Reclassification Journal (83): standard Business Central behaviour as the map expects it, not checked against PLX's BC configuration; no Workbench reader or allowlist entry",
+   "reader": "none",
+   "evidence": "OntologyProject:context/28a8482d8ba0dec0ecf02871caab3fdfba9ac1aa5b02f3e288ec40a4fdbf64d1.json@c8fcb26d00c8; OntologyProject:integrations/live_source_grammar.py@c11ad1ed5732:80"
+  },
+  {
+   "id": "portal.fm_batch_calibration",
+   "system": "portal-reporting-api",
+   "relation": "public.batch_calibration (BatchSchedule: scheduled slot of a bulk batch) and public.batch (Batch, BC-{YY}{doy}{letter}); the raw-material lot a batch will consume appears only as text",
+   "reader": "served",
+   "evidence": "OntologyProject:ontology/schema/domains/production.json@c11ad1ed5732:12-21; OntologyProject:ontology/schema/domains/manufacturing.json@c11ad1ed5732:1643-1655; OntologyProject:ontology/schema/domains/items.json@c11ad1ed5732:431"
+  },
+  {
+   "id": "portal.app_customer",
+   "system": "portal-reporting-api",
+   "relation": "public.app_customer (Customer). The map says it has no expired-material policy field; not checked against Portal code",
+   "reader": "served",
+   "evidence": "OntologyProject:ontology/schema/domains/catalog_parties.json@c11ad1ed5732:1391-1405"
+  },
+  {
+   "id": "portal.app_purchase_order",
+   "system": "portal-reporting-api",
+   "relation": "public.app_purchase_order (PurchaseOrder): a replacement purchase; the map says it carries no reference to the expired lot",
+   "reader": "served",
+   "evidence": "OntologyProject:ontology/schema/domains/purchasing.json@c11ad1ed5732:12-25"
+  },
+  {
+   "id": "portal.app_pick_list",
+   "system": "portal",
+   "relation": "PickList / PickLine (app_pick_list, app_pick_line): the pick step where the map's target lot-restriction check would sit; not an approved relation of the reporting API",
+   "reader": "not_served",
+   "evidence": "OntologyProject:ontology/source_registry.json@c11ad1ed5732:1482-1483"
+  },
+  {
+   "id": "portal.app_inventory_transaction",
+   "system": "portal",
+   "relation": "InventoryTransaction (app_inventory_transaction): the write-off the map expects at disposal (to confirm); not an approved relation of the reporting API",
+   "reader": "not_served",
+   "evidence": "OntologyProject:ontology/source_registry.json@c11ad1ed5732:1452"
+  },
+  {
+   "id": "portal.app_attachment",
+   "system": "portal",
+   "relation": "Attachment (app_attachment, entity_type and entity_id): where the map's target attaches CoAs, Form 063 and waivers to a disposition case that does not exist; not an approved relation of the reporting API",
+   "reader": "not_served",
+   "evidence": "OntologyProject:ontology/source_registry.json@c11ad1ed5732:1369"
+  },
+  {
+   "id": "graph_mail.certificates_of_analysis",
+   "system": "graph_mail",
+   "relation": "CertificateOfAnalysis (a supplier CoA of one lot, from captured mail attachments and SharePoint files): the evidence of a manufacturer recertification",
+   "reader": "served",
+   "evidence": "OntologyProject:ontology/schema/domains/quality.json@c11ad1ed5732:132-140"
+  },
+  {
+   "id": "sharepoint.ontology_usecases",
+   "system": "sharepoint",
+   "relation": "AGENTS drive /Ontology UseCases (watch folder wf-a672d852ff20 of examples/case_originals.json, read by scripts.case_originals read): the map's archive and its ten members",
+   "reader": "watch_read",
+   "evidence": "OntologyProject:scripts/case_originals.py@c11ad1ed5732:1881-1943; OntologyProject:examples/case_originals.json@c11ad1ed5732:194-201"
+  }
+ ],
+ "layers": {
+  "comprehension": "what the map says, attributed to the QC owner's walkthrough of 16 Oct 2026 and its two examples, with as practised, as decided, as it happened and the target kept apart",
+  "tracing": "joins across FileMaker, the Portal, Business Central, Form 063, labels and the waiver for one expired lot; an unseen join is a gap, never a match, and a map claim about Portal or BC code is an unverified expectation",
+  "actual_case_answerability": "UNSCORED until the originals of R-0663 and R-0030 are read visually and the missing objects, links and readers exist (ontology_gaps.json)"
+ },
+ "open_questions": [
+  "how a batch-limited waiver without a new expiry is represented and posted when BC Strict Expiration Posting refuses consumption of an expired lot",
+  "where a lot's extension history is kept, if anywhere, today",
+  "whether each customer's quality agreement states an expired-material policy",
+  "whether the Portal pick step filters expired lots or checks any lot restriction today",
+  "which exact lot and batch the R-0030 waiver names"
+ ],
+ "non_goals": [
+  "Portal, FileMaker or BC writes",
+  "releasing, extending, relabelling or writing off a lot",
+  "safety, regulatory or legal-effectiveness conclusions about a waiver or an extension",
+  "choosing the waiver posting design"
+ ],
+ "real_example": {
+  "batch_id": "expired-material-disposition-map",
+  "exposure": "dev-exposed",
+  "split": "dev",
+  "as_of": "2026-10-16T17:06:35Z",
+  "cards": [
+   {
+    "id": "EMD-01",
+    "layer": "comprehension",
+    "question": "What does the Expired-Material Disposition Map cover, and what kind of evidence is it?",
+    "criterion": "Attribute to the map (Draft 3, 16 Oct 2026, owned by QC; archive pinned by item id and SHA-256): today's process from the QC owner's description and walkthrough of 16 Oct 2026 and two real records (Form 063 for R-0663, Oct 2026; a signed customer waiver for R-0030, Sep 2026); twelve stages from the expiry flag to release or rejection; rules A1 to A10; nine balance checks; ten gaps. Say that its own review notes state the portal code was not verified and that its portal and Business Central lanes are drafted from the system map of 30 Sep 2026 and standard BC item tracking, so every 'missing' or 'no field' about the Portal or BC is an expectation, not a finding. Call it a stakeholder process map whose targets are requirements for consideration, not implementation instructions or authority to act.",
+    "originals": [],
+    "live_sources": [
+     "sharepoint.ontology_usecases"
+    ],
+    "cites": [
+     "advisory:28a8482d8ba0",
+     "sharepoint.ontology_usecases"
+    ]
+   },
+   {
+    "id": "EMD-02",
+    "layer": "comprehension",
+    "question": "Which disposition routes can an expired raw-material lot take, and what new expiry does each give, according to the map?",
+    "criterion": "Per the map (owner's statements of 16 Oct 2026, status stated): after the trigger and an initial screen, quick checks (organoleptic, FT-IR identity, container integrity); a 30-day extension; manufacturer recertification (the manufacturer's date on a revised CoA for the same lot); a material review board that weighs the routes in parallel by email; and its outcomes: customer waiver (no new date, one named batch), repurchase (the lot is rejected) or in-house recertification or defense (1 year from the test date, renewable). Approval on Form 063 is followed by the new expiry being applied to the lot and the label, or by rejection and disposal; FD&C certified colours are rejected outright. An answer keeps as practised, as decided and as it happened apart and does not present the target routes as built.",
+    "originals": [],
+    "live_sources": [
+     "fm.receipt_raw_material"
+    ],
+    "cites": [
+     "advisory:28a8482d8ba0",
+     "fm.receipt_raw_material"
+    ]
+   },
+   {
+    "id": "EMD-03",
+    "layer": "comprehension",
+    "question": "When may a lot take the 30-day extension, and can its extension history be checked?",
+    "criterion": "State the owner's rule as the map's: the lot expired 30 days ago or less, passes the limited panel (FT-IR identity, appearance, odour), gets 30 days from the original expiry, once per lot, and only if all six conditions hold (no evident testing issue, never expired before, CoA, SDS and TDS on file and traceable, not a compendial grade the formula requires, no customer that forbids it, and the remaining condition the map lists). 'Never expired before' needs an extension history per lot that the map says no system keeps; Form 063 records only previous and new expiry. An answer reports the history as unknown, never infers 'first extension' from a missing record, and keeps the map's target (an extension count on Lot No. Information) apart from fact.",
+    "originals": [],
+    "live_sources": [
+     "bc.lot_no_information"
+    ],
+    "cites": [
+     "advisory:28a8482d8ba0",
+     "bc.lot_no_information"
+    ]
+   },
+   {
+    "id": "EMD-04",
+    "layer": "comprehension",
+    "question": "Which customer rules decide whether an expired lot may be used for that customer's product?",
+    "criterion": "Per the map: Petra-purchased material may be used on a sound QC justification unless the customer has said otherwise (A2); for customer-supplied material the customer decides (A7); an internal defense is accepted by the customer (A6); a best-use date supports extension better than an expiry date (A8). The map reports customer restrictions as tribal knowledge with no field on the customer record and its target as a policy per customer cited to the quality agreement; that 'no field' is the map's claim about the Portal, not checked. An answer cites a written policy or quality agreement when one is read, otherwise says the customer's acceptance is assumed, and never states it as given.",
+    "originals": [],
+    "live_sources": [
+     "portal.app_customer"
+    ],
+    "cites": [
+     "advisory:28a8482d8ba0",
+     "portal.app_customer"
+    ]
+   },
+   {
+    "id": "EMD-05",
+    "layer": "tracing",
+    "question": "What record ties together everything done about one expired lot?",
+    "criterion": "None today, per the map: requests and outcomes travel by email and are typed into a receiving comment, the QC log, Form 063 and a label, none linked. Its target is one disposition case per lot holding each route's status, documents and a single closing decision with owner and date. The lot itself is identified by item plus supplier lot (two suppliers can share a lot string) and by a Lab ID with no confirmed portal home. An answer joins records on item plus lot or Lab ID with the source of each, reports the missing case as a gap and never merges two lots on a matching lot string alone.",
+    "originals": [],
+    "live_sources": [
+     "portal.app_inventory_lot",
+     "fm.receipt_raw_material",
+     "portal.app_attachment"
+    ],
+    "cites": [
+     "advisory:28a8482d8ba0",
+     "portal.app_inventory_lot"
+    ]
+   },
+   {
+    "id": "EMD-06",
+    "layer": "tracing",
+    "question": "Which expired lots should QC test first, by batch demand?",
+    "criterion": "The map's target is priority from the scheduled batch date the lot is allocated to, with a look-ahead window; today Production tells QC what to test first because the receipt testing-priority flag is unreliable, and cases open at scheduling time. Batch schedules are readable (BatchSchedule, Batch), but the raw-material lot a scheduled batch will consume appears only as text and the Portal lot is not served, so a lot-to-batch-demand ranking needs a join that does not exist. An answer cites the schedule rows it read, names the missing allocation link as a gap and does not rank lots by guessed allocation.",
+    "originals": [],
+    "live_sources": [
+     "portal.fm_batch_calibration",
+     "portal.app_inventory_lot"
+    ],
+    "cites": [
+     "advisory:28a8482d8ba0",
+     "portal.fm_batch_calibration"
+    ]
+   },
+   {
+    "id": "EMD-07",
+    "layer": "tracing",
+    "question": "What is a lot's current expiry date, and do its records agree?",
+    "criterion": "Read each copy with its source and as-of time: the FileMaker raw-material receipt (expirydate; per the map the new date is typed into its comment field), Form 063 and the QC log, the container label, the Portal lot (expiry field to confirm; not served) and the BC item ledger (lot expiry carried per entry under item tracking, but the Workbench allowlist reads neither lot number nor expiration date). The map says the same date is typed into three places with no link back to Form 063. An answer reports disagreement between copies as a conflict with each side attributed, treats an unread copy as unknown, and never picks one silently.",
+    "originals": [],
+    "live_sources": [
+     "fm.receipt_raw_material",
+     "portal.app_inventory_lot",
+     "bc.item_ledger_entries"
+    ],
+    "cites": [
+     "advisory:28a8482d8ba0",
+     "fm.receipt_raw_material"
+    ]
+   },
+   {
+    "id": "EMD-08",
+    "layer": "tracing",
+    "question": "What evidence shows a disposition was approved, and by whom?",
+    "criterion": "Per the map and SOP QC-002: the QC technician writes the justification and the QC manager or designate approves on Form 063 (conclusion Approved, Rejected or Other; previous and new expiry; tested by; approved by); a manufacturer route is evidenced by a revised CoA for the same lot; a waiver by the customer's signature and the account manager's countersignature, with no QC signature. An answer names the approving document and the role that signed it, cites a CoA only when one is read, names signatories by role only, and treats an approval without a read document as unverified.",
+    "originals": [],
+    "live_sources": [
+     "graph_mail.certificates_of_analysis",
+     "portal.app_attachment"
+    ],
+    "cites": [
+     "advisory:28a8482d8ba0",
+     "graph_mail.certificates_of_analysis"
+    ]
+   },
+   {
+    "id": "EMD-09",
+    "layer": "tracing",
+    "question": "Can a lot released for one batch be kept out of any other batch at picking and at posting?",
+    "criterion": "Per the map, no: A10 says an approved lot may go into any formula because only a physical label can carry a restriction, while the waiver route scopes a lot to one batch; the map says the Portal pick step has no lot-restriction check and nothing in FileMaker or the Portal enforces the waiver's scope. Both are the map's claims, unverified against Portal code (its review notes list the pick step as a code check still to run). Its target is a lot restriction stored on the lot and checked when a pick list is built, with BC Strict Expiration Posting as the posting control (standard BC behaviour, not checked against PLX's BC). An answer reports the enforcement as unknown until a read shows it and never treats a waiver as enforced.",
+    "originals": [],
+    "live_sources": [
+     "portal.app_pick_list",
+     "bc.lot_no_information"
+    ],
+    "cites": [
+     "advisory:28a8482d8ba0",
+     "portal.app_pick_list"
+    ]
+   },
+   {
+    "id": "EMD-10",
+    "layer": "tracing",
+    "question": "How is a batch-limited waiver that sets no new expiry represented and posted?",
+    "criterion": "Open: the map's review notes record this as an unresolved design decision. A waiver releases an expired lot to one batch without a new date; with Strict Expiration Posting BC would refuse consumption of that lot, so the one-batch exception needs a defined posting path, and the map's target keeps the original expiry on the lot and grants the exception on the case. An answer states the question and the options the map names, does not invent a posting path, and does not claim BC behaviour that was not read.",
+    "originals": [],
+    "live_sources": [
+     "bc.lot_no_information",
+     "portal.app_pick_list"
+    ],
+    "cites": [
+     "advisory:28a8482d8ba0",
+     "bc.lot_no_information"
+    ]
+   },
+   {
+    "id": "EMD-11",
+    "layer": "tracing",
+    "question": "How are relabelling, disposal and replacement purchases linked to the disposition of a lot?",
+    "criterion": "Per the map: after approval the label is reprinted by hand with the new expiry; its target prints the label from the lot record with an extension marker and re-release date. Rejection marks Form 063 Rejected and writes the lot off through WMS transactions (to confirm), posting to BC as item journal batch PLXADJ through codeunit 50116 (from the system map, unverified); no reason code links the write-off to a case, a customer-supplied lot's return or disposal instruction is not recorded, and a replacement purchase order does not reference the expired lot. An answer reports each link as missing unless a read record carries it, and checks rejected quantity against written-off plus returned quantity only from read records.",
+    "originals": [],
+    "live_sources": [
+     "portal.app_inventory_transaction",
+     "portal.app_purchase_order"
+    ],
+    "cites": [
+     "advisory:28a8482d8ba0",
+     "portal.app_inventory_transaction"
+    ]
+   },
+   {
+    "id": "EMD-A1",
+    "layer": "actual_case_answerability",
+    "question": "Was the R-0663 camellia-oil lot extended according to the 30-day rule?",
+    "criterion": "From Form 063 (member pinned by path and SHA-256) as the map reads it: the lot expired 28 Sep 2026, was retested the same day with an external plate count received 30 Sep, and was approved by a designate on 2 Oct with a new expiry of 27 Oct 2026; the limited panel was extended with specific gravity and the plate count. The map's check '30-day date = original expiry + 30 days' fails: 28 Sep plus 30 days is 28 Oct, so 27 Oct is 29 days, which the map reads as one calendar month counted inclusively. Whether the lot had been extended before cannot be checked because no extension history exists. An answer computes the day count itself, attributes the dates to Form 063 or the map, and names no signatory.",
+    "originals": [],
+    "live_sources": [
+     "fm.receipt_raw_material",
+     "bc.lot_no_information"
+    ],
+    "cites": [
+     "advisory:28a8482d8ba0",
+     "fm.receipt_raw_material"
+    ]
+   },
+   {
+    "id": "EMD-A2",
+    "layer": "actual_case_answerability",
+    "question": "Do the tests run on R-0663 cover every risk its justification names?",
+    "criterion": "Per the map's check 'every named risk has a test' (fail): the Form 063 justification names microbial proliferation, oxidative or precipitative change and loss of solvent ratio integrity; the plate count covers the microbial risk, odour and appearance detect only advanced oxidation, no oxidation test was run and the material has no solvent. An answer attributes the finding to the map, distinguishes a risk covered by a test from one accepted without a test, and does not judge the lot's safety.",
+    "originals": [],
+    "live_sources": [
+     "fm.receipt_raw_material"
+    ],
+    "cites": [
+     "advisory:28a8482d8ba0",
+     "fm.receipt_raw_material"
+    ]
+   },
+   {
+    "id": "EMD-A3",
+    "layer": "actual_case_answerability",
+    "question": "Does the reissued R-0663 label show that the lot was extended?",
+    "criterion": "Per the map (label image member pinned): the label carries the new expiry 2026-10-27 but keeps the original release date of 15 Apr 2026 and its releaser, with no extension marker or re-release date, so compounding sees an ordinary lot; the check 'label matches the lot record' fails. An answer reports the mismatch, attributes it to the label and the map, and does not state who released the lot.",
+    "originals": [],
+    "live_sources": [
+     "fm.receipt_raw_material"
+    ],
+    "cites": [
+     "advisory:28a8482d8ba0",
+     "fm.receipt_raw_material"
+    ]
+   },
+   {
+    "id": "EMD-A4",
+    "layer": "actual_case_answerability",
+    "question": "Which lot and batch does the R-0030 arginine waiver cover, and is its scope enforced?",
+    "criterion": "The map and the PDF's file name say lot 52174440, expired 2 May 2026, released for batch BC-26267D only by a waiver signed 16 Sep 2026; both identifiers are unverified, because the PDF's text layer reads different digits in each while its OCR agrees with the file name, and the intake record says the waiver's identifiers remain unverified. An answer quotes them as the map's claim, marks them unverified, and verifies them only from a visual read. Per the map, QC did not sign and no test is referenced, and nothing in FileMaker or the Portal limits the lot to that batch; its 'waiver signed before use' pass rests on reading the unverified batch code as day 267 (24 Sep 2026). An answer names no signatory or customer contact.",
+    "originals": [],
+    "live_sources": [
+     "portal.app_pick_list",
+     "portal.fm_batch_calibration"
+    ],
+    "cites": [
+     "advisory:28a8482d8ba0",
+     "portal.app_pick_list"
+    ]
+   },
+   {
+    "id": "EMD-A5",
+    "layer": "actual_case_answerability",
+    "question": "Which originals of the two examples exist, and which have been read?",
+    "criterion": "Read: the map's archive (item id and SHA-256 pinned, ten members pinned by path, bytes and SHA-256), including Form 063 for R-0663 and the signed R-0030 waiver, read as text extraction only, which is not visual verification. Not supplied (missing_originals): the emails between QC, account managers, Production and the manufacturer; the QC spreadsheet log; the FileMaker receipt rows and their comments; and the map's two pending examples (a manufacturer CoA revision for stage 5 and a rejected lot for stage 12). An answer lists each unread original with its state and infers nothing about its content.",
+    "originals": [],
+    "live_sources": [
+     "sharepoint.ontology_usecases"
+    ],
+    "cites": [
+     "advisory:28a8482d8ba0",
+     "sharepoint.ontology_usecases"
+    ]
+   }
+  ]
+ }
+}

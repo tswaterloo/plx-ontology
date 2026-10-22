@@ -1,0 +1,83 @@
+{
+ "id": "case.customer_po_coverage",
+ "description": "Customer-PO coverage over the source mirror of the Portal reporting API: scan completeness and counts by lineage/status (no values); and REC-01 document carriers: one host capture cycle (operating.host: the Portal sales orders, the PLXCUSTOMERS 'Customer Documents' folder through the GET-only Graph reader), then operating.customer_po_coverage.document_carriers over the projection as the same principals: per record kind a document class attests, how many values a captured document states that Portal holds empty (missing_in_portal) or differently (conflict, document_blank). Counts and schema names only, never a value, key or citation.",
+ "source": "portal-workbench-api+microsoft-graph",
+ "cadence": "daily",
+ "requires": [
+  "portal.health_catalog"
+ ],
+ "requires_relations": [
+  "public.app_sales_order"
+ ],
+ "legacy_ids": [
+  "queue8-10.customer_po_coverage"
+ ],
+ "command": [
+  "python3",
+  "-m",
+  "operating.customer_po_coverage",
+  "--state-dir",
+  "{tmp}/state",
+  "--audience",
+  "examples/source_mirror_audience.example.json",
+  "--principal",
+  "staff:operations",
+  "--principal",
+  "staff:finance",
+  "--clearance",
+  "restricted",
+  "--host-config",
+  "examples/customer_po_coverage_host.live-check.json"
+ ],
+ "timeout_seconds": 2400,
+ "requires_env": [
+  "PLX_WORKBENCH_API_URL",
+  "PLX_WORKBENCH_API_KEY",
+  "MICROSOFT_GRAPH_TENANT_ID",
+  "MICROSOFT_GRAPH_CLIENT_ID",
+  "MICROSOFT_GRAPH_CLIENT_SECRET",
+  "SHAREPOINT_SITE_ID"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "completeness.rows_scanned",
+   "aggregates.by_lineage_status",
+   "document_carriers.capture",
+   "document_carriers.records_checked",
+   "document_carriers.by_status",
+   "document_carriers.by_record_kind_status"
+  ],
+  "json_equals": {
+   "completeness.complete": true,
+   "completeness.scan_complete": true,
+   "document_carriers.state": "read"
+  }
+ },
+ "record": [
+  "completeness.complete",
+  "completeness.scan_complete",
+  "completeness.rows_scanned",
+  "completeness.rows_matched_in_mirror",
+  "aggregates.by_lineage_status",
+  "aggregates.orders_with_probable_po_after_normalization",
+  "document_carriers.state",
+  "document_carriers.capture",
+  "document_carriers.records_checked",
+  "document_carriers.by_status",
+  "document_carriers.by_record_kind_status",
+  "document_carriers.by_carrier_status",
+  "document_carriers.not_compared_by_reason",
+  "document_carriers.finding_count"
+ ],
+ "record_keys": [
+  "aggregates.by_lineage_status",
+  "aggregates.orders_with_probable_po_after_normalization",
+  "document_carriers.capture",
+  "document_carriers.records_checked",
+  "document_carriers.by_record_kind_status",
+  "document_carriers.by_carrier_status",
+  "document_carriers.not_compared_by_reason"
+ ],
+ "notes": "Live-unverified until the live check runs it; the module test is injected-transport (operating/tests/test_customer_po_coverage_live.py DocumentCarrierLiveCheckTests: the spec's own command, its host config copied with the in-process FakeWorkbench and a FakeDrive standing for the PLXCUSTOMERS site; its expectations checked on the real output). document_carriers.by_status all zero means no captured document stated a value an order the reader sees lacks or contradicts (or no document was linked), never a pass of REC-01 by itself; records_checked says how many orders were compared."
+}

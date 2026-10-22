@@ -1,0 +1,15 @@
+{
+ "schema": "plx-live-source-audience/v1",
+ "tenant": "plx",
+ "note": "EXAMPLE ONLY, not a PLX-confirmed grant: the principals of the ontology.document_links live check (scripts/eval_document_fields_live.py --links). The SharePoint capture service principal captures the scope (examples/sharepoint_capture_scope.qcqa_aos.live-check.json) and every BC company, and reads them back through the served host; staff:document-links-withheld is granted the captured files only (no BC company, no Portal family), so everything the served host gives it over the documents' record links is a leak (must be 0). Default deny for everything else.",
+ "default_classification": "confidential",
+ "audiences": {
+  "sharepoint:*": [
+   "svc:sharepoint-capture",
+   "staff:document-links-withheld"
+  ],
+  "bc:*": [
+   "svc:sharepoint-capture"
+  ]
+ }
+}

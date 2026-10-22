@@ -1,0 +1,27 @@
+{
+ "format": "plx-generator-overrides/v1",
+ "kind": "names",
+ "description": "The curated id an unserved relation's generated not_served declaration takes, when the curated schema (identifiers.json, process/) already names that table by it: the generated type keeps the id, its anchor and its markings, so the table has one declaration. A named relation the source serves, or does not declare, fails generation: curate its served type and drop the name.",
+ "sources": {
+  "portal_api": {
+   "public.app_pick_list": {
+    "object_type": "PickList",
+    "anchor": true,
+    "note": "The order lifecycle rail's last step (process/sales_order_lifecycle.json pick_list): until it is served, a pick stage is always unknown, never missing."
+   },
+   "public.formula": {
+    "object_type": "Formulation",
+    "note": "The FM formula, authoritative for the formula code (identifiers.json formula_code); app_formulation is the gold copy."
+   },
+   "public.app_bill_of_materials": {
+    "object_type": "BillOfMaterials",
+    "note": "The versioned assembly/packaging BOM header; ProductComponent (the FM finished-good component list) is the served approximation."
+   },
+   "public.app_eqms_record": {
+    "object_type": "QualityRecord",
+    "markings": ["quality_controlled"],
+    "note": "The eQMS record its number names (identifiers.json eqms_number, D|CC|CAPA|QRM-{YY}{seq}); batch QC results are on Batch (quality_controlled)."
+   }
+  }
+ }
+}

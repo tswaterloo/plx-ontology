@@ -1,0 +1,1044 @@
+{
+  "$schema": "../_format.schema.json",
+  "format": "plx-ontology-domain/v1",
+  "domain": "example_orders",
+  "origin": "curated",
+  "description": "Illustrative domain file for the C0 contract test. Shapes are binding; content is a minimal sample, not the curated orders domain (ontology/schema/domains/orders.json).",
+  "upstream_pins": {
+    "plx-customer-portal": "b46934a"
+  },
+  "object_types": [
+    {
+      "id": "Customer",
+      "description": "A customer party (Portal gold card; FM and Sage cards join by verified keys).",
+      "interfaces": [
+        "Party"
+      ],
+      "availability": {
+        "state": "served"
+      },
+      "bindings": [
+        {
+          "id": "portal.app_customer",
+          "source": "portal_api",
+          "relation": "public.app_customer",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "default": "gold_native_staging",
+            "rules": [
+              {
+                "when": [
+                  {
+                    "path": "external_id",
+                    "op": "prefix",
+                    "value": "fm-cust-"
+                  }
+                ],
+                "lineage": "gold_etl_from_fm",
+                "evidence": [
+                  {
+                    "kind": "upstream_code",
+                    "repo": "plx-customer-portal",
+                    "path": "portal/prisma/schema.prisma",
+                    "commit": "b46934a",
+                    "note": "model Customer @@map(\"app_customer\"): company_name, erp_code (Sage IDCUST = BC No.), external_id.",
+                    "symbol": "Customer",
+                    "lines": "1299-1390"
+                  },
+                  {
+                    "kind": "context_pack",
+                    "ref": "docs/reference/portal-code-map.md#3.2",
+                    "note": "SalesOrder customFields keys, number series and FM/Sage bridges."
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "portal/prisma/schema.prisma",
+              "commit": "b46934a",
+              "note": "model Customer @@map(\"app_customer\"): company_name, erp_code (Sage IDCUST = BC No.), external_id.",
+              "symbol": "Customer",
+              "lines": "1299-1390"
+            }
+          ]
+        }
+      ],
+      "properties": [
+        {
+          "name": "company_name",
+          "value_type": "text",
+          "markings": [],
+          "sources": [
+            {
+              "binding": "portal.app_customer",
+              "path": "company_name",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "erp_code",
+          "value_type": "identifier",
+          "identifier_kind": "customer_erp_code",
+          "sources": [
+            {
+              "binding": "portal.app_customer",
+              "path": "erp_code",
+              "parser": "identifier"
+            }
+          ]
+        }
+      ],
+      "identity_keys": [
+        {
+          "name": "erp_code",
+          "properties": [
+            "erp_code"
+          ],
+          "identifier_kind": "customer_erp_code",
+          "tier": "verified",
+          "unique": false,
+          "scope": "cross_binding",
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "portal/prisma/schema.prisma",
+              "commit": "b46934a",
+              "note": "model Customer @@map(\"app_customer\"): company_name, erp_code (Sage IDCUST = BC No.), external_id.",
+              "symbol": "Customer",
+              "lines": "1299-1390"
+            }
+          ]
+        }
+      ],
+      "display": [
+        "company_name"
+      ],
+      "evidence": [
+        {
+          "kind": "upstream_code",
+          "repo": "plx-customer-portal",
+          "path": "portal/prisma/schema.prisma",
+          "commit": "b46934a",
+          "note": "model Customer @@map(\"app_customer\"): company_name, erp_code (Sage IDCUST = BC No.), external_id.",
+          "symbol": "Customer",
+          "lines": "1299-1390"
+        }
+      ]
+    },
+    {
+      "id": "SalesOrder",
+      "description": "A customer sales order, per source record; FM and Sage records are linked by same_record_as, never merged.",
+      "anchor": true,
+      "availability": {
+        "state": "served"
+      },
+      "bindings": [
+        {
+          "id": "portal.app_sales_order",
+          "source": "portal_api",
+          "relation": "public.app_sales_order",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "default": "gold_native_staging",
+            "rules": [
+              {
+                "when": [
+                  {
+                    "path": "custom_fields.source",
+                    "op": "eq",
+                    "value": "sage.oe_order_header"
+                  }
+                ],
+                "lineage": "gold_etl_from_sage",
+                "evidence": [
+                  {
+                    "kind": "upstream_code",
+                    "repo": "plx-customer-portal",
+                    "path": "portal/src/lib/wms/sage-ship-queue.ts",
+                    "commit": "b46934a",
+                    "note": "Sage-backed gold SO: sageOrdUniq | sageSourceOrdUniq | source == 'sage.oe_order_header'.",
+                    "symbol": "isSageBackedSalesOrder",
+                    "lines": "32-40"
+                  }
+                ]
+              },
+              {
+                "when": [
+                  {
+                    "path": "custom_fields.sageOrdUniq",
+                    "op": "present"
+                  }
+                ],
+                "lineage": "gold_etl_from_sage",
+                "evidence": [
+                  {
+                    "kind": "upstream_code",
+                    "repo": "plx-customer-portal",
+                    "path": "portal/src/lib/wms/sage-ship-queue.ts",
+                    "commit": "b46934a",
+                    "note": "Sage-backed gold SO: sageOrdUniq | sageSourceOrdUniq | source == 'sage.oe_order_header'.",
+                    "symbol": "isSageBackedSalesOrder",
+                    "lines": "32-40"
+                  }
+                ]
+              },
+              {
+                "when": [
+                  {
+                    "path": "custom_fields.source",
+                    "op": "eq",
+                    "value": "fm-oe-ensure"
+                  }
+                ],
+                "lineage": "gold_etl_from_fm",
+                "evidence": [
+                  {
+                    "kind": "upstream_code",
+                    "repo": "plx-customer-portal",
+                    "path": "portal/src/lib/wms/ensure-sales-order-from-fm-oe.ts",
+                    "commit": "b46934a",
+                    "note": "FM OE -> gold SO stamps customFields {fmId, erpCode, source: 'fm-oe-ensure'}.",
+                    "symbol": "ensureSalesOrderFromFmOe",
+                    "lines": "512"
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "portal/prisma/schema.prisma",
+              "commit": "b46934a",
+              "note": "model SalesOrder @@map(\"app_sales_order\"): order_number, customer_id, required_date, currency, po_reference, custom_fields.",
+              "symbol": "SalesOrder",
+              "lines": "3662-3716"
+            },
+            {
+              "kind": "context_pack",
+              "ref": "docs/reference/portal-code-map.md#3.2",
+              "note": "SalesOrder customFields keys, number series and FM/Sage bridges."
+            }
+          ]
+        },
+        {
+          "id": "portal.fm_order_entry",
+          "source": "portal_api",
+          "relation": "public.order_entry",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "default": "fm_bronze",
+            "rules": [
+              {
+                "when": [
+                  {
+                    "path": "id",
+                    "op": "gte",
+                    "value": 900000
+                  }
+                ],
+                "lineage": "gold_native_staging",
+                "evidence": [
+                  {
+                    "kind": "upstream_code",
+                    "repo": "plx-customer-portal",
+                    "path": "portal/src/lib/sales-order/fm-oe-bridge-ids.ts",
+                    "commit": "b46934a",
+                    "note": "PORTAL_OE_ID_BASE = 900_000: FM order_entry ids >= 900000 were minted by the Portal from gold SOs.",
+                    "symbol": "PORTAL_OE_ID_BASE",
+                    "lines": "14"
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "context_pack",
+              "ref": "docs/reference/portal-code-map.md#3.2",
+              "note": "SalesOrder customFields keys, number series and FM/Sage bridges."
+            }
+          ]
+        },
+        {
+          "id": "bc.sales_orders",
+          "source": "bc",
+          "relation": "salesOrders",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "from_capture": "bc_company"
+          },
+          "evidence": [
+            {
+              "kind": "context_pack",
+              "ref": "docs/reference/live-sources.md",
+              "note": "BC Production salesOrders, GET only, 3 companies."
+            }
+          ]
+        }
+      ],
+      "properties": [
+        {
+          "name": "order_number",
+          "value_type": "identifier",
+          "identifier_kind": "so_number",
+          "description": "Not immutable: rewritten to the BC document No. after drain; keep renumber aliases.",
+          "sources": [
+            {
+              "binding": "portal.app_sales_order",
+              "path": "order_number",
+              "parser": "identifier"
+            },
+            {
+              "binding": "bc.sales_orders",
+              "path": "number",
+              "parser": "identifier"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "bc_petra_example"
+                ],
+                "evidence": [
+                  {
+                    "kind": "upstream_code",
+                    "repo": "plx-customer-portal",
+                    "path": "portal/src/lib/business-central/align-portal-so-number.ts",
+                    "commit": "b46934a",
+                    "note": "Portal SO number is rewritten to the BC document No. after drain.",
+                    "symbol": "alignPortalSoNumberToBc",
+                    "lines": "21"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm",
+                  "gold_etl_from_sage"
+                ],
+                "evidence": [
+                  {
+                    "kind": "context_pack",
+                    "ref": "docs/reference/portal-code-map.md#3.2",
+                    "note": "SalesOrder customFields keys, number series and FM/Sage bridges."
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_native_staging"
+                ],
+                "human_confirmation": {
+                  "who": "example-owner",
+                  "when": "2099-01-01",
+                  "note": "Illustration only: a real entry needs a recorded human confirmation."
+                },
+                "evidence": [
+                  {
+                    "kind": "context_pack",
+                    "ref": "docs/reference/portal-code-map.md#3.2",
+                    "note": "SalesOrder customFields keys, number series and FM/Sage bridges."
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "customer_po",
+          "value_type": "text",
+          "description": "Raw customer PO text (sometimes a person's name). The customer_po identifier is derived by the normalizer, never by a model.",
+          "sources": [
+            {
+              "binding": "portal.app_sales_order",
+              "path": "po_reference",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.fm_order_entry",
+              "path": "custpocode",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "context_pack",
+                    "ref": "docs/reference/portal-code-map.md#3.2",
+                    "note": "SalesOrder customFields keys, number series and FM/Sage bridges."
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm",
+                  "gold_etl_from_sage"
+                ],
+                "evidence": [
+                  {
+                    "kind": "context_pack",
+                    "ref": "docs/reference/portal-code-map.md#3.2",
+                    "note": "SalesOrder customFields keys, number series and FM/Sage bridges."
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "required_date",
+          "value_type": "date",
+          "sources": [
+            {
+              "binding": "portal.app_sales_order",
+              "path": "required_date",
+              "parser": "iso_date"
+            }
+          ]
+        },
+        {
+          "name": "status",
+          "value_type": "enum",
+          "enum_values": [
+            "DRAFT",
+            "CONFIRMED",
+            "IN_PRODUCTION",
+            "READY_TO_SHIP",
+            "PARTIALLY_SHIPPED",
+            "SHIPPED",
+            "COMPLETE",
+            "CANCELLED"
+          ],
+          "description": "Normalized per normalizeSalesOrderStatus (legacy Open -> CONFIRMED).",
+          "sources": [
+            {
+              "binding": "portal.app_sales_order",
+              "path": "status",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "pack.sales-order"
+            }
+          ]
+        },
+        {
+          "name": "total_amount",
+          "value_type": "money",
+          "currency_from": "currency",
+          "markings": [
+            "finance"
+          ],
+          "description": "One property, two sources, each with its own currency column.",
+          "sources": [
+            {
+              "binding": "portal.app_sales_order",
+              "path": "total_amount",
+              "parser": "decimal_text",
+              "tax_basis": "unknown",
+              "tax_basis_by_lineage": {
+                "gold_etl_from_fm": "excl_tax",
+                "gold_etl_from_sage": "excl_tax"
+              },
+              "note": "Example: one column, two writers. The FM bridge and the Sage ETL write it without tax (plx-customer-portal@fa46f2d portal/src/lib/wms/ensure-sales-order-from-fm-oe.ts:363); a Portal-entered order adds tax (portal/src/lib/sales-order/service.ts:346)."
+            },
+            {
+              "binding": "bc.sales_orders",
+              "path": "totalAmountIncludingTax",
+              "parser": "decimal_text",
+              "currency_from": "currencyCode",
+              "tax_basis": "incl_tax"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "bc_petra_example"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "pack.sales-order"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm",
+                  "gold_etl_from_sage"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "pack.sales-order"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "ordered_quantity",
+          "value_type": "quantity",
+          "quantity_role": "ordered",
+          "unit": "each",
+          "availability": "degraded",
+          "availability_reason": "Illustration: header carries no quantity; lines do.",
+          "sources": [
+            {
+              "binding": "portal.app_sales_order",
+              "path": "custom_fields.totalQuantity",
+              "parser": "decimal_text"
+            }
+          ]
+        }
+      ],
+      "identity_keys": [
+        {
+          "name": "fm_id",
+          "properties": [
+            "order_number"
+          ],
+          "tier": "verified",
+          "unique": true,
+          "scope": "within_binding",
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "portal/src/lib/wms/ensure-sales-order-from-fm-oe.ts",
+              "commit": "b46934a",
+              "note": "FM OE -> gold SO stamps customFields {fmId, erpCode, source: 'fm-oe-ensure'}.",
+              "symbol": "ensureSalesOrderFromFmOe",
+              "lines": "512"
+            }
+          ]
+        }
+      ],
+      "display": [
+        "order_number"
+      ],
+      "evidence": [
+        {
+          "kind": "upstream_code",
+          "repo": "plx-customer-portal",
+          "path": "portal/prisma/schema.prisma",
+          "commit": "b46934a",
+          "note": "model SalesOrder @@map(\"app_sales_order\"): order_number, customer_id, required_date, currency, po_reference, custom_fields.",
+          "symbol": "SalesOrder",
+          "lines": "3662-3716"
+        }
+      ]
+    },
+    {
+      "id": "SalesOrderLine",
+      "description": "One sales order line, per source record. Lines inherit their header's lineage.",
+      "availability": {
+        "state": "served"
+      },
+      "bindings": [
+        {
+          "id": "portal.app_sales_order_line",
+          "source": "portal_api",
+          "relation": "public.app_sales_order_line",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "inherit": "SalesOrderLine.line_of",
+            "default": "gold_native_staging"
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "pack.sales-order"
+            }
+          ]
+        },
+        {
+          "id": "portal.fm_order_entry_item",
+          "source": "portal_api",
+          "relation": "public.order_entry_item",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "default": "fm_bronze",
+            "rules": [
+              {
+                "when": [
+                  {
+                    "via_link": "SalesOrderLine.line_of",
+                    "path": "id",
+                    "op": "gte",
+                    "value": 900000
+                  }
+                ],
+                "lineage": "gold_native_staging",
+                "evidence": [
+                  {
+                    "kind": "upstream_code",
+                    "repo": "plx-customer-portal",
+                    "path": "portal/src/lib/sales-order/fm-oe-bridge-ids.ts",
+                    "commit": "b46934a",
+                    "note": "PORTAL_OE_ID_BASE = 900_000: FM order_entry ids >= 900000 were minted by the Portal from gold SOs.",
+                    "symbol": "PORTAL_OE_ID_BASE",
+                    "lines": "14"
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "pack.sales-order"
+            }
+          ]
+        }
+      ],
+      "properties": [
+        {
+          "name": "quantity",
+          "value_type": "quantity",
+          "quantity_role": "ordered",
+          "sources": [
+            {
+              "binding": "portal.app_sales_order_line",
+              "path": "quantity",
+              "parser": "decimal_text",
+              "unit_from": "uom"
+            },
+            {
+              "binding": "portal.fm_order_entry_item",
+              "path": "qty",
+              "parser": "decimal_text",
+              "unit_unknown": {
+                "reason": "FM order_entry_item.qty is in the finished product's unit, which this line does not record.",
+                "evidence": [
+                  {
+                    "kind": "workbench_code",
+                    "path": "operating/source_unit_contracts.json",
+                    "note": "public-order-entry-item-qty-ordered: role only, no unit."
+                  }
+                ]
+              }
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "pack.sales-order"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm",
+                  "gold_etl_from_sage"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "pack.sales-order"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "line_total",
+          "value_type": "money",
+          "markings": [
+            "finance"
+          ],
+          "currency_from": {
+            "via_link": "SalesOrderLine.line_of",
+            "path": "currency"
+          },
+          "sources": [
+            {
+              "binding": "portal.app_sales_order_line",
+              "path": "total_price",
+              "parser": "decimal_text",
+              "tax_basis": "excl_tax"
+            }
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "pack.sales-order"
+        }
+      ]
+    },
+    {
+      "id": "FormulaVersion",
+      "description": "Versioned formula (not served by the Portal API).",
+      "availability": {
+        "state": "not_served",
+        "reason": "app_formulation and FM formula are outside the served allowlist.",
+        "upstream_ask": "Q3"
+      },
+      "bindings": [],
+      "properties": [],
+      "evidence": [
+        {
+          "kind": "context_pack",
+          "ref": "docs/reference/portal-code-map.md#3.2",
+          "note": "SalesOrder customFields keys, number series and FM/Sage bridges."
+        }
+      ]
+    }
+  ],
+  "link_types": [
+    {
+      "id": "SalesOrder.ordered_by",
+      "from": "SalesOrder",
+      "to": "Customer",
+      "name": "ordered_by",
+      "reverse_name": "orders",
+      "cardinality": "N:1",
+      "description": "Gold SO customer_id references app_customer.id.",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_sales_order",
+          "to_binding": "portal.app_customer",
+          "pairs": [
+            {
+              "from": "customer_id",
+              "to": "id",
+              "compare": "text_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "portal/prisma/schema.prisma",
+              "commit": "b46934a",
+              "note": "model SalesOrder @@map(\"app_sales_order\"): order_number, customer_id, required_date, currency, po_reference, custom_fields.",
+              "symbol": "SalesOrder",
+              "lines": "3662-3716"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "SalesOrder.same_record_as",
+      "from": "SalesOrder",
+      "to": "SalesOrder",
+      "name": "same_record_as",
+      "reverse_name": "same_record_as",
+      "cardinality": "1:1",
+      "description": "Gold SO and its FM order_entry are one business record (custom_fields.fmId).",
+      "bindings": [
+        {
+          "kind": "same_record",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_sales_order",
+          "to_binding": "portal.fm_order_entry",
+          "pairs": [
+            {
+              "from": "custom_fields.fmId",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "portal/src/lib/wms/ensure-sales-order-from-fm-oe.ts",
+              "commit": "b46934a",
+              "note": "FM OE -> gold SO stamps customFields {fmId, erpCode, source: 'fm-oe-ensure'}.",
+              "symbol": "ensureSalesOrderFromFmOe",
+              "lines": "512"
+            }
+          ]
+        },
+        {
+          "kind": "text_match",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.app_sales_order",
+          "to_binding": "bc.sales_orders",
+          "pairs": [
+            {
+              "from": "order_number",
+              "to": "number",
+              "compare": "identifier",
+              "identifier_kind": "so_number"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "context_pack",
+              "ref": "docs/reference/portal-code-map.md#3.2",
+              "note": "SalesOrder customFields keys, number series and FM/Sage bridges."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "SalesOrderLine.line_of",
+      "from": "SalesOrderLine",
+      "to": "SalesOrder",
+      "name": "line_of",
+      "reverse_name": "lines",
+      "cardinality": "N:1",
+      "description": "A line belongs to one order in its own system.",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_sales_order_line",
+          "to_binding": "portal.app_sales_order",
+          "pairs": [
+            {
+              "from": "sales_order_id",
+              "to": "id",
+              "compare": "text_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "portal/prisma/schema.prisma",
+              "commit": "b46934a",
+              "note": "model SalesOrder @@map(\"app_sales_order\"): order_number, customer_id, required_date, currency, po_reference, custom_fields.",
+              "symbol": "SalesOrder",
+              "lines": "3662-3716"
+            }
+          ]
+        },
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_order_entry_item",
+          "to_binding": "portal.fm_order_entry",
+          "pairs": [
+            {
+              "from": "idoe",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "pack.sales-order"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "event_types": [
+    {
+      "id": "SalesOrder.required",
+      "object_type": "SalesOrder",
+      "description": "Customer required date: a planned event.",
+      "time_basis": "planned",
+      "time": {
+        "binding": "portal.app_sales_order",
+        "path": "required_date",
+        "parser": "iso_date"
+      },
+      "qualifiers": [
+        {
+          "qualifier": "order",
+          "object_type": "SalesOrder",
+          "via": "self"
+        },
+        {
+          "qualifier": "customer",
+          "object_type": "Customer",
+          "via": "SalesOrder.ordered_by"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "upstream_code",
+          "repo": "plx-customer-portal",
+          "path": "portal/prisma/schema.prisma",
+          "commit": "b46934a",
+          "note": "model SalesOrder @@map(\"app_sales_order\"): order_number, customer_id, required_date, currency, po_reference, custom_fields.",
+          "symbol": "SalesOrder",
+          "lines": "3662-3716"
+        }
+      ]
+    },
+    {
+      "id": "SalesOrder.status_changed",
+      "object_type": "SalesOrder",
+      "description": "Status change seen between two captures.",
+      "time_basis": "capture_observed",
+      "observed_property": "status",
+      "qualifiers": [
+        {
+          "qualifier": "order",
+          "object_type": "SalesOrder",
+          "via": "self"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "context_pack",
+          "ref": "docs/reference/portal-code-map.md#3.2",
+          "note": "SalesOrder customFields keys, number series and FM/Sage bridges."
+        }
+      ]
+    }
+  ],
+  "action_types": [
+    {
+      "id": "SetCustomerPO",
+      "description": "Propose filling an absent customer PO on a sales order; a human performs it in the Portal; the Workbench reads it back.",
+      "target": "SalesOrder",
+      "params": {
+        "customer_po": {
+          "type": "identifier",
+          "property_ref": "SalesOrder.customer_po",
+          "provenance": [
+            "cited_value"
+          ],
+          "required": true
+        },
+        "evidence": {
+          "type": "citation",
+          "provenance": [
+            "cited_value"
+          ],
+          "required": true
+        }
+      },
+      "submission_criteria": [
+        {
+          "id": "po_absent_in_all_fields",
+          "description": "All PO fields of the target were read and none holds a PO."
+        },
+        {
+          "id": "evidence_holds_value",
+          "description": "The evidence resolves now for the actor and holds exactly params.customer_po."
+        },
+        {
+          "id": "same_customer",
+          "description": "Evidence customer equals target customer at verified or reviewed tier."
+        }
+      ],
+      "owner_system": "portal",
+      "executor": "human_in_owner_system",
+      "approval": {
+        "route": "mc_request_approval",
+        "decider": "a human holding approval.decide who is not the requester"
+      },
+      "expected_effect": {
+        "object": "target",
+        "property": "customer_po",
+        "equals": "params.customer_po"
+      },
+      "verification": "read_back",
+      "idempotency": [
+        "target",
+        "params.customer_po"
+      ],
+      "evidence": [
+        {
+          "kind": "workbench_code",
+          "path": "operating/action_path.py",
+          "note": "MC-gate lifecycle this catalog feeds."
+        }
+      ]
+    },
+    {
+      "id": "ReviewIdentityLink",
+      "description": "Accept or reject a proposed identity link (Workbench-internal edit layered over captures).",
+      "target": "SalesOrder",
+      "params": {
+        "other": {
+          "type": "object_ref",
+          "object_type": "SalesOrder",
+          "provenance": [
+            "cited_value"
+          ],
+          "required": true
+        },
+        "decision": {
+          "type": "text",
+          "provenance": [
+            "user_objective"
+          ],
+          "required": true
+        }
+      },
+      "submission_criteria": [
+        {
+          "id": "reviewer_is_human",
+          "description": "The session employee decides; agents are never principals."
+        }
+      ],
+      "owner_system": "workbench",
+      "executor": "workbench_internal",
+      "approval": {
+        "route": "none"
+      },
+      "verification": "workbench_log",
+      "idempotency": [
+        "target",
+        "params.other"
+      ],
+      "evidence": [
+        {
+          "kind": "context_pack",
+          "ref": "docs/reference/ontology-design.md#decisions-at-a-glance",
+          "note": "Workbench-internal actions execute now."
+        }
+      ]
+    }
+  ],
+  "evidence_catalog": {
+    "pack.sales-order": {
+      "kind": "context_pack",
+      "ref": "docs/reference/portal-code-map.md#3.2",
+      "note": "SalesOrder customFields keys, number series and FM/Sage bridges."
+    }
+  }
+}

@@ -1,0 +1,62 @@
+{
+ "schema": "plx-live-source-audience/v1",
+ "tenant": "plx",
+ "note": "EXAMPLE ONLY, not a PLX-confirmed grant: the ingest service principal of the live check, narrowed to what the check reads. Default deny. Mail: the one allowlisted shared inbox. QCQA: the '/AOs/2026 - AOs' folder (exact key) and everything under '/AOs/2026 - AOs/' (the folder is anchored by its slash, so a sibling such as '/AOs/2026 - AOs archive' is not granted; recursive walk). PLXCUSTOMERS: the root item and the metadata of its 10 known top-level folders as exact keys (no subtree); any other root child is withheld and reported as withheld:<n>. The AGENTS site's '/Ontology UseCases' (Vince's use cases; ${site:AGENTS} is that site's default drive, resolved by name at run time by operating.ingestion.resolve_sites, and no request is sent for a site this file grants nothing on): the folder (exact key) and everything under it (recursive walk); nothing else on the AGENTS site. BC: the company list and every company's entity sets (a pattern cannot name an entity set without the company GUIDs; purchaseOrders is the only set read). ${NAME} in a key is substituted by operating.ingestion from the environment; a key naming a missing variable is dropped.",
+ "default_classification": "confidential",
+ "audiences": {
+  "mail:purchase-order@petrasoap.com": [
+   "svc:ingest"
+  ],
+  "sharepoint:b!ubhBC91PLkOOCpyUeCUJMLOi0jT3ADZHi0QxVdjuwxvq6wHrgPmdQqNrzbAMxVqk:/AOs/2026 - AOs": [
+   "svc:ingest"
+  ],
+  "sharepoint:b!ubhBC91PLkOOCpyUeCUJMLOi0jT3ADZHi0QxVdjuwxvq6wHrgPmdQqNrzbAMxVqk:/AOs/2026 - AOs/*": [
+   "svc:ingest"
+  ],
+  "bc:production:*": [
+   "svc:ingest"
+  ],
+  "sharepoint:${SHAREPOINT_DRIVE_ID}:/": [
+   "svc:ingest"
+  ],
+  "sharepoint:${SHAREPOINT_DRIVE_ID}:/AGENTS": [
+   "svc:ingest"
+  ],
+  "sharepoint:${site:AGENTS}:/Ontology UseCases": [
+   "svc:ingest"
+  ],
+  "sharepoint:${site:AGENTS}:/Ontology UseCases/*": [
+   "svc:ingest"
+  ],
+  "sharepoint:${SHAREPOINT_DRIVE_ID}:/Business": [
+   "svc:ingest"
+  ],
+  "sharepoint:${SHAREPOINT_DRIVE_ID}:/CursorInbox": [
+   "svc:ingest"
+  ],
+  "sharepoint:${SHAREPOINT_DRIVE_ID}:/Customer Documents": [
+   "svc:ingest"
+  ],
+  "sharepoint:${SHAREPOINT_DRIVE_ID}:/Customer_Onboarding": [
+   "svc:ingest"
+  ],
+  "sharepoint:${SHAREPOINT_DRIVE_ID}:/Customers": [
+   "svc:ingest"
+  ],
+  "sharepoint:${SHAREPOINT_DRIVE_ID}:/Documentation": [
+   "svc:ingest"
+  ],
+  "sharepoint:${SHAREPOINT_DRIVE_ID}:/Documents": [
+   "svc:ingest"
+  ],
+  "sharepoint:${SHAREPOINT_DRIVE_ID}:/Exports": [
+   "svc:ingest"
+  ],
+  "sharepoint:${SHAREPOINT_DRIVE_ID}:/General": [
+   "svc:ingest"
+  ]
+ },
+ "classifications": {
+  "mail:*": "restricted"
+ }
+}

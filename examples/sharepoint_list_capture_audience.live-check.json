@@ -1,0 +1,21 @@
+{
+ "schema": "plx-live-source-audience/v1",
+ "tenant": "plx",
+ "note": "EXAMPLE ONLY, not a PLX-confirmed grant: the SharePoint list-item capture principal of the capture.sharepoint_list_items live check and its three readers. staff:list-reader stands for vince@, the owner of the personal site the Vendor Quotes list lives on (integrations/sharepoint_list_capture_scope.json), so the item permissions captured with each quote should grant it; staff:list-outsider is granted every list but no item's permissions name it (item trimming: it must see 0 items); staff:list-withheld has no grant (0 of everything). Default deny; every sharepoint:list: resource also needs the item's captured permissions (source_acl_required), as for every employee.",
+ "default_classification": "confidential",
+ "audiences": {
+  "sharepoint:list:*": [
+   "svc:sharepoint-list-capture",
+   "staff:list-reader",
+   "staff:list-outsider"
+  ]
+ },
+ "classifications": {
+  "sharepoint:list:*": "restricted"
+ },
+ "identities": {
+  "staff:list-reader": ["vince@petrasoap.com"],
+  "staff:list-outsider": ["list-outsider.live-check@petrasoap.com"]
+ },
+ "source_acl_required": ["sharepoint:list:*"]
+}

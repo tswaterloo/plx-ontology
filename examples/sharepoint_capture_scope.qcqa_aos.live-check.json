@@ -1,0 +1,17 @@
+{
+ "schema": "plx-sharepoint-capture-scope/v1",
+ "note": "Capture scope of the ontology.document_fields_sharepoint live check: only the QA/QC Department (QCQA) library's '2026 - AOs' folder, where QA/QC files the scanned assembly-order packets (docs/reference/cases-and-artifacts.md 3.1). Grants nothing: the capture principal still needs the live-source audience. Read-only.",
+ "max_content_bytes": 20000000,
+ "full_walk_hours": 24,
+ "targets": [
+  {
+   "id": "qcqa.aos-2026",
+   "drive_id": "b!ubhBC91PLkOOCpyUeCUJMLOi0jT3ADZHi0QxVdjuwxvq6wHrgPmdQqNrzbAMxVqk",
+   "folders": [
+    "/AOs/2026 - AOs"
+   ],
+   "max_depth": 2,
+   "max_folders": 20
+  }
+ ]
+}

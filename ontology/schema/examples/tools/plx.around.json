@@ -1,0 +1,120 @@
+{
+  "tool": "plx.around",
+  "examples": [
+    {
+      "name": "one hop",
+      "input": {
+        "from": "SalesOrder:portal.app_sales_order:ex-so-1",
+        "path": [
+          {
+            "link_type": "SalesOrder.ordered_by",
+            "direction": "forward"
+          }
+        ],
+        "tier_floor": "lead"
+      },
+      "output": {
+        "set": "set:hop1abcdefgh",
+        "hops": [
+          {
+            "link_type": "SalesOrder.ordered_by",
+            "direction": "forward",
+            "count": 1,
+            "tiers": {
+              "verified": 1
+            }
+          }
+        ],
+        "edges": [
+          {
+            "link_id": "lnk-8b5cc4df7eec7d32",
+            "link_type": "SalesOrder.ordered_by",
+            "from": "SalesOrder:portal.app_sales_order:ex-so-1",
+            "to": "Customer:portal.app_customer:fm-cust-7",
+            "tier": "verified",
+            "reason": [
+              {
+                "feature": "fk_customer_id",
+                "agrees": true,
+                "citations": [
+                  {
+                    "l1_handle": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42",
+                    "field_path": "row.customer_id",
+                    "digest": "1da6be6150c2725bdc78028f07b807c44e3e16c38679f3f8682cd6f27647a450",
+                    "lineage": "gold_etl_from_fm"
+                  },
+                  {
+                    "l1_handle": "api://public.app_customer/%7B%22id%22%3A%22fm-cust-7%22%7D@0123456789abcdef-45",
+                    "field_path": "row.id",
+                    "digest": "5ff4d8168bc51c1ef5b96962514075ef25ede541efff79cacd87172c3ac39e0b",
+                    "lineage": "gold_etl_from_fm"
+                  }
+                ]
+              }
+            ],
+            "why_not": []
+          }
+        ],
+        "objects": [
+          {
+            "object_id": "Customer:portal.app_customer:fm-cust-7",
+            "object_type": "Customer",
+            "display": {
+              "untrusted_text": "Example Cosmetics Ltd",
+              "origin": {
+                "citation": "api://public.app_customer/%7B%22id%22%3A%22fm-cust-7%22%7D@0123456789abcdef-45",
+                "field_path": "row.company_name"
+              }
+            },
+            "lineage": "gold_etl_from_fm"
+          }
+        ],
+        "gaps": [],
+        "completeness": {
+          "complete": true,
+          "truncated": false,
+          "returned": 1,
+          "total": 1,
+          "next_cursor": null
+        },
+        "freshness_coverage": {
+          "total": 1,
+          "listed": 1,
+          "truncated": false
+        },
+        "meta": {
+          "schema_digest": "df0ad6e43880f09c90ebf95f19110178aba6890df0010ebda7485029e2b543b4",
+          "as_known_at": "2099-01-02T03:04:05Z",
+          "freshness": [
+            {
+              "source": "portal_api",
+              "captured_at": "2099-01-02T03:00:00Z",
+              "lag_seconds": 245,
+              "completeness": "complete",
+              "stale": false
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "undeclared",
+      "input": {
+        "from": "SalesOrder:portal.app_sales_order:ex-so-1",
+        "path": [
+          {
+            "link_type": "SalesOrder.paid_by",
+            "direction": "forward"
+          }
+        ]
+      },
+      "output": {
+        "error": {
+          "code": "undeclared_link",
+          "message": "SalesOrder.paid_by is not a declared link type.",
+          "hint": "See plx.schema section links."
+        }
+      }
+    }
+  ]
+}

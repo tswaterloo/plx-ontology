@@ -1,0 +1,1460 @@
+{
+ "format": "plx-use-case-answer-review/v1",
+ "check_id": "eval.use_case_answers",
+ "evidence_label": "live-observed",
+ "observed_at": "2026-10-16T08:19:35.268927+00:00",
+ "run": {
+  "code": "reviewed main 9ac148d3343bf21b1ce312bb74f7a179d894bfe8 (detached worktree)",
+  "agent": "ClaudeCodeAgent",
+  "discovery": "seeded_from_capture",
+  "reader": "staff:operations",
+  "run_evidence_label": "live-captures",
+  "totals": {
+   "agreement_with_proposed": 7,
+   "blocked": 0,
+   "coverage": 1.0,
+   "gap_only": 3,
+   "items": 26,
+   "refused": 11,
+   "scored": 0,
+   "unscored": 19
+  },
+  "agreement_with_proposed": {
+   "agree": 0,
+   "disagree": 7,
+   "runs": 7
+  },
+  "scored_runs": 0,
+  "spec_result": "fails json_min answers.scored.runs >= 1 (0 scored runs)"
+ },
+ "classes": {
+  "given": [
+   "tool_missing",
+   "permission_or_audience",
+   "source_not_captured",
+   "prompt_or_policy_refusal",
+   "agent_wrong",
+   "proposed_value_wrong",
+   "unit_or_scope_mismatch"
+  ],
+  "added": {
+   "eval_harness_defect": "the scorer or item compiler, not the product, rejects a right answer; the given enum has no class for a fault in the measuring code"
+  },
+  "rule": "failure_class is the cause that still blocks the card after every other listed cause is fixed; a card whose only blocker is the harness gets eval_harness_defect. secondary_classes lists the other causes; 'latent' or 'non-blocking' in the evidence marks a cause that did not change this outcome."
+ },
+ "counts": {
+  "primary": {
+   "agent_wrong": 9,
+   "eval_harness_defect": 4,
+   "prompt_or_policy_refusal": 11,
+   "unit_or_scope_mismatch": 2
+  },
+  "contributing": {
+   "agent_wrong": 11,
+   "eval_harness_defect": 15,
+   "permission_or_audience": 1,
+   "prompt_or_policy_refusal": 11,
+   "tool_missing": 3,
+   "unit_or_scope_mismatch": 3
+  },
+  "zero": [
+   "source_not_captured",
+   "proposed_value_wrong"
+  ]
+ },
+ "cards": [
+  {
+   "card_id": "RRO-01",
+   "item_id": "dev-F21-0001-exposed",
+   "layer": "comprehension",
+   "bucket": "unscored",
+   "outcome": "wrong",
+   "codes": [
+    "gap_missing",
+    "unsupported_assertion"
+   ],
+   "answerability": "partial",
+   "tool_calls": [
+    {
+     "tool": "plx.documents",
+     "arg_keys": [
+      "query",
+      "sources"
+     ],
+     "status": null,
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars",
+      "text_offset"
+     ],
+     "status": "resolved",
+     "error": null
+    }
+   ],
+   "failure_class": "agent_wrong",
+   "secondary_classes": [
+    "tool_missing",
+    "eval_harness_defect"
+   ],
+   "evidence": [
+    "gap_missing: no agent gap names the pinned attachment-provenance conflict; agent gaps were unknown/freshness_unknown, absent_in_source/listed_as_still_to_come_in_source, unknown/not_run_against_database_or_bc",
+    "tool_missing: the third plx.read used text_offset with no page; the answer cited the whole handle, so the claim gate gave claim_uncited",
+    "gate: claim_uncited, claim_unstructured, claim_value_mismatch",
+    "eval_harness_defect (latent): the expected gap carries a verbatim subject and no concerns; _states() needs an exact folded subject, so a paraphrased conflict gap would also miss"
+   ]
+  },
+  {
+   "card_id": "RRO-02",
+   "item_id": "dev-F21-0002-exposed",
+   "layer": "comprehension",
+   "bucket": "unscored",
+   "outcome": "refused",
+   "codes": [
+    "empty_outcome"
+   ],
+   "answerability": null,
+   "tool_calls": [],
+   "failure_class": "prompt_or_policy_refusal",
+   "secondary_classes": [],
+   "evidence": [
+    "admission refused the item: empty_outcome (the card has a prose criterion only; the proposal compiler produced no values and no gaps)",
+    "no agent session was started; tool_calls=0"
+   ]
+  },
+  {
+   "card_id": "RRO-03",
+   "item_id": "dev-F21-0003-exposed",
+   "layer": "comprehension",
+   "bucket": "unscored",
+   "outcome": "refused",
+   "codes": [
+    "empty_outcome"
+   ],
+   "answerability": null,
+   "tool_calls": [],
+   "failure_class": "prompt_or_policy_refusal",
+   "secondary_classes": [],
+   "evidence": [
+    "admission refused the item: empty_outcome (the card has a prose criterion only; the proposal compiler produced no values and no gaps)",
+    "no agent session was started; tool_calls=0"
+   ]
+  },
+  {
+   "card_id": "RRO-04",
+   "item_id": "dev-F21-0004-exposed",
+   "layer": "comprehension",
+   "bucket": "unscored",
+   "outcome": "refused",
+   "codes": [
+    "empty_outcome"
+   ],
+   "answerability": null,
+   "tool_calls": [],
+   "failure_class": "prompt_or_policy_refusal",
+   "secondary_classes": [],
+   "evidence": [
+    "admission refused the item: empty_outcome (the card has a prose criterion only; the proposal compiler produced no values and no gaps)",
+    "no agent session was started; tool_calls=0"
+   ]
+  },
+  {
+   "card_id": "RRO-05",
+   "item_id": "dev-F21-0005-exposed",
+   "layer": "comprehension",
+   "bucket": "unscored",
+   "outcome": "refused",
+   "codes": [
+    "empty_outcome"
+   ],
+   "answerability": null,
+   "tool_calls": [],
+   "failure_class": "prompt_or_policy_refusal",
+   "secondary_classes": [],
+   "evidence": [
+    "admission refused the item: empty_outcome (the card has a prose criterion only; the proposal compiler produced no values and no gaps)",
+    "no agent session was started; tool_calls=0"
+   ]
+  },
+  {
+   "card_id": "RRO-06",
+   "item_id": "dev-F21-0006-exposed",
+   "layer": "comprehension",
+   "bucket": "unscored",
+   "outcome": "wrong",
+   "codes": [
+    "answerability_mismatch",
+    "gap_missing",
+    "unsupported_assertion"
+   ],
+   "answerability": "answerable",
+   "tool_calls": [
+    {
+     "tool": "plx.documents",
+     "arg_keys": [
+      "as_known_at",
+      "query"
+     ],
+     "status": null,
+     "error": null
+    },
+    {
+     "tool": "plx.documents",
+     "arg_keys": [
+      "query",
+      "sources"
+     ],
+     "status": null,
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars",
+      "text_offset"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars",
+      "text_offset"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars",
+      "page"
+     ],
+     "status": "resolved",
+     "error": null
+    }
+   ],
+   "failure_class": "agent_wrong",
+   "secondary_classes": [
+    "tool_missing",
+    "eval_harness_defect"
+   ],
+   "evidence": [
+    "answerability_mismatch: agent answered 'answerable', the card expects 'partial'",
+    "gap_missing: no agent gap names the pinned provenance conflict; agent gaps were absent_in_source x2 and unknown/originals_not_versioned",
+    "gate: claim_role_unverified, claim_unstructured, claim_value_mismatch x2 (paraphrased values against the cited page)",
+    "tool_missing: the card pins source line ranges; plx.read is page-addressed and exposes no line numbers",
+    "eval_harness_defect (latent): exact-subject gap matching"
+   ]
+  },
+  {
+   "card_id": "RRO-07",
+   "item_id": "dev-F21-0007-exposed",
+   "layer": "comprehension",
+   "bucket": "unscored",
+   "outcome": "refused",
+   "codes": [
+    "empty_outcome"
+   ],
+   "answerability": null,
+   "tool_calls": [],
+   "failure_class": "prompt_or_policy_refusal",
+   "secondary_classes": [],
+   "evidence": [
+    "admission refused the item: empty_outcome (the card has a prose criterion only; the proposal compiler produced no values and no gaps)",
+    "no agent session was started; tool_calls=0"
+   ]
+  },
+  {
+   "card_id": "RRO-08",
+   "item_id": "dev-F21-0008-exposed",
+   "layer": "comprehension",
+   "bucket": "unscored",
+   "outcome": "refused",
+   "codes": [
+    "empty_outcome"
+   ],
+   "answerability": null,
+   "tool_calls": [],
+   "failure_class": "prompt_or_policy_refusal",
+   "secondary_classes": [],
+   "evidence": [
+    "admission refused the item: empty_outcome (the card has a prose criterion only; the proposal compiler produced no values and no gaps)",
+    "no agent session was started; tool_calls=0"
+   ]
+  },
+  {
+   "card_id": "RRO-09",
+   "item_id": "dev-F21-0009-exposed",
+   "layer": "comprehension",
+   "bucket": "unscored",
+   "outcome": "refused",
+   "codes": [
+    "empty_outcome"
+   ],
+   "answerability": null,
+   "tool_calls": [],
+   "failure_class": "prompt_or_policy_refusal",
+   "secondary_classes": [],
+   "evidence": [
+    "admission refused the item: empty_outcome (the card has a prose criterion only; the proposal compiler produced no values and no gaps)",
+    "no agent session was started; tool_calls=0"
+   ]
+  },
+  {
+   "card_id": "RRO-10",
+   "item_id": "dev-F21-0010-exposed",
+   "layer": "comprehension",
+   "bucket": "unscored",
+   "outcome": "refused",
+   "codes": [
+    "empty_outcome"
+   ],
+   "answerability": null,
+   "tool_calls": [],
+   "failure_class": "prompt_or_policy_refusal",
+   "secondary_classes": [],
+   "evidence": [
+    "admission refused the item: empty_outcome (the card has a prose criterion only; the proposal compiler produced no values and no gaps)",
+    "no agent session was started; tool_calls=0"
+   ]
+  },
+  {
+   "card_id": "RRO-11",
+   "item_id": "dev-F21-0011-exposed",
+   "layer": "comprehension",
+   "bucket": "unscored",
+   "outcome": "refused",
+   "codes": [
+    "empty_outcome"
+   ],
+   "answerability": null,
+   "tool_calls": [],
+   "failure_class": "prompt_or_policy_refusal",
+   "secondary_classes": [],
+   "evidence": [
+    "admission refused the item: empty_outcome (the card has a prose criterion only; the proposal compiler produced no values and no gaps)",
+    "no agent session was started; tool_calls=0"
+   ]
+  },
+  {
+   "card_id": "RRO-12",
+   "item_id": "dev-F21-0012-exposed",
+   "layer": "comprehension",
+   "bucket": "unscored",
+   "outcome": "refused",
+   "codes": [
+    "empty_outcome"
+   ],
+   "answerability": null,
+   "tool_calls": [],
+   "failure_class": "prompt_or_policy_refusal",
+   "secondary_classes": [],
+   "evidence": [
+    "admission refused the item: empty_outcome (the card has a prose criterion only; the proposal compiler produced no values and no gaps)",
+    "no agent session was started; tool_calls=0"
+   ]
+  },
+  {
+   "card_id": "RRO-13",
+   "item_id": "dev-F21-0013-exposed",
+   "layer": "comprehension",
+   "bucket": "unscored",
+   "outcome": "refused",
+   "codes": [
+    "empty_outcome"
+   ],
+   "answerability": null,
+   "tool_calls": [],
+   "failure_class": "prompt_or_policy_refusal",
+   "secondary_classes": [],
+   "evidence": [
+    "admission refused the item: empty_outcome (the card has a prose criterion only; the proposal compiler produced no values and no gaps)",
+    "no agent session was started; tool_calls=0"
+   ]
+  },
+  {
+   "card_id": "RRO-14",
+   "item_id": "dev-F21-0014-exposed",
+   "layer": "comprehension",
+   "bucket": "unscored",
+   "outcome": "wrong",
+   "codes": [
+    "answerability_mismatch",
+    "gap_missing",
+    "unsupported_assertion"
+   ],
+   "answerability": "answerable",
+   "tool_calls": [
+    {
+     "tool": "plx.documents",
+     "arg_keys": [
+      "as_known_at",
+      "query"
+     ],
+     "status": null,
+     "error": null
+    },
+    {
+     "tool": "plx.documents",
+     "arg_keys": [
+      "query",
+      "sources"
+     ],
+     "status": null,
+     "error": null
+    },
+    {
+     "tool": "plx.case_get",
+     "arg_keys": [],
+     "status": null,
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    }
+   ],
+   "failure_class": "agent_wrong",
+   "secondary_classes": [
+    "permission_or_audience",
+    "tool_missing",
+    "eval_harness_defect"
+   ],
+   "evidence": [
+    "answerability_mismatch: agent answered 'answerable', the card expects 'partial'",
+    "gap_missing: no agent gap names the pinned provenance conflict",
+    "plx.case_get returned no case for this reader",
+    "permission_or_audience (non-causal): two agent gaps inaccessible/audience_not_granted for the fixture mail and SharePoint sources; the expected answer needs only the original",
+    "gate: claim_unstructured, claim_value_mismatch x2",
+    "eval_harness_defect (latent): exact-subject gap matching"
+   ]
+  },
+  {
+   "card_id": "A01",
+   "item_id": "dev-F22-0001-exposed",
+   "layer": "arithmetic",
+   "bucket": "unscored",
+   "outcome": "wrong",
+   "codes": [
+    "unsupported_assertion",
+    "value_missing"
+   ],
+   "answerability": "answerable",
+   "tool_calls": [
+    {
+     "tool": "plx.documents",
+     "arg_keys": [
+      "as_known_at",
+      "query",
+      "sources"
+     ],
+     "status": null,
+     "error": null
+    },
+    {
+     "tool": "plx.documents",
+     "arg_keys": [
+      "query"
+     ],
+     "status": null,
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars",
+      "page"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars",
+      "page"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars",
+      "page"
+     ],
+     "status": "resolved",
+     "error": null
+    }
+   ],
+   "failure_class": "agent_wrong",
+   "secondary_classes": [
+    "eval_harness_defect"
+   ],
+   "evidence": [
+    "agent computed value equals the proposed value (Decimal compare)",
+    "score.value_missing on the expected value 'result': the expected citation is original://sha256/<sha> field row.text, cite_identity()=None, and no agent value is named 'result'",
+    "with the value renamed to 'result' (scratch re-score): wrong, violation claim_uncited_number (prose numbers outside value claims, including a lot code read as a number)",
+    "gate: claim_role_unverified, claim_unstructured"
+   ]
+  },
+  {
+   "card_id": "A02",
+   "item_id": "dev-F22-0002-exposed",
+   "layer": "arithmetic",
+   "bucket": "agreement_with_proposed",
+   "outcome": "wrong",
+   "codes": [
+    "value_missing"
+   ],
+   "answerability": "answerable",
+   "tool_calls": [
+    {
+     "tool": "plx.documents",
+     "arg_keys": [
+      "as_known_at",
+      "query"
+     ],
+     "status": null,
+     "error": null
+    },
+    {
+     "tool": "plx.documents",
+     "arg_keys": [
+      "query",
+      "sources"
+     ],
+     "status": null,
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    }
+   ],
+   "failure_class": "eval_harness_defect",
+   "secondary_classes": [],
+   "evidence": [
+    "agent computed value equals the proposed value (Decimal compare)",
+    "score.value_missing on the expected value 'result': the expected citation is original://sha256/<sha> field row.text, cite_identity()=None, and no agent value is named 'result'",
+    "with the value renamed to 'result' (scratch re-score): correct",
+    "gate: claim_wording_role_unverified (non-blocking)"
+   ]
+  },
+  {
+   "card_id": "A03",
+   "item_id": "dev-F22-0003-exposed",
+   "layer": "arithmetic",
+   "bucket": "agreement_with_proposed",
+   "outcome": "wrong",
+   "codes": [
+    "unsupported_assertion",
+    "value_missing"
+   ],
+   "answerability": "answerable",
+   "tool_calls": [
+    {
+     "tool": "plx.documents",
+     "arg_keys": [
+      "as_known_at",
+      "query"
+     ],
+     "status": null,
+     "error": null
+    },
+    {
+     "tool": "plx.documents",
+     "arg_keys": [
+      "query",
+      "sources"
+     ],
+     "status": null,
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    }
+   ],
+   "failure_class": "agent_wrong",
+   "secondary_classes": [
+    "eval_harness_defect",
+    "unit_or_scope_mismatch"
+   ],
+   "evidence": [
+    "agent computed value equals the proposed value (Decimal compare)",
+    "score.value_missing on the expected value 'result': the expected citation is original://sha256/<sha> field row.text, cite_identity()=None, and no agent value is named 'result'",
+    "with the value renamed to 'result' (scratch re-score): wrong, violation claim_uncited_number (a derived percentage in prose)",
+    "unit_or_scope_mismatch (non-blocking): gate claim_wording_role_mismatch x2 (ordered vs produced quantity roles)",
+    "gate: claim_role_unverified, claim_unstructured"
+   ]
+  },
+  {
+   "card_id": "A04",
+   "item_id": "dev-F22-0004-exposed",
+   "layer": "arithmetic",
+   "bucket": "agreement_with_proposed",
+   "outcome": "wrong",
+   "codes": [
+    "value_missing"
+   ],
+   "answerability": "answerable",
+   "tool_calls": [
+    {
+     "tool": "plx.documents",
+     "arg_keys": [
+      "as_known_at",
+      "query",
+      "sources"
+     ],
+     "status": null,
+     "error": null
+    },
+    {
+     "tool": "plx.documents",
+     "arg_keys": [
+      "query"
+     ],
+     "status": null,
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    }
+   ],
+   "failure_class": "eval_harness_defect",
+   "secondary_classes": [],
+   "evidence": [
+    "agent computed value equals the proposed value (Decimal compare)",
+    "score.value_missing on the expected value 'result': the expected citation is original://sha256/<sha> field row.text, cite_identity()=None, and no agent value is named 'result'",
+    "with the value renamed to 'result' (scratch re-score): correct",
+    "gate: claim_role_unverified (non-blocking)"
+   ]
+  },
+  {
+   "card_id": "A05",
+   "item_id": "dev-F22-0005-exposed",
+   "layer": "arithmetic",
+   "bucket": "unscored",
+   "outcome": "wrong",
+   "codes": [
+    "unsupported_assertion",
+    "value_missing"
+   ],
+   "answerability": "answerable",
+   "tool_calls": [
+    {
+     "tool": "plx.documents",
+     "arg_keys": [
+      "as_known_at",
+      "query"
+     ],
+     "status": null,
+     "error": null
+    },
+    {
+     "tool": "plx.documents",
+     "arg_keys": [
+      "query",
+      "sources"
+     ],
+     "status": null,
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    }
+   ],
+   "failure_class": "unit_or_scope_mismatch",
+   "secondary_classes": [
+    "eval_harness_defect",
+    "agent_wrong"
+   ],
+   "evidence": [
+    "agent computed value equals the proposed value (Decimal compare)",
+    "score.value_missing on the expected value 'result': the expected citation is original://sha256/<sha> field row.text, cite_identity()=None, and no agent value is named 'result'",
+    "with the value renamed to 'result' (scratch re-score): wrong, value code calculation_input_unresolved (a percent input written as a percent figure does not resolve against the page that prints it) and violation claim_uncited_number",
+    "gate: claim_role_unverified, claim_unstructured"
+   ]
+  },
+  {
+   "card_id": "A06",
+   "item_id": "dev-F22-0006-exposed",
+   "layer": "arithmetic",
+   "bucket": "agreement_with_proposed",
+   "outcome": "wrong",
+   "codes": [
+    "unsupported_assertion",
+    "value_missing"
+   ],
+   "answerability": "answerable",
+   "tool_calls": [
+    {
+     "tool": "plx.documents",
+     "arg_keys": [
+      "as_known_at",
+      "query"
+     ],
+     "status": null,
+     "error": null
+    },
+    {
+     "tool": "plx.documents",
+     "arg_keys": [
+      "query",
+      "sources"
+     ],
+     "status": null,
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars",
+      "page"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars",
+      "page"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars",
+      "page"
+     ],
+     "status": "resolved",
+     "error": null
+    }
+   ],
+   "failure_class": "agent_wrong",
+   "secondary_classes": [
+    "eval_harness_defect"
+   ],
+   "evidence": [
+    "agent value equals the proposed value (Decimal compare), given as a plain cited value, not a calculation",
+    "score.value_missing on the expected value 'result': the expected citation is original://sha256/<sha> field row.text, cite_identity()=None, and no agent value is named 'result'",
+    "with the value renamed to 'result' (scratch re-score): wrong, violation claim_uncited_number (rate and received amount restated in prose)",
+    "gate: claim_unstructured"
+   ]
+  },
+  {
+   "card_id": "A07",
+   "item_id": "dev-F22-0007-exposed",
+   "layer": "arithmetic",
+   "bucket": "agreement_with_proposed",
+   "outcome": "wrong",
+   "codes": [
+    "unsupported_assertion",
+    "value_missing"
+   ],
+   "answerability": "answerable",
+   "tool_calls": [
+    {
+     "tool": "plx.documents",
+     "arg_keys": [
+      "as_known_at",
+      "query"
+     ],
+     "status": null,
+     "error": null
+    },
+    {
+     "tool": "plx.documents",
+     "arg_keys": [
+      "query",
+      "sources"
+     ],
+     "status": null,
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.documents",
+     "arg_keys": [
+      "query",
+      "sources"
+     ],
+     "status": null,
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    }
+   ],
+   "failure_class": "unit_or_scope_mismatch",
+   "secondary_classes": [
+    "eval_harness_defect",
+    "agent_wrong"
+   ],
+   "evidence": [
+    "agent computed value equals the proposed value (Decimal compare)",
+    "score.value_missing on the expected value 'result': the expected citation is original://sha256/<sha> field row.text, cite_identity()=None, and no agent value is named 'result'",
+    "with the value renamed to 'result' (scratch re-score): wrong, value code calculation_currency_mismatch (currency given in the input 'unit', not 'currency') and violation claim_uncited_number",
+    "gate: claim_unstructured, claim_wording_role_unverified"
+   ]
+  },
+  {
+   "card_id": "A08",
+   "item_id": "dev-F22-0008-exposed",
+   "layer": "arithmetic",
+   "bucket": "unscored",
+   "outcome": "wrong",
+   "codes": [
+    "no_answer"
+   ],
+   "answerability": null,
+   "tool_calls": [
+    {
+     "tool": "plx.documents",
+     "arg_keys": [
+      "as_known_at",
+      "query"
+     ],
+     "status": null,
+     "error": null
+    },
+    {
+     "tool": "plx.documents",
+     "arg_keys": [
+      "query",
+      "sources"
+     ],
+     "status": null,
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars",
+      "page"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars",
+      "page"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars",
+      "page"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars",
+      "page"
+     ],
+     "status": "resolved",
+     "error": null
+    }
+   ],
+   "failure_class": "agent_wrong",
+   "secondary_classes": [
+    "eval_harness_defect"
+   ],
+   "evidence": [
+    "answer_error answer_malformed:values.0.calculation; calculation_problem()=citations_beside_calculation (an expression value also carried citations)",
+    "score: no_answer; no value reached the scorer",
+    "eval_harness_defect (latent): a well-formed answer would still hit value_missing on 'result'"
+   ]
+  },
+  {
+   "card_id": "A09",
+   "item_id": "dev-F22-0009-exposed",
+   "layer": "arithmetic",
+   "bucket": "unscored",
+   "outcome": "wrong",
+   "codes": [
+    "value_missing"
+   ],
+   "answerability": "answerable",
+   "tool_calls": [
+    {
+     "tool": "plx.documents",
+     "arg_keys": [
+      "as_known_at",
+      "query",
+      "sources"
+     ],
+     "status": null,
+     "error": null
+    },
+    {
+     "tool": "plx.documents",
+     "arg_keys": [
+      "query"
+     ],
+     "status": null,
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    }
+   ],
+   "failure_class": "eval_harness_defect",
+   "secondary_classes": [],
+   "evidence": [
+    "agent computed value equals the proposed value (Decimal compare)",
+    "score.value_missing on the expected value 'result': the expected citation is original://sha256/<sha> field row.text, cite_identity()=None, and no agent value is named 'result'",
+    "with the value renamed to 'result' (scratch re-score): correct",
+    "gate: claim_role_unverified (non-blocking)"
+   ]
+  },
+  {
+   "card_id": "A10",
+   "item_id": "dev-F22-0010-exposed",
+   "layer": "arithmetic",
+   "bucket": "unscored",
+   "outcome": "wrong",
+   "codes": [
+    "unsupported_assertion",
+    "value_missing"
+   ],
+   "answerability": "answerable",
+   "tool_calls": [
+    {
+     "tool": "plx.documents",
+     "arg_keys": [
+      "as_known_at",
+      "query",
+      "sources"
+     ],
+     "status": null,
+     "error": null
+    },
+    {
+     "tool": "plx.documents",
+     "arg_keys": [
+      "query"
+     ],
+     "status": null,
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    }
+   ],
+   "failure_class": "agent_wrong",
+   "secondary_classes": [
+    "eval_harness_defect"
+   ],
+   "evidence": [
+    "both agent values equal the proposed results (Decimal compare), given as plain cited values",
+    "score.value_missing on 'result_1' and 'result_2': same unresolvable original://sha256 row.text citation and name mismatch",
+    "with the values renamed (scratch re-score): wrong, violation claim_uncited_number (rates restated in prose)",
+    "gate: claim_role_unverified, claim_unstructured"
+   ]
+  },
+  {
+   "card_id": "A11",
+   "item_id": "dev-F22-0011-exposed",
+   "layer": "arithmetic",
+   "bucket": "agreement_with_proposed",
+   "outcome": "wrong",
+   "codes": [
+    "value_missing"
+   ],
+   "answerability": "answerable",
+   "tool_calls": [
+    {
+     "tool": "plx.documents",
+     "arg_keys": [
+      "as_known_at",
+      "query"
+     ],
+     "status": null,
+     "error": null
+    },
+    {
+     "tool": "plx.documents",
+     "arg_keys": [
+      "query",
+      "sources"
+     ],
+     "status": null,
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    }
+   ],
+   "failure_class": "eval_harness_defect",
+   "secondary_classes": [],
+   "evidence": [
+    "agent computed value equals the proposed value (Decimal compare)",
+    "score.value_missing on the expected value 'result': the expected citation is original://sha256/<sha> field row.text, cite_identity()=None, and no agent value is named 'result'",
+    "with the value renamed to 'result' (scratch re-score): correct",
+    "gate: no codes"
+   ]
+  },
+  {
+   "card_id": "A12",
+   "item_id": "dev-F22-0012-exposed",
+   "layer": "arithmetic",
+   "bucket": "agreement_with_proposed",
+   "outcome": "wrong",
+   "codes": [
+    "no_answer"
+   ],
+   "answerability": null,
+   "tool_calls": [
+    {
+     "tool": "plx.documents",
+     "arg_keys": [
+      "as_known_at",
+      "query",
+      "sources"
+     ],
+     "status": null,
+     "error": null
+    },
+    {
+     "tool": "plx.documents",
+     "arg_keys": [
+      "query"
+     ],
+     "status": null,
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    },
+    {
+     "tool": "plx.read",
+     "arg_keys": [
+      "citation",
+      "max_chars"
+     ],
+     "status": "resolved",
+     "error": null
+    }
+   ],
+   "failure_class": "agent_wrong",
+   "secondary_classes": [
+    "eval_harness_defect"
+   ],
+   "evidence": [
+    "answer_error answer_malformed:values.0.calculation; calculation_problem()=citations_beside_calculation",
+    "score: no_answer; no value reached the scorer",
+    "eval_harness_defect (latent): a well-formed answer would still hit value_missing on 'result'"
+   ]
+  }
+ ]
+}

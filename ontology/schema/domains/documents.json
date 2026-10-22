@@ -1,0 +1,1257 @@
+{
+ "$schema": "../_format.schema.json",
+ "format": "plx-ontology-domain/v1",
+ "domain": "documents",
+ "origin": "curated",
+ "description": "Captured documents (decision 2026-10-02-mail-and-mentions-store): Email and Attachment from the versioned mail capture (integrations/capture_mail.py, source graph_mail, cited graph-mail://), SharePointFile from the versioned SharePoint capture (integrations/capture_sharepoint.py, source sharepoint, cited sharepoint://<drive>/<item>@<eTag>). Documents are evidence, never business truth by themselves; every reader is re-gated per mailbox (audience mail:<mailbox>) or per SharePoint item (audience sharepoint:<drive>, then the item's path keys and permissions recorded at capture). Mentions of identifiers in a document are stored lead links (Email.mentions_<type>, Attachment.mentions_<type> from an attachment's own extracted text, a PDF cited by page, and SharePointFile.mentions_<type>, binding kind mention, written by ontology/mentions.py into the same store generation); the loader generates one such link type per served type with an identifier property from one rule per document type (ontology/schema.py MENTION_LINK_RULES, evidence wb.mentions and ctx.mentions below); ambiguous candidates are kept, never merged. Copies: an Email's internet_message_id (with equal headers and body preview, so a forged Message-ID groups nothing) and a captured file's content_sha256 are verified identifier kinds whose equal values name copies (ontology/schema/identifiers.json copies): one message in several mailboxes, one file attached, stored or packed in a container. A copy identity is never read from text, so no mention link type targets a document type (ontology/schema.py mention_links). Copies stay separate objects with their own permissions; evidence they carry counts once (ontology/mentions.py confirmation_support).",
+ "object_types": [
+  {
+   "id": "Email",
+   "description": "One captured mail message version (Graph immutable id + changeKey). Source text is untrusted; the body is cited (row.body_text) but not projected as a value.",
+   "interfaces": [
+    "Document"
+   ],
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "graph_mail.messages",
+     "source": "graph_mail",
+     "relation": "messages",
+     "key": [
+      "mailbox",
+      "id"
+     ],
+     "lineage": {
+      "default": "mail"
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_mail"
+      }
+     ],
+     "note": "One object per message (mailbox object id + immutable message id); one version per captured changeKey interval (MailCaptureStore.messages)."
+    }
+   ],
+   "properties": [
+    {
+     "name": "subject",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "graph_mail.messages",
+       "path": "subject",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_mail"
+      }
+     ]
+    },
+    {
+     "name": "sender",
+     "value_type": "text",
+     "description": "The From address as Graph reports it (no SPF/DKIM).",
+     "sources": [
+      {
+       "binding": "graph_mail.messages",
+       "path": "from",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_mail"
+      }
+     ]
+    },
+    {
+     "name": "received_at",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "graph_mail.messages",
+       "path": "received_at",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_mail"
+      }
+     ]
+    },
+    {
+     "name": "sent_at",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "graph_mail.messages",
+       "path": "sent_at",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_mail"
+      }
+     ]
+    },
+    {
+     "name": "conversation_id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "graph_mail.messages",
+       "path": "conversation_id",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_mail"
+      }
+     ]
+    },
+    {
+     "name": "internet_message_id",
+     "value_type": "identifier",
+     "identifier_kind": "internet_message_id",
+     "description": "One message delivered to several mailboxes: one object per mailbox copy, one Message-ID. Verified (the sending server writes it) but not unique: copies are candidates of one another, never merged; evidence they carry counts once (ontology/mentions.py confirmation_support).",
+     "sources": [
+      {
+       "binding": "graph_mail.messages",
+       "path": "internet_message_id",
+       "parser": "identifier"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_mail"
+      }
+     ]
+    },
+    {
+     "name": "body_preview",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "graph_mail.messages",
+       "path": "body_preview",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_mail"
+      }
+     ]
+    },
+    {
+     "name": "mailbox",
+     "value_type": "text",
+     "description": "Mailbox owner object id.",
+     "sources": [
+      {
+       "binding": "graph_mail.messages",
+       "path": "mailbox",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_mail"
+      }
+     ]
+    }
+   ],
+   "identity_keys": [
+    {
+     "name": "internet_message_id",
+     "properties": [
+      "internet_message_id"
+     ],
+     "identifier_kind": "internet_message_id",
+     "tier": "verified",
+     "unique": false,
+     "scope": "cross_binding",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_mail"
+      }
+     ]
+    }
+   ],
+   "display": [
+    "subject"
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "ctx.documents"
+    },
+    {
+     "kind": "ref",
+     "id": "wb.capture_mail"
+    }
+   ]
+  },
+  {
+   "id": "Attachment",
+   "description": "One captured file attachment of one message version, byte-pinned (graph-mail://...#attachment=<id>&sha256=<hex>). Attachments whose bytes were not captured have no handle and are not projected. Removed with its message, it is marked missing_from_source_since like the message.",
+   "interfaces": [
+    "Document"
+   ],
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "graph_mail.attachments",
+     "source": "graph_mail",
+     "relation": "attachments",
+     "key": [
+      "mailbox",
+      "message_id",
+      "attachment_id"
+     ],
+     "lineage": {
+      "default": "mail"
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_mail"
+      }
+     ]
+    }
+   ],
+   "properties": [
+    {
+     "name": "name",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "graph_mail.attachments",
+       "path": "name",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_mail"
+      }
+     ]
+    },
+    {
+     "name": "content_type",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "graph_mail.attachments",
+       "path": "content_type",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_mail"
+      }
+     ]
+    },
+    {
+     "name": "size",
+     "value_type": "integer",
+     "sources": [
+      {
+       "binding": "graph_mail.attachments",
+       "path": "size",
+       "parser": "integer_text"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_mail"
+      }
+     ]
+    },
+    {
+     "name": "content_sha256",
+     "value_type": "identifier",
+     "identifier_kind": "content_sha256",
+     "description": "Equal bytes: an attachment and any other captured file with its digest are copies, never merged; evidence they carry counts once (ontology/mentions.py confirmation_support).",
+     "sources": [
+      {
+       "binding": "graph_mail.attachments",
+       "path": "content_sha256",
+       "parser": "identifier"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_mail"
+      }
+     ]
+    },
+    {
+     "name": "message_id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "graph_mail.attachments",
+       "path": "message_id",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_mail"
+      }
+     ]
+    },
+    {
+     "name": "mailbox",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "graph_mail.attachments",
+       "path": "mailbox",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_mail"
+      }
+     ]
+    }
+   ],
+   "identity_keys": [
+    {
+     "name": "content_sha256",
+     "properties": [
+      "content_sha256"
+     ],
+     "identifier_kind": "content_sha256",
+     "tier": "verified",
+     "unique": false,
+     "scope": "cross_binding",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_mail"
+      }
+     ]
+    }
+   ],
+   "display": [
+    "name"
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "ctx.documents"
+    },
+    {
+     "kind": "ref",
+     "id": "wb.capture_mail"
+    }
+   ]
+  },
+  {
+   "id": "SharePointFile",
+   "description": "One captured SharePoint drive item version, keyed by (driveId, itemId) and cited sharepoint://<drive>/<item>@<eTag> (#sha256=<hex> names the pinned bytes). Name, path and extracted text are untrusted source text; the text is cited (row.content_text) but not projected as a value. A file whose bytes were not captured (over the size cap, or unreadable) is still a version, with content_status saying why: incomplete, never absent.",
+   "interfaces": [
+    "Document"
+   ],
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "sharepoint.drive_items",
+     "source": "sharepoint",
+     "relation": "driveItems",
+     "key": [
+      "drive_id",
+      "id"
+     ],
+     "lineage": {
+      "default": "sharepoint"
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_sharepoint"
+      },
+      {
+       "kind": "ref",
+       "id": "wb.graph_read_drive"
+      }
+     ],
+     "note": "One object per drive item (drive id + item id); one version per captured eTag interval (SharePointCaptureStore); a move keeps the object (same item id) and opens a new interval at the new path."
+    }
+   ],
+   "properties": [
+    {
+     "name": "name",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "sharepoint.drive_items",
+       "path": "name",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_sharepoint"
+      }
+     ]
+    },
+    {
+     "name": "path",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "sharepoint.drive_items",
+       "path": "path",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_sharepoint"
+      }
+     ]
+    },
+    {
+     "name": "size",
+     "value_type": "integer",
+     "sources": [
+      {
+       "binding": "sharepoint.drive_items",
+       "path": "size",
+       "parser": "integer_text"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_sharepoint"
+      }
+     ]
+    },
+    {
+     "name": "mime_type",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "sharepoint.drive_items",
+       "path": "mime_type",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_sharepoint"
+      }
+     ]
+    },
+    {
+     "name": "last_modified",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "sharepoint.drive_items",
+       "path": "last_modified",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_sharepoint"
+      }
+     ]
+    },
+    {
+     "name": "content_sha256",
+     "value_type": "identifier",
+     "identifier_kind": "content_sha256",
+     "description": "Equal bytes: a SharePoint file and any other captured file with its digest are copies, never merged; evidence they carry counts once (ontology/mentions.py confirmation_support).",
+     "sources": [
+      {
+       "binding": "sharepoint.drive_items",
+       "path": "content_sha256",
+       "parser": "identifier"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_sharepoint"
+      }
+     ]
+    },
+    {
+     "name": "content_status",
+     "value_type": "text",
+     "description": "captured, exceeds_cap or unavailable:<detail> (retried by later captures).",
+     "sources": [
+      {
+       "binding": "sharepoint.drive_items",
+       "path": "content_status",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_sharepoint"
+      }
+     ]
+    },
+    {
+     "name": "portal_metadata",
+     "value_type": "json",
+     "description": "What the Portal states in this version's own SharePoint listItem columns (stated-by-Portal, never a Workbench proposal): every Portal-taxonomy column of operating/doc_metadata_taxonomy.py COLUMNS once, filled ones under columns, absent (empty_or_not_provisioned: Graph omits an empty column), blank, unread or unsupported ones under gaps, cited to the listItem (citation.source_api, list_item_id, drive_etag). Read GET-only per version and bound to its eTag (taxonomy.stated_metadata); null when no snapshot of this version was read. A Ref column's record number is a mention of the file (SharePointFile.mentions_<type>). Never written to SharePoint.",
+     "sources": [
+      {
+       "binding": "sharepoint.drive_items",
+       "path": "portal_metadata",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_sharepoint"
+      }
+     ]
+    },
+    {
+     "name": "document_kind",
+     "value_type": "text",
+     "description": "The Workbench document kind a person confirmed for these bytes (operating/playbook_originals.py KINDS: ao_scan, proforma_invoice, ...); never a SharePoint column. Reviewed by a person, never inferred.",
+     "sources": [
+      {
+       "binding": "sharepoint.drive_items",
+       "path": "content_sha256",
+       "parser": "post_project",
+       "note": "Written by the kind-confirmation projection step (operating/kind_confirmation.py projection_step), not read from the capture: a person's current confirmation of this file (plx.document_fields mode request), bound to the same drive item, eTag and bytes (this path), valid from its confirmation until a later one supersedes it; lineage workbench."
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.kind_confirmation"
+      }
+     ]
+    },
+    {
+     "name": "document_category",
+     "value_type": "text",
+     "description": "The Portal DocumentCategory (portal/src/lib/storage/folder-taxonomy.ts) a person confirmed for these bytes: findable with plx.find object_type SharePointFile and a filter on it. A proposal for the SharePoint column, never written to SharePoint.",
+     "sources": [
+      {
+       "binding": "sharepoint.drive_items",
+       "path": "content_sha256",
+       "parser": "post_project",
+       "note": "Written by the kind-confirmation projection step (operating/kind_confirmation.py projection_step), not read from the capture: a person's current confirmation of this file (plx.document_fields mode request), bound to the same drive item, eTag and bytes (this path), valid from its confirmation until a later one supersedes it; lineage workbench."
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.kind_confirmation"
+      }
+     ]
+    },
+    {
+     "name": "proposed_portal_metadata",
+     "value_type": "json",
+     "description": "Every Portal-taxonomy column a person confirmed for these bytes (DocumentType, DocumentCategory, PartyRef, ...), the confirmed document kind and the confirmation id and time, as proposed SharePoint metadata: status proposed, written_to_sources false. The Workbench never writes it to SharePoint or the Portal.",
+     "sources": [
+      {
+       "binding": "sharepoint.drive_items",
+       "path": "content_sha256",
+       "parser": "post_project",
+       "note": "Written by the kind-confirmation projection step (operating/kind_confirmation.py projection_step), not read from the capture: a person's current confirmation of this file (plx.document_fields mode request), bound to the same drive item, eTag and bytes (this path), valid from its confirmation until a later one supersedes it; lineage workbench."
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.kind_confirmation"
+      }
+     ]
+    }
+   ],
+   "identity_keys": [
+    {
+     "name": "content_sha256",
+     "properties": [
+      "content_sha256"
+     ],
+     "identifier_kind": "content_sha256",
+     "tier": "verified",
+     "unique": false,
+     "scope": "cross_binding",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_sharepoint"
+      }
+     ]
+    }
+   ],
+   "display": [
+    "name"
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "ctx.documents"
+    },
+    {
+     "kind": "ref",
+     "id": "wb.capture_sharepoint"
+    }
+   ]
+  },
+  {
+   "id": "ContainerMember",
+   "description": "One member of a captured container file (a zip that is not an Office package, an .eml or an Outlook .msg; a mail attachment or a SharePoint file), nested containers recursively, cited <container handle>&member=<path>&member_sha256=<hex> (the member's own bytes inside the container's pinned bytes). Its text is the one reading of its bytes (integrations/captured_text.py) and is cited (row.content_text), never projected as a value. A member the extractor could not read (state unread, reason text_<status>) and every part of the container's structure that was not read (an encrypted or over-cap member, an undecoded .msg property: state unread or skipped_by_cap with its reason or cap) is a member too: a visible gap, never omitted. Same audience and validity interval as its container; every reader is gated by the container.",
+   "interfaces": [
+    "Document"
+   ],
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "graph_mail.container_members",
+     "source": "graph_mail",
+     "relation": "containerMembers",
+     "key": [
+      "mailbox",
+      "message_id",
+      "attachment_id",
+      "path"
+     ],
+     "lineage": {
+      "default": "mail"
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_mail"
+      },
+      {
+       "kind": "ref",
+       "id": "wb.container_members"
+      }
+     ],
+     "note": "One object per member path of a captured zip/.msg/.eml attachment (ontology/project_graph.py member_records); one version per attachment version."
+    },
+    {
+     "id": "sharepoint.container_members",
+     "source": "sharepoint",
+     "relation": "containerMembers",
+     "key": [
+      "drive_id",
+      "item_id",
+      "path"
+     ],
+     "lineage": {
+      "default": "sharepoint"
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_sharepoint"
+      },
+      {
+       "kind": "ref",
+       "id": "wb.container_members"
+      }
+     ],
+     "note": "One object per member path of a captured zip/.msg/.eml drive item (ontology/project_graph.py member_records); one version per drive item version."
+    }
+   ],
+   "properties": [
+    {
+     "name": "name",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "graph_mail.container_members",
+       "path": "name",
+       "parser": "as_is"
+      },
+      {
+       "binding": "sharepoint.container_members",
+       "path": "name",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.container_members"
+      }
+     ],
+     "authority": {
+      "precedence": [
+       {
+        "lineage": [
+         "mail",
+         "sharepoint"
+        ],
+        "evidence": [
+         {
+          "kind": "ref",
+          "id": "wb.container_members"
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "name": "path",
+     "value_type": "text",
+     "description": "The member's path inside its container (nested containers joined by !/); untrusted source text.",
+     "sources": [
+      {
+       "binding": "graph_mail.container_members",
+       "path": "path",
+       "parser": "as_is"
+      },
+      {
+       "binding": "sharepoint.container_members",
+       "path": "path",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.container_members"
+      }
+     ],
+     "authority": {
+      "precedence": [
+       {
+        "lineage": [
+         "mail",
+         "sharepoint"
+        ],
+        "evidence": [
+         {
+          "kind": "ref",
+          "id": "wb.container_members"
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "name": "state",
+     "value_type": "text",
+     "description": "read, container (its own members follow), unread (reason) or skipped_by_cap (reason names the cap).",
+     "sources": [
+      {
+       "binding": "graph_mail.container_members",
+       "path": "state",
+       "parser": "trim"
+      },
+      {
+       "binding": "sharepoint.container_members",
+       "path": "state",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.container_members"
+      }
+     ],
+     "authority": {
+      "precedence": [
+       {
+        "lineage": [
+         "mail",
+         "sharepoint"
+        ],
+        "evidence": [
+         {
+          "kind": "ref",
+          "id": "wb.container_members"
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "name": "reason",
+     "value_type": "text",
+     "description": "Why the member or part was not read: text_<extractor status> for a member file, else the part accounting reason (operating/use_case_parts.py REASONS) or cap.",
+     "sources": [
+      {
+       "binding": "graph_mail.container_members",
+       "path": "reason",
+       "parser": "trim"
+      },
+      {
+       "binding": "sharepoint.container_members",
+       "path": "reason",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.container_members"
+      }
+     ],
+     "authority": {
+      "precedence": [
+       {
+        "lineage": [
+         "mail",
+         "sharepoint"
+        ],
+        "evidence": [
+         {
+          "kind": "ref",
+          "id": "wb.container_members"
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "name": "kind",
+     "value_type": "text",
+     "description": "file for a member file, else the kind of the part not read (operating/use_case_parts.py KINDS).",
+     "sources": [
+      {
+       "binding": "graph_mail.container_members",
+       "path": "kind",
+       "parser": "trim"
+      },
+      {
+       "binding": "sharepoint.container_members",
+       "path": "kind",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.container_members"
+      }
+     ],
+     "authority": {
+      "precedence": [
+       {
+        "lineage": [
+         "mail",
+         "sharepoint"
+        ],
+        "evidence": [
+         {
+          "kind": "ref",
+          "id": "wb.container_members"
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "name": "content_sha256",
+     "value_type": "identifier",
+     "identifier_kind": "content_sha256",
+     "description": "SHA-256 of the member's bytes (null for a part read without bytes). Equal bytes: a member and any other captured file with its digest are copies, never merged; evidence they carry counts once (ontology/mentions.py confirmation_support).",
+     "sources": [
+      {
+       "binding": "graph_mail.container_members",
+       "path": "content_sha256",
+       "parser": "identifier"
+      },
+      {
+       "binding": "sharepoint.container_members",
+       "path": "content_sha256",
+       "parser": "identifier"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.container_members"
+      }
+     ],
+     "authority": {
+      "precedence": [
+       {
+        "lineage": [
+         "mail",
+         "sharepoint"
+        ],
+        "evidence": [
+         {
+          "kind": "ref",
+          "id": "wb.container_members"
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "name": "mime_type",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "graph_mail.container_members",
+       "path": "mime_type",
+       "parser": "trim"
+      },
+      {
+       "binding": "sharepoint.container_members",
+       "path": "mime_type",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.container_members"
+      }
+     ],
+     "authority": {
+      "precedence": [
+       {
+        "lineage": [
+         "mail",
+         "sharepoint"
+        ],
+        "evidence": [
+         {
+          "kind": "ref",
+          "id": "wb.container_members"
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "name": "size",
+     "value_type": "integer",
+     "sources": [
+      {
+       "binding": "graph_mail.container_members",
+       "path": "size",
+       "parser": "integer_text"
+      },
+      {
+       "binding": "sharepoint.container_members",
+       "path": "size",
+       "parser": "integer_text"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.container_members"
+      }
+     ],
+     "authority": {
+      "precedence": [
+       {
+        "lineage": [
+         "mail",
+         "sharepoint"
+        ],
+        "evidence": [
+         {
+          "kind": "ref",
+          "id": "wb.container_members"
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ],
+   "identity_keys": [
+    {
+     "name": "content_sha256",
+     "properties": [
+      "content_sha256"
+     ],
+     "identifier_kind": "content_sha256",
+     "tier": "verified",
+     "unique": false,
+     "scope": "cross_binding",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.container_members"
+      }
+     ]
+    }
+   ],
+   "display": [
+    "name"
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "ctx.documents"
+    },
+    {
+     "kind": "ref",
+     "id": "wb.container_members"
+    }
+   ]
+  }
+ ],
+ "link_types": [
+  {
+   "id": "Attachment.attached_to",
+   "from": "Attachment",
+   "to": "Email",
+   "name": "attached_to",
+   "reverse_name": "attachments",
+   "cardinality": "N:1",
+   "description": "The message an attachment was captured with (Graph structure: the attachment's message id; Graph immutable ids are unique across mailboxes, and a key that ever named two messages makes the link an ambiguous lead, never a guess).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "graph_mail.attachments",
+     "to_binding": "graph_mail.messages",
+     "pairs": [
+      {
+       "from": "message_id",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_mail"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "ContainerMember.in_attachment",
+   "from": "ContainerMember",
+   "to": "Attachment",
+   "name": "in_attachment",
+   "reverse_name": "members",
+   "cardinality": "N:1",
+   "description": "The captured mail attachment a member was read from (the attachment id copied from the container record; Graph attachment ids embed their message's, and a key that ever named two attachments makes the link an ambiguous lead, never a guess).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "graph_mail.container_members",
+     "to_binding": "graph_mail.attachments",
+     "pairs": [
+      {
+       "from": "attachment_id",
+       "to": "attachment_id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.container_members"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "ContainerMember.in_file",
+   "from": "ContainerMember",
+   "to": "SharePointFile",
+   "name": "in_file",
+   "reverse_name": "members",
+   "cardinality": "N:1",
+   "description": "The captured SharePoint file a member was read from (the drive item id copied from the container record).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "sharepoint.container_members",
+     "to_binding": "sharepoint.drive_items",
+     "pairs": [
+      {
+       "from": "item_id",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.container_members"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "Email.sent_by_supplier",
+   "from": "Email",
+   "to": "Supplier",
+   "name": "sent_by_supplier",
+   "reverse_name": "sent_emails",
+   "cardinality": "N:M",
+   "description": "The Supplier whose party sent this message: the sender address scored against the supplier's website domain, its name and a BC contact holding the address (ontology/identity_scoring.py mail_sender). Reviewed only: no score links a message by itself.",
+   "bindings": [
+    {
+     "kind": "reviewed",
+     "tier_ceiling": "reviewed",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.identity_scoring"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "Email.sent_by_customer",
+   "from": "Email",
+   "to": "Customer",
+   "name": "sent_by_customer",
+   "reverse_name": "sent_emails",
+   "cardinality": "N:M",
+   "description": "The Customer whose party sent this message: the sender address scored against the customer's name and a BC contact holding the address (ontology/identity_scoring.py mail_sender). Reviewed only: no score links a message by itself.",
+   "bindings": [
+    {
+     "kind": "reviewed",
+     "tier_ceiling": "reviewed",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.identity_scoring"
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "event_types": [
+  {
+   "id": "Email.received",
+   "object_type": "Email",
+   "description": "The message arrived in the captured mailbox (Graph receivedDateTime).",
+   "time_basis": "source_recorded",
+   "time": {
+    "binding": "graph_mail.messages",
+    "path": "received_at",
+    "parser": "iso_timestamp"
+   },
+   "qualifiers": [
+    {
+     "qualifier": "email",
+     "object_type": "Email",
+     "via": "self"
+    }
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "wb.capture_mail"
+    }
+   ]
+  }
+ ],
+ "evidence_catalog": {
+  "wb.capture_mail": {
+   "kind": "workbench_code",
+   "path": "integrations/capture_mail.py",
+   "note": "MailCaptureStore: one row per message version interval keyed by graph-mail://<mailbox>/<message>@<changeKey>; attachments byte-pinned; per-reader mailbox audience."
+  },
+  "wb.capture_sharepoint": {
+   "kind": "workbench_code",
+   "path": "integrations/capture_sharepoint.py",
+   "note": "SharePointCaptureStore: one row per drive-item version interval keyed by sharepoint://<drive>/<item>@<eTag>; bytes and extracted text byte-pinned; per-reader path keys and item permissions recorded at capture."
+  },
+  "wb.graph_read_drive": {
+   "kind": "workbench_code",
+   "path": "integrations/graph_read.py",
+   "note": "GET-only SharePoint drive reader record (drive_id, id, eTag, name, path, size, mime_type, last_modified)."
+  },
+  "wb.mentions": {
+   "kind": "workbench_code",
+   "path": "ontology/mentions.py",
+   "note": "Identifier mentions extracted by the one identifier grammar and resolved through the identifier index; stored as lead links (store_mention_links)."
+  },
+  "ctx.documents": {
+   "kind": "context_pack",
+   "ref": "docs/reference/ontology-design.md#C.2",
+   "note": "Document interface (Email, Attachment, SharePointFile); Document attached_to Email."
+  },
+  "ctx.mentions": {
+   "kind": "context_pack",
+   "ref": "docs/reference/ontology-design.md#C.2",
+   "note": "Document mentions any object: mention resolution (lead/corroborated)."
+  },
+  "wb.kind_confirmation": {
+   "kind": "workbench_code",
+   "path": "operating/kind_confirmation.py",
+   "note": "KindConfirmations: a person's confirmation of an original's document kind and Portal-taxonomy columns (MCP elicitation form), in the Workbench's own store; projection_step writes the current one onto the SharePointFile version with the same item, eTag and bytes."
+  },
+  "wb.container_members": {
+   "kind": "workbench_code",
+   "path": "ontology/project_graph.py",
+   "note": "member_records / member_documents: the members of captured zip/.msg/.eml files through operating/use_case_parts.py members and integrations/captured_text.py container_members; unread parts are member records with their reason."
+  },
+  "wb.identity_scoring": {
+   "kind": "workbench_code",
+   "path": "ontology/identity_scoring.py",
+   "note": "Weighted identity candidates (Fellegi-Sunter: blocking, field comparison levels, m/u from verified and reviewed pairs) offered for a person's review; a link exists only once plx.review records the decision, projected by ontology/reviews.py link_step as reviewed."
+  }
+ }
+}

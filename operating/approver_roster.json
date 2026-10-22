@@ -1,0 +1,23 @@
+{
+ "schema": "plx-approver-roster/v1",
+ "note": "The default approver roster (2026-10-05): who approves each Workbench action type, as operating/goal2_mc_approval.load_approver_roster reads it against operating/action_catalog.json (action_types \"all\" = every type the catalog declares). The same people are the MC admin/owner roster that re-checks gate deciders (mc_role), with the same action_types; an mc_role is recorded only with mc_role_source, and while no source states a person's MC role both are null: that person approves per call but decides no MC gate (decider_not_in_mc_roster). One rule for every approver, so a decider counts only for the types listed for them, a type-scoped approver approves its types per call at any host, and an empty list approves nothing. An oid is the person's Entra object id, recorded only with oid_source (where it was read: a read-only Graph /users lookup in the credentialed environment, who and when); it is never invented. While it is null, a host that serves actions resolves it at its start from the entry's UPN (its key) through the GET-only Graph /users read into its own state directory, never into this file (integrations/graph_directory.resolve_roster); while neither holds one the approver is refused: call_approver_oid_unknown for a per-call approval, decider_oid_unknown for an MC decision (operating/action_path.py). Vince can change this roster.",
+ "source_ref": "2026-10-05: default roster = Vince Alton as approver for every Workbench action type; Vince can change it later; 2026-10-14: Tanush and Vince are the Goal-2 approvers; UPN tanush@petrasoap.com",
+ "approvers": {
+  "vince@petrasoap.com": {
+   "name": "Vince Alton",
+   "mc_role": "owner",
+   "mc_role_source": "PLX_MC src/lib/mc-data/data.ts:87 @ eeb7db7 (Vince Alton, role Owner, vince@petrasoap.com); MC itself still decides who holds approval.decide",
+   "oid": null,
+   "oid_source": null,
+   "action_types": "all"
+  },
+  "tanush@petrasoap.com": {
+   "name": "Tanush Shah",
+   "mc_role": null,
+   "mc_role_source": null,
+   "oid": null,
+   "oid_source": null,
+   "action_types": "all"
+  }
+ }
+}

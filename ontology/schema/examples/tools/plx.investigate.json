@@ -1,0 +1,749 @@
+{
+  "tool": "plx.investigate",
+  "examples": [
+    {
+      "name": "answerable chain",
+      "input": {
+        "family": "chain",
+        "root": {
+          "identifier": "SO-2099-0001",
+          "identifier_kind": "so_number"
+        }
+      },
+      "output": {
+        "procedure": "procedure:chain@64879f7d6b960a01",
+        "answerability": {
+          "state": "partial",
+          "reasons": [
+            "customer_po_absent"
+          ]
+        },
+        "root": {
+          "object_id": "SalesOrder:portal.app_sales_order:ex-so-1",
+          "object_type": "SalesOrder",
+          "display": {
+            "untrusted_text": "SO-2099-0001",
+            "origin": {
+              "citation": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42",
+              "field_path": "row.order_number"
+            }
+          },
+          "lineage": "gold_etl_from_fm"
+        },
+        "chain": {
+          "objects": [
+            {
+              "object_id": "SalesOrder:portal.app_sales_order:ex-so-1",
+              "object_type": "SalesOrder",
+              "display": {
+                "untrusted_text": "SO-2099-0001",
+                "origin": {
+                  "citation": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42",
+                  "field_path": "row.order_number"
+                }
+              },
+              "lineage": "gold_etl_from_fm"
+            },
+            {
+              "object_id": "Customer:portal.app_customer:fm-cust-7",
+              "object_type": "Customer",
+              "display": {
+                "untrusted_text": "Example Cosmetics Ltd",
+                "origin": {
+                  "citation": "api://public.app_customer/%7B%22id%22%3A%22fm-cust-7%22%7D@0123456789abcdef-45",
+                  "field_path": "row.company_name"
+                }
+              },
+              "lineage": "gold_etl_from_fm"
+            },
+            {
+              "object_id": "SalesOrder:portal.fm_order_entry:900123",
+              "object_type": "SalesOrder",
+              "display": null,
+              "lineage": "gold_native_staging"
+            }
+          ],
+          "edges": [
+            {
+              "link_id": "lnk-8b5cc4df7eec7d32",
+              "link_type": "SalesOrder.ordered_by",
+              "from": "SalesOrder:portal.app_sales_order:ex-so-1",
+              "to": "Customer:portal.app_customer:fm-cust-7",
+              "tier": "verified",
+              "reason": [
+                {
+                  "feature": "fk_customer_id",
+                  "agrees": true,
+                  "citations": [
+                    {
+                      "l1_handle": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42",
+                      "field_path": "row.customer_id",
+                      "digest": "1da6be6150c2725bdc78028f07b807c44e3e16c38679f3f8682cd6f27647a450",
+                      "lineage": "gold_etl_from_fm"
+                    },
+                    {
+                      "l1_handle": "api://public.app_customer/%7B%22id%22%3A%22fm-cust-7%22%7D@0123456789abcdef-45",
+                      "field_path": "row.id",
+                      "digest": "5ff4d8168bc51c1ef5b96962514075ef25ede541efff79cacd87172c3ac39e0b",
+                      "lineage": "gold_etl_from_fm"
+                    }
+                  ]
+                }
+              ],
+              "why_not": []
+            },
+            {
+              "link_id": "lnk-ac0f09c0f8bf5e7a",
+              "link_type": "SalesOrder.same_record_as",
+              "from": "SalesOrder:portal.app_sales_order:ex-so-1",
+              "to": "SalesOrder:portal.fm_order_entry:900123",
+              "tier": "verified",
+              "reason": [
+                {
+                  "feature": "custom_fields_fm_id",
+                  "agrees": true,
+                  "citations": [
+                    {
+                      "l1_handle": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42",
+                      "field_path": "row.custom_fields.fmId",
+                      "digest": "10d9bfc42f399164177f8125646ee81f5988e2152835bd576d32cf4dad4d8e36",
+                      "lineage": "gold_etl_from_fm"
+                    },
+                    {
+                      "l1_handle": "api://public.order_entry/%7B%22id%22%3A900123%7D@0123456789abcdef-44",
+                      "field_path": "row.id",
+                      "digest": "0e14e085a9008dbe9ae5f9a3ce3ab0687dc8baf1cbe8290e83a912d38f90fa84",
+                      "lineage": "gold_native_staging"
+                    }
+                  ]
+                }
+              ],
+              "why_not": [
+                {
+                  "feature": "bc_number_text_match",
+                  "agrees": null,
+                  "weight": 2.0
+                }
+              ]
+            }
+          ]
+        },
+        "values": [
+          {
+            "property": "total_amount",
+            "value_type": "money",
+            "value": "1250.50",
+            "currency": "CAD",
+            "citation": {
+              "l1_handle": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42",
+              "field_path": "row.total_amount",
+              "digest": "9bdd1080c047baefbeff07851d548876b8bc65d1d3dbd1574d7f11aeecc2e339",
+              "lineage": "gold_etl_from_fm"
+            },
+            "authority_rank": 0,
+            "markings": [
+              "finance"
+            ]
+          },
+          {
+            "property": "ordered_quantity",
+            "value_type": "quantity",
+            "value": "1920",
+            "unit": "each",
+            "quantity_role": "ordered",
+            "citation": {
+              "l1_handle": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42",
+              "field_path": "row.custom_fields.totalQuantity",
+              "digest": "146d17af168f5260311952fff1a5ab31eb9a141a29fb93f8a2b753d963fad7ed",
+              "lineage": "gold_etl_from_fm"
+            },
+            "authority_rank": 0,
+            "markings": []
+          },
+          {
+            "property": "quantity",
+            "value_type": "quantity",
+            "value": "1920",
+            "unit": null,
+            "quantity_role": "ordered",
+            "unit_gap": {
+              "state": "unknown",
+              "reason": "unit_unknown",
+              "subject": "SalesOrderLine.quantity",
+              "detail": "The FM line quantity is in the finished product's unit, which the line does not record."
+            },
+            "citation": {
+              "l1_handle": "api://public.order_entry_item/%7B%22id%22%3A900500%7D@0123456789abcdef-46",
+              "field_path": "row.qty",
+              "digest": "e39b2543d0e3f1d568f8a2a7821a2074c5f19bf956208cbddb15b547d00c2bb5",
+              "lineage": "gold_native_staging"
+            },
+            "authority_rank": null,
+            "markings": []
+          }
+        ],
+        "gaps": [
+          {
+            "state": "absent_in_source",
+            "reason": "no_match",
+            "subject": "SalesOrder.customer_po",
+            "searched": {
+              "sources": [
+                "portal_api",
+                "graph_mail"
+              ],
+              "scopes": [
+                "public.app_sales_order",
+                "public.order_entry",
+                "purchase-order inbox"
+              ],
+              "since": "2098-10-01",
+              "until": "2099-01-02",
+              "queries": [
+                "SO-2099-0001"
+              ]
+            }
+          }
+        ],
+        "conflicts": [],
+        "steps": {
+          "used": 4,
+          "budget": 12
+        },
+        "completeness": {
+          "complete": true,
+          "truncated": false,
+          "returned": 3,
+          "total": 3,
+          "next_cursor": null
+        },
+        "meta": {
+          "schema_digest": "df0ad6e43880f09c90ebf95f19110178aba6890df0010ebda7485029e2b543b4",
+          "as_known_at": "2099-01-02T03:04:05Z",
+          "freshness": [
+            {
+              "source": "portal_api",
+              "captured_at": "2099-01-02T03:00:00Z",
+              "lag_seconds": 245,
+              "completeness": "complete",
+              "stale": false
+            }
+          ],
+          "procedure": "procedure:chain@64879f7d6b960a01"
+        },
+        "answer": [
+          {
+            "name": "ordered",
+            "kind": "property",
+            "value": "1920",
+            "value_type": "quantity",
+            "object_id": "SalesOrder:portal.app_sales_order:ex-so-1",
+            "object_type": "SalesOrder",
+            "property": "ordered_quantity",
+            "quantity_role": "ordered",
+            "unit": "each",
+            "citation": {
+              "l1_handle": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42",
+              "field_path": "row.custom_fields.totalQuantity",
+              "digest": "146d17af168f5260311952fff1a5ab31eb9a141a29fb93f8a2b753d963fad7ed",
+              "lineage": "gold_etl_from_fm"
+            },
+            "check": "passed"
+          },
+          {
+            "name": "customer_count",
+            "kind": "count",
+            "value": 1,
+            "object_type": "Customer",
+            "basis": [
+              "Customer:portal.app_customer:fm-cust-7"
+            ],
+            "check": "not_applicable"
+          }
+        ],
+        "claim_checks": {
+          "checked": true,
+          "passed": true,
+          "claims": 1,
+          "failures": []
+        },
+        "trace": [
+          {
+            "step": "root",
+            "tool": "plx.find",
+            "status": "ok",
+            "calls": 1,
+            "objects": 1
+          },
+          {
+            "step": "customer",
+            "tool": "plx.around",
+            "status": "ok",
+            "calls": 1,
+            "objects": 1
+          },
+          {
+            "step": "root_read",
+            "tool": "plx.object",
+            "status": "ok",
+            "calls": 1,
+            "objects": 1
+          },
+          {
+            "step": "invoices",
+            "tool": "plx.documents",
+            "status": "step_unavailable",
+            "calls": 0,
+            "objects": 0
+          }
+        ]
+      }
+    },
+    {
+      "name": "ambiguous root",
+      "input": {
+        "family": "chain",
+        "root": {
+          "identifier": "SO-2099-0001"
+        }
+      },
+      "output": {
+        "procedure": "procedure:chain@64879f7d6b960a01",
+        "answerability": {
+          "state": "blocked",
+          "reasons": [
+            "ambiguous_root"
+          ]
+        },
+        "candidates": [
+          {
+            "object": {
+              "object_id": "SalesOrder:portal.app_sales_order:ex-so-1",
+              "object_type": "SalesOrder",
+              "display": {
+                "untrusted_text": "SO-2099-0001",
+                "origin": {
+                  "citation": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42",
+                  "field_path": "row.order_number"
+                }
+              },
+              "lineage": "gold_etl_from_fm"
+            },
+            "rank": 1,
+            "tier": "verified",
+            "reason": "exact_identifier",
+            "matched": {
+              "identifier_kind": "so_number",
+              "normalized": "SO-2099-0001",
+              "raw": {
+                "untrusted_text": "SO-2099-0001",
+                "origin": {
+                  "citation": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42",
+                  "field_path": "row.order_number"
+                }
+              },
+              "property": "order_number",
+              "binding": "portal.app_sales_order",
+              "role": "primary"
+            }
+          },
+          {
+            "object": {
+              "object_id": "SalesOrder:portal.app_sales_order:ex-so-2",
+              "object_type": "SalesOrder",
+              "display": {
+                "untrusted_text": "SO-2099-0002",
+                "origin": {
+                  "citation": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-2%22%7D@0123456789abcdef-43",
+                  "field_path": "row.order_number"
+                }
+              },
+              "lineage": "gold_native_staging"
+            },
+            "rank": 2,
+            "tier": "lead",
+            "reason": "alias_match",
+            "matched": {
+              "identifier_kind": "so_number",
+              "normalized": "SO-2099-0001",
+              "raw": {
+                "untrusted_text": "SO-2099-0001",
+                "origin": {
+                  "citation": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-2%22%7D@0123456789abcdef-43",
+                  "field_path": "row.custom_fields.fmOeNumber"
+                }
+              },
+              "property": "order_number",
+              "binding": "portal.app_sales_order",
+              "role": "alias"
+            }
+          }
+        ],
+        "chain": {
+          "objects": [],
+          "edges": []
+        },
+        "values": [],
+        "gaps": [],
+        "conflicts": [],
+        "steps": {
+          "used": 1,
+          "budget": 12
+        },
+        "completeness": {
+          "complete": true,
+          "truncated": false,
+          "returned": 0,
+          "total": 0,
+          "next_cursor": null
+        },
+        "meta": {
+          "schema_digest": "df0ad6e43880f09c90ebf95f19110178aba6890df0010ebda7485029e2b543b4",
+          "as_known_at": "2099-01-02T03:04:05Z",
+          "freshness": [
+            {
+              "source": "portal_api",
+              "captured_at": "2099-01-02T03:00:00Z",
+              "lag_seconds": 245,
+              "completeness": "complete",
+              "stale": false
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "no plan",
+      "input": {
+        "family": "F9",
+        "root": {
+          "identifier": "SO-2099-0001",
+          "identifier_kind": "so_number"
+        }
+      },
+      "output": {
+        "error": {
+          "code": "no_plan",
+          "message": "no plan for family F9",
+          "hint": "plans: F1, F2, F3, F4, chain, customer_po_status, order_quantities, three_way_match"
+        },
+        "suggested_calls": [
+          {
+            "tool": "plx.find",
+            "arguments": {
+              "query": "SO-2099-0001",
+              "identifier_kind": "so_number"
+            },
+            "why": "resolve_root"
+          }
+        ],
+        "meta": {
+          "schema_digest": "df0ad6e43880f09c90ebf95f19110178aba6890df0010ebda7485029e2b543b4",
+          "as_known_at": "2099-01-02T03:04:05Z",
+          "freshness": []
+        }
+      }
+    },
+    {
+      "name": "landed cost, a later page of a paged answer",
+      "input": {
+        "family": "landed_cost",
+        "root": {
+          "identifier": "PO100912"
+        },
+        "as_known_at": "2099-01-02T04:00:00Z",
+        "cursor": "eyJwIjoyLCJzIjo1LCJkIjoiYWNhOTRjYjIxMDU4ODgyOSIsImYiOiJlYTI4ZDZlNWE0NjM4MTA3In0"
+      },
+      "output": {
+        "procedure": "procedure:landed_cost@b09c1e0afe7e5c20",
+        "answerability": {
+          "state": "partial",
+          "reasons": [
+            "lead_tier_links_followed",
+            "missing_landed_cost",
+            "receipt_actual_not_read",
+            "tariff_treatment_unverified"
+          ]
+        },
+        "chain": {
+          "objects": [],
+          "edges": []
+        },
+        "values": [],
+        "gaps": [
+          {
+            "state": "not_ingested",
+            "reason": "tariff_treatment_unverified",
+            "subject": "duty of landed_cost_line_1, landed_cost_line_2, landed_cost_line_3, landed_cost_line_4, landed_cost_line_5, landed_cost_line_6, landed_cost_line_7, landed_cost_line_8, landed_cost_line_9, landed_cost_line_10, landed_cost_line_11, landed_cost_line_12",
+            "detail": "TARIFF_TREATMENT_UNVERIFIED: no cited HS classification and duty rate for this item; the header records no duty; an HS code is cited for the item; the ontology projects no duty rate (who can answer: Finance (customs broker))",
+            "searched": {
+              "sources": [
+                "PurchaseOrder.duties_cost_estimate",
+                "Product.hs_code",
+                "Receipt.duties_cost_actual"
+              ]
+            }
+          }
+        ],
+        "conflicts": [],
+        "steps": {
+          "used": 21,
+          "budget": 64
+        },
+        "completeness": {
+          "complete": false,
+          "truncated": true,
+          "returned": 0,
+          "total": 14,
+          "next_cursor": "eyJwIjozLCJzIjoxMCwiZCI6ImFjYTk0Y2IyMTA1ODg4MjkiLCJmIjoiZWEyOGQ2ZTVhNDYzODEwNyJ9",
+          "reason": "answer_paged"
+        },
+        "meta": {
+          "schema_digest": "6d353f42bc61cceef1f7325e2ab3d3b0112f59b6b8b3c4056ecfa6cbce4e5dc5",
+          "as_known_at": "2099-01-02T04:00:00Z",
+          "freshness": [
+            {
+              "captured_at": "2099-01-02T04:00:00.000000Z",
+              "completeness": "partial",
+              "lag_seconds": null,
+              "source": "portal_api",
+              "stale": false
+            }
+          ],
+          "procedure": "procedure:landed_cost@b09c1e0afe7e5c20"
+        },
+        "answer": [
+          {
+            "name": "po_currency",
+            "kind": "property",
+            "value": {
+              "untrusted_text": "USD",
+              "origin": {
+                "citation": "api://public.app_purchase_order/%7B%22id%22%3A%22fx-po-n%22%7D@c1277c01631baa7d-2",
+                "field_path": "row.currency"
+              }
+            },
+            "value_type": "text",
+            "object_id": "PurchaseOrder:portal.app_purchase_order:{\"id\":\"fx-po-n\"}",
+            "object_type": "PurchaseOrder",
+            "property": "currency",
+            "citation": {
+              "l1_handle": "api://public.app_purchase_order/%7B%22id%22%3A%22fx-po-n%22%7D@c1277c01631baa7d-2",
+              "field_path": "row.currency",
+              "digest": "ca4013b7d6157f79c6cb999aa353143ac46cca094ad589e90c40b8ea8fe2de97",
+              "lineage": "gold_native_staging"
+            },
+            "check": "passed"
+          },
+          {
+            "name": "freight_estimate",
+            "kind": "property",
+            "value": "100.0",
+            "value_type": "money",
+            "object_id": "PurchaseOrder:portal.app_purchase_order:{\"id\":\"fx-po-n\"}",
+            "object_type": "PurchaseOrder",
+            "property": "shipping_cost_estimate",
+            "citation": {
+              "l1_handle": "api://public.app_purchase_order/%7B%22id%22%3A%22fx-po-n%22%7D@c1277c01631baa7d-2",
+              "field_path": "row.shipping_cost",
+              "digest": "ca4013b7d6157f79c6cb999aa353143ac46cca094ad589e90c40b8ea8fe2de97",
+              "lineage": "gold_native_staging"
+            },
+            "check": "passed",
+            "currency": "USD"
+          },
+          {
+            "name": "unit_price_6",
+            "kind": "property",
+            "value": "1.5",
+            "value_type": "money",
+            "object_id": "PurchaseOrderLine:portal.app_purchase_order_line:{\"id\":\"fx-pol-n-3\"}",
+            "object_type": "PurchaseOrderLine",
+            "property": "unit_price",
+            "citation": {
+              "l1_handle": "api://public.app_purchase_order_line/%7B%22id%22%3A%22fx-pol-n-3%22%7D@c1277c01631baa7d-3",
+              "field_path": "row.unit_price",
+              "digest": "9443142a84b90c633bde91a4926fa9242e5d8de17d9cda38a005a8729cb991cc",
+              "lineage": "gold_native_staging"
+            },
+            "check": "passed",
+            "unit": "ea",
+            "currency": "USD",
+            "lead_basis": true
+          },
+          {
+            "name": "ordered_6",
+            "kind": "property",
+            "value": "10.0",
+            "value_type": "quantity",
+            "object_id": "PurchaseOrderLine:portal.app_purchase_order_line:{\"id\":\"fx-pol-n-3\"}",
+            "object_type": "PurchaseOrderLine",
+            "property": "ordered_quantity",
+            "citation": {
+              "l1_handle": "api://public.app_purchase_order_line/%7B%22id%22%3A%22fx-pol-n-3%22%7D@c1277c01631baa7d-3",
+              "field_path": "row.quantity",
+              "digest": "9443142a84b90c633bde91a4926fa9242e5d8de17d9cda38a005a8729cb991cc",
+              "lineage": "gold_native_staging"
+            },
+            "check": "unverified",
+            "quantity_role": "ordered",
+            "unit": "ea",
+            "lead_basis": true,
+            "code": "claim_role_unverified"
+          },
+          {
+            "name": "received_6",
+            "kind": "property",
+            "value": "10.0",
+            "value_type": "quantity",
+            "object_id": "PurchaseOrderLine:portal.app_purchase_order_line:{\"id\":\"fx-pol-n-3\"}",
+            "object_type": "PurchaseOrderLine",
+            "property": "received_quantity",
+            "citation": {
+              "l1_handle": "api://public.app_purchase_order_line/%7B%22id%22%3A%22fx-pol-n-3%22%7D@c1277c01631baa7d-3",
+              "field_path": "row.quantity_received",
+              "digest": "9443142a84b90c633bde91a4926fa9242e5d8de17d9cda38a005a8729cb991cc",
+              "lineage": "gold_native_staging"
+            },
+            "check": "unverified",
+            "quantity_role": "received",
+            "unit": "ea",
+            "lead_basis": true,
+            "code": "claim_role_unverified"
+          },
+          {
+            "name": "hs_code",
+            "kind": "property",
+            "value": {
+              "untrusted_text": "3923.30",
+              "origin": {
+                "citation": "api://public.app_product/%7B%22id%22%3A%22fx-p-btl%22%7D@c1277c01631baa7d-1",
+                "field_path": "row.hs_code"
+              }
+            },
+            "value_type": "text",
+            "object_id": "Product:portal.app_product:{\"id\":\"fx-p-btl\"}",
+            "object_type": "Product",
+            "property": "hs_code",
+            "citation": {
+              "l1_handle": "api://public.app_product/%7B%22id%22%3A%22fx-p-btl%22%7D@c1277c01631baa7d-1",
+              "field_path": "row.hs_code",
+              "digest": "e0ebdeeb6895e939c8bcbd29b1d761f09637d7a35454cbb9b9dbee365775e205",
+              "lineage": "gold_native_staging"
+            },
+            "check": "passed",
+            "lead_basis": true
+          },
+          {
+            "name": "landed_cost",
+            "kind": "computed",
+            "value": null,
+            "inputs": [
+              "landed_cost_line_1",
+              "landed_cost_line_2",
+              "landed_cost_line_3",
+              "landed_cost_line_4",
+              "landed_cost_line_5",
+              "landed_cost_line_6",
+              "landed_cost_line_7",
+              "landed_cost_line_8",
+              "landed_cost_line_9",
+              "landed_cost_line_10",
+              "landed_cost_line_11",
+              "landed_cost_line_12"
+            ],
+            "steps": [
+              "12 of 12 line(s) have no computed landed cost; no purchase order total is stated",
+              "cost treatment: analytic_estimate_not_item_cost; expense (ERP-D-015, Approved 2026-09-10): freight and duty post to Sage G/L (packaging freight 41130, packaging duty 41131)"
+            ],
+            "check": "not_applicable",
+            "unit": "USD",
+            "currency": "USD",
+            "lead_basis": true
+          },
+          {
+            "name": "landed_cost_line_6",
+            "kind": "computed",
+            "value": null,
+            "inputs": [
+              "unit_price_6",
+              "ordered_6",
+              "received_6",
+              "freight_estimate",
+              "hs_code"
+            ],
+            "steps": [
+              "goods total: goods * qty [goods=1.5 USD/ea, qty=10 ea] = 15 USD",
+              "freight total: freight * qty [freight=0.8333 USD/ea, qty=10 ea] = 8.333 USD",
+              "duty: UNKNOWN (TARIFF_TREATMENT_UNVERIFIED: see the gaps)",
+              "receipt_actual: UNKNOWN (RECEIPT_ACTUAL_NOT_READ: see the gaps)",
+              "known subtotal: goods + freight [freight=8.333 USD, goods=15 USD] = 23.333 USD"
+            ],
+            "basis": [
+              "Product:portal.app_product:{\"id\":\"fx-p-btl\"}",
+              "PurchaseOrder:portal.app_purchase_order:{\"id\":\"fx-po-n\"}",
+              "PurchaseOrderLine:portal.app_purchase_order_line:{\"id\":\"fx-pol-n-3\"}"
+            ],
+            "check": "not_applicable",
+            "unit": "USD/ea",
+            "currency": "USD",
+            "digest": "f522fe5d831b281300c4891d1deecccdb8840200a2bf7d37e14fa95ec59d2fa5",
+            "lead_basis": true
+          }
+        ],
+        "claim_checks": {
+          "checked": true,
+          "passed": true,
+          "claims": 39,
+          "failures": []
+        },
+        "trace": [
+          {
+            "step": "root",
+            "tool": "plx.find",
+            "status": "ok",
+            "calls": 1,
+            "objects": 1
+          },
+          {
+            "step": "root_read",
+            "tool": "plx.object",
+            "status": "ok",
+            "calls": 1,
+            "objects": 1
+          },
+          {
+            "step": "twins",
+            "tool": "plx.around",
+            "status": "ok",
+            "calls": 1,
+            "objects": 0
+          }
+        ],
+        "root": {
+          "object_id": "PurchaseOrder:portal.app_purchase_order:{\"id\":\"fx-po-n\"}",
+          "object_type": "PurchaseOrder",
+          "display": {
+            "untrusted_text": "PO100912",
+            "origin": {
+              "citation": "api://public.app_purchase_order/%7B%22id%22%3A%22fx-po-n%22%7D@c1277c01631baa7d-2",
+              "field_path": "row.po_number"
+            }
+          },
+          "lineage": "gold_native_staging"
+        },
+        "withheld": {
+          "properties": null,
+          "objects": null,
+          "reason": "marking_and_audience"
+        },
+        "answer_page": {
+          "page": 2,
+          "pages": 3,
+          "returned": 8,
+          "total": 53
+        }
+      }
+    }
+  ]
+}

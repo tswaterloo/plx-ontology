@@ -1,0 +1,6962 @@
+{
+ "portal_commit": "d4d1bb247708052ddacf78ed4f47bcba0a27c375",
+ "portal_src_files": {
+  "portal/src/lib/costing/landed-cost.ts": "4a8272e66698216b8d91462d828bc53ee9e085973824f42f6ca2f7a78b39a3f5",
+  "portal/src/lib/costing/cost-estimate.ts": "796b5a438633dfbf34cca2589805da11632d23e22cee60eb5190e6e21ffab123",
+  "portal/src/lib/costing/rate-masters.ts": "5c12425067e4b7f3501e44da634986168adb5188a4863daf3e108a31b939c340",
+  "portal/src/lib/costing/margin-ladder.ts": "e526b449acbbc9a02a74a868af6925c1d7ed911f72ee67a0d0d3686dfc738d2a",
+  "portal/src/lib/costing/uptime-overhead.ts": "c6cc9e2150f44a2f82a4e7244b7fcd1cc4942a1d417f9c85e65f31b3e4710e2e",
+  "portal/src/lib/costing/volume-tiers.ts": "0e3380708edcd31adcbb75a257c21b747d7e5a5f556fe952c81f3de9d526fd9b",
+  "portal/src/lib/costing/template-cost-matrix.ts": "8d1f446f6f212b38fecdaca668e9b93f176214570b93fa4a0deb8c9d04a9e941",
+  "portal/src/lib/costing/ready-to-quote.ts": "81164486eb1951133c3ac81cc3d824ee338abcf65e224c867673b6d3f46cd61e",
+  "portal/src/lib/costing/bom-total.ts": "25601ecc777453b3d790f6e2a699750f345995162d745bb15fb18ee2ea3b212e",
+  "portal/src/lib/costing/project-landed-quote.ts": "37fe87758eb9c7fde72080b2e29510d73b734199a08c5dd7fb2fe4163c1e5b4c",
+  "portal/src/lib/costing/raw-cost.ts": "ac98b29bc97143ca158cb0ea4cdcf8675fbc062841e871a08b2dec0457ff06fa",
+  "portal/src/lib/costing/formulation-resolution.ts": "107839bcfd33795e195c9197549d9613fd40597058756aa8ba6493fa9bd6ccdc",
+  "portal/src/lib/costing/fg-routing.ts": "f2acff651f5c65c3ef15a07b7d1535aa931a18ff35177b0bc6d290a32ae32062",
+  "portal/src/lib/costing/fg-routing-store.ts": "00e161cae83e614bf29ceb472b9e9c9ebb8625e65eac8486565cb91c61ee45e9",
+  "portal/src/lib/costing/setup-standards.ts": "e1c43408b6839a18f0eb0ceac243c5463fde8c56f53a3ae3b1002802be445502",
+  "portal/src/lib/costing/setup-standards-store.ts": "c91a198ebd5a41d1c1041f8db24a3f3cfcfcb3b58d0c42795df2e72787cd69d8",
+  "portal/src/lib/costing/draft-cost-overrides.ts": "55d912bfd218833c8df868c5529e0abcfc732a99e09df41a563f57361a73ab1a",
+  "portal/src/lib/assembly-bom/draft-cost-persist.ts": "e92d0493ca17834a2d91248260e4827950a23a03ad18c4903ebb8c2811d35d63",
+  "portal/src/lib/quote/totals.ts": "b7a3edaf6d409dc64afaac0369b1d1af3fe55761ed7b713a15ef92664cc588b7",
+  "portal/src/lib/quote/matrix-fallback.ts": "d88b742015c55f689fb3932a6eed4da5ba05bd070ee997d4d097c50c0773458f",
+  "portal/src/lib/quote/matrix.ts": "bdf327a349b34c4e15e336c225da1c33dd3090f404fe37d3f542f077865ca0e4",
+  "portal/src/lib/quote/service.ts": "73d5174ca1b90e113f232fe9f18da61ffd882e339938c25d4d397d4669edb238",
+  "portal/src/lib/procurement/landed-gl.ts": "23882eeff8f7e3ef27d7d83ae7f2932ac9081fa9a16e1379edd31dcb394ad82b",
+  "portal/src/lib/customer-materials/supply-source-shared.ts": "0bb93551ec974eb80d701a69b25e9dbcf5693cb690bdd513ce4bf185e9d7e56e",
+  "portal/src/lib/customer-materials/supply-source.ts": "420cf4e7eac739b5740061b2cad76a2bd8804bab8de6951fad6340dfe0a65806",
+  "portal/src/lib/customers/anchor.ts": "522686f9a762d0cbd4521965bd071a9f3979fd3e6c598ec5175d1e913c0a4631",
+  "portal/src/lib/sourcing/raw-product.ts": "36d460187155d8dc686188898669d6777432690333e7052dc4ce6a3c6a15ed76",
+  "portal/src/lib/sourcing/status.ts": "4a84fd4c83cfd90fb5d3369a736bb0e9d730e83437ba8da6771f1a3f255f2e09"
+ },
+ "functions": {
+  "landedComponentCost": [
+   {
+    "args": {
+     "tierPrice": 0.802,
+     "freight": 0
+    },
+    "result": {
+     "tierPrice": 0.802,
+     "duty": 0.0521,
+     "dutyRate": 0.065,
+     "multiplier": 1.38,
+     "freight": 0,
+     "landedUnitCost": 1.1787
+    }
+   },
+   {
+    "args": {
+     "tierPrice": 0.13,
+     "freight": 0.02
+    },
+    "result": {
+     "tierPrice": 0.13,
+     "duty": 0.0085,
+     "dutyRate": 0.065,
+     "multiplier": 1.38,
+     "freight": 0.02,
+     "landedUnitCost": 0.2111
+    }
+   },
+   {
+    "args": {
+     "tierPrice": 1.005,
+     "freight": 0.0342
+    },
+    "result": {
+     "tierPrice": 1.005,
+     "duty": 0.0653,
+     "dutyRate": 0.065,
+     "multiplier": 1.38,
+     "freight": 0.0342,
+     "landedUnitCost": 1.5112
+    }
+   },
+   {
+    "args": {
+     "tierPrice": 0,
+     "freight": 0.3
+    },
+    "result": {
+     "tierPrice": 0,
+     "duty": 0,
+     "dutyRate": 0.065,
+     "multiplier": 1.38,
+     "freight": 0.3,
+     "landedUnitCost": 0.3
+    }
+   },
+   {
+    "args": {
+     "tierPrice": -1,
+     "freight": 0.1
+    },
+    "result": {
+     "tierPrice": 0,
+     "duty": 0,
+     "dutyRate": 0.065,
+     "multiplier": 1.38,
+     "freight": 0.1,
+     "landedUnitCost": 0.1
+    }
+   },
+   {
+    "args": {
+     "tierPrice": 12.3456,
+     "freight": 1.2
+    },
+    "result": {
+     "tierPrice": 12.3456,
+     "duty": 0.8025,
+     "dutyRate": 0.065,
+     "multiplier": 1.38,
+     "freight": 1.2,
+     "landedUnitCost": 19.3444
+    }
+   },
+   {
+    "args": {
+     "tierPrice": 0.000769,
+     "freight": 0.00005
+    },
+    "result": {
+     "tierPrice": 0.0008,
+     "duty": 0,
+     "dutyRate": 0.065,
+     "multiplier": 1.38,
+     "freight": 0.0001,
+     "landedUnitCost": 0.0011
+    }
+   },
+   {
+    "args": {
+     "tierPrice": 0.31,
+     "freight": null
+    },
+    "result": {
+     "tierPrice": 0.31,
+     "duty": 0.0202,
+     "dutyRate": 0.065,
+     "multiplier": 1.38,
+     "freight": 0,
+     "landedUnitCost": 0.4557
+    }
+   },
+   {
+    "args": {
+     "tierPrice": 2.675,
+     "freight": 0.125
+    },
+    "result": {
+     "tierPrice": 2.675,
+     "duty": 0.1739,
+     "dutyRate": 0.065,
+     "multiplier": 1.38,
+     "freight": 0.125,
+     "landedUnitCost": 4.0565
+    }
+   },
+   {
+    "args": {
+     "tierPrice": 0.5
+    },
+    "result": {
+     "tierPrice": 0.5,
+     "duty": 0.0325,
+     "dutyRate": 0.065,
+     "multiplier": 1.38,
+     "freight": 0,
+     "landedUnitCost": 0.7348
+    }
+   },
+   {
+    "args": {
+     "tierPrice": 1,
+     "duty": 0.2,
+     "freight": 0.05
+    },
+    "result": {
+     "tierPrice": 1,
+     "duty": 0.2,
+     "dutyRate": 0.065,
+     "multiplier": 1.38,
+     "freight": 0.05,
+     "landedUnitCost": 1.706
+    }
+   },
+   {
+    "args": {
+     "tierPrice": 1,
+     "dutyRate": 0.1,
+     "multiplier": 1.2,
+     "freight": 0.05
+    },
+    "result": {
+     "tierPrice": 1,
+     "duty": 0.1,
+     "dutyRate": 0.1,
+     "multiplier": 1.2,
+     "freight": 0.05,
+     "landedUnitCost": 1.37
+    }
+   },
+   {
+    "args": {
+     "tierPrice": 3.3,
+     "dutyRate": -1,
+     "multiplier": 0,
+     "freight": -2
+    },
+    "result": {
+     "tierPrice": 3.3,
+     "duty": 0.2145,
+     "dutyRate": 0.065,
+     "multiplier": 1.38,
+     "freight": 0,
+     "landedUnitCost": 4.85
+    }
+   }
+  ],
+  "fillMassKg": [
+   {
+    "args": {
+     "fillWeightG": 236.6,
+     "specificGravity": 1.05
+    },
+    "result": 0.24843
+   },
+   {
+    "args": {
+     "fillWeightG": 500,
+     "specificGravity": null
+    },
+    "result": 0.5
+   },
+   {
+    "args": {
+     "fillWeightG": null,
+     "specificGravity": 1.2
+    },
+    "result": 0
+   },
+   {
+    "args": {
+     "fillWeightG": 30,
+     "specificGravity": -1
+    },
+    "result": 0.03
+   }
+  ],
+  "estimateUnitCost": [
+   {
+    "args": {
+     "fillWeightG": 248.43,
+     "rawMaterials": [
+      {
+       "name": "water",
+       "inclusionPct": 72.5,
+       "costPerKg": 0.02
+      },
+      {
+       "name": "surfactant",
+       "inclusionPct": 20,
+       "costPerKg": 3.1
+      },
+      {
+       "name": "fragrance",
+       "inclusionPct": 7.5,
+       "costPerKg": 41.333
+      }
+     ],
+     "packaging": [
+      {
+       "name": "bottle",
+       "qtyPerUnit": 1,
+       "unitCost": 0.4489
+      },
+      {
+       "name": "cap",
+       "qtyPerUnit": 1,
+       "unitCost": 0.0911
+      },
+      {
+       "name": "case",
+       "qtyPerUnit": 0.0833,
+       "unitCost": 0.92
+      }
+     ],
+     "rawMaterialsAdjustmentPct": 12,
+     "assemblyHoursPerUnit": 0.0042,
+     "compoundingHoursPerUnit": 0.0013,
+     "assemblyRate": 22.5,
+     "batchingRate": 30,
+     "overheadRate": 35,
+     "marginPct": 35
+    },
+    "result": {
+     "bulkCostPerKg": 4.18,
+     "bulkCostPerUnit": 1.04,
+     "packagingCostPerUnit": 0.62,
+     "compoundingLabourPerUnit": 0.04,
+     "assemblyLabourPerUnit": 0.09,
+     "overheadPerUnit": 0.15,
+     "productionHoursPerUnit": 0.0055,
+     "totalCostPerUnit": 1.94,
+     "marginPct": 35,
+     "sellPricePerUnit": 2.98,
+     "marginPerUnit": 1.04,
+     "lines": [
+      {
+       "key": "bulk",
+       "label": "Raw materials (bulk)",
+       "amountPerUnit": 1.04
+      },
+      {
+       "key": "packaging",
+       "label": "Packaging components",
+       "amountPerUnit": 0.62
+      },
+      {
+       "key": "compounding",
+       "label": "Compounding labour",
+       "amountPerUnit": 0.04
+      },
+      {
+       "key": "assembly",
+       "label": "Assembly labour",
+       "amountPerUnit": 0.09
+      },
+      {
+       "key": "overhead",
+       "label": "Overhead",
+       "amountPerUnit": 0.15
+      }
+     ]
+    }
+   },
+   {
+    "args": {
+     "fillWeightG": 100,
+     "rawMaterials": [],
+     "packaging": [
+      {
+       "name": "x",
+       "qtyPerUnit": -2,
+       "unitCost": 1
+      }
+     ],
+     "rawMaterialsAdjustmentPct": -5,
+     "assemblyHoursPerUnit": 0.01,
+     "compoundingHoursPerUnit": 0,
+     "assemblyRate": 20.9,
+     "batchingRate": 32,
+     "overheadRate": 31.3,
+     "overheadHoursPerUnit": 0.0025,
+     "marginPct": 100
+    },
+    "result": {
+     "bulkCostPerKg": 0,
+     "bulkCostPerUnit": 0,
+     "packagingCostPerUnit": 0,
+     "compoundingLabourPerUnit": 0,
+     "assemblyLabourPerUnit": 0.21,
+     "overheadPerUnit": 0.08,
+     "productionHoursPerUnit": 0.01,
+     "totalCostPerUnit": 0.29,
+     "marginPct": 100,
+     "sellPricePerUnit": 0.29,
+     "marginPerUnit": 0,
+     "lines": [
+      {
+       "key": "bulk",
+       "label": "Raw materials (bulk)",
+       "amountPerUnit": 0
+      },
+      {
+       "key": "packaging",
+       "label": "Packaging components",
+       "amountPerUnit": 0
+      },
+      {
+       "key": "compounding",
+       "label": "Compounding labour",
+       "amountPerUnit": 0
+      },
+      {
+       "key": "assembly",
+       "label": "Assembly labour",
+       "amountPerUnit": 0.21
+      },
+      {
+       "key": "overhead",
+       "label": "Overhead",
+       "amountPerUnit": 0.08
+      }
+     ]
+    }
+   },
+   {
+    "args": {
+     "fillWeightG": 0,
+     "rawMaterials": [
+      {
+       "name": "a",
+       "inclusionPct": 100,
+       "costPerKg": 5
+      }
+     ],
+     "packaging": [],
+     "rawMaterialsAdjustmentPct": 10,
+     "assemblyHoursPerUnit": 0,
+     "compoundingHoursPerUnit": 0,
+     "assemblyRate": 20.9,
+     "batchingRate": 32,
+     "overheadRate": 31.3,
+     "overheadHoursPerUnit": null,
+     "marginPct": 30
+    },
+    "result": {
+     "bulkCostPerKg": 5.5,
+     "bulkCostPerUnit": 0,
+     "packagingCostPerUnit": 0,
+     "compoundingLabourPerUnit": 0,
+     "assemblyLabourPerUnit": 0,
+     "overheadPerUnit": 0,
+     "productionHoursPerUnit": 0,
+     "totalCostPerUnit": 0,
+     "marginPct": 30,
+     "sellPricePerUnit": 0,
+     "marginPerUnit": 0,
+     "lines": [
+      {
+       "key": "bulk",
+       "label": "Raw materials (bulk)",
+       "amountPerUnit": 0
+      },
+      {
+       "key": "packaging",
+       "label": "Packaging components",
+       "amountPerUnit": 0
+      },
+      {
+       "key": "compounding",
+       "label": "Compounding labour",
+       "amountPerUnit": 0
+      },
+      {
+       "key": "assembly",
+       "label": "Assembly labour",
+       "amountPerUnit": 0
+      },
+      {
+       "key": "overhead",
+       "label": "Overhead",
+       "amountPerUnit": 0
+      }
+     ]
+    }
+   }
+  ],
+  "resolveMarginLadder": [
+   {
+    "args": {
+     "settings": null
+    },
+    "result": {
+     "tiersPct": [
+      25,
+      30,
+      35,
+      40
+     ],
+     "tiersSource": "fallback",
+     "defaultTierPct": 30,
+     "targetPct": 30,
+     "targetSource": "system_default",
+     "tiers": [
+      {
+       "marginPct": 25,
+       "markupPct": 33.33333333333333,
+       "label": "25% margin = 33.3% markup",
+       "isDefault": false,
+       "isTarget": false
+      },
+      {
+       "marginPct": 30,
+       "markupPct": 42.85714285714286,
+       "label": "30% margin = 42.9% markup",
+       "isDefault": true,
+       "isTarget": true
+      },
+      {
+       "marginPct": 35,
+       "markupPct": 53.84615384615385,
+       "label": "35% margin = 53.8% markup",
+       "isDefault": false,
+       "isTarget": false
+      },
+      {
+       "marginPct": 40,
+       "markupPct": 66.66666666666667,
+       "label": "40% margin = 66.7% markup",
+       "isDefault": false,
+       "isTarget": false
+      }
+     ]
+    }
+   },
+   {
+    "args": {
+     "settings": {
+      "marginTiersPct": [
+       40,
+       25,
+       25.004,
+       30,
+       101,
+       -1,
+       33.333
+      ],
+      "marginPercent": 35
+     }
+    },
+    "result": {
+     "tiersPct": [
+      25,
+      30,
+      33.33,
+      40
+     ],
+     "tiersSource": "rate_settings",
+     "defaultTierPct": 35,
+     "targetPct": 35,
+     "targetSource": "system_default",
+     "tiers": [
+      {
+       "marginPct": 25,
+       "markupPct": 33.33333333333333,
+       "label": "25% margin = 33.3% markup",
+       "isDefault": false,
+       "isTarget": false
+      },
+      {
+       "marginPct": 30,
+       "markupPct": 42.85714285714286,
+       "label": "30% margin = 42.9% markup",
+       "isDefault": false,
+       "isTarget": false
+      },
+      {
+       "marginPct": 33.33,
+       "markupPct": 49.99250037498124,
+       "label": "33.3% margin = 50% markup",
+       "isDefault": false,
+       "isTarget": false
+      },
+      {
+       "marginPct": 40,
+       "markupPct": 66.66666666666667,
+       "label": "40% margin = 66.7% markup",
+       "isDefault": false,
+       "isTarget": false
+      }
+     ]
+    }
+   },
+   {
+    "args": {
+     "settings": {
+      "marginPercent": 120
+     },
+     "quoteOverride": {
+      "tiersPct": [
+       20,
+       33.333
+      ],
+      "targetPct": 33.333
+     }
+    },
+    "result": {
+     "tiersPct": [
+      20,
+      33.33
+     ],
+     "tiersSource": "quote_override",
+     "defaultTierPct": 30,
+     "targetPct": 33.333,
+     "targetSource": "quote_override",
+     "tiers": [
+      {
+       "marginPct": 20,
+       "markupPct": 25,
+       "label": "20% margin = 25% markup",
+       "isDefault": false,
+       "isTarget": false
+      },
+      {
+       "marginPct": 33.33,
+       "markupPct": 49.99250037498124,
+       "label": "33.3% margin = 50% markup",
+       "isDefault": false,
+       "isTarget": true
+      }
+     ]
+    }
+   }
+  ],
+  "priceMarginTiers": [
+   {
+    "args": {
+     "cost": 1.3459,
+     "ladder": {
+      "settings": null
+     }
+    },
+    "result": [
+     {
+      "marginPct": 25,
+      "markupPct": 33.33333333333333,
+      "label": "25% margin = 33.3% markup",
+      "isDefault": false,
+      "isTarget": false,
+      "sellPricePerUnit": 1.79
+     },
+     {
+      "marginPct": 30,
+      "markupPct": 42.85714285714286,
+      "label": "30% margin = 42.9% markup",
+      "isDefault": true,
+      "isTarget": true,
+      "sellPricePerUnit": 1.92
+     },
+     {
+      "marginPct": 35,
+      "markupPct": 53.84615384615385,
+      "label": "35% margin = 53.8% markup",
+      "isDefault": false,
+      "isTarget": false,
+      "sellPricePerUnit": 2.07
+     },
+     {
+      "marginPct": 40,
+      "markupPct": 66.66666666666667,
+      "label": "40% margin = 66.7% markup",
+      "isDefault": false,
+      "isTarget": false,
+      "sellPricePerUnit": 2.24
+     }
+    ]
+   },
+   {
+    "args": {
+     "cost": 0,
+     "ladder": {
+      "settings": {
+       "marginTiersPct": [
+        10,
+        50
+       ]
+      }
+     }
+    },
+    "result": [
+     {
+      "marginPct": 10,
+      "markupPct": 11.111111111111112,
+      "label": "10% margin = 11.1% markup",
+      "isDefault": false,
+      "isTarget": false,
+      "sellPricePerUnit": 0
+     },
+     {
+      "marginPct": 50,
+      "markupPct": 100,
+      "label": "50% margin = 100% markup",
+      "isDefault": false,
+      "isTarget": false,
+      "sellPricePerUnit": 0
+     }
+    ]
+   },
+   {
+    "args": {
+     "cost": 2.675,
+     "ladder": {
+      "settings": {
+       "marginTiersPct": [
+        12.5,
+        33.33,
+        99.99
+       ]
+      }
+     }
+    },
+    "result": [
+     {
+      "marginPct": 12.5,
+      "markupPct": 14.285714285714285,
+      "label": "12.5% margin = 14.3% markup",
+      "isDefault": false,
+      "isTarget": false,
+      "sellPricePerUnit": 3.06
+     },
+     {
+      "marginPct": 33.33,
+      "markupPct": 49.99250037498124,
+      "label": "33.3% margin = 50% markup",
+      "isDefault": false,
+      "isTarget": false,
+      "sellPricePerUnit": 4.01
+     },
+     {
+      "marginPct": 99.99,
+      "markupPct": 999899.9999989999,
+      "label": "100% margin = 999900% markup",
+      "isDefault": false,
+      "isTarget": false,
+      "sellPricePerUnit": 26750
+     }
+    ]
+   }
+  ],
+  "deriveUptimeOverhead": [
+   {
+    "args": {
+     "hourlyRate": 35,
+     "assemblyHoursPerUnit": 0.0042,
+     "assemblyHoursSource": "routing"
+    },
+    "result": {
+     "hourlyRate": 35,
+     "uptimeHours": null,
+     "expectedUnitsPerShift": null,
+     "hoursPerUnit": 0.0042,
+     "perUnit": 0.147,
+     "source": "assembly_hours",
+     "hoursSource": "routing",
+     "appliesTo": "assembly",
+     "reasons": []
+    }
+   },
+   {
+    "args": {
+     "hourlyRate": 31.3,
+     "assemblyHoursPerUnit": null,
+     "expectedUnitsPerShift": 4200,
+     "uptimeHours": null
+    },
+    "result": {
+     "hourlyRate": 31.3,
+     "uptimeHours": 6.5,
+     "expectedUnitsPerShift": 4200,
+     "hoursPerUnit": 0.0015476190476190477,
+     "perUnit": 0.048440476190476194,
+     "source": "expected_units_override",
+     "hoursSource": null,
+     "appliesTo": "assembly",
+     "reasons": [
+      "uptime-defaulted-workbook-wedge"
+     ]
+    }
+   },
+   {
+    "args": {
+     "hourlyRate": 31.3,
+     "assemblyHoursPerUnit": 0.01,
+     "expectedUnitsPerShift": 3000,
+     "uptimeHours": 7
+    },
+    "result": {
+     "hourlyRate": 31.3,
+     "uptimeHours": 7,
+     "expectedUnitsPerShift": 3000,
+     "hoursPerUnit": 0.0023333333333333335,
+     "perUnit": 0.07303333333333334,
+     "source": "expected_units_override",
+     "hoursSource": null,
+     "appliesTo": "assembly",
+     "reasons": []
+    }
+   },
+   {
+    "args": {
+     "hourlyRate": -4,
+     "assemblyHoursPerUnit": null,
+     "assemblyHoursSource": "missing"
+    },
+    "result": {
+     "hourlyRate": 0,
+     "uptimeHours": null,
+     "expectedUnitsPerShift": null,
+     "hoursPerUnit": null,
+     "perUnit": null,
+     "source": "missing",
+     "hoursSource": "missing",
+     "appliesTo": "assembly",
+     "reasons": [
+      "overhead-basis-missing:no-assembly-hours"
+     ]
+    }
+   }
+  ],
+  "pickRunVolumeTierForQty": [
+   {
+    "args": {
+     "qty": null
+    },
+    "result": null
+   },
+   {
+    "args": {
+     "qty": 0
+    },
+    "result": null
+   },
+   {
+    "args": {
+     "qty": 1
+    },
+    "result": "5k"
+   },
+   {
+    "args": {
+     "qty": 4999
+    },
+    "result": "5k"
+   },
+   {
+    "args": {
+     "qty": 9999
+    },
+    "result": "5k"
+   },
+   {
+    "args": {
+     "qty": 9999.5
+    },
+    "result": "10k"
+   },
+   {
+    "args": {
+     "qty": 10000
+    },
+    "result": "10k"
+   },
+   {
+    "args": {
+     "qty": 24999
+    },
+    "result": "10k"
+   },
+   {
+    "args": {
+     "qty": 25000
+    },
+    "result": "25k"
+   },
+   {
+    "args": {
+     "qty": 49999.9
+    },
+    "result": "50k"
+   },
+   {
+    "args": {
+     "qty": 50000
+    },
+    "result": "50k"
+   },
+   {
+    "args": {
+     "qty": 1000000000
+    },
+    "result": "50k"
+   }
+  ],
+  "pickSupplierCardTierPrice": [
+   {
+    "args": {
+     "card": {
+      "unitCost": 0.33,
+      "deliveryCost": 0.02,
+      "updatedAt": "2026-08-01T10:00:00Z",
+      "tiers": [
+       {
+        "minQty": 5000,
+        "unitCost": 0.31,
+        "effectiveFrom": "2026-07-01",
+        "updatedAt": null
+       },
+       {
+        "minQty": 20000,
+        "unitCost": 0.27,
+        "effectiveFrom": null,
+        "updatedAt": "2026-07-15T08:30:00Z"
+       }
+      ]
+     },
+     "componentQty": 24000,
+     "runVolumeTierCode": "10k"
+    },
+    "result": {
+     "source": "supplier_card_tier",
+     "unitCost": 0.27,
+     "tierMinQty": 20000,
+     "runVolumeTierCode": "10k",
+     "qtyBasis": 24000,
+     "asOf": "2026-07-15T08:30:00.000Z"
+    }
+   },
+   {
+    "args": {
+     "card": {
+      "unitCost": 0.33,
+      "deliveryCost": null,
+      "updatedAt": "2026-08-01",
+      "tiers": [
+       {
+        "minQty": 5000,
+        "unitCost": 0.31,
+        "effectiveFrom": null,
+        "updatedAt": null
+       }
+      ]
+     },
+     "componentQty": 4999,
+     "runVolumeTierCode": "5k"
+    },
+    "result": {
+     "source": "supplier_card_tier",
+     "unitCost": 0.33,
+     "tierMinQty": null,
+     "runVolumeTierCode": "5k",
+     "qtyBasis": 4999,
+     "asOf": "2026-08-01T00:00:00.000Z"
+    }
+   },
+   {
+    "args": {
+     "card": {
+      "unitCost": 0.33,
+      "deliveryCost": null,
+      "updatedAt": null,
+      "tiers": []
+     },
+     "componentQty": null,
+     "runVolumeTierCode": null
+    },
+    "result": {
+     "source": "supplier_card_tier",
+     "unitCost": 0.33,
+     "tierMinQty": null,
+     "runVolumeTierCode": null,
+     "qtyBasis": null,
+     "asOf": null
+    }
+   }
+  ],
+  "allocatePoFreightPerUnit": [
+   {
+    "args": {
+     "shippingCost": 1710,
+     "lineId": "a",
+     "poLines": [
+      {
+       "id": "a",
+       "unitPrice": 0.802,
+       "quantityReceived": 12500
+      },
+      {
+       "id": "b",
+       "unitPrice": 0.802,
+       "quantityReceived": 12500
+      },
+      {
+       "id": "c",
+       "unitPrice": 1.13,
+       "quantityReceived": 3000
+      }
+     ]
+    },
+    "result": {
+     "freightPerUnit": 0.0585,
+     "reason": null
+    }
+   },
+   {
+    "args": {
+     "shippingCost": 0,
+     "lineId": "a",
+     "poLines": [
+      {
+       "id": "a",
+       "unitPrice": 1,
+       "quantityReceived": 10
+      }
+     ]
+    },
+    "result": {
+     "freightPerUnit": 0,
+     "reason": null
+    }
+   },
+   {
+    "args": {
+     "shippingCost": 500,
+     "lineId": "a",
+     "poLines": [
+      {
+       "id": "a",
+       "unitPrice": 0,
+       "quantityReceived": 10
+      }
+     ]
+    },
+    "result": {
+     "freightPerUnit": null,
+     "reason": "po-freight-unallocatable-zero-line-value"
+    }
+   },
+   {
+    "args": {
+     "shippingCost": 500,
+     "lineId": "a",
+     "poLines": [
+      {
+       "id": "a",
+       "unitPrice": 2,
+       "quantityReceived": 0
+      }
+     ]
+    },
+    "result": {
+     "freightPerUnit": null,
+     "reason": "po-line-nothing-received"
+    }
+   },
+   {
+    "args": {
+     "shippingCost": 500,
+     "lineId": "z",
+     "poLines": [
+      {
+       "id": "a",
+       "unitPrice": 2,
+       "quantityReceived": 3
+      }
+     ]
+    },
+    "result": {
+     "freightPerUnit": null,
+     "reason": "po-line-not-found"
+    }
+   },
+   {
+    "args": {
+     "shippingCost": 333.33,
+     "lineId": "b",
+     "poLines": [
+      {
+       "id": "a",
+       "unitPrice": -5,
+       "quantityReceived": 7
+      },
+      {
+       "id": "b",
+       "unitPrice": 0.07,
+       "quantityReceived": 3
+      }
+     ]
+    },
+    "result": {
+     "freightPerUnit": 111.11,
+     "reason": null
+    }
+   }
+  ],
+  "deriveReadyToQuote": [
+   {
+    "args": {
+     "fillWeightG": 236.6,
+     "specificGravity": 1.05,
+     "specificGravityConfirmed": true,
+     "unsourcedLineCount": 0,
+     "linkedLineCount": 3,
+     "missingHsCodeCount": 1,
+     "missingIncotermsCount": 1,
+     "missingOriginCount": 0,
+     "labourIsPlaceholder": false,
+     "sellPricePerUnit": 2.07,
+     "retailPerUnit": 1.85,
+     "provenanceLines": [
+      {
+       "lineName": "bottle",
+       "cardUnitCost": 0.27,
+       "cardUpdatedAt": "2026-07-01T00:00:00.000Z",
+       "lastPoUnitPrice": 0.31,
+       "lastPoReceivedAt": "2026-09-01T00:00:00.000Z"
+      },
+      {
+       "lineName": "cap",
+       "cardUnitCost": 0.05,
+       "cardUpdatedAt": null,
+       "lastPoUnitPrice": 0.05,
+       "lastPoReceivedAt": null
+      }
+     ],
+     "pricedTotalCostPerUnit": 1.3459,
+     "stockFillLines": [
+      {
+       "lineName": "bottle",
+       "qtyPerUnit": 1,
+       "pricedUnitCost": 0.4489,
+       "stockUnitCost": 0.29,
+       "stockQuantityOnHand": 50000,
+       "requiredQty": 12000
+      },
+      {
+       "lineName": "cap",
+       "qtyPerUnit": 1,
+       "pricedUnitCost": 0.0911,
+       "stockUnitCost": null,
+       "stockQuantityOnHand": null,
+       "requiredQty": 12000
+      }
+     ]
+    },
+    "result": {
+     "ready": true,
+     "items": [
+      {
+       "key": "fill_weight_g",
+       "label": "Fill weight (g)",
+       "severity": "ok",
+       "detail": "236.6 g on the ASSEMBLY BOM"
+      },
+      {
+       "key": "specific_gravity",
+       "label": "Specific gravity",
+       "severity": "ok",
+       "detail": "1.05"
+      },
+      {
+       "key": "sourcing",
+       "label": "Packaging sourced",
+       "severity": "ok",
+       "detail": "3 line(s) linked; estimates cleared"
+      },
+      {
+       "key": "hs_code",
+       "label": "HS code",
+       "severity": "warning",
+       "detail": "1 linked product(s) missing Product.hsCode"
+      },
+      {
+       "key": "vendor_card",
+       "label": "Vendor-item card",
+       "severity": "warning",
+       "detail": "1 missing incoterms, 0 missing origin"
+      },
+      {
+       "key": "labour",
+       "label": "Labour / overhead",
+       "severity": "ok",
+       "detail": "Routing hours pinned"
+      }
+     ],
+     "sellVsRetail": {
+      "sellPricePerUnit": 2.07,
+      "retailPerUnit": 1.85,
+      "deltaPct": 11.9,
+      "note": "Suggested sell is +11.9% vs retail / target"
+     },
+     "advisories": [
+      {
+       "kind": "card_po_drift",
+       "severity": "warning",
+       "lineName": "bottle",
+       "cardUnitCost": 0.27,
+       "lastPoUnitPrice": 0.31,
+       "driftPct": -12.9,
+       "detail": "bottle: supplier card $0.27 vs last-PO $0.31 — -12.9% drift (threshold 10%). Card stays canonical; re-verify the card."
+      },
+      {
+       "kind": "stale_card",
+       "severity": "advisory",
+       "lineName": "bottle",
+       "cardUpdatedAt": "2026-07-01T00:00:00.000Z",
+       "lastPoReceivedAt": "2026-09-01T00:00:00.000Z",
+       "detail": "bottle: supplier card last updated 2026-07-01T00:00:00.000Z — older than the newest PO receipt 2026-09-01T00:00:00.000Z. Card stays canonical; confirm it still reflects the vendor's price."
+      }
+     ],
+     "marginIfFilledFromStock": {
+      "label": "Margin if filled from stock — won't-replace-stock exception, display only; the priced margin stays canonical",
+      "sellPricePerUnit": 2.07,
+      "pricedTotalCostPerUnit": 1.35,
+      "pricedMarginPct": 35,
+      "stockAdjustedTotalCostPerUnit": 1.19,
+      "stockAdjustedMarginPct": 42.5,
+      "linesFromStock": 1,
+      "linesAtPricedBasis": 1
+     },
+     "volumeAdvisories": []
+    }
+   },
+   {
+    "args": {
+     "fillWeightG": null,
+     "specificGravity": null,
+     "specificGravityConfirmed": false,
+     "unsourcedLineCount": 2,
+     "linkedLineCount": 0,
+     "missingHsCodeCount": 0,
+     "missingIncotermsCount": 0,
+     "missingOriginCount": 0,
+     "labourIsPlaceholder": true,
+     "sellPricePerUnit": 0,
+     "retailPerUnit": null
+    },
+    "result": {
+     "ready": false,
+     "items": [
+      {
+       "key": "fill_weight_g",
+       "label": "Fill weight (g)",
+       "severity": "blocker",
+       "detail": "ASSEMBLY BOM has no typed fill_weight_g (no silent 500 g default)"
+      },
+      {
+       "key": "specific_gravity",
+       "label": "Specific gravity",
+       "severity": "warning",
+       "detail": "Defaulting to 1.00 until Formulation.specificGravity is set"
+      },
+      {
+       "key": "sourcing",
+       "label": "Packaging sourced",
+       "severity": "blocker",
+       "detail": "2 line(s) still on estimatedUnitCost / needsSourcing"
+      },
+      {
+       "key": "hs_code",
+       "label": "HS code",
+       "severity": "ok",
+       "detail": "Import HS code present on linked products"
+      },
+      {
+       "key": "vendor_card",
+       "label": "Vendor-item card",
+       "severity": "ok",
+       "detail": "Incoterms and country of origin present"
+      },
+      {
+       "key": "labour",
+       "label": "Labour / overhead",
+       "severity": "warning",
+       "detail": "No routing hours, so assembly and setup labour are priced at $0 and reported"
+      }
+     ],
+     "sellVsRetail": {
+      "sellPricePerUnit": 0,
+      "retailPerUnit": null,
+      "deltaPct": null,
+      "note": "No retail / target price on the project to compare"
+     },
+     "advisories": [],
+     "marginIfFilledFromStock": null,
+     "volumeAdvisories": []
+    }
+   },
+   {
+    "args": {
+     "fillWeightG": 236.6,
+     "specificGravity": 1.05,
+     "specificGravityConfirmed": true,
+     "unsourcedLineCount": 0,
+     "linkedLineCount": 1,
+     "missingHsCodeCount": 1,
+     "missingIncotermsCount": 1,
+     "missingOriginCount": 0,
+     "labourIsPlaceholder": false,
+     "sellPricePerUnit": 2.07,
+     "retailPerUnit": 1.85,
+     "provenanceLines": [
+      {
+       "lineName": "bottle",
+       "cardUnitCost": 0.27,
+       "cardUpdatedAt": "2026-07-01T00:00:00.000Z",
+       "lastPoUnitPrice": 0.31,
+       "lastPoReceivedAt": "2026-09-01T00:00:00.000Z"
+      },
+      {
+       "lineName": "cap",
+       "cardUnitCost": 0.05,
+       "cardUpdatedAt": null,
+       "lastPoUnitPrice": 0.05,
+       "lastPoReceivedAt": null
+      }
+     ],
+     "pricedTotalCostPerUnit": 1.3459,
+     "stockFillLines": [
+      {
+       "lineName": "bottle",
+       "qtyPerUnit": 1,
+       "pricedUnitCost": 0.4489,
+       "stockUnitCost": 0.29,
+       "stockQuantityOnHand": 50000,
+       "requiredQty": 12000
+      },
+      {
+       "lineName": "cap",
+       "qtyPerUnit": 1,
+       "pricedUnitCost": 0.0911,
+       "stockUnitCost": null,
+       "stockQuantityOnHand": null,
+       "requiredQty": 12000
+      }
+     ],
+     "customerSuppliedLineCount": 2,
+     "customerPendingLineCount": 5,
+     "customerSuppliedRawCount": 1
+    },
+    "result": {
+     "ready": true,
+     "items": [
+      {
+       "key": "fill_weight_g",
+       "label": "Fill weight (g)",
+       "severity": "ok",
+       "detail": "236.6 g on the ASSEMBLY BOM"
+      },
+      {
+       "key": "specific_gravity",
+       "label": "Specific gravity",
+       "severity": "ok",
+       "detail": "1.05"
+      },
+      {
+       "key": "sourcing",
+       "label": "Packaging sourced",
+       "severity": "ok",
+       "detail": "1 line(s) linked; estimates cleared; 2 supplied by the customer"
+      },
+      {
+       "key": "customer_supplied",
+       "label": "Customer-supplied",
+       "severity": "warning",
+       "detail": "2 packaging line(s) and 1 raw material(s) supplied by the customer, priced at $0; 2 line(s) still waiting for \"Approve customer component\""
+      },
+      {
+       "key": "hs_code",
+       "label": "HS code",
+       "severity": "warning",
+       "detail": "1 linked product(s) missing Product.hsCode"
+      },
+      {
+       "key": "vendor_card",
+       "label": "Vendor-item card",
+       "severity": "warning",
+       "detail": "1 missing incoterms, 0 missing origin"
+      },
+      {
+       "key": "labour",
+       "label": "Labour / overhead",
+       "severity": "ok",
+       "detail": "Routing hours pinned"
+      }
+     ],
+     "sellVsRetail": {
+      "sellPricePerUnit": 2.07,
+      "retailPerUnit": 1.85,
+      "deltaPct": 11.9,
+      "note": "Suggested sell is +11.9% vs retail / target"
+     },
+     "advisories": [
+      {
+       "kind": "card_po_drift",
+       "severity": "warning",
+       "lineName": "bottle",
+       "cardUnitCost": 0.27,
+       "lastPoUnitPrice": 0.31,
+       "driftPct": -12.9,
+       "detail": "bottle: supplier card $0.27 vs last-PO $0.31 — -12.9% drift (threshold 10%). Card stays canonical; re-verify the card."
+      },
+      {
+       "kind": "stale_card",
+       "severity": "advisory",
+       "lineName": "bottle",
+       "cardUpdatedAt": "2026-07-01T00:00:00.000Z",
+       "lastPoReceivedAt": "2026-09-01T00:00:00.000Z",
+       "detail": "bottle: supplier card last updated 2026-07-01T00:00:00.000Z — older than the newest PO receipt 2026-09-01T00:00:00.000Z. Card stays canonical; confirm it still reflects the vendor's price."
+      }
+     ],
+     "marginIfFilledFromStock": {
+      "label": "Margin if filled from stock — won't-replace-stock exception, display only; the priced margin stays canonical",
+      "sellPricePerUnit": 2.07,
+      "pricedTotalCostPerUnit": 1.35,
+      "pricedMarginPct": 35,
+      "stockAdjustedTotalCostPerUnit": 1.19,
+      "stockAdjustedMarginPct": 42.5,
+      "linesFromStock": 1,
+      "linesAtPricedBasis": 1
+     },
+     "volumeAdvisories": []
+    }
+   },
+   {
+    "args": {
+     "fillWeightG": 236.6,
+     "specificGravity": 1.05,
+     "specificGravityConfirmed": true,
+     "unsourcedLineCount": 0,
+     "linkedLineCount": 0,
+     "missingHsCodeCount": 1,
+     "missingIncotermsCount": 1,
+     "missingOriginCount": 0,
+     "labourIsPlaceholder": false,
+     "sellPricePerUnit": 2.07,
+     "retailPerUnit": 1.85,
+     "provenanceLines": [
+      {
+       "lineName": "bottle",
+       "cardUnitCost": 0.27,
+       "cardUpdatedAt": "2026-07-01T00:00:00.000Z",
+       "lastPoUnitPrice": 0.31,
+       "lastPoReceivedAt": "2026-09-01T00:00:00.000Z"
+      },
+      {
+       "lineName": "cap",
+       "cardUnitCost": 0.05,
+       "cardUpdatedAt": null,
+       "lastPoUnitPrice": 0.05,
+       "lastPoReceivedAt": null
+      }
+     ],
+     "pricedTotalCostPerUnit": 1.3459,
+     "stockFillLines": [
+      {
+       "lineName": "bottle",
+       "qtyPerUnit": 1,
+       "pricedUnitCost": 0.4489,
+       "stockUnitCost": 0.29,
+       "stockQuantityOnHand": 50000,
+       "requiredQty": 12000
+      },
+      {
+       "lineName": "cap",
+       "qtyPerUnit": 1,
+       "pricedUnitCost": 0.0911,
+       "stockUnitCost": null,
+       "stockQuantityOnHand": null,
+       "requiredQty": 12000
+      }
+     ],
+     "customerSuppliedLineCount": 3,
+     "customerPendingLineCount": 0,
+     "customerSuppliedRawCount": 0
+    },
+    "result": {
+     "ready": true,
+     "items": [
+      {
+       "key": "fill_weight_g",
+       "label": "Fill weight (g)",
+       "severity": "ok",
+       "detail": "236.6 g on the ASSEMBLY BOM"
+      },
+      {
+       "key": "specific_gravity",
+       "label": "Specific gravity",
+       "severity": "ok",
+       "detail": "1.05"
+      },
+      {
+       "key": "sourcing",
+       "label": "Packaging sourced",
+       "severity": "ok",
+       "detail": "All 3 line(s) supplied by the customer"
+      },
+      {
+       "key": "customer_supplied",
+       "label": "Customer-supplied",
+       "severity": "advisory",
+       "detail": "3 packaging line(s) supplied by the customer, priced at $0"
+      },
+      {
+       "key": "hs_code",
+       "label": "HS code",
+       "severity": "warning",
+       "detail": "1 linked product(s) missing Product.hsCode"
+      },
+      {
+       "key": "vendor_card",
+       "label": "Vendor-item card",
+       "severity": "warning",
+       "detail": "1 missing incoterms, 0 missing origin"
+      },
+      {
+       "key": "labour",
+       "label": "Labour / overhead",
+       "severity": "ok",
+       "detail": "Routing hours pinned"
+      }
+     ],
+     "sellVsRetail": {
+      "sellPricePerUnit": 2.07,
+      "retailPerUnit": 1.85,
+      "deltaPct": 11.9,
+      "note": "Suggested sell is +11.9% vs retail / target"
+     },
+     "advisories": [
+      {
+       "kind": "card_po_drift",
+       "severity": "warning",
+       "lineName": "bottle",
+       "cardUnitCost": 0.27,
+       "lastPoUnitPrice": 0.31,
+       "driftPct": -12.9,
+       "detail": "bottle: supplier card $0.27 vs last-PO $0.31 — -12.9% drift (threshold 10%). Card stays canonical; re-verify the card."
+      },
+      {
+       "kind": "stale_card",
+       "severity": "advisory",
+       "lineName": "bottle",
+       "cardUpdatedAt": "2026-07-01T00:00:00.000Z",
+       "lastPoReceivedAt": "2026-09-01T00:00:00.000Z",
+       "detail": "bottle: supplier card last updated 2026-07-01T00:00:00.000Z — older than the newest PO receipt 2026-09-01T00:00:00.000Z. Card stays canonical; confirm it still reflects the vendor's price."
+      }
+     ],
+     "marginIfFilledFromStock": {
+      "label": "Margin if filled from stock — won't-replace-stock exception, display only; the priced margin stays canonical",
+      "sellPricePerUnit": 2.07,
+      "pricedTotalCostPerUnit": 1.35,
+      "pricedMarginPct": 35,
+      "stockAdjustedTotalCostPerUnit": 1.19,
+      "stockAdjustedMarginPct": 42.5,
+      "linesFromStock": 1,
+      "linesAtPricedBasis": 1
+     },
+     "volumeAdvisories": []
+    }
+   },
+   {
+    "args": {
+     "fillWeightG": 236.6,
+     "specificGravity": 1.05,
+     "specificGravityConfirmed": true,
+     "unsourcedLineCount": 1,
+     "linkedLineCount": 0,
+     "missingHsCodeCount": 1,
+     "missingIncotermsCount": 1,
+     "missingOriginCount": 0,
+     "labourIsPlaceholder": false,
+     "sellPricePerUnit": 2.07,
+     "retailPerUnit": 1.85,
+     "provenanceLines": [
+      {
+       "lineName": "bottle",
+       "cardUnitCost": 0.27,
+       "cardUpdatedAt": "2026-07-01T00:00:00.000Z",
+       "lastPoUnitPrice": 0.31,
+       "lastPoReceivedAt": "2026-09-01T00:00:00.000Z"
+      },
+      {
+       "lineName": "cap",
+       "cardUnitCost": 0.05,
+       "cardUpdatedAt": null,
+       "lastPoUnitPrice": 0.05,
+       "lastPoReceivedAt": null
+      }
+     ],
+     "pricedTotalCostPerUnit": 1.3459,
+     "stockFillLines": [
+      {
+       "lineName": "bottle",
+       "qtyPerUnit": 1,
+       "pricedUnitCost": 0.4489,
+       "stockUnitCost": 0.29,
+       "stockQuantityOnHand": 50000,
+       "requiredQty": 12000
+      },
+      {
+       "lineName": "cap",
+       "qtyPerUnit": 1,
+       "pricedUnitCost": 0.0911,
+       "stockUnitCost": null,
+       "stockQuantityOnHand": null,
+       "requiredQty": 12000
+      }
+     ],
+     "customerSuppliedLineCount": 2.7,
+     "customerPendingLineCount": null,
+     "customerSuppliedRawCount": -1
+    },
+    "result": {
+     "ready": false,
+     "items": [
+      {
+       "key": "fill_weight_g",
+       "label": "Fill weight (g)",
+       "severity": "ok",
+       "detail": "236.6 g on the ASSEMBLY BOM"
+      },
+      {
+       "key": "specific_gravity",
+       "label": "Specific gravity",
+       "severity": "ok",
+       "detail": "1.05"
+      },
+      {
+       "key": "sourcing",
+       "label": "Packaging sourced",
+       "severity": "blocker",
+       "detail": "1 line(s) still on estimatedUnitCost / needsSourcing"
+      },
+      {
+       "key": "customer_supplied",
+       "label": "Customer-supplied",
+       "severity": "advisory",
+       "detail": "2 packaging line(s) supplied by the customer, priced at $0"
+      },
+      {
+       "key": "hs_code",
+       "label": "HS code",
+       "severity": "warning",
+       "detail": "1 linked product(s) missing Product.hsCode"
+      },
+      {
+       "key": "vendor_card",
+       "label": "Vendor-item card",
+       "severity": "warning",
+       "detail": "1 missing incoterms, 0 missing origin"
+      },
+      {
+       "key": "labour",
+       "label": "Labour / overhead",
+       "severity": "ok",
+       "detail": "Routing hours pinned"
+      }
+     ],
+     "sellVsRetail": {
+      "sellPricePerUnit": 2.07,
+      "retailPerUnit": 1.85,
+      "deltaPct": 11.9,
+      "note": "Suggested sell is +11.9% vs retail / target"
+     },
+     "advisories": [
+      {
+       "kind": "card_po_drift",
+       "severity": "warning",
+       "lineName": "bottle",
+       "cardUnitCost": 0.27,
+       "lastPoUnitPrice": 0.31,
+       "driftPct": -12.9,
+       "detail": "bottle: supplier card $0.27 vs last-PO $0.31 — -12.9% drift (threshold 10%). Card stays canonical; re-verify the card."
+      },
+      {
+       "kind": "stale_card",
+       "severity": "advisory",
+       "lineName": "bottle",
+       "cardUpdatedAt": "2026-07-01T00:00:00.000Z",
+       "lastPoReceivedAt": "2026-09-01T00:00:00.000Z",
+       "detail": "bottle: supplier card last updated 2026-07-01T00:00:00.000Z — older than the newest PO receipt 2026-09-01T00:00:00.000Z. Card stays canonical; confirm it still reflects the vendor's price."
+      }
+     ],
+     "marginIfFilledFromStock": {
+      "label": "Margin if filled from stock — won't-replace-stock exception, display only; the priced margin stays canonical",
+      "sellPricePerUnit": 2.07,
+      "pricedTotalCostPerUnit": 1.35,
+      "pricedMarginPct": 35,
+      "stockAdjustedTotalCostPerUnit": 1.19,
+      "stockAdjustedMarginPct": 42.5,
+      "linesFromStock": 1,
+      "linesAtPricedBasis": 1
+     },
+     "volumeAdvisories": []
+    }
+   }
+  ],
+  "rollupBomTotal": [
+   {
+    "args": {
+     "lines": [
+      {
+       "quantity": 1,
+       "cost": 0.33,
+       "estimatedUnitCost": null
+      },
+      {
+       "quantity": 2,
+       "cost": 0.1,
+       "estimatedUnitCost": 0.07
+      },
+      {
+       "quantity": null,
+       "cost": 5,
+       "estimatedUnitCost": null
+      }
+     ]
+    },
+    "result": 0.47
+   }
+  ],
+  "computeQuoteTotals": [
+   {
+    "args": {
+     "lineTotals": [
+      10350,
+      41400.25,
+      0.005,
+      null
+     ],
+     "taxRatePercent": 13
+    },
+    "result": {
+     "subtotal": 51750.26,
+     "taxAmount": 6727.53,
+     "totalAmount": 58477.79
+    }
+   },
+   {
+    "args": {
+     "lineTotals": [
+      1.005,
+      2.675
+     ],
+     "taxRatePercent": 120
+    },
+    "result": {
+     "subtotal": 3.68,
+     "taxAmount": 3.68,
+     "totalAmount": 7.36
+    }
+   },
+   {
+    "args": {
+     "lineTotals": [],
+     "taxRatePercent": 0
+    },
+    "result": {
+     "subtotal": 0,
+     "taxAmount": 0,
+     "totalAmount": 0
+    }
+   }
+  ],
+  "deriveUnitPrice": [
+   {
+    "args": {
+     "stdCost": 1.3459,
+     "marginPercent": 35
+    },
+    "result": 2.07
+   },
+   {
+    "args": {
+     "stdCost": 2.675,
+     "marginPercent": 0
+    },
+    "result": 2.68
+   },
+   {
+    "args": {
+     "stdCost": 1,
+     "marginPercent": 150
+    },
+    "result": 1000
+   }
+  ],
+  "resolveUnitPrice": [
+   {
+    "args": {
+     "stdCost": 1.3459,
+     "marginPercent": 30,
+     "unitPrice": 5
+    },
+    "result": 1.92
+   },
+   {
+    "args": {
+     "stdCost": 0,
+     "marginPercent": 30,
+     "unitPrice": 1.005
+    },
+    "result": 1.01
+   },
+   {
+    "args": {
+     "stdCost": null,
+     "marginPercent": null,
+     "unitPrice": null
+    },
+    "result": 0
+   }
+  ],
+  "lineTotal": [
+   {
+    "args": {
+     "unitPrice": 2.07,
+     "quantity": 5000
+    },
+    "result": 10350
+   },
+   {
+    "args": {
+     "unitPrice": 1.005,
+     "quantity": 3
+    },
+    "result": 3.01
+   },
+   {
+    "args": {
+     "unitPrice": 0.1,
+     "quantity": null
+    },
+    "result": 0
+   }
+  ],
+  "fallbackMatrixUnitCost": [
+   {
+    "args": {
+     "engineUnitCost": 0,
+     "lineStdCost": 1.3459,
+     "theoreticalFgCost": 1.2
+    },
+    "result": {
+     "unitCost": 1.3459,
+     "source": "line-std"
+    }
+   },
+   {
+    "args": {
+     "engineUnitCost": 1.5,
+     "lineStdCost": 1.3
+    },
+    "result": {
+     "unitCost": 1.5,
+     "source": "engine"
+    }
+   },
+   {
+    "args": {
+     "engineUnitCost": 0,
+     "lineStdCost": null,
+     "theoreticalFgCost": 1.2
+    },
+    "result": {
+     "unitCost": 1.2,
+     "source": "theoretical-fg"
+    }
+   },
+   {
+    "args": {
+     "engineUnitCost": 0
+    },
+    "result": {
+     "unitCost": 0,
+     "source": "none"
+    }
+   },
+   {
+    "args": {
+     "engineUnitCost": 0,
+     "lineStdCost": 1.3459,
+     "theoreticalFgCost": 1.2,
+     "customerSuppliedCount": 2
+    },
+    "result": {
+     "unitCost": 0,
+     "source": "none"
+    }
+   },
+   {
+    "args": {
+     "engineUnitCost": 1.5,
+     "lineStdCost": 1.3,
+     "customerSuppliedCount": 1
+    },
+    "result": {
+     "unitCost": 1.5,
+     "source": "engine"
+    }
+   }
+  ],
+  "applyColumnUnitCostFallback": [
+   {
+    "args": {
+     "column": {
+      "askedUnits": 5000,
+      "unitCost": 0,
+      "marginTiers": [
+       {
+        "marginPct": 25,
+        "sellPricePerUnit": 0
+       },
+       {
+        "marginPct": 30,
+        "sellPricePerUnit": 0
+       }
+      ]
+     },
+     "lineStdCost": 1.3459,
+     "theoreticalFgCost": null
+    },
+    "result": {
+     "source": "line-std",
+     "column": {
+      "askedUnits": 5000,
+      "unitCost": 1.3459,
+      "marginTiers": [
+       {
+        "marginPct": 25,
+        "sellPricePerUnit": 1.79
+       },
+       {
+        "marginPct": 30,
+        "sellPricePerUnit": 1.92
+       }
+      ]
+     }
+    }
+   },
+   {
+    "args": {
+     "column": {
+      "askedUnits": 5000,
+      "unitCost": 0,
+      "marginTiers": [
+       {
+        "marginPct": 25,
+        "sellPricePerUnit": 0
+       }
+      ],
+      "customerSupplied": [
+       {
+        "kind": "raw",
+        "key": "fixture-raw",
+        "name": "Fixture raw",
+        "qty": 1
+       }
+      ]
+     },
+     "lineStdCost": 1.3459,
+     "theoreticalFgCost": 1.2
+    },
+    "result": {
+     "column": {
+      "askedUnits": 5000,
+      "unitCost": 0,
+      "marginTiers": [
+       {
+        "marginPct": 25,
+        "sellPricePerUnit": 0
+       }
+      ],
+      "customerSupplied": [
+       {
+        "kind": "raw",
+        "key": "fixture-raw",
+        "name": "Fixture raw",
+        "qty": 1
+       }
+      ]
+     },
+     "source": "none"
+    }
+   }
+  ],
+  "buildLandedExpenseLines": [
+   {
+    "args": {
+     "productTypes": [
+      "PACKAGING",
+      "PACK",
+      "RAW"
+     ],
+     "freightAmount": 1710.005,
+     "dutyAmount": 2606.5
+    },
+    "result": [
+     {
+      "lineType": "Account",
+      "accountNumber": "41130",
+      "quantity": 1,
+      "unitCost": 1710.01,
+      "description": "Freight (PACKAGING)"
+     },
+     {
+      "lineType": "Account",
+      "accountNumber": "41131",
+      "quantity": 1,
+      "unitCost": 2606.5,
+      "description": "Duties & brokerage (PACKAGING)"
+     }
+    ]
+   },
+   {
+    "args": {
+     "productTypes": [
+      "RETAIL"
+     ],
+     "freightAmount": 0,
+     "dutyAmount": 12.345
+    },
+    "result": [
+     {
+      "lineType": "Account",
+      "accountNumber": "41680",
+      "quantity": 1,
+      "unitCost": 12.35,
+      "description": "Duties & brokerage (DISTRIBUTION)"
+     }
+    ]
+   },
+   {
+    "args": {
+     "productTypes": [
+      null,
+      "x"
+     ],
+     "freightAmount": null,
+     "dutyAmount": null
+    },
+    "result": []
+   }
+  ],
+  "resolvePostedLandedAmounts": [
+   {
+    "args": {
+     "receiptFreight": 0,
+     "receiptDuty": 50,
+     "poFreight": 1710,
+     "poDuty": 80
+    },
+    "result": {
+     "freight": 1710,
+     "duty": 50
+    }
+   },
+   {
+    "args": {
+     "receiptFreight": null,
+     "poFreight": null
+    },
+    "result": {
+     "freight": 0,
+     "duty": 0
+    }
+   }
+  ],
+  "customerSuppliedRequirements": [
+   {
+    "args": {
+     "materials": [
+      {
+       "kind": "raw",
+       "key": "rm-a",
+       "name": "a",
+       "productId": "rm-a",
+       "supplySource": "CUSTOMER",
+       "qtyPerUnit": 1234567890.5,
+       "unit": "kg"
+      },
+      {
+       "kind": "raw",
+       "key": "rm-a",
+       "name": "a",
+       "productId": "rm-a",
+       "supplySource": "CUSTOMER",
+       "qtyPerUnit": null,
+       "unit": "kg"
+      }
+     ],
+     "units": 1
+    },
+    "result": [
+     {
+      "kind": "raw",
+      "key": "rm-a",
+      "name": "a",
+      "productId": "rm-a",
+      "supplySource": "CUSTOMER",
+      "qtyPerUnit": 1234567890.5,
+      "unit": "kg",
+      "requiredQty": 1234567891
+     },
+     {
+      "kind": "raw",
+      "key": "rm-a",
+      "name": "a",
+      "productId": "rm-a",
+      "supplySource": "CUSTOMER",
+      "qtyPerUnit": null,
+      "unit": "kg",
+      "requiredQty": null
+     }
+    ]
+   },
+   {
+    "args": {
+     "materials": [
+      {
+       "kind": "raw",
+       "key": "rm-a",
+       "name": "a",
+       "productId": "rm-a",
+       "supplySource": "CUSTOMER",
+       "qtyPerUnit": 1.5e-7,
+       "unit": "kg"
+      },
+      {
+       "kind": "packaging",
+       "key": "rm-a",
+       "name": "a",
+       "productId": "rm-a",
+       "supplySource": "CUSTOMER_PENDING",
+       "qtyPerUnit": 2,
+       "unit": "each"
+      }
+     ],
+     "units": 3333
+    },
+    "result": [
+     {
+      "kind": "raw",
+      "key": "rm-a",
+      "name": "a",
+      "productId": "rm-a",
+      "supplySource": "CUSTOMER",
+      "qtyPerUnit": 1.5e-7,
+      "unit": "kg",
+      "requiredQty": 0.00049995
+     },
+     {
+      "kind": "packaging",
+      "key": "rm-a",
+      "name": "a",
+      "productId": "rm-a",
+      "supplySource": "CUSTOMER_PENDING",
+      "qtyPerUnit": 2,
+      "unit": "each",
+      "requiredQty": 6666
+     }
+    ]
+   },
+   {
+    "args": {
+     "materials": [
+      {
+       "kind": "raw",
+       "key": "rm-a",
+       "name": "a",
+       "productId": "rm-a",
+       "supplySource": "CUSTOMER",
+       "qtyPerUnit": 0.1,
+       "unit": "kg"
+      }
+     ],
+     "units": 0
+    },
+    "result": [
+     {
+      "kind": "raw",
+      "key": "rm-a",
+      "name": "a",
+      "productId": "rm-a",
+      "supplySource": "CUSTOMER",
+      "qtyPerUnit": 0.1,
+      "unit": "kg",
+      "requiredQty": null
+     }
+    ]
+   },
+   {
+    "args": {
+     "materials": [
+      {
+       "kind": "raw",
+       "key": "rm-a",
+       "name": "a",
+       "productId": "rm-a",
+       "supplySource": "CUSTOMER",
+       "qtyPerUnit": 0.1,
+       "unit": "kg"
+      }
+     ],
+     "units": null
+    },
+    "result": [
+     {
+      "kind": "raw",
+      "key": "rm-a",
+      "name": "a",
+      "productId": "rm-a",
+      "supplySource": "CUSTOMER",
+      "qtyPerUnit": 0.1,
+      "unit": "kg",
+      "requiredQty": null
+     }
+    ]
+   }
+  ]
+ },
+ "scenarios": {
+  "linked_cards_routed": {
+   "result": {
+    "estimate": {
+     "bulkCostPerKg": 4.18,
+     "bulkCostPerUnit": 1.04,
+     "packagingCostPerUnit": 2.21,
+     "compoundingLabourPerUnit": 0.14,
+     "assemblyLabourPerUnit": 0.1,
+     "overheadPerUnit": 0.16,
+     "productionHoursPerUnit": 0.00915,
+     "totalCostPerUnit": 3.65,
+     "marginPct": 35,
+     "sellPricePerUnit": 5.61,
+     "marginPerUnit": 1.96,
+     "lines": [
+      {
+       "key": "bulk",
+       "label": "Raw materials (bulk)",
+       "amountPerUnit": 1.04
+      },
+      {
+       "key": "packaging",
+       "label": "Packaging components",
+       "amountPerUnit": 2.21
+      },
+      {
+       "key": "compounding",
+       "label": "Compounding labour",
+       "amountPerUnit": 0.14
+      },
+      {
+       "key": "assembly",
+       "label": "Assembly labour",
+       "amountPerUnit": 0.1
+      },
+      {
+       "key": "overhead",
+       "label": "Overhead",
+       "amountPerUnit": 0.16
+      }
+     ]
+    },
+    "fillWeightG": 236.6,
+    "specificGravity": 1.05,
+    "fillMassKg": 0.24843,
+    "bomTotal": 0.35,
+    "resolutionSource": "project_pin",
+    "labourIsPlaceholder": false,
+    "labour": {
+     "source": "routing",
+     "assemblySource": "routing",
+     "compoundingSource": "routing",
+     "pricedTierCode": null,
+     "pricedQtyBasis": 12000,
+     "assemblyRunHoursPerUnit": 0.0042,
+     "assemblyHoursPerUnit": 0.004575,
+     "compoundingHoursPerUnit": 0.004575,
+     "reasons": []
+    },
+    "marginLadder": {
+     "tiersPct": [
+      25,
+      35,
+      45
+     ],
+     "tiersSource": "rate_settings",
+     "defaultTierPct": 35,
+     "targetPct": 35,
+     "targetSource": "system_default",
+     "tiers": [
+      {
+       "marginPct": 25,
+       "markupPct": 33.33333333333333,
+       "label": "25% margin = 33.3% markup",
+       "isDefault": false,
+       "isTarget": false
+      },
+      {
+       "marginPct": 35,
+       "markupPct": 53.84615384615385,
+       "label": "35% margin = 53.8% markup",
+       "isDefault": true,
+       "isTarget": true
+      },
+      {
+       "marginPct": 45,
+       "markupPct": 81.81818181818181,
+       "label": "45% margin = 81.8% markup",
+       "isDefault": false,
+       "isTarget": false
+      }
+     ]
+    },
+    "marginTiers": [
+     {
+      "marginPct": 25,
+      "markupPct": 33.33333333333333,
+      "label": "25% margin = 33.3% markup",
+      "isDefault": false,
+      "isTarget": false,
+      "sellPricePerUnit": 4.87
+     },
+     {
+      "marginPct": 35,
+      "markupPct": 53.84615384615385,
+      "label": "35% margin = 53.8% markup",
+      "isDefault": true,
+      "isTarget": true,
+      "sellPricePerUnit": 5.62
+     },
+     {
+      "marginPct": 45,
+      "markupPct": 81.81818181818181,
+      "label": "45% margin = 81.8% markup",
+      "isDefault": false,
+      "isTarget": false,
+      "sellPricePerUnit": 6.64
+     }
+    ],
+    "overhead": {
+     "hourlyRate": 35,
+     "uptimeHours": null,
+     "expectedUnitsPerShift": null,
+     "hoursPerUnit": 0.004575,
+     "perUnit": 0.160125,
+     "source": "assembly_hours",
+     "hoursSource": "routing",
+     "appliesTo": "assembly",
+     "reasons": []
+    },
+    "census": {
+     "ready": true,
+     "items": [
+      {
+       "key": "fill_weight_g",
+       "label": "Fill weight (g)",
+       "severity": "ok",
+       "detail": "236.6 g on the ASSEMBLY BOM"
+      },
+      {
+       "key": "specific_gravity",
+       "label": "Specific gravity",
+       "severity": "ok",
+       "detail": "1.05"
+      },
+      {
+       "key": "sourcing",
+       "label": "Packaging sourced",
+       "severity": "ok",
+       "detail": "3 line(s) linked; estimates cleared"
+      },
+      {
+       "key": "hs_code",
+       "label": "HS code",
+       "severity": "warning",
+       "detail": "1 linked product(s) missing Product.hsCode"
+      },
+      {
+       "key": "vendor_card",
+       "label": "Vendor-item card",
+       "severity": "warning",
+       "detail": "1 missing incoterms, 1 missing origin"
+      },
+      {
+       "key": "labour",
+       "label": "Labour / overhead",
+       "severity": "ok",
+       "detail": "Routing hours pinned"
+      }
+     ],
+     "sellVsRetail": {
+      "sellPricePerUnit": 5.61,
+      "retailPerUnit": 1.85,
+      "deltaPct": 203.2,
+      "note": "Suggested sell is +203.2% vs retail / target"
+     },
+     "advisories": [
+      {
+       "kind": "stale_card",
+       "severity": "advisory",
+       "lineName": "1000 ml bottle",
+       "cardUpdatedAt": "2026-08-01T10:00:00.000Z",
+       "lastPoReceivedAt": "2026-09-01T00:00:00.000Z",
+       "detail": "1000 ml bottle: supplier card last updated 2026-08-01T10:00:00.000Z — older than the newest PO receipt 2026-09-01T00:00:00.000Z. Card stays canonical; confirm it still reflects the vendor's price."
+      },
+      {
+       "kind": "card_po_drift",
+       "severity": "warning",
+       "lineName": "cap",
+       "cardUnitCost": 0.13,
+       "lastPoUnitPrice": 0.05,
+       "driftPct": 160,
+       "detail": "cap: supplier card $0.13 vs last-PO $0.05 — +160% drift (threshold 10%). Card stays canonical; re-verify the card."
+      },
+      {
+       "kind": "stale_card",
+       "severity": "advisory",
+       "lineName": "cap",
+       "cardUpdatedAt": "2026-06-01T00:00:00.000Z",
+       "lastPoReceivedAt": "2026-09-01T00:00:00.000Z",
+       "detail": "cap: supplier card last updated 2026-06-01T00:00:00.000Z — older than the newest PO receipt 2026-09-01T00:00:00.000Z. Card stays canonical; confirm it still reflects the vendor's price."
+      }
+     ],
+     "marginIfFilledFromStock": {
+      "label": "Margin if filled from stock — won't-replace-stock exception, display only; the priced margin stays canonical",
+      "sellPricePerUnit": 5.61,
+      "pricedTotalCostPerUnit": 3.65,
+      "pricedMarginPct": 34.9,
+      "stockAdjustedTotalCostPerUnit": 3.44,
+      "stockAdjustedMarginPct": 38.7,
+      "linesFromStock": 1,
+      "linesAtPricedBasis": 2
+     },
+     "volumeAdvisories": []
+    },
+    "lineProvenance": [
+     {
+      "lineKey": "l-bottle",
+      "lineName": "1000 ml bottle",
+      "productId": "p-bottle",
+      "qtyPerUnit": 1,
+      "pricedUnitCost": 0.5066,
+      "cardTier": {
+       "source": "supplier_card_tier",
+       "unitCost": 0.31,
+       "tierMinQty": 5000,
+       "runVolumeTierCode": "10k",
+       "qtyBasis": 12000,
+       "asOf": "2026-07-01T00:00:00.000Z"
+      },
+      "lastPo": {
+       "source": "last_po_landed_approx",
+       "poNumber": "PO5447",
+       "unitPrice": 0.31,
+       "freightPerUnit": 0.1178,
+       "landedApproxUnitCost": 0.4278,
+       "quantityReceived": 12500,
+       "freightReason": null,
+       "asOf": "2026-09-01T00:00:00.000Z"
+      },
+      "stock": {
+       "source": "stock_weighted_avg",
+       "unitCost": 0.296,
+       "quantityOnHand": 50000,
+       "asOf": "2026-09-12T00:00:00.000Z"
+      },
+      "missing": [],
+      "evidenceDbError": false
+     },
+     {
+      "lineKey": "l-cap",
+      "lineName": "cap",
+      "productId": "p-cap",
+      "qtyPerUnit": 1,
+      "pricedUnitCost": 0.1911,
+      "cardTier": {
+       "source": "supplier_card_tier",
+       "unitCost": 0.13,
+       "tierMinQty": null,
+       "runVolumeTierCode": "10k",
+       "qtyBasis": 12000,
+       "asOf": "2026-06-01T00:00:00.000Z"
+      },
+      "lastPo": {
+       "source": "last_po_landed_approx",
+       "poNumber": "PO5447",
+       "unitPrice": 0.05,
+       "freightPerUnit": 0.019,
+       "landedApproxUnitCost": 0.069,
+       "quantityReceived": 12500,
+       "freightReason": null,
+       "asOf": "2026-09-01T00:00:00.000Z"
+      },
+      "stock": null,
+      "missing": [
+       "stock:stock-cost-missing"
+      ],
+      "evidenceDbError": false
+     },
+     {
+      "lineKey": "l-case",
+      "lineName": "shipper case",
+      "productId": "p-case",
+      "qtyPerUnit": 1,
+      "pricedUnitCost": 1.5112,
+      "cardTier": {
+       "source": "supplier_card_tier",
+       "unitCost": 1.005,
+       "tierMinQty": null,
+       "runVolumeTierCode": "10k",
+       "qtyBasis": 12000,
+       "asOf": "2026-08-01T10:00:00.000Z"
+      },
+      "lastPo": null,
+      "stock": null,
+      "missing": [
+       "last_po:none-received",
+       "stock:no-inventory-row"
+      ],
+      "evidenceDbError": false
+     }
+    ],
+    "volumeMatrix": [
+     {
+      "askedUnits": 5000,
+      "vesselPlan": {
+       "batchKg": 1242.15,
+       "pick": null,
+       "candidates": [],
+       "reportedMissing": [
+        "no compounding standard recorded for this formula — vessel pick reported-missing (QD-3)"
+       ]
+      },
+      "labour": {
+       "assemblySource": "routing",
+       "compoundingSource": "routing",
+       "tierCode": "5k",
+       "assemblyRunHoursPerUnit": 0.0042,
+       "assemblyHoursPerUnit": 0.0050999999999999995,
+       "compoundingHoursPerUnit": 0.0050999999999999995,
+       "compoundingBasis": "per_unit_fallback",
+       "setupSource": "routing",
+       "reasons": []
+      },
+      "componentLines": [
+       {
+        "lineKey": "l-bottle",
+        "lineName": "1000 ml bottle",
+        "qtyPerUnit": 1,
+        "componentDemand": 5000,
+        "runVolumeTierCode": "5k",
+        "unitCost": 0.4772,
+        "unitCostSource": "card_tier_landed",
+        "supplySource": "PLX"
+       },
+       {
+        "lineKey": "l-cap",
+        "lineName": "cap",
+        "qtyPerUnit": 1,
+        "componentDemand": 5000,
+        "runVolumeTierCode": "5k",
+        "unitCost": 0.1911,
+        "unitCostSource": "card_tier_landed",
+        "supplySource": "PLX"
+       },
+       {
+        "lineKey": "l-case",
+        "lineName": "shipper case",
+        "qtyPerUnit": 1,
+        "componentDemand": 5000,
+        "runVolumeTierCode": "5k",
+        "unitCost": 1.5112,
+        "unitCostSource": "card_tier_landed",
+        "supplySource": "PLX"
+       }
+      ],
+      "lines": [
+       {
+        "key": "bulk",
+        "label": "Raw materials (bulk)",
+        "amountPerUnit": 1.04
+       },
+       {
+        "key": "packaging",
+        "label": "Packaging components",
+        "amountPerUnit": 2.18
+       },
+       {
+        "key": "compounding",
+        "label": "Compounding labour",
+        "amountPerUnit": 0.15
+       },
+       {
+        "key": "assembly",
+        "label": "Assembly labour",
+        "amountPerUnit": 0.11
+       },
+       {
+        "key": "overhead",
+        "label": "Overhead",
+        "amountPerUnit": 0.18
+       }
+      ],
+      "estimate": {
+       "bulkCostPerKg": 4.18,
+       "bulkCostPerUnit": 1.04,
+       "packagingCostPerUnit": 2.18,
+       "compoundingLabourPerUnit": 0.15,
+       "assemblyLabourPerUnit": 0.11,
+       "overheadPerUnit": 0.18,
+       "productionHoursPerUnit": 0.0102,
+       "totalCostPerUnit": 3.66,
+       "marginPct": 35,
+       "sellPricePerUnit": 5.64,
+       "marginPerUnit": 1.97,
+       "lines": [
+        {
+         "key": "bulk",
+         "label": "Raw materials (bulk)",
+         "amountPerUnit": 1.04
+        },
+        {
+         "key": "packaging",
+         "label": "Packaging components",
+         "amountPerUnit": 2.18
+        },
+        {
+         "key": "compounding",
+         "label": "Compounding labour",
+         "amountPerUnit": 0.15
+        },
+        {
+         "key": "assembly",
+         "label": "Assembly labour",
+         "amountPerUnit": 0.11
+        },
+        {
+         "key": "overhead",
+         "label": "Overhead",
+         "amountPerUnit": 0.18
+        }
+       ]
+      },
+      "unitCost": 3.66,
+      "marginTiers": [
+       {
+        "marginPct": 25,
+        "markupPct": 33.33333333333333,
+        "label": "25% margin = 33.3% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 4.88
+       },
+       {
+        "marginPct": 35,
+        "markupPct": 53.84615384615385,
+        "label": "35% margin = 53.8% markup",
+        "isDefault": true,
+        "isTarget": true,
+        "sellPricePerUnit": 5.63
+       },
+       {
+        "marginPct": 45,
+        "markupPct": 81.81818181818181,
+        "label": "45% margin = 81.8% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 6.65
+       }
+      ],
+      "overhead": {
+       "hourlyRate": 35,
+       "uptimeHours": null,
+       "expectedUnitsPerShift": null,
+       "hoursPerUnit": 0.0050999999999999995,
+       "perUnit": 0.1785,
+       "source": "assembly_hours",
+       "hoursSource": "routing",
+       "appliesTo": "assembly",
+       "reasons": []
+      },
+      "reportedMissing": [
+       "no compounding standard recorded for this formula — vessel pick reported-missing (QD-3)",
+       "charge count underivable — amortisation assumes a single charge and SAYS SO (fix the compounding standard to price multi-charge honestly)"
+      ],
+      "advisories": []
+     },
+     {
+      "askedUnits": 24000,
+      "vesselPlan": {
+       "batchKg": 5962.32,
+       "pick": null,
+       "candidates": [],
+       "reportedMissing": [
+        "no compounding standard recorded for this formula — vessel pick reported-missing (QD-3)"
+       ]
+      },
+      "labour": {
+       "assemblySource": "routing",
+       "compoundingSource": "routing",
+       "tierCode": "10k",
+       "assemblyRunHoursPerUnit": 0.0042,
+       "assemblyHoursPerUnit": 0.0043875,
+       "compoundingHoursPerUnit": 0.0043875,
+       "compoundingBasis": "per_unit_fallback",
+       "setupSource": "routing",
+       "reasons": []
+      },
+      "componentLines": [
+       {
+        "lineKey": "l-bottle",
+        "lineName": "1000 ml bottle",
+        "qtyPerUnit": 1,
+        "componentDemand": 24000,
+        "runVolumeTierCode": "10k",
+        "unitCost": 0.4184,
+        "unitCostSource": "card_tier_landed",
+        "supplySource": "PLX"
+       },
+       {
+        "lineKey": "l-cap",
+        "lineName": "cap",
+        "qtyPerUnit": 1,
+        "componentDemand": 24000,
+        "runVolumeTierCode": "10k",
+        "unitCost": 0.1911,
+        "unitCostSource": "card_tier_landed",
+        "supplySource": "PLX"
+       },
+       {
+        "lineKey": "l-case",
+        "lineName": "shipper case",
+        "qtyPerUnit": 1,
+        "componentDemand": 24000,
+        "runVolumeTierCode": "10k",
+        "unitCost": 1.5112,
+        "unitCostSource": "card_tier_landed",
+        "supplySource": "PLX"
+       }
+      ],
+      "lines": [
+       {
+        "key": "bulk",
+        "label": "Raw materials (bulk)",
+        "amountPerUnit": 1.04
+       },
+       {
+        "key": "packaging",
+        "label": "Packaging components",
+        "amountPerUnit": 2.12
+       },
+       {
+        "key": "compounding",
+        "label": "Compounding labour",
+        "amountPerUnit": 0.13
+       },
+       {
+        "key": "assembly",
+        "label": "Assembly labour",
+        "amountPerUnit": 0.1
+       },
+       {
+        "key": "overhead",
+        "label": "Overhead",
+        "amountPerUnit": 0.15
+       }
+      ],
+      "estimate": {
+       "bulkCostPerKg": 4.18,
+       "bulkCostPerUnit": 1.04,
+       "packagingCostPerUnit": 2.12,
+       "compoundingLabourPerUnit": 0.13,
+       "assemblyLabourPerUnit": 0.1,
+       "overheadPerUnit": 0.15,
+       "productionHoursPerUnit": 0.008775,
+       "totalCostPerUnit": 3.54,
+       "marginPct": 35,
+       "sellPricePerUnit": 5.45,
+       "marginPerUnit": 1.91,
+       "lines": [
+        {
+         "key": "bulk",
+         "label": "Raw materials (bulk)",
+         "amountPerUnit": 1.04
+        },
+        {
+         "key": "packaging",
+         "label": "Packaging components",
+         "amountPerUnit": 2.12
+        },
+        {
+         "key": "compounding",
+         "label": "Compounding labour",
+         "amountPerUnit": 0.13
+        },
+        {
+         "key": "assembly",
+         "label": "Assembly labour",
+         "amountPerUnit": 0.1
+        },
+        {
+         "key": "overhead",
+         "label": "Overhead",
+         "amountPerUnit": 0.15
+        }
+       ]
+      },
+      "unitCost": 3.54,
+      "marginTiers": [
+       {
+        "marginPct": 25,
+        "markupPct": 33.33333333333333,
+        "label": "25% margin = 33.3% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 4.72
+       },
+       {
+        "marginPct": 35,
+        "markupPct": 53.84615384615385,
+        "label": "35% margin = 53.8% markup",
+        "isDefault": true,
+        "isTarget": true,
+        "sellPricePerUnit": 5.45
+       },
+       {
+        "marginPct": 45,
+        "markupPct": 81.81818181818181,
+        "label": "45% margin = 81.8% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 6.44
+       }
+      ],
+      "overhead": {
+       "hourlyRate": 35,
+       "uptimeHours": null,
+       "expectedUnitsPerShift": null,
+       "hoursPerUnit": 0.0043875,
+       "perUnit": 0.1535625,
+       "source": "assembly_hours",
+       "hoursSource": "routing",
+       "appliesTo": "assembly",
+       "reasons": []
+      },
+      "reportedMissing": [
+       "no compounding standard recorded for this formula — vessel pick reported-missing (QD-3)",
+       "charge count underivable — amortisation assumes a single charge and SAYS SO (fix the compounding standard to price multi-charge honestly)"
+      ],
+      "advisories": []
+     },
+     {
+      "askedUnits": 60000,
+      "vesselPlan": {
+       "batchKg": 14905.8,
+       "pick": null,
+       "candidates": [],
+       "reportedMissing": [
+        "no compounding standard recorded for this formula — vessel pick reported-missing (QD-3)"
+       ]
+      },
+      "labour": {
+       "assemblySource": "routing",
+       "compoundingSource": "routing",
+       "tierCode": "50k",
+       "assemblyRunHoursPerUnit": 0.0042,
+       "assemblyHoursPerUnit": 0.004275,
+       "compoundingHoursPerUnit": 0.004275,
+       "compoundingBasis": "per_unit_fallback",
+       "setupSource": "routing",
+       "reasons": []
+      },
+      "componentLines": [
+       {
+        "lineKey": "l-bottle",
+        "lineName": "1000 ml bottle",
+        "qtyPerUnit": 1,
+        "componentDemand": 60000,
+        "runVolumeTierCode": "50k",
+        "unitCost": 0.4184,
+        "unitCostSource": "card_tier_landed",
+        "supplySource": "PLX"
+       },
+       {
+        "lineKey": "l-cap",
+        "lineName": "cap",
+        "qtyPerUnit": 1,
+        "componentDemand": 60000,
+        "runVolumeTierCode": "50k",
+        "unitCost": 0.1911,
+        "unitCostSource": "card_tier_landed",
+        "supplySource": "PLX"
+       },
+       {
+        "lineKey": "l-case",
+        "lineName": "shipper case",
+        "qtyPerUnit": 1,
+        "componentDemand": 60000,
+        "runVolumeTierCode": "50k",
+        "unitCost": 1.5112,
+        "unitCostSource": "card_tier_landed",
+        "supplySource": "PLX"
+       }
+      ],
+      "lines": [
+       {
+        "key": "bulk",
+        "label": "Raw materials (bulk)",
+        "amountPerUnit": 1.04
+       },
+       {
+        "key": "packaging",
+        "label": "Packaging components",
+        "amountPerUnit": 2.12
+       },
+       {
+        "key": "compounding",
+        "label": "Compounding labour",
+        "amountPerUnit": 0.13
+       },
+       {
+        "key": "assembly",
+        "label": "Assembly labour",
+        "amountPerUnit": 0.1
+       },
+       {
+        "key": "overhead",
+        "label": "Overhead",
+        "amountPerUnit": 0.15
+       }
+      ],
+      "estimate": {
+       "bulkCostPerKg": 4.18,
+       "bulkCostPerUnit": 1.04,
+       "packagingCostPerUnit": 2.12,
+       "compoundingLabourPerUnit": 0.13,
+       "assemblyLabourPerUnit": 0.1,
+       "overheadPerUnit": 0.15,
+       "productionHoursPerUnit": 0.00855,
+       "totalCostPerUnit": 3.53,
+       "marginPct": 35,
+       "sellPricePerUnit": 5.44,
+       "marginPerUnit": 1.9,
+       "lines": [
+        {
+         "key": "bulk",
+         "label": "Raw materials (bulk)",
+         "amountPerUnit": 1.04
+        },
+        {
+         "key": "packaging",
+         "label": "Packaging components",
+         "amountPerUnit": 2.12
+        },
+        {
+         "key": "compounding",
+         "label": "Compounding labour",
+         "amountPerUnit": 0.13
+        },
+        {
+         "key": "assembly",
+         "label": "Assembly labour",
+         "amountPerUnit": 0.1
+        },
+        {
+         "key": "overhead",
+         "label": "Overhead",
+         "amountPerUnit": 0.15
+        }
+       ]
+      },
+      "unitCost": 3.53,
+      "marginTiers": [
+       {
+        "marginPct": 25,
+        "markupPct": 33.33333333333333,
+        "label": "25% margin = 33.3% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 4.71
+       },
+       {
+        "marginPct": 35,
+        "markupPct": 53.84615384615385,
+        "label": "35% margin = 53.8% markup",
+        "isDefault": true,
+        "isTarget": true,
+        "sellPricePerUnit": 5.43
+       },
+       {
+        "marginPct": 45,
+        "markupPct": 81.81818181818181,
+        "label": "45% margin = 81.8% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 6.42
+       }
+      ],
+      "overhead": {
+       "hourlyRate": 35,
+       "uptimeHours": null,
+       "expectedUnitsPerShift": null,
+       "hoursPerUnit": 0.004275,
+       "perUnit": 0.149625,
+       "source": "assembly_hours",
+       "hoursSource": "routing",
+       "appliesTo": "assembly",
+       "reasons": []
+      },
+      "reportedMissing": [
+       "no compounding standard recorded for this formula — vessel pick reported-missing (QD-3)",
+       "charge count underivable — amortisation assumes a single charge and SAYS SO (fix the compounding standard to price multi-charge honestly)"
+      ],
+      "advisories": []
+     }
+    ]
+   },
+   "offer": {
+    "lineStdCost": 1.42,
+    "sources": [
+     "engine",
+     "engine",
+     "engine"
+    ],
+    "lines": [
+     {
+      "quoteVolumeId": "vol-5000",
+      "askedUnits": 5000,
+      "unitCost": 3.66,
+      "marginPercent": 40,
+      "unitPrice": 6.1
+     },
+     {
+      "quoteVolumeId": "vol-24000",
+      "askedUnits": 24000,
+      "unitCost": 3.54,
+      "marginPercent": 35,
+      "unitPrice": 5.45
+     },
+     {
+      "quoteVolumeId": "vol-60000",
+      "askedUnits": 60000,
+      "unitCost": 3.53,
+      "marginPercent": 35,
+      "unitPrice": 5.43
+     }
+    ],
+    "creates": [
+     {
+      "quantity": 5000,
+      "unitPrice": 6.1,
+      "totalPrice": 30500,
+      "marginPercent": 40
+     },
+     {
+      "quantity": 24000,
+      "unitPrice": 5.45,
+      "totalPrice": 130800,
+      "marginPercent": 35
+     },
+     {
+      "quantity": 60000,
+      "unitPrice": 5.43,
+      "totalPrice": 325800,
+      "marginPercent": 35
+     }
+    ],
+    "totals": {
+     "subtotal": 487100,
+     "taxAmount": 63323,
+     "totalAmount": 550423
+    }
+   },
+   "db_calls": [
+    "assemblySourcingRequest.findMany",
+    "billOfMaterials.findFirst",
+    "bomLine.findMany",
+    "customer.findFirst",
+    "draftCostOverride.findMany",
+    "fgItem.findUnique",
+    "fgRouting.findFirst",
+    "formulaCompoundingStandard.findUnique",
+    "formulation.findFirst",
+    "formulation.findUnique",
+    "inventory.findMany",
+    "lineActionSetupStandard.findMany",
+    "project.findFirst",
+    "projectLocal.findUnique",
+    "projectSubAssembly.findFirst",
+    "purchaseOrderLine.findMany",
+    "quote.findFirst",
+    "rateSettings.findFirst"
+   ]
+  },
+  "project_without_facts": {
+   "result": {
+    "estimate": {
+     "bulkCostPerKg": 0,
+     "bulkCostPerUnit": 0,
+     "packagingCostPerUnit": 0,
+     "compoundingLabourPerUnit": 0,
+     "assemblyLabourPerUnit": 0,
+     "overheadPerUnit": 0,
+     "productionHoursPerUnit": 0,
+     "totalCostPerUnit": 0,
+     "marginPct": 30,
+     "sellPricePerUnit": 0,
+     "marginPerUnit": 0,
+     "lines": [
+      {
+       "key": "bulk",
+       "label": "Raw materials (bulk)",
+       "amountPerUnit": 0
+      },
+      {
+       "key": "packaging",
+       "label": "Packaging components",
+       "amountPerUnit": 0
+      },
+      {
+       "key": "compounding",
+       "label": "Compounding labour",
+       "amountPerUnit": 0
+      },
+      {
+       "key": "assembly",
+       "label": "Assembly labour",
+       "amountPerUnit": 0
+      },
+      {
+       "key": "overhead",
+       "label": "Overhead",
+       "amountPerUnit": 0
+      }
+     ]
+    },
+    "fillWeightG": null,
+    "specificGravity": null,
+    "fillMassKg": 0,
+    "bomTotal": 0,
+    "resolutionSource": "none",
+    "labourIsPlaceholder": true,
+    "labour": {
+     "source": "missing",
+     "assemblySource": "missing",
+     "compoundingSource": "missing",
+     "pricedTierCode": null,
+     "pricedQtyBasis": null,
+     "assemblyRunHoursPerUnit": null,
+     "assemblyHoursPerUnit": null,
+     "compoundingHoursPerUnit": null,
+     "reasons": [
+      "assembly-hours-missing:no-routing",
+      "compounding-hours-missing:no-routing"
+     ]
+    },
+    "marginLadder": {
+     "tiersPct": [
+      25,
+      30,
+      35,
+      40
+     ],
+     "tiersSource": "fallback",
+     "defaultTierPct": 30,
+     "targetPct": 30,
+     "targetSource": "system_default",
+     "tiers": [
+      {
+       "marginPct": 25,
+       "markupPct": 33.33333333333333,
+       "label": "25% margin = 33.3% markup",
+       "isDefault": false,
+       "isTarget": false
+      },
+      {
+       "marginPct": 30,
+       "markupPct": 42.85714285714286,
+       "label": "30% margin = 42.9% markup",
+       "isDefault": true,
+       "isTarget": true
+      },
+      {
+       "marginPct": 35,
+       "markupPct": 53.84615384615385,
+       "label": "35% margin = 53.8% markup",
+       "isDefault": false,
+       "isTarget": false
+      },
+      {
+       "marginPct": 40,
+       "markupPct": 66.66666666666667,
+       "label": "40% margin = 66.7% markup",
+       "isDefault": false,
+       "isTarget": false
+      }
+     ]
+    },
+    "marginTiers": [
+     {
+      "marginPct": 25,
+      "markupPct": 33.33333333333333,
+      "label": "25% margin = 33.3% markup",
+      "isDefault": false,
+      "isTarget": false,
+      "sellPricePerUnit": 0
+     },
+     {
+      "marginPct": 30,
+      "markupPct": 42.85714285714286,
+      "label": "30% margin = 42.9% markup",
+      "isDefault": true,
+      "isTarget": true,
+      "sellPricePerUnit": 0
+     },
+     {
+      "marginPct": 35,
+      "markupPct": 53.84615384615385,
+      "label": "35% margin = 53.8% markup",
+      "isDefault": false,
+      "isTarget": false,
+      "sellPricePerUnit": 0
+     },
+     {
+      "marginPct": 40,
+      "markupPct": 66.66666666666667,
+      "label": "40% margin = 66.7% markup",
+      "isDefault": false,
+      "isTarget": false,
+      "sellPricePerUnit": 0
+     }
+    ],
+    "overhead": {
+     "hourlyRate": 31.3,
+     "uptimeHours": null,
+     "expectedUnitsPerShift": null,
+     "hoursPerUnit": null,
+     "perUnit": null,
+     "source": "missing",
+     "hoursSource": "missing",
+     "appliesTo": "assembly",
+     "reasons": [
+      "overhead-basis-missing:no-assembly-hours"
+     ]
+    },
+    "census": {
+     "ready": false,
+     "items": [
+      {
+       "key": "fill_weight_g",
+       "label": "Fill weight (g)",
+       "severity": "blocker",
+       "detail": "ASSEMBLY BOM has no typed fill_weight_g (no silent 500 g default)"
+      },
+      {
+       "key": "specific_gravity",
+       "label": "Specific gravity",
+       "severity": "warning",
+       "detail": "Defaulting to 1.00 until Formulation.specificGravity is set"
+      },
+      {
+       "key": "sourcing",
+       "label": "Packaging sourced",
+       "severity": "warning",
+       "detail": "No ASSEMBLY BOM lines to quote"
+      },
+      {
+       "key": "hs_code",
+       "label": "HS code",
+       "severity": "ok",
+       "detail": "Import HS code present on linked products"
+      },
+      {
+       "key": "vendor_card",
+       "label": "Vendor-item card",
+       "severity": "ok",
+       "detail": "Incoterms and country of origin present"
+      },
+      {
+       "key": "labour",
+       "label": "Labour / overhead",
+       "severity": "warning",
+       "detail": "No routing hours, so assembly and setup labour are priced at $0 and reported"
+      }
+     ],
+     "sellVsRetail": {
+      "sellPricePerUnit": 0,
+      "retailPerUnit": null,
+      "deltaPct": null,
+      "note": "No retail / target price on the project to compare"
+     },
+     "advisories": [],
+     "marginIfFilledFromStock": null,
+     "volumeAdvisories": []
+    },
+    "lineProvenance": [],
+    "volumeMatrix": [
+     {
+      "askedUnits": 5000,
+      "vesselPlan": {
+       "batchKg": null,
+       "pick": null,
+       "candidates": [],
+       "reportedMissing": [
+        "fill mass (kg/unit) missing — fill weight and/or specific gravity not recorded (QD-4)",
+        "no compounding standard recorded for this formula — vessel pick reported-missing (QD-3)"
+       ]
+      },
+      "labour": {
+       "assemblySource": "missing",
+       "compoundingSource": "missing",
+       "tierCode": "5k",
+       "assemblyRunHoursPerUnit": null,
+       "assemblyHoursPerUnit": null,
+       "compoundingHoursPerUnit": null,
+       "compoundingBasis": "missing",
+       "setupSource": "setup-standard:seed",
+       "reasons": [
+        "assembly-hours-missing:no-routing",
+        "compounding-hours-missing:no-routing",
+        "compounding-hours-missing-for-volume"
+       ]
+      },
+      "componentLines": [],
+      "lines": [
+       {
+        "key": "bulk",
+        "label": "Raw materials (bulk)",
+        "amountPerUnit": 0
+       },
+       {
+        "key": "packaging",
+        "label": "Packaging components",
+        "amountPerUnit": 0
+       },
+       {
+        "key": "compounding",
+        "label": "Compounding labour",
+        "amountPerUnit": 0
+       },
+       {
+        "key": "assembly",
+        "label": "Assembly labour",
+        "amountPerUnit": 0
+       },
+       {
+        "key": "overhead",
+        "label": "Overhead",
+        "amountPerUnit": 0
+       }
+      ],
+      "estimate": {
+       "bulkCostPerKg": 0,
+       "bulkCostPerUnit": 0,
+       "packagingCostPerUnit": 0,
+       "compoundingLabourPerUnit": 0,
+       "assemblyLabourPerUnit": 0,
+       "overheadPerUnit": 0,
+       "productionHoursPerUnit": 0,
+       "totalCostPerUnit": 0,
+       "marginPct": 30,
+       "sellPricePerUnit": 0,
+       "marginPerUnit": 0,
+       "lines": [
+        {
+         "key": "bulk",
+         "label": "Raw materials (bulk)",
+         "amountPerUnit": 0
+        },
+        {
+         "key": "packaging",
+         "label": "Packaging components",
+         "amountPerUnit": 0
+        },
+        {
+         "key": "compounding",
+         "label": "Compounding labour",
+         "amountPerUnit": 0
+        },
+        {
+         "key": "assembly",
+         "label": "Assembly labour",
+         "amountPerUnit": 0
+        },
+        {
+         "key": "overhead",
+         "label": "Overhead",
+         "amountPerUnit": 0
+        }
+       ]
+      },
+      "unitCost": 0,
+      "marginTiers": [
+       {
+        "marginPct": 25,
+        "markupPct": 33.33333333333333,
+        "label": "25% margin = 33.3% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 0
+       },
+       {
+        "marginPct": 30,
+        "markupPct": 42.85714285714286,
+        "label": "30% margin = 42.9% markup",
+        "isDefault": true,
+        "isTarget": true,
+        "sellPricePerUnit": 0
+       },
+       {
+        "marginPct": 35,
+        "markupPct": 53.84615384615385,
+        "label": "35% margin = 53.8% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 0
+       },
+       {
+        "marginPct": 40,
+        "markupPct": 66.66666666666667,
+        "label": "40% margin = 66.7% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 0
+       }
+      ],
+      "overhead": {
+       "hourlyRate": 31.3,
+       "uptimeHours": null,
+       "expectedUnitsPerShift": null,
+       "hoursPerUnit": null,
+       "perUnit": null,
+       "source": "missing",
+       "hoursSource": "missing",
+       "appliesTo": "assembly",
+       "reasons": [
+        "overhead-basis-missing:no-assembly-hours"
+       ]
+      },
+      "reportedMissing": [
+       "No formula linked — no formula cost",
+       "fill mass (kg/unit) missing — fill weight and/or specific gravity not recorded (QD-4)",
+       "no compounding standard recorded for this formula — vessel pick reported-missing (QD-3)",
+       "charge count underivable — amortisation assumes a single charge and SAYS SO (fix the compounding standard to price multi-charge honestly)",
+       "assembly hours missing for this volume — labour priced at 0 and REPORTED",
+       "compounding hours missing for this volume — labour priced at 0 and REPORTED"
+      ],
+      "advisories": []
+     },
+     {
+      "askedUnits": 10000,
+      "vesselPlan": {
+       "batchKg": null,
+       "pick": null,
+       "candidates": [],
+       "reportedMissing": [
+        "fill mass (kg/unit) missing — fill weight and/or specific gravity not recorded (QD-4)",
+        "no compounding standard recorded for this formula — vessel pick reported-missing (QD-3)"
+       ]
+      },
+      "labour": {
+       "assemblySource": "missing",
+       "compoundingSource": "missing",
+       "tierCode": "10k",
+       "assemblyRunHoursPerUnit": null,
+       "assemblyHoursPerUnit": null,
+       "compoundingHoursPerUnit": null,
+       "compoundingBasis": "missing",
+       "setupSource": "setup-standard:seed",
+       "reasons": [
+        "assembly-hours-missing:no-routing",
+        "compounding-hours-missing:no-routing",
+        "compounding-hours-missing-for-volume"
+       ]
+      },
+      "componentLines": [],
+      "lines": [
+       {
+        "key": "bulk",
+        "label": "Raw materials (bulk)",
+        "amountPerUnit": 0
+       },
+       {
+        "key": "packaging",
+        "label": "Packaging components",
+        "amountPerUnit": 0
+       },
+       {
+        "key": "compounding",
+        "label": "Compounding labour",
+        "amountPerUnit": 0
+       },
+       {
+        "key": "assembly",
+        "label": "Assembly labour",
+        "amountPerUnit": 0
+       },
+       {
+        "key": "overhead",
+        "label": "Overhead",
+        "amountPerUnit": 0
+       }
+      ],
+      "estimate": {
+       "bulkCostPerKg": 0,
+       "bulkCostPerUnit": 0,
+       "packagingCostPerUnit": 0,
+       "compoundingLabourPerUnit": 0,
+       "assemblyLabourPerUnit": 0,
+       "overheadPerUnit": 0,
+       "productionHoursPerUnit": 0,
+       "totalCostPerUnit": 0,
+       "marginPct": 30,
+       "sellPricePerUnit": 0,
+       "marginPerUnit": 0,
+       "lines": [
+        {
+         "key": "bulk",
+         "label": "Raw materials (bulk)",
+         "amountPerUnit": 0
+        },
+        {
+         "key": "packaging",
+         "label": "Packaging components",
+         "amountPerUnit": 0
+        },
+        {
+         "key": "compounding",
+         "label": "Compounding labour",
+         "amountPerUnit": 0
+        },
+        {
+         "key": "assembly",
+         "label": "Assembly labour",
+         "amountPerUnit": 0
+        },
+        {
+         "key": "overhead",
+         "label": "Overhead",
+         "amountPerUnit": 0
+        }
+       ]
+      },
+      "unitCost": 0,
+      "marginTiers": [
+       {
+        "marginPct": 25,
+        "markupPct": 33.33333333333333,
+        "label": "25% margin = 33.3% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 0
+       },
+       {
+        "marginPct": 30,
+        "markupPct": 42.85714285714286,
+        "label": "30% margin = 42.9% markup",
+        "isDefault": true,
+        "isTarget": true,
+        "sellPricePerUnit": 0
+       },
+       {
+        "marginPct": 35,
+        "markupPct": 53.84615384615385,
+        "label": "35% margin = 53.8% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 0
+       },
+       {
+        "marginPct": 40,
+        "markupPct": 66.66666666666667,
+        "label": "40% margin = 66.7% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 0
+       }
+      ],
+      "overhead": {
+       "hourlyRate": 31.3,
+       "uptimeHours": null,
+       "expectedUnitsPerShift": null,
+       "hoursPerUnit": null,
+       "perUnit": null,
+       "source": "missing",
+       "hoursSource": "missing",
+       "appliesTo": "assembly",
+       "reasons": [
+        "overhead-basis-missing:no-assembly-hours"
+       ]
+      },
+      "reportedMissing": [
+       "No formula linked — no formula cost",
+       "fill mass (kg/unit) missing — fill weight and/or specific gravity not recorded (QD-4)",
+       "no compounding standard recorded for this formula — vessel pick reported-missing (QD-3)",
+       "charge count underivable — amortisation assumes a single charge and SAYS SO (fix the compounding standard to price multi-charge honestly)",
+       "assembly hours missing for this volume — labour priced at 0 and REPORTED",
+       "compounding hours missing for this volume — labour priced at 0 and REPORTED"
+      ],
+      "advisories": []
+     },
+     {
+      "askedUnits": 25000,
+      "vesselPlan": {
+       "batchKg": null,
+       "pick": null,
+       "candidates": [],
+       "reportedMissing": [
+        "fill mass (kg/unit) missing — fill weight and/or specific gravity not recorded (QD-4)",
+        "no compounding standard recorded for this formula — vessel pick reported-missing (QD-3)"
+       ]
+      },
+      "labour": {
+       "assemblySource": "missing",
+       "compoundingSource": "missing",
+       "tierCode": "25k",
+       "assemblyRunHoursPerUnit": null,
+       "assemblyHoursPerUnit": null,
+       "compoundingHoursPerUnit": null,
+       "compoundingBasis": "missing",
+       "setupSource": "setup-standard:seed",
+       "reasons": [
+        "assembly-hours-missing:no-routing",
+        "compounding-hours-missing:no-routing",
+        "compounding-hours-missing-for-volume"
+       ]
+      },
+      "componentLines": [],
+      "lines": [
+       {
+        "key": "bulk",
+        "label": "Raw materials (bulk)",
+        "amountPerUnit": 0
+       },
+       {
+        "key": "packaging",
+        "label": "Packaging components",
+        "amountPerUnit": 0
+       },
+       {
+        "key": "compounding",
+        "label": "Compounding labour",
+        "amountPerUnit": 0
+       },
+       {
+        "key": "assembly",
+        "label": "Assembly labour",
+        "amountPerUnit": 0
+       },
+       {
+        "key": "overhead",
+        "label": "Overhead",
+        "amountPerUnit": 0
+       }
+      ],
+      "estimate": {
+       "bulkCostPerKg": 0,
+       "bulkCostPerUnit": 0,
+       "packagingCostPerUnit": 0,
+       "compoundingLabourPerUnit": 0,
+       "assemblyLabourPerUnit": 0,
+       "overheadPerUnit": 0,
+       "productionHoursPerUnit": 0,
+       "totalCostPerUnit": 0,
+       "marginPct": 30,
+       "sellPricePerUnit": 0,
+       "marginPerUnit": 0,
+       "lines": [
+        {
+         "key": "bulk",
+         "label": "Raw materials (bulk)",
+         "amountPerUnit": 0
+        },
+        {
+         "key": "packaging",
+         "label": "Packaging components",
+         "amountPerUnit": 0
+        },
+        {
+         "key": "compounding",
+         "label": "Compounding labour",
+         "amountPerUnit": 0
+        },
+        {
+         "key": "assembly",
+         "label": "Assembly labour",
+         "amountPerUnit": 0
+        },
+        {
+         "key": "overhead",
+         "label": "Overhead",
+         "amountPerUnit": 0
+        }
+       ]
+      },
+      "unitCost": 0,
+      "marginTiers": [
+       {
+        "marginPct": 25,
+        "markupPct": 33.33333333333333,
+        "label": "25% margin = 33.3% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 0
+       },
+       {
+        "marginPct": 30,
+        "markupPct": 42.85714285714286,
+        "label": "30% margin = 42.9% markup",
+        "isDefault": true,
+        "isTarget": true,
+        "sellPricePerUnit": 0
+       },
+       {
+        "marginPct": 35,
+        "markupPct": 53.84615384615385,
+        "label": "35% margin = 53.8% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 0
+       },
+       {
+        "marginPct": 40,
+        "markupPct": 66.66666666666667,
+        "label": "40% margin = 66.7% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 0
+       }
+      ],
+      "overhead": {
+       "hourlyRate": 31.3,
+       "uptimeHours": null,
+       "expectedUnitsPerShift": null,
+       "hoursPerUnit": null,
+       "perUnit": null,
+       "source": "missing",
+       "hoursSource": "missing",
+       "appliesTo": "assembly",
+       "reasons": [
+        "overhead-basis-missing:no-assembly-hours"
+       ]
+      },
+      "reportedMissing": [
+       "No formula linked — no formula cost",
+       "fill mass (kg/unit) missing — fill weight and/or specific gravity not recorded (QD-4)",
+       "no compounding standard recorded for this formula — vessel pick reported-missing (QD-3)",
+       "charge count underivable — amortisation assumes a single charge and SAYS SO (fix the compounding standard to price multi-charge honestly)",
+       "assembly hours missing for this volume — labour priced at 0 and REPORTED",
+       "compounding hours missing for this volume — labour priced at 0 and REPORTED"
+      ],
+      "advisories": []
+     },
+     {
+      "askedUnits": 50000,
+      "vesselPlan": {
+       "batchKg": null,
+       "pick": null,
+       "candidates": [],
+       "reportedMissing": [
+        "fill mass (kg/unit) missing — fill weight and/or specific gravity not recorded (QD-4)",
+        "no compounding standard recorded for this formula — vessel pick reported-missing (QD-3)"
+       ]
+      },
+      "labour": {
+       "assemblySource": "missing",
+       "compoundingSource": "missing",
+       "tierCode": "50k",
+       "assemblyRunHoursPerUnit": null,
+       "assemblyHoursPerUnit": null,
+       "compoundingHoursPerUnit": null,
+       "compoundingBasis": "missing",
+       "setupSource": "setup-standard:seed",
+       "reasons": [
+        "assembly-hours-missing:no-routing",
+        "compounding-hours-missing:no-routing",
+        "compounding-hours-missing-for-volume"
+       ]
+      },
+      "componentLines": [],
+      "lines": [
+       {
+        "key": "bulk",
+        "label": "Raw materials (bulk)",
+        "amountPerUnit": 0
+       },
+       {
+        "key": "packaging",
+        "label": "Packaging components",
+        "amountPerUnit": 0
+       },
+       {
+        "key": "compounding",
+        "label": "Compounding labour",
+        "amountPerUnit": 0
+       },
+       {
+        "key": "assembly",
+        "label": "Assembly labour",
+        "amountPerUnit": 0
+       },
+       {
+        "key": "overhead",
+        "label": "Overhead",
+        "amountPerUnit": 0
+       }
+      ],
+      "estimate": {
+       "bulkCostPerKg": 0,
+       "bulkCostPerUnit": 0,
+       "packagingCostPerUnit": 0,
+       "compoundingLabourPerUnit": 0,
+       "assemblyLabourPerUnit": 0,
+       "overheadPerUnit": 0,
+       "productionHoursPerUnit": 0,
+       "totalCostPerUnit": 0,
+       "marginPct": 30,
+       "sellPricePerUnit": 0,
+       "marginPerUnit": 0,
+       "lines": [
+        {
+         "key": "bulk",
+         "label": "Raw materials (bulk)",
+         "amountPerUnit": 0
+        },
+        {
+         "key": "packaging",
+         "label": "Packaging components",
+         "amountPerUnit": 0
+        },
+        {
+         "key": "compounding",
+         "label": "Compounding labour",
+         "amountPerUnit": 0
+        },
+        {
+         "key": "assembly",
+         "label": "Assembly labour",
+         "amountPerUnit": 0
+        },
+        {
+         "key": "overhead",
+         "label": "Overhead",
+         "amountPerUnit": 0
+        }
+       ]
+      },
+      "unitCost": 0,
+      "marginTiers": [
+       {
+        "marginPct": 25,
+        "markupPct": 33.33333333333333,
+        "label": "25% margin = 33.3% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 0
+       },
+       {
+        "marginPct": 30,
+        "markupPct": 42.85714285714286,
+        "label": "30% margin = 42.9% markup",
+        "isDefault": true,
+        "isTarget": true,
+        "sellPricePerUnit": 0
+       },
+       {
+        "marginPct": 35,
+        "markupPct": 53.84615384615385,
+        "label": "35% margin = 53.8% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 0
+       },
+       {
+        "marginPct": 40,
+        "markupPct": 66.66666666666667,
+        "label": "40% margin = 66.7% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 0
+       }
+      ],
+      "overhead": {
+       "hourlyRate": 31.3,
+       "uptimeHours": null,
+       "expectedUnitsPerShift": null,
+       "hoursPerUnit": null,
+       "perUnit": null,
+       "source": "missing",
+       "hoursSource": "missing",
+       "appliesTo": "assembly",
+       "reasons": [
+        "overhead-basis-missing:no-assembly-hours"
+       ]
+      },
+      "reportedMissing": [
+       "No formula linked — no formula cost",
+       "fill mass (kg/unit) missing — fill weight and/or specific gravity not recorded (QD-4)",
+       "no compounding standard recorded for this formula — vessel pick reported-missing (QD-3)",
+       "charge count underivable — amortisation assumes a single charge and SAYS SO (fix the compounding standard to price multi-charge honestly)",
+       "assembly hours missing for this volume — labour priced at 0 and REPORTED",
+       "compounding hours missing for this volume — labour priced at 0 and REPORTED"
+      ],
+      "advisories": []
+     }
+    ]
+   },
+   "offer": {
+    "lineStdCost": 2.4,
+    "sources": [
+     "line-std",
+     "line-std",
+     "line-std",
+     "line-std"
+    ],
+    "lines": [
+     {
+      "quoteVolumeId": "vol-5000",
+      "askedUnits": 5000,
+      "unitCost": 2.4,
+      "marginPercent": 30,
+      "unitPrice": 3.43
+     },
+     {
+      "quoteVolumeId": "vol-10000",
+      "askedUnits": 10000,
+      "unitCost": 2.4,
+      "marginPercent": 30,
+      "unitPrice": 3.43
+     },
+     {
+      "quoteVolumeId": "vol-25000",
+      "askedUnits": 25000,
+      "unitCost": 2.4,
+      "marginPercent": 30,
+      "unitPrice": 3.43
+     },
+     {
+      "quoteVolumeId": "vol-50000",
+      "askedUnits": 50000,
+      "unitCost": 2.4,
+      "marginPercent": 30,
+      "unitPrice": 3.43
+     }
+    ],
+    "creates": [
+     {
+      "quantity": 5000,
+      "unitPrice": 3.43,
+      "totalPrice": 17150,
+      "marginPercent": 30
+     },
+     {
+      "quantity": 10000,
+      "unitPrice": 3.43,
+      "totalPrice": 34300,
+      "marginPercent": 30
+     },
+     {
+      "quantity": 25000,
+      "unitPrice": 3.43,
+      "totalPrice": 85750,
+      "marginPercent": 30
+     },
+     {
+      "quantity": 50000,
+      "unitPrice": 3.43,
+      "totalPrice": 171500,
+      "marginPercent": 30
+     }
+    ],
+    "totals": {
+     "subtotal": 308700,
+     "taxAmount": 0,
+     "totalAmount": 308700
+    }
+   },
+   "db_calls": [
+    "$queryRawUnsafe.",
+    "billOfMaterials.findFirst",
+    "draftCostOverride.findMany",
+    "fgItem.findUnique",
+    "fgRouting.findFirst",
+    "lineActionSetupStandard.findMany",
+    "project.findFirst",
+    "projectLocal.findUnique",
+    "projectSubAssembly.findFirst",
+    "quote.findFirst",
+    "rateSettings.findFirst"
+   ]
+  },
+  "unsourced_lines_fg_pin": {
+   "result": {
+    "estimate": {
+     "bulkCostPerKg": 0,
+     "bulkCostPerUnit": 0,
+     "packagingCostPerUnit": 0.76,
+     "compoundingLabourPerUnit": 0,
+     "assemblyLabourPerUnit": 0,
+     "overheadPerUnit": 0,
+     "productionHoursPerUnit": 0,
+     "totalCostPerUnit": 0.76,
+     "marginPct": 30,
+     "sellPricePerUnit": 1.08,
+     "marginPerUnit": 0.32,
+     "lines": [
+      {
+       "key": "bulk",
+       "label": "Raw materials (bulk)",
+       "amountPerUnit": 0
+      },
+      {
+       "key": "packaging",
+       "label": "Packaging components",
+       "amountPerUnit": 0.76
+      },
+      {
+       "key": "compounding",
+       "label": "Compounding labour",
+       "amountPerUnit": 0
+      },
+      {
+       "key": "assembly",
+       "label": "Assembly labour",
+       "amountPerUnit": 0
+      },
+      {
+       "key": "overhead",
+       "label": "Overhead",
+       "amountPerUnit": 0
+      }
+     ]
+    },
+    "fillWeightG": null,
+    "specificGravity": null,
+    "fillMassKg": 0,
+    "bomTotal": 0.7,
+    "resolutionSource": "fg_pin",
+    "labourIsPlaceholder": true,
+    "labour": {
+     "source": "missing",
+     "assemblySource": "missing",
+     "compoundingSource": "missing",
+     "pricedTierCode": null,
+     "pricedQtyBasis": 7000,
+     "assemblyRunHoursPerUnit": null,
+     "assemblyHoursPerUnit": null,
+     "compoundingHoursPerUnit": null,
+     "reasons": [
+      "assembly-hours-missing:no-routing",
+      "compounding-hours-missing:no-routing"
+     ]
+    },
+    "marginLadder": {
+     "tiersPct": [
+      25,
+      30,
+      35,
+      40
+     ],
+     "tiersSource": "fallback",
+     "defaultTierPct": 30,
+     "targetPct": 30,
+     "targetSource": "system_default",
+     "tiers": [
+      {
+       "marginPct": 25,
+       "markupPct": 33.33333333333333,
+       "label": "25% margin = 33.3% markup",
+       "isDefault": false,
+       "isTarget": false
+      },
+      {
+       "marginPct": 30,
+       "markupPct": 42.85714285714286,
+       "label": "30% margin = 42.9% markup",
+       "isDefault": true,
+       "isTarget": true
+      },
+      {
+       "marginPct": 35,
+       "markupPct": 53.84615384615385,
+       "label": "35% margin = 53.8% markup",
+       "isDefault": false,
+       "isTarget": false
+      },
+      {
+       "marginPct": 40,
+       "markupPct": 66.66666666666667,
+       "label": "40% margin = 66.7% markup",
+       "isDefault": false,
+       "isTarget": false
+      }
+     ]
+    },
+    "marginTiers": [
+     {
+      "marginPct": 25,
+      "markupPct": 33.33333333333333,
+      "label": "25% margin = 33.3% markup",
+      "isDefault": false,
+      "isTarget": false,
+      "sellPricePerUnit": 1.01
+     },
+     {
+      "marginPct": 30,
+      "markupPct": 42.85714285714286,
+      "label": "30% margin = 42.9% markup",
+      "isDefault": true,
+      "isTarget": true,
+      "sellPricePerUnit": 1.09
+     },
+     {
+      "marginPct": 35,
+      "markupPct": 53.84615384615385,
+      "label": "35% margin = 53.8% markup",
+      "isDefault": false,
+      "isTarget": false,
+      "sellPricePerUnit": 1.17
+     },
+     {
+      "marginPct": 40,
+      "markupPct": 66.66666666666667,
+      "label": "40% margin = 66.7% markup",
+      "isDefault": false,
+      "isTarget": false,
+      "sellPricePerUnit": 1.27
+     }
+    ],
+    "overhead": {
+     "hourlyRate": 31.3,
+     "uptimeHours": null,
+     "expectedUnitsPerShift": null,
+     "hoursPerUnit": null,
+     "perUnit": null,
+     "source": "missing",
+     "hoursSource": "missing",
+     "appliesTo": "assembly",
+     "reasons": [
+      "overhead-basis-missing:no-assembly-hours"
+     ]
+    },
+    "census": {
+     "ready": false,
+     "items": [
+      {
+       "key": "fill_weight_g",
+       "label": "Fill weight (g)",
+       "severity": "blocker",
+       "detail": "ASSEMBLY BOM has no typed fill_weight_g (no silent 500 g default)"
+      },
+      {
+       "key": "specific_gravity",
+       "label": "Specific gravity",
+       "severity": "warning",
+       "detail": "Defaulting to 1.00 until Formulation.specificGravity is set"
+      },
+      {
+       "key": "sourcing",
+       "label": "Packaging sourced",
+       "severity": "blocker",
+       "detail": "2 line(s) still on estimatedUnitCost / needsSourcing"
+      },
+      {
+       "key": "hs_code",
+       "label": "HS code",
+       "severity": "warning",
+       "detail": "1 linked product(s) missing Product.hsCode"
+      },
+      {
+       "key": "vendor_card",
+       "label": "Vendor-item card",
+       "severity": "ok",
+       "detail": "Incoterms and country of origin present"
+      },
+      {
+       "key": "labour",
+       "label": "Labour / overhead",
+       "severity": "warning",
+       "detail": "No routing hours, so assembly and setup labour are priced at $0 and reported"
+      }
+     ],
+     "sellVsRetail": {
+      "sellPricePerUnit": 1.08,
+      "retailPerUnit": null,
+      "deltaPct": null,
+      "note": "No retail / target price on the project to compare"
+     },
+     "advisories": [],
+     "marginIfFilledFromStock": null,
+     "volumeAdvisories": []
+    },
+    "lineProvenance": [
+     {
+      "lineKey": "u-label",
+      "lineName": "label",
+      "productId": null,
+      "qtyPerUnit": 2,
+      "pricedUnitCost": 0.04,
+      "cardTier": null,
+      "lastPo": null,
+      "stock": null,
+      "missing": [
+       "card:line-unsourced",
+       "last_po:no-product-link",
+       "stock:no-product-link"
+      ],
+      "evidenceDbError": false
+     },
+     {
+      "lineKey": "u-jar",
+      "lineName": "jar",
+      "productId": "p-jar",
+      "qtyPerUnit": 1,
+      "pricedUnitCost": 0.5,
+      "cardTier": null,
+      "lastPo": null,
+      "stock": null,
+      "missing": [
+       "card:line-unsourced",
+       "last_po:none-received",
+       "stock:no-inventory-row"
+      ],
+      "evidenceDbError": false
+     },
+     {
+      "lineKey": "u-lid",
+      "lineName": "lid",
+      "productId": "p-lid",
+      "qtyPerUnit": 1,
+      "pricedUnitCost": 0.1764,
+      "cardTier": null,
+      "lastPo": null,
+      "stock": {
+       "source": "stock_weighted_avg",
+       "unitCost": 0.11,
+       "quantityOnHand": 250,
+       "asOf": "2026-09-03T00:00:00.000Z"
+      },
+      "missing": [
+       "card:no-supplier-card",
+       "last_po:none-received"
+      ],
+      "evidenceDbError": false
+     }
+    ],
+    "volumeMatrix": [
+     {
+      "askedUnits": 7000,
+      "vesselPlan": {
+       "batchKg": null,
+       "pick": null,
+       "candidates": [],
+       "reportedMissing": [
+        "fill mass (kg/unit) missing — fill weight and/or specific gravity not recorded (QD-4)",
+        "no compounding standard recorded for this formula — vessel pick reported-missing (QD-3)"
+       ]
+      },
+      "labour": {
+       "assemblySource": "missing",
+       "compoundingSource": "missing",
+       "tierCode": "5k",
+       "assemblyRunHoursPerUnit": null,
+       "assemblyHoursPerUnit": null,
+       "compoundingHoursPerUnit": null,
+       "compoundingBasis": "missing",
+       "setupSource": "setup-standard:seed",
+       "reasons": [
+        "assembly-hours-missing:no-routing",
+        "compounding-hours-missing:no-routing",
+        "compounding-hours-missing-for-volume"
+       ]
+      },
+      "componentLines": [
+       {
+        "lineKey": "u-label",
+        "lineName": "label",
+        "qtyPerUnit": 2,
+        "componentDemand": 14000,
+        "runVolumeTierCode": "10k",
+        "unitCost": 0.04,
+        "unitCostSource": "priced_basis",
+        "supplySource": "PLX"
+       },
+       {
+        "lineKey": "u-jar",
+        "lineName": "jar",
+        "qtyPerUnit": 1,
+        "componentDemand": 7000,
+        "runVolumeTierCode": "5k",
+        "unitCost": 0.5,
+        "unitCostSource": "priced_basis",
+        "supplySource": "PLX"
+       },
+       {
+        "lineKey": "u-lid",
+        "lineName": "lid",
+        "qtyPerUnit": 1,
+        "componentDemand": 7000,
+        "runVolumeTierCode": "5k",
+        "unitCost": 0.1764,
+        "unitCostSource": "priced_basis",
+        "supplySource": "PLX"
+       }
+      ],
+      "lines": [
+       {
+        "key": "bulk",
+        "label": "Raw materials (bulk)",
+        "amountPerUnit": 0
+       },
+       {
+        "key": "packaging",
+        "label": "Packaging components",
+        "amountPerUnit": 0.76
+       },
+       {
+        "key": "compounding",
+        "label": "Compounding labour",
+        "amountPerUnit": 0
+       },
+       {
+        "key": "assembly",
+        "label": "Assembly labour",
+        "amountPerUnit": 0
+       },
+       {
+        "key": "overhead",
+        "label": "Overhead",
+        "amountPerUnit": 0
+       }
+      ],
+      "estimate": {
+       "bulkCostPerKg": 0,
+       "bulkCostPerUnit": 0,
+       "packagingCostPerUnit": 0.76,
+       "compoundingLabourPerUnit": 0,
+       "assemblyLabourPerUnit": 0,
+       "overheadPerUnit": 0,
+       "productionHoursPerUnit": 0,
+       "totalCostPerUnit": 0.76,
+       "marginPct": 30,
+       "sellPricePerUnit": 1.08,
+       "marginPerUnit": 0.32,
+       "lines": [
+        {
+         "key": "bulk",
+         "label": "Raw materials (bulk)",
+         "amountPerUnit": 0
+        },
+        {
+         "key": "packaging",
+         "label": "Packaging components",
+         "amountPerUnit": 0.76
+        },
+        {
+         "key": "compounding",
+         "label": "Compounding labour",
+         "amountPerUnit": 0
+        },
+        {
+         "key": "assembly",
+         "label": "Assembly labour",
+         "amountPerUnit": 0
+        },
+        {
+         "key": "overhead",
+         "label": "Overhead",
+         "amountPerUnit": 0
+        }
+       ]
+      },
+      "unitCost": 0.76,
+      "marginTiers": [
+       {
+        "marginPct": 25,
+        "markupPct": 33.33333333333333,
+        "label": "25% margin = 33.3% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 1.01
+       },
+       {
+        "marginPct": 30,
+        "markupPct": 42.85714285714286,
+        "label": "30% margin = 42.9% markup",
+        "isDefault": true,
+        "isTarget": true,
+        "sellPricePerUnit": 1.09
+       },
+       {
+        "marginPct": 35,
+        "markupPct": 53.84615384615385,
+        "label": "35% margin = 53.8% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 1.17
+       },
+       {
+        "marginPct": 40,
+        "markupPct": 66.66666666666667,
+        "label": "40% margin = 66.7% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 1.27
+       }
+      ],
+      "overhead": {
+       "hourlyRate": 31.3,
+       "uptimeHours": null,
+       "expectedUnitsPerShift": null,
+       "hoursPerUnit": null,
+       "perUnit": null,
+       "source": "missing",
+       "hoursSource": "missing",
+       "appliesTo": "assembly",
+       "reasons": [
+        "overhead-basis-missing:no-assembly-hours"
+       ]
+      },
+      "reportedMissing": [
+       "fill mass (kg/unit) missing — fill weight and/or specific gravity not recorded (QD-4)",
+       "no compounding standard recorded for this formula — vessel pick reported-missing (QD-3)",
+       "charge count underivable — amortisation assumes a single charge and SAYS SO (fix the compounding standard to price multi-charge honestly)",
+       "assembly hours missing for this volume — labour priced at 0 and REPORTED",
+       "compounding hours missing for this volume — labour priced at 0 and REPORTED"
+      ],
+      "advisories": []
+     }
+    ]
+   },
+   "offer": null,
+   "db_calls": [
+    "$queryRawUnsafe.",
+    "assemblySourcingRequest.findMany",
+    "billOfMaterials.findFirst",
+    "bomLine.findMany",
+    "customer.findFirst",
+    "draftCostOverride.findMany",
+    "fgItem.findUnique",
+    "fgRouting.findFirst",
+    "formulaCompoundingStandard.findUnique",
+    "formulation.findFirst",
+    "formulation.findUnique",
+    "inventory.findMany",
+    "lineActionSetupStandard.findMany",
+    "project.findFirst",
+    "projectLocal.findUnique",
+    "projectSubAssembly.findFirst",
+    "purchaseOrderLine.findMany",
+    "quote.findFirst",
+    "rateSettings.findFirst"
+   ]
+  },
+  "draft_tier_overrides": {
+   "result": {
+    "estimate": {
+     "bulkCostPerKg": 4.18,
+     "bulkCostPerUnit": 1.04,
+     "packagingCostPerUnit": 2.21,
+     "compoundingLabourPerUnit": 0.04,
+     "assemblyLabourPerUnit": 0.09,
+     "overheadPerUnit": 0.08,
+     "productionHoursPerUnit": 0.005167,
+     "totalCostPerUnit": 3.46,
+     "marginPct": 35,
+     "sellPricePerUnit": 5.32,
+     "marginPerUnit": 1.86,
+     "lines": [
+      {
+       "key": "bulk",
+       "label": "Raw materials (bulk)",
+       "amountPerUnit": 1.04
+      },
+      {
+       "key": "packaging",
+       "label": "Packaging components",
+       "amountPerUnit": 2.21
+      },
+      {
+       "key": "compounding",
+       "label": "Compounding labour",
+       "amountPerUnit": 0.04
+      },
+      {
+       "key": "assembly",
+       "label": "Assembly labour",
+       "amountPerUnit": 0.09
+      },
+      {
+       "key": "overhead",
+       "label": "Overhead",
+       "amountPerUnit": 0.08
+      }
+     ]
+    },
+    "fillWeightG": 236.6,
+    "specificGravity": 1.05,
+    "fillMassKg": 0.24843,
+    "bomTotal": 0.35,
+    "resolutionSource": "project_pin",
+    "labourIsPlaceholder": false,
+    "labour": {
+     "source": "draft_tier",
+     "assemblySource": "draft_tier",
+     "compoundingSource": "draft_tier",
+     "pricedTierCode": "10k",
+     "pricedQtyBasis": 12000,
+     "assemblyRunHoursPerUnit": 0.0035,
+     "assemblyHoursPerUnit": 0.0038333333333333336,
+     "compoundingHoursPerUnit": 0.0013333333333333333,
+     "reasons": []
+    },
+    "marginLadder": {
+     "tiersPct": [
+      25,
+      35,
+      45
+     ],
+     "tiersSource": "rate_settings",
+     "defaultTierPct": 35,
+     "targetPct": 35,
+     "targetSource": "system_default",
+     "tiers": [
+      {
+       "marginPct": 25,
+       "markupPct": 33.33333333333333,
+       "label": "25% margin = 33.3% markup",
+       "isDefault": false,
+       "isTarget": false
+      },
+      {
+       "marginPct": 35,
+       "markupPct": 53.84615384615385,
+       "label": "35% margin = 53.8% markup",
+       "isDefault": true,
+       "isTarget": true
+      },
+      {
+       "marginPct": 45,
+       "markupPct": 81.81818181818181,
+       "label": "45% margin = 81.8% markup",
+       "isDefault": false,
+       "isTarget": false
+      }
+     ]
+    },
+    "marginTiers": [
+     {
+      "marginPct": 25,
+      "markupPct": 33.33333333333333,
+      "label": "25% margin = 33.3% markup",
+      "isDefault": false,
+      "isTarget": false,
+      "sellPricePerUnit": 4.61
+     },
+     {
+      "marginPct": 35,
+      "markupPct": 53.84615384615385,
+      "label": "35% margin = 53.8% markup",
+      "isDefault": true,
+      "isTarget": true,
+      "sellPricePerUnit": 5.32
+     },
+     {
+      "marginPct": 45,
+      "markupPct": 81.81818181818181,
+      "label": "45% margin = 81.8% markup",
+      "isDefault": false,
+      "isTarget": false,
+      "sellPricePerUnit": 6.29
+     }
+    ],
+    "overhead": {
+     "hourlyRate": 35,
+     "uptimeHours": 7,
+     "expectedUnitsPerShift": 3000,
+     "hoursPerUnit": 0.0023333333333333335,
+     "perUnit": 0.08166666666666668,
+     "source": "expected_units_override",
+     "hoursSource": "draft_tier",
+     "appliesTo": "assembly",
+     "reasons": []
+    },
+    "census": {
+     "ready": true,
+     "items": [
+      {
+       "key": "fill_weight_g",
+       "label": "Fill weight (g)",
+       "severity": "ok",
+       "detail": "236.6 g on the ASSEMBLY BOM"
+      },
+      {
+       "key": "specific_gravity",
+       "label": "Specific gravity",
+       "severity": "ok",
+       "detail": "1.05"
+      },
+      {
+       "key": "sourcing",
+       "label": "Packaging sourced",
+       "severity": "ok",
+       "detail": "3 line(s) linked; estimates cleared"
+      },
+      {
+       "key": "hs_code",
+       "label": "HS code",
+       "severity": "warning",
+       "detail": "1 linked product(s) missing Product.hsCode"
+      },
+      {
+       "key": "vendor_card",
+       "label": "Vendor-item card",
+       "severity": "warning",
+       "detail": "1 missing incoterms, 1 missing origin"
+      },
+      {
+       "key": "labour",
+       "label": "Labour / overhead",
+       "severity": "ok",
+       "detail": "Routing hours pinned"
+      }
+     ],
+     "sellVsRetail": {
+      "sellPricePerUnit": 5.32,
+      "retailPerUnit": 1.85,
+      "deltaPct": 187.6,
+      "note": "Suggested sell is +187.6% vs retail / target"
+     },
+     "advisories": [
+      {
+       "kind": "stale_card",
+       "severity": "advisory",
+       "lineName": "1000 ml bottle",
+       "cardUpdatedAt": "2026-08-01T10:00:00.000Z",
+       "lastPoReceivedAt": "2026-09-01T00:00:00.000Z",
+       "detail": "1000 ml bottle: supplier card last updated 2026-08-01T10:00:00.000Z — older than the newest PO receipt 2026-09-01T00:00:00.000Z. Card stays canonical; confirm it still reflects the vendor's price."
+      },
+      {
+       "kind": "card_po_drift",
+       "severity": "warning",
+       "lineName": "cap",
+       "cardUnitCost": 0.13,
+       "lastPoUnitPrice": 0.05,
+       "driftPct": 160,
+       "detail": "cap: supplier card $0.13 vs last-PO $0.05 — +160% drift (threshold 10%). Card stays canonical; re-verify the card."
+      },
+      {
+       "kind": "stale_card",
+       "severity": "advisory",
+       "lineName": "cap",
+       "cardUpdatedAt": "2026-06-01T00:00:00.000Z",
+       "lastPoReceivedAt": "2026-09-01T00:00:00.000Z",
+       "detail": "cap: supplier card last updated 2026-06-01T00:00:00.000Z — older than the newest PO receipt 2026-09-01T00:00:00.000Z. Card stays canonical; confirm it still reflects the vendor's price."
+      }
+     ],
+     "marginIfFilledFromStock": {
+      "label": "Margin if filled from stock — won't-replace-stock exception, display only; the priced margin stays canonical",
+      "sellPricePerUnit": 5.32,
+      "pricedTotalCostPerUnit": 3.46,
+      "pricedMarginPct": 35,
+      "stockAdjustedTotalCostPerUnit": 3.25,
+      "stockAdjustedMarginPct": 38.9,
+      "linesFromStock": 1,
+      "linesAtPricedBasis": 2
+     },
+     "volumeAdvisories": []
+    },
+    "lineProvenance": [
+     {
+      "lineKey": "l-bottle",
+      "lineName": "1000 ml bottle",
+      "productId": "p-bottle",
+      "qtyPerUnit": 1,
+      "pricedUnitCost": 0.5066,
+      "cardTier": {
+       "source": "supplier_card_tier",
+       "unitCost": 0.31,
+       "tierMinQty": 5000,
+       "runVolumeTierCode": "10k",
+       "qtyBasis": 12000,
+       "asOf": "2026-07-01T00:00:00.000Z"
+      },
+      "lastPo": {
+       "source": "last_po_landed_approx",
+       "poNumber": "PO5447",
+       "unitPrice": 0.31,
+       "freightPerUnit": 0.1178,
+       "landedApproxUnitCost": 0.4278,
+       "quantityReceived": 12500,
+       "freightReason": null,
+       "asOf": "2026-09-01T00:00:00.000Z"
+      },
+      "stock": {
+       "source": "stock_weighted_avg",
+       "unitCost": 0.296,
+       "quantityOnHand": 50000,
+       "asOf": "2026-09-12T00:00:00.000Z"
+      },
+      "missing": [],
+      "evidenceDbError": false
+     },
+     {
+      "lineKey": "l-cap",
+      "lineName": "cap",
+      "productId": "p-cap",
+      "qtyPerUnit": 1,
+      "pricedUnitCost": 0.1911,
+      "cardTier": {
+       "source": "supplier_card_tier",
+       "unitCost": 0.13,
+       "tierMinQty": null,
+       "runVolumeTierCode": "10k",
+       "qtyBasis": 12000,
+       "asOf": "2026-06-01T00:00:00.000Z"
+      },
+      "lastPo": {
+       "source": "last_po_landed_approx",
+       "poNumber": "PO5447",
+       "unitPrice": 0.05,
+       "freightPerUnit": 0.019,
+       "landedApproxUnitCost": 0.069,
+       "quantityReceived": 12500,
+       "freightReason": null,
+       "asOf": "2026-09-01T00:00:00.000Z"
+      },
+      "stock": null,
+      "missing": [
+       "stock:stock-cost-missing"
+      ],
+      "evidenceDbError": false
+     },
+     {
+      "lineKey": "l-case",
+      "lineName": "shipper case",
+      "productId": "p-case",
+      "qtyPerUnit": 1,
+      "pricedUnitCost": 1.5112,
+      "cardTier": {
+       "source": "supplier_card_tier",
+       "unitCost": 1.005,
+       "tierMinQty": null,
+       "runVolumeTierCode": "10k",
+       "qtyBasis": 12000,
+       "asOf": "2026-08-01T10:00:00.000Z"
+      },
+      "lastPo": null,
+      "stock": null,
+      "missing": [
+       "last_po:none-received",
+       "stock:no-inventory-row"
+      ],
+      "evidenceDbError": false
+     }
+    ],
+    "volumeMatrix": [
+     {
+      "askedUnits": 12000,
+      "vesselPlan": {
+       "batchKg": 2981.16,
+       "pick": null,
+       "candidates": [],
+       "reportedMissing": [
+        "no compounding standard recorded for this formula — vessel pick reported-missing (QD-3)"
+       ]
+      },
+      "labour": {
+       "assemblySource": "draft_tier",
+       "compoundingSource": "draft_tier",
+       "tierCode": "10k",
+       "assemblyRunHoursPerUnit": 0.0035,
+       "assemblyHoursPerUnit": 0.0038333333333333336,
+       "compoundingHoursPerUnit": 0.0013333333333333333,
+       "compoundingBasis": "per_unit_fallback",
+       "setupSource": "draft_tier",
+       "reasons": []
+      },
+      "componentLines": [
+       {
+        "lineKey": "l-bottle",
+        "lineName": "1000 ml bottle",
+        "qtyPerUnit": 1,
+        "componentDemand": 12000,
+        "runVolumeTierCode": "10k",
+        "unitCost": 0.4772,
+        "unitCostSource": "card_tier_landed",
+        "supplySource": "PLX"
+       },
+       {
+        "lineKey": "l-cap",
+        "lineName": "cap",
+        "qtyPerUnit": 1,
+        "componentDemand": 12000,
+        "runVolumeTierCode": "10k",
+        "unitCost": 0.1911,
+        "unitCostSource": "card_tier_landed",
+        "supplySource": "PLX"
+       },
+       {
+        "lineKey": "l-case",
+        "lineName": "shipper case",
+        "qtyPerUnit": 1,
+        "componentDemand": 12000,
+        "runVolumeTierCode": "10k",
+        "unitCost": 1.5112,
+        "unitCostSource": "card_tier_landed",
+        "supplySource": "PLX"
+       }
+      ],
+      "lines": [
+       {
+        "key": "bulk",
+        "label": "Raw materials (bulk)",
+        "amountPerUnit": 1.04
+       },
+       {
+        "key": "packaging",
+        "label": "Packaging components",
+        "amountPerUnit": 2.18
+       },
+       {
+        "key": "compounding",
+        "label": "Compounding labour",
+        "amountPerUnit": 0.04
+       },
+       {
+        "key": "assembly",
+        "label": "Assembly labour",
+        "amountPerUnit": 0.09
+       },
+       {
+        "key": "overhead",
+        "label": "Overhead",
+        "amountPerUnit": 0.08
+       }
+      ],
+      "estimate": {
+       "bulkCostPerKg": 4.18,
+       "bulkCostPerUnit": 1.04,
+       "packagingCostPerUnit": 2.18,
+       "compoundingLabourPerUnit": 0.04,
+       "assemblyLabourPerUnit": 0.09,
+       "overheadPerUnit": 0.08,
+       "productionHoursPerUnit": 0.005167,
+       "totalCostPerUnit": 3.43,
+       "marginPct": 35,
+       "sellPricePerUnit": 5.27,
+       "marginPerUnit": 1.85,
+       "lines": [
+        {
+         "key": "bulk",
+         "label": "Raw materials (bulk)",
+         "amountPerUnit": 1.04
+        },
+        {
+         "key": "packaging",
+         "label": "Packaging components",
+         "amountPerUnit": 2.18
+        },
+        {
+         "key": "compounding",
+         "label": "Compounding labour",
+         "amountPerUnit": 0.04
+        },
+        {
+         "key": "assembly",
+         "label": "Assembly labour",
+         "amountPerUnit": 0.09
+        },
+        {
+         "key": "overhead",
+         "label": "Overhead",
+         "amountPerUnit": 0.08
+        }
+       ]
+      },
+      "unitCost": 3.43,
+      "marginTiers": [
+       {
+        "marginPct": 25,
+        "markupPct": 33.33333333333333,
+        "label": "25% margin = 33.3% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 4.57
+       },
+       {
+        "marginPct": 35,
+        "markupPct": 53.84615384615385,
+        "label": "35% margin = 53.8% markup",
+        "isDefault": true,
+        "isTarget": true,
+        "sellPricePerUnit": 5.28
+       },
+       {
+        "marginPct": 45,
+        "markupPct": 81.81818181818181,
+        "label": "45% margin = 81.8% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 6.24
+       }
+      ],
+      "overhead": {
+       "hourlyRate": 35,
+       "uptimeHours": 7,
+       "expectedUnitsPerShift": 3000,
+       "hoursPerUnit": 0.0023333333333333335,
+       "perUnit": 0.08166666666666668,
+       "source": "expected_units_override",
+       "hoursSource": "draft_tier",
+       "appliesTo": "assembly",
+       "reasons": []
+      },
+      "reportedMissing": [
+       "no compounding standard recorded for this formula — vessel pick reported-missing (QD-3)",
+       "charge count underivable — amortisation assumes a single charge and SAYS SO (fix the compounding standard to price multi-charge honestly)"
+      ],
+      "advisories": []
+     },
+     {
+      "askedUnits": 30000,
+      "vesselPlan": {
+       "batchKg": 7452.9,
+       "pick": null,
+       "candidates": [],
+       "reportedMissing": [
+        "no compounding standard recorded for this formula — vessel pick reported-missing (QD-3)"
+       ]
+      },
+      "labour": {
+       "assemblySource": "missing",
+       "compoundingSource": "missing",
+       "tierCode": "25k",
+       "assemblyRunHoursPerUnit": null,
+       "assemblyHoursPerUnit": null,
+       "compoundingHoursPerUnit": null,
+       "compoundingBasis": "missing",
+       "setupSource": "setup-standard:seed",
+       "reasons": [
+        "assembly-hours-missing:no-routing",
+        "compounding-hours-missing:no-routing",
+        "compounding-hours-missing-for-volume"
+       ]
+      },
+      "componentLines": [
+       {
+        "lineKey": "l-bottle",
+        "lineName": "1000 ml bottle",
+        "qtyPerUnit": 1,
+        "componentDemand": 30000,
+        "runVolumeTierCode": "25k",
+        "unitCost": 0.4184,
+        "unitCostSource": "card_tier_landed",
+        "supplySource": "PLX"
+       },
+       {
+        "lineKey": "l-cap",
+        "lineName": "cap",
+        "qtyPerUnit": 1,
+        "componentDemand": 30000,
+        "runVolumeTierCode": "25k",
+        "unitCost": 0.1911,
+        "unitCostSource": "card_tier_landed",
+        "supplySource": "PLX"
+       },
+       {
+        "lineKey": "l-case",
+        "lineName": "shipper case",
+        "qtyPerUnit": 1,
+        "componentDemand": 30000,
+        "runVolumeTierCode": "25k",
+        "unitCost": 1.5112,
+        "unitCostSource": "card_tier_landed",
+        "supplySource": "PLX"
+       }
+      ],
+      "lines": [
+       {
+        "key": "bulk",
+        "label": "Raw materials (bulk)",
+        "amountPerUnit": 1.04
+       },
+       {
+        "key": "packaging",
+        "label": "Packaging components",
+        "amountPerUnit": 2.12
+       },
+       {
+        "key": "compounding",
+        "label": "Compounding labour",
+        "amountPerUnit": 0
+       },
+       {
+        "key": "assembly",
+        "label": "Assembly labour",
+        "amountPerUnit": 0
+       },
+       {
+        "key": "overhead",
+        "label": "Overhead",
+        "amountPerUnit": 0
+       }
+      ],
+      "estimate": {
+       "bulkCostPerKg": 4.18,
+       "bulkCostPerUnit": 1.04,
+       "packagingCostPerUnit": 2.12,
+       "compoundingLabourPerUnit": 0,
+       "assemblyLabourPerUnit": 0,
+       "overheadPerUnit": 0,
+       "productionHoursPerUnit": 0,
+       "totalCostPerUnit": 3.16,
+       "marginPct": 35,
+       "sellPricePerUnit": 4.86,
+       "marginPerUnit": 1.7,
+       "lines": [
+        {
+         "key": "bulk",
+         "label": "Raw materials (bulk)",
+         "amountPerUnit": 1.04
+        },
+        {
+         "key": "packaging",
+         "label": "Packaging components",
+         "amountPerUnit": 2.12
+        },
+        {
+         "key": "compounding",
+         "label": "Compounding labour",
+         "amountPerUnit": 0
+        },
+        {
+         "key": "assembly",
+         "label": "Assembly labour",
+         "amountPerUnit": 0
+        },
+        {
+         "key": "overhead",
+         "label": "Overhead",
+         "amountPerUnit": 0
+        }
+       ]
+      },
+      "unitCost": 3.16,
+      "marginTiers": [
+       {
+        "marginPct": 25,
+        "markupPct": 33.33333333333333,
+        "label": "25% margin = 33.3% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 4.21
+       },
+       {
+        "marginPct": 35,
+        "markupPct": 53.84615384615385,
+        "label": "35% margin = 53.8% markup",
+        "isDefault": true,
+        "isTarget": true,
+        "sellPricePerUnit": 4.86
+       },
+       {
+        "marginPct": 45,
+        "markupPct": 81.81818181818181,
+        "label": "45% margin = 81.8% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 5.75
+       }
+      ],
+      "overhead": {
+       "hourlyRate": 35,
+       "uptimeHours": null,
+       "expectedUnitsPerShift": null,
+       "hoursPerUnit": null,
+       "perUnit": null,
+       "source": "missing",
+       "hoursSource": "missing",
+       "appliesTo": "assembly",
+       "reasons": [
+        "overhead-basis-missing:no-assembly-hours"
+       ]
+      },
+      "reportedMissing": [
+       "no compounding standard recorded for this formula — vessel pick reported-missing (QD-3)",
+       "charge count underivable — amortisation assumes a single charge and SAYS SO (fix the compounding standard to price multi-charge honestly)",
+       "assembly hours missing for this volume — labour priced at 0 and REPORTED",
+       "compounding hours missing for this volume — labour priced at 0 and REPORTED"
+      ],
+      "advisories": []
+     }
+    ]
+   },
+   "offer": null,
+   "db_calls": [
+    "assemblySourcingRequest.findMany",
+    "billOfMaterials.findFirst",
+    "bomLine.findMany",
+    "customer.findFirst",
+    "draftCostOverride.findMany",
+    "fgItem.findUnique",
+    "fgRouting.findFirst",
+    "formulaCompoundingStandard.findUnique",
+    "formulation.findFirst",
+    "formulation.findUnique",
+    "inventory.findMany",
+    "lineActionSetupStandard.findMany",
+    "project.findFirst",
+    "projectLocal.findUnique",
+    "projectSubAssembly.findFirst",
+    "purchaseOrderLine.findMany",
+    "quote.findFirst",
+    "rateSettings.findFirst"
+   ]
+  },
+  "card_priced_raw_crew_drafts": {
+   "result": {
+    "estimate": {
+     "bulkCostPerKg": 3.09,
+     "bulkCostPerUnit": 1.51,
+     "packagingCostPerUnit": 0.35,
+     "compoundingLabourPerUnit": 0.06,
+     "assemblyLabourPerUnit": 0.05,
+     "overheadPerUnit": 0.09,
+     "productionHoursPerUnit": 0.003875,
+     "totalCostPerUnit": 2.06,
+     "marginPct": 35,
+     "sellPricePerUnit": 3.17,
+     "marginPerUnit": 1.11,
+     "lines": [
+      {
+       "key": "bulk",
+       "label": "Raw materials (bulk)",
+       "amountPerUnit": 1.51
+      },
+      {
+       "key": "packaging",
+       "label": "Packaging components",
+       "amountPerUnit": 0.35
+      },
+      {
+       "key": "compounding",
+       "label": "Compounding labour",
+       "amountPerUnit": 0.06
+      },
+      {
+       "key": "assembly",
+       "label": "Assembly labour",
+       "amountPerUnit": 0.05
+      },
+      {
+       "key": "overhead",
+       "label": "Overhead",
+       "amountPerUnit": 0.09
+      }
+     ]
+    },
+    "fillWeightG": 500,
+    "specificGravity": 0.98,
+    "fillMassKg": 0.49,
+    "bomTotal": 0.28,
+    "resolutionSource": "fg_pin",
+    "labourIsPlaceholder": false,
+    "labour": {
+     "source": "draft_tier",
+     "assemblySource": "draft_tier",
+     "compoundingSource": "draft_tier",
+     "pricedTierCode": "25k",
+     "pricedQtyBasis": 30000,
+     "assemblyRunHoursPerUnit": 0.002,
+     "assemblyHoursPerUnit": 0.002,
+     "compoundingHoursPerUnit": 0.001875,
+     "reasons": []
+    },
+    "marginLadder": {
+     "tiersPct": [
+      25,
+      35,
+      45
+     ],
+     "tiersSource": "rate_settings",
+     "defaultTierPct": 35,
+     "targetPct": 35,
+     "targetSource": "system_default",
+     "tiers": [
+      {
+       "marginPct": 25,
+       "markupPct": 33.33333333333333,
+       "label": "25% margin = 33.3% markup",
+       "isDefault": false,
+       "isTarget": false
+      },
+      {
+       "marginPct": 35,
+       "markupPct": 53.84615384615385,
+       "label": "35% margin = 53.8% markup",
+       "isDefault": true,
+       "isTarget": true
+      },
+      {
+       "marginPct": 45,
+       "markupPct": 81.81818181818181,
+       "label": "45% margin = 81.8% markup",
+       "isDefault": false,
+       "isTarget": false
+      }
+     ]
+    },
+    "marginTiers": [
+     {
+      "marginPct": 25,
+      "markupPct": 33.33333333333333,
+      "label": "25% margin = 33.3% markup",
+      "isDefault": false,
+      "isTarget": false,
+      "sellPricePerUnit": 2.75
+     },
+     {
+      "marginPct": 35,
+      "markupPct": 53.84615384615385,
+      "label": "35% margin = 53.8% markup",
+      "isDefault": true,
+      "isTarget": true,
+      "sellPricePerUnit": 3.17
+     },
+     {
+      "marginPct": 45,
+      "markupPct": 81.81818181818181,
+      "label": "45% margin = 81.8% markup",
+      "isDefault": false,
+      "isTarget": false,
+      "sellPricePerUnit": 3.75
+     }
+    ],
+    "overhead": {
+     "hourlyRate": 35,
+     "uptimeHours": 6.5,
+     "expectedUnitsPerShift": 2400,
+     "hoursPerUnit": 0.0027083333333333334,
+     "perUnit": 0.09479166666666666,
+     "source": "expected_units_override",
+     "hoursSource": "draft_tier",
+     "appliesTo": "assembly",
+     "reasons": [
+      "uptime-defaulted-workbook-wedge"
+     ]
+    },
+    "census": {
+     "ready": false,
+     "items": [
+      {
+       "key": "fill_weight_g",
+       "label": "Fill weight (g)",
+       "severity": "ok",
+       "detail": "500 g on the ASSEMBLY BOM"
+      },
+      {
+       "key": "specific_gravity",
+       "label": "Specific gravity",
+       "severity": "ok",
+       "detail": "0.98"
+      },
+      {
+       "key": "sourcing",
+       "label": "Packaging sourced",
+       "severity": "blocker",
+       "detail": "1 line(s) still on estimatedUnitCost / needsSourcing"
+      },
+      {
+       "key": "hs_code",
+       "label": "HS code",
+       "severity": "ok",
+       "detail": "Import HS code present on linked products"
+      },
+      {
+       "key": "vendor_card",
+       "label": "Vendor-item card",
+       "severity": "ok",
+       "detail": "Incoterms and country of origin present"
+      },
+      {
+       "key": "labour",
+       "label": "Labour / overhead",
+       "severity": "ok",
+       "detail": "Routing hours pinned"
+      }
+     ],
+     "sellVsRetail": {
+      "sellPricePerUnit": 3.17,
+      "retailPerUnit": null,
+      "deltaPct": null,
+      "note": "No retail / target price on the project to compare"
+     },
+     "advisories": [],
+     "marginIfFilledFromStock": null,
+     "volumeAdvisories": []
+    },
+    "lineProvenance": [
+     {
+      "lineKey": "l4-tube",
+      "lineName": "tube",
+      "productId": "p-tube",
+      "qtyPerUnit": 1,
+      "pricedUnitCost": 0.3187,
+      "cardTier": {
+       "source": "supplier_card_tier",
+       "unitCost": 0.2,
+       "tierMinQty": 10000,
+       "runVolumeTierCode": "25k",
+       "qtyBasis": 30000,
+       "asOf": null
+      },
+      "lastPo": null,
+      "stock": null,
+      "missing": [
+       "last_po:none-received",
+       "stock:no-inventory-row"
+      ],
+      "evidenceDbError": false
+     },
+     {
+      "lineKey": "l4-carton",
+      "lineName": "shipper carton",
+      "productId": null,
+      "qtyPerUnit": 0.05,
+      "pricedUnitCost": 0.6,
+      "cardTier": null,
+      "lastPo": null,
+      "stock": null,
+      "missing": [
+       "card:line-unsourced",
+       "last_po:no-product-link",
+       "stock:no-product-link"
+      ],
+      "evidenceDbError": false
+     }
+    ],
+    "volumeMatrix": [
+     {
+      "askedUnits": 8000,
+      "vesselPlan": {
+       "batchKg": 3920,
+       "pick": null,
+       "candidates": [],
+       "reportedMissing": [
+        "no compounding standard recorded for this formula — vessel pick reported-missing (QD-3)"
+       ]
+      },
+      "labour": {
+       "assemblySource": "routing",
+       "compoundingSource": "routing",
+       "tierCode": "5k",
+       "assemblyRunHoursPerUnit": 0.003,
+       "assemblyHoursPerUnit": 0.003375,
+       "compoundingHoursPerUnit": 0.003375,
+       "compoundingBasis": "per_unit_fallback",
+       "setupSource": "routing",
+       "reasons": []
+      },
+      "componentLines": [
+       {
+        "lineKey": "l4-tube",
+        "lineName": "tube",
+        "qtyPerUnit": 1,
+        "componentDemand": 8000,
+        "runVolumeTierCode": "5k",
+        "unitCost": 0.3187,
+        "unitCostSource": "card_tier_landed",
+        "supplySource": "PLX"
+       },
+       {
+        "lineKey": "l4-carton",
+        "lineName": "shipper carton",
+        "qtyPerUnit": 0.05,
+        "componentDemand": 400,
+        "runVolumeTierCode": "5k",
+        "unitCost": 0.6,
+        "unitCostSource": "priced_basis",
+        "supplySource": "PLX"
+       }
+      ],
+      "lines": [
+       {
+        "key": "bulk",
+        "label": "Raw materials (bulk)",
+        "amountPerUnit": 1.51
+       },
+       {
+        "key": "packaging",
+        "label": "Packaging components",
+        "amountPerUnit": 0.35
+       },
+       {
+        "key": "compounding",
+        "label": "Compounding labour",
+        "amountPerUnit": 0.1
+       },
+       {
+        "key": "assembly",
+        "label": "Assembly labour",
+        "amountPerUnit": 0.08
+       },
+       {
+        "key": "overhead",
+        "label": "Overhead",
+        "amountPerUnit": 0.12
+       }
+      ],
+      "estimate": {
+       "bulkCostPerKg": 3.09,
+       "bulkCostPerUnit": 1.51,
+       "packagingCostPerUnit": 0.35,
+       "compoundingLabourPerUnit": 0.1,
+       "assemblyLabourPerUnit": 0.08,
+       "overheadPerUnit": 0.12,
+       "productionHoursPerUnit": 0.00675,
+       "totalCostPerUnit": 2.16,
+       "marginPct": 35,
+       "sellPricePerUnit": 3.32,
+       "marginPerUnit": 1.16,
+       "lines": [
+        {
+         "key": "bulk",
+         "label": "Raw materials (bulk)",
+         "amountPerUnit": 1.51
+        },
+        {
+         "key": "packaging",
+         "label": "Packaging components",
+         "amountPerUnit": 0.35
+        },
+        {
+         "key": "compounding",
+         "label": "Compounding labour",
+         "amountPerUnit": 0.1
+        },
+        {
+         "key": "assembly",
+         "label": "Assembly labour",
+         "amountPerUnit": 0.08
+        },
+        {
+         "key": "overhead",
+         "label": "Overhead",
+         "amountPerUnit": 0.12
+        }
+       ]
+      },
+      "unitCost": 2.16,
+      "marginTiers": [
+       {
+        "marginPct": 25,
+        "markupPct": 33.33333333333333,
+        "label": "25% margin = 33.3% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 2.88
+       },
+       {
+        "marginPct": 35,
+        "markupPct": 53.84615384615385,
+        "label": "35% margin = 53.8% markup",
+        "isDefault": true,
+        "isTarget": true,
+        "sellPricePerUnit": 3.32
+       },
+       {
+        "marginPct": 45,
+        "markupPct": 81.81818181818181,
+        "label": "45% margin = 81.8% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 3.93
+       }
+      ],
+      "overhead": {
+       "hourlyRate": 35,
+       "uptimeHours": null,
+       "expectedUnitsPerShift": null,
+       "hoursPerUnit": 0.003375,
+       "perUnit": 0.118125,
+       "source": "assembly_hours",
+       "hoursSource": "routing",
+       "appliesTo": "assembly",
+       "reasons": []
+      },
+      "reportedMissing": [
+       "no compounding standard recorded for this formula — vessel pick reported-missing (QD-3)",
+       "charge count underivable — amortisation assumes a single charge and SAYS SO (fix the compounding standard to price multi-charge honestly)"
+      ],
+      "advisories": []
+     },
+     {
+      "askedUnits": 30000,
+      "vesselPlan": {
+       "batchKg": 14700,
+       "pick": null,
+       "candidates": [],
+       "reportedMissing": [
+        "no compounding standard recorded for this formula — vessel pick reported-missing (QD-3)"
+       ]
+      },
+      "labour": {
+       "assemblySource": "draft_tier",
+       "compoundingSource": "draft_tier",
+       "tierCode": "25k",
+       "assemblyRunHoursPerUnit": 0.002,
+       "assemblyHoursPerUnit": 0.00215,
+       "compoundingHoursPerUnit": 0.001875,
+       "compoundingBasis": "per_unit_fallback",
+       "setupSource": "routing",
+       "reasons": []
+      },
+      "componentLines": [
+       {
+        "lineKey": "l4-tube",
+        "lineName": "tube",
+        "qtyPerUnit": 1,
+        "componentDemand": 30000,
+        "runVolumeTierCode": "25k",
+        "unitCost": 0.3039,
+        "unitCostSource": "card_tier_landed",
+        "supplySource": "PLX"
+       },
+       {
+        "lineKey": "l4-carton",
+        "lineName": "shipper carton",
+        "qtyPerUnit": 0.05,
+        "componentDemand": 1500,
+        "runVolumeTierCode": "5k",
+        "unitCost": 0.6,
+        "unitCostSource": "priced_basis",
+        "supplySource": "PLX"
+       }
+      ],
+      "lines": [
+       {
+        "key": "bulk",
+        "label": "Raw materials (bulk)",
+        "amountPerUnit": 1.51
+       },
+       {
+        "key": "packaging",
+        "label": "Packaging components",
+        "amountPerUnit": 0.33
+       },
+       {
+        "key": "compounding",
+        "label": "Compounding labour",
+        "amountPerUnit": 0.06
+       },
+       {
+        "key": "assembly",
+        "label": "Assembly labour",
+        "amountPerUnit": 0.05
+       },
+       {
+        "key": "overhead",
+        "label": "Overhead",
+        "amountPerUnit": 0.09
+       }
+      ],
+      "estimate": {
+       "bulkCostPerKg": 3.09,
+       "bulkCostPerUnit": 1.51,
+       "packagingCostPerUnit": 0.33,
+       "compoundingLabourPerUnit": 0.06,
+       "assemblyLabourPerUnit": 0.05,
+       "overheadPerUnit": 0.09,
+       "productionHoursPerUnit": 0.004025,
+       "totalCostPerUnit": 2.05,
+       "marginPct": 35,
+       "sellPricePerUnit": 3.15,
+       "marginPerUnit": 1.1,
+       "lines": [
+        {
+         "key": "bulk",
+         "label": "Raw materials (bulk)",
+         "amountPerUnit": 1.51
+        },
+        {
+         "key": "packaging",
+         "label": "Packaging components",
+         "amountPerUnit": 0.33
+        },
+        {
+         "key": "compounding",
+         "label": "Compounding labour",
+         "amountPerUnit": 0.06
+        },
+        {
+         "key": "assembly",
+         "label": "Assembly labour",
+         "amountPerUnit": 0.05
+        },
+        {
+         "key": "overhead",
+         "label": "Overhead",
+         "amountPerUnit": 0.09
+        }
+       ]
+      },
+      "unitCost": 2.05,
+      "marginTiers": [
+       {
+        "marginPct": 25,
+        "markupPct": 33.33333333333333,
+        "label": "25% margin = 33.3% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 2.73
+       },
+       {
+        "marginPct": 35,
+        "markupPct": 53.84615384615385,
+        "label": "35% margin = 53.8% markup",
+        "isDefault": true,
+        "isTarget": true,
+        "sellPricePerUnit": 3.15
+       },
+       {
+        "marginPct": 45,
+        "markupPct": 81.81818181818181,
+        "label": "45% margin = 81.8% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 3.73
+       }
+      ],
+      "overhead": {
+       "hourlyRate": 35,
+       "uptimeHours": 6.5,
+       "expectedUnitsPerShift": 2400,
+       "hoursPerUnit": 0.0027083333333333334,
+       "perUnit": 0.09479166666666666,
+       "source": "expected_units_override",
+       "hoursSource": "draft_tier",
+       "appliesTo": "assembly",
+       "reasons": [
+        "uptime-defaulted-workbook-wedge"
+       ]
+      },
+      "reportedMissing": [
+       "no compounding standard recorded for this formula — vessel pick reported-missing (QD-3)",
+       "charge count underivable — amortisation assumes a single charge and SAYS SO (fix the compounding standard to price multi-charge honestly)"
+      ],
+      "advisories": []
+     }
+    ]
+   },
+   "offer": null,
+   "db_calls": [
+    "$queryRawUnsafe.",
+    "assemblySourcingRequest.findMany",
+    "billOfMaterials.findFirst",
+    "bomLine.findMany",
+    "customer.findFirst",
+    "draftCostOverride.findMany",
+    "fgItem.findUnique",
+    "fgRouting.findFirst",
+    "formulaCompoundingStandard.findUnique",
+    "formulation.findFirst",
+    "formulation.findUnique",
+    "inventory.findMany",
+    "lineActionSetupStandard.findMany",
+    "project.findFirst",
+    "projectLocal.findUnique",
+    "projectSubAssembly.findFirst",
+    "purchaseOrderLine.findMany",
+    "quote.findFirst",
+    "rateSettings.findFirst"
+   ]
+  },
+  "customer_supplied_g9": {
+   "result": {
+    "estimate": {
+     "bulkCostPerKg": 0.02,
+     "bulkCostPerUnit": 0,
+     "packagingCostPerUnit": 1.7,
+     "compoundingLabourPerUnit": 0.14,
+     "assemblyLabourPerUnit": 0.1,
+     "overheadPerUnit": 0.16,
+     "productionHoursPerUnit": 0.00915,
+     "totalCostPerUnit": 2.11,
+     "marginPct": 35,
+     "sellPricePerUnit": 3.24,
+     "marginPerUnit": 1.13,
+     "lines": [
+      {
+       "key": "bulk",
+       "label": "Raw materials (bulk)",
+       "amountPerUnit": 0
+      },
+      {
+       "key": "packaging",
+       "label": "Packaging components",
+       "amountPerUnit": 1.7
+      },
+      {
+       "key": "compounding",
+       "label": "Compounding labour",
+       "amountPerUnit": 0.14
+      },
+      {
+       "key": "assembly",
+       "label": "Assembly labour",
+       "amountPerUnit": 0.1
+      },
+      {
+       "key": "overhead",
+       "label": "Overhead",
+       "amountPerUnit": 0.16
+      }
+     ]
+    },
+    "fillWeightG": 236.6,
+    "specificGravity": 1.05,
+    "fillMassKg": 0.24843,
+    "bomTotal": 0.05,
+    "resolutionSource": "project_pin",
+    "labourIsPlaceholder": false,
+    "labour": {
+     "source": "routing",
+     "assemblySource": "routing",
+     "compoundingSource": "routing",
+     "pricedTierCode": null,
+     "pricedQtyBasis": 12000,
+     "assemblyRunHoursPerUnit": 0.0042,
+     "assemblyHoursPerUnit": 0.004575,
+     "compoundingHoursPerUnit": 0.004575,
+     "reasons": []
+    },
+    "marginLadder": {
+     "tiersPct": [
+      25,
+      35,
+      45
+     ],
+     "tiersSource": "rate_settings",
+     "defaultTierPct": 35,
+     "targetPct": 35,
+     "targetSource": "system_default",
+     "tiers": [
+      {
+       "marginPct": 25,
+       "markupPct": 33.33333333333333,
+       "label": "25% margin = 33.3% markup",
+       "isDefault": false,
+       "isTarget": false
+      },
+      {
+       "marginPct": 35,
+       "markupPct": 53.84615384615385,
+       "label": "35% margin = 53.8% markup",
+       "isDefault": true,
+       "isTarget": true
+      },
+      {
+       "marginPct": 45,
+       "markupPct": 81.81818181818181,
+       "label": "45% margin = 81.8% markup",
+       "isDefault": false,
+       "isTarget": false
+      }
+     ]
+    },
+    "marginTiers": [
+     {
+      "marginPct": 25,
+      "markupPct": 33.33333333333333,
+      "label": "25% margin = 33.3% markup",
+      "isDefault": false,
+      "isTarget": false,
+      "sellPricePerUnit": 2.81
+     },
+     {
+      "marginPct": 35,
+      "markupPct": 53.84615384615385,
+      "label": "35% margin = 53.8% markup",
+      "isDefault": true,
+      "isTarget": true,
+      "sellPricePerUnit": 3.25
+     },
+     {
+      "marginPct": 45,
+      "markupPct": 81.81818181818181,
+      "label": "45% margin = 81.8% markup",
+      "isDefault": false,
+      "isTarget": false,
+      "sellPricePerUnit": 3.84
+     }
+    ],
+    "overhead": {
+     "hourlyRate": 35,
+     "uptimeHours": null,
+     "expectedUnitsPerShift": null,
+     "hoursPerUnit": 0.004575,
+     "perUnit": 0.160125,
+     "source": "assembly_hours",
+     "hoursSource": "routing",
+     "appliesTo": "assembly",
+     "reasons": []
+    },
+    "census": {
+     "ready": true,
+     "items": [
+      {
+       "key": "fill_weight_g",
+       "label": "Fill weight (g)",
+       "severity": "ok",
+       "detail": "236.6 g on the ASSEMBLY BOM"
+      },
+      {
+       "key": "specific_gravity",
+       "label": "Specific gravity",
+       "severity": "ok",
+       "detail": "1.05"
+      },
+      {
+       "key": "sourcing",
+       "label": "Packaging sourced",
+       "severity": "ok",
+       "detail": "2 line(s) linked; estimates cleared; 2 supplied by the customer"
+      },
+      {
+       "key": "customer_supplied",
+       "label": "Customer-supplied",
+       "severity": "warning",
+       "detail": "2 packaging line(s) and 3 raw material(s) supplied by the customer, priced at $0; 1 line(s) still waiting for \"Approve customer component\""
+      },
+      {
+       "key": "hs_code",
+       "label": "HS code",
+       "severity": "warning",
+       "detail": "1 linked product(s) missing Product.hsCode"
+      },
+      {
+       "key": "vendor_card",
+       "label": "Vendor-item card",
+       "severity": "warning",
+       "detail": "1 missing incoterms, 1 missing origin"
+      },
+      {
+       "key": "labour",
+       "label": "Labour / overhead",
+       "severity": "ok",
+       "detail": "Routing hours pinned"
+      }
+     ],
+     "sellVsRetail": {
+      "sellPricePerUnit": 3.24,
+      "retailPerUnit": 1.85,
+      "deltaPct": 75.1,
+      "note": "Suggested sell is +75.1% vs retail / target"
+     },
+     "advisories": [
+      {
+       "kind": "card_po_drift",
+       "severity": "warning",
+       "lineName": "cap",
+       "cardUnitCost": 0.13,
+       "lastPoUnitPrice": 0.05,
+       "driftPct": 160,
+       "detail": "cap: supplier card $0.13 vs last-PO $0.05 — +160% drift (threshold 10%). Card stays canonical; re-verify the card."
+      },
+      {
+       "kind": "stale_card",
+       "severity": "advisory",
+       "lineName": "cap",
+       "cardUpdatedAt": "2026-06-01T00:00:00.000Z",
+       "lastPoReceivedAt": "2026-09-01T00:00:00.000Z",
+       "detail": "cap: supplier card last updated 2026-06-01T00:00:00.000Z — older than the newest PO receipt 2026-09-01T00:00:00.000Z. Card stays canonical; confirm it still reflects the vendor's price."
+      }
+     ],
+     "marginIfFilledFromStock": null,
+     "volumeAdvisories": []
+    },
+    "lineProvenance": [
+     {
+      "lineKey": "l-bottle",
+      "lineName": "1000 ml bottle",
+      "productId": "p-bottle",
+      "qtyPerUnit": 1,
+      "pricedUnitCost": 0,
+      "cardTier": null,
+      "lastPo": null,
+      "stock": null,
+      "missing": [
+       "card:customer-supplied",
+       "last_po:customer-supplied",
+       "stock:customer-supplied"
+      ],
+      "evidenceDbError": false
+     },
+     {
+      "lineKey": "l-cap",
+      "lineName": "cap",
+      "productId": "p-cap",
+      "qtyPerUnit": 1,
+      "pricedUnitCost": 0.1911,
+      "cardTier": {
+       "source": "supplier_card_tier",
+       "unitCost": 0.13,
+       "tierMinQty": null,
+       "runVolumeTierCode": "10k",
+       "qtyBasis": 12000,
+       "asOf": "2026-06-01T00:00:00.000Z"
+      },
+      "lastPo": {
+       "source": "last_po_landed_approx",
+       "poNumber": "PO5447",
+       "unitPrice": 0.05,
+       "freightPerUnit": 0.019,
+       "landedApproxUnitCost": 0.069,
+       "quantityReceived": 12500,
+       "freightReason": null,
+       "asOf": "2026-09-01T00:00:00.000Z"
+      },
+      "stock": null,
+      "missing": [
+       "stock:stock-cost-missing"
+      ],
+      "evidenceDbError": false
+     },
+     {
+      "lineKey": "l-case",
+      "lineName": "shipper case",
+      "productId": "p-case",
+      "qtyPerUnit": 1,
+      "pricedUnitCost": 1.5112,
+      "cardTier": {
+       "source": "supplier_card_tier",
+       "unitCost": 1.005,
+       "tierMinQty": null,
+       "runVolumeTierCode": "10k",
+       "qtyBasis": 12000,
+       "asOf": "2026-08-01T10:00:00.000Z"
+      },
+      "lastPo": null,
+      "stock": null,
+      "missing": [
+       "last_po:none-received",
+       "stock:no-inventory-row"
+      ],
+      "evidenceDbError": false
+     },
+     {
+      "lineKey": "l-label",
+      "lineName": "label",
+      "productId": null,
+      "qtyPerUnit": 2,
+      "pricedUnitCost": 0,
+      "cardTier": null,
+      "lastPo": null,
+      "stock": null,
+      "missing": [
+       "card:customer-supplied",
+       "last_po:customer-supplied",
+       "stock:customer-supplied"
+      ],
+      "evidenceDbError": false
+     }
+    ],
+    "volumeMatrix": [
+     {
+      "askedUnits": 5000,
+      "vesselPlan": {
+       "batchKg": 1242.15,
+       "pick": null,
+       "candidates": [],
+       "reportedMissing": [
+        "no compounding standard recorded for this formula — vessel pick reported-missing (QD-3)"
+       ]
+      },
+      "labour": {
+       "assemblySource": "routing",
+       "compoundingSource": "routing",
+       "tierCode": "5k",
+       "assemblyRunHoursPerUnit": 0.0042,
+       "assemblyHoursPerUnit": 0.0050999999999999995,
+       "compoundingHoursPerUnit": 0.0050999999999999995,
+       "compoundingBasis": "per_unit_fallback",
+       "setupSource": "routing",
+       "reasons": []
+      },
+      "componentLines": [
+       {
+        "lineKey": "l-bottle",
+        "lineName": "1000 ml bottle",
+        "qtyPerUnit": 1,
+        "componentDemand": 5000,
+        "runVolumeTierCode": "5k",
+        "unitCost": 0,
+        "unitCostSource": "priced_basis",
+        "supplySource": "CUSTOMER"
+       },
+       {
+        "lineKey": "l-cap",
+        "lineName": "cap",
+        "qtyPerUnit": 1,
+        "componentDemand": 5000,
+        "runVolumeTierCode": "5k",
+        "unitCost": 0.1911,
+        "unitCostSource": "card_tier_landed",
+        "supplySource": "PLX"
+       },
+       {
+        "lineKey": "l-case",
+        "lineName": "shipper case",
+        "qtyPerUnit": 1,
+        "componentDemand": 5000,
+        "runVolumeTierCode": "5k",
+        "unitCost": 1.5112,
+        "unitCostSource": "card_tier_landed",
+        "supplySource": "PLX"
+       },
+       {
+        "lineKey": "l-label",
+        "lineName": "label",
+        "qtyPerUnit": 2,
+        "componentDemand": 10000,
+        "runVolumeTierCode": "10k",
+        "unitCost": 0,
+        "unitCostSource": "priced_basis",
+        "supplySource": "CUSTOMER_PENDING"
+       }
+      ],
+      "lines": [
+       {
+        "key": "bulk",
+        "label": "Raw materials (bulk)",
+        "amountPerUnit": 0
+       },
+       {
+        "key": "packaging",
+        "label": "Packaging components",
+        "amountPerUnit": 1.7
+       },
+       {
+        "key": "compounding",
+        "label": "Compounding labour",
+        "amountPerUnit": 0.15
+       },
+       {
+        "key": "assembly",
+        "label": "Assembly labour",
+        "amountPerUnit": 0.11
+       },
+       {
+        "key": "overhead",
+        "label": "Overhead",
+        "amountPerUnit": 0.18
+       }
+      ],
+      "estimate": {
+       "bulkCostPerKg": 0.02,
+       "bulkCostPerUnit": 0,
+       "packagingCostPerUnit": 1.7,
+       "compoundingLabourPerUnit": 0.15,
+       "assemblyLabourPerUnit": 0.11,
+       "overheadPerUnit": 0.18,
+       "productionHoursPerUnit": 0.0102,
+       "totalCostPerUnit": 2.15,
+       "marginPct": 35,
+       "sellPricePerUnit": 3.31,
+       "marginPerUnit": 1.16,
+       "lines": [
+        {
+         "key": "bulk",
+         "label": "Raw materials (bulk)",
+         "amountPerUnit": 0
+        },
+        {
+         "key": "packaging",
+         "label": "Packaging components",
+         "amountPerUnit": 1.7
+        },
+        {
+         "key": "compounding",
+         "label": "Compounding labour",
+         "amountPerUnit": 0.15
+        },
+        {
+         "key": "assembly",
+         "label": "Assembly labour",
+         "amountPerUnit": 0.11
+        },
+        {
+         "key": "overhead",
+         "label": "Overhead",
+         "amountPerUnit": 0.18
+        }
+       ]
+      },
+      "unitCost": 2.15,
+      "marginTiers": [
+       {
+        "marginPct": 25,
+        "markupPct": 33.33333333333333,
+        "label": "25% margin = 33.3% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 2.87
+       },
+       {
+        "marginPct": 35,
+        "markupPct": 53.84615384615385,
+        "label": "35% margin = 53.8% markup",
+        "isDefault": true,
+        "isTarget": true,
+        "sellPricePerUnit": 3.31
+       },
+       {
+        "marginPct": 45,
+        "markupPct": 81.81818181818181,
+        "label": "45% margin = 81.8% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 3.91
+       }
+      ],
+      "overhead": {
+       "hourlyRate": 35,
+       "uptimeHours": null,
+       "expectedUnitsPerShift": null,
+       "hoursPerUnit": 0.0050999999999999995,
+       "perUnit": 0.1785,
+       "source": "assembly_hours",
+       "hoursSource": "routing",
+       "appliesTo": "assembly",
+       "reasons": []
+      },
+      "reportedMissing": [
+       "no compounding standard recorded for this formula — vessel pick reported-missing (QD-3)",
+       "charge count underivable — amortisation assumes a single charge and SAYS SO (fix the compounding standard to price multi-charge honestly)"
+      ],
+      "advisories": [],
+      "customerSupplied": [
+       {
+        "kind": "raw",
+        "key": "rm-surf",
+        "name": "surfactant",
+        "productId": "rm-surf",
+        "supplySource": "CUSTOMER",
+        "qtyPerUnit": 0.049686,
+        "unit": "kg",
+        "requiredQty": 248.43
+       },
+       {
+        "kind": "raw",
+        "key": "rm-frag",
+        "name": "fragrance",
+        "productId": "rm-frag",
+        "supplySource": "CUSTOMER_PENDING",
+        "qtyPerUnit": 0.01863225,
+        "unit": "kg",
+        "requiredQty": 93.16125
+       },
+       {
+        "kind": "raw",
+        "key": "rm-trace",
+        "name": "trace active",
+        "productId": "rm-trace",
+        "supplySource": "CUSTOMER",
+        "qtyPerUnit": 0.0000024843,
+        "unit": "kg",
+        "requiredQty": 0.0124215
+       },
+       {
+        "kind": "packaging",
+        "key": "l-bottle",
+        "name": "1000 ml bottle",
+        "productId": "p-bottle",
+        "supplySource": "CUSTOMER",
+        "qtyPerUnit": 1,
+        "unit": "each",
+        "requiredQty": 5000
+       },
+       {
+        "kind": "packaging",
+        "key": "l-label",
+        "name": "label",
+        "productId": null,
+        "supplySource": "CUSTOMER_PENDING",
+        "qtyPerUnit": 2,
+        "unit": "each",
+        "requiredQty": 10000
+       }
+      ]
+     },
+     {
+      "askedUnits": 24000,
+      "vesselPlan": {
+       "batchKg": 5962.32,
+       "pick": null,
+       "candidates": [],
+       "reportedMissing": [
+        "no compounding standard recorded for this formula — vessel pick reported-missing (QD-3)"
+       ]
+      },
+      "labour": {
+       "assemblySource": "routing",
+       "compoundingSource": "routing",
+       "tierCode": "10k",
+       "assemblyRunHoursPerUnit": 0.0042,
+       "assemblyHoursPerUnit": 0.0043875,
+       "compoundingHoursPerUnit": 0.0043875,
+       "compoundingBasis": "per_unit_fallback",
+       "setupSource": "routing",
+       "reasons": []
+      },
+      "componentLines": [
+       {
+        "lineKey": "l-bottle",
+        "lineName": "1000 ml bottle",
+        "qtyPerUnit": 1,
+        "componentDemand": 24000,
+        "runVolumeTierCode": "10k",
+        "unitCost": 0,
+        "unitCostSource": "priced_basis",
+        "supplySource": "CUSTOMER"
+       },
+       {
+        "lineKey": "l-cap",
+        "lineName": "cap",
+        "qtyPerUnit": 1,
+        "componentDemand": 24000,
+        "runVolumeTierCode": "10k",
+        "unitCost": 0.1911,
+        "unitCostSource": "card_tier_landed",
+        "supplySource": "PLX"
+       },
+       {
+        "lineKey": "l-case",
+        "lineName": "shipper case",
+        "qtyPerUnit": 1,
+        "componentDemand": 24000,
+        "runVolumeTierCode": "10k",
+        "unitCost": 1.5112,
+        "unitCostSource": "card_tier_landed",
+        "supplySource": "PLX"
+       },
+       {
+        "lineKey": "l-label",
+        "lineName": "label",
+        "qtyPerUnit": 2,
+        "componentDemand": 48000,
+        "runVolumeTierCode": "25k",
+        "unitCost": 0,
+        "unitCostSource": "priced_basis",
+        "supplySource": "CUSTOMER_PENDING"
+       }
+      ],
+      "lines": [
+       {
+        "key": "bulk",
+        "label": "Raw materials (bulk)",
+        "amountPerUnit": 0
+       },
+       {
+        "key": "packaging",
+        "label": "Packaging components",
+        "amountPerUnit": 1.7
+       },
+       {
+        "key": "compounding",
+        "label": "Compounding labour",
+        "amountPerUnit": 0.13
+       },
+       {
+        "key": "assembly",
+        "label": "Assembly labour",
+        "amountPerUnit": 0.1
+       },
+       {
+        "key": "overhead",
+        "label": "Overhead",
+        "amountPerUnit": 0.15
+       }
+      ],
+      "estimate": {
+       "bulkCostPerKg": 0.02,
+       "bulkCostPerUnit": 0,
+       "packagingCostPerUnit": 1.7,
+       "compoundingLabourPerUnit": 0.13,
+       "assemblyLabourPerUnit": 0.1,
+       "overheadPerUnit": 0.15,
+       "productionHoursPerUnit": 0.008775,
+       "totalCostPerUnit": 2.09,
+       "marginPct": 35,
+       "sellPricePerUnit": 3.22,
+       "marginPerUnit": 1.13,
+       "lines": [
+        {
+         "key": "bulk",
+         "label": "Raw materials (bulk)",
+         "amountPerUnit": 0
+        },
+        {
+         "key": "packaging",
+         "label": "Packaging components",
+         "amountPerUnit": 1.7
+        },
+        {
+         "key": "compounding",
+         "label": "Compounding labour",
+         "amountPerUnit": 0.13
+        },
+        {
+         "key": "assembly",
+         "label": "Assembly labour",
+         "amountPerUnit": 0.1
+        },
+        {
+         "key": "overhead",
+         "label": "Overhead",
+         "amountPerUnit": 0.15
+        }
+       ]
+      },
+      "unitCost": 2.09,
+      "marginTiers": [
+       {
+        "marginPct": 25,
+        "markupPct": 33.33333333333333,
+        "label": "25% margin = 33.3% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 2.79
+       },
+       {
+        "marginPct": 35,
+        "markupPct": 53.84615384615385,
+        "label": "35% margin = 53.8% markup",
+        "isDefault": true,
+        "isTarget": true,
+        "sellPricePerUnit": 3.22
+       },
+       {
+        "marginPct": 45,
+        "markupPct": 81.81818181818181,
+        "label": "45% margin = 81.8% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 3.8
+       }
+      ],
+      "overhead": {
+       "hourlyRate": 35,
+       "uptimeHours": null,
+       "expectedUnitsPerShift": null,
+       "hoursPerUnit": 0.0043875,
+       "perUnit": 0.1535625,
+       "source": "assembly_hours",
+       "hoursSource": "routing",
+       "appliesTo": "assembly",
+       "reasons": []
+      },
+      "reportedMissing": [
+       "no compounding standard recorded for this formula — vessel pick reported-missing (QD-3)",
+       "charge count underivable — amortisation assumes a single charge and SAYS SO (fix the compounding standard to price multi-charge honestly)"
+      ],
+      "advisories": [],
+      "customerSupplied": [
+       {
+        "kind": "raw",
+        "key": "rm-surf",
+        "name": "surfactant",
+        "productId": "rm-surf",
+        "supplySource": "CUSTOMER",
+        "qtyPerUnit": 0.049686,
+        "unit": "kg",
+        "requiredQty": 1192.464
+       },
+       {
+        "kind": "raw",
+        "key": "rm-frag",
+        "name": "fragrance",
+        "productId": "rm-frag",
+        "supplySource": "CUSTOMER_PENDING",
+        "qtyPerUnit": 0.01863225,
+        "unit": "kg",
+        "requiredQty": 447.174
+       },
+       {
+        "kind": "raw",
+        "key": "rm-trace",
+        "name": "trace active",
+        "productId": "rm-trace",
+        "supplySource": "CUSTOMER",
+        "qtyPerUnit": 0.0000024843,
+        "unit": "kg",
+        "requiredQty": 0.0596232
+       },
+       {
+        "kind": "packaging",
+        "key": "l-bottle",
+        "name": "1000 ml bottle",
+        "productId": "p-bottle",
+        "supplySource": "CUSTOMER",
+        "qtyPerUnit": 1,
+        "unit": "each",
+        "requiredQty": 24000
+       },
+       {
+        "kind": "packaging",
+        "key": "l-label",
+        "name": "label",
+        "productId": null,
+        "supplySource": "CUSTOMER_PENDING",
+        "qtyPerUnit": 2,
+        "unit": "each",
+        "requiredQty": 48000
+       }
+      ]
+     }
+    ],
+    "customerSupplied": [
+     {
+      "kind": "raw",
+      "key": "rm-surf",
+      "name": "surfactant",
+      "productId": "rm-surf",
+      "supplySource": "CUSTOMER",
+      "qtyPerUnit": 0.049686,
+      "unit": "kg",
+      "requiredQty": 596.232
+     },
+     {
+      "kind": "raw",
+      "key": "rm-frag",
+      "name": "fragrance",
+      "productId": "rm-frag",
+      "supplySource": "CUSTOMER_PENDING",
+      "qtyPerUnit": 0.01863225,
+      "unit": "kg",
+      "requiredQty": 223.587
+     },
+     {
+      "kind": "raw",
+      "key": "rm-trace",
+      "name": "trace active",
+      "productId": "rm-trace",
+      "supplySource": "CUSTOMER",
+      "qtyPerUnit": 0.0000024843,
+      "unit": "kg",
+      "requiredQty": 0.0298116
+     },
+     {
+      "kind": "packaging",
+      "key": "l-bottle",
+      "name": "1000 ml bottle",
+      "productId": "p-bottle",
+      "supplySource": "CUSTOMER",
+      "qtyPerUnit": 1,
+      "unit": "each",
+      "requiredQty": 12000
+     },
+     {
+      "kind": "packaging",
+      "key": "l-label",
+      "name": "label",
+      "productId": null,
+      "supplySource": "CUSTOMER_PENDING",
+      "qtyPerUnit": 2,
+      "unit": "each",
+      "requiredQty": 24000
+     }
+    ]
+   },
+   "offer": null,
+   "db_calls": [
+    "assemblySourcingRequest.findMany",
+    "billOfMaterials.findFirst",
+    "bomLine.findMany",
+    "customer.findFirst",
+    "customerLocal.findUnique",
+    "customerSuppliedItem.findMany",
+    "draftCostOverride.findMany",
+    "fgItem.findUnique",
+    "fgRouting.findFirst",
+    "formulaCompoundingStandard.findUnique",
+    "formulation.findFirst",
+    "formulation.findUnique",
+    "inventory.findMany",
+    "lineActionSetupStandard.findMany",
+    "product.findMany",
+    "project.findFirst",
+    "projectLocal.findUnique",
+    "projectSubAssembly.findFirst",
+    "purchaseOrderLine.findMany",
+    "quote.findFirst",
+    "rateSettings.findFirst"
+   ]
+  },
+  "customer_supplied_all_lines": {
+   "result": {
+    "estimate": {
+     "bulkCostPerKg": 0,
+     "bulkCostPerUnit": 0,
+     "packagingCostPerUnit": 0,
+     "compoundingLabourPerUnit": 0,
+     "assemblyLabourPerUnit": 0,
+     "overheadPerUnit": 0,
+     "productionHoursPerUnit": 0,
+     "totalCostPerUnit": 0,
+     "marginPct": 30,
+     "sellPricePerUnit": 0,
+     "marginPerUnit": 0,
+     "lines": [
+      {
+       "key": "bulk",
+       "label": "Raw materials (bulk)",
+       "amountPerUnit": 0
+      },
+      {
+       "key": "packaging",
+       "label": "Packaging components",
+       "amountPerUnit": 0
+      },
+      {
+       "key": "compounding",
+       "label": "Compounding labour",
+       "amountPerUnit": 0
+      },
+      {
+       "key": "assembly",
+       "label": "Assembly labour",
+       "amountPerUnit": 0
+      },
+      {
+       "key": "overhead",
+       "label": "Overhead",
+       "amountPerUnit": 0
+      }
+     ]
+    },
+    "fillWeightG": 50,
+    "specificGravity": null,
+    "fillMassKg": 0.05,
+    "bomTotal": 0,
+    "resolutionSource": "none",
+    "labourIsPlaceholder": true,
+    "labour": {
+     "source": "missing",
+     "assemblySource": "missing",
+     "compoundingSource": "missing",
+     "pricedTierCode": null,
+     "pricedQtyBasis": 3000,
+     "assemblyRunHoursPerUnit": null,
+     "assemblyHoursPerUnit": null,
+     "compoundingHoursPerUnit": null,
+     "reasons": [
+      "assembly-hours-missing:no-routing",
+      "compounding-hours-missing:no-routing"
+     ]
+    },
+    "marginLadder": {
+     "tiersPct": [
+      25,
+      30,
+      35,
+      40
+     ],
+     "tiersSource": "fallback",
+     "defaultTierPct": 30,
+     "targetPct": 30,
+     "targetSource": "system_default",
+     "tiers": [
+      {
+       "marginPct": 25,
+       "markupPct": 33.33333333333333,
+       "label": "25% margin = 33.3% markup",
+       "isDefault": false,
+       "isTarget": false
+      },
+      {
+       "marginPct": 30,
+       "markupPct": 42.85714285714286,
+       "label": "30% margin = 42.9% markup",
+       "isDefault": true,
+       "isTarget": true
+      },
+      {
+       "marginPct": 35,
+       "markupPct": 53.84615384615385,
+       "label": "35% margin = 53.8% markup",
+       "isDefault": false,
+       "isTarget": false
+      },
+      {
+       "marginPct": 40,
+       "markupPct": 66.66666666666667,
+       "label": "40% margin = 66.7% markup",
+       "isDefault": false,
+       "isTarget": false
+      }
+     ]
+    },
+    "marginTiers": [
+     {
+      "marginPct": 25,
+      "markupPct": 33.33333333333333,
+      "label": "25% margin = 33.3% markup",
+      "isDefault": false,
+      "isTarget": false,
+      "sellPricePerUnit": 0
+     },
+     {
+      "marginPct": 30,
+      "markupPct": 42.85714285714286,
+      "label": "30% margin = 42.9% markup",
+      "isDefault": true,
+      "isTarget": true,
+      "sellPricePerUnit": 0
+     },
+     {
+      "marginPct": 35,
+      "markupPct": 53.84615384615385,
+      "label": "35% margin = 53.8% markup",
+      "isDefault": false,
+      "isTarget": false,
+      "sellPricePerUnit": 0
+     },
+     {
+      "marginPct": 40,
+      "markupPct": 66.66666666666667,
+      "label": "40% margin = 66.7% markup",
+      "isDefault": false,
+      "isTarget": false,
+      "sellPricePerUnit": 0
+     }
+    ],
+    "overhead": {
+     "hourlyRate": 31.3,
+     "uptimeHours": null,
+     "expectedUnitsPerShift": null,
+     "hoursPerUnit": null,
+     "perUnit": null,
+     "source": "missing",
+     "hoursSource": "missing",
+     "appliesTo": "assembly",
+     "reasons": [
+      "overhead-basis-missing:no-assembly-hours"
+     ]
+    },
+    "census": {
+     "ready": true,
+     "items": [
+      {
+       "key": "fill_weight_g",
+       "label": "Fill weight (g)",
+       "severity": "ok",
+       "detail": "50 g on the ASSEMBLY BOM"
+      },
+      {
+       "key": "specific_gravity",
+       "label": "Specific gravity",
+       "severity": "warning",
+       "detail": "Defaulting to 1.00 until Formulation.specificGravity is set"
+      },
+      {
+       "key": "sourcing",
+       "label": "Packaging sourced",
+       "severity": "ok",
+       "detail": "All 2 line(s) supplied by the customer"
+      },
+      {
+       "key": "customer_supplied",
+       "label": "Customer-supplied",
+       "severity": "advisory",
+       "detail": "2 packaging line(s) supplied by the customer, priced at $0"
+      },
+      {
+       "key": "hs_code",
+       "label": "HS code",
+       "severity": "ok",
+       "detail": "Import HS code present on linked products"
+      },
+      {
+       "key": "vendor_card",
+       "label": "Vendor-item card",
+       "severity": "ok",
+       "detail": "Incoterms and country of origin present"
+      },
+      {
+       "key": "labour",
+       "label": "Labour / overhead",
+       "severity": "warning",
+       "detail": "No routing hours, so assembly and setup labour are priced at $0 and reported"
+      }
+     ],
+     "sellVsRetail": {
+      "sellPricePerUnit": 0,
+      "retailPerUnit": null,
+      "deltaPct": null,
+      "note": "No retail / target price on the project to compare"
+     },
+     "advisories": [],
+     "marginIfFilledFromStock": null,
+     "volumeAdvisories": []
+    },
+    "lineProvenance": [
+     {
+      "lineKey": "l-jar",
+      "lineName": "50 ml jar",
+      "productId": "p-jar",
+      "qtyPerUnit": 1,
+      "pricedUnitCost": 0,
+      "cardTier": null,
+      "lastPo": null,
+      "stock": null,
+      "missing": [
+       "card:customer-supplied",
+       "last_po:customer-supplied",
+       "stock:customer-supplied"
+      ],
+      "evidenceDbError": false
+     },
+     {
+      "lineKey": "l-lid",
+      "lineName": "jar lid",
+      "productId": "p-lid",
+      "qtyPerUnit": 1,
+      "pricedUnitCost": 0,
+      "cardTier": null,
+      "lastPo": null,
+      "stock": null,
+      "missing": [
+       "card:customer-supplied",
+       "last_po:customer-supplied",
+       "stock:customer-supplied"
+      ],
+      "evidenceDbError": false
+     }
+    ],
+    "volumeMatrix": [
+     {
+      "askedUnits": 10000,
+      "vesselPlan": {
+       "batchKg": 500,
+       "pick": null,
+       "candidates": [],
+       "reportedMissing": [
+        "no compounding standard recorded for this formula — vessel pick reported-missing (QD-3)"
+       ]
+      },
+      "labour": {
+       "assemblySource": "missing",
+       "compoundingSource": "missing",
+       "tierCode": "10k",
+       "assemblyRunHoursPerUnit": null,
+       "assemblyHoursPerUnit": null,
+       "compoundingHoursPerUnit": null,
+       "compoundingBasis": "missing",
+       "setupSource": "setup-standard:seed",
+       "reasons": [
+        "assembly-hours-missing:no-routing",
+        "compounding-hours-missing:no-routing",
+        "compounding-hours-missing-for-volume"
+       ]
+      },
+      "componentLines": [
+       {
+        "lineKey": "l-jar",
+        "lineName": "50 ml jar",
+        "qtyPerUnit": 1,
+        "componentDemand": 10000,
+        "runVolumeTierCode": "10k",
+        "unitCost": 0,
+        "unitCostSource": "priced_basis",
+        "supplySource": "CUSTOMER"
+       },
+       {
+        "lineKey": "l-lid",
+        "lineName": "jar lid",
+        "qtyPerUnit": 1,
+        "componentDemand": 10000,
+        "runVolumeTierCode": "10k",
+        "unitCost": 0,
+        "unitCostSource": "priced_basis",
+        "supplySource": "CUSTOMER"
+       }
+      ],
+      "lines": [
+       {
+        "key": "bulk",
+        "label": "Raw materials (bulk)",
+        "amountPerUnit": 0
+       },
+       {
+        "key": "packaging",
+        "label": "Packaging components",
+        "amountPerUnit": 0
+       },
+       {
+        "key": "compounding",
+        "label": "Compounding labour",
+        "amountPerUnit": 0
+       },
+       {
+        "key": "assembly",
+        "label": "Assembly labour",
+        "amountPerUnit": 0
+       },
+       {
+        "key": "overhead",
+        "label": "Overhead",
+        "amountPerUnit": 0
+       }
+      ],
+      "estimate": {
+       "bulkCostPerKg": 0,
+       "bulkCostPerUnit": 0,
+       "packagingCostPerUnit": 0,
+       "compoundingLabourPerUnit": 0,
+       "assemblyLabourPerUnit": 0,
+       "overheadPerUnit": 0,
+       "productionHoursPerUnit": 0,
+       "totalCostPerUnit": 0,
+       "marginPct": 30,
+       "sellPricePerUnit": 0,
+       "marginPerUnit": 0,
+       "lines": [
+        {
+         "key": "bulk",
+         "label": "Raw materials (bulk)",
+         "amountPerUnit": 0
+        },
+        {
+         "key": "packaging",
+         "label": "Packaging components",
+         "amountPerUnit": 0
+        },
+        {
+         "key": "compounding",
+         "label": "Compounding labour",
+         "amountPerUnit": 0
+        },
+        {
+         "key": "assembly",
+         "label": "Assembly labour",
+         "amountPerUnit": 0
+        },
+        {
+         "key": "overhead",
+         "label": "Overhead",
+         "amountPerUnit": 0
+        }
+       ]
+      },
+      "unitCost": 0,
+      "marginTiers": [
+       {
+        "marginPct": 25,
+        "markupPct": 33.33333333333333,
+        "label": "25% margin = 33.3% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 0
+       },
+       {
+        "marginPct": 30,
+        "markupPct": 42.85714285714286,
+        "label": "30% margin = 42.9% markup",
+        "isDefault": true,
+        "isTarget": true,
+        "sellPricePerUnit": 0
+       },
+       {
+        "marginPct": 35,
+        "markupPct": 53.84615384615385,
+        "label": "35% margin = 53.8% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 0
+       },
+       {
+        "marginPct": 40,
+        "markupPct": 66.66666666666667,
+        "label": "40% margin = 66.7% markup",
+        "isDefault": false,
+        "isTarget": false,
+        "sellPricePerUnit": 0
+       }
+      ],
+      "overhead": {
+       "hourlyRate": 31.3,
+       "uptimeHours": null,
+       "expectedUnitsPerShift": null,
+       "hoursPerUnit": null,
+       "perUnit": null,
+       "source": "missing",
+       "hoursSource": "missing",
+       "appliesTo": "assembly",
+       "reasons": [
+        "overhead-basis-missing:no-assembly-hours"
+       ]
+      },
+      "reportedMissing": [
+       "No formula linked — no formula cost",
+       "no compounding standard recorded for this formula — vessel pick reported-missing (QD-3)",
+       "charge count underivable — amortisation assumes a single charge and SAYS SO (fix the compounding standard to price multi-charge honestly)",
+       "assembly hours missing for this volume — labour priced at 0 and REPORTED",
+       "compounding hours missing for this volume — labour priced at 0 and REPORTED"
+      ],
+      "advisories": [],
+      "customerSupplied": [
+       {
+        "kind": "packaging",
+        "key": "l-jar",
+        "name": "50 ml jar",
+        "productId": "p-jar",
+        "supplySource": "CUSTOMER",
+        "qtyPerUnit": 1,
+        "unit": "each",
+        "requiredQty": 10000
+       },
+       {
+        "kind": "packaging",
+        "key": "l-lid",
+        "name": "jar lid",
+        "productId": "p-lid",
+        "supplySource": "CUSTOMER",
+        "qtyPerUnit": 1,
+        "unit": "each",
+        "requiredQty": 10000
+       }
+      ]
+     }
+    ],
+    "customerSupplied": [
+     {
+      "kind": "packaging",
+      "key": "l-jar",
+      "name": "50 ml jar",
+      "productId": "p-jar",
+      "supplySource": "CUSTOMER",
+      "qtyPerUnit": 1,
+      "unit": "each",
+      "requiredQty": 3000
+     },
+     {
+      "kind": "packaging",
+      "key": "l-lid",
+      "name": "jar lid",
+      "productId": "p-lid",
+      "supplySource": "CUSTOMER",
+      "qtyPerUnit": 1,
+      "unit": "each",
+      "requiredQty": 3000
+     }
+    ]
+   },
+   "offer": null,
+   "db_calls": [
+    "$queryRawUnsafe.",
+    "assemblySourcingRequest.findMany",
+    "billOfMaterials.findFirst",
+    "bomLine.findMany",
+    "customer.findFirst",
+    "customerSuppliedItem.findMany",
+    "draftCostOverride.findMany",
+    "fgItem.findUnique",
+    "fgRouting.findFirst",
+    "lineActionSetupStandard.findMany",
+    "project.findFirst",
+    "projectLocal.findUnique",
+    "projectSubAssembly.findFirst",
+    "quote.findFirst",
+    "rateSettings.findFirst"
+   ]
+  }
+ }
+}

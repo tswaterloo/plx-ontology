@@ -1,0 +1,96 @@
+{
+  "tool": "plx.identity",
+  "examples": [
+    {
+      "name": "why and why not",
+      "input": {
+        "object_ids": [
+          "SalesOrder:portal.app_sales_order:ex-so-1",
+          "SalesOrder:portal.fm_order_entry:900123"
+        ],
+        "include_near_misses": true
+      },
+      "output": {
+        "edges": [
+          {
+            "link_id": "lnk-ac0f09c0f8bf5e7a",
+            "link_type": "SalesOrder.same_record_as",
+            "from": "SalesOrder:portal.app_sales_order:ex-so-1",
+            "to": "SalesOrder:portal.fm_order_entry:900123",
+            "tier": "verified",
+            "reason": [
+              {
+                "feature": "custom_fields_fm_id",
+                "agrees": true,
+                "citations": [
+                  {
+                    "l1_handle": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42",
+                    "field_path": "row.custom_fields.fmId",
+                    "digest": "10d9bfc42f399164177f8125646ee81f5988e2152835bd576d32cf4dad4d8e36",
+                    "lineage": "gold_etl_from_fm"
+                  },
+                  {
+                    "l1_handle": "api://public.order_entry/%7B%22id%22%3A900123%7D@0123456789abcdef-44",
+                    "field_path": "row.id",
+                    "digest": "0e14e085a9008dbe9ae5f9a3ce3ab0687dc8baf1cbe8290e83a912d38f90fa84",
+                    "lineage": "gold_native_staging"
+                  }
+                ]
+              }
+            ],
+            "why_not": [
+              {
+                "feature": "bc_number_text_match",
+                "agrees": null,
+                "weight": 2.0
+              }
+            ]
+          }
+        ],
+        "near_misses": [
+          {
+            "object": {
+              "object_id": "SalesOrder:portal.app_sales_order:ex-so-2",
+              "object_type": "SalesOrder",
+              "display": {
+                "untrusted_text": "SO-2099-0002",
+                "origin": {
+                  "citation": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-2%22%7D@0123456789abcdef-43",
+                  "field_path": "row.order_number"
+                }
+              },
+              "lineage": "gold_native_staging"
+            },
+            "failed": [
+              {
+                "feature": "custom_fields_fm_id",
+                "agrees": false
+              }
+            ]
+          }
+        ],
+        "gaps": [],
+        "completeness": {
+          "complete": true,
+          "truncated": false,
+          "returned": 1,
+          "total": 1,
+          "next_cursor": null
+        },
+        "meta": {
+          "schema_digest": "df0ad6e43880f09c90ebf95f19110178aba6890df0010ebda7485029e2b543b4",
+          "as_known_at": "2099-01-02T03:04:05Z",
+          "freshness": [
+            {
+              "source": "portal_api",
+              "captured_at": "2099-01-02T03:00:00Z",
+              "lag_seconds": 245,
+              "completeness": "complete",
+              "stale": false
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

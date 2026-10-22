@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "plx-use-case-eval-stub/v3",
+  "title": "Use-case evaluation intake stub (one line of <state>/use_cases/evaluation_set.jsonl)",
+  "description": "Written by operating.use_case_intake for every new content version of a file delivered to the AGENTS site 'Ontology UseCases' folder. It is the documented input to the evaluation tooling: an eval-item generator (evals/oracle, held-out generator) reads these lines from the live state directory, turns a confirmed stub into plx-eval-item/v1 items with the stub's split, and never commits a held_out one. A stub is not evaluation truth: status stays stub_unconfirmed until a person confirms the outcome, questions, desired actions, locations and permissions. Split: split_for(case_id) in operating/use_case_intake.py, rule plx-use-case-split/v1 (sha256 of rule:case_id, first 8 hex digits mod 3 == 0 -> dev, else held_out; 1 dev per 2 held-out). It depends only on the stable drive-item case id, never on document text, so a re-upload keeps its split. Spans (known_outcome.span, questions[*].span) are [start, end) character offsets into the stored extraction text text_ref, decoded from its UTF-8 bytes without newline translation (mail text keeps CRLF; sha256 of those bytes: text_sha256); the record's accounting.parts[*].start/end say which part of the artifact a span falls in. draft is outcome_stated only when known_outcome.stated (a labelled, non-placeholder statement in text that was actually extracted), else no_stated_outcome: an outcome is never invented. artifact_complete is the record's accounting.complete: false means some part was unread or skipped by a cap, so the text (and any absence of an outcome) is partial. Validate with ontology/json_contract.py.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "case_id", "intake_seq", "recorded_at", "artifact_citation", "sha256",
+               "split", "split_rule", "text_ref", "text_sha256", "detected_type", "known_outcome",
+               "draft", "artifact_complete", "questions", "questions_truncated", "text_available", "status", "note"],
+  "properties": {
+    "schema": {"const": "plx-use-case-eval-stub/v3"},
+    "case_id": {"type": "string", "pattern": "^uc-[0-9a-f]{16}$"},
+    "intake_seq": {"type": "integer", "minimum": 1},
+    "recorded_at": {"type": "string", "minLength": 20},
+    "artifact_citation": {"type": "string", "pattern": "^sharepoint://"},
+    "sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$",
+               "description": "null when the original exceeded the intake cap and was not pinned."},
+    "split": {"enum": ["dev", "held_out"]},
+    "split_rule": {"const": "plx-use-case-split/v1"},
+    "text_ref": {"type": ["string", "null"], "pattern": "^extractions/[0-9a-f]{64}\\.txt$"},
+    "text_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "detected_type": {"enum": ["docx", "xlsx", "pptx", "pdf", "vsdx", "png", "jpg", "md", "txt",
+                               "eml", "html", "msg", "zip", "other"]},
+    "known_outcome": {
+      "type": "object",
+      "required": ["stated", "text", "span", "statements", "placeholder"],
+      "properties": {
+        "stated": {"type": "boolean"},
+        "label": {"type": "string"},
+        "text": {"type": ["string", "null"], "maxLength": 500},
+        "span": {"type": ["array", "null"], "items": {"type": "integer", "minimum": 0},
+                 "minItems": 2, "maxItems": 2},
+        "statements": {"type": "integer", "minimum": 0},
+        "placeholder": {"type": "boolean"},
+        "note": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "draft": {"enum": ["outcome_stated", "no_stated_outcome"]},
+    "artifact_complete": {"type": "boolean"},
+    "questions": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["text", "span"],
+        "properties": {
+          "text": {"type": "string", "minLength": 4, "maxLength": 500},
+          "span": {"type": "array", "items": {"type": "integer", "minimum": 0},
+                   "minItems": 2, "maxItems": 2}
+        }
+      }
+    },
+    "questions_truncated": {"type": "boolean"},
+    "text_available": {"type": "boolean"},
+    "status": {"const": "stub_unconfirmed"},
+    "note": {"type": "string"}
+  }
+}

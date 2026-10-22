@@ -1,0 +1,201 @@
+{
+ "id": "ontology.session_projection",
+ "description": "One ontology projection per runner session (option 3 of docs/decisions/2026-10-10-dev-baseline-projection-budget.md), which its consumers open instead of each projecting the session's mirror cold: scripts.ontology_projection_probe --produce-session reads mirror.full_coverage's {session_state}/mirror.sqlite in place (never synced or copied here: one read transaction pins its state until the manifest names it, and consumers open the generation only while the file still holds that state), reads its completeness offline, captures BC itself GET-only (the entity sets the host captures, bound to the served tenant so every consumer's served host resolves its handles), keeps ontology.project_incremental.build_generation current in {session_state}/projection under the curated schema and the host's post_project steps, and writes the session manifest (the committed generation, its sources, blocked parts, mirror completeness block and BC capture block). Consumers (eval.dev_baseline, ontology.projection, ontology.traverse, workspace.object_view, ontology.mentions, process.dependencies) name the same path under the same capture audience and require this check, so it runs before them and never blocks them: a consumer opens the generation read-only when this session committed it (PLX_CAPTURE_FRESH_SINCE) and every unit key matches its captures (session_projection.mode reused: nothing projected), projects only what differs (incremental: its mail), and projects cold only when there is none. Pass = a generation committed (session_projection.committed) with the BC capture live-read from production and the build inside its memory budget. Output: counts, booleans, codes and relation names only; never a row value, key or citation. With --mail-capture-scope, --live-audience and --store {session_state}/ontology.sqlite (the mail consumers' store and capture audience) it also captures that mail scope once, GET-only, into that store's served state and names it in the manifest (session_mail; a Graph failure or Graph not configured is a code there, never a blocked source of the session projection), so workspace.object_view, session.replay and ontology.mentions reuse that one capture and one mail store (decision 2026-10-14-mentions-cold-path, option 4).",
+ "source": "portal-workbench-api+business-central+microsoft-graph",
+ "cadence": "daily",
+ "requires": [
+  "mirror.full_coverage"
+ ],
+ "command": [
+  "python3",
+  "-m",
+  "scripts.ontology_projection_probe",
+  "--produce-session",
+  "--session-projection",
+  "{session_state}/projection",
+  "--db",
+  "{session_state}/mirror.sqlite",
+  "--store",
+  "{session_state}/ontology.sqlite",
+  "--mail-capture-scope",
+  "examples/case_mail_capture_scope.live-check.json",
+  "--live-audience",
+  "examples/projection_probe_audience.live-check.json",
+  "--capture-page-budget",
+  "4",
+  "--bc-capture",
+  "--budget-seconds",
+  "3600",
+  "--max-rss-mb",
+  "1536",
+  "--previous-report={daily_report}"
+ ],
+ "timeout_seconds": 4200,
+ "requires_env": [
+  "BC_TENANT_ID",
+  "BC_CLIENT_ID",
+  "BC_CLIENT_SECRET",
+  "BC_ENVIRONMENT"
+ ],
+ "optional_env": [
+  "PLX_WORKBENCH_API_URL",
+  "PLX_WORKBENCH_API_KEY",
+  "MICROSOFT_GRAPH_TENANT_ID",
+  "MICROSOFT_GRAPH_CLIENT_ID",
+  "MICROSOFT_GRAPH_CLIENT_SECRET"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "session_projection.mode",
+   "session_projection.units_rebuilt",
+   "objects",
+   "values",
+   "links",
+   "sources",
+   "blocked_upstream",
+   "completeness",
+   "build_seconds",
+   "maxrss_mb",
+   "max_rss_budget_mb"
+  ],
+  "json_equals": {
+   "session_projection.committed": true,
+   "maxrss_within_budget": true,
+   "bc_capture.evidence_label": "live-read",
+   "bc_capture.environment_is_production": true
+  },
+  "json_min": {
+   "objects": 1000,
+   "values": 10000
+  }
+ },
+ "expect_blocked": {
+  "exit_code": 0,
+  "json_fields": [
+   "sources",
+   "blocked_upstream",
+   "session_projection.mode"
+  ],
+  "json_equals": {
+   "session_projection.committed": true,
+   "maxrss_within_budget": true
+  },
+  "json_min": {
+   "objects": 1
+  }
+ },
+ "blocked_when": "sources_blocked",
+ "record": [
+  "session_projection.committed",
+  "session_projection.mode",
+  "session_projection.units",
+  "session_projection.units_rebuilt",
+  "sources",
+  "sources_blocked",
+  "blocked_upstream",
+  "mirror_complete",
+  "mirror_relation_count",
+  "rows_current_total",
+  "completeness",
+  "capture_unstable_bindings",
+  "objects",
+  "versions",
+  "values",
+  "links",
+  "identifiers",
+  "events",
+  "etl_duplicates_collapsed",
+  "gap_codes",
+  "build_seconds",
+  "build_seconds_split",
+  "phase_seconds",
+  "maxrss_mb",
+  "max_rss_budget_mb",
+  "maxrss_within_budget",
+  "bc_capture",
+  "bc_capture.evidence_label",
+  "bc_capture.stopped_reason",
+  "bc_capture.reason",
+  "store",
+  "session_mail.captured",
+  "session_mail.complete",
+  "session_mail.reasons",
+  "session_mail.messages_seen",
+  "session_mail.error_code"
+ ],
+ "record_keys": [
+  "completeness",
+  "gap_codes",
+  "bc_capture",
+  "build_seconds_split",
+  "phase_seconds"
+ ],
+ "record_enums": [
+  "session_projection.mode",
+  "sources",
+  "sources_blocked",
+  "blocked_upstream",
+  "capture_unstable_bindings",
+  "bc_capture.evidence_label",
+  "bc_capture.stopped_reason",
+  "bc_capture.reason",
+  "store",
+  "session_mail.reasons",
+  "session_mail.error_code"
+ ],
+ "session_audience": {
+  "/mirror.sqlite": {
+   "sources": [
+    "portal-workbench-api"
+   ],
+   "env": [
+    "PLX_WORKBENCH_API_KEY",
+    "PLX_WORKBENCH_API_URL"
+   ],
+   "reader": "service"
+  },
+  "/ontology.sqlite": {
+   "sources": [
+    "business-central",
+    "microsoft-graph",
+    "portal-workbench-api"
+   ],
+   "env": [
+    "BC_CLIENT_ID",
+    "BC_CLIENT_SECRET",
+    "BC_ENVIRONMENT",
+    "BC_TENANT_ID",
+    "MICROSOFT_GRAPH_CLIENT_ID",
+    "MICROSOFT_GRAPH_CLIENT_SECRET",
+    "MICROSOFT_GRAPH_TENANT_ID",
+    "PLX_WORKBENCH_API_KEY",
+    "PLX_WORKBENCH_API_URL"
+   ],
+   "reader": [
+    "examples/case_mail_capture_scope.live-check.json",
+    "examples/projection_probe_audience.live-check.json"
+   ]
+  },
+  "/projection": {
+   "sources": [
+    "business-central",
+    "portal-workbench-api"
+   ],
+   "env": [
+    "BC_CLIENT_ID",
+    "BC_CLIENT_SECRET",
+    "BC_ENVIRONMENT",
+    "BC_TENANT_ID",
+    "PLX_WORKBENCH_API_KEY",
+    "PLX_WORKBENCH_API_URL"
+   ],
+   "reader": "service"
+  }
+ },
+ "session_reads": [
+  "/mirror.sqlite"
+ ],
+ "session_required": true,
+ "notes": "Registered, live-unverified until the live check records a result; module tests are isolated-fixture and injected-transport (ontology/tests/test_project_incremental.py: a session generation reused unprojected, only within its session, and a changed capture projected on top equal to a cold build; verify/tests/test_live_verify.py SessionProjectionTests: this spec, process.dependencies and ontology.traverse by their own argv over the fixture world in one runner session, counted builds = 1, checked with check_expectations, and cold when the producer found no session mirror; tests/test_eval_dev_baseline.py SessionProjectionTests: eval.dev_baseline's argv opens it and projects nothing). Its only requires is its session producer mirror.full_coverage (never blocking): with no session mirror there it prints error session_mirror_missing and commits nothing, so every consumer projects cold as before; a mirror with no complete bound relation is a blocked portal_mirror part and the BC part is projected alone. It does not require bc.capture_full: that store is bound to the BC tenant (integrations.bc_read.capture_probe's service audience), which no consumer's served host (tenant plx) can read, so it captures BC itself into {session_state}/projection under the served tenant (each probe consumer captured its own BC cold before; with the projection they capture none). Consumers in later commands of a daily set get this producer and its own producer re-run first (verify/live_verify.py producers_to_run: a producer's session producers first) when they fit the budget. Timing (measured, seven dailies 2026-10-18..19, decision 2026-10-19-projection-shared-cost): 2,282-3,174 s per run, of which the build 2,215-3,088 s (mode cold, 1.6M objects), the BC capture 56-415 s and the rest under 10 s; the BC capture gets 60% of the 3,600 s budget at most and the projection the rest; a spent budget exits 4 with a partial report and commits nothing; timeout 4,200 s. build_seconds_split records where the build's seconds go (fingerprint, each projector stage, finish) and phase_seconds the run's phases, so the next daily names the stage a cut must target. Disk (owner order 42ad51823f9c): no mirror copy (a 5-6 GB backup per session before); a re-run removes the earlier manifest first, so a run that fails leaves no earlier run's completeness counts; the build first checks the free space it needs (the previous daily's largest disk.peak.build_bytes, else 3 x its source bytes; short: error disk_insufficient with need_bytes and free_bytes, no build) and records disk.peak."
+}

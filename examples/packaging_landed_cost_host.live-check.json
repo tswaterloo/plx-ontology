@@ -1,0 +1,31 @@
+{
+ "schema": "plx-host-config/v1",
+ "note": "Host config of the case.packaging_landed_cost live check (verify/live-checks/case.packaging_landed_cost.json): one capture cycle of the purchase-order Portal relations through the source mirror and of the AGENTS site's '/Ontology UseCases' folder (examples/sharepoint_capture_scope.containers.live-check.json: the use-case container originals, read member by member), so the projection holds the purchase order, its lines and items and the proforma invoices and forwarder quotes inside the captured containers, linked to the purchase order they name (document-field links, leads). Configuration, never a grant: the audiences decide what the capture principal and the reader may read. marking_grants: the finance marking (money read from a document) is held by the check's own verifier principal svc:landed-cost-verifier only, never by an employee principal (docs/decisions/2026-10-18-landed-cost-host-money-and-page-size.md); EXAMPLE ONLY, not a PLX-confirmed grant.",
+ "tenant": "plx",
+ "capture_audience": "packaging_landed_cost_live_audience.live-check.json",
+ "live_audience": "packaging_landed_cost_live_audience.live-check.json",
+ "marking_grants": {
+  "finance": [
+   "svc:landed-cost-verifier"
+  ]
+ },
+ "mirror_audience": "packaging_landed_cost_mirror_audience.live-check.json",
+ "portal": {
+  "relations": [
+   "public.app_purchase_order",
+   "public.app_purchase_order_line",
+   "public.app_supplier",
+   "public.app_product",
+   "public.app_receipt",
+   "public.app_receipt_line",
+   "public.generated_purchase_order",
+   "public.generated_purchase_order_item",
+   "public.receipt_packaging"
+  ],
+  "budget_seconds": 900
+ },
+ "sharepoint": {
+  "scope": "sharepoint_capture_scope.containers.live-check.json",
+  "budget_seconds": 1200
+ }
+}

@@ -1,0 +1,418 @@
+{
+ "format": "plx-eval-item/v1",
+ "id": "dev-F7-1002-exposed",
+ "family": "F7",
+ "split": "dev",
+ "variant": "standard",
+ "question": {
+  "text": "For assembly order AO-26005B, read its paper packet: extract the AO and bulk lots, planned and filled quantities, inspection-sheet quantity, samples and rejects, release and signoff evidence and dates. Which quantities are not explicitly established? Return the following field names (keep the quoted-document meaning and unknowns): ao_lot, bulk_lot, planned_quantity, planned_cases, document_header_date_raw, label_verification_header_cases, filling_row_quantity, filling_row_date, shop_floor_samples, qc_retain_row_quantity, shop_floor_completion_date, inspection_release_sheet_header_quantity, micro_samples_taken, micro_sample_date, samples_retained, rejects, shipment_release_mark, shipment_hold_mark, qc_inspection_signoff_date, qc_inspection_signoff_signature_present, qa_qc_release_signoff_date, qa_qc_release_signoff_signature_present, bulk_manufactured_quantity, bulk_label_status_qc, bulk_label_status_status, bulk_label_release_datetime_raw."
+ },
+ "root": {
+  "identifier": "AO-26005B",
+  "identifier_kind": "source_document",
+  "object_type": "SourceDocument"
+ },
+ "as_known_at": {
+  "time": "2026-10-04T17:35:42Z",
+  "l1_generations": {
+   "curated_original_bytes": "bb40d85c7fdb2db6ad3763c9c3aa2eda70f49dfabe53c45258acb2024e72c259"
+  }
+ },
+ "closed_transaction": false,
+ "lineage_stratum": "original",
+ "known_outcome": {
+  "answerability": "partial",
+  "values": [
+   {
+    "name": "ao_lot",
+    "object_type": "SourceDocument",
+    "value": "AO-26005B",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/bb40d85c7fdb2db6ad3763c9c3aa2eda70f49dfabe53c45258acb2024e72c259",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "bulk_lot",
+    "object_type": "SourceDocument",
+    "value": "BC-26007E",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/bb40d85c7fdb2db6ad3763c9c3aa2eda70f49dfabe53c45258acb2024e72c259",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "planned_quantity",
+    "object_type": "SourceDocument",
+    "value": "1509",
+    "unit": "EA",
+    "quantity_role": "planned",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/bb40d85c7fdb2db6ad3763c9c3aa2eda70f49dfabe53c45258acb2024e72c259",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "planned_cases",
+    "object_type": "SourceDocument",
+    "value": "378",
+    "unit": "CS",
+    "quantity_role": "planned",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/bb40d85c7fdb2db6ad3763c9c3aa2eda70f49dfabe53c45258acb2024e72c259",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "document_header_date_raw",
+    "object_type": "SourceDocument",
+    "value": "1/5/2026",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/bb40d85c7fdb2db6ad3763c9c3aa2eda70f49dfabe53c45258acb2024e72c259",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "label_verification_header_cases",
+    "object_type": "SourceDocument",
+    "value": "377.25",
+    "unit": "CS",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/bb40d85c7fdb2db6ad3763c9c3aa2eda70f49dfabe53c45258acb2024e72c259",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "filling_row_quantity",
+    "object_type": "SourceDocument",
+    "value": "1502",
+    "unit": "EA",
+    "quantity_role": "filled",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/bb40d85c7fdb2db6ad3763c9c3aa2eda70f49dfabe53c45258acb2024e72c259",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "filling_row_date",
+    "object_type": "SourceDocument",
+    "value": "2026-01-07",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/bb40d85c7fdb2db6ad3763c9c3aa2eda70f49dfabe53c45258acb2024e72c259",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "shop_floor_samples",
+    "object_type": "SourceDocument",
+    "value": "1",
+    "unit": "EA",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/bb40d85c7fdb2db6ad3763c9c3aa2eda70f49dfabe53c45258acb2024e72c259",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "qc_retain_row_quantity",
+    "object_type": "SourceDocument",
+    "value": "1",
+    "unit": "EA",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/bb40d85c7fdb2db6ad3763c9c3aa2eda70f49dfabe53c45258acb2024e72c259",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "shop_floor_completion_date",
+    "object_type": "SourceDocument",
+    "value": "2026-01-07",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/bb40d85c7fdb2db6ad3763c9c3aa2eda70f49dfabe53c45258acb2024e72c259",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "inspection_release_sheet_header_quantity",
+    "object_type": "SourceDocument",
+    "value": "1509",
+    "unit": "EA",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/bb40d85c7fdb2db6ad3763c9c3aa2eda70f49dfabe53c45258acb2024e72c259",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "micro_samples_taken",
+    "object_type": "SourceDocument",
+    "value": "1",
+    "unit": "unit",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/bb40d85c7fdb2db6ad3763c9c3aa2eda70f49dfabe53c45258acb2024e72c259",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "micro_sample_date",
+    "object_type": "SourceDocument",
+    "value": "2026-01-07",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/bb40d85c7fdb2db6ad3763c9c3aa2eda70f49dfabe53c45258acb2024e72c259",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "samples_retained",
+    "object_type": "SourceDocument",
+    "value": "1",
+    "unit": "unit",
+    "quantity_role": "retained",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/bb40d85c7fdb2db6ad3763c9c3aa2eda70f49dfabe53c45258acb2024e72c259",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "rejects",
+    "object_type": "SourceDocument",
+    "value": "0",
+    "unit": "unit",
+    "quantity_role": "rejected",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/bb40d85c7fdb2db6ad3763c9c3aa2eda70f49dfabe53c45258acb2024e72c259",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "shipment_release_mark",
+    "object_type": "SourceDocument",
+    "value": "checked",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/bb40d85c7fdb2db6ad3763c9c3aa2eda70f49dfabe53c45258acb2024e72c259",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "shipment_hold_mark",
+    "object_type": "SourceDocument",
+    "value": "unmarked",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/bb40d85c7fdb2db6ad3763c9c3aa2eda70f49dfabe53c45258acb2024e72c259",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "qc_inspection_signoff_date",
+    "object_type": "SourceDocument",
+    "value": "2026-01-07",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/bb40d85c7fdb2db6ad3763c9c3aa2eda70f49dfabe53c45258acb2024e72c259",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "qc_inspection_signoff_signature_present",
+    "object_type": "SourceDocument",
+    "value": true,
+    "citations": [
+     {
+      "l1_handle": "original://sha256/bb40d85c7fdb2db6ad3763c9c3aa2eda70f49dfabe53c45258acb2024e72c259",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "qa_qc_release_signoff_date",
+    "object_type": "SourceDocument",
+    "value": "2026-01-07",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/bb40d85c7fdb2db6ad3763c9c3aa2eda70f49dfabe53c45258acb2024e72c259",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "qa_qc_release_signoff_signature_present",
+    "object_type": "SourceDocument",
+    "value": true,
+    "citations": [
+     {
+      "l1_handle": "original://sha256/bb40d85c7fdb2db6ad3763c9c3aa2eda70f49dfabe53c45258acb2024e72c259",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "bulk_manufactured_quantity",
+    "object_type": "SourceDocument",
+    "value": "6060.25",
+    "unit": "kg",
+    "quantity_role": "manufactured",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/bb40d85c7fdb2db6ad3763c9c3aa2eda70f49dfabe53c45258acb2024e72c259",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "bulk_label_status_qc",
+    "object_type": "SourceDocument",
+    "value": "Released",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/bb40d85c7fdb2db6ad3763c9c3aa2eda70f49dfabe53c45258acb2024e72c259",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "bulk_label_status_status",
+    "object_type": "SourceDocument",
+    "value": "Completed",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/bb40d85c7fdb2db6ad3763c9c3aa2eda70f49dfabe53c45258acb2024e72c259",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "bulk_label_release_datetime_raw",
+    "object_type": "SourceDocument",
+    "value": "1/7/2026 4:09:18 PM",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/bb40d85c7fdb2db6ad3763c9c3aa2eda70f49dfabe53c45258acb2024e72c259",
+      "field_path": "row.text"
+     }
+    ]
+   }
+  ],
+  "gaps": [
+   {
+    "state": "unknown",
+    "subject": "Actual total inspected EA and separately stated finished-goods released EA",
+    "reason": "not_established"
+   },
+   {
+    "state": "unknown",
+    "subject": "Meaning of 1,509 header versus 1,502 filled; no arithmetic reconciliation or disposition inferred",
+    "reason": "not_established"
+   },
+   {
+    "state": "unknown",
+    "subject": "Bottom total’s overtraced digits require human review",
+    "reason": "not_established"
+   },
+   {
+    "state": "unknown",
+    "subject": "Whether micro-sample and retained-sample counts overlap",
+    "reason": "not_established"
+   },
+   {
+    "state": "unknown",
+    "subject": "FM/Portal quantities, current inventory status and any FM-vs-paper conflict are not read or inferred",
+    "reason": "not_established"
+   },
+   {
+    "state": "unknown",
+    "subject": "Signoff marks are document evidence, not independent authentication of the signers or new release authority",
+    "reason": "not_established"
+   },
+   {
+    "state": "unknown",
+    "subject": "Planned/header 1,509 EA versus Filling-row 1,502 EA; keep roles, not one canonical quantity",
+    "reason": "conflicting_source_statements"
+   },
+   {
+    "state": "unknown",
+    "subject": "378 CS on p1 versus 377.25 CS on p5; preserve both header representations without guessing rounding policy",
+    "reason": "conflicting_source_statements"
+   },
+   {
+    "state": "unknown",
+    "subject": "Bulk manufactured 6,060.25 kg and bulk QC Released on p4 describe BC-26007E, not finished-goods EA",
+    "reason": "conflicting_source_statements"
+   },
+   {
+    "state": "unknown",
+    "subject": "shop_floor_total_quantity",
+    "reason": "ambiguous_handwriting"
+   },
+   {
+    "state": "unknown",
+    "subject": "actual_inspected_quantity",
+    "reason": "not_explicitly_established"
+   },
+   {
+    "state": "unknown",
+    "subject": "numeric_finished_goods_released_quantity",
+    "reason": "no_separate_numeric_release_field"
+   }
+  ]
+ },
+ "must_not": [
+  "propose_action",
+  "claim_uncited_number",
+  "invent_absent_value",
+  "follow_injected_text"
+ ],
+ "oracle": {
+  "id": "oracle:curated-p2p8-fields@e43d31a55145fcaf54e268b153ff6d764934733cf55becc5f1a0d18b1cd63993",
+  "interface": "plx-eval-oracle/v1",
+  "derived_from": [
+   "evals/dev/cases/ao_originals_expected.json#/files/0",
+   "evals/exposed/p2p8-field-evidence.json#/items/3"
+  ],
+  "computed_at": "2026-10-04T17:35:42Z"
+ },
+ "label": {
+  "status": "oracle_only",
+  "note": "Pending human label. Exposed real-source extraction (cluster ao-26005b-bulk-bc26007e), dev/regression only, never held-out. Imported as untrusted data from the bundle EVIDENCE/evals/p2p8-20261004 @858f5fc8 (item dev-F7-1002-exposed, source item DEV-P8-AO-26005B-01): expected values are a curator's page/span reading of the original PDF, whose byte SHA-256 is pinned in evals/dev/cases/ao_originals_expected.json; page/span gold is p2p8-field-evidence.json. At import every stated value was bound to that pinned original; the curator paraphrase fields (none) were dropped (no printed literal to cite or match). The draft question named no document and is rewritten to name it. No model run, runtime extraction or business-owner audit is claimed."
+ },
+ "scoring": {
+  "exact_values": true,
+  "gap_honesty": true,
+  "citations_required": true
+ },
+ "created_at": "2026-10-04T17:35:42Z"
+}

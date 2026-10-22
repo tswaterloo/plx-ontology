@@ -1,0 +1,78 @@
+{
+  "tool": "plx.compare",
+  "examples": [
+    {
+      "name": "order vs mail",
+      "input": {
+        "left": "SalesOrder:portal.app_sales_order:ex-so-1",
+        "right": {
+          "citation": "graph-mail://mailbox-example/messages/AAMkExample01@capture-7"
+        },
+        "properties": [
+          "customer_po"
+        ]
+      },
+      "output": {
+        "rows": [
+          {
+            "property": "customer_po",
+            "left": {
+              "property": "customer_po",
+              "value_type": "text",
+              "value": {
+                "untrusted_text": "Jane at receiving",
+                "origin": {
+                  "citation": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42",
+                  "field_path": "row.po_reference"
+                }
+              },
+              "citation": {
+                "l1_handle": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42",
+                "field_path": "row.po_reference",
+                "digest": "e953fc5ab080fdcbf88df010ba92d74f33af85288b639a36a452409bebf3c1be",
+                "lineage": "gold_etl_from_fm"
+              },
+              "authority_rank": 1,
+              "markings": []
+            },
+            "right": {
+              "property": "customer_po",
+              "value_type": "identifier",
+              "value": "90001",
+              "citation": {
+                "l1_handle": "graph-mail://mailbox-example/messages/AAMkExample01@capture-7",
+                "field_path": "row.body",
+                "digest": "0d3af8a87bc07e51344d28886e6572f22de7deb416ec994b48330430ad0a3ed5",
+                "lineage": "mail"
+              },
+              "markings": []
+            },
+            "comparison": "incomparable",
+            "reason": "left_not_identifier"
+          }
+        ],
+        "gaps": [],
+        "completeness": {
+          "complete": true,
+          "truncated": false,
+          "returned": 1,
+          "total": 1,
+          "next_cursor": null
+        },
+        "meta": {
+          "schema_digest": "df0ad6e43880f09c90ebf95f19110178aba6890df0010ebda7485029e2b543b4",
+          "as_known_at": "2099-01-02T03:04:05Z",
+          "freshness": [
+            {
+              "source": "portal_api",
+              "captured_at": "2099-01-02T03:00:00Z",
+              "lag_seconds": 245,
+              "completeness": "complete",
+              "stale": false
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

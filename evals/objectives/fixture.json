@@ -1,0 +1,33 @@
+{
+  "format": "plx-eval-objectives/v1",
+  "world": "fixture",
+  "as_known_at": "2099-01-02T04:00:00Z",
+  "note": "Free-form business objectives on the synthetic fixture world (evals/oracle/fixture_world.py) for scripts/eval_objective_agent.py. Each names only a root (identifier and identifier kind) and a business goal in an employee's words: no question family, no plan, no expected answer. The expected discovery set is computed from the independent oracle (evals/oracle/families.py) at run time, never stored here. as_known_at is the fixture world's now (scripts/eval_oracle_dev.py FIXTURE_NOW).",
+  "objectives": [
+    {
+      "id": "obj-fx-001",
+      "root": {"identifier": "FXSO100048", "identifier_kind": "so_number"},
+      "goal": "Production says this sales order is done and the customer wants to know when it ships. Find out what is still unresolved on it, what it depends on, and who has to act."
+    },
+    {
+      "id": "obj-fx-002",
+      "root": {"identifier": "PO9200042", "identifier_kind": "po_number"},
+      "goal": "Accounts payable wants to close this purchase order this week. Find out what still stands in the way and who has to act on each open point."
+    },
+    {
+      "id": "obj-fx-003",
+      "root": {"identifier": "FXCPO-082", "identifier_kind": "customer_po"},
+      "goal": "The customer asks where their order stands. Find out what we know about it, what we do not know, and who can answer what is missing."
+    },
+    {
+      "id": "obj-fx-004",
+      "root": {"identifier": "FXSO100108", "identifier_kind": "so_number"},
+      "goal": "Planning wants to close out this order before month end. Find out what is still open around it and who needs to follow up."
+    },
+    {
+      "id": "obj-fx-005",
+      "root": {"identifier": "PO9200016", "identifier_kind": "po_number"},
+      "goal": "Do a three-way match on this purchase order and tell me what does not reconcile, and who should chase it."
+    }
+  ]
+}

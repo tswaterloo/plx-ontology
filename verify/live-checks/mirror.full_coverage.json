@@ -1,0 +1,212 @@
+{
+ "id": "mirror.full_coverage",
+ "description": "Source mirror L1 completeness: a full, resumable, GET-only sync of every relation the Portal Workbench reporting API catalog serves into a throwaway mirror file, the relations bound in ontology/schema/domains (the evaluation denominator) first, then one batch citation resolve. Three relations are read at a time (inside wb_api's five connections); relations the previous daily report names row-bound or paging-defective (defer_next_run, or counted above the mirror bound by mirror.relation_counts) stay in the denominator but are synced last, after the key-only reads. Relations the previous daily report's mirror.relation_counts names unstable (data_truth_defect on two consecutive daily runs) are never staged: they are read key-only by the no-store counter and leave the denominator. Pass = every stable bound relation complete (complete_bound_relation_count/bound_total, the completeness figure of decision 2026-10-02-capture-persistence), the catalog still serving at least 93 relations, every relation's counts recorded, and 5,000 handles resolved offline in under 3 s. The 93-relation figures (complete_relation_count, all_stable_served_complete, accounted_relation_count, accounted_equals_catalog) are recorded fields, never a failure. Output is counts, booleans, timings and relation names only; never a row value, key or citation.",
+ "source": "portal-workbench-api",
+ "requires": [
+  "portal.health_catalog"
+ ],
+ "command": [
+  "python3",
+  "-m",
+  "scripts.live_read_probes",
+  "mirror-full-coverage",
+  "--db",
+  "{session_state}/mirror.sqlite",
+  "--previous-report={daily_report}",
+  "--budget-seconds",
+  "3000",
+  "--resolve-sample",
+  "5000",
+  "--workers",
+  "3"
+ ],
+ "timeout_seconds": 3200,
+ "requires_env": [
+  "PLX_WORKBENCH_API_URL",
+  "PLX_WORKBENCH_API_KEY"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "relations",
+   "lineage_totals",
+   "rows_current_total",
+   "sync_seconds",
+   "key_only_seconds",
+   "deferred_sync_seconds",
+   "batch_resolve_seconds",
+   "bound_total",
+   "complete_bound_relation_count",
+   "completeness",
+   "unstable_relations",
+   "relation_outcomes",
+   "failure_classes",
+   "defer_next_run",
+   "rows_deleted_in_source_total",
+   "bound_incomplete_untyped"
+  ],
+  "json_equals": {
+   "all_bound_complete": true,
+   "key_only_row_data_check.leaked": 0,
+   "resolve_all_ok": true,
+   "batch_resolve_under_3s": true,
+   "atomic_upstream_snapshot": false,
+   "deletions_proven": false
+  },
+  "json_min": {
+   "relation_count": 93,
+   "catalog_relation_count": 93,
+   "handles_resolved": 5000,
+   "bound_declared_total": 50,
+   "soft_delete_relation_count": 1
+  }
+ },
+ "expect_blocked": {
+  "exit_code": 0,
+  "json_fields": [
+   "relations",
+   "lineage_totals",
+   "rows_current_total",
+   "sync_seconds",
+   "key_only_seconds",
+   "deferred_sync_seconds",
+   "batch_resolve_seconds",
+   "bound_total",
+   "complete_bound_relation_count",
+   "completeness",
+   "unstable_relations",
+   "relation_outcomes",
+   "failure_classes",
+   "defer_next_run",
+   "rows_deleted_in_source_total",
+   "bound_incomplete",
+   "blocked_upstream"
+  ],
+  "json_equals": {
+   "key_only_row_data_check.leaked": 0,
+   "resolve_all_ok": true,
+   "batch_resolve_under_3s": true,
+   "atomic_upstream_snapshot": false,
+   "deletions_proven": false
+  },
+  "json_min": {
+   "relation_count": 93,
+   "catalog_relation_count": 93,
+   "handles_resolved": 5000,
+   "bound_declared_total": 50,
+   "soft_delete_relation_count": 1
+  },
+  "json_empty": [
+   "bound_incomplete_untyped"
+  ]
+ },
+ "complete_when": {
+  "all_bound_complete": true
+ },
+ "record": [
+  "relation_count",
+  "catalog_relation_count",
+  "served_relation_count",
+  "unavailable_relation_count",
+  "complete_relation_count",
+  "capture_order",
+  "bound_declared_total",
+  "bound_total",
+  "bound_in_catalog_count",
+  "complete_bound_relation_count",
+  "all_bound_complete",
+  "bound_incomplete",
+  "bound_incomplete_untyped",
+  "blocked_upstream",
+  "bound_run_outcomes",
+  "all_served_complete",
+  "complete_equals_catalog",
+  "completeness_rate",
+  "unstable_relations",
+  "unstable_bindings",
+  "all_stable_served_complete",
+  "key_only_relation_count",
+  "key_only_complete_count",
+  "accounted_relation_count",
+  "accounted_equals_catalog",
+  "key_only_row_data_check",
+  "in_progress_count",
+  "failed_count",
+  "run_outcomes",
+  "rows_current_total",
+  "rows_missing_total",
+  "rows_deleted_in_source_total",
+  "soft_delete_relation_count",
+  "soft_deleted_rows",
+  "lineage_totals",
+  "relations",
+  "sync_seconds",
+  "key_only_seconds",
+  "deferred_sync_seconds",
+  "throttle_waits",
+  "handles_resolved",
+  "handles_ok",
+  "resolve_all_ok",
+  "batch_resolve_seconds",
+  "batch_resolve_under_3s",
+  "workers",
+  "failure_classes",
+  "deferred_relations",
+  "defer_next_run",
+  "relation_outcomes[*].relation",
+  "relation_outcomes[*].bound",
+  "relation_outcomes[*].deferred",
+  "relation_outcomes[*].outcome",
+  "relation_outcomes[*].failure_class",
+  "relation_outcomes[*].http_status",
+  "relation_outcomes[*].upstream_error_code",
+  "relation_outcomes[*].exception_type",
+  "relation_outcomes[*].pages",
+  "relation_outcomes[*].rows_received",
+  "relation_outcomes[*].page_size_final",
+  "relation_outcomes[*].seconds",
+  "slowest_relations[*].relation",
+  "slowest_relations[*].seconds",
+  "slowest_relations[*].rows_received",
+  "slowest_relations[*].pages"
+ ],
+ "record_keys": [
+  "run_outcomes",
+  "lineage_totals",
+  "relations",
+  "throttle_waits",
+  "bound_run_outcomes",
+  "key_only_row_data_check",
+  "failure_classes",
+  "soft_deleted_rows"
+ ],
+ "notes": "live-unverified until a live-check result exists. Daily cadence (python3 verify/live_verify.py --cadence daily): the 2026-10-01 hourly run took 1503 s of a 1500 s budget for 53/93 relations, so the full sync left the hourly suite. --workers 3: three relations are read at a time, each on its own fenced traversal and mirror connection (wb_api allows 5 connections; at most 4 workers). Retry-After honoured on 429/503; statement timeouts and HTTP 500 halve the page down to the floor, then retry with backoff; key-run-too-long/null-key 500s double it up to 5000 (the service's own remedy), never back to a size already proven too small or too large for the same cursor; row-too-large, a 500 at the limit and a cursor with no page size left between those two errors are a per-relation source_defect that never blocks the others. relation_outcomes[*] records every relation not captured (outcome, failure_class: budget | row_bound | paging_defect | source_defect | throttled | transport | contract | superseded | store_busy | internal_error (with exception_type, never the message), HTTP status, the service's error code, pages, rows, final page size, seconds); slowest_relations names the ten longest captures. A row_bound or paging_defect traversal is abandoned (never resumed into a stitched capture) and named in defer_next_run; every other interrupted traversal, budget cuts included, resumes from its last committed page on the next run. sync_seconds is the main sync only; key_only_seconds times the key-only reads of unstable relations and deferred_sync_seconds the late sync of deferred relations. Root cause of the five 1M-row gold relations (2026-10-01/02): petralabx/plx-customer-portal portal/scripts/etl-silver-to-gold.ts@c3ffda3 inserts every child row under a fresh cuid each ETL run, so ON CONFLICT (id) never fires and the tables grow per run; the keyset paging (services/workbench-api/src/core/query.mjs@c3ffda3) is correct, and the mirror now proves each page's cursor names that page's last key. The probe audience grants a service principal every served schema because it measures the mirror, not an employee's view. A relation that does not finish inside the budget is reported incomplete (in_progress_count) and the check fails rather than passing on partial data. complete_bound_relation_count/bound_total is the completeness figure the eval and the projection report (scripts.mirror_measure.completeness; bound_total excludes unstable relations, bound_declared_total does not); complete_relation_count/catalog_relation_count, all_stable_served_complete and accounted_relation_count/accounted_equals_catalog stay secondary: recorded, not gated (an unbound relation left incomplete never fails the check). --previous-report={daily_report} is the runner's --daily-report (results/daily/latest.json); without it no relation is unstable and the probe behaves as before. Relations whose true count exceeds the mirror's max_rows_per_relation are measured by mirror.relation_counts. Source deletions (ING-09): rows_deleted_in_source_total and soft_deleted_rows (per relation whose catalog carries a soft-delete column declared in integrations/source_mirror_ingest.json soft_delete_rules; relation names and counts only) count the distinct record keys the source soft-deleted (deleted_in_source) in this run, and rows_missing_total the distinct keys missing from it (a duplicate-key run is one record; despite the rows_ names, rows_current_total counts held rows, duplicates and soft-deleted ones included); soft_delete_relation_count >= 1 proves the declaration still matches the live catalog. Live-pending until a live-check result records them. Session state (verify/live_verify.py): the session producer of {session_state}/mirror.sqlite: the ontology probes (ontology.projection, ontology.traverse, ontology.mentions, workspace.object_view) require this spec and top its mirror up incrementally in the same runner session instead of a cold sync each (daily run 4ea6073: about 8 checks each re-synced the Portal, ~1,538 s apiece). Its own check is unchanged: a session starts with an empty directory. Typed gaps: a bound relation the live catalog lists but does not serve (run outcome unavailable) stays in bound_incomplete (all_bound_complete false, complete_when unmet) and is named in blocked_upstream (cause relation_unavailable); bound_incomplete_untyped holds every bound relation incomplete any other way. With only typed parts missing and expect_blocked met (every other expectation, bound_incomplete_untyped empty) the check is blocked relation_unavailable, never a pass; any untyped incomplete bound relation (budget, row bound, paging defect, failure) is a fail.",
+ "cadence": "daily",
+ "record_enums": [
+  "capture_order",
+  "bound_incomplete",
+  "blocked_upstream",
+  "bound_incomplete_untyped",
+  "unstable_relations",
+  "unstable_bindings",
+  "deferred_relations",
+  "defer_next_run",
+  "relation_outcomes[*].relation",
+  "relation_outcomes[*].outcome",
+  "relation_outcomes[*].failure_class",
+  "relation_outcomes[*].upstream_error_code",
+  "slowest_relations[*].relation"
+ ],
+ "session_audience": {
+  "/mirror.sqlite": {
+   "sources": [
+    "portal-workbench-api"
+   ],
+   "env": [
+    "PLX_WORKBENCH_API_KEY",
+    "PLX_WORKBENCH_API_URL"
+   ],
+   "reader": "service"
+  }
+ }
+}

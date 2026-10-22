@@ -1,0 +1,11 @@
+{
+ "schema": "plx-ingest-sources/v1",
+ "tenant": "plx",
+ "note": "Live-check scope for verify/live-checks/graph.mail_paging.json: the one allowlisted shared operational inbox of examples/ingestion_sources.live-check.json, read with page_size=1 and max_pages=3 so a 730-day window with at least four messages (three read: pages 3, cap:page_cap, items_read 3) must follow Graph's @odata.nextLink (OData key form mailFolders('<id>')/messages). Read-only; counts only.",
+ "actor": {"principals": ["svc:ingest", "staff:operations"], "clearance": "restricted"},
+ "sources": [
+  {"id": "mail.purchase-order.inbox.paging", "kind": "mail_folder",
+   "mailbox": "purchase-order@petrasoap.com", "folder": "inbox", "initial_window_days": 730,
+   "overlap_seconds": 900, "page_size": 1, "max_pages": 3, "max_items": 3}
+ ]
+}

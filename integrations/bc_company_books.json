@@ -1,0 +1,62 @@
+{
+ "schema": "plx-bc-company-books/v1",
+ "note": "BC company id -> book (lineage bc_<book>), per environment, matched by GUID only. A company is read only when its GUID is pinned here; in an only_pinned environment every other listed company is out of scope (counted, never read). A pinned GUID is also read only while BC lists it under its pinned name (names), so a wrong pin fails closed. Production is pinned to My Company alone (CRONUS is a demo company, PLX Consol and PLX Distribution hold no purchase orders).",
+ "source": "Production: plx-customer-portal portal/src/lib/business-central/company-pins.ts@b46934a COMPANY_PINS manufacturing (My Company = manufacturing), narrowed to that book; Sandbox/UAT pin only manufacturing. GUID to be confirmed live by the name check (names).",
+ "environments": {
+  "production": {
+   "fbd2ba74-f148-f111-b476-7ced8db443c4": "manufacturing"
+  },
+  "sandbox": {
+   "fbd2ba74-f148-f111-b476-7ced8db443c4": "manufacturing"
+  },
+  "uat": {
+   "fbd2ba74-f148-f111-b476-7ced8db443c4": "manufacturing"
+  }
+ },
+ "only_pinned": [
+  "production"
+ ],
+ "names": {
+  "production": {
+   "fbd2ba74-f148-f111-b476-7ced8db443c4": "My Company"
+  }
+ },
+ "ledgers": {
+  "production": {
+   "required_book": "manufacturing",
+   "required_sets": [
+    "customerPaymentJournals",
+    "vendorPaymentJournals"
+   ],
+   "expected_gaps": [
+    {
+     "company": "d2586da0-809d-f111-8072-6045bd5bf768",
+     "label": "consol",
+     "sets": [
+      "customerPaymentJournals",
+      "vendorPaymentJournals"
+     ],
+     "http_status": 400,
+     "error_code": "internal_data_not_found_filter",
+     "message_class": "journal_template_missing",
+     "owner": "Ricardo",
+     "cause": "payment_journal_templates_missing"
+    },
+    {
+     "company": "ca41a27f-809d-f111-8072-6045bd5bf768",
+     "label": "distribution",
+     "sets": [
+      "customerPaymentJournals",
+      "vendorPaymentJournals"
+     ],
+     "http_status": 400,
+     "error_code": "internal_data_not_found_filter",
+     "message_class": "journal_template_missing",
+     "owner": "Ricardo",
+     "cause": "payment_journal_templates_missing"
+    }
+   ]
+  }
+ },
+ "ledgers_note": "bc.ledgers: Production / My Company is the required book; the consol and distribution companies (GUIDs of the earlier three-book pin, still matched by GUID only) refuse their payment journal listings with 400 internal_data_not_found_filter / journal_template_missing (the 2026-10-21 probe); owner Ricardo, cause: the payment-journal templates are missing in those companies. They are read by the ledger probe only to name the gap; they are not pinned for capture."
+}

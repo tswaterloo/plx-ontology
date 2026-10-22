@@ -1,0 +1,25 @@
+{
+ "schema": "plx-teams-capture-scope/v1",
+ "note": "Live-check scope of graph.teams_capture (verify/live-checks/graph.teams_capture.json): the channels of the teams cos@ and vince@ joined (both on the canonical allowlist, operating/case_mail_scope.json) and the chats of every account on that allowlist (member_chats mail_allowlist: chats are decided, docs/decisions/2026-10-07-ovs-teams-capture.md item 2; the accounts are read from the allowlist, never listed here). Small caps so one run stays bounded (a read stopped by a cap resumes on the next run; channels and chats share max_conversations in turn, and beyond it the runs rotate on a stored cursor until every conversation found is read). max_conversations 16 from the measured live run (204 s for 6 conversations over both runs, about 34 s each): 16 x 34 s = 544 s a run, plus the 60 s retry budget; the check's 6900 s timeout holds about 11 such runs, and its --budget-seconds 6300 stops starting runs and reading pages before the timeout (caps not raised). Captured messages stay in the check's host state directory (outside the repository, kept across its daily runs so a pass carries on until it completes); only counts are printed. Configuration, never a grant.",
+ "members": [
+  {"address": "cos@petrasoap.com", "joined_teams": true},
+  {"address": "vince@petrasoap.com", "joined_teams": true}
+ ],
+ "member_chats": "mail_allowlist",
+ "page_size": 20,
+ "max_pages_per_run": 3,
+ "max_items_per_run": 200,
+ "max_replies_per_message": 50,
+ "max_conversations": 16,
+ "census": {
+  "note": "Census (TeamsCapture.census): every team and channel of the tenant and the chats of the chat accounts, names and 30-day counts only, read once the people guard cleared their members. The keywords below propose a channel or chat to the operator by its name, for purchasing, QA and R&D; a proposal, never a grant. Content is read only of what he confirms in content-confirmation.json beside the census file in the state directory.",
+  "message_counts": "teams_activity_report",
+  "max_teams": 500,
+  "max_chats": 200,
+  "proposals": {
+   "purchasing": ["purchas", "procure", "buying", "buyer", "supplier", "vendor"],
+   "qa": ["qa", "qc", "quality", "hand-off", "handoff", "hand off"],
+   "rnd": ["r&d", "rnd", "research", "development", "kb board", "formulation"]
+  }
+ }
+}

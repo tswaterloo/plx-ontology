@@ -1,0 +1,2088 @@
+{
+  "$schema": "../_format.schema.json",
+  "format": "plx-ontology-domain/v1",
+  "domain": "bc_finance",
+  "origin": "curated",
+  "description": "Business Central finance ledgers per company (book): companies, item ledger and G/L entries, G/L accounts, and the (unserved) Portal app_bc_entity_map. Business documents (orders, invoices, receipts, shipments and their lines, incl. their BC and Sage bindings) are declared once, in orders.json / purchasing.json; links here target those types and binding ids. BC is Production and read GET-only; the company is the lineage bc_<book> (manufacturing, distribution, consol). Renumbering: Portal SO/PO numbers are rewritten to the BC No. after drain (custom_fields.renumberedTo), and BC externalDocumentNumber echoes the customer PO (orders) or the Portal order number (invoices). Also the aged receivable/payable balances per party and the payment journal lines (Payment).",
+  "upstream_pins": {
+    "plx-customer-portal": "b46934a"
+  },
+  "object_types": [
+    {
+      "id": "BcCompany",
+      "description": "A Business Central Production company (book): manufacturing, distribution, consol. Every BC-sourced object carries its company as lineage bc_<book>.",
+      "availability": {
+        "state": "served"
+      },
+      "bindings": [
+        {
+          "id": "bc.companies",
+          "source": "bc",
+          "relation": "companies",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "from_capture": "bc_company"
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench-code.live-source-grammar-py.4afed4"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.bcbookkey.e32697"
+            },
+            {
+              "kind": "live_trace",
+              "ref": "claude/verify-live:results/latest.json#bc.adapter_probe (live-2026-10-01T19:39:24Z)",
+              "note": "companies_count 3, environment_is_production true."
+            },
+            {
+              "kind": "ref",
+              "id": "context-pack.06-live-sources-md.10666f"
+            }
+          ],
+          "note": "GET /companies; 3 companies live."
+        }
+      ],
+      "properties": [
+        {
+          "name": "name",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "bc.companies",
+              "path": "name",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "display_name",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "bc.companies",
+              "path": "displayName",
+              "parser": "trim"
+            }
+          ]
+        }
+      ],
+      "display": [
+        "display_name"
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.bcbookkey.e32697"
+        },
+        {
+          "kind": "ref",
+          "id": "context-pack.06-live-sources-md.10666f"
+        }
+      ]
+    },
+    {
+      "id": "ItemLedgerEntry",
+      "description": "A posted item ledger entry (BC): purchase, sale, output, consumption, adjustment, transfer. The signed quantity means different things per entry type; never sum across entry types.",
+      "availability": {
+        "state": "partial",
+        "reason": "itemLedgerEntries: select allowlist in integrations/live_source_grammar.py BC_QUERY_SPECS, checked live by verify/live-checks/bc.ledgers.json (unverified until it passes). The capture reads at most 25,000 entries per call (CAPTURE_RECORD_CAPS) and resumes: until the unit settles the binding is source_capture_incomplete, a gap, never an absence."
+      },
+      "bindings": [
+        {
+          "id": "bc.item_ledger_entries",
+          "source": "bc",
+          "relation": "itemLedgerEntries",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "from_capture": "bc_company"
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench-code.live-source-grammar-py.4afed4"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.bcbookkey.e32697"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench-code.live-source-grammar-py.a7d28e"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_finance_specs"
+            }
+          ],
+          "note": "Item ledger per book. Company = the capture's BC company (lineage bc_<book>); the record carries no company field. PLX Consol (bc_consol) holds consolidation copies and is never authority for documents."
+        }
+      ],
+      "properties": [
+        {
+          "name": "entry_number",
+          "value_type": "integer",
+          "sources": [
+            {
+              "binding": "bc.item_ledger_entries",
+              "path": "entryNumber",
+              "parser": "integer_text"
+            }
+          ]
+        },
+        {
+          "name": "item_number",
+          "value_type": "identifier",
+          "identifier_kind": "item_code",
+          "identifies": "reference",
+          "sources": [
+            {
+              "binding": "bc.item_ledger_entries",
+              "path": "itemNumber",
+              "parser": "identifier"
+            }
+          ]
+        },
+        {
+          "name": "entry_type",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "bc.item_ledger_entries",
+              "path": "entryType",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "document_type",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "bc.item_ledger_entries",
+              "path": "documentType",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "document_number",
+          "value_type": "identifier",
+          "identifier_kind": "bc_document_no",
+          "identifies": "reference",
+          "sources": [
+            {
+              "binding": "bc.item_ledger_entries",
+              "path": "documentNumber",
+              "parser": "identifier"
+            }
+          ]
+        },
+        {
+          "name": "source_type",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "bc.item_ledger_entries",
+              "path": "sourceType",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "source_number",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "bc.item_ledger_entries",
+              "path": "sourceNumber",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "quantity",
+          "value_type": "decimal",
+          "description": "Signed quantity in the item's base unit (Product.bc_base_uom); its role depends on entry_type, so it carries none.",
+          "sources": [
+            {
+              "binding": "bc.item_ledger_entries",
+              "path": "quantity",
+              "parser": "decimal_text"
+            }
+          ]
+        },
+        {
+          "name": "cost_amount_actual",
+          "value_type": "money",
+          "currency": "CAD",
+          "markings": [
+            "finance"
+          ],
+          "availability": "degraded",
+          "availability_reason": "Ledger amounts are in the company LCY (not on the entry); CAD is proven only for the manufacturing and distribution books.",
+          "sources": [
+            {
+              "binding": "bc.item_ledger_entries",
+              "path": "costAmountActual",
+              "parser": "decimal_text",
+              "tax_basis": "unknown"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.bctransactioncurrency.67bd64"
+            }
+          ]
+        },
+        {
+          "name": "sales_amount_actual",
+          "value_type": "money",
+          "currency": "CAD",
+          "markings": [
+            "finance"
+          ],
+          "availability": "degraded",
+          "availability_reason": "Same LCY caveat as cost_amount_actual.",
+          "sources": [
+            {
+              "binding": "bc.item_ledger_entries",
+              "path": "salesAmountActual",
+              "parser": "decimal_text",
+              "tax_basis": "unknown"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.bctransactioncurrency.67bd64"
+            }
+          ]
+        }
+      ],
+      "markings": [
+        "finance"
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "workbench-code.live-source-grammar-py.a7d28e"
+        },
+        {
+          "kind": "ref",
+          "id": "context-pack.03-portal-md-4-10.86537f"
+        }
+      ]
+    },
+    {
+      "id": "GeneralLedgerEntry",
+      "description": "A posted G/L entry (BC). Freight and duty are expensed to G/L under ERP-D-015.",
+      "availability": {
+        "state": "partial",
+        "reason": "generalLedgerEntries: select allowlist in integrations/live_source_grammar.py BC_QUERY_SPECS, checked live by verify/live-checks/bc.ledgers.json (unverified until it passes). The capture reads at most 25,000 entries per call (CAPTURE_RECORD_CAPS) and resumes: until the unit settles the binding is source_capture_incomplete, a gap, never an absence."
+      },
+      "bindings": [
+        {
+          "id": "bc.general_ledger_entries",
+          "source": "bc",
+          "relation": "generalLedgerEntries",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "from_capture": "bc_company"
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench-code.live-source-grammar-py.4afed4"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.bcbookkey.e32697"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench-code.live-source-grammar-py.a7d28e"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_finance_specs"
+            }
+          ],
+          "note": "G/L per book. Company = the capture's BC company (lineage bc_<book>); the record carries no company field. PLX Consol (bc_consol) holds consolidation copies and is never authority for documents."
+        }
+      ],
+      "properties": [
+        {
+          "name": "entry_number",
+          "value_type": "integer",
+          "sources": [
+            {
+              "binding": "bc.general_ledger_entries",
+              "path": "entryNumber",
+              "parser": "integer_text"
+            }
+          ]
+        },
+        {
+          "name": "document_number",
+          "value_type": "identifier",
+          "identifier_kind": "bc_document_no",
+          "identifies": "reference",
+          "sources": [
+            {
+              "binding": "bc.general_ledger_entries",
+              "path": "documentNumber",
+              "parser": "identifier"
+            }
+          ]
+        },
+        {
+          "name": "document_type",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "bc.general_ledger_entries",
+              "path": "documentType",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "account_number",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "bc.general_ledger_entries",
+              "path": "accountNumber",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "description",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "bc.general_ledger_entries",
+              "path": "description",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "debit_amount",
+          "value_type": "money",
+          "currency": "CAD",
+          "markings": [
+            "finance"
+          ],
+          "availability": "degraded",
+          "availability_reason": "LCY amount; CAD proven only for the manufacturing and distribution books.",
+          "sources": [
+            {
+              "binding": "bc.general_ledger_entries",
+              "path": "debitAmount",
+              "parser": "decimal_text",
+              "tax_basis": "unknown"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.bctransactioncurrency.67bd64"
+            }
+          ]
+        },
+        {
+          "name": "credit_amount",
+          "value_type": "money",
+          "currency": "CAD",
+          "markings": [
+            "finance"
+          ],
+          "availability": "degraded",
+          "availability_reason": "LCY amount; CAD proven only for the manufacturing and distribution books.",
+          "sources": [
+            {
+              "binding": "bc.general_ledger_entries",
+              "path": "creditAmount",
+              "parser": "decimal_text",
+              "tax_basis": "unknown"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.bctransactioncurrency.67bd64"
+            }
+          ]
+        }
+      ],
+      "markings": [
+        "finance"
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "workbench-code.live-source-grammar-py.a7d28e"
+        },
+        {
+          "kind": "ref",
+          "id": "context-pack.03-portal-md-4-10.86537f"
+        }
+      ]
+    },
+    {
+      "id": "GlAccount",
+      "description": "A G/L account of one BC company (book).",
+      "availability": {
+        "state": "partial",
+        "reason": "accounts has no Workbench select allowlist or live probe yet."
+      },
+      "bindings": [
+        {
+          "id": "bc.accounts",
+          "source": "bc",
+          "relation": "accounts",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "from_capture": "bc_company"
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench-code.live-source-grammar-py.4afed4"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.bcbookkey.e32697"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench-code.live-source-grammar-py.a7d28e"
+            }
+          ],
+          "note": "Chart of accounts per book."
+        }
+      ],
+      "properties": [
+        {
+          "name": "number",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "bc.accounts",
+              "path": "number",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "display_name",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "bc.accounts",
+              "path": "displayName",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "category",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "bc.accounts",
+              "path": "category",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "sub_category",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "bc.accounts",
+              "path": "subCategory",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "blocked",
+          "value_type": "boolean",
+          "sources": [
+            {
+              "binding": "bc.accounts",
+              "path": "blocked",
+              "parser": "boolean_text"
+            }
+          ]
+        }
+      ],
+      "display": [
+        "number",
+        "display_name"
+      ],
+      "markings": [
+        "finance"
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "workbench-code.live-source-grammar-py.a7d28e"
+        }
+      ]
+    },
+    {
+      "id": "AgedReceivable",
+      "description": "BC agedAccountsReceivables: one row per customer with an open balance, aged into current and three overdue periods as of a date. A report BC recomputes on each read (the capture keeps each read's row as a version), keyed by the party.",
+      "availability": {
+        "state": "partial",
+        "reason": "agedAccountsReceivables is a report page; a company that does not expose it fails the capture unit with reason not_exposed (a gap, never zero balances). UNVERIFIED live until verify/live-checks/bc.ledgers.json passes."
+      },
+      "bindings": [
+        {
+          "id": "bc.aged_accounts_receivables",
+          "source": "bc",
+          "relation": "agedAccountsReceivables",
+          "key": [
+            "customerId"
+          ],
+          "lineage": {
+            "from_capture": "bc_company"
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench.bc_finance_specs"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.bcbookkey.e32697"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_same_company_scope"
+            }
+          ]
+        }
+      ],
+      "properties": [
+        {
+          "name": "party_number",
+          "value_type": "identifier",
+          "identifier_kind": "customer_erp_code",
+          "identifies": "reference",
+          "sources": [
+            {
+              "binding": "bc.aged_accounts_receivables",
+              "path": "customerNumber",
+              "parser": "identifier"
+            }
+          ]
+        },
+        {
+          "name": "currency",
+          "value_type": "text",
+          "description": "currencyCode as BC states it on the row.",
+          "sources": [
+            {
+              "binding": "bc.aged_accounts_receivables",
+              "path": "currencyCode",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "balance_due",
+          "value_type": "money",
+          "description": "Open balance of the party as of aged_as_of_date.",
+          "currency_unknown": {
+            "reason": "BC API v2.0 states a currencyCode per aged row but not whether its amounts are in it or in the company's local currency; unverified live, so no currency is asserted and plx.aggregate never sums these.",
+            "evidence": [
+              {
+                "kind": "ref",
+                "id": "workbench.bc_finance_specs"
+              }
+            ]
+          },
+          "markings": [
+            "finance"
+          ],
+          "sources": [
+            {
+              "binding": "bc.aged_accounts_receivables",
+              "path": "balanceDue",
+              "parser": "decimal_text",
+              "tax_basis": "incl_tax"
+            }
+          ]
+        },
+        {
+          "name": "current_amount",
+          "value_type": "money",
+          "description": "Not yet due.",
+          "currency_unknown": {
+            "reason": "BC API v2.0 states a currencyCode per aged row but not whether its amounts are in it or in the company's local currency; unverified live, so no currency is asserted and plx.aggregate never sums these.",
+            "evidence": [
+              {
+                "kind": "ref",
+                "id": "workbench.bc_finance_specs"
+              }
+            ]
+          },
+          "markings": [
+            "finance"
+          ],
+          "sources": [
+            {
+              "binding": "bc.aged_accounts_receivables",
+              "path": "currentAmount",
+              "parser": "decimal_text",
+              "tax_basis": "incl_tax"
+            }
+          ]
+        },
+        {
+          "name": "period1_amount",
+          "value_type": "money",
+          "description": "Overdue, first period (periodLengthFilter).",
+          "currency_unknown": {
+            "reason": "BC API v2.0 states a currencyCode per aged row but not whether its amounts are in it or in the company's local currency; unverified live, so no currency is asserted and plx.aggregate never sums these.",
+            "evidence": [
+              {
+                "kind": "ref",
+                "id": "workbench.bc_finance_specs"
+              }
+            ]
+          },
+          "markings": [
+            "finance"
+          ],
+          "sources": [
+            {
+              "binding": "bc.aged_accounts_receivables",
+              "path": "period1Amount",
+              "parser": "decimal_text",
+              "tax_basis": "incl_tax"
+            }
+          ]
+        },
+        {
+          "name": "period2_amount",
+          "value_type": "money",
+          "description": "Overdue, second period.",
+          "currency_unknown": {
+            "reason": "BC API v2.0 states a currencyCode per aged row but not whether its amounts are in it or in the company's local currency; unverified live, so no currency is asserted and plx.aggregate never sums these.",
+            "evidence": [
+              {
+                "kind": "ref",
+                "id": "workbench.bc_finance_specs"
+              }
+            ]
+          },
+          "markings": [
+            "finance"
+          ],
+          "sources": [
+            {
+              "binding": "bc.aged_accounts_receivables",
+              "path": "period2Amount",
+              "parser": "decimal_text",
+              "tax_basis": "incl_tax"
+            }
+          ]
+        },
+        {
+          "name": "period3_amount",
+          "value_type": "money",
+          "description": "Overdue, third period and older.",
+          "currency_unknown": {
+            "reason": "BC API v2.0 states a currencyCode per aged row but not whether its amounts are in it or in the company's local currency; unverified live, so no currency is asserted and plx.aggregate never sums these.",
+            "evidence": [
+              {
+                "kind": "ref",
+                "id": "workbench.bc_finance_specs"
+              }
+            ]
+          },
+          "markings": [
+            "finance"
+          ],
+          "sources": [
+            {
+              "binding": "bc.aged_accounts_receivables",
+              "path": "period3Amount",
+              "parser": "decimal_text",
+              "tax_basis": "incl_tax"
+            }
+          ]
+        },
+        {
+          "name": "aged_as_of_date",
+          "value_type": "date",
+          "sources": [
+            {
+              "binding": "bc.aged_accounts_receivables",
+              "path": "agedAsOfDate",
+              "parser": "iso_date"
+            }
+          ]
+        },
+        {
+          "name": "period_length",
+          "value_type": "text",
+          "description": "periodLengthFilter, e.g. 30D.",
+          "sources": [
+            {
+              "binding": "bc.aged_accounts_receivables",
+              "path": "periodLengthFilter",
+              "parser": "trim"
+            }
+          ]
+        }
+      ],
+      "markings": [
+        "finance"
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "workbench.bc_finance_specs"
+        }
+      ]
+    },
+    {
+      "id": "AgedPayable",
+      "description": "BC agedAccountsPayables: one row per supplier with an open balance, aged into current and three overdue periods as of a date. A report BC recomputes on each read (the capture keeps each read's row as a version), keyed by the party.",
+      "availability": {
+        "state": "partial",
+        "reason": "agedAccountsPayables is a report page; a company that does not expose it fails the capture unit with reason not_exposed (a gap, never zero balances). UNVERIFIED live until verify/live-checks/bc.ledgers.json passes."
+      },
+      "bindings": [
+        {
+          "id": "bc.aged_accounts_payables",
+          "source": "bc",
+          "relation": "agedAccountsPayables",
+          "key": [
+            "vendorId"
+          ],
+          "lineage": {
+            "from_capture": "bc_company"
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench.bc_finance_specs"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.bcbookkey.e32697"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_same_company_scope"
+            }
+          ]
+        }
+      ],
+      "properties": [
+        {
+          "name": "party_number",
+          "value_type": "identifier",
+          "identifier_kind": "supplier_code",
+          "identifies": "reference",
+          "sources": [
+            {
+              "binding": "bc.aged_accounts_payables",
+              "path": "vendorNumber",
+              "parser": "identifier"
+            }
+          ]
+        },
+        {
+          "name": "currency",
+          "value_type": "text",
+          "description": "currencyCode as BC states it on the row.",
+          "sources": [
+            {
+              "binding": "bc.aged_accounts_payables",
+              "path": "currencyCode",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "balance_due",
+          "value_type": "money",
+          "description": "Open balance of the party as of aged_as_of_date.",
+          "currency_unknown": {
+            "reason": "BC API v2.0 states a currencyCode per aged row but not whether its amounts are in it or in the company's local currency; unverified live, so no currency is asserted and plx.aggregate never sums these.",
+            "evidence": [
+              {
+                "kind": "ref",
+                "id": "workbench.bc_finance_specs"
+              }
+            ]
+          },
+          "markings": [
+            "finance"
+          ],
+          "sources": [
+            {
+              "binding": "bc.aged_accounts_payables",
+              "path": "balanceDue",
+              "parser": "decimal_text",
+              "tax_basis": "incl_tax"
+            }
+          ]
+        },
+        {
+          "name": "current_amount",
+          "value_type": "money",
+          "description": "Not yet due.",
+          "currency_unknown": {
+            "reason": "BC API v2.0 states a currencyCode per aged row but not whether its amounts are in it or in the company's local currency; unverified live, so no currency is asserted and plx.aggregate never sums these.",
+            "evidence": [
+              {
+                "kind": "ref",
+                "id": "workbench.bc_finance_specs"
+              }
+            ]
+          },
+          "markings": [
+            "finance"
+          ],
+          "sources": [
+            {
+              "binding": "bc.aged_accounts_payables",
+              "path": "currentAmount",
+              "parser": "decimal_text",
+              "tax_basis": "incl_tax"
+            }
+          ]
+        },
+        {
+          "name": "period1_amount",
+          "value_type": "money",
+          "description": "Overdue, first period (periodLengthFilter).",
+          "currency_unknown": {
+            "reason": "BC API v2.0 states a currencyCode per aged row but not whether its amounts are in it or in the company's local currency; unverified live, so no currency is asserted and plx.aggregate never sums these.",
+            "evidence": [
+              {
+                "kind": "ref",
+                "id": "workbench.bc_finance_specs"
+              }
+            ]
+          },
+          "markings": [
+            "finance"
+          ],
+          "sources": [
+            {
+              "binding": "bc.aged_accounts_payables",
+              "path": "period1Amount",
+              "parser": "decimal_text",
+              "tax_basis": "incl_tax"
+            }
+          ]
+        },
+        {
+          "name": "period2_amount",
+          "value_type": "money",
+          "description": "Overdue, second period.",
+          "currency_unknown": {
+            "reason": "BC API v2.0 states a currencyCode per aged row but not whether its amounts are in it or in the company's local currency; unverified live, so no currency is asserted and plx.aggregate never sums these.",
+            "evidence": [
+              {
+                "kind": "ref",
+                "id": "workbench.bc_finance_specs"
+              }
+            ]
+          },
+          "markings": [
+            "finance"
+          ],
+          "sources": [
+            {
+              "binding": "bc.aged_accounts_payables",
+              "path": "period2Amount",
+              "parser": "decimal_text",
+              "tax_basis": "incl_tax"
+            }
+          ]
+        },
+        {
+          "name": "period3_amount",
+          "value_type": "money",
+          "description": "Overdue, third period and older.",
+          "currency_unknown": {
+            "reason": "BC API v2.0 states a currencyCode per aged row but not whether its amounts are in it or in the company's local currency; unverified live, so no currency is asserted and plx.aggregate never sums these.",
+            "evidence": [
+              {
+                "kind": "ref",
+                "id": "workbench.bc_finance_specs"
+              }
+            ]
+          },
+          "markings": [
+            "finance"
+          ],
+          "sources": [
+            {
+              "binding": "bc.aged_accounts_payables",
+              "path": "period3Amount",
+              "parser": "decimal_text",
+              "tax_basis": "incl_tax"
+            }
+          ]
+        },
+        {
+          "name": "aged_as_of_date",
+          "value_type": "date",
+          "sources": [
+            {
+              "binding": "bc.aged_accounts_payables",
+              "path": "agedAsOfDate",
+              "parser": "iso_date"
+            }
+          ]
+        },
+        {
+          "name": "period_length",
+          "value_type": "text",
+          "description": "periodLengthFilter, e.g. 30D.",
+          "sources": [
+            {
+              "binding": "bc.aged_accounts_payables",
+              "path": "periodLengthFilter",
+              "parser": "trim"
+            }
+          ]
+        }
+      ],
+      "markings": [
+        "finance"
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "workbench.bc_finance_specs"
+        }
+      ]
+    },
+    {
+      "id": "Payment",
+      "description": "A payment line in a BC customer or vendor payment journal (customerPayments / vendorPayments): a receipt from a customer or a payment to a vendor, optionally applied to one posted invoice. Journal lines are unposted: BC removes a line from the journal when it posts it, so a captured line later marked missing_from_source was posted or deleted, never proven paid. Paid state of an invoice comes from the invoice (status, remaining_amount).",
+      "anchor": true,
+      "availability": {
+        "state": "partial",
+        "reason": "Only unposted payment journal lines: BC API v2.0 serves no posted payment (customer/vendor ledger entries are not published for these companies, plx-customer-portal@790256c inbound.ts:248-268); Portal app_order_prepayment is outside the reporting API allowlist. UNVERIFIED live until verify/live-checks/bc.ledgers.json passes.",
+        "upstream_ask": "Q3"
+      },
+      "bindings": [
+        {
+          "id": "bc.customer_payments",
+          "source": "bc",
+          "relation": "customerPayments",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "from_capture": "bc_company"
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench.bc_finance_specs"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.bcbookkey.e32697"
+            }
+          ],
+          "note": "Read only by nested navigation from its customerPaymentJournals journal; journalId is the parent id."
+        },
+        {
+          "id": "bc.vendor_payments",
+          "source": "bc",
+          "relation": "vendorPayments",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "from_capture": "bc_company"
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench.bc_finance_specs"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.bcbookkey.e32697"
+            }
+          ],
+          "note": "Read only by nested navigation from its vendorPaymentJournals journal; journalId is the parent id."
+        }
+      ],
+      "properties": [
+        {
+          "name": "document_number",
+          "value_type": "identifier",
+          "identifier_kind": "bc_document_no",
+          "sources": [
+            {
+              "binding": "bc.customer_payments",
+              "path": "documentNumber",
+              "parser": "identifier"
+            },
+            {
+              "binding": "bc.vendor_payments",
+              "path": "documentNumber",
+              "parser": "identifier"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "workbench.bc_finance_specs"
+                  }
+                ]
+              }
+            ],
+            "note": "A payment line is read from one journal set only (customer or vendor), so its two sources never meet on one object."
+          }
+        },
+        {
+          "name": "external_document_number",
+          "value_type": "identifier",
+          "identifier_kind": "bc_external_document_no",
+          "identifies": "reference",
+          "sources": [
+            {
+              "binding": "bc.customer_payments",
+              "path": "externalDocumentNumber",
+              "parser": "identifier"
+            },
+            {
+              "binding": "bc.vendor_payments",
+              "path": "externalDocumentNumber",
+              "parser": "identifier"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "workbench.bc_finance_specs"
+                  }
+                ]
+              }
+            ],
+            "note": "A payment line is read from one journal set only (customer or vendor), so its two sources never meet on one object."
+          }
+        },
+        {
+          "name": "customer_number",
+          "value_type": "identifier",
+          "identifier_kind": "customer_erp_code",
+          "identifies": "reference",
+          "sources": [
+            {
+              "binding": "bc.customer_payments",
+              "path": "customerNumber",
+              "parser": "identifier"
+            }
+          ]
+        },
+        {
+          "name": "vendor_number",
+          "value_type": "identifier",
+          "identifier_kind": "supplier_code",
+          "identifies": "reference",
+          "sources": [
+            {
+              "binding": "bc.vendor_payments",
+              "path": "vendorNumber",
+              "parser": "identifier"
+            }
+          ]
+        },
+        {
+          "name": "posting_date",
+          "value_type": "date",
+          "description": "The journal line's posting date: when it will post, not a proven payment date.",
+          "sources": [
+            {
+              "binding": "bc.customer_payments",
+              "path": "postingDate",
+              "parser": "iso_date"
+            },
+            {
+              "binding": "bc.vendor_payments",
+              "path": "postingDate",
+              "parser": "iso_date"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "workbench.bc_finance_specs"
+                  }
+                ]
+              }
+            ],
+            "note": "A payment line is read from one journal set only (customer or vendor), so its two sources never meet on one object."
+          }
+        },
+        {
+          "name": "amount",
+          "value_type": "money",
+          "description": "amount as BC states it on the journal line: a customer receipt is negative (a credit), a vendor payment positive. Read by the document kind, never summed across the two.",
+          "currency_unknown": {
+            "reason": "BC API v2.0 customerPayment/vendorPayment carry no currency code; the applied invoice's currency is not proof of the line's.",
+            "evidence": [
+              {
+                "kind": "ref",
+                "id": "workbench.bc_finance_specs"
+              }
+            ]
+          },
+          "markings": [
+            "finance"
+          ],
+          "sources": [
+            {
+              "binding": "bc.customer_payments",
+              "path": "amount",
+              "parser": "decimal_text",
+              "tax_basis": "incl_tax"
+            },
+            {
+              "binding": "bc.vendor_payments",
+              "path": "amount",
+              "parser": "decimal_text",
+              "tax_basis": "incl_tax"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "workbench.bc_finance_specs"
+                  }
+                ]
+              }
+            ],
+            "note": "A payment line is read from one journal set only (customer or vendor), so its two sources never meet on one object."
+          }
+        },
+        {
+          "name": "applies_to_invoice_number",
+          "value_type": "identifier",
+          "identifier_kind": "bc_document_no",
+          "identifies": "reference",
+          "sources": [
+            {
+              "binding": "bc.customer_payments",
+              "path": "appliesToInvoiceNumber",
+              "parser": "identifier"
+            },
+            {
+              "binding": "bc.vendor_payments",
+              "path": "appliesToInvoiceNumber",
+              "parser": "identifier"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "workbench.bc_finance_specs"
+                  }
+                ]
+              }
+            ],
+            "note": "A payment line is read from one journal set only (customer or vendor), so its two sources never meet on one object."
+          }
+        },
+        {
+          "name": "applies_to_invoice_id",
+          "value_type": "text",
+          "description": "appliesToInvoiceId as BC states it (blank or the nil Guid: none).",
+          "sources": [
+            {
+              "binding": "bc.customer_payments",
+              "path": "appliesToInvoiceId",
+              "parser": "trim"
+            },
+            {
+              "binding": "bc.vendor_payments",
+              "path": "appliesToInvoiceId",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "workbench.bc_finance_specs"
+                  }
+                ]
+              }
+            ],
+            "note": "A payment line is read from one journal set only (customer or vendor), so its two sources never meet on one object."
+          }
+        },
+        {
+          "name": "journal",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "bc.customer_payments",
+              "path": "journalDisplayName",
+              "parser": "trim"
+            },
+            {
+              "binding": "bc.vendor_payments",
+              "path": "journalDisplayName",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "workbench.bc_finance_specs"
+                  }
+                ]
+              }
+            ],
+            "note": "A payment line is read from one journal set only (customer or vendor), so its two sources never meet on one object."
+          }
+        },
+        {
+          "name": "description",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "bc.customer_payments",
+              "path": "description",
+              "parser": "trim"
+            },
+            {
+              "binding": "bc.vendor_payments",
+              "path": "description",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "workbench.bc_finance_specs"
+                  }
+                ]
+              }
+            ],
+            "note": "A payment line is read from one journal set only (customer or vendor), so its two sources never meet on one object."
+          }
+        }
+      ],
+      "display": [
+        "document_number"
+      ],
+      "markings": [
+        "finance"
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "workbench.bc_finance_specs"
+        }
+      ]
+    },
+    {
+      "id": "BcEntityMapping",
+      "description": "Portal's identity bridge app_bc_entity_map: (entity_type, source_system portal|fm|sage, source_id) -> BC systemId + No. (+ echoed externalDocumentNumber), status LINKED|ARCHIVED|BLOCKED. It is the only verified Portal<->BC link for renumbered orders, POs and invoices; distribution clones encode the book in source_id ('{id}::distribution'). Until it is served, Portal<->BC links fall back to renumberedTo (verified) and number/externalDocumentNumber matches (leads). Its bindings and the entity-map joins (SalesOrder/PurchaseOrder/Product.bc_posted_as, SalesInvoice.posted_for_order) are declared and tested in ontology/schema/pending/bc_entity_map.json, which replaces this placeholder when loaded with include_pending.",
+      "availability": {
+        "state": "not_served",
+        "reason": "app_bc_entity_map and every bc_* snapshot table are outside the reporting API allowlist.",
+        "upstream_ask": "Q3"
+      },
+      "bindings": [],
+      "properties": [],
+      "evidence": [
+        {
+          "kind": "upstream_code",
+          "repo": "plx-customer-portal",
+          "path": "scripts/migrations/20260615_create_app_bc_integration.sql",
+          "commit": "b46934a",
+          "note": "app_bc_entity_map: unique (entity_type, source_system, source_id); source_system portal|fm|sage; bc_system_id, bc_number, bc_external_document_number; status LINKED|ARCHIVED|BLOCKED; no company column.",
+          "symbol": "app_bc_entity_map",
+          "lines": "67-91"
+        },
+        {
+          "kind": "upstream_code",
+          "repo": "plx-customer-portal",
+          "path": "portal/src/lib/business-central/book-routing.ts",
+          "commit": "b46934a",
+          "note": "masterBookSliceId / shipmentBookSliceId: distribution clones use source_id '{id}::distribution' (shipments '{id}::manufacturing|::distribution'); the book is encoded in source_id, not a column.",
+          "symbol": "masterBookSliceId",
+          "lines": "64-113"
+        },
+        {
+          "kind": "ref",
+          "id": "context-pack.03-portal-md-4-10.86537f"
+        },
+        {
+          "kind": "upstream_code",
+          "repo": "plx-customer-portal",
+          "path": "portal/src/lib/business-central/align-portal-so-number.ts",
+          "commit": "b46934a",
+          "note": "After drain the gold SO order_number is rewritten to the BC document No.; custom_fields.renumberedTo keeps the BC No., fmOeNumber the earlier number.",
+          "symbol": "alignPortalSoNumberToBc",
+          "lines": "21-67"
+        },
+        {
+          "kind": "upstream_code",
+          "repo": "plx-customer-portal",
+          "path": "portal/src/lib/business-central/align-portal-po-number.ts",
+          "commit": "b46934a",
+          "note": "Gold PO po_number is rewritten to the BC No.; custom_fields.renumberedTo / fmPoNumber keep both numbers.",
+          "symbol": "alignPortalPoNumberToBc",
+          "lines": "10-55"
+        }
+      ]
+    }
+  ],
+  "link_types": [
+    {
+      "id": "ItemLedgerEntry.for_item",
+      "from": "ItemLedgerEntry",
+      "to": "Product",
+      "name": "for_item",
+      "reverse_name": "ledger_entries",
+      "cardinality": "N:1",
+      "description": "Item of the ledger entry (Item No.).",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "bc.item_ledger_entries",
+          "to_binding": "bc.items",
+          "pairs": [
+            {
+              "from": "itemNumber",
+              "to": "number",
+              "compare": "identifier",
+              "identifier_kind": "item_code"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench-code.live-source-grammar-py.a7d28e"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_same_company_scope"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ItemLedgerEntry.posted_by_receipt",
+      "from": "ItemLedgerEntry",
+      "to": "Receipt",
+      "name": "posted_by_receipt",
+      "reverse_name": "item_ledger_entries",
+      "cardinality": "N:1",
+      "description": "Ledger entry whose document No. is a posted receipt No. (same company). Document numbers of different document types can collide, so this stays corroborated, never verified.",
+      "bindings": [
+        {
+          "kind": "same_record",
+          "tier_ceiling": "corroborated",
+          "from_binding": "bc.item_ledger_entries",
+          "to_binding": "bc.purchase_receipts",
+          "pairs": [
+            {
+              "from": "documentNumber",
+              "to": "number",
+              "compare": "identifier",
+              "identifier_kind": "bc_document_no"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench-code.live-source-grammar-py.a7d28e"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_same_company_scope"
+            }
+          ]
+        }
+      ],
+      "markings": [
+        "finance"
+      ]
+    },
+    {
+      "id": "ItemLedgerEntry.posted_by_shipment",
+      "from": "ItemLedgerEntry",
+      "to": "Shipment",
+      "name": "posted_by_shipment",
+      "reverse_name": "item_ledger_entries",
+      "cardinality": "N:1",
+      "description": "Ledger entry whose document No. is a posted sales shipment No. (same company): BC posts the item ledger entries (entry type Sale) of a sales order line on its posted shipment, and the cost of the invoiced quantity lands on that entry. Document numbers of different document types can collide, so this stays corroborated, never verified.",
+      "bindings": [
+        {
+          "kind": "same_record",
+          "tier_ceiling": "corroborated",
+          "from_binding": "bc.item_ledger_entries",
+          "to_binding": "bc.sales_shipments",
+          "pairs": [
+            {
+              "from": "documentNumber",
+              "to": "number",
+              "compare": "identifier",
+              "identifier_kind": "bc_document_no"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench-code.live-source-grammar-py.a7d28e"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_same_company_scope"
+            }
+          ]
+        }
+      ],
+      "markings": [
+        "finance"
+      ]
+    },
+    {
+      "id": "ItemLedgerEntry.posted_by_credit_memo",
+      "from": "ItemLedgerEntry",
+      "to": "SalesCreditMemo",
+      "name": "posted_by_credit_memo",
+      "reverse_name": "item_ledger_entries",
+      "cardinality": "N:1",
+      "description": "Ledger entry whose document No. is a posted sales credit memo No. (same company): posting a credit memo Item line without a return receipt puts the goods back into inventory on an entry of type Sale and document type Sales Credit Memo, whose Cost Amount (Actual) is the returned goods' cost. A return posted through a return receipt carries the receipt's No. instead and is not linked here. Document numbers of different document types can collide, so this stays corroborated, never verified, and consumers read document_type first.",
+      "bindings": [
+        {
+          "kind": "same_record",
+          "tier_ceiling": "corroborated",
+          "from_binding": "bc.item_ledger_entries",
+          "to_binding": "bc.sales_credit_memos",
+          "pairs": [
+            {
+              "from": "documentNumber",
+              "to": "number",
+              "compare": "identifier",
+              "identifier_kind": "bc_document_no"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench-code.live-source-grammar-py.a7d28e"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_same_company_scope"
+            }
+          ]
+        }
+      ],
+      "markings": [
+        "finance"
+      ]
+    },
+    {
+      "id": "GeneralLedgerEntry.on_account",
+      "from": "GeneralLedgerEntry",
+      "to": "GlAccount",
+      "name": "on_account",
+      "reverse_name": "entries",
+      "cardinality": "N:1",
+      "description": "Entry account by account No. (same company).",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "bc.general_ledger_entries",
+          "to_binding": "bc.accounts",
+          "pairs": [
+            {
+              "from": "accountNumber",
+              "to": "number",
+              "compare": "text_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench-code.live-source-grammar-py.a7d28e"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_same_company_scope"
+            }
+          ]
+        }
+      ],
+      "markings": [
+        "finance"
+      ]
+    },
+    {
+      "id": "GeneralLedgerEntry.for_purchase_invoice",
+      "from": "GeneralLedgerEntry",
+      "to": "PurchaseInvoice",
+      "name": "for_purchase_invoice",
+      "reverse_name": "gl_entries",
+      "cardinality": "N:1",
+      "description": "G/L entries carrying a posted purchase invoice No. as document No. (corroborated: numbers are not typed by document type in this binding).",
+      "bindings": [
+        {
+          "kind": "same_record",
+          "tier_ceiling": "corroborated",
+          "from_binding": "bc.general_ledger_entries",
+          "to_binding": "bc.purchase_invoices",
+          "pairs": [
+            {
+              "from": "documentNumber",
+              "to": "number",
+              "compare": "identifier",
+              "identifier_kind": "bc_document_no"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench-code.live-source-grammar-py.a7d28e"
+            },
+            {
+              "kind": "context_pack",
+              "ref": "docs/reference/cases-and-artifacts.md",
+              "note": "Procure-to-GL map: PO -> receipt -> vendor invoice -> G/L, with BC renumbering and externalDocumentNumber as the bridges."
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_same_company_scope"
+            }
+          ]
+        }
+      ],
+      "markings": [
+        "finance"
+      ]
+    },
+    {
+      "id": "GeneralLedgerEntry.for_sales_invoice",
+      "from": "GeneralLedgerEntry",
+      "to": "SalesInvoice",
+      "name": "for_sales_invoice",
+      "reverse_name": "gl_entries",
+      "cardinality": "N:1",
+      "description": "G/L entries carrying a posted sales invoice No. as document No. (corroborated).",
+      "bindings": [
+        {
+          "kind": "same_record",
+          "tier_ceiling": "corroborated",
+          "from_binding": "bc.general_ledger_entries",
+          "to_binding": "bc.sales_invoices",
+          "pairs": [
+            {
+              "from": "documentNumber",
+              "to": "number",
+              "compare": "identifier",
+              "identifier_kind": "bc_document_no"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench-code.live-source-grammar-py.a7d28e"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_same_company_scope"
+            }
+          ]
+        }
+      ],
+      "markings": [
+        "finance"
+      ]
+    },
+    {
+      "id": "Payment.applies_to_sales_invoice",
+      "from": "Payment",
+      "to": "SalesInvoice",
+      "name": "applies_to_sales_invoice",
+      "reverse_name": "payments",
+      "cardinality": "N:1",
+      "description": "The posted BC SalesInvoice the journal line applies to (same company): appliesToInvoiceId, else an appliesToInvoiceNumber naming exactly one invoice of the company. A journal line is not a posted payment.",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "bc.customer_payments",
+          "to_binding": "bc.sales_invoices",
+          "pairs": [
+            {
+              "from": "appliesToInvoiceId",
+              "to": "id",
+              "compare": "identifier",
+              "identifier_kind": "bc_system_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench.bc_finance_specs"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_same_company_scope"
+            }
+          ]
+        },
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "bc.customer_payments",
+          "to_binding": "bc.sales_invoices",
+          "where": [
+            {
+              "path": "appliesToInvoiceId",
+              "op": "in",
+              "value": [
+                "",
+                "00000000-0000-0000-0000-000000000000"
+              ]
+            }
+          ],
+          "unique_target": true,
+          "pairs": [
+            {
+              "from": "appliesToInvoiceNumber",
+              "to": "number",
+              "compare": "identifier",
+              "identifier_kind": "bc_document_no"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench.bc_finance_specs"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_same_company_scope"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "Payment.applies_to_purchase_invoice",
+      "from": "Payment",
+      "to": "PurchaseInvoice",
+      "name": "applies_to_purchase_invoice",
+      "reverse_name": "payments",
+      "cardinality": "N:1",
+      "description": "The posted BC PurchaseInvoice the journal line applies to (same company): appliesToInvoiceId, else an appliesToInvoiceNumber naming exactly one invoice of the company. A journal line is not a posted payment.",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "bc.vendor_payments",
+          "to_binding": "bc.purchase_invoices",
+          "pairs": [
+            {
+              "from": "appliesToInvoiceId",
+              "to": "id",
+              "compare": "identifier",
+              "identifier_kind": "bc_system_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench.bc_finance_specs"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_same_company_scope"
+            }
+          ]
+        },
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "bc.vendor_payments",
+          "to_binding": "bc.purchase_invoices",
+          "where": [
+            {
+              "path": "appliesToInvoiceId",
+              "op": "in",
+              "value": [
+                "",
+                "00000000-0000-0000-0000-000000000000"
+              ]
+            }
+          ],
+          "unique_target": true,
+          "pairs": [
+            {
+              "from": "appliesToInvoiceNumber",
+              "to": "number",
+              "compare": "identifier",
+              "identifier_kind": "bc_document_no"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench.bc_finance_specs"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_same_company_scope"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "Payment.received_from",
+      "from": "Payment",
+      "to": "Customer",
+      "name": "received_from",
+      "reverse_name": "payments",
+      "cardinality": "N:1",
+      "description": "The BC customer of the journal line (same company).",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "bc.customer_payments",
+          "to_binding": "bc.customers",
+          "pairs": [
+            {
+              "from": "customerId",
+              "to": "id",
+              "compare": "identifier",
+              "identifier_kind": "bc_system_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench.bc_finance_specs"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_same_company_scope"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "Payment.paid_to",
+      "from": "Payment",
+      "to": "Supplier",
+      "name": "paid_to",
+      "reverse_name": "payments",
+      "cardinality": "N:1",
+      "description": "The BC supplier of the journal line (same company).",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "bc.vendor_payments",
+          "to_binding": "bc.vendors",
+          "pairs": [
+            {
+              "from": "vendorId",
+              "to": "id",
+              "compare": "identifier",
+              "identifier_kind": "bc_system_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench.bc_finance_specs"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_same_company_scope"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "AgedReceivable.of_customer",
+      "from": "AgedReceivable",
+      "to": "Customer",
+      "name": "of_customer",
+      "reverse_name": "aged_balances",
+      "cardinality": "N:1",
+      "description": "The BC customer the aged row is for (same company).",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "bc.aged_accounts_receivables",
+          "to_binding": "bc.customers",
+          "pairs": [
+            {
+              "from": "customerId",
+              "to": "id",
+              "compare": "identifier",
+              "identifier_kind": "bc_system_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench.bc_finance_specs"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_same_company_scope"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "AgedPayable.of_supplier",
+      "from": "AgedPayable",
+      "to": "Supplier",
+      "name": "of_supplier",
+      "reverse_name": "aged_balances",
+      "cardinality": "N:1",
+      "description": "The BC supplier the aged row is for (same company).",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "bc.aged_accounts_payables",
+          "to_binding": "bc.vendors",
+          "pairs": [
+            {
+              "from": "vendorId",
+              "to": "id",
+              "compare": "identifier",
+              "identifier_kind": "bc_system_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench.bc_finance_specs"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_same_company_scope"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "event_types": [
+    {
+      "id": "ItemLedgerEntry.posted",
+      "object_type": "ItemLedgerEntry",
+      "description": "Ledger posting date.",
+      "time_basis": "source_business_date",
+      "time": {
+        "binding": "bc.item_ledger_entries",
+        "path": "postingDate",
+        "parser": "iso_date"
+      },
+      "qualifiers": [
+        {
+          "qualifier": "entry",
+          "object_type": "ItemLedgerEntry",
+          "via": "self"
+        },
+        {
+          "qualifier": "item",
+          "object_type": "Product",
+          "via": "ItemLedgerEntry.for_item"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "workbench-code.live-source-grammar-py.a7d28e"
+        }
+      ]
+    },
+    {
+      "id": "GeneralLedgerEntry.posted",
+      "object_type": "GeneralLedgerEntry",
+      "description": "G/L posting date.",
+      "time_basis": "source_business_date",
+      "time": {
+        "binding": "bc.general_ledger_entries",
+        "path": "postingDate",
+        "parser": "iso_date"
+      },
+      "qualifiers": [
+        {
+          "qualifier": "entry",
+          "object_type": "GeneralLedgerEntry",
+          "via": "self"
+        },
+        {
+          "qualifier": "account",
+          "object_type": "GlAccount",
+          "via": "GeneralLedgerEntry.on_account"
+        }
+      ],
+      "markings": [
+        "finance"
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "workbench-code.live-source-grammar-py.a7d28e"
+        }
+      ]
+    }
+  ],
+  "evidence_catalog": {
+    "context-pack.03-portal-md-4-10.86537f": {
+      "kind": "context_pack",
+      "ref": "docs/reference/portal-code-map.md#4.10",
+      "note": "app_bc_entity_map, outbox/inbox, ERP-D-012 two books, ERP-D-015 freight/duty expensed to G/L, ERP-D-009 go-forward receipts only."
+    },
+    "context-pack.06-live-sources-md.10666f": {
+      "kind": "context_pack",
+      "ref": "docs/reference/live-sources.md",
+      "note": "BC Production (3 companies) is readable GET-only through the one guarded client."
+    },
+    "upstream-code.bcbookkey.e32697": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/src/lib/business-central/company-pins.ts",
+      "commit": "b46934a",
+      "note": "Portal names the three Production companies by book: manufacturing (My Company / PLX Manufacturing), distribution (PLX Distribution / Petra Soap Distribution), consol (PLX Consol / Petra Hygienic Systems International Ltd). Lineage bc_<book> uses these keys.",
+      "symbol": "BcBookKey",
+      "lines": "14-28"
+    },
+    "upstream-code.bctransactioncurrency.67bd64": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/src/lib/business-central/serializers.ts",
+      "commit": "b46934a",
+      "note": "bcTransactionCurrency omits CAD so BC uses the company LCY: a blank currencyCode on a BC document of the manufacturing or distribution book means CAD.",
+      "symbol": "bcTransactionCurrency",
+      "lines": "428-434"
+    },
+    "workbench-code.live-source-grammar-py.4afed4": {
+      "kind": "workbench_code",
+      "path": "integrations/live_source_grammar.py",
+      "commit": "0615a02",
+      "note": "BC_ENTITY_SETS / BC_QUERY_SPECS: the GET-only BC entity sets and $select fields the Workbench may read; document lines always carry id and documentId."
+    },
+    "workbench-code.live-source-grammar-py.a7d28e": {
+      "kind": "workbench_code",
+      "path": "integrations/live_source_grammar.py",
+      "commit": "0615a02",
+      "note": "In BC_ENTITY_SETS (GET allowed) but without a BC_QUERY_SPECS entry: no $select allowlist and no live probe yet; field names follow BC API v2.0 and are unverified live."
+    },
+    "workbench.bc_same_company_scope": {
+      "kind": "workbench_code",
+      "path": "ontology/schema.py",
+      "note": "Both ends are BC captures: compare only within one BC company (bc_<book> equal on both ends). BC numbers are unique per company only; masters synced to several books and consolidation copies reuse them (SO vs DSO series: outbox-drain.ts:880-890 @b46934a). Machine-readable today as ontology.schema.link_company_scope / CompiledSchema.company_scope; a C0 field is asked in bc-link-company-scope."
+    },
+    "workbench.bc_finance_specs": {
+      "kind": "workbench_code",
+      "path": "integrations/live_source_grammar.py",
+      "note": "BC_QUERY_SPECS itemLedgerEntries, generalLedgerEntries, agedAccountsReceivables/-Payables (keyed by customerId/vendorId, BC_RECORD_KEY_FIELD), customer/vendorPaymentJournals and customer/vendorPayments (lines of their journal by journalId, BC_LINE_PARENT_FIELD): field names from the BC API v2.0 resource reference (MicrosoftDocs dynamics365smb-devitpro-pb api-reference/v2.0). Captured by integrations.bc_read.BcCapture; a 404 listing is reason not_exposed. Field names and $select acceptance are checked by verify/live-checks/bc.ledgers.json (probe --finance-entities); unverified live until it passes."
+    }
+  }
+}

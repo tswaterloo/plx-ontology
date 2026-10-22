@@ -1,0 +1,30 @@
+{
+  "schema": "plx-paper-leads/v1",
+  "note": "[PAPER] unverified leads, not authority and not case facts. An offline (macOS Vision) OCR reading of Ricardo's paper AO-26005B packet; when the case attaches the SharePoint original (operating.sharepoint_originals) it cites the page each lead names beside the FM rows. Labels and notes are written into the case as words (they must carry no digits: every number in a case statement must be in a cited row); paper values appear only in the investigation report's paper_leads.",
+  "case": "AO-26005B",
+  "provenance": "[PAPER] docs/reference/cases-and-artifacts.md sections 3.3 (p1 AO header, p3 shop floor, p4 bulk label, p11 FG release; each lead names its page) and 3.4 (FM vs paper); offline OCR of AO-26005B.pdf, sha256 bb40d85c7fdb2db6ad3763c9c3aa2eda70f49dfabe53c45258acb2024e72c259 (SharePoint QCQA AOs/2026 - AOs); read 2026-09-30",
+  "status": "unverified_lead",
+  "leads": [
+    {"id": "damage_box", "page": 3, "kind": "component_damage", "packaging_id": "1415", "code": "P-01274",
+     "label": "shipper box damage", "paper": "11"},
+    {"id": "damage_jug", "page": 3, "kind": "component_damage", "packaging_id": "162", "code": "P-0156",
+     "label": "gallon jug damage", "paper": "3"},
+    {"id": "damage_cap", "page": 3, "kind": "component_damage", "packaging_id": "122", "code": "P-0121",
+     "label": "cap damage", "paper": "7"},
+    {"id": "filled", "page": 3, "kind": "filled", "label": "filled count", "paper": "1502"},
+    {"id": "qc_retain", "page": 3, "kind": "produced_not_filled",
+     "label": "units produced but not filled (a QC retain sample at line clearance on paper)",
+     "paper": "1"},
+    {"id": "production_date", "page": 11, "kind": "date_manufactured",
+     "label": "production and QC release date versus FM's date manufactured", "paper": "2026-01-07"},
+    {"id": "plan_date", "page": 1, "kind": "date_manufactured",
+     "label": "printed plan date versus FM's date manufactured", "paper": "2026-01-05"}
+  ],
+  "note_pages": {"lateness": [1]},
+  "notes": {
+    "lateness": [
+      "the paper AO's own required-date and PO fields are blank",
+      "a sibling AO on the same sales order prints a later required date"
+    ]
+  }
+}

@@ -1,0 +1,130 @@
+{
+ "id": "capture.sharepoint_estate",
+ "description": "SharePoint estate capture (integrations/capture_sharepoint.py, scope integrations/sharepoint_estate_scope.json) through the GET-only Graph client: discovers every site the application may read (GET /sites/getAllSites, paged) and every document library of each site on the SHAREPOINT_SITE_ID host or on its tenant's OneDrive host <tenant>-my.sharepoint.com (personal sites, estate.sites_personal; their drives typed business (OneDrive for Business) or documentLibrary are planned, at least one: estate.libraries_personal_planned; the second host the read guard downloads from) (GET /sites/{id}/drives, paged), leaves out the data-driven exclusion list and sites on any other host (counted, estate.sites_other_host), and captures each library from its root with item permissions into the host's Workbench state directory for this check ($PLX_WORKBENCH_STATE_DIR/sharepoint-capture-check/live when that variable is set, an absolute path, else $XDG_STATE_HOME/plx-workbench/sharepoint-capture-check/live, else under $HOME/.local/state; storage.state_base names which base: workbench_state_dir, xdg_state_home or home; outside the git tree, kept across the check's daily runs, the graph.teams_capture and eval.heldout pattern), bounded by --budget-seconds. A daily run resumes every root from its stored walk position or change feed, and gives each root it walks a fair slice of the remaining budget (a first pass over every root spends at most capture_sharepoint.FIRST_WALK_PASS_SHARE of it with no least slice; a root its slice cut is resumed in the same run once the others had theirs, the fewest folders left first and at least capture_sharepoint.ROOT_SLICE_MIN_SECONDS each, its walks counted in walk_slices), so one large root never holds the roots after it unvisited and the estate progresses across runs: estate.progress.roots_complete_not_falling (the capture principal's complete roots, read before and after the run, never fewer) and estate.progress.roots_unvisited_falling (planned roots no walk has reached, fewer than before the run or none left) are asserted; a complete root whose due daily full walk (a refresh) the budget cut keeps its state and resumes next run (estate.roots_refresh_cut), ahead of the roots no walk has reached, so a permission revoked or a file deleted under it is applied when that refresh ends; every planned root is counted by the age of its last full walk that listed everything (estate.full_walk_age: fresh, due, stale, never; estate.full_walk_age_max_hours), so a complete root never reads as fresh. The store is bounded by default (capture_sharepoint.MAX_STORE_BYTES; a blob past it ends its root store_full, a gap that fails the check) and keeps only each root's last complete capture (older versions' bytes pruned, their metadata and permissions kept). Every personal-drive item is re-gated per reader on its item permissions. Discovery must be complete (no site or library listing failed or was cut), every planned library must be readable by the capture principal (a forbidden or failing library is a named gap that fails the check), a root the time budget cut is reported partial (estate.roots_budget_cut; each with its typed cause by root class in estate.roots_budget_cut_by: unreached, start_cut (walked, cut before it listed any folder, no position kept), walk_cut or finish_cut for personal, site or named roots), never as read, and so is a root walked to the end whose source did not serve some files' bytes (estate.roots_incomplete_source: an incomplete-source gap named by detail in estate.contents_unavailable; the files' metadata and permissions are captured and their bytes retried every run); every other root reason fails the check (estate.roots_other_gaps) and every reason is named with its root count (estate.root_gaps). Then the store is read back offline: every captured handle resolves, every captured content re-hashes, a withheld actor sees 0 of everything and a folder-only actor (item permissions required, no source identity) sees 0 rows. Counts, booleans and enums only; no library, path, id or content, and no site name except those ontology/source_registry.json already names: registry_sites names every one of the registry's sharepoint site entries by outcome (captured: every library of it the run planned walked to the end; partial: one walked, another cut by the time budget; unexercised: nothing walked; failed) with the typed reason of each one not captured (registry_sites.reasons: time_budget, no_library_planned, site_excluded, other_host, library_listing_failed, not_listed, discovery_incomplete, or the first walk gap), so scripts/source_registry.py reads each of them (registry_names: partial as unexercised), never as unnamed (no_live_check). registry_sites.readback gives, per registry site, counts and a reason code only (libraries, items_listed, items_read, withheld, reason: no_access, empty_site, not_in_scope, not_walked, source_error when nothing was read); a site walked whole that holds no file is unexercised (reason empty_site), never captured. Completeness is judged across the runs (estate.carried, capture_sharepoint.carried_estate): complete_when estate.carried.complete is true only when roots are planned and every planned root is complete (a full walk listed everything and every current file's bytes are captured) with its last full walk younger than capture_sharepoint.STALE_HOURS; one unvisited (roots_unvisited), incomplete (roots_incomplete) or stale (roots_stale) root keeps the check recorded incomplete, so it can pass once the tenant is covered and names the remaining roots by count while it is not.",
+ "source": "sharepoint",
+ "cadence": "daily",
+ "command": [
+  "python3",
+  "-m",
+  "integrations.graph_read",
+  "sharepoint-capture",
+  "--scope",
+  "integrations/sharepoint_estate_scope.json",
+  "--live-audience",
+  "examples/sharepoint_capture_audience.live-check.json",
+  "--runs",
+  "1",
+  "--budget-seconds",
+  "1500",
+  "--registry",
+  "ontology/source_registry.json"
+ ],
+ "timeout_seconds": 1800,
+ "requires_env": [
+  "MICROSOFT_GRAPH_TENANT_ID",
+  "MICROSOFT_GRAPH_CLIENT_ID",
+  "MICROSOFT_GRAPH_CLIENT_SECRET",
+  "SHAREPOINT_SITE_ID"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "estate.sites_seen",
+   "estate.libraries_planned",
+   "estate.roots_budget_cut",
+   "estate.roots_incomplete_source",
+   "summary.roots",
+   "summary.files_current",
+   "resolve_check.resolved_offline",
+   "runs[*].targets[*].roots[*].counts.folders_listed",
+   "estate.sites_personal",
+   "estate.libraries_personal_planned",
+   "estate.sites_other_host",
+   "estate.sites_locked",
+   "estate.roots_refresh_cut",
+   "estate.full_walk_age",
+   "estate.progress.roots_complete",
+   "estate.progress.roots_unvisited",
+   "estate.carried.roots_planned",
+   "estate.carried.roots_complete"
+  ],
+  "json_equals": {
+   "ok": true,
+   "storage.outside_git_tree": true,
+   "storage.under_state_dir": true,
+   "storage.host_state": true,
+   "estate.discovery_complete": true,
+   "estate.roots_other_gaps": 0,
+   "estate.progress.roots_complete_not_falling": true,
+   "estate.progress.roots_unvisited_falling": true,
+   "leak_check.withheld_actor_roots": 0,
+   "leak_check.withheld_actor_rows": 0,
+   "leak_check.withheld_actor_counts": 0,
+   "leak_check.withheld_actor_resolved": 0,
+   "leak_check.folder_only_actor_rows": 0,
+   "leak_check.folder_only_actor_counts": 0,
+   "leak_check.folder_only_actor_resolved": 0
+  },
+  "json_min": {
+   "estate.sites_listed": 3,
+   "estate.libraries_planned": 3,
+   "summary.roots": 3,
+   "summary.roots_complete": 1,
+   "summary.files_current": 1,
+   "estate.libraries_personal_planned": 1
+  },
+  "json_empty": [
+   "runs[*].discovery.gaps"
+  ]
+ },
+ "complete_when": {
+  "estate.carried.complete": true
+ },
+ "record": [
+  "ok",
+  "storage",
+  "estate",
+  "summary",
+  "resolve_check",
+  "leak_check",
+  "runs[*].complete",
+  "runs[*].discovery.gaps",
+  "runs[*].targets[*].status",
+  "runs[*].targets[*].roots[*].reason",
+  "registry_sites.failed",
+  "registry_sites.unexercised",
+  "registry_sites.captured",
+  "registry_sites.partial",
+  "registry_sites.reasons",
+  "registry_sites.readback",
+  "relations",
+  "requests_sent"
+ ],
+ "record_keys": [
+  "storage",
+  "estate",
+  "summary",
+  "resolve_check",
+  "leak_check",
+  "relations"
+ ],
+ "record_enums": [
+  "runs[*].discovery.gaps",
+  "runs[*].targets[*].status",
+  "runs[*].targets[*].roots[*].reason",
+  "registry_sites"
+ ],
+ "registry_names": {
+  "pass": [
+   "registry_sites.captured"
+  ],
+  "fail": [
+   "registry_sites.failed"
+  ],
+  "unexercised": [
+   "registry_sites.unexercised",
+   "registry_sites.partial"
+  ]
+ },
+ "notes": "Live-unverified until the live check runs it (evidence label of its tests: injected-transport, integrations/tests/test_capture_sharepoint_estate.py). The minimums are the three sites the live access audit already read on this host (QA/QC Department, PLXCUSTOMERS, AGENTS), each with at least one document library. complete_when marks a run partial while any root is budget-cut; the estate completes across persistent host cycles (operating/host.py with this scope: every root resumes, unchanged versions are not re-read, complete roots follow their drive's change feed), not within one check. Each listing's item permissions are read for every listed item (capture_sharepoint.MAX_ACL_READS = LIST_MAX_ITEMS): the daily runs 2026-10-06/07 failed with roots_other_gaps 1 on the root the time budget cut, whose comma-joined reason the runner masked as a 26-character string; acl_read_bound,time_budget is the only reason set of that length holding time_budget (inferred: the old 500-read bound hit in a large folder). Reasons are now also recorded by name (estate.root_gaps). Unverified live assumptions: the shared app holds Sites.Read.All so /sites/getAllSites answers app-only; the drives listing names document libraries with driveType documentLibrary; subsites are not enumerated (getAllSites lists site collections), so a library of a subsite is not discovered (estate.sites_seen says how many sites were); the app may read item permissions in every library. Captured files live only in the host state directory (0700, outside every git tree; an injected transport uses its own injected-transport subdirectory, never the live store); nothing captured is printed. Live acceptance of the cross-run fields (ING-16): this check passes, or summary.roots_complete rises between two daily runs (storage.carried true on the second). Unverified live assumptions of the OneDrive host: getAllSites lists personal sites on <tenant>-my.sharepoint.com, each user's OneDrive lists as driveType business (planned on that host only; json_min estate.libraries_personal_planned 1 fails the check when none is planned), and their download URLs are on that host; a personal library the app may not list is a named gap (library_listing), never dropped. A single root larger than one day's budget no longer holds roots_unvisited flat: each walked root gets a fair slice of the remaining budget (refreshes, decision 28e628682928, are never sliced), and a root cut by its slice resumes from its walk position the same run or the next. A personal OneDrive whose library listing answers 423 (locked; live 2026-10-16: the one discovery gap library_listing:http_423) is counted estate.sites_locked and its registry site, if any, reported failed site_locked, never a discovery gap; a 423 on the site host stays a library_listing gap (docs/decisions/2026-10-17-capture-persistence-site-locked.md). Convergence across dailies needs a store kept between them: on the credentialed host set PLX_WORKBENCH_STATE_DIR to an absolute persistent directory outside every git tree (storage.state_base workbench_state_dir, storage.carried true on the second run). A site is credited captured only when every library of it the run planned was walked to the end: a site with one library cut by the time budget is partial, never captured. The time budget is asked before every item permission read inside a listing too (a listing holds up to 5000 items, each with its permission read), so one large folder ends its root time_budget instead of overrunning the timeout. Decision 28e628682928: a budget-cut refresh resumes before roots no walk has reached (capture_mail.schedule_units FRONTIER), so on a growing estate new roots wait behind refreshes; estate.progress.roots_unvisited_falling still fails a day that reached no new root. Unverified live assumption of the default store bound: the estate's last complete capture fits under MAX_STORE_BYTES (50 GB); a store_full root says it does not. Live measurements (read-only, Graph GET only, --runs 1 --budget-seconds 1500, fresh PLX_WORKBENCH_STATE_DIR, storage.carried false; counts only): base dabe69ce3 (2026-10-18T09:46:56Z to 10:13:07Z, the 20 s per-root floor): estate.roots_budget_cut 130 (78 unreached), progress.roots_complete 94, libraries_planned 224, sites_locked 57. 3fa4011f9 (2026-10-18T11:21:24Z to 11:47:16Z): roots_budget_cut 86, roots_budget_cut_by personal {unreached 0, walk_cut 49, finish_cut 0}, site {unreached 0, walk_cut 37, finish_cut 0}; roots_complete 137, roots_unvisited 0; check_expectations []. Repaired candidate 5ca05a4b1c7a46c9d373d2ff4e53426ec40e15e9 (2026-10-18T13:38:56Z to 14:04:46Z, exit 0, ok true): roots_budget_cut 85, roots_budget_cut_by personal {unreached 0, start_cut 0, walk_cut 48, finish_cut 0}, site {unreached 0, start_cut 0, walk_cut 37, finish_cut 0}; progress.roots_complete 138 of libraries_planned 224 (personal 122), roots_unvisited 0, sites_locked 57, root_gaps {content_incomplete: 1} (contents_unavailable {content_mismatch: 1}), roots_other_gaps 0, retry_after_waits 0; check_expectations []. The resume-with-floor path (the oldest walk a run cut resumes with at least capture_sharepoint.ROOT_SLICE_MIN_SECONDS) cannot be checked live until later_ask live-host-persistent-state-dir lands, since each live run here starts from fresh state; only unit tests cover it. Decision 2026-10-21-sharepoint-census-across-runs: the daily run is no longer judged by its own runs[*].complete (86 roots time-budget cut each run kept it failing although progress was carried and rising); estate.carried.complete is the carried estate's verdict. Evidence label: injected-transport (integrations/tests/test_capture_sharepoint_estate.py)."
+}

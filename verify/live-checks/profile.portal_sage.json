@@ -1,0 +1,64 @@
+{
+ "id": "profile.portal_sage",
+ "description": "Data-shape profile of the Sage relations (sage.*) through the Workbench reporting API: bounded sample reads, shapes and cardinalities only.",
+ "source": "portal-workbench-api",
+ "requires": [
+  "portal.health_catalog"
+ ],
+ "profile": true,
+ "command": [
+  "python3",
+  "-m",
+  "verify.data_profile",
+  "portal",
+  "--relations",
+  "sage.*",
+  "--page-size",
+  "1000",
+  "--max-pages",
+  "3"
+ ],
+ "timeout_seconds": 1200,
+ "requires_env": [
+  "PLX_WORKBENCH_API_URL",
+  "PLX_WORKBENCH_API_KEY"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "targets",
+   "target_count",
+   "errors_count"
+  ],
+  "json_equals": {
+   "schema": "plx-data-profile/v1",
+   "valid": true,
+   "errors_count": 0,
+   "evidence_label": "live-read"
+  },
+  "json_min": {
+   "target_count": 1
+  }
+ },
+ "record": [
+  "source_kind",
+  "evidence_label",
+  "target_count",
+  "errors_count",
+  "requests_sent",
+  "companies_count",
+  "targets_truncated",
+  "sanitizer_dropped",
+  "errors[*].name",
+  "errors[*].error",
+  "skipped[*].reason"
+ ],
+ "record_enums": [
+  "source_kind",
+  "evidence_label",
+  "errors[*].name",
+  "errors[*].error",
+  "skipped[*].reason"
+ ],
+ "notes": "Live-unverified until the live check runs it. Publishes the profile inline, or as results/profiles/<id>.json (one file per spec, overwritten each run; the check carries profile_file and counts) when run with --output results/... or --profiles-dir (plx-data-profile/v1, rebuilt by verify.data_profile.sanitize_profile): names, counts, null/absence rates, type and string-class counts, distinct-count and length buckets, AAA-9999 shape masks of single-token code values (a digit, no whitespace, no @) shared by >= 5 rows, nested JSON key names only when reviewed (verify/profile-nested-keys.json) or source-declared (other keys as counted shape masks), declared column names only (other row keys counted), declared key uniqueness and join resolution rates. Never values, names, emails, amounts, subjects, file names or ids. A non-zero errors_count fails the check but the partial profile is still published."
+}

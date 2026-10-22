@@ -1,0 +1,44 @@
+{
+ "schema": "plx-source-mirror-audience/v1",
+ "note": "EXAMPLE ONLY, not a PLX-confirmed grant: the purchase-order Portal relations the case.packaging_landed_cost host cycle mirrors (examples/packaging_landed_cost_host.live-check.json). svc:workbench-host fills the mirror; staff:operations reads it. Default deny.",
+ "tenant": "plx",
+ "default_classification": "internal",
+ "audiences": {
+  "public.app_purchase_order": [
+   "staff:operations",
+   "svc:workbench-host"
+  ],
+  "public.app_purchase_order_line": [
+   "staff:operations",
+   "svc:workbench-host"
+  ],
+  "public.app_supplier": [
+   "staff:operations",
+   "svc:workbench-host"
+  ],
+  "public.app_product": [
+   "staff:operations",
+   "svc:workbench-host"
+  ],
+  "public.app_receipt": [
+   "staff:operations",
+   "svc:workbench-host"
+  ],
+  "public.app_receipt_line": [
+   "staff:operations",
+   "svc:workbench-host"
+  ],
+  "public.generated_purchase_order": [
+   "staff:operations",
+   "svc:workbench-host"
+  ],
+  "public.generated_purchase_order_item": [
+   "staff:operations",
+   "svc:workbench-host"
+  ],
+  "public.receipt_packaging": [
+   "staff:operations",
+   "svc:workbench-host"
+  ]
+ }
+}

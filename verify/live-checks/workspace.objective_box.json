@@ -1,0 +1,69 @@
+{
+ "id": "workspace.objective_box",
+ "description": "Home's objective box (operator_ui.objective_box.answer, the path POST /api/objective serves) as one named reader: three generic free-form objectives (no object id, no case id; two investigate, one scenario) on the object workspace the console builds for the reader of the persistent host's own session start-up (scripts.eval_real_agent.ask_workspace), operating.agent_loop.run unchanged with a headless Claude Code planner. The box finds the roots itself (the reader's plx.find on the identifiers the objective names, else the agent's own plx.find), shows only claims citing records the reader may open, and returns gaps and follow-ups it only proposes. Each objective must end in a cited answer (at least one shown claim, every citation openable) or honest gaps (no claim, gaps stated); none unanswered. Counts and enums only.",
+ "source": "claude-code",
+ "tier": "employee_usable",
+ "cadence": "daily",
+ "command": [
+  "python3",
+  "-m",
+  "scripts.eval_objective_box",
+  "--planner-timeout",
+  "120",
+  "--max-steps",
+  "8"
+ ],
+ "timeout_seconds": 3600,
+ "requires_env_any": [
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "PLX_CLAUDE_CODE_OAUTH_TOKEN"
+ ],
+ "optional_env": [
+  "PLX_EVAL_READER",
+  "PLX_WORKBENCH_SESSION_SECRET",
+  "PLX_WORKBENCH_STATE_DIR",
+  "PLX_WORKBENCH_HOST_CONFIG",
+  "MICROSOFT_GRAPH_TENANT_ID",
+  "MICROSOFT_GRAPH_CLIENT_ID",
+  "MICROSOFT_GRAPH_CLIENT_SECRET"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "objective_box.ran",
+   "objective_box.cited",
+   "objective_box.honest_gaps",
+   "objective_box.items"
+  ],
+  "json_equals": {
+   "adapter_status": "live-unverified",
+   "values_published": false,
+   "blocked": null,
+   "objective_box.ran": 3,
+   "objective_box.unanswered": 0
+  },
+  "json_min": {
+   "objective_box.cited": 1
+  },
+  "json_empty": [
+   "objective_box.fail_reasons"
+  ]
+ },
+ "blocked_when": "blocked",
+ "blocked_cause": "host_misconfiguration",
+ "blocked_causes": {
+  "no_employee_identity": "later_ask"
+ },
+ "record": [
+  "blocked",
+  "objective_box"
+ ],
+ "record_enums": [
+  "blocked",
+  "objective_box"
+ ],
+ "record_keys": [
+  "objective_box"
+ ],
+ "notes": "live-unverified until a passing live-check result; nothing a model answered through the objective box is recorded until this check runs. Keyless tests (operator_ui/tests/test_objective_box.py) drive scripts.eval_objective_box.main on the fixture world with a scripted planner (injected transport, never live) and hold check_expectations to this spec on its real output, and its blocked output without a reader. Preflight before any read: the claude binary (binary_not_found), the reader in PLX_EVAL_READER (no_employee_identity: later_ask, a person names a reader; reader_identity_invalid), the session secret, host state and config, the host's acceptance of the reader and its projection store; each refusal blocks with its code, never a pass. A run where no objective reached the planner is blocked every_objective_failed. Pass: all three objectives ran, none unanswered, at least one cited answer. Budget: three objectives, each at most 8 planner turns of at most 120 s (2880 s), inside the 3600 s timeout. Daily at most: it spends the operator's Claude Code plan."
+}

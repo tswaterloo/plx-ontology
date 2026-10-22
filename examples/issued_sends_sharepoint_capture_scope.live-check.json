@@ -1,0 +1,17 @@
+{
+ "schema": "plx-sharepoint-capture-scope/v1",
+ "note": "Live-check scope for operating.issued_sends: the folder where the Portal files issued and sent purchase-order PDFs by its code defaults (Suppliers/_Procurement/<phase>/<PO> on the default drive, SHAREPOINT_DRIVE_ID = the PLXCUSTOMERS site's library; plx-customer-portal portal/src/lib/storage/folder-taxonomy.ts ROOT_PREFIX P and issued-record-categories.ts ISSUED_RECORD_LOCATIONS). Admin app_storage_location rows the reporting API does not serve may route them elsewhere, and the Supply Chain library of the PLX site design is not live: a missing folder is recorded incomplete, never as absence. Configuration, never a grant. Read-only. The Portal-taxonomy columns are read per version (list_item_columns 'portal_taxonomy' = operating/doc_metadata_taxonomy.py COLUMNS); its DocumentCategory: ISSUED_PO/ISSUED_CUSTOMS = the PDF route or a legacy send, SIGNED_PO/CUSTOMS = the hub or an upload.",
+ "max_content_bytes": 20000000,
+ "list_item_columns": "portal_taxonomy",
+ "targets": [
+  {
+   "id": "plxcustomers.procurement",
+   "site": "PLXCUSTOMERS",
+   "folders": [
+    "/Suppliers/_Procurement"
+   ],
+   "max_depth": 4,
+   "max_folders": 2000
+  }
+ ]
+}

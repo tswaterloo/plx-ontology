@@ -1,0 +1,421 @@
+{
+  "schema": "plx-case-playbook/v1",
+  "id": "ao_quantity_reconciliation",
+  "version": 2,
+  "question_pattern": "Was assembly order <AO number> produced as ordered for sales order <order number>: planned vs produced vs filled finished goods (derived from the AO's components per Portal/FM semantics), damage per component, and on time? Paper/FM disagreements are recorded as evidence conflicts, not facts.",
+  "allowed_tools": [
+    "plx.case_open",
+    "plx.source_resolve",
+    "plx.source_rows",
+    "plx.source_citation",
+    "plx.case_add_finding",
+    "plx.case_compute",
+    "plx.case_record_gap",
+    "plx.case_attach_original",
+    "plx.case_get"
+  ],
+  "writes_case_state": [
+    "plx.case_open",
+    "plx.case_add_finding",
+    "plx.case_compute",
+    "plx.case_record_gap",
+    "plx.case_attach_original"
+  ],
+  "required_evidence": [
+    {
+      "role": "ao",
+      "relation": "public.assembly_order",
+      "key_hint": "resolved from the AO literal (e.g. AO-26005B); id is the hop key",
+      "identity": {
+        "kind": "case_root",
+        "fields": [
+          "nameamo_c"
+        ]
+      }
+    },
+    {
+      "role": "order",
+      "relation": "public.order_entry",
+      "key_hint": "resolved from the order literal (e.g. OR1000151885)",
+      "identity": {
+        "kind": "case_root",
+        "fields": [
+          "erpcode"
+        ]
+      }
+    },
+    {
+      "role": "link",
+      "relation": "public.order_entry_item_assembly",
+      "key_hint": "idassembly equals the AO id and idoeitem names a line of the case's order; qtymfg_c is an FM link-table calculation the Portal does not read (compared, never used as the produced figure); links of other AOs on the same line are reported as related, not cited",
+      "identity": {
+        "kind": "join",
+        "to_role": "ao",
+        "field": "idassembly",
+        "to_field": "id"
+      }
+    },
+    {
+      "role": "line",
+      "relation": "public.order_entry_item",
+      "key_hint": "id equals the link idoeitem; idoe must equal the order id",
+      "identity": {
+        "kind": "join",
+        "to_role": "link",
+        "field": "id",
+        "to_field": "idoeitem"
+      }
+    },
+    {
+      "role": "item",
+      "relation": "silver.assembly_order_items",
+      "key_hint": "assembly_order_id equals the AO id and qty_per_batch is 1 (numerically): the one packaging component consumed one per finished unit, whose quantity / qty_per_batch and actual_amount / qty_per_batch are the planned and produced finished goods; every such source row must agree (check fg_basis)",
+      "identity": {
+        "kind": "join",
+        "to_role": "ao",
+        "field": "assembly_order_id",
+        "to_field": "id",
+        "fixed": {
+          "qty_per_batch": "1"
+        }
+      }
+    },
+    {
+      "role": "component",
+      "relation": "silver.assembly_order_items",
+      "required": false,
+      "key_hint": "assembly_order_id equals the AO id: the AO's other component rows (boxes, labels, bulk), cited only when they imply another produced figure (evidence conflict)",
+      "identity": {
+        "kind": "join",
+        "to_role": "ao",
+        "field": "assembly_order_id",
+        "to_field": "id"
+      }
+    },
+    {
+      "role": "filling",
+      "relation": "silver.production_tasks",
+      "key_hint": "mo_id equals the AO id and task_type is Filling",
+      "identity": {
+        "kind": "join",
+        "to_role": "ao",
+        "field": "mo_id",
+        "to_field": "id",
+        "fixed": {
+          "task_type": "Filling"
+        }
+      }
+    },
+    {
+      "role": "clearance",
+      "relation": "silver.production_tasks",
+      "required": false,
+      "key_hint": "mo_id equals the AO id and task_type is Line clearance: units taken at line clearance (the FM side of a QC retain sample)",
+      "identity": {
+        "kind": "join",
+        "to_role": "ao",
+        "field": "mo_id",
+        "to_field": "id",
+        "fixed": {
+          "task_type": "Line clearance"
+        }
+      }
+    },
+    {
+      "role": "damage",
+      "relation": "silver.assembly_order_damage",
+      "key_hint": "assembly_order_id equals the AO id; one or more rows, each component-level damage in that component's own unit; rows of different components are never summed",
+      "identity": {
+        "kind": "join",
+        "to_role": "ao",
+        "field": "assembly_order_id",
+        "to_field": "id"
+      }
+    },
+    {
+      "role": "mo",
+      "relation": "public.app_manufacturing_order",
+      "required": false,
+      "key_hint": "mo_code equals the AO code: the Portal manufacturing order (= the AO) with qty_sample, finished-good qty_damaged and size_pieces",
+      "identity": {
+        "kind": "case_root",
+        "fields": [
+          "mo_code"
+        ]
+      }
+    }
+  ],
+  "required_computations": [
+    {
+      "name": "planned_minus_produced",
+      "unit": "EA",
+      "expression": "planned / per_unit - produced / per_unit",
+      "inputs": {
+        "planned": {
+          "role": "item",
+          "field": "row.quantity",
+          "unit": "pc"
+        },
+        "produced": {
+          "role": "item",
+          "field": "row.actual_amount",
+          "unit": "pc"
+        },
+        "per_unit": {
+          "role": "item",
+          "field": "row.qty_per_batch",
+          "unit": "pc/EA"
+        }
+      }
+    },
+    {
+      "name": "produced_minus_filled",
+      "unit": "EA",
+      "expression": "produced / per_unit - filled",
+      "inputs": {
+        "produced": {
+          "role": "item",
+          "field": "row.actual_amount",
+          "unit": "pc"
+        },
+        "per_unit": {
+          "role": "item",
+          "field": "row.qty_per_batch",
+          "unit": "pc/EA"
+        },
+        "filled": {
+          "role": "filling",
+          "field": "row.qty",
+          "unit": "EA"
+        }
+      }
+    },
+    {
+      "name": "ordered_minus_produced",
+      "unit": "EA",
+      "expression": "ordered - produced / per_unit",
+      "inputs": {
+        "ordered": {
+          "role": "line",
+          "field": "row.qty",
+          "unit": "EA"
+        },
+        "produced": {
+          "role": "item",
+          "field": "row.actual_amount",
+          "unit": "pc"
+        },
+        "per_unit": {
+          "role": "item",
+          "field": "row.qty_per_batch",
+          "unit": "pc/EA"
+        }
+      }
+    }
+  ],
+  "expected_gaps": [
+    {
+      "id": "chain_unproven",
+      "kind": "unknown",
+      "about": "Which sales order the AO was produced for, when the cited AO, link, line, item and order rows do not form one id chain",
+      "when": "chain_inconsistent",
+      "match": {
+        "terms": [
+          "which sales order"
+        ],
+        "cites": [
+          "ao",
+          "link"
+        ]
+      }
+    },
+    {
+      "id": "dates_unreadable",
+      "kind": "unknown",
+      "about": "Whether the AO was produced by the required date, when a required, manufactured or filling date is empty or not an ISO date",
+      "when": "dates_unreadable",
+      "match": {
+        "terms": [
+          "by the required date"
+        ],
+        "cites": [
+          "order",
+          "filling"
+        ]
+      }
+    },
+    {
+      "id": "lateness_conflict",
+      "kind": "unknown",
+      "about": "Whether the AO was late against the governing required date, when FM dates say it was: the FM AO date may be the printed plan date and the paper AO's required-date and PO fields are blank, so the lateness is an evidence conflict, never a fact",
+      "when": "after_required_date",
+      "match": {
+        "terms": [
+          "governing required date",
+          "evidence conflict"
+        ],
+        "cites": [
+          "ao",
+          "filling",
+          "order"
+        ]
+      }
+    },
+    {
+      "id": "header_quantities_empty",
+      "kind": "absent_in_source",
+      "about": "AO header quantities qtytotal and finalqty; planned and produced finished goods are then derived from a component row (quantity or actual_amount divided by qty_per_batch)",
+      "when": "field_empty:ao:qtytotal,finalqty",
+      "match": {
+        "terms": [
+          "qtytotal",
+          "finalqty"
+        ],
+        "cites": [
+          "ao"
+        ]
+      }
+    },
+    {
+      "id": "original_scan_not_ingested",
+      "kind": "not_ingested",
+      "about": "The signed paper AO packet, which no source the Workbench reads holds; until an operator attaches it with plx.case_attach_original its figures are unverified leads and its conflicts with FM (component damage, QC retain, production date) are named in words",
+      "when": "always",
+      "match": {
+        "terms": [
+          "paper",
+          "original",
+          "not attached"
+        ],
+        "cites": [
+          "ao",
+          "damage"
+        ]
+      }
+    }
+  ],
+  "authority": {
+    "business_writes": 0,
+    "approvals": "portal"
+  },
+  "success_checks": [
+    {
+      "id": "facts_cite",
+      "type": "every_fact_cites"
+    },
+    {
+      "id": "no_uncited_numbers",
+      "type": "no_uncited_number_in_statements"
+    },
+    {
+      "id": "ao_cited",
+      "type": "evidence_cited",
+      "params": {
+        "role": "ao"
+      }
+    },
+    {
+      "id": "order_cited",
+      "type": "evidence_cited",
+      "params": {
+        "role": "order"
+      }
+    },
+    {
+      "id": "link_cited",
+      "type": "evidence_cited",
+      "params": {
+        "role": "link"
+      }
+    },
+    {
+      "id": "line_cited",
+      "type": "evidence_cited",
+      "params": {
+        "role": "line"
+      }
+    },
+    {
+      "id": "item_cited",
+      "type": "evidence_cited",
+      "params": {
+        "role": "item"
+      }
+    },
+    {
+      "id": "filling_cited",
+      "type": "evidence_cited",
+      "params": {
+        "role": "filling"
+      }
+    },
+    {
+      "id": "damage_cited",
+      "type": "evidence_cited",
+      "params": {
+        "role": "damage"
+      }
+    },
+    {
+      "id": "fg_basis",
+      "type": "basis_row_agrees",
+      "params": {
+        "role": "item",
+        "field": "row.qty_per_batch",
+        "equals": "1",
+        "agree": "row.quantity,row.actual_amount"
+      }
+    },
+    {
+      "id": "planned_arith",
+      "type": "calculation_equals_cited_arithmetic",
+      "params": {
+        "calculation": "planned_minus_produced"
+      }
+    },
+    {
+      "id": "filled_arith",
+      "type": "calculation_equals_cited_arithmetic",
+      "params": {
+        "calculation": "produced_minus_filled"
+      }
+    },
+    {
+      "id": "ordered_arith",
+      "type": "calculation_equals_cited_arithmetic",
+      "params": {
+        "calculation": "ordered_minus_produced"
+      }
+    },
+    {
+      "id": "damage_per_component",
+      "type": "component_sums",
+      "params": {
+        "role": "damage",
+        "field": "row.qty_damaged",
+        "group": "row.assembly_item_id"
+      }
+    },
+    {
+      "id": "scan_gap",
+      "type": "gap_recorded",
+      "params": {
+        "gap": "original_scan_not_ingested"
+      }
+    },
+    {
+      "id": "header_gap",
+      "type": "gap_recorded",
+      "params": {
+        "gap": "header_quantities_empty"
+      }
+    },
+    {
+      "id": "lateness_gap",
+      "type": "gap_recorded",
+      "params": {
+        "gap": "lateness_conflict"
+      }
+    }
+  ]
+}

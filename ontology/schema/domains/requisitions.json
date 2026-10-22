@@ -1,0 +1,621 @@
+{
+ "$schema": "../_format.schema.json",
+ "format": "plx-ontology-domain/v1",
+ "domain": "requisitions",
+ "origin": "curated",
+ "description": "Portal purchase requisitions and their lines. Portal-native rows (gold_native_staging). The line estimated cost has two contradicting writers, so it is a finance-marked decimal, not money. No PR-to-PO link: conversion stores no reference.",
+ "upstream_pins": {
+  "plx-customer-portal": "790256ca43"
+ },
+ "object_types": [
+  {
+   "id": "PurchaseRequisition",
+   "description": "A Portal purchase requisition (PR-YYYYMMDD-NNNN, UAT- prefixed on UAT): requested materials, optionally for one supplier, approved and then converted to a PO or DPO. The converted PO stores no requisition reference, so no PR-to-PO link is declared.",
+   "interfaces": [
+    "Document"
+   ],
+   "anchor": true,
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "portal.app_purchase_requisition",
+     "source": "portal_api",
+     "relation": "public.app_purchase_requisition",
+     "key": [
+      "id"
+     ],
+     "lineage": {
+      "default": "gold_native_staging"
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "allowlist.public.app_purchase_requisition"
+      },
+      {
+       "kind": "ref",
+       "id": "prisma.purchase_requisition"
+      },
+      {
+       "kind": "ref",
+       "id": "context.portal.3.5"
+      }
+     ],
+     "note": "Portal-native rows: gold_native_staging, never authority without a human confirmation."
+    }
+   ],
+   "properties": [
+    {
+     "name": "pr_number",
+     "value_type": "identifier",
+     "identifier_kind": "pr_number",
+     "description": "The requisition's own number (unique).",
+     "sources": [
+      {
+       "binding": "portal.app_purchase_requisition",
+       "path": "pr_number",
+       "parser": "identifier"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.pr_number"
+      }
+     ]
+    },
+    {
+     "name": "status",
+     "value_type": "enum",
+     "enum_values": [
+      "DRAFT",
+      "PENDING_APPROVAL",
+      "APPROVED",
+      "REJECTED",
+      "CONVERTED_TO_PO",
+      "CANCELLED",
+      "CONVERTED_TO_CMR"
+     ],
+     "sources": [
+      {
+       "binding": "portal.app_purchase_requisition",
+       "path": "status",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.pr_status"
+      },
+      {
+       "kind": "ref",
+       "id": "portal.pr_convert_customer"
+      }
+     ]
+    },
+    {
+     "name": "requested_date",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "portal.app_purchase_requisition",
+       "path": "requested_date",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.purchase_requisition"
+      }
+     ]
+    },
+    {
+     "name": "required_by_date",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "portal.app_purchase_requisition",
+       "path": "required_by_date",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.purchase_requisition"
+      }
+     ]
+    },
+    {
+     "name": "approved_date",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "portal.app_purchase_requisition",
+       "path": "approved_date",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.purchase_requisition"
+      }
+     ]
+    },
+    {
+     "name": "total_amount",
+     "value_type": "money",
+     "money_measure": "amount",
+     "markings": [
+      "finance"
+     ],
+     "description": "Estimated requisition total.",
+     "sources": [
+      {
+       "binding": "portal.app_purchase_requisition",
+       "path": "total_amount",
+       "parser": "decimal_text",
+       "tax_basis": "unknown",
+       "currency_unknown": {
+        "reason": "The requisition has no currency column and its writers sum supplier or reorder estimates without one.",
+        "evidence": [
+         {
+          "kind": "ref",
+          "id": "prisma.purchase_requisition"
+         }
+        ]
+       }
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.pr_route_estimates"
+      },
+      {
+       "kind": "ref",
+       "id": "portal.pr_reorder_estimates"
+      }
+     ]
+    },
+    {
+     "name": "notes",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "portal.app_purchase_requisition",
+       "path": "notes",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.purchase_requisition"
+      }
+     ]
+    }
+   ],
+   "identity_keys": [
+    {
+     "name": "pr_number",
+     "properties": [
+      "pr_number"
+     ],
+     "identifier_kind": "pr_number",
+     "tier": "verified",
+     "unique": true,
+     "scope": "within_binding",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.purchase_requisition"
+      }
+     ]
+    }
+   ],
+   "display": [
+    "pr_number"
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "prisma.purchase_requisition"
+    },
+    {
+     "kind": "ref",
+     "id": "context.portal.3.5"
+    }
+   ]
+  },
+  {
+   "id": "PurchaseRequisitionLine",
+   "description": "One requested item of a purchase requisition: a gold product or an ingredient, a quantity in a free-text uom and an estimated cost.",
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "portal.app_pr_line_item",
+     "source": "portal_api",
+     "relation": "public.app_pr_line_item",
+     "key": [
+      "id"
+     ],
+     "lineage": {
+      "default": "gold_native_staging",
+      "inherit": "PurchaseRequisitionLine.line_of"
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "allowlist.public.app_pr_line_item"
+      },
+      {
+       "kind": "ref",
+       "id": "prisma.pr_line_item"
+      }
+     ]
+    }
+   ],
+   "properties": [
+    {
+     "name": "quantity",
+     "value_type": "decimal",
+     "description": "Requested quantity in the line's uom. No quantity role: a request, not an order.",
+     "sources": [
+      {
+       "binding": "portal.app_pr_line_item",
+       "path": "quantity",
+       "parser": "decimal_text",
+       "unit_from": "uom"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.pr_line_item"
+      }
+     ]
+    },
+    {
+     "name": "uom",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "portal.app_pr_line_item",
+       "path": "uom",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.pr_line_item"
+      }
+     ]
+    },
+    {
+     "name": "estimated_cost",
+     "value_type": "decimal",
+     "markings": [
+      "finance"
+     ],
+     "description": "Writers disagree on its meaning: the generate-po route stores a line total and convert divides it by the quantity, the reorder service multiplies it by the quantity as a unit cost. It is therefore not declared as money: never summed, priced or compared.",
+     "sources": [
+      {
+       "binding": "portal.app_pr_line_item",
+       "path": "estimated_cost",
+       "parser": "decimal_text"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.pr_route_estimates"
+      },
+      {
+       "kind": "ref",
+       "id": "portal.pr_reorder_estimates"
+      },
+      {
+       "kind": "ref",
+       "id": "portal.pr_convert"
+      }
+     ]
+    },
+    {
+     "name": "notes",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "portal.app_pr_line_item",
+       "path": "notes",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.pr_line_item"
+      }
+     ]
+    }
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "prisma.pr_line_item"
+    }
+   ]
+  }
+ ],
+ "link_types": [
+  {
+   "id": "PurchaseRequisition.for_supplier",
+   "from": "PurchaseRequisition",
+   "to": "Supplier",
+   "name": "for_supplier",
+   "reverse_name": "purchase_requisitions",
+   "cardinality": "N:1",
+   "description": "The supplier the requisition is for, when chosen (supplier_id FK).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "portal.app_purchase_requisition",
+     "to_binding": "portal.app_supplier",
+     "pairs": [
+      {
+       "from": "supplier_id",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.purchase_requisition"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "PurchaseRequisitionLine.line_of",
+   "from": "PurchaseRequisitionLine",
+   "to": "PurchaseRequisition",
+   "name": "line_of",
+   "reverse_name": "lines",
+   "cardinality": "N:1",
+   "description": "A line belongs to its requisition.",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "portal.app_pr_line_item",
+     "to_binding": "portal.app_purchase_requisition",
+     "pairs": [
+      {
+       "from": "purchase_requisition_id",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.pr_line_item"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "PurchaseRequisitionLine.for_item",
+   "from": "PurchaseRequisitionLine",
+   "to": "Product",
+   "name": "for_item",
+   "reverse_name": "requisition_lines",
+   "cardinality": "N:1",
+   "description": "The gold product requested (product_id FK; ingredient lines have none).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "portal.app_pr_line_item",
+     "to_binding": "portal.app_product",
+     "pairs": [
+      {
+       "from": "product_id",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.pr_line_item"
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "event_types": [
+  {
+   "id": "PurchaseRequisition.requested",
+   "object_type": "PurchaseRequisition",
+   "description": "Requisition requested.",
+   "time_basis": "source_recorded",
+   "time": {
+    "binding": "portal.app_purchase_requisition",
+    "path": "requested_date",
+    "parser": "iso_timestamp"
+   },
+   "qualifiers": [
+    {
+     "qualifier": "requisition",
+     "object_type": "PurchaseRequisition",
+     "via": "self"
+    }
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "prisma.purchase_requisition"
+    }
+   ]
+  },
+  {
+   "id": "PurchaseRequisition.approved",
+   "object_type": "PurchaseRequisition",
+   "description": "Requisition approved.",
+   "time_basis": "source_recorded",
+   "time": {
+    "binding": "portal.app_purchase_requisition",
+    "path": "approved_date",
+    "parser": "iso_timestamp"
+   },
+   "qualifiers": [
+    {
+     "qualifier": "requisition",
+     "object_type": "PurchaseRequisition",
+     "via": "self"
+    }
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "prisma.purchase_requisition"
+    }
+   ]
+  },
+  {
+   "id": "PurchaseRequisition.required_by",
+   "object_type": "PurchaseRequisition",
+   "description": "Date the materials are required by.",
+   "time_basis": "planned",
+   "time": {
+    "binding": "portal.app_purchase_requisition",
+    "path": "required_by_date",
+    "parser": "iso_timestamp"
+   },
+   "qualifiers": [
+    {
+     "qualifier": "requisition",
+     "object_type": "PurchaseRequisition",
+     "via": "self"
+    },
+    {
+     "qualifier": "supplier",
+     "object_type": "Supplier",
+     "via": "PurchaseRequisition.for_supplier"
+    }
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "prisma.purchase_requisition"
+    }
+   ]
+  }
+ ],
+ "evidence_catalog": {
+  "allowlist.public.app_purchase_requisition": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "services/workbench-api/manifest/allowlist.json",
+   "commit": "790256ca43",
+   "note": "Reporting API allowlist entry public.app_purchase_requisition: every cited column is served.",
+   "symbol": "public.app_purchase_requisition"
+  },
+  "allowlist.public.app_pr_line_item": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "services/workbench-api/manifest/allowlist.json",
+   "commit": "790256ca43",
+   "note": "Reporting API allowlist entry public.app_pr_line_item: every cited column is served.",
+   "symbol": "public.app_pr_line_item"
+  },
+  "prisma.purchase_requisition": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/prisma/schema.prisma",
+   "commit": "790256ca43",
+   "note": "PurchaseRequisition -> app_purchase_requisition: unique prNumber, status PRStatus, requestedBy/approvedBy user FKs, optional supplierId FK, requestedDate, requiredByDate, approvedDate, totalAmount Decimal(10,2); no currency column.",
+   "symbol": "PurchaseRequisition",
+   "lines": "3526-3550"
+  },
+  "prisma.pr_status": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/prisma/schema.prisma",
+   "commit": "5cb95e1302",
+   "note": "enum PRStatus: DRAFT, PENDING_APPROVAL, APPROVED, REJECTED, CONVERTED_TO_PO, CANCELLED, CONVERTED_TO_CMR (TASK-2300, 7a3388d: a CUSTOMER-source requisition became a Customer Material Request; terminal like CONVERTED_TO_PO). The requisition's source_type (VENDOR or CUSTOMER) and customer_id (TASK-2300) are not served by the reporting API.",
+   "symbol": "PRStatus",
+   "lines": "354-365"
+  },
+  "prisma.pr_line_item": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/prisma/schema.prisma",
+   "commit": "790256ca43",
+   "note": "PRLineItem -> app_pr_line_item: purchaseRequisitionId FK (cascade), optional productId/ingredientId/reorderRuleId FKs, quantity Decimal(10,2), free-text uom, estimatedCost Decimal(10,2).",
+   "symbol": "PRLineItem",
+   "lines": "3552-3575"
+  },
+  "portal.pr_number": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/src/app/api/mrp/generate-po/requisition/route.ts",
+   "commit": "790256ca43",
+   "note": "generatePRNumber: PR-YYYYMMDD-NNNN behind prefixRef (UAT- on UAT deployments).",
+   "symbol": "generatePRNumber",
+   "lines": "53-82"
+  },
+  "portal.pr_route_estimates": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/src/app/api/mrp/generate-po/requisition/route.ts",
+   "commit": "790256ca43",
+   "note": "This writer stores estimatedCost = quantity x supplier unitCost (a line total) and totalAmount = sum of estimatedCost.",
+   "lines": "114-200"
+  },
+  "portal.pr_reorder_estimates": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/src/lib/services/reorder-management.ts",
+   "commit": "790256ca43",
+   "note": "computeTotalAmount: totalAmount = round2(sum of quantity x estimatedCost), i.e. this writer reads estimatedCost as a unit cost.",
+   "symbol": "computeTotalAmount",
+   "lines": "248-259"
+  },
+  "portal.pr_convert": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/src/app/api/mrp/generate-po/requisition/[id]/convert/route.ts",
+   "commit": "790256ca43",
+   "note": "Convert reads estimatedCost as a line total (unitPrice = estimated / quantity) and only sets status CONVERTED_TO_PO: the PO it creates stores no requisition reference.",
+   "lines": "100-190"
+  },
+  "portal.pr_convert_customer": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/src/app/api/mrp/generate-po/requisition/[id]/convert/route.ts",
+   "commit": "5cb95e1302",
+   "note": "A CUSTOMER-source requisition (TASK-2301 2dd7071: raised from the active customer-supplied item registry) converts to a Customer Material Request (TASK-2302, lib/customer-materials/create-request.ts:306 sets CONVERTED_TO_CMR), never a PO; the deprecated operations routes refuse it (TASK-2303 424427a).",
+   "lines": "24-96"
+  },
+  "context.portal.3.5": {
+   "kind": "context_pack",
+   "ref": "docs/reference/portal-code-map.md#3.5",
+   "note": "PurchaseRequisition / PRLineItem; PR numbers are generated twice."
+  }
+ }
+}

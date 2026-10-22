@@ -1,0 +1,137 @@
+{
+  "schema": "plx-case-playbook/v1",
+  "id": "customer_po_enrichment",
+  "version": 3,
+  "question_pattern": "Which Portal sales orders lack a customer PO in every exposed PO field, and is there cited evidence supporting a PO value to propose for a specific order?",
+  "allowed_tools": [
+    "plx.case_open",
+    "plx.find",
+    "plx.object",
+    "plx.read",
+    "plx.case_add_finding",
+    "plx.case_record_gap",
+    "plx.case_propose",
+    "plx.case_attach_original",
+    "plx.case_get",
+    "plx.case_close"
+  ],
+  "writes_case_state": [
+    "plx.case_open",
+    "plx.case_add_finding",
+    "plx.case_record_gap",
+    "plx.case_propose",
+    "plx.case_attach_original",
+    "plx.case_close"
+  ],
+  "required_evidence": [
+    {
+      "role": "order",
+      "relation": "public.app_sales_order",
+      "key_hint": "one row per order (plx.find over sales orders, then plx.object); cite the order row for every claim about its PO fields (po_reference, custom_fields.custPoCode)",
+      "identity": {
+        "kind": "case_root",
+        "fields": [
+          "order_number"
+        ]
+      }
+    },
+    {
+      "role": "po_evidence",
+      "relation": "original",
+      "key_hint": "a cited row or attached original whose field holds exactly the PO-shaped value; required only before a PO is proposed",
+      "identity": "any",
+      "required": false
+    },
+    {
+      "role": "po_evidence_row",
+      "relation": "sage.oe_order_header",
+      "key_hint": "Sage order header whose ponumber holds the PO-shaped value; no verified join to the Portal order yet, so identity is explicitly any",
+      "identity": "any",
+      "required": false
+    }
+  ],
+  "required_computations": [],
+  "expected_gaps": [
+    {
+      "id": "po_absent_in_source",
+      "kind": "absent_in_source",
+      "about": "Customer PO of an order whose every exposed PO field is empty or absent; the PO may be held elsewhere",
+      "when": "po_field_empty",
+      "property": "SalesOrder.customer_po",
+      "match": {
+        "cites": [
+          "order"
+        ]
+      }
+    },
+    {
+      "id": "po_text_not_po",
+      "kind": "unknown",
+      "about": "Customer PO of an order whose PO field holds text that is not PO-shaped (for example a person name) or could not be read",
+      "when": "po_field_not_po_like",
+      "property": "SalesOrder.customer_po",
+      "match": {
+        "cites": [
+          "order"
+        ]
+      }
+    },
+    {
+      "id": "po_documents_not_ingested",
+      "kind": "not_ingested",
+      "about": "Customer PO documents in mail, SharePoint and BC, which are not ingested; Portal attachments are unknown",
+      "when": "source_not_ingested",
+      "match": {
+        "terms": [
+          "customer po documents"
+        ],
+        "cites": [
+          "order"
+        ]
+      }
+    }
+  ],
+  "authority": {
+    "business_writes": 0,
+    "approvals": "portal"
+  },
+  "success_checks": [
+    {
+      "id": "facts_cite",
+      "type": "every_fact_cites"
+    },
+    {
+      "id": "no_uncited_numbers",
+      "type": "no_uncited_number_in_statements"
+    },
+    {
+      "id": "order_cited",
+      "type": "evidence_cited",
+      "params": {
+        "role": "order"
+      }
+    },
+    {
+      "id": "absent_gap",
+      "type": "gap_recorded",
+      "params": {
+        "gap": "po_absent_in_source"
+      }
+    },
+    {
+      "id": "not_ingested_gap",
+      "type": "gap_recorded",
+      "params": {
+        "gap": "po_documents_not_ingested"
+      }
+    },
+    {
+      "id": "proposals_supported",
+      "type": "proposals_cite_support"
+    },
+    {
+      "id": "proposals_not_dispatched",
+      "type": "proposals_recorded_only"
+    }
+  ]
+}

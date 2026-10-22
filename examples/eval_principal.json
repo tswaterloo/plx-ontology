@@ -1,0 +1,11 @@
+{
+ "schema": "plx-eval-principal/v1",
+ "label": "eval_principal",
+ "note": "Not a person. The declared reader the answer evals (eval.case_cards_answers, the live parts of eval.ask_agent and eval.real_agent) run as when PLX_EVAL_READER names no employee (operating/eval_principal.py). Its grants are these roles only: no Portal row, no Entra membership, no file clearance, no finance marking, no action path; every result it produces is labelled eval_principal. The A6 permission proof (denied_leaks with a real identity) still requires PLX_EVAL_READER.",
+ "object_id": "00000000-0000-4000-8000-00000000e7a1",
+ "email": "eval-principal@workbench.invalid",
+ "uid": "eval_principal",
+ "principals": ["staff:operations", "staff:sales"],
+ "clearance": "internal",
+ "markings": []
+}

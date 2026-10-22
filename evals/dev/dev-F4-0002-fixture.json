@@ -1,0 +1,146 @@
+{
+ "format": "plx-eval-item/v1",
+ "id": "dev-F4-0002-fixture",
+ "family": "F4",
+ "split": "dev",
+ "variant": "standard",
+ "question": {
+  "text": "Do the purchase order lines, receipts and supplier invoices for purchase order PO9200042 agree on quantities?"
+ },
+ "root": {
+  "identifier": "PO9200042",
+  "identifier_kind": "po_number",
+  "object_type": "PurchaseOrder",
+  "relation": "public.app_purchase_order",
+  "key": {
+   "id": "fx-po-42"
+  }
+ },
+ "as_known_at": {
+  "time": "2099-01-02T03:04:05Z",
+  "l1_generations": {
+   "portal_api": "8a5851cbdc2e491a"
+  }
+ },
+ "closed_transaction": true,
+ "lineage_stratum": "gold_etl_from_fm",
+ "known_outcome": {
+  "answerability": "partial",
+  "values": [
+   {
+    "name": "item_1",
+    "object_type": "Product",
+    "property": "code",
+    "value": "FX-ITEM-003"
+   },
+   {
+    "name": "ordered_1",
+    "object_type": "PurchaseOrderLine",
+    "property": "quantity",
+    "value": "92",
+    "quantity_role": "ordered",
+    "unit": "ea",
+    "citations": [
+     {
+      "l1_handle": "api://public.app_purchase_order_line/%7B%22id%22%3A%22fx-pol-42-1%22%7D@8a5851cbdc2e491a",
+      "field_path": "row.quantity"
+     }
+    ]
+   },
+   {
+    "name": "received_1",
+    "object_type": "ReceiptLine",
+    "property": "quantity",
+    "value": "92",
+    "quantity_role": "received",
+    "unit": "ea",
+    "citations": [
+     {
+      "l1_handle": "api://public.app_receipt_line/%7B%22id%22%3A%22fx-rcl-42-1%22%7D@8a5851cbdc2e491a",
+      "field_path": "row.quantity"
+     }
+    ]
+   },
+   {
+    "name": "invoiced_1",
+    "object_type": "BcPurchaseInvoiceLine",
+    "property": "quantity",
+    "value": null
+   },
+   {
+    "name": "match_1",
+    "value": null
+   },
+   {
+    "name": "three_way_match",
+    "value": null
+   }
+  ],
+  "gaps": [
+   {
+    "state": "absent_in_source",
+    "subject": "invoiced quantity of item 1",
+    "reason": "no_invoice_line",
+    "concerns": "invoiced_1"
+   }
+  ],
+  "chain": [
+   {
+    "object_type": "PurchaseOrder",
+    "relation": "public.app_purchase_order",
+    "key": {
+     "id": "fx-po-42"
+    }
+   },
+   {
+    "object_type": "PurchaseOrderLine",
+    "relation": "public.app_purchase_order_line",
+    "key": {
+     "id": "fx-pol-42-1"
+    },
+    "hop_from": 0,
+    "fk": "po.lines"
+   },
+   {
+    "object_type": "Receipt",
+    "relation": "public.app_receipt",
+    "key": {
+     "id": "fx-rcpt-42"
+    },
+    "hop_from": 0,
+    "fk": "po.receipts"
+   }
+  ]
+ },
+ "must_not": [
+  "claim_uncited_number",
+  "invent_absent_value"
+ ],
+ "oracle": {
+  "id": "oracle:f4_three_way_match@1c117db7f628",
+  "interface": "plx-eval-oracle/v1",
+  "derived_from": [
+   "docs/reference/portal-code-map.md#3.5 app_purchase_order.po_number (unique)",
+   "docs/reference/portal-code-map.md#3.5 app_purchase_order_line.quantity (purchase UoM)",
+   "docs/reference/portal-code-map.md#3.5 app_receipt_line.quantity by receipt of the PO",
+   "docs/reference/portal-code-map.md#3.6 app_product.code = BC Item No.; BC purchaseInvoiceLines.quantity by lineObjectNumber",
+   "docs/reference/portal-code-map.md#4.5 normalizeProductUom + PRODUCT_UOM_OPTIONS bcCode (P:src/lib/mrp/product-uom.ts:30)",
+   "docs/reference/portal-code-map.md#3.5 app_purchase_order_line.purchase_order_id -> app_purchase_order.id (P:prisma/schema.prisma:3449)",
+   "docs/reference/portal-code-map.md#3.5 app_receipt.purchase_order_id -> app_purchase_order.id (P:prisma/schema.prisma:3565)",
+   "docs/reference/portal-code-map.md#3.5 app_receipt_line.receipt_id -> app_receipt.id (P:prisma/schema.prisma:3620)",
+   "docs/reference/portal-code-map.md#3.5 derivePoFulfillmentCode over header + summed lines = RECEIVED, or closed_at (P@59b0548:src/lib/mrp/po-fulfillment-status.ts:12, apply-po-line-receive.ts:298)"
+  ],
+  "computed_at": "2099-01-02T04:00:00Z",
+  "query_digest": "3e061a14952ee59e3e95d199ee41c80e1c609924a632a203d1176ad4a56fa26c"
+ },
+ "label": {
+  "status": "oracle_only",
+  "note": "evidence: injected-transport fixture (synthetic FX rows from evals/oracle/fixture_world.py), not live PLX data."
+ },
+ "scoring": {
+  "exact_values": true,
+  "gap_honesty": true,
+  "citations_required": true
+ },
+ "created_at": "2099-01-02T04:00:00Z"
+}

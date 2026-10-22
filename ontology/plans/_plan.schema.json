@@ -1,0 +1,137 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "plx-investigate-plan/v1",
+ "title": "plx.investigate declarative plan",
+ "description": "One question family's investigation plan, run by plx.investigate (operating/ontology_tools_investigate.py) over the generic primitives through the host's tool dispatch. Nothing here is code: steps name a primitive, the collection it starts from and its static arguments; evidence names what the answer needs and how a missing piece is reported. Every object type, binding, link type and property must exist in the compiled ontology schema and every step's arguments must satisfy the tool's input contract (checked by the loader). A primitive the host does not serve degrades to a step_unavailable gap.",
+ "type": "object",
+ "additionalProperties": false,
+ "required": ["$schema", "format", "id", "families", "title", "description", "root", "step_budget", "steps", "evidence"],
+ "properties": {
+  "$schema": {"type": "string"},
+  "format": {"const": "plx-investigate-plan/v1"},
+  "id": {"$ref": "#/$defs/name"},
+  "families": {
+   "type": "array",
+   "description": "Evaluation family ids (evals/item.schema.json $defs/family) this plan answers; plx.investigate accepts the plan id or one of these.",
+   "items": {"type": "string", "pattern": "^F[1-9][0-9]?$"},
+   "minItems": 1, "maxItems": 8, "uniqueItems": true
+  },
+  "title": {"type": "string", "minLength": 1, "maxLength": 200},
+  "description": {"type": "string", "minLength": 1, "maxLength": 2000},
+  "root": {
+   "type": "object",
+   "additionalProperties": false,
+   "oneOf": [{"required": ["object_types"], "not": {"required": ["links"]}}, {"required": ["links"], "not": {"required": ["object_types"]}}],
+   "properties": {
+    "object_types": {"type": "array", "items": {"$ref": "#/$defs/type_id"}, "minItems": 1, "maxItems": 12, "uniqueItems": true},
+    "links": {"type": "array", "items": {"$ref": "#/$defs/name"}, "minItems": 1, "maxItems": 8, "uniqueItems": true, "description": "Instead of object_types: navigation names (a link's name on its from type, its reverse_name on its to type); every type of the compiled schema declaring each of them is a root type, so a type the schema gives those links is covered with no plan edit. Steps then walk them by name (a plx.around hop {\"link\": name})."},
+    "cardinality": {"type": "string", "enum": ["single", "set"], "description": "single (default): an ambiguous identifier blocks with ranked candidates. set: the question is about every record carrying the identifier (e.g. every order carrying one customer PO); every candidate at a set_tiers tier is a root, weaker candidates are reported as a gap and never followed."},
+    "set_tiers": {"type": "array", "items": {"$ref": "#/$defs/tier"}, "minItems": 1, "maxItems": 6, "uniqueItems": true},
+    "fallback_filters": {
+     "type": "array",
+     "description": "When plx.find resolves nothing from the identifier text, exact property filters tried in order (plx.find object_type + eq filter); still a plx.find call, never a guess.",
+     "items": {
+      "type": "object", "additionalProperties": false, "required": ["object_type", "property"],
+      "properties": {"object_type": {"$ref": "#/$defs/type_id"}, "property": {"$ref": "#/$defs/name"}}
+     },
+     "maxItems": 6
+    }
+   }
+  },
+  "step_budget": {"type": "integer", "minimum": 1, "maximum": 128, "description": "Default primitive-call budget (the caller's step_budget overrides it, within the contract's maximum)."},
+  "max_each": {"type": "integer", "minimum": 1, "maximum": 50, "description": "Objects one per-object step reads at most (default 20); the rest are reported truncated."},
+  "steps": {"type": "array", "items": {"$ref": "#/$defs/step"}, "minItems": 1, "maxItems": 48},
+  "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}, "minItems": 1, "maxItems": 64}
+ },
+ "$defs": {
+  "name": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+  "type_id": {"type": "string", "pattern": "^[A-Z][A-Za-z0-9]{1,63}$"},
+  "binding": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{1,95}$"},
+  "tier": {"type": "string", "enum": ["verified", "reviewed", "corroborated", "stored_by_text_join", "lead", "contradicted"]},
+  "gap_state": {"type": "string", "enum": ["absent_in_source", "inaccessible", "stale", "not_ingested", "unknown"]},
+  "quantity_role": {"type": "string", "enum": ["accepted", "actual", "committed", "damaged", "delivered", "filled", "inspected", "invoiced", "manufactured", "ordered", "planned", "produced", "received", "rejected", "retained", "returned", "shipped"]},
+  "step": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["id", "tool", "from", "bind"],
+   "properties": {
+    "id": {"$ref": "#/$defs/name"},
+    "description": {"type": "string", "minLength": 1, "maxLength": 600},
+    "tool": {"type": "string", "pattern": "^plx\\.[a-z][a-z_]{0,31}$", "description": "A generic primitive (never plx.investigate itself)."},
+    "from": {"anyOf": [{"$ref": "#/$defs/name"}, {"type": "array", "items": {"$ref": "#/$defs/name"}, "minItems": 2, "maxItems": 8, "uniqueItems": true}], "description": "root, or the id of an earlier step whose reached objects this step starts from (several: their objects together, e.g. every twin collection)."},
+    "bind": {"$ref": "#/$defs/name", "description": "The tool input property that receives the starting object (or the collection's set handle when the property accepts one and every object fits)."},
+    "object_types": {"type": "array", "items": {"$ref": "#/$defs/type_id"}, "minItems": 1, "maxItems": 12, "uniqueItems": true, "description": "Only these types of the starting collection are used. A plx.around path's start type always filters (from the schema)."},
+    "links": {
+     "type": "object", "additionalProperties": false, "required": ["binding_kind", "direction"],
+     "description": "plx.around only, with no args.path: one path per link type the schema declares at each starting object's type, read when the step runs (a link type added to the schema is followed with no plan edit): every link with a binding of binding_kind whose end in direction starts at the object's type (reverse: links into it) and, with far_relation, whose far end's type is bound to that source relation (documentFields: the typed documents ontology/document_fields.py reads, not the generated mention links of every captured message, file or task). An object of a type no such link reaches is no input.",
+     "properties": {
+      "binding_kind": {"$ref": "#/$defs/name"},
+      "direction": {"type": "string", "enum": ["forward", "reverse"]},
+      "far_relation": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.]{0,95}$"}
+     }
+    },
+    "args": {"type": "object", "description": "Static tool arguments, validated against the tool's input contract; as_known_at is added by the executor when the tool takes it."},
+    "max_each": {"type": "integer", "minimum": 1, "maximum": 50, "description": "Objects this per-object step reads at most, below the plan's max_each (e.g. a read for names only, whose every entry is on every answer page); the rest are reported truncated, as for the plan's."},
+    "required": {"type": "boolean", "description": "A required step that could not run (step_unavailable, error, budget) makes the answer partial."},
+    "retry": {
+     "type": "object", "additionalProperties": false, "required": ["on_gap_reasons", "set_args", "note_gap"],
+     "description": "Ask once more with changed arguments when the tool's own gap says so (e.g. below_tier_floor -> tier_floor lead); the answer then carries note_gap.",
+     "properties": {
+      "on_gap_reasons": {"type": "array", "items": {"$ref": "#/$defs/name"}, "minItems": 1, "maxItems": 4, "uniqueItems": true},
+      "set_args": {"type": "object", "minProperties": 1},
+      "note_gap": {"$ref": "#/$defs/name"}
+     }
+    },
+    "party_check": {
+     "type": "object", "additionalProperties": false,
+     "description": "plx.around only: each reached object is compared, on the reference identifiers the schema corroborates (ontology.resolve.corroborations: a BC invoice's vendor No. against the purchase order's supplier code), with the objects of the against collections (default: this step's from). One that conflicts with some and agrees with none is a record of another party sharing the number: left out of this step (and of the run when first reached here) and declared in a party_differs gap, never a silent pick. Values are read through the primitives as the reader; an unreadable side proves nothing and the object stays.",
+     "properties": {
+      "against": {"type": "array", "items": {"$ref": "#/$defs/name"}, "minItems": 1, "maxItems": 8, "uniqueItems": true}
+     }
+    }
+   }
+  },
+  "evidence": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["name", "kind"],
+   "description": "property: one cited value per reached object of object_type (the first of `properties` the object carries); count: how many distinct visible objects of object_type (or of a `from` collection) the plan reached (never 0: nothing reached is a gap), with a citation of each counted record when it has one for all; select: a value read from a step's results by a dotted path (`*` iterates a list; `where` keeps only the elements the first `*` iterates whose keys equal the given JSON values; `per` reduces each group of them alone) and reduced, with the cited values those elements compared (all/any are three-valued: a null the primitive left undecided makes the result null unless a decided value settles it). compute: what a named Workbench engine (operating/ontology_tools_investigate.py default_engines) computes from the entries of evidence items listed before it, with the arithmetic step by step and every input named; null while any input is unknown. A verdict (a match, a conformance) is always selected from the primitive that decides it, never recomputed by the plan. A count on a type with several bindings must name its bindings: twins of one record in two systems are never added together.",
+   "properties": {
+    "name": {"$ref": "#/$defs/name"},
+    "kind": {"type": "string", "enum": ["property", "count", "select", "compute"]},
+    "description": {"type": "string", "minLength": 1, "maxLength": 600},
+    "required": {"type": "boolean"},
+    "object_type": {"$ref": "#/$defs/type_id"},
+    "bindings": {"type": "array", "items": {"$ref": "#/$defs/binding"}, "minItems": 1, "maxItems": 8, "uniqueItems": true},
+    "properties": {"type": "array", "items": {"$ref": "#/$defs/name"}, "minItems": 1, "maxItems": 4, "uniqueItems": true},
+    "quantity_role": {"$ref": "#/$defs/quantity_role"},
+    "single": {"type": "boolean", "description": "Distinct values across objects are a value_disagreement conflict."},
+    "omit_empty": {"type": "boolean", "description": "property only, never with required: an empty value is no entry and no value_empty gap (an optional item only an engine reads, whose own gaps name what it searched)."},
+    "canonical_unit": {"type": "boolean", "description": "property only: the entry states its unit in the one Workbench unit vocabulary (ontology/units.py unit_token: each -> ea, pcs -> ea), never converted; the claim gate still checks the cited cell in its own spelling."},
+    "if_no_object": {"$ref": "#/$defs/gap_state"},
+    "zero": {"const": "complete_search", "description": "count of named bindings only: the count is of the records of its bindings that carry the root identifier, so when none is reached it is 0 (with its proof) only when the root's identifier search answered complete, each binding's relation carries that identifier kind and holds no candidate of the search, and the host proves the relation wholly captured and readable by this reader now; otherwise nothing reached stays a no_object_reached gap, never a count of zero."},
+    "if_null": {"$ref": "#/$defs/gap_state"},
+    "step": {"$ref": "#/$defs/name"},
+    "path": {"type": "string", "pattern": "^[a-z_*][a-z0-9_*]*(?:\\.[a-z_*][a-z0-9_*]*){0,5}$"},
+    "reduce": {"type": "string", "enum": ["all", "any", "count", "first"]},
+    "where": {"type": "object", "minProperties": 1, "maxProperties": 4, "description": "select only: keys and exact JSON values the elements of the path's first `*` must carry (e.g. a quantity check's roles)."},
+    "where_any": {"type": "array", "minItems": 2, "maxItems": 8, "items": {"type": "object", "minProperties": 1, "maxProperties": 4}, "description": "select only: as where, an element is kept when it carries the keys and values of any one of these (e.g. two role pairs)."},
+    "engine": {"$ref": "#/$defs/name", "description": "compute only: the engine (checked by the loader against the engines it knows)."},
+    "engine_args": {"type": "object", "description": "compute only: the engine's static arguments (which evidence items fill which role), checked by the engine's own check."},
+    "distinct": {"const": "content", "description": "count only: objects whose record citation pins the same whole-document bytes (a mailed and a filed copy of one file) count once, as the copy a root is joined to by evidence-tier links when one is; an object without such a citation counts on its own (copies are never merged without their bytes). The count may then name several bindings of its type."},
+    "from": {"$ref": "#/$defs/name", "description": "count only: count the objects of this collection (root, or a step id) instead of every reached object of object_type (object_type, bindings then narrow it), e.g. how many roots the question resolved to."},
+    "numbering": {"const": "value", "description": "property only: entries are always numbered (name_1 even for one) in the order of their values, then object id, so a list of items reads the same however its records are keyed."},
+    "per": {"$ref": "#/$defs/name", "description": "select only (a path with `*`): one entry per distinct value of this key of the elements the first `*` keeps (e.g. a quantity check's group), each reduced alone and named name_<n>; elements without it are a not_grouped gap."},
+    "number_as": {"$ref": "#/$defs/name", "description": "with per: a property item listed before; the entry of group object G is numbered as that item's entry of G (groups it has no entry for come after, by key)."}
+   },
+   "allOf": [
+    {"if": {"properties": {"kind": {"const": "property"}}}, "then": {"required": ["object_type", "properties"]}},
+    {"if": {"properties": {"kind": {"const": "count"}}}, "then": {"anyOf": [{"required": ["object_type"]}, {"required": ["from"]}]}},
+    {"if": {"properties": {"kind": {"const": "select"}}}, "then": {"required": ["step", "path", "reduce"]}},
+    {"if": {"properties": {"kind": {"const": "compute"}}}, "then": {"required": ["engine", "engine_args"]}},
+    {"if": {"properties": {"omit_empty": {"const": true}}, "required": ["omit_empty"]}, "then": {"properties": {"kind": {"const": "property"}, "required": {"const": false}}}},
+    {"if": {"required": ["canonical_unit"]}, "then": {"properties": {"kind": {"const": "property"}}}}
+   ]
+  }
+ }
+}

@@ -1,0 +1,17 @@
+{
+ "schema": "plx-live-source-audience/v1",
+ "tenant": "plx",
+ "note": "EXAMPLE ONLY, not a PLX-confirmed grant: the capture service principal of the capture.breadth live check, granted every mailbox (mail:*; ING-06: the capture reads every mailbox of the tenant directory except the scope's exclusion list) and every SharePoint key (two of the three capture targets are sites resolved by name at run time). What is read is bounded by the capture scopes (integrations/mail_capture_scope.json, integrations/sharepoint_capture_scope.json), never by this grant, and the Exchange application access policy still applies upstream (a refused mailbox is a forbidden gap). Default deny for everything else (no BC company). The withheld principal of the check has no grant, so reading the capture stores as it must return 0 mailboxes, 0 roots and 0 counts.",
+ "default_classification": "confidential",
+ "audiences": {
+  "mail:*": [
+   "svc:capture"
+  ],
+  "sharepoint:*": [
+   "svc:capture"
+  ]
+ },
+ "classifications": {
+  "mail:*": "restricted"
+ }
+}

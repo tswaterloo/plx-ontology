@@ -1,0 +1,231 @@
+{
+  "schema": "plx-case-link-contracts/v1",
+  "note": "Each contract declares how one cited source row links to another, with its evidence. fk and json_path agreement is a verified link between the two cited rows (what the source stores, not proof the stored value was right); text_match agreement is only a lead. Portal citations are petralabx/plx-customer-portal at the staging commit each names (portal-relative paths as written in docs/reference/portal-code-map.md): 6c9415973c1990ea9785c9079568aa93d0e37363 as mapped there, not re-read in the run that wrote this file (no upstream checkout in that session); a citation of a file verify/upstream-pins.json pins names the pinned commit and was re-read there (tests/test_customer_po_scope.py). Column names of relations not exercised by a live trace are unverified until a live-check reads them.",
+  "contracts": [
+    {
+      "id": "fm-ao-link-to-assembly-order",
+      "from": {"relation": "public.order_entry_item_assembly"},
+      "to": {"relation": "public.assembly_order"},
+      "match": "fk",
+      "pairs": [{"from": "idassembly", "to": "id", "compare": "integer_id"}],
+      "fm_source_fk": "fm_linked_assembly_order",
+      "meaning": "An FM AO-to-order-line link row names this assembly order (FM order_entry_item_assembly.idassembly = assembly_order.id). One AO can serve several order lines and a line can have several AOs.",
+      "evidence": [
+        "Portal 6c9415973c19 app/api/mrp/assembly/[id] POST (link_oe_item_id) maintains FM public.order_entry_item_assembly(idoeitem, idassembly) and rejects a link when the OE line idfp differs from the AO idfinprod (docs/reference/portal-code-map.md section 3.8).",
+        "ontology/relation_contracts.py FM_SOURCE_FK fm_linked_assembly_order = (idassembly, assemblyOrderId).",
+        "EVIDENCE/live/2026-09-30-ao-26005b-live-trace.json: link 1245 idassembly 10718 = AssemblyOrder 10718 (AO-26005B)."
+      ],
+      "verification": "one live transaction (AO-26005B); the reporting API serves public.order_entry_item_assembly as a full-reload relation (no since column)."
+    },
+    {
+      "id": "fm-ao-link-to-order-line",
+      "from": {"relation": "public.order_entry_item_assembly"},
+      "to": {"relation": "public.order_entry_item"},
+      "match": "fk",
+      "pairs": [{"from": "idoeitem", "to": "id", "compare": "integer_id"}],
+      "fm_source_fk": "fm_assembly_link_for_line",
+      "meaning": "An FM AO-to-order-line link row names this FM sales order line (order_entry_item_assembly.idoeitem = order_entry_item.id).",
+      "evidence": [
+        "Portal 6c9415973c19 app/api/mrp/assembly/[id] POST (link_oe_item_id) writes order_entry_item_assembly.idoeitem (docs/reference/portal-code-map.md section 3.8).",
+        "ontology/relation_contracts.py FM_SOURCE_FK fm_assembly_link_for_line = (idoeitem, salesOrderLineId).",
+        "EVIDENCE/live/2026-09-30-ao-26005b-live-trace.json: link 1245 idoeitem 1140 = SalesOrderLine 1140."
+      ],
+      "verification": "one live transaction (AO-26005B)."
+    },
+    {
+      "id": "fm-order-line-to-order",
+      "from": {"relation": "public.order_entry_item"},
+      "to": {"relation": "public.order_entry"},
+      "match": "fk",
+      "pairs": [{"from": "idoe", "to": "id", "compare": "integer_id"}],
+      "fm_source_fk": "fm_line_of_sales_order",
+      "meaning": "An FM sales order line belongs to this FM sales order (order_entry_item.idoe = order_entry.id).",
+      "evidence": [
+        "Portal 6c9415973c19 lib/wms/ensure-fm-oe-from-sales-order.ts:ensureFmOeFromSalesOrder:153 inserts FM order_entry and its order_entry_item rows (docs/reference/portal-code-map.md section 3.2).",
+        "ontology/relation_contracts.py FM_SOURCE_FK fm_line_of_sales_order = (idoe, salesOrderId).",
+        "EVIDENCE/live/2026-09-30-ao-26005b-live-trace.json: SalesOrderLine 1140 idoe 351 = SalesOrder 351 (OR1000151885)."
+      ],
+      "verification": "one live transaction (AO-26005B)."
+    },
+    {
+      "id": "fm-ao-item-to-assembly-order",
+      "from": {"relation": "silver.assembly_order_items"},
+      "to": {"relation": "public.assembly_order"},
+      "match": "fk",
+      "pairs": [{"from": "assembly_order_id", "to": "id", "compare": "integer_id"}],
+      "fm_source_fk": "fm_item_of_assembly_order",
+      "meaning": "An assembly-order component row (silver copy of FM assembly_order_item) belongs to this assembly order.",
+      "evidence": [
+        "Portal 6c9415973c19: FM public.assembly_order_item holds the AO components (qty_c planned, actualamount); silver.assembly_order_items is its served copy (docs/reference/portal-code-map.md section 3.8).",
+        "ontology/relation_contracts.py FM_SOURCE_FK fm_item_of_assembly_order = (assembly_order_id, assemblyOrderId).",
+        "EVIDENCE/live/2026-09-30-ao-26005b-live-trace.json: items 58382-58387 assembly_order_id 10718."
+      ],
+      "verification": "one live transaction (AO-26005B)."
+    },
+    {
+      "id": "fm-production-task-to-assembly-order",
+      "from": {"relation": "silver.production_tasks"},
+      "to": {"relation": "public.assembly_order"},
+      "match": "fk",
+      "pairs": [{"from": "mo_id", "to": "id", "compare": "integer_id"}],
+      "fm_source_fk": "fm_task_of_assembly_order",
+      "meaning": "A production task (setup, line clearance, filling, cleaning) was recorded against this assembly order.",
+      "evidence": [
+        "Portal 38cd3f35c31b lib/inventory/assembly-entries.ts:insertAssemblyProductionTask:364 writes FM production tasks for an AO (unchanged since 6c9415973c19).",
+        "Portal b4118a39b130 gold copy etl-silver-to-gold.ts:etlProductionTasks:1971 (docs/reference/portal-code-map.md section 3.8).",
+        "ontology/relation_contracts.py FM_SOURCE_FK fm_task_of_assembly_order = (mo_id, assemblyOrderId).",
+        "EVIDENCE/live/2026-09-30-ao-26005b-live-trace.json: tasks 14353-14356 mo_id 10718."
+      ],
+      "verification": "one live transaction (AO-26005B)."
+    },
+    {
+      "id": "fm-damage-to-assembly-order",
+      "from": {"relation": "silver.assembly_order_damage"},
+      "to": {"relation": "public.assembly_order"},
+      "match": "fk",
+      "pairs": [{"from": "assembly_order_id", "to": "id", "compare": "integer_id"}],
+      "fm_source_fk": "fm_damage_of_assembly_order",
+      "meaning": "A damage entry was recorded against this assembly order.",
+      "evidence": [
+        "Portal 38cd3f35c31b lib/inventory/assembly-entries.ts:insertAssemblyDamage:193 (unchanged since 6c9415973c19).",
+        "Portal b4118a39b130 gold copy etl-silver-to-gold.ts:etlAssemblyOrderDamage:1801 (docs/reference/portal-code-map.md section 3.8).",
+        "ontology/relation_contracts.py FM_SOURCE_FK fm_damage_of_assembly_order = (assembly_order_id, assemblyOrderId).",
+        "EVIDENCE/live/2026-09-30-ao-26005b-live-trace.json: damage 5444-5446 assembly_order_id 10718."
+      ],
+      "verification": "one live transaction (AO-26005B)."
+    },
+    {
+      "id": "portal-so-to-fm-order-by-fmid",
+      "from": {"relation": "public.app_sales_order"},
+      "to": {"relation": "public.order_entry"},
+      "match": "json_path",
+      "pairs": [{"from": "custom_fields.fmId", "to": "id", "compare": "integer_id"}],
+      "meaning": "A Portal sales order is bridged to this FM order_entry through custom_fields.fmId, the link Portal itself resolves by. The order number is not a link: Portal rewrites order_number to the BC document No. after drain. Portal's bridge may have first chosen an existing unlinked SO by PO/ERP text (findUnlinkedPortalSo) before stamping fmId; the Portal code map treats the stamped fmId as a source-asserted link (docs/reference/portal-code-map.md section 9), and so does this contract.",
+      "evidence": [
+        "Portal 40f78021b920 lib/orders/order-identity.ts:resolveOrderFromFmOrderId:233 resolves a sales order by custom_fields->>'fmId' (matchedBy 'fmId') (docs/reference/portal-code-map.md section 3.4).",
+        "Portal 6c9415973c19 lib/wms/ensure-sales-order-from-fm-oe.ts:ensureSalesOrderFromFmOe:402 stamps customFields.fmId when it links or creates the gold SO (docs/reference/portal-code-map.md sections 3.2 and 9).",
+        "Portal 549f6f0e0bb0 lib/business-central/align-portal-so-number.ts:alignPortalSoNumberToBc:21 rewrites order_number to the BC document No. (docs/reference/portal-code-map.md section 9)."
+      ],
+      "verification": "upstream code as mapped in docs/reference/portal-code-map.md; no live transaction checked through this contract yet. fmId may arrive as a JSON number or a digit string; both are compared as integers."
+    },
+    {
+      "id": "portal-po-to-fm-generated-po",
+      "from": {"relation": "public.app_purchase_order"},
+      "to": {"relation": "public.generated_purchase_order"},
+      "match": "json_path",
+      "pairs": [{"from": "custom_fields.fmGeneratedPoId", "to": "id", "compare": "integer_id"}],
+      "meaning": "A Portal purchase order is the copy of this FM generated purchase order; custom_fields.fmGeneratedPoId is the only link (po_number is rewritten to the BC No.).",
+      "evidence": [
+        "Packaging Procure-to-GL map weak link 3: app_purchase_order.custom_fields.fmGeneratedPoId is the only link to the FileMaker PO (operating/process_stage_map.json weak_links; docs/reference/cases-and-artifacts.md section 1.7).",
+        "Portal 6c9415973c19 PurchaseOrder customFields.fmPoNumber/fmGeneratedPoId; lib/mrp/create-fm-purchase-order.ts writes FM then gold (docs/reference/portal-code-map.md section 3.5)."
+      ],
+      "verification": "upstream code and the map as relayed; no live transaction checked through this contract yet (PO5447's ids are not in the map)."
+    },
+    {
+      "id": "fm-po-item-to-fm-po",
+      "from": {"relation": "public.generated_purchase_order_item"},
+      "to": {"relation": "public.generated_purchase_order"},
+      "match": "fk",
+      "pairs": [{"from": "idpogen", "to": "id", "compare": "integer_id"}],
+      "fm_source_fk": "fm_line_of_purchase_order",
+      "meaning": "An FM purchase order line belongs to this FM generated purchase order (gpi.idpogen = gpo.id).",
+      "evidence": [
+        "Packaging Procure-to-GL map stage 11: gpi.idpogen -> gpo.id, foreign key, both relations in the API (docs/reference/cases-and-artifacts.md section 1.3).",
+        "ontology/relation_contracts.py FM_SOURCE_FK fm_line_of_purchase_order = (idpogen, purchaseOrderId)."
+      ],
+      "verification": "map and replica FK names; no live transaction checked through this contract yet."
+    },
+    {
+      "id": "fm-packaging-receipt-to-po-item",
+      "from": {"relation": "public.receipt_packaging"},
+      "to": {"relation": "public.generated_purchase_order_item"},
+      "match": "fk",
+      "pairs": [{"from": "idpogenitem", "to": "id", "compare": "integer_id"}],
+      "fm_source_fk": "fm_packaging_receipt_detail_for_purchase_line",
+      "meaning": "An FM packaging receipt detail was received against this FM purchase order line (idpogenitem = gpi.id). Unlike the Portal receipt's PO number text, this is an id.",
+      "evidence": [
+        "Packaging Procure-to-GL map stage 16: receiptpack.idpogenitem -> gpi.id, foreign key; the API serves public.receipt_packaging, probably the same FM table under its replica name (docs/reference/cases-and-artifacts.md section 1.3, marked inference).",
+        "ontology/relation_contracts.py FM_SOURCE_FK fm_packaging_receipt_detail_for_purchase_line = (idpogenitem, purchaseOrderLineId)."
+      ],
+      "verification": "that public.receipt_packaging carries idpogenitem in the reporting API is an inference until a live-check reads it."
+    },
+    {
+      "id": "portal-receipt-to-po-by-id",
+      "from": {"relation": "public.app_receipt"},
+      "to": {"relation": "public.app_purchase_order"},
+      "match": "fk",
+      "pairs": [{"from": "purchase_order_id", "to": "id", "compare": "text_id"}],
+      "provenance": "source_set_by_text_join",
+      "provenance_note": "Portal stores this PO id; Portal set it by PO-number text match (TRIM(po_number) = ponoqc at receive time, on a po_number that can carry an -FM<id> suffix or be rewritten to the BC No.)",
+      "meaning": "A Portal receipt stores this purchase order's id, but the column is loose text that Portal filled by matching TRIM(po_number) = ponoqc. Agreement is recorded as stored_by_text_join, never as a verified link, and cannot support a relation claim; a stored id that differs still contradicts.",
+      "evidence": [
+        "Packaging Procure-to-GL map stage 16: app_receipt purchase_order_id set by matching TRIM(po_number) = ponoqc text (docs/reference/cases-and-artifacts.md section 1.3).",
+        "Portal f3e3a5399d42 lib/mrp/upsert-gold-receipt.ts:upsertGoldReceipt:175 (docs/reference/portal-code-map.md section 3.5)."
+      ],
+      "verification": "map (classifies the column as 'Loose text') and upstream code as relayed; the packaging fixture uses this column (operating/tests/fixtures/packaging_case_fixture.json, column names pending live-verify)."
+    },
+    {
+      "id": "portal-po-line-to-po",
+      "from": {"relation": "public.app_purchase_order_line"},
+      "to": {"relation": "public.app_purchase_order"},
+      "match": "fk",
+      "pairs": [{"from": "purchase_order_id", "to": "id", "compare": "text_id"}],
+      "meaning": "A Portal purchase order line belongs to this Portal purchase order.",
+      "evidence": [
+        "Portal f3e3a5399d42 prisma PurchaseOrderLine (schema.prisma:3642) relates to PurchaseOrder (docs/reference/portal-code-map.md section 3.5); map stage 11: app_purchase_order_line -> app_purchase_order, foreign key."
+      ],
+      "verification": "schema as relayed; column names pending live-verify."
+    },
+    {
+      "id": "portal-receipt-to-po-by-number-text",
+      "from": {"relation": "public.app_receipt"},
+      "to": {"relation": "public.app_purchase_order"},
+      "match": "text_match",
+      "pairs": [{"from": "po_reference", "to": "po_number", "compare": "text"}],
+      "meaning": "A receipt's PO number text equals a purchase order's number after trimming. A LEAD only: po_number gets an -FM<id> suffix on clashes and is rewritten to the BC No., and the text is not unique over time.",
+      "evidence": [
+        "Packaging Procure-to-GL map weak link 2: po_number is not stable (-FM<id> suffix, overwritten with the BC No.); receipts join by this text (docs/reference/cases-and-artifacts.md section 1.7).",
+        "Portal 6c9415973c19 business-central/align-portal-po-number.ts:alignPortalPoNumberToBc:10 renumbers POs to BC (docs/reference/portal-code-map.md section 3.5)."
+      ],
+      "verification": "upstream behaviour as relayed; text agreement is never a verified link."
+    },
+    {
+      "id": "bc-invoice-to-portal-order-by-doc-number",
+      "from": {"relation": "public.bc_invoice_snapshot"},
+      "to": {"relation": "public.app_sales_order"},
+      "match": "text_match",
+      "pairs": [{"from": "external_document_number", "to": "order_number", "compare": "text"}],
+      "meaning": "A BC sales invoice's external document number equals a Portal order number: Portal's fallback after the entity map. A LEAD only: order_number is rewritten to the BC document No. after drain, and the ship-only bridge overwrites external document numbers.",
+      "evidence": [
+        "Portal 40f78021b920 lib/orders/order-identity.ts:resolveOrderFromBcInvoiceId:183 tries app_bc_entity_map first, then bc_invoice_snapshot.external_document_number through resolveOrderByNumber (matchedBy 'externalDocNumber'): the order number unscoped, a customer PO only with the invoice's customer (resolvePortalCustomerIdFromBc:158, resolveOrderByNumber:125-149) (docs/reference/portal-code-map.md section 3.4).",
+        "Portal c09de5d5c90e business-central serializers.ts:1114 (serializeSalesInvoice; was 4243499026f2:1113, the same bytes at 0323e19c) sets the BC sales invoice externalDocumentNumber = order_number (docs/reference/portal-code-map.md sections 3.2 and 3.3).",
+        "Portal 549f6f0e0bb0 lib/business-central/align-portal-so-number.ts:alignPortalSoNumberToBc:21 makes order_number mutable (docs/reference/portal-code-map.md section 9)."
+      ],
+      "verification": "no BC table is in the reporting API manifest (docs/reference/portal-code-map.md section 3.11): this contract applies only once BC invoice rows are mirrored under this relation name; until then no citation can satisfy it."
+    },
+    {
+      "id": "portal-quote-to-sales-order-by-converted-id",
+      "from": {"relation": "public.app_quote"},
+      "to": {"relation": "public.app_sales_order"},
+      "match": "json_path",
+      "pairs": [{"from": "custom_fields.convertedSalesOrderId", "to": "id", "compare": "text_id"}],
+      "meaning": "A Portal quote was converted to this sales order: Portal stamps the quote's custom_fields.convertedSalesOrderId in the conversion transaction. Only an ACCEPTED quote converted in Portal carries it; a quote agreed by email or in FM/Sage never does.",
+      "evidence": [
+        "Portal 790256ca43d0 portal/src/lib/sales-order/convert.ts:convertAcceptedQuote:104-176 locks the ACCEPTED quote FOR UPDATE, creates the sales order with customFields.sourceQuoteId/sourceQuoteNumber and stamps the quote's customFields.convertedSalesOrderId/convertedSalesOrderNumber/convertedAt in the same transaction (ontology/schema/domains/quotes.json evidence portal.quote_convert)."
+      ],
+      "verification": "upstream code; live read 2026-10-16 through the reporting API (counts only): 5 app_quote rows, all DRAFT, 0 carrying custom_fields.convertedSalesOrderId; 939 app_sales_order rows, 0 carrying custom_fields.sourceQuoteId or sourceQuoteNumber. No live order is linked to a quote yet, so a cited order without this stamp is an unrecorded link, never one inferred by customer, date or amount."
+    },
+    {
+      "id": "portal-sales-order-to-quote-by-source-id",
+      "from": {"relation": "public.app_sales_order"},
+      "to": {"relation": "public.app_quote"},
+      "match": "json_path",
+      "pairs": [{"from": "custom_fields.sourceQuoteId", "to": "id", "compare": "text_id"}],
+      "meaning": "A Portal sales order was created from this quote: Portal stamps the order's custom_fields.sourceQuoteId when it converts an ACCEPTED quote. An order entered in FM or by hand has no source quote recorded; customer and amount agreement is not a link.",
+      "evidence": [
+        "Portal 790256ca43d0 portal/src/lib/sales-order/convert.ts:convertAcceptedQuote:104-176 locks the ACCEPTED quote FOR UPDATE, creates the sales order with customFields.sourceQuoteId/sourceQuoteNumber and stamps the quote's customFields.convertedSalesOrderId/convertedSalesOrderNumber/convertedAt in the same transaction (ontology/schema/domains/quotes.json evidence portal.quote_convert)."
+      ],
+      "verification": "upstream code; live read 2026-10-16 through the reporting API (counts only): 5 app_quote rows, all DRAFT, 0 carrying custom_fields.convertedSalesOrderId; 939 app_sales_order rows, 0 carrying custom_fields.sourceQuoteId or sourceQuoteNumber. No live order is linked to a quote yet, so a cited order without this stamp is an unrecorded link, never one inferred by customer, date or amount."
+    }
+  ]
+}

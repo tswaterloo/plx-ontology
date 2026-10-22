@@ -1,0 +1,4978 @@
+{
+  "$schema": "../_format.schema.json",
+  "format": "plx-ontology-domain/v1",
+  "domain": "catalog_parties",
+  "origin": "curated",
+  "description": "Items/products (code = BC Item No., erp_code = Sage IC No.), customers, customer locations, suppliers/vendors, manufacturers, supplier offers and contacts across Portal gold, FM bronze, Sage and BC. Records are never merged: same_record_as links carry the evidence.",
+  "upstream_pins": {
+    "plx-customer-portal": "b46934a"
+  },
+  "object_types": [
+    {
+      "id": "Product",
+      "description": "A product, material or component across Portal gold, FM product families, Sage IC and BC item cards. Records stay per source; same_record_as links them.",
+      "interfaces": [
+        "Item"
+      ],
+      "availability": {
+        "state": "served"
+      },
+      "bindings": [
+        {
+          "id": "portal.app_product",
+          "source": "portal_api",
+          "relation": "public.app_product",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "default": "gold_native_staging",
+            "rules": [
+              {
+                "when": [
+                  {
+                    "path": "external_id",
+                    "op": "prefix",
+                    "value": "fm-"
+                  }
+                ],
+                "lineage": "gold_etl_from_fm",
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlproducts.712d7f"
+                  }
+                ]
+              },
+              {
+                "when": [
+                  {
+                    "path": "external_id",
+                    "op": "prefix",
+                    "value": "sage-"
+                  }
+                ],
+                "lineage": "gold_etl_from_sage",
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.upsertitems.b5e83c"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.upsertfgitemlinks.955437"
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "services/workbench-api/manifest/allowlist.json",
+              "commit": "b46934a",
+              "note": "Reporting API allowlist entry public.app_product: the cited columns are served. standard_cost and unit_cost are not served.",
+              "symbol": "public.app_product"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.product.11eed8"
+            }
+          ],
+          "note": "Gold item master for every product family (RAW_MATERIAL, PACKAGING, BULK, FINAL_PRODUCT, DISTRIBUTION, ...). FM-born rows are overwritten from FM on every ETL run."
+        },
+        {
+          "id": "portal.fm_raw_material",
+          "source": "portal_api",
+          "relation": "public.raw_material",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "default": "fm_bronze"
+          },
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "services/workbench-api/manifest/allowlist.json",
+              "commit": "b46934a",
+              "note": "Reporting API allowlist entry public.raw_material: the cited columns are served.",
+              "symbol": "public.raw_material"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-raw-materials-packaging-bulk-prod.36f18f"
+            }
+          ]
+        },
+        {
+          "id": "portal.fm_packaging",
+          "source": "portal_api",
+          "relation": "public.packaging",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "default": "fm_bronze"
+          },
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "services/workbench-api/manifest/allowlist.json",
+              "commit": "b46934a",
+              "note": "Reporting API allowlist entry public.packaging: the cited columns are served.",
+              "symbol": "public.packaging"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-raw-materials-packaging-bulk-prod.36f18f"
+            }
+          ]
+        },
+        {
+          "id": "portal.fm_bulk_product",
+          "source": "portal_api",
+          "relation": "public.bulk_product",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "default": "fm_bronze"
+          },
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "services/workbench-api/manifest/allowlist.json",
+              "commit": "b46934a",
+              "note": "Reporting API allowlist entry public.bulk_product: the cited columns are served.",
+              "symbol": "public.bulk_product"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-raw-materials-packaging-bulk-prod.36f18f"
+            }
+          ]
+        },
+        {
+          "id": "portal.fm_finished_product",
+          "source": "portal_api",
+          "relation": "public.finished_product",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "default": "fm_bronze"
+          },
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "services/workbench-api/manifest/allowlist.json",
+              "commit": "b46934a",
+              "note": "Reporting API allowlist entry public.finished_product: the cited columns are served.",
+              "symbol": "public.finished_product"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-raw-materials-packaging-bulk-prod.36f18f"
+            }
+          ]
+        },
+        {
+          "id": "portal.sage_ic_item",
+          "source": "portal_api",
+          "relation": "sage.ic_item",
+          "key": [
+            "itemno"
+          ],
+          "lineage": {
+            "default": "sage_bronze"
+          },
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "services/workbench-api/manifest/allowlist.json",
+              "commit": "b46934a",
+              "note": "Reporting API allowlist entry sage.ic_item: the cited columns are served.",
+              "symbol": "sage.ic_item"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.upsertitems.b5e83c"
+            }
+          ]
+        },
+        {
+          "id": "bc.items",
+          "source": "bc",
+          "relation": "items",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "from_capture": "bc_company"
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench-code.live-source-grammar-py.4afed4"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.bcbookkey.e32697"
+            },
+            {
+              "kind": "ref",
+              "id": "live-trace.latest-json-bc-case-entities-live-2026-1.a185c0"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.bcitemnumber.4ae4db"
+            }
+          ],
+          "note": "BC item card per company (book)."
+        }
+      ],
+      "properties": [
+        {
+          "name": "code",
+          "value_type": "identifier",
+          "description": "Portal/FM product code, trimmed and compared case-insensitively; the whole code is the identity. BC receives it as its Item No. cut to 20 characters (bcItemNumber), and only that form is compared with a BC item No.",
+          "identifier_kind": "item_code",
+          "sources": [
+            {
+              "binding": "portal.app_product",
+              "path": "code",
+              "parser": "identifier"
+            },
+            {
+              "binding": "portal.fm_raw_material",
+              "path": "rawcode",
+              "parser": "identifier"
+            },
+            {
+              "binding": "portal.fm_packaging",
+              "path": "packcode",
+              "parser": "identifier"
+            },
+            {
+              "binding": "portal.fm_bulk_product",
+              "path": "bulkcode_u",
+              "parser": "identifier"
+            },
+            {
+              "binding": "portal.fm_finished_product",
+              "path": "codefp_c",
+              "parser": "identifier"
+            },
+            {
+              "binding": "portal.sage_ic_item",
+              "path": "fmtitemno",
+              "parser": "identifier"
+            },
+            {
+              "binding": "bc.items",
+              "path": "number",
+              "parser": "identifier"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlproducts.712d7f"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "sage_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.upsertitems.b5e83c"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm",
+                  "gold_etl_from_sage"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlproducts.712d7f"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.upsertitems.b5e83c"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.bcitemnumber.4ae4db"
+                  }
+                ]
+              }
+            ],
+            "note": "The FM/Sage record a gold row was copied from wins; BC cards are created from the gold code and are downstream. Portal-native (gold_native_staging) rows have no confirmed authority."
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.bcitemnumber.4ae4db"
+            },
+            {
+              "kind": "ref",
+              "id": "context-pack.03-portal-md-3-6.9db86c"
+            }
+          ]
+        },
+        {
+          "name": "name",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.app_product",
+              "path": "name",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.fm_raw_material",
+              "path": "name",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.fm_packaging",
+              "path": "name",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.fm_bulk_product",
+              "path": "name",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.fm_finished_product",
+              "path": "name",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.sage_ic_item",
+              "path": "desc",
+              "parser": "trim"
+            },
+            {
+              "binding": "bc.items",
+              "path": "displayName",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlproducts.712d7f"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "sage_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.upsertitems.b5e83c"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm",
+                  "gold_etl_from_sage"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlproducts.712d7f"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.upsertitems.b5e83c"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.bcitemnumber.4ae4db"
+                  }
+                ]
+              }
+            ],
+            "note": "The FM/Sage record a gold row was copied from wins; BC cards are created from the gold code and are downstream. Portal-native (gold_native_staging) rows have no confirmed authority."
+          }
+        },
+        {
+          "name": "product_type",
+          "value_type": "enum",
+          "enum_values": [
+            "RAW_MATERIAL",
+            "PACKAGING",
+            "BULK",
+            "FINAL_PRODUCT",
+            "COMPONENT",
+            "SERVICE",
+            "DISTRIBUTION"
+          ],
+          "sources": [
+            {
+              "binding": "portal.app_product",
+              "path": "product_type"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.product.11eed8"
+            }
+          ]
+        },
+        {
+          "name": "erp_code",
+          "value_type": "identifier",
+          "description": "Sage IC item No.: the cutover match key, not the BC Item No.",
+          "identifier_kind": "erp_item_code",
+          "sources": [
+            {
+              "binding": "portal.app_product",
+              "path": "erp_code",
+              "parser": "identifier"
+            },
+            {
+              "binding": "portal.fm_finished_product",
+              "path": "codeerp",
+              "parser": "identifier"
+            },
+            {
+              "binding": "portal.sage_ic_item",
+              "path": "itemno",
+              "parser": "identifier"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "sage_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.upsertitems.b5e83c"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.stampfgerpcodefromfilemaker.8e41f6"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm",
+                  "gold_etl_from_sage"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.stampfgerpcodefromfilemaker.8e41f6"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "context-pack.03-portal-md-3-6.9db86c"
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "context-pack.03-portal-md-3-6.9db86c"
+            }
+          ]
+        },
+        {
+          "name": "uom",
+          "value_type": "text",
+          "description": "Portal/Sage unit of measure (kg, ea, ...). Not comparable with the BC code in bc_base_uom.",
+          "sources": [
+            {
+              "binding": "portal.app_product",
+              "path": "uom",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.sage_ic_item",
+              "path": "stockunit",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "sage_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.upsertitems.b5e83c"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_sage",
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlproducts.712d7f"
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.bcuomcode.ba2e7d"
+            }
+          ]
+        },
+        {
+          "name": "bc_base_uom",
+          "value_type": "text",
+          "description": "BC base unit code (PCS, CSE, GR, KG, ...).",
+          "sources": [
+            {
+              "binding": "bc.items",
+              "path": "baseUnitOfMeasureCode",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.bcuomcode.ba2e7d"
+            },
+            {
+              "kind": "ref",
+              "id": "live-trace.latest-json-bc-case-entities-live-2026-1.a185c0"
+            }
+          ]
+        },
+        {
+          "name": "bc_item_type",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "bc.items",
+              "path": "type",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "live-trace.latest-json-bc-case-entities-live-2026-1.a185c0"
+            }
+          ]
+        },
+        {
+          "name": "item_category",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "bc.items",
+              "path": "itemCategoryCode",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.sage_ic_item",
+              "path": "category",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "live-trace.latest-json-bc-case-entities-live-2026-1.a185c0"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "sage_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.upsertitems.b5e83c"
+                  }
+                ]
+              }
+            ],
+            "note": "Different vocabularies; disagreement is expected and reported, not resolved."
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "live-trace.latest-json-bc-case-entities-live-2026-1.a185c0"
+            }
+          ]
+        },
+        {
+          "name": "is_active",
+          "value_type": "boolean",
+          "sources": [
+            {
+              "binding": "portal.app_product",
+              "path": "is_active",
+              "parser": "boolean_text"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.etlproducts.712d7f"
+            }
+          ]
+        },
+        {
+          "name": "fm_status",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.fm_raw_material",
+              "path": "status",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.fm_packaging",
+              "path": "status",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.fm_finished_product",
+              "path": "status",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.fm_bulk_product",
+              "path": "status_u",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.silver-raw-materials-packaging-bulk-prod.36f18f"
+                  }
+                ]
+              }
+            ],
+            "note": "One FM record per item; each family has its own column."
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-raw-materials-packaging-bulk-prod.36f18f"
+            }
+          ]
+        },
+        {
+          "name": "blocked",
+          "value_type": "boolean",
+          "sources": [
+            {
+              "binding": "portal.app_product",
+              "path": "blocked",
+              "parser": "boolean_text"
+            },
+            {
+              "binding": "bc.items",
+              "path": "blocked",
+              "parser": "boolean_text"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "live-trace.latest-json-bc-case-entities-live-2026-1.a185c0"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm",
+                  "gold_etl_from_sage"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.product.11eed8"
+                  }
+                ]
+              }
+            ],
+            "note": "BC's own blocked flag is what BC enforces on posting."
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.product.11eed8"
+            },
+            {
+              "kind": "ref",
+              "id": "live-trace.latest-json-bc-case-entities-live-2026-1.a185c0"
+            }
+          ]
+        },
+        {
+          "name": "fm_id",
+          "value_type": "identifier",
+          "description": "The FM record id of this item in its own FM table (raw_material, packaging, bulk_product or finished_product). Ids recur across those tables, so one value can name one record in each: the value identifies a record only within its binding.",
+          "identifier_kind": "fm_id",
+          "sources": [
+            {
+              "binding": "portal.fm_raw_material",
+              "path": "id",
+              "parser": "identifier"
+            },
+            {
+              "binding": "portal.fm_packaging",
+              "path": "id",
+              "parser": "identifier"
+            },
+            {
+              "binding": "portal.fm_bulk_product",
+              "path": "id",
+              "parser": "identifier"
+            },
+            {
+              "binding": "portal.fm_finished_product",
+              "path": "id",
+              "parser": "identifier"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-raw-materials-packaging-bulk-prod.36f18f"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.silver-raw-materials-packaging-bulk-prod.36f18f"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "customer_owner_fm_id",
+          "value_type": "identifier",
+          "description": "FM customer id that owns this item (customer-specific bulk, FG and packaging). On app_product the ETL copies the FM idcust as text; it is not an app_customer.id.",
+          "identifier_kind": "fm_id",
+          "identifies": "reference",
+          "sources": [
+            {
+              "binding": "portal.fm_finished_product",
+              "path": "idcust",
+              "parser": "identifier"
+            },
+            {
+              "binding": "portal.fm_bulk_product",
+              "path": "idcust",
+              "parser": "identifier"
+            },
+            {
+              "binding": "portal.fm_packaging",
+              "path": "idcust",
+              "parser": "identifier"
+            },
+            {
+              "binding": "portal.app_product",
+              "path": "customer_id",
+              "parser": "identifier"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.silver-raw-materials-packaging-bulk-prod.36f18f"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlproducts.712d7f"
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.etlproducts.712d7f"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-raw-materials-packaging-bulk-prod.36f18f"
+            }
+          ]
+        },
+        {
+          "name": "bulk_fm_id",
+          "value_type": "identifier",
+          "description": "FM bulk product filled into this finished product.",
+          "identifier_kind": "fm_id",
+          "identifies": "reference",
+          "sources": [
+            {
+              "binding": "portal.fm_finished_product",
+              "path": "idbulk",
+              "parser": "identifier"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-raw-materials-packaging-bulk-prod.36f18f"
+            }
+          ]
+        },
+        {
+          "name": "hs_code",
+          "value_type": "text",
+          "description": "Import HS code (distinct from ProductPackSpec.tariffCode).",
+          "sources": [
+            {
+              "binding": "portal.app_product",
+              "path": "hs_code",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "context-pack.03-portal-md-3-6.9db86c"
+            }
+          ]
+        },
+        {
+          "name": "units_per_box",
+          "value_type": "decimal",
+          "sources": [
+            {
+              "binding": "portal.app_product",
+              "path": "units_per_box",
+              "parser": "decimal_text"
+            },
+            {
+              "binding": "portal.fm_finished_product",
+              "path": "unitsperbox",
+              "parser": "decimal_text"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.silver-raw-materials-packaging-bulk-prod.36f18f"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm",
+                  "gold_etl_from_sage"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.product.11eed8"
+                  }
+                ]
+              }
+            ],
+            "note": "etlProducts does not copy unitsperbox; a gold value is Portal-entered."
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-raw-materials-packaging-bulk-prod.36f18f"
+            }
+          ]
+        },
+        {
+          "name": "fill_weight",
+          "value_type": "decimal",
+          "description": "Fill per unit; the unit is not stored with the value.",
+          "sources": [
+            {
+              "binding": "portal.app_product",
+              "path": "fill_weight",
+              "parser": "decimal_text"
+            },
+            {
+              "binding": "portal.fm_finished_product",
+              "path": "fill",
+              "parser": "decimal_text"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.silver-raw-materials-packaging-bulk-prod.36f18f"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm",
+                  "gold_etl_from_sage"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.product.11eed8"
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-raw-materials-packaging-bulk-prod.36f18f"
+            }
+          ]
+        },
+        {
+          "name": "size_text",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.app_product",
+              "path": "size",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.fm_finished_product",
+              "path": "size",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.silver-raw-materials-packaging-bulk-prod.36f18f"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm",
+                  "gold_etl_from_sage"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.product.11eed8"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "average_cost",
+          "value_type": "decimal",
+          "description": "Average unit cost. No currency is stored with it (company currency, CAD by Portal convention; unverified), so it is a decimal, not money.",
+          "markings": [
+            "finance"
+          ],
+          "sources": [
+            {
+              "binding": "portal.app_product",
+              "path": "average_cost",
+              "parser": "decimal_text"
+            },
+            {
+              "binding": "portal.fm_raw_material",
+              "path": "averagecost",
+              "parser": "decimal_text"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlproducts.712d7f"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm",
+                  "gold_etl_from_sage"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.product.11eed8"
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "context-pack.03-portal-md-3-6.9db86c"
+            },
+            {
+              "kind": "ref",
+              "id": "context-pack.03-portal-md-5.3be8d0"
+            }
+          ]
+        },
+        {
+          "name": "total_cost",
+          "value_type": "decimal",
+          "markings": [
+            "finance"
+          ],
+          "sources": [
+            {
+              "binding": "portal.app_product",
+              "path": "total_cost",
+              "parser": "decimal_text"
+            },
+            {
+              "binding": "portal.fm_finished_product",
+              "path": "sumcost_c",
+              "parser": "decimal_text"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.silver-raw-materials-packaging-bulk-prod.36f18f"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm",
+                  "gold_etl_from_sage"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.product.11eed8"
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "context-pack.03-portal-md-3-6.9db86c"
+            }
+          ]
+        },
+        {
+          "name": "bc_unit_cost",
+          "value_type": "money",
+          "money_measure": "unit_price",
+          "currency": "CAD",
+          "markings": [
+            "finance"
+          ],
+          "availability": "degraded",
+          "availability_reason": "BC item unit cost is in the company LCY, which the record does not carry; CAD is proven only for the books the Portal writes (manufacturing, distribution).",
+          "sources": [
+            {
+              "binding": "bc.items",
+              "path": "unitCost",
+              "parser": "decimal_text",
+              "tax_basis": "unknown",
+              "per_unit_from": "baseUnitOfMeasureCode",
+              "evidence": [
+                {
+                  "kind": "ref",
+                  "id": "portal.bc_item_card_price_per_base_uom"
+                }
+              ]
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.bctransactioncurrency.67bd64"
+            },
+            {
+              "kind": "ref",
+              "id": "live-trace.latest-json-bc-case-entities-live-2026-1.a185c0"
+            }
+          ]
+        },
+        {
+          "name": "bc_unit_price",
+          "value_type": "money",
+          "money_measure": "unit_price",
+          "currency": "CAD",
+          "markings": [
+            "finance"
+          ],
+          "availability": "degraded",
+          "availability_reason": "Same LCY caveat as bc_unit_cost.",
+          "sources": [
+            {
+              "binding": "bc.items",
+              "path": "unitPrice",
+              "parser": "decimal_text",
+              "tax_basis": "unknown",
+              "per_unit_from": "baseUnitOfMeasureCode",
+              "evidence": [
+                {
+                  "kind": "ref",
+                  "id": "portal.bc_item_card_price_per_base_uom"
+                }
+              ]
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.bctransactioncurrency.67bd64"
+            },
+            {
+              "kind": "ref",
+              "id": "live-trace.latest-json-bc-case-entities-live-2026-1.a185c0"
+            }
+          ]
+        },
+        {
+          "name": "external_id",
+          "value_type": "text",
+          "description": "fm-raw|fm-pack|fm-bulk|fm-fp-{FM id}, sage-dist-{itemno} or sage-fg-{itemno}; not unique.",
+          "sources": [
+            {
+              "binding": "portal.app_product",
+              "path": "external_id",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.etlproducts.712d7f"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.upsertitems.b5e83c"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.upsertfgitemlinks.955437"
+            }
+          ]
+        },
+        {
+          "name": "deleted_at",
+          "value_type": "timestamp",
+          "sources": [
+            {
+              "binding": "portal.app_product",
+              "path": "deleted_at",
+              "parser": "iso_timestamp"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.product.11eed8"
+            }
+          ]
+        }
+      ],
+      "identity_keys": [
+        {
+          "name": "item_code",
+          "properties": [
+            "code"
+          ],
+          "tier": "verified",
+          "unique": false,
+          "scope": "cross_binding",
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.bcitemnumber.4ae4db"
+            }
+          ],
+          "identifier_kind": "item_code"
+        },
+        {
+          "name": "erp_item_code",
+          "properties": [
+            "erp_code"
+          ],
+          "tier": "verified",
+          "unique": false,
+          "scope": "cross_binding",
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "context-pack.03-portal-md-3-6.9db86c"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.upsertitems.b5e83c"
+            }
+          ],
+          "identifier_kind": "erp_item_code"
+        },
+        {
+          "name": "fm_id",
+          "properties": [
+            "fm_id"
+          ],
+          "tier": "verified",
+          "unique": true,
+          "scope": "within_binding",
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-raw-materials-packaging-bulk-prod.36f18f"
+            }
+          ],
+          "identifier_kind": "fm_id"
+        }
+      ],
+      "display": [
+        "code",
+        "name"
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.product.11eed8"
+        },
+        {
+          "kind": "ref",
+          "id": "context-pack.03-portal-md-3-6.9db86c"
+        }
+      ]
+    },
+    {
+      "id": "Customer",
+      "description": "A customer party: Portal gold card, FM customer, Sage ARCUS and BC customer cards.",
+      "interfaces": [
+        "Party"
+      ],
+      "availability": {
+        "state": "served"
+      },
+      "bindings": [
+        {
+          "id": "portal.app_customer",
+          "source": "portal_api",
+          "relation": "public.app_customer",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "default": "gold_native_staging",
+            "rules": [
+              {
+                "when": [
+                  {
+                    "path": "external_id",
+                    "op": "prefix",
+                    "value": "fm-cust-"
+                  }
+                ],
+                "lineage": "gold_etl_from_fm",
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlcustomers.70a343"
+                  }
+                ]
+              },
+              {
+                "when": [
+                  {
+                    "path": "external_id",
+                    "op": "prefix",
+                    "value": "sage-cust-"
+                  }
+                ],
+                "lineage": "gold_etl_from_sage",
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.upsertcustomers.9e65d0"
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "services/workbench-api/manifest/allowlist.json",
+              "commit": "b46934a",
+              "note": "Reporting API allowlist entry public.app_customer: the cited columns are served.",
+              "symbol": "public.app_customer"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.customer.25869b"
+            }
+          ],
+          "note": "local-cust-* and cm-012-stub rows are Portal-native."
+        },
+        {
+          "id": "portal.fm_customer",
+          "source": "portal_api",
+          "relation": "public.customer",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "default": "fm_bronze"
+          },
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "services/workbench-api/manifest/allowlist.json",
+              "commit": "b46934a",
+              "note": "Reporting API allowlist entry public.customer: the cited columns are served.",
+              "symbol": "public.customer"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.loadcustomerheader.8ba028"
+            }
+          ]
+        },
+        {
+          "id": "portal.sage_ar_customer",
+          "source": "portal_api",
+          "relation": "sage.ar_customer",
+          "key": [
+            "idcust"
+          ],
+          "lineage": {
+            "default": "sage_bronze"
+          },
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "services/workbench-api/manifest/allowlist.json",
+              "commit": "b46934a",
+              "note": "Reporting API allowlist entry sage.ar_customer: the cited columns are served.",
+              "symbol": "sage.ar_customer"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.upsertcustomers.9e65d0"
+            }
+          ]
+        },
+        {
+          "id": "bc.customers",
+          "source": "bc",
+          "relation": "customers",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "from_capture": "bc_company"
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench-code.live-source-grammar-py.4afed4"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.bcbookkey.e32697"
+            },
+            {
+              "kind": "ref",
+              "id": "live-trace.latest-json-bc-case-entities-live-2026-1.a185c0"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.resolvecustomerbcnumber.07a6e9"
+            }
+          ],
+          "note": "BC customer card per book; No. = Sage IDCUST."
+        }
+      ],
+      "properties": [
+        {
+          "name": "name",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.app_customer",
+              "path": "company_name",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.fm_customer",
+              "path": "name",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.sage_ar_customer",
+              "path": "namecust",
+              "parser": "trim"
+            },
+            {
+              "binding": "bc.customers",
+              "path": "displayName",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.loadcustomerheader.8ba028"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "sage_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.upsertcustomers.9e65d0"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm",
+                  "gold_etl_from_sage"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlcustomers.70a343"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.upsertcustomers.9e65d0"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.resolvecustomerbcnumber.07a6e9"
+                  }
+                ]
+              }
+            ],
+            "note": "The Portal reads the FM card as the customer header; BC cards are created from gold."
+          }
+        },
+        {
+          "name": "erp_code",
+          "value_type": "identifier",
+          "description": "Sage IDCUST = BC customer No.; not unique on app_customer.",
+          "identifier_kind": "customer_erp_code",
+          "sources": [
+            {
+              "binding": "portal.app_customer",
+              "path": "erp_code",
+              "parser": "identifier"
+            },
+            {
+              "binding": "portal.sage_ar_customer",
+              "path": "idcust",
+              "parser": "identifier"
+            },
+            {
+              "binding": "bc.customers",
+              "path": "number",
+              "parser": "identifier"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "sage_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.upsertcustomers.9e65d0"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.resolvecustomerbcnumber.07a6e9"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_sage",
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context-pack.03-portal-md-3-1.d6d515"
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "context-pack.03-portal-md-3-1.d6d515"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.resolvecustomerbcnumber.07a6e9"
+            }
+          ]
+        },
+        {
+          "name": "fm_id",
+          "value_type": "identifier",
+          "description": "The FM customer record id (FM idcust; app_customer.external_id fm-cust-{this id}).",
+          "identifier_kind": "fm_id",
+          "sources": [
+            {
+              "binding": "portal.fm_customer",
+              "path": "id",
+              "parser": "identifier"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.loadcustomerheader.8ba028"
+            }
+          ]
+        },
+        {
+          "name": "bill_to_erp_code",
+          "value_type": "identifier",
+          "description": "Payer's IDCUST (BC Bill-to Customer No.).",
+          "identifier_kind": "customer_erp_code",
+          "identifies": "reference",
+          "sources": [
+            {
+              "binding": "portal.app_customer",
+              "path": "bill_to_erp_code",
+              "parser": "identifier"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "portal/src/lib/business-central/serializers.ts",
+              "commit": "b46934a",
+              "note": "resolveBillToCustomerNumber: BC Bill-to No. from bill_to_erp_code.",
+              "lines": "190-205"
+            }
+          ]
+        },
+        {
+          "name": "code",
+          "value_type": "text",
+          "description": "PLX internal short code (WD, AA, ...): not a Sage/BC key.",
+          "sources": [
+            {
+              "binding": "portal.app_customer",
+              "path": "code",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.fm_customer",
+              "path": "code",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlcustomers.70a343"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm",
+                  "gold_etl_from_sage"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlcustomers.70a343"
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.resolvecustomerbcnumber.07a6e9"
+            }
+          ]
+        },
+        {
+          "name": "currency",
+          "value_type": "text",
+          "description": "Billing currency. BC leaves it blank for the company LCY (CAD).",
+          "sources": [
+            {
+              "binding": "portal.app_customer",
+              "path": "currency",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.sage_ar_customer",
+              "path": "codecurn",
+              "parser": "trim"
+            },
+            {
+              "binding": "bc.customers",
+              "path": "currencyCode",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "sage_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.upsertcustomers.9e65d0"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_sage",
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.customer.25869b"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.bctransactioncurrency.67bd64"
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.bctransactioncurrency.67bd64"
+            }
+          ]
+        },
+        {
+          "name": "price_list_code",
+          "value_type": "text",
+          "markings": [
+            "finance"
+          ],
+          "sources": [
+            {
+              "binding": "portal.app_customer",
+              "path": "price_list_code",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.sage_ar_customer",
+              "path": "priclist",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "gold_etl_from_sage",
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.pricelistlookuporder.d2259c"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "sage_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.pricelistlookuporder.d2259c"
+                  }
+                ]
+              }
+            ],
+            "note": "Mirrors priceListLookupOrder: the gold code wins, Sage ARCUS.priclist is the fallback."
+          }
+        },
+        {
+          "name": "business_line",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.app_customer",
+              "path": "business_line",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.customer.25869b"
+            }
+          ]
+        },
+        {
+          "name": "fm_status",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.fm_customer",
+              "path": "status",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "bc_blocked",
+          "value_type": "text",
+          "description": "BC blocked option (blank, Ship, Invoice, All).",
+          "sources": [
+            {
+              "binding": "bc.customers",
+              "path": "blocked",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "live-trace.latest-json-bc-case-entities-live-2026-1.a185c0"
+            }
+          ]
+        },
+        {
+          "name": "contact_person",
+          "value_type": "text",
+          "markings": [
+            "pii"
+          ],
+          "sources": [
+            {
+              "binding": "portal.fm_customer",
+              "path": "contcperson",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "context-pack.03-portal-md-5.3be8d0"
+            }
+          ]
+        },
+        {
+          "name": "bc_credit_limit",
+          "value_type": "money",
+          "currency": "CAD",
+          "markings": [
+            "finance"
+          ],
+          "availability": "degraded",
+          "availability_reason": "Credit limit is in the company LCY; CAD is proven only for the manufacturing and distribution books.",
+          "sources": [
+            {
+              "binding": "bc.customers",
+              "path": "creditLimit",
+              "parser": "decimal_text",
+              "tax_basis": "unknown"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.bctransactioncurrency.67bd64"
+            },
+            {
+              "kind": "ref",
+              "id": "live-trace.latest-json-bc-case-entities-live-2026-1.a185c0"
+            }
+          ]
+        },
+        {
+          "name": "bc_balance_due",
+          "value_type": "money",
+          "currency": "CAD",
+          "markings": [
+            "finance"
+          ],
+          "availability": "degraded",
+          "availability_reason": "Balance is in the company LCY and is a point-in-time capture value.",
+          "sources": [
+            {
+              "binding": "bc.customers",
+              "path": "balanceDue",
+              "parser": "decimal_text",
+              "tax_basis": "unknown"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.bctransactioncurrency.67bd64"
+            },
+            {
+              "kind": "ref",
+              "id": "live-trace.latest-json-bc-case-entities-live-2026-1.a185c0"
+            }
+          ]
+        },
+        {
+          "name": "external_id",
+          "value_type": "text",
+          "description": "fm-cust-{FM id}, local-cust-{cuid}, sage-cust-{IDCUST} or cm-012-stub:...",
+          "sources": [
+            {
+              "binding": "portal.app_customer",
+              "path": "external_id",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "context-pack.03-portal-md-3-1.d6d515"
+            }
+          ]
+        },
+        {
+          "name": "deleted_at",
+          "value_type": "timestamp",
+          "sources": [
+            {
+              "binding": "portal.app_customer",
+              "path": "deleted_at",
+              "parser": "iso_timestamp"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.customer.25869b"
+            }
+          ]
+        }
+      ],
+      "identity_keys": [
+        {
+          "name": "erp_code",
+          "properties": [
+            "erp_code"
+          ],
+          "tier": "verified",
+          "unique": false,
+          "scope": "cross_binding",
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.resolvecustomerbcnumber.07a6e9"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.upsertcustomers.9e65d0"
+            }
+          ],
+          "identifier_kind": "customer_erp_code"
+        },
+        {
+          "name": "fm_id",
+          "properties": [
+            "fm_id"
+          ],
+          "tier": "verified",
+          "unique": true,
+          "scope": "within_binding",
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.loadcustomerheader.8ba028"
+            }
+          ],
+          "identifier_kind": "fm_id"
+        }
+      ],
+      "display": [
+        "name"
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.customer.25869b"
+        },
+        {
+          "kind": "ref",
+          "id": "context-pack.03-portal-md-3-1.d6d515"
+        }
+      ]
+    },
+    {
+      "id": "CustomerLocation",
+      "description": "A customer ship-to location (Portal gold and Sage ship-to).",
+      "availability": {
+        "state": "served"
+      },
+      "bindings": [
+        {
+          "id": "portal.app_customer_location",
+          "source": "portal_api",
+          "relation": "public.app_customer_location",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "default": "gold_native_staging",
+            "rules": [
+              {
+                "when": [
+                  {
+                    "path": "legacy_sage_ship_to_code",
+                    "op": "present"
+                  }
+                ],
+                "lineage": "gold_etl_from_sage",
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.customerlocation.64c39f"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.upsertcustomers.9e65d0"
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "services/workbench-api/manifest/allowlist.json",
+              "commit": "b46934a",
+              "note": "Reporting API allowlist entry public.app_customer_location: the cited columns are served.",
+              "symbol": "public.app_customer_location"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.customerlocation.64c39f"
+            }
+          ]
+        },
+        {
+          "id": "portal.sage_ar_ship_to",
+          "source": "portal_api",
+          "relation": "sage.ar_ship_to",
+          "key": [
+            "_sage_pk"
+          ],
+          "lineage": {
+            "default": "sage_bronze"
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.sage-ar-ship-to.e9f1b0"
+            }
+          ]
+        }
+      ],
+      "properties": [
+        {
+          "name": "label",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.app_customer_location",
+              "path": "label",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.sage_ar_ship_to",
+              "path": "namelocn",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "sage_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.customerlocation.64c39f"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_sage"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.customerlocation.64c39f"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "ship_to_code",
+          "value_type": "text",
+          "description": "Sage ship-to code (IDCUSTSHPT).",
+          "sources": [
+            {
+              "binding": "portal.app_customer_location",
+              "path": "legacy_sage_ship_to_code",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.sage_ar_ship_to",
+              "path": "idcustshpt",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "sage_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.customerlocation.64c39f"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_sage"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.customerlocation.64c39f"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "bc_ship_to_code",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.app_customer_location",
+              "path": "bc_ship_to_code",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "portal/src/lib/customers/ship-to-seed.ts",
+              "commit": "b46934a",
+              "note": "deriveBcShipToCode: BC ship-to code of a location.",
+              "symbol": "deriveBcShipToCode",
+              "lines": "165"
+            }
+          ]
+        },
+        {
+          "name": "city",
+          "value_type": "text",
+          "markings": [
+            "pii"
+          ],
+          "sources": [
+            {
+              "binding": "portal.app_customer_location",
+              "path": "city",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.sage_ar_ship_to",
+              "path": "namecity",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "sage_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.customerlocation.64c39f"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_sage"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.customerlocation.64c39f"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "country",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.app_customer_location",
+              "path": "country",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.sage_ar_ship_to",
+              "path": "codectry",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "sage_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.customerlocation.64c39f"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_sage"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.customerlocation.64c39f"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "is_default",
+          "value_type": "boolean",
+          "sources": [
+            {
+              "binding": "portal.app_customer_location",
+              "path": "is_default",
+              "parser": "boolean_text"
+            }
+          ]
+        },
+        {
+          "name": "location_type",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.app_customer_location",
+              "path": "location_type",
+              "parser": "trim"
+            }
+          ]
+        }
+      ],
+      "display": [
+        "label"
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.customerlocation.64c39f"
+        },
+        {
+          "kind": "ref",
+          "id": "context-pack.03-portal-md-3-1.d6d515"
+        }
+      ]
+    },
+    {
+      "id": "Supplier",
+      "description": "A supplier/vendor party: Portal gold, FM supplier and BC vendor cards. Sage AP vendors are not served by the reporting API.",
+      "interfaces": [
+        "Party"
+      ],
+      "availability": {
+        "state": "served"
+      },
+      "bindings": [
+        {
+          "id": "portal.app_supplier",
+          "source": "portal_api",
+          "relation": "public.app_supplier",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "default": "gold_native_staging",
+            "rules": [
+              {
+                "when": [
+                  {
+                    "path": "external_id",
+                    "op": "prefix",
+                    "value": "fm-supp-"
+                  }
+                ],
+                "lineage": "gold_etl_from_fm",
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlsuppliers.2e0828"
+                  }
+                ]
+              },
+              {
+                "when": [
+                  {
+                    "path": "external_id",
+                    "op": "prefix",
+                    "value": "sage-vend-"
+                  }
+                ],
+                "lineage": "gold_etl_from_sage",
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.upsertvendors.d50ef1"
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "services/workbench-api/manifest/allowlist.json",
+              "commit": "b46934a",
+              "note": "Reporting API allowlist entry public.app_supplier: the cited columns are served.",
+              "symbol": "public.app_supplier"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.supplier.56b59a"
+            }
+          ],
+          "note": "A bare numeric external_id is also an FM id (parseFmSupplierId); the predicate grammar cannot match digits-only, so such rows default to gold_native_staging."
+        },
+        {
+          "id": "portal.fm_supplier",
+          "source": "portal_api",
+          "relation": "public.supplier",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "default": "fm_bronze"
+          },
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "services/workbench-api/manifest/allowlist.json",
+              "commit": "b46934a",
+              "note": "Reporting API allowlist entry public.supplier: the cited columns are served.",
+              "symbol": "public.supplier"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.etlsuppliers.2e0828"
+            }
+          ]
+        },
+        {
+          "id": "bc.vendors",
+          "source": "bc",
+          "relation": "vendors",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "from_capture": "bc_company"
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench-code.live-source-grammar-py.4afed4"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.bcbookkey.e32697"
+            },
+            {
+              "kind": "ref",
+              "id": "live-trace.latest-json-bc-case-entities-live-2026-1.a185c0"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.serializevendor.7acf77"
+            }
+          ],
+          "note": "BC vendor card per book; No. = Sage-style supplier code."
+        }
+      ],
+      "properties": [
+        {
+          "name": "name",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.app_supplier",
+              "path": "name",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.fm_supplier",
+              "path": "name",
+              "parser": "trim"
+            },
+            {
+              "binding": "bc.vendors",
+              "path": "displayName",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlsuppliers.2e0828"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm",
+                  "gold_etl_from_sage"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlsuppliers.2e0828"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.upsertvendors.d50ef1"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.serializevendor.7acf77"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "code",
+          "value_type": "identifier",
+          "identifier_kind": "supplier_code",
+          "sources": [
+            {
+              "binding": "portal.app_supplier",
+              "path": "code",
+              "parser": "identifier"
+            },
+            {
+              "binding": "bc.vendors",
+              "path": "number",
+              "parser": "identifier"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "gold_etl_from_sage",
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.serializevendor.7acf77"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.serializevendor.7acf77"
+                  }
+                ]
+              }
+            ],
+            "note": "BC takes its vendor No. from the gold code, so gold is upstream of BC."
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.serializevendor.7acf77"
+            },
+            {
+              "kind": "ref",
+              "id": "context-pack.03-portal-md-3-5.5e11bc"
+            }
+          ]
+        },
+        {
+          "name": "currency",
+          "value_type": "text",
+          "description": "Purchase currency; blank in BC means the company LCY (CAD).",
+          "sources": [
+            {
+              "binding": "portal.app_supplier",
+              "path": "currency",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.fm_supplier",
+              "path": "currency",
+              "parser": "trim"
+            },
+            {
+              "binding": "bc.vendors",
+              "path": "currencyCode",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlsuppliers.2e0828"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm",
+                  "gold_etl_from_sage"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlsuppliers.2e0828"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.upsertvendors.d50ef1"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.serializevendor.7acf77"
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.bctransactioncurrency.67bd64"
+            }
+          ]
+        },
+        {
+          "name": "status",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.app_supplier",
+              "path": "status",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.fm_supplier",
+              "path": "status",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlsuppliers.2e0828"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm",
+                  "gold_etl_from_sage"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlsuppliers.2e0828"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "bc_blocked",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "bc.vendors",
+              "path": "blocked",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.serializevendor.7acf77"
+            }
+          ]
+        },
+        {
+          "name": "incoterms",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.app_supplier",
+              "path": "incoterms",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.supplier.56b59a"
+            }
+          ]
+        },
+        {
+          "name": "lead_time_days",
+          "value_type": "integer",
+          "sources": [
+            {
+              "binding": "portal.app_supplier",
+              "path": "lead_time_days",
+              "parser": "integer_text"
+            },
+            {
+              "binding": "portal.fm_supplier",
+              "path": "lt",
+              "parser": "integer_text"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlsuppliers.2e0828"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm",
+                  "gold_etl_from_sage"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlsuppliers.2e0828"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "supplier_type",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.app_supplier",
+              "path": "supplier_type",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.fm_supplier",
+              "path": "type",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlsuppliers.2e0828"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm",
+                  "gold_etl_from_sage"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlsuppliers.2e0828"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "website",
+          "value_type": "text",
+          "description": "Used only to corroborate mail-domain leads, never to name a supplier.",
+          "sources": [
+            {
+              "binding": "portal.app_supplier",
+              "path": "website",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "bc_balance",
+          "value_type": "money",
+          "currency": "CAD",
+          "markings": [
+            "finance"
+          ],
+          "availability": "degraded",
+          "availability_reason": "Vendor balance is in the company LCY and is a point-in-time value.",
+          "sources": [
+            {
+              "binding": "bc.vendors",
+              "path": "balance",
+              "parser": "decimal_text",
+              "tax_basis": "unknown"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.bctransactioncurrency.67bd64"
+            },
+            {
+              "kind": "ref",
+              "id": "live-trace.latest-json-bc-case-entities-live-2026-1.a185c0"
+            }
+          ]
+        },
+        {
+          "name": "external_id",
+          "value_type": "text",
+          "description": "fm-supp-{n}, a bare FM id, or sage-vend-{VENDORID}.",
+          "sources": [
+            {
+              "binding": "portal.app_supplier",
+              "path": "external_id",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "portal/src/lib/mrp/fm-supplier-id.ts",
+              "commit": "b46934a",
+              "note": "parseFmSupplierId: FM supplier id stored as fm-supp-{n} or a bare number.",
+              "symbol": "parseFmSupplierId",
+              "lines": "5"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.upsertvendors.d50ef1"
+            }
+          ]
+        },
+        {
+          "name": "deleted_at",
+          "value_type": "timestamp",
+          "sources": [
+            {
+              "binding": "portal.app_supplier",
+              "path": "deleted_at",
+              "parser": "iso_timestamp"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.supplier.56b59a"
+            }
+          ]
+        }
+      ],
+      "identity_keys": [
+        {
+          "name": "supplier_code",
+          "properties": [
+            "code"
+          ],
+          "tier": "verified",
+          "unique": true,
+          "scope": "within_binding",
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.supplier.56b59a"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.serializevendor.7acf77"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.issagestylevendorcode.serializers"
+            }
+          ],
+          "identifier_kind": "supplier_code"
+        }
+      ],
+      "display": [
+        "name"
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.supplier.56b59a"
+        },
+        {
+          "kind": "ref",
+          "id": "context-pack.03-portal-md-3-5.5e11bc"
+        }
+      ]
+    },
+    {
+      "id": "Manufacturer",
+      "description": "A material manufacturer behind a supplier (FM manufacturer). The gold copy app_manufacturer is not bound: its ETL mints a new row id on every run.",
+      "interfaces": [
+        "Party"
+      ],
+      "availability": {
+        "state": "served"
+      },
+      "bindings": [
+        {
+          "id": "portal.fm_manufacturer",
+          "source": "portal_api",
+          "relation": "public.manufacturer",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "default": "fm_bronze"
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.public-manufacturer.bb15de"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.etlmanufacturers.049489"
+            }
+          ]
+        }
+      ],
+      "properties": [
+        {
+          "name": "name",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.fm_manufacturer",
+              "path": "name",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "country",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.fm_manufacturer",
+              "path": "country",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "gmp_compliance",
+          "value_type": "text",
+          "markings": [
+            "quality_controlled"
+          ],
+          "sources": [
+            {
+              "binding": "portal.fm_manufacturer",
+              "path": "gmpcompliance",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "contact_rep",
+          "value_type": "text",
+          "markings": [
+            "pii"
+          ],
+          "sources": [
+            {
+              "binding": "portal.fm_manufacturer",
+              "path": "contcrep",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "context-pack.03-portal-md-5.3be8d0"
+            }
+          ]
+        }
+      ],
+      "display": [
+        "name"
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.manufacturer.a48410"
+        },
+        {
+          "kind": "ref",
+          "id": "upstream-code.etlmanufacturers.049489"
+        }
+      ]
+    },
+    {
+      "id": "SupplierItem",
+      "description": "A supplier's offer for one item: price, purchase unit, lead time.",
+      "availability": {
+        "state": "served"
+      },
+      "bindings": [
+        {
+          "id": "portal.app_supplier_product",
+          "source": "portal_api",
+          "relation": "public.app_supplier_product",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "default": "gold_native_staging",
+            "rules": [
+              {
+                "when": [
+                  {
+                    "path": "source",
+                    "op": "in",
+                    "value": [
+                      "raw",
+                      "pack"
+                    ]
+                  }
+                ],
+                "lineage": "gold_etl_from_fm",
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.supplierproduct.7bca74"
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "services/workbench-api/manifest/allowlist.json",
+              "commit": "b46934a",
+              "note": "Reporting API allowlist entry public.app_supplier_product: the cited columns are served.",
+              "symbol": "public.app_supplier_product"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.supplierproduct.7bca74"
+            }
+          ],
+          "note": "etlSupplierProducts copies do not set source; with the (supplierId, productId) unique key only the first copy survives, so copied rows can hold first-run costs."
+        },
+        {
+          "id": "portal.fm_raw_material_supplier",
+          "source": "portal_api",
+          "relation": "public.raw_material_supplier",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "default": "fm_bronze"
+          },
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "services/workbench-api/manifest/allowlist.json",
+              "commit": "b46934a",
+              "note": "Reporting API allowlist entry public.raw_material_supplier: the cited columns are served.",
+              "symbol": "public.raw_material_supplier"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.etlsupplierproducts.ee2e9d"
+            }
+          ]
+        },
+        {
+          "id": "portal.fm_packaging_supplier",
+          "source": "portal_api",
+          "relation": "public.packaging_supplier",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "default": "fm_bronze"
+          },
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "services/workbench-api/manifest/allowlist.json",
+              "commit": "b46934a",
+              "note": "Reporting API allowlist entry public.packaging_supplier: the cited columns are served.",
+              "symbol": "public.packaging_supplier"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.etlsupplierproducts.ee2e9d"
+            }
+          ]
+        }
+      ],
+      "properties": [
+        {
+          "name": "supplier_item_number",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.app_supplier_product",
+              "path": "supplier_item_number",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.fm_raw_material_supplier",
+              "path": "itemnumber",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.fm_packaging_supplier",
+              "path": "itemnumber",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlsupplierproducts.ee2e9d"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlsupplierproducts.ee2e9d"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_cost_per_kg",
+          "value_type": "money",
+          "money_measure": "unit_price",
+          "description": "FM computed system cost, in each record's currency: per kg for raw materials, per purchase unit (uofm) for packaging.",
+          "markings": [
+            "finance"
+          ],
+          "sources": [
+            {
+              "binding": "portal.app_supplier_product",
+              "path": "system_cost",
+              "parser": "decimal_text",
+              "currency_from": "currency",
+              "tax_basis": "unknown",
+              "per_unit_unknown": {
+                "reason": "One column holds FM raw costs (per kg) and packaging costs (per purchase unit, a unit app_supplier_product does not carry), and Portal-native rows state none; only rows whose source is 'raw' are decided (per_unit_rules), none while source stays null.",
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "portal.supplier_product_system_cost_mixed"
+                  }
+                ]
+              },
+              "per_unit_rules": [
+                {
+                  "id": "fm_raw_per_kg",
+                  "when": [
+                    {
+                      "path": "source",
+                      "op": "eq",
+                      "value": "raw"
+                    }
+                  ],
+                  "per_unit": "kg",
+                  "note": "A row whose source column says 'raw' holds an FM raw_material_supplier cost_system, per kg (the Prisma model documents systemCost as $/kg). Today it decides nothing: etlSupplierProducts copies do not set source (the source note above) and the live profile of public.app_supplier_product (3,000-row sample) has source 100% null, so every row stays price_denominator_unknown (undecided no_rule_holds) until a writer sets source. Packaging ('pack') and Portal-native rows stay unknown.",
+                  "evidence": [
+                    {
+                      "kind": "ref",
+                      "id": "portal.supplier_product_system_cost_mixed"
+                    },
+                    {
+                      "kind": "ref",
+                      "id": "portal.fm_raw_costs_per_kg"
+                    },
+                    {
+                      "kind": "ref",
+                      "id": "upstream-code.supplierproduct.7bca74"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "binding": "portal.fm_raw_material_supplier",
+              "path": "costsystem",
+              "parser": "decimal_text",
+              "currency_from": "currency_c",
+              "tax_basis": "unknown",
+              "per_unit": "kg",
+              "evidence": [
+                {
+                  "kind": "ref",
+                  "id": "portal.fm_raw_costs_per_kg"
+                }
+              ]
+            },
+            {
+              "binding": "portal.fm_packaging_supplier",
+              "path": "costsystem_c",
+              "parser": "decimal_text",
+              "currency_from": "currency",
+              "tax_basis": "unknown",
+              "per_unit_from": "uofm",
+              "evidence": [
+                {
+                  "kind": "ref",
+                  "id": "portal.fm_pack_costs_per_uofm"
+                }
+              ]
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlsupplierproducts.ee2e9d"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlsupplierproducts.ee2e9d"
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.supplierproduct.7bca74"
+            }
+          ]
+        },
+        {
+          "name": "entry_cost",
+          "value_type": "money",
+          "money_measure": "unit_price",
+          "description": "Supplier price as entered in FM, in the supplier's currency: per kg for raw materials (not per purchase unit), per purchase unit (uofm) for packaging. The gold copy app_supplier_product.unit_cost is not served.",
+          "markings": [
+            "finance"
+          ],
+          "sources": [
+            {
+              "binding": "portal.fm_raw_material_supplier",
+              "path": "costentry",
+              "parser": "decimal_text",
+              "currency_from": "currency_c",
+              "tax_basis": "unknown",
+              "per_unit": "kg",
+              "evidence": [
+                {
+                  "kind": "ref",
+                  "id": "portal.fm_raw_costs_per_kg"
+                }
+              ]
+            },
+            {
+              "binding": "portal.fm_packaging_supplier",
+              "path": "costentry",
+              "parser": "decimal_text",
+              "currency_from": "currency",
+              "tax_basis": "unknown",
+              "per_unit_from": "uofm",
+              "evidence": [
+                {
+                  "kind": "ref",
+                  "id": "portal.fm_pack_costs_per_uofm"
+                }
+              ]
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlsupplierproducts.ee2e9d"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "purchase_uom",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.fm_raw_material_supplier",
+              "path": "uofm",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.fm_packaging_supplier",
+              "path": "uofm",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlsupplierproducts.ee2e9d"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "kg_per_purchase_unit",
+          "value_type": "decimal",
+          "description": "Conversion the Portal uses to turn received kg into purchase units.",
+          "sources": [
+            {
+              "binding": "portal.fm_raw_material_supplier",
+              "path": "kgperuofm_c",
+              "parser": "decimal_text"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "portal/src/lib/mrp/apply-po-line-receive.ts",
+              "commit": "b46934a",
+              "note": "receiveQtyToPurchaseUom: kg received / FM raw_material_supplier.kgperuofm_c = purchase units.",
+              "symbol": "receiveQtyToPurchaseUom",
+              "lines": "58"
+            }
+          ]
+        },
+        {
+          "name": "lead_time_days",
+          "value_type": "integer",
+          "sources": [
+            {
+              "binding": "portal.app_supplier_product",
+              "path": "lead_time_days",
+              "parser": "integer_text"
+            },
+            {
+              "binding": "portal.fm_raw_material_supplier",
+              "path": "lt",
+              "parser": "integer_text"
+            },
+            {
+              "binding": "portal.fm_packaging_supplier",
+              "path": "lt",
+              "parser": "integer_text"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlsupplierproducts.ee2e9d"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlsupplierproducts.ee2e9d"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "min_order",
+          "value_type": "decimal",
+          "description": "Minimum order in the purchase unit: a constraint, not an ordered quantity.",
+          "sources": [
+            {
+              "binding": "portal.app_supplier_product",
+              "path": "min_order_qty",
+              "parser": "decimal_text"
+            },
+            {
+              "binding": "portal.fm_raw_material_supplier",
+              "path": "minorder",
+              "parser": "decimal_text"
+            },
+            {
+              "binding": "portal.fm_packaging_supplier",
+              "path": "minorder",
+              "parser": "decimal_text"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlsupplierproducts.ee2e9d"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlsupplierproducts.ee2e9d"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "is_preferred",
+          "value_type": "boolean",
+          "sources": [
+            {
+              "binding": "portal.app_supplier_product",
+              "path": "is_preferred",
+              "parser": "boolean_text"
+            }
+          ]
+        },
+        {
+          "name": "country_of_origin",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "portal.app_supplier_product",
+              "path": "country_of_origin",
+              "parser": "trim"
+            }
+          ]
+        }
+      ],
+      "display": [
+        "supplier_item_number"
+      ],
+      "markings": [
+        "finance"
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.supplierproduct.7bca74"
+        },
+        {
+          "kind": "ref",
+          "id": "context-pack.03-portal-md-3-5.5e11bc"
+        }
+      ]
+    },
+    {
+      "id": "Contact",
+      "description": "A BC contact (person or company contact). Portal CustomerContact is not served, so Portal-side contacts are only the FM customer.contcperson text on Customer.",
+      "interfaces": [
+        "Party"
+      ],
+      "availability": {
+        "state": "partial",
+        "reason": "Only BC contacts are readable; app_customer_contact and FM contact tables are outside the reporting API allowlist.",
+        "upstream_ask": "Q3"
+      },
+      "bindings": [
+        {
+          "id": "bc.contacts",
+          "source": "bc",
+          "relation": "contacts",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "from_capture": "bc_company"
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench-code.live-source-grammar-py.4afed4"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.bcbookkey.e32697"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench-code.live-source-grammar-py.560dcf"
+            }
+          ],
+          "note": "BC contacts; fields unverified live (no probe yet)."
+        }
+      ],
+      "properties": [
+        {
+          "name": "number",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "bc.contacts",
+              "path": "number",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "display_name",
+          "value_type": "text",
+          "markings": [
+            "pii"
+          ],
+          "sources": [
+            {
+              "binding": "bc.contacts",
+              "path": "displayName",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "contact_type",
+          "value_type": "text",
+          "description": "Person or Company.",
+          "sources": [
+            {
+              "binding": "bc.contacts",
+              "path": "type",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "company_number",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "bc.contacts",
+              "path": "companyNumber",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "company_name",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "bc.contacts",
+              "path": "companyName",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "email",
+          "value_type": "text",
+          "markings": [
+            "pii"
+          ],
+          "sources": [
+            {
+              "binding": "bc.contacts",
+              "path": "email",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "phone_number",
+          "value_type": "text",
+          "markings": [
+            "pii"
+          ],
+          "sources": [
+            {
+              "binding": "bc.contacts",
+              "path": "phoneNumber",
+              "parser": "trim"
+            }
+          ]
+        }
+      ],
+      "display": [
+        "display_name"
+      ],
+      "markings": [
+        "pii"
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "workbench-code.live-source-grammar-py.560dcf"
+        },
+        {
+          "kind": "ref",
+          "id": "context-pack.03-portal-md-5.3be8d0"
+        }
+      ]
+    }
+  ],
+  "link_types": [
+    {
+      "id": "Product.same_record_as",
+      "from": "Product",
+      "to": "Product",
+      "name": "same_record_as",
+      "reverse_name": "same_record_as",
+      "cardinality": "N:M",
+      "description": "Records of one item in different systems. Codes are stored copies (FM->gold ETL, gold->BC serializer), so a code match is verified but non-unique codes yield candidates, never a merge. The gold external_id -> FM id link (fm-<family>-{id}) needs a prefixed-id compare the format lacks.",
+      "bindings": [
+        {
+          "kind": "same_record",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_product",
+          "to_binding": "portal.fm_raw_material",
+          "pairs": [
+            {
+              "from": "code",
+              "to": "rawcode",
+              "compare": "identifier",
+              "identifier_kind": "item_code"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.etlproducts.712d7f"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-raw-materials-packaging-bulk-prod.36f18f"
+            }
+          ]
+        },
+        {
+          "kind": "same_record",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_product",
+          "to_binding": "portal.fm_packaging",
+          "pairs": [
+            {
+              "from": "code",
+              "to": "packcode",
+              "compare": "identifier",
+              "identifier_kind": "item_code"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.etlproducts.712d7f"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-raw-materials-packaging-bulk-prod.36f18f"
+            }
+          ]
+        },
+        {
+          "kind": "same_record",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_product",
+          "to_binding": "portal.fm_bulk_product",
+          "pairs": [
+            {
+              "from": "code",
+              "to": "bulkcode_u",
+              "compare": "identifier",
+              "identifier_kind": "item_code"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.etlproducts.712d7f"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-raw-materials-packaging-bulk-prod.36f18f"
+            }
+          ]
+        },
+        {
+          "kind": "same_record",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_product",
+          "to_binding": "portal.fm_finished_product",
+          "pairs": [
+            {
+              "from": "code",
+              "to": "codefp_c",
+              "compare": "identifier",
+              "identifier_kind": "item_code"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.etlproducts.712d7f"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-raw-materials-packaging-bulk-prod.36f18f"
+            }
+          ]
+        },
+        {
+          "kind": "same_record",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_product",
+          "to_binding": "bc.items",
+          "pairs": [
+            {
+              "from": "code",
+              "to": "number",
+              "compare": "identifier",
+              "identifier_kind": "item_code"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.bcitemnumber.4ae4db"
+            }
+          ]
+        },
+        {
+          "kind": "same_record",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_product",
+          "to_binding": "portal.sage_ic_item",
+          "pairs": [
+            {
+              "from": "erp_code",
+              "to": "itemno",
+              "compare": "identifier",
+              "identifier_kind": "erp_item_code"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.upsertitems.b5e83c"
+            },
+            {
+              "kind": "ref",
+              "id": "context-pack.03-portal-md-3-6.9db86c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "Product.owned_by",
+      "from": "Product",
+      "to": "Customer",
+      "name": "owned_by",
+      "reverse_name": "owns_items",
+      "cardinality": "N:1",
+      "description": "Customer-specific FM items (bulk, finished product, packaging) name their owner by FM customer id.",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_finished_product",
+          "to_binding": "portal.fm_customer",
+          "pairs": [
+            {
+              "from": "idcust",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-raw-materials-packaging-bulk-prod.36f18f"
+            }
+          ]
+        },
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_bulk_product",
+          "to_binding": "portal.fm_customer",
+          "pairs": [
+            {
+              "from": "idcust",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-raw-materials-packaging-bulk-prod.36f18f"
+            }
+          ]
+        },
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_packaging",
+          "to_binding": "portal.fm_customer",
+          "pairs": [
+            {
+              "from": "idcust",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-raw-materials-packaging-bulk-prod.36f18f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "Product.fills_bulk",
+      "from": "Product",
+      "to": "Product",
+      "name": "fills_bulk",
+      "reverse_name": "filled_into",
+      "cardinality": "N:1",
+      "description": "A finished product is filled from one FM bulk product.",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_finished_product",
+          "to_binding": "portal.fm_bulk_product",
+          "pairs": [
+            {
+              "from": "idbulk",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-raw-materials-packaging-bulk-prod.36f18f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "Customer.same_record_as",
+      "from": "Customer",
+      "to": "Customer",
+      "name": "same_record_as",
+      "reverse_name": "same_record_as",
+      "cardinality": "N:M",
+      "description": "Customer cards of one party. erp_code (Sage IDCUST) is written by the Sage ETL and is the BC No., but is not unique on app_customer, so it yields candidates. FM<->gold is by the FM code the ETL copies into app_customer.code (TRIM, a stored key compared as text_id), at most stored_by_text_join because the same ETL claims a Portal-native row by that code; the fm-cust-{id} external_id link needs the prefixed-id compare (OPEN-DECISIONS).",
+      "bindings": [
+        {
+          "kind": "same_record",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_customer",
+          "to_binding": "portal.sage_ar_customer",
+          "pairs": [
+            {
+              "from": "erp_code",
+              "to": "idcust",
+              "compare": "identifier",
+              "identifier_kind": "customer_erp_code"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.upsertcustomers.9e65d0"
+            }
+          ]
+        },
+        {
+          "kind": "same_record",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_customer",
+          "to_binding": "bc.customers",
+          "pairs": [
+            {
+              "from": "erp_code",
+              "to": "number",
+              "compare": "identifier",
+              "identifier_kind": "customer_erp_code"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.resolvecustomerbcnumber.07a6e9"
+            }
+          ]
+        },
+        {
+          "kind": "same_record",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.sage_ar_customer",
+          "to_binding": "bc.customers",
+          "pairs": [
+            {
+              "from": "idcust",
+              "to": "number",
+              "compare": "identifier",
+              "identifier_kind": "customer_erp_code"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.resolvecustomerbcnumber.07a6e9"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.upsertcustomers.9e65d0"
+            }
+          ]
+        },
+        {
+          "kind": "same_record",
+          "tier_ceiling": "stored_by_text_join",
+          "from_binding": "portal.app_customer",
+          "to_binding": "portal.fm_customer",
+          "pairs": [
+            {
+              "from": "code",
+              "to": "code",
+              "compare": "text_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.etlcustomers.70a343"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.silvercustomers.code"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "Customer.billed_to",
+      "from": "Customer",
+      "to": "Customer",
+      "name": "billed_to",
+      "reverse_name": "pays_for",
+      "cardinality": "N:1",
+      "description": "The payer card (bill_to_erp_code = the payer's IDCUST).",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_customer",
+          "to_binding": "portal.app_customer",
+          "pairs": [
+            {
+              "from": "bill_to_erp_code",
+              "to": "erp_code",
+              "compare": "identifier",
+              "identifier_kind": "customer_erp_code"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "portal/src/lib/business-central/serializers.ts",
+              "commit": "b46934a",
+              "note": "resolveBillToCustomerNumber",
+              "lines": "190-205"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "CustomerLocation.location_of",
+      "from": "CustomerLocation",
+      "to": "Customer",
+      "name": "location_of",
+      "reverse_name": "locations",
+      "cardinality": "N:1",
+      "description": "Ship-to location of a customer.",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_customer_location",
+          "to_binding": "portal.app_customer",
+          "pairs": [
+            {
+              "from": "customer_id",
+              "to": "id",
+              "compare": "text_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.customerlocation.64c39f"
+            }
+          ]
+        },
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.sage_ar_ship_to",
+          "to_binding": "portal.sage_ar_customer",
+          "pairs": [
+            {
+              "from": "idcust",
+              "to": "idcust",
+              "compare": "text_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.sage-ar-ship-to.e9f1b0"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "CustomerLocation.same_record_as",
+      "from": "CustomerLocation",
+      "to": "CustomerLocation",
+      "name": "same_record_as",
+      "reverse_name": "same_record_as",
+      "cardinality": "1:1",
+      "description": "Gold location copied from a Sage ship-to (legacy IDCUST + ship-to code).",
+      "bindings": [
+        {
+          "kind": "same_record",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_customer_location",
+          "to_binding": "portal.sage_ar_ship_to",
+          "pairs": [
+            {
+              "from": "legacy_sage_idcust",
+              "to": "idcust",
+              "compare": "text_id"
+            },
+            {
+              "from": "legacy_sage_ship_to_code",
+              "to": "idcustshpt",
+              "compare": "text_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.customerlocation.64c39f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "Supplier.same_record_as",
+      "from": "Supplier",
+      "to": "Supplier",
+      "name": "same_record_as",
+      "reverse_name": "same_record_as",
+      "cardinality": "N:M",
+      "description": "Supplier cards of one party. The Portal writes the BC vendor No. from app_supplier.code only for Sage-style codes; pure-digit FM codes are never BC numbers (serializers.ts:150-160, 204-214 @b46934a), so the code pair is a lead until an identifier kind restricts it (OPEN-DECISIONS supplier-code-bc-vendor). FM<->gold: app_supplier.external_id fm-supp-{id} is the ETL's stored key for FM supplier {id} (etlSuppliers; parseFmSupplierId), compared under the fm_supplier_id kind that maps the prefixed and the bare id to one key, so it is verified; a malformed or other-prefix external id joins nothing. The name pair stays a lead for suppliers without that key.",
+      "bindings": [
+        {
+          "kind": "same_record",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.app_supplier",
+          "to_binding": "bc.vendors",
+          "pairs": [
+            {
+              "from": "code",
+              "to": "number",
+              "compare": "identifier",
+              "identifier_kind": "supplier_code"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.serializevendor.7acf77"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.issagestylevendorcode.serializers"
+            }
+          ]
+        },
+        {
+          "kind": "same_record",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_supplier",
+          "to_binding": "portal.fm_supplier",
+          "pairs": [
+            {
+              "from": "external_id",
+              "to": "id",
+              "compare": "identifier",
+              "identifier_kind": "fm_supplier_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.etlsuppliers.2e0828"
+            },
+            {
+              "kind": "upstream_code",
+              "repo": "plx-customer-portal",
+              "path": "portal/src/lib/mrp/fm-supplier-id.ts",
+              "commit": "b46934a",
+              "note": "parseFmSupplierId reads app_supplier.externalId fm-supp-{n} or a bare number as FM supplier id n; supplierIdsMatch compares suppliers by that id.",
+              "symbol": "parseFmSupplierId",
+              "lines": "5"
+            }
+          ]
+        },
+        {
+          "kind": "text_match",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.app_supplier",
+          "to_binding": "portal.fm_supplier",
+          "pairs": [
+            {
+              "from": "name",
+              "to": "name",
+              "compare": "text"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.etlsuppliers.2e0828"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "Manufacturer.represented_by",
+      "from": "Manufacturer",
+      "to": "Supplier",
+      "name": "represented_by",
+      "reverse_name": "manufacturers",
+      "cardinality": "N:1",
+      "description": "FM manufacturer -> its supplier.",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_manufacturer",
+          "to_binding": "portal.fm_supplier",
+          "pairs": [
+            {
+              "from": "idsupplier",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.public-manufacturer.bb15de"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.manufacturer.a48410"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "SupplierItem.offered_by",
+      "from": "SupplierItem",
+      "to": "Supplier",
+      "name": "offered_by",
+      "reverse_name": "offers",
+      "cardinality": "N:1",
+      "description": "The supplier making the offer.",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_supplier_product",
+          "to_binding": "portal.app_supplier",
+          "pairs": [
+            {
+              "from": "supplier_id",
+              "to": "id",
+              "compare": "text_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.supplierproduct.7bca74"
+            }
+          ]
+        },
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_raw_material_supplier",
+          "to_binding": "portal.fm_supplier",
+          "pairs": [
+            {
+              "from": "idsupplier",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.etlsupplierproducts.ee2e9d"
+            }
+          ]
+        },
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_packaging_supplier",
+          "to_binding": "portal.fm_supplier",
+          "pairs": [
+            {
+              "from": "idsupp",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.etlsupplierproducts.ee2e9d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "SupplierItem.for_item",
+      "from": "SupplierItem",
+      "to": "Product",
+      "name": "for_item",
+      "reverse_name": "supplier_offers",
+      "cardinality": "N:1",
+      "description": "The item offered.",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_supplier_product",
+          "to_binding": "portal.app_product",
+          "pairs": [
+            {
+              "from": "product_id",
+              "to": "id",
+              "compare": "text_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.supplierproduct.7bca74"
+            }
+          ]
+        },
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_raw_material_supplier",
+          "to_binding": "portal.fm_raw_material",
+          "pairs": [
+            {
+              "from": "idraw",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.etlsupplierproducts.ee2e9d"
+            }
+          ]
+        },
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_packaging_supplier",
+          "to_binding": "portal.fm_packaging",
+          "pairs": [
+            {
+              "from": "idpack",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.etlsupplierproducts.ee2e9d"
+            }
+          ]
+        }
+      ],
+      "markings": [
+        "finance"
+      ]
+    },
+    {
+      "id": "Contact.of_company",
+      "from": "Contact",
+      "to": "Contact",
+      "name": "of_company",
+      "reverse_name": "people",
+      "cardinality": "N:1",
+      "description": "A person contact's company contact (same BC company).",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "bc.contacts",
+          "to_binding": "bc.contacts",
+          "pairs": [
+            {
+              "from": "companyNumber",
+              "to": "number",
+              "compare": "text_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench-code.live-source-grammar-py.560dcf"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_same_company_scope"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "Contact.same_record_as",
+      "from": "Contact",
+      "to": "Contact",
+      "name": "same_record_as",
+      "reverse_name": "same_record_as",
+      "cardinality": "N:M",
+      "description": "BC contact cards of one person or company in different BC books: display name, e-mail, phone and company name scored by ontology/identity_scoring.py (person). Reviewed only: BC keeps no cross-book contact key.",
+      "bindings": [
+        {
+          "kind": "reviewed",
+          "tier_ceiling": "reviewed",
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "wb.identity_scoring"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "event_types": [
+    {
+      "id": "Customer.blocked_changed",
+      "object_type": "Customer",
+      "description": "BC blocked option changed between two captures.",
+      "time_basis": "capture_observed",
+      "observed_property": "bc_blocked",
+      "qualifiers": [
+        {
+          "qualifier": "customer",
+          "object_type": "Customer",
+          "via": "self"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "live-trace.latest-json-bc-case-entities-live-2026-1.a185c0"
+        }
+      ]
+    },
+    {
+      "id": "Product.blocked_changed",
+      "object_type": "Product",
+      "description": "Item blocked flag changed between two captures.",
+      "time_basis": "capture_observed",
+      "observed_property": "blocked",
+      "qualifiers": [
+        {
+          "qualifier": "item",
+          "object_type": "Product",
+          "via": "self"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "live-trace.latest-json-bc-case-entities-live-2026-1.a185c0"
+        }
+      ]
+    },
+    {
+      "id": "SupplierItem.cost_changed",
+      "object_type": "SupplierItem",
+      "description": "Supplier price changed between two captures.",
+      "time_basis": "capture_observed",
+      "observed_property": "entry_cost",
+      "qualifiers": [
+        {
+          "qualifier": "offer",
+          "object_type": "SupplierItem",
+          "via": "self"
+        },
+        {
+          "qualifier": "supplier",
+          "object_type": "Supplier",
+          "via": "SupplierItem.offered_by"
+        },
+        {
+          "qualifier": "item",
+          "object_type": "Product",
+          "via": "SupplierItem.for_item"
+        }
+      ],
+      "markings": [
+        "finance"
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "upstream-code.etlsupplierproducts.ee2e9d"
+        }
+      ]
+    }
+  ],
+  "evidence_catalog": {
+    "context-pack.03-portal-md-3-1.d6d515": {
+      "kind": "context_pack",
+      "ref": "docs/reference/portal-code-map.md#3.1",
+      "note": "Customer identity: id mixes cuid and fm-cust-N; erp_code = Sage IDCUST = BC No. (not unique); external_id forms fm-cust-, local-cust-, sage-cust-."
+    },
+    "context-pack.03-portal-md-3-5.5e11bc": {
+      "kind": "context_pack",
+      "ref": "docs/reference/portal-code-map.md#3.5",
+      "note": "Supplier, SupplierProduct, FM raw_material_supplier / packaging_supplier."
+    },
+    "context-pack.03-portal-md-3-6.9db86c": {
+      "kind": "context_pack",
+      "ref": "docs/reference/portal-code-map.md#3.6",
+      "note": "Item identifiers: code = BC Item No., erpCode = Sage IC item No., externalId not unique; standard_cost/unit_cost are not served."
+    },
+    "context-pack.03-portal-md-5.3be8d0": {
+      "kind": "context_pack",
+      "ref": "docs/reference/portal-code-map.md#5",
+      "note": "Contact names, emails, phones and costs ARE served (D3 decision kept them): the Workbench must trim them per actor (pii / finance markings)."
+    },
+    "live-trace.latest-json-bc-case-entities-live-2026-1.a185c0": {
+      "kind": "live_trace",
+      "ref": "claude/verify-live:results/latest.json#bc.case_entities (live-2026-10-01T19:39:24Z)",
+      "note": "Live read-only probe of purchaseOrders, purchaseReceipts, purchaseInvoices, salesOrders, salesInvoices, items, vendors and customers (+ document lines) in the 3 Production companies: select_allowlist_absent and filter_fields_absent were empty, so every field in BC_QUERY_SPECS exists live."
+    },
+    "upstream-code.bcbookkey.e32697": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/src/lib/business-central/company-pins.ts",
+      "commit": "b46934a",
+      "note": "Portal names the three Production companies by book: manufacturing (My Company / PLX Manufacturing), distribution (PLX Distribution / Petra Soap Distribution), consol (PLX Consol / Petra Hygienic Systems International Ltd). Lineage bc_<book> uses these keys.",
+      "symbol": "BcBookKey",
+      "lines": "14-28"
+    },
+    "upstream-code.bcitemnumber.4ae4db": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/src/lib/business-central/serializers.ts",
+      "commit": "b46934a",
+      "note": "bcItemNumber / bcItemNumbersEqual: BC Item No. = trimmed Portal code truncated to 20, compared case-insensitively; serializeItem sets the BC No. from Product.code (never erpCode).",
+      "symbol": "bcItemNumber",
+      "lines": "826-870"
+    },
+    "upstream-code.bctransactioncurrency.67bd64": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/src/lib/business-central/serializers.ts",
+      "commit": "b46934a",
+      "note": "bcTransactionCurrency omits CAD so BC uses the company LCY: a blank currencyCode on a BC document of the manufacturing or distribution book means CAD.",
+      "symbol": "bcTransactionCurrency",
+      "lines": "428-434"
+    },
+    "upstream-code.bcuomcode.ba2e7d": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/src/lib/business-central/serializers.ts",
+      "commit": "b46934a",
+      "note": "bcUomCode / BC_UOM_CODE maps Portal UoM to BC codes (EA->PCS, CS/CASE->CSE, G->GR, default PCS): Portal and BC UoM vocabularies differ and are never compared directly.",
+      "symbol": "bcUomCode",
+      "lines": "726"
+    },
+    "upstream-code.customer.25869b": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "b46934a",
+      "note": "model Customer @@map(\"app_customer\"): id (cuid or fm-cust-N), code, erpCode (Sage IDCUST = BC customer No., not unique), billToErpCode, priceListCode, currency, externalId, deletedAt.",
+      "symbol": "Customer",
+      "lines": "1299-1388"
+    },
+    "upstream-code.customerlocation.64c39f": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "b46934a",
+      "note": "model CustomerLocation @@map(\"app_customer_location\"): customerId FK, bcShipToCode, legacySageIdcust, legacySageShipToCode, isDefault.",
+      "symbol": "CustomerLocation",
+      "lines": "1440-1475"
+    },
+    "upstream-code.etlcustomers.70a343": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/scripts/etl-silver-to-gold.ts",
+      "commit": "b46934a",
+      "note": "etlCustomers: FM silver.customers -> app_customer external_id fm-cust-{FM id}, code = FM code; a Portal-native row with the same code is only stamped.",
+      "symbol": "etlCustomers",
+      "lines": "128-210"
+    },
+    "upstream-code.etlmanufacturers.049489": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/scripts/etl-silver-to-gold.ts",
+      "commit": "b46934a",
+      "note": "etlManufacturers inserts a fresh cuid per FM row on every run (ON CONFLICT (id) never fires): gold app_manufacturer rows are not a stable copy of FM manufacturer, so only FM is bound.",
+      "symbol": "etlManufacturers",
+      "lines": "2059-2090"
+    },
+    "upstream-code.etlproducts.712d7f": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/scripts/etl-silver-to-gold.ts",
+      "commit": "b46934a",
+      "note": "etlProducts: 4 FM tables -> app_product keyed by external_id {fm-raw,fm-pack,fm-bulk,fm-fp}-{id}; code/name/uom overwritten from FM silver on every run; a Portal-native row with the same code is only stamped with external_id.",
+      "symbol": "etlProducts",
+      "lines": "300-427"
+    },
+    "upstream-code.etlsupplierproducts.ee2e9d": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/scripts/etl-silver-to-gold.ts",
+      "commit": "b46934a",
+      "note": "etlSupplierProducts: FM raw_material_suppliers + packaging_suppliers -> app_supplier_product (unit_cost = cost_entry, system_cost = cost_system, currency default CAD); inserts with a fresh cuid, so the (supplierId, productId) unique key keeps the first copy.",
+      "symbol": "etlSupplierProducts",
+      "lines": "1746-1798"
+    },
+    "upstream-code.etlsuppliers.2e0828": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/scripts/etl-silver-to-gold.ts",
+      "commit": "b46934a",
+      "note": "etlSuppliers: FM silver.suppliers -> app_supplier external_id fm-supp-{FM id}.",
+      "symbol": "etlSuppliers",
+      "lines": "214-300"
+    },
+    "upstream-code.loadcustomerheader.8ba028": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/src/lib/customers/read.ts",
+      "commit": "b46934a",
+      "note": "loadCustomerHeader: CustomerLocal first, else FM bronze customer + CustomerOverride: the Portal reads the FM card as the customer header.",
+      "symbol": "loadCustomerHeader",
+      "lines": "290"
+    },
+    "upstream-code.manufacturer.a48410": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "b46934a",
+      "note": "model Manufacturer @@map(\"app_manufacturer\"): supplierId -> Supplier.",
+      "symbol": "Manufacturer",
+      "lines": "7108-7123"
+    },
+    "upstream-code.pricelistlookuporder.d2259c": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/src/lib/sage/product-pricing.ts",
+      "commit": "b46934a",
+      "note": "priceListLookupOrder / resolveAssignedPriceList: gold Customer.priceListCode first, then sage.ar_customer.priclist.",
+      "symbol": "priceListLookupOrder",
+      "lines": "59-148"
+    },
+    "upstream-code.product.11eed8": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "b46934a",
+      "note": "model Product @@map(\"app_product\"): unique code (= Portal/FM code and today's BC Item No.), erpCode (Sage IC item No.), externalId fm-raw|fm-pack|fm-bulk|fm-fp-{FM id} (not unique), productType, uom, blocked, cost columns.",
+      "symbol": "Product",
+      "lines": "1720-1849"
+    },
+    "upstream-code.public-manufacturer.bb15de": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "services/workbench-api/manifest/allowlist.json",
+      "commit": "b46934a",
+      "note": "Reporting API allowlist entry public.manufacturer: the cited columns are served.",
+      "symbol": "public.manufacturer"
+    },
+    "upstream-code.resolvecustomerbcnumber.07a6e9": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/src/lib/business-central/serializers.ts",
+      "commit": "b46934a",
+      "note": "resolveCustomerBcNumber: BC customer No. = app_customer.erp_code (Sage IDCUST, <= 20 chars); rows without erp_code are never sent to BC.",
+      "symbol": "resolveCustomerBcNumber",
+      "lines": "160-200"
+    },
+    "upstream-code.sage-ar-ship-to.e9f1b0": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "services/workbench-api/manifest/allowlist.json",
+      "commit": "b46934a",
+      "note": "Reporting API allowlist entry sage.ar_ship_to: the cited columns are served.",
+      "symbol": "sage.ar_ship_to"
+    },
+    "upstream-code.serializevendor.7acf77": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/src/lib/business-central/serializers.ts",
+      "commit": "b46934a",
+      "note": "resolveVendorBcNumber / serializeVendor: BC vendor No. = Sage-style app_supplier.code (pure-numeric FM codes are omitted and BC auto-numbers); blocked = All when status is not ACTIVE.",
+      "symbol": "serializeVendor",
+      "lines": "208-214"
+    },
+    "upstream-code.silver-raw-materials-packaging-bulk-prod.36f18f": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "scripts/migrations/20260403_enhance_silver_views.sql",
+      "commit": "b46934a",
+      "note": "silver views name the FM item codes: raw_material.rawcode, packaging.packcode, bulk_product.bulkcode_u, finished_product.codefp_c (+ codeerp, idcust, idbulk, unitsperbox, fill).",
+      "symbol": "silver.raw_materials|packaging|bulk_products|finished_products",
+      "lines": "325-428"
+    },
+    "upstream-code.stampfgerpcodefromfilemaker.8e41f6": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/scripts/etl-sage-distribution-gold.mjs",
+      "commit": "b46934a",
+      "note": "stampFgErpCodeFromFileMaker: FG erp_code comes from FM finished_product.codeerp.",
+      "symbol": "stampFgErpCodeFromFileMaker",
+      "lines": "139-191"
+    },
+    "upstream-code.supplier.56b59a": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "b46934a",
+      "note": "model Supplier @@map(\"app_supplier\"): unique code and externalId (fm-supp-{n} or bare FM id), currency, incoterms, deletedAt.",
+      "symbol": "Supplier",
+      "lines": "1482-1539"
+    },
+    "upstream-code.supplierproduct.7bca74": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "b46934a",
+      "note": "model SupplierProduct @@map(\"app_supplier_product\"): unique [supplierId, productId], unitCost + currency, systemCost ($/kg for PLX), source 'raw'|'pack' (FM rawsupp vs packsupp).",
+      "symbol": "SupplierProduct",
+      "lines": "1603-1641"
+    },
+    "upstream-code.upsertcustomers.9e65d0": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/scripts/etl-sage-distribution-gold.mjs",
+      "commit": "b46934a",
+      "note": "upsertCustomers: Sage ar_customer -> app_customer external_id sage-cust-{IDCUST}, erp_code = IDCUST.",
+      "symbol": "upsertCustomers",
+      "lines": "311-449"
+    },
+    "upstream-code.upsertfgitemlinks.955437": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/scripts/etl-sage-distribution-gold.mjs",
+      "commit": "b46934a",
+      "note": "upsertFgItemLinks: Sage FG items -> app_product external_id sage-fg-{itemno}.",
+      "symbol": "upsertFgItemLinks",
+      "lines": "259-310"
+    },
+    "upstream-code.upsertitems.b5e83c": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/scripts/etl-sage-distribution-gold.mjs",
+      "commit": "b46934a",
+      "note": "upsertItems: Sage ic_item -> app_product external_id sage-dist-{itemno}, code = fmtitemno ?? itemno, uom = lower(stockunit), product_type DISTRIBUTION.",
+      "symbol": "upsertItems",
+      "lines": "192-257"
+    },
+    "upstream-code.upsertvendors.d50ef1": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/scripts/etl-sage-distribution-gold.mjs",
+      "commit": "b46934a",
+      "note": "upsertVendors: Sage vendors -> app_supplier external_id sage-vend-{VENDORID}.",
+      "symbol": "upsertVendors",
+      "lines": "450-611"
+    },
+    "workbench-code.live-source-grammar-py.4afed4": {
+      "kind": "workbench_code",
+      "path": "integrations/live_source_grammar.py",
+      "commit": "0615a02",
+      "note": "BC_ENTITY_SETS / BC_QUERY_SPECS: the GET-only BC entity sets and $select fields the Workbench may read; document lines always carry id and documentId."
+    },
+    "workbench-code.live-source-grammar-py.560dcf": {
+      "kind": "workbench_code",
+      "path": "integrations/live_source_grammar.py",
+      "commit": "0615a02",
+      "note": "contacts is in BC_ENTITY_SETS (GET allowed) but has no BC_QUERY_SPECS entry: no $select allowlist and no live probe yet. Field names follow the BC API v2.0 contact resource."
+    },
+    "upstream-code.issagestylevendorcode.serializers": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/src/lib/business-central/serializers.ts",
+      "commit": "b46934a",
+      "symbol": "isSageStyleVendorCode",
+      "lines": "150-214",
+      "note": "The Portal sends app_supplier.code as the BC Vendor No. only when it is Sage-style (has a letter, not pure digits); pure-digit FM codes are omitted and BC auto-numbers the vendor. A pure-digit code equal to a BC vendor No. is a coincidence. The C0 pair/predicate grammar cannot express 'Sage-style', so the pair is capped at lead until an identifier kind does."
+    },
+    "workbench.bc_same_company_scope": {
+      "kind": "workbench_code",
+      "path": "ontology/schema.py",
+      "note": "Both ends are BC captures: compare only within one BC company (bc_<book> equal on both ends). BC numbers are unique per company only; masters synced to several books and consolidation copies reuse them (SO vs DSO series: outbox-drain.ts:880-890 @b46934a). Machine-readable today as ontology.schema.link_company_scope / CompiledSchema.company_scope; a C0 field is asked in bc-link-company-scope."
+    },
+    "upstream-code.silvercustomers.code": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "scripts/migrations/20260403_enhance_silver_views.sql",
+      "commit": "b46934a",
+      "note": "silver.customers.code = NULLIF(TRIM(public.customer.code), ''); etlCustomers (portal/scripts/etl-silver-to-gold.ts:128-210) writes it to app_customer.code via safeStr (trim) and claims a Portal-native row WHERE code = $1. app_customer.code is a stored copy of the FM code (Customer.code @unique, portal/prisma/schema.prisma:1302), so the pair compares text_id; an FM code with surrounding spaces does not link (missed, never false). Unchanged at c3ffda3.",
+      "symbol": "silver.customers",
+      "lines": "49-52"
+    },
+    "portal.bc_item_card_price_per_base_uom": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/src/lib/business-central/serializers.ts",
+      "commit": "b46934a",
+      "symbol": "serializeItem",
+      "lines": "852-884",
+      "note": "The Portal writes a BC item card with baseUnitOfMeasureCode = bcUomCode(product uom) and unitCost/unitPrice from that product's per-uom costs: item card prices are per the item's base unit of measure."
+    },
+    "portal.fm_raw_costs_per_kg": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/src/app/api/mrp/generate-po/reorder-items/route.ts",
+      "commit": "b46934a",
+      "lines": "171-186",
+      "note": "Verified by the Portal against staging data (UAT #136): in raw_material_supplier both costsystem (CAD) and costentry (supplier currency) are per kilogram, not per purchase unit; per-UoM cost = per-kg cost x kgperuofm_c."
+    },
+    "portal.fm_pack_costs_per_uofm": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/src/app/api/mrp/generate-po/pack-reorder-items/route.ts",
+      "commit": "b46934a",
+      "lines": "109-180",
+      "note": "Packaging reorder: the line uom is packaging_supplier.uofm and its unit cost is costentry, else costsystem_c, used as is (no conversion): packaging costs are per uofm."
+    },
+    "portal.supplier_product_system_cost_mixed": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/scripts/etl-silver-to-gold.ts",
+      "commit": "b46934a",
+      "symbol": "etlSupplierProducts",
+      "lines": "1746-1781",
+      "note": "etlSupplierProducts copies FM raw (per kg) and packaging (per uofm) cost_system into one app_supplier_product.system_cost column, which the Prisma model documents as $/kg (schema.prisma:1615@b46934a)."
+    },
+    "wb.identity_scoring": {
+      "kind": "workbench_code",
+      "path": "ontology/identity_scoring.py",
+      "note": "Weighted identity candidates (Fellegi-Sunter: blocking, field comparison levels, m/u from verified and reviewed pairs) offered for a person's review; a link exists only once plx.review records the decision, projected by ontology/reviews.py link_step as reviewed."
+    }
+  }
+}

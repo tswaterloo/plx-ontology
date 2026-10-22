@@ -1,0 +1,96 @@
+{
+ "id": "ontology.lot_trace",
+ "description": "Supplier-lot traceability (decision 2026-10-20-documents-lot-trace-supplier-lot): one GET-only SharePoint capture of the Portal's raw-material receiving folder (the ontology.document_fields_coa scope, integrations/capture_sharepoint.py through the GET-only Graph client; scans OCR-read locally) and a GET-only Portal mirror of the trace relations (scripts/eval_lot_trace.py TRACE_RELATIONS: gold and FileMaker receipt lines, receipts, suppliers, purchase orders, the FM PO lines and the gold products), projected together into the check's temporary host state with the host's post-project steps, so each certificate of analysis's lot field links the receipt lines whose supplier_lot_number it states (CertificateOfAnalysis.for_receipt_line, a lead; a supplier lot never matches a PLX lab id or batch code). Measured through the served host (plx.around) for the capture principal: certificates served, with a lot stated and linked to one receipt line or more; receipt lines projected, with a supplier lot and linked; of the linked certificates, how many reach a Supplier (line_of, supplied_by), a PurchaseOrder (line_of, receives on gold; receives_line, line_of on FM) and a Product (for_item, gold only); up to 3 sample traces as line sources and one boolean per hop; leaks: certificates or certificate links served to a principal granted the Portal relations but no SharePoint file, must be 0. Zero certificates fails (--min-documents 1); no linked certificate, or none reaching a Supplier and a PurchaseOrder, fails; a run without the Portal is blocked no_record_source. Counts, booleans and enums only; no names, paths, ids, lots or text.",
+ "source": "sharepoint",
+ "command": [
+  "python3",
+  "-m",
+  "scripts.eval_document_fields_live",
+  "--lot-trace",
+  "--state-dir",
+  "{tmp}/state",
+  "--scope",
+  "examples/sharepoint_capture_scope.receiving_coa.live-check.json",
+  "--live-audience",
+  "examples/sharepoint_capture_audience.live-check.json",
+  "--min-documents",
+  "1",
+  "--capture-budget-seconds",
+  "900",
+  "--portal-budget-seconds",
+  "600"
+ ],
+ "cadence": "daily",
+ "timeout_seconds": 1600,
+ "requires_env": [
+  "MICROSOFT_GRAPH_TENANT_ID",
+  "MICROSOFT_GRAPH_CLIENT_ID",
+  "MICROSOFT_GRAPH_CLIENT_SECRET",
+  "SHAREPOINT_SITE_ID",
+  "PLX_WORKBENCH_API_URL",
+  "PLX_WORKBENCH_API_KEY"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "certificates",
+   "certificates_with_lot",
+   "certificates_linked",
+   "receipt_lines",
+   "receipt_lines_with_supplier_lot",
+   "receipt_lines_linked",
+   "hops.supplier",
+   "hops.purchase_order",
+   "hops.product",
+   "samples",
+   "capture_complete",
+   "portal_mirror.relations_complete"
+  ],
+  "json_equals": {
+   "ok": true,
+   "check": "ontology.lot_trace",
+   "leaks": 0,
+   "capture_complete": true
+  },
+  "json_min": {
+   "certificates": 1,
+   "certificates_linked": 1,
+   "receipt_lines_with_supplier_lot": 1,
+   "hops.supplier": 1,
+   "hops.purchase_order": 1
+  }
+ },
+ "record": [
+  "ok",
+  "evidence_label",
+  "blocked",
+  "certificates",
+  "certificates_withheld",
+  "certificates_with_lot",
+  "certificates_linked",
+  "links",
+  "receipt_lines",
+  "receipt_lines_with_supplier_lot",
+  "receipt_lines_linked",
+  "hops",
+  "line_sources",
+  "samples",
+  "leaks",
+  "capture",
+  "capture_complete",
+  "portal_mirror",
+  "requests_sent"
+ ],
+ "record_keys": [
+  "hops",
+  "line_sources",
+  "capture",
+  "portal_mirror"
+ ],
+ "record_enums": [
+  "evidence_label",
+  "blocked"
+ ],
+ "notes": "Live-unverified until the live check runs it; its test is injected-transport (ontology/tests/test_lot_trace.py LotTraceLiveCheckTests runs scripts.eval_document_fields_live --lot-trace over the in-process FakeDrive and a fixture Portal, checks this spec's expectations on that output, and that a run whose certificates state no served supplier lot fails them). Captured files and mirrored rows live only in {tmp}/state and are deleted with the check's temporary directory. Unverified live assumptions: the vendor CoAs in Receiving/Raw state the supplier's lot under a label the certificate_of_analysis profile knows; the Portal's gold receipt lines carry supplier_lot_number and FM's raw and packaging receipts lotnoqc in the supplier's own spelling (the lot normaliser upper-cases and trims, nothing more); how many certificates link is measured here, never assumed. FM receipt rows bind no product, so hops.product counts gold traces only.",
+ "blocked_when": "blocked"
+}

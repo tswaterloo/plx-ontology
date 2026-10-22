@@ -1,0 +1,477 @@
+{
+ "schema": "plx-live-read-evidence/v1",
+ "evidence_mode": "live-read (Portal Workbench reporting API, read-only)",
+ "captured_at": "2026-09-30T02:00:46.611503+00:00",
+ "command": "python3 -m operating investigate-workbench-api-named AssemblyOrder 10718 (after lookup-workbench-api-named AssemblyOrder AO-26005B)",
+ "root": "portal-fm-api-paged::AssemblyOrder::10718",
+ "evidence_digest": "3b30f625ffef92238a3a2f1718bd3244fe43ee3786c127f73a29f2590ae3a513",
+ "atomic_upstream_snapshot": false,
+ "current_named_source": false,
+ "limitations": [
+  "Relation pages are individually read from a reporting replica; concurrent changes can tear the reconstructed transaction.",
+  "Missing relationships and deleted rows are not proven absent; older advisory observations are not withdrawn.",
+  "This advisory source cannot authorize actions or satisfy exact named-replica currentness."
+ ],
+ "import": {
+  "observations": 25,
+  "relations": 34
+ },
+ "relation_reads": {
+  "public.assembly_order": {
+   "rows": 10968,
+   "pages": 11
+  },
+  "public.bulk_product": {
+   "rows": 1356,
+   "pages": 2
+  },
+  "public.customer": {
+   "rows": 142,
+   "pages": 1
+  },
+  "public.finished_product": {
+   "rows": 1617,
+   "pages": 2
+  },
+  "public.order_entry": {
+   "rows": 518,
+   "pages": 1
+  },
+  "public.order_entry_item": {
+   "rows": 1681,
+   "pages": 2
+  },
+  "public.order_entry_item_assembly": {
+   "rows": 1917,
+   "pages": 2
+  },
+  "public.packaging": {
+   "rows": 2329,
+   "pages": 3
+  },
+  "silver.assembly_order_damage": {
+   "rows": 6012,
+   "pages": 7
+  },
+  "silver.assembly_order_items": {
+   "rows": 63659,
+   "pages": 64
+  },
+  "silver.assembly_order_statuses": {
+   "rows": 15137,
+   "pages": 16
+  },
+  "silver.production_tasks": {
+   "rows": 20825,
+   "pages": 21
+  }
+ },
+ "objects": [
+  {
+   "type": "AssemblyOrder",
+   "native_id": "10718",
+   "attributes": {
+    "date_manufactured": "2026-01-05",
+    "mo_code": "AO-26005B",
+    "productId": "1534",
+    "sourceModel": "public.assembly_order",
+    "status": "Realized",
+    "uom": "EA"
+   }
+  },
+  {
+   "type": "AssemblyOrderDamage",
+   "native_id": "5444",
+   "attributes": {
+    "assemblyItemId": "58386",
+    "assemblyOrderId": "10718",
+    "damageType": "Pack",
+    "date_entered": "2026-01-08",
+    "qtyDamaged": 20.0,
+    "qtyTotal": 180627.35,
+    "sourceModel": "silver.assembly_order_damage",
+    "status": "Generated"
+   }
+  },
+  {
+   "type": "AssemblyOrderDamage",
+   "native_id": "5445",
+   "attributes": {
+    "assemblyItemId": "58383",
+    "assemblyOrderId": "10718",
+    "damageType": "Pack",
+    "date_entered": "2026-01-08",
+    "qtyDamaged": 3.0,
+    "qtyTotal": 180627.35,
+    "sourceModel": "silver.assembly_order_damage",
+    "status": "Generated"
+   }
+  },
+  {
+   "type": "AssemblyOrderDamage",
+   "native_id": "5446",
+   "attributes": {
+    "assemblyItemId": "58384",
+    "assemblyOrderId": "10718",
+    "damageType": "Pack",
+    "date_entered": "2026-01-08",
+    "qtyDamaged": 7.0,
+    "qtyTotal": 180627.35,
+    "sourceModel": "silver.assembly_order_damage",
+    "status": "Generated"
+   }
+  },
+  {
+   "type": "AssemblyOrderItem",
+   "native_id": "58382",
+   "attributes": {
+    "actualAmount": 5974.425,
+    "assemblyOrderId": "10718",
+    "bulkProductId": "1091",
+    "finishedProductId": "1534",
+    "qtyPerBatch": 3.975,
+    "qtyPerBatchBox": 15.9,
+    "quantity": 5998.275,
+    "sourceModel": "silver.assembly_order_items"
+   }
+  },
+  {
+   "type": "AssemblyOrderItem",
+   "native_id": "58383",
+   "attributes": {
+    "actualAmount": 1503.0,
+    "assemblyOrderId": "10718",
+    "finishedProductId": "1534",
+    "packagingId": "162",
+    "qtyPerBatch": 1.0,
+    "qtyPerBatchBox": 4.0,
+    "quantity": 1509.0,
+    "sourceModel": "silver.assembly_order_items"
+   }
+  },
+  {
+   "type": "AssemblyOrderItem",
+   "native_id": "58384",
+   "attributes": {
+    "actualAmount": 1503.0,
+    "assemblyOrderId": "10718",
+    "finishedProductId": "1534",
+    "packagingId": "122",
+    "qtyPerBatch": 1.0,
+    "qtyPerBatchBox": 4.0,
+    "quantity": 1509.0,
+    "sourceModel": "silver.assembly_order_items"
+   }
+  },
+  {
+   "type": "AssemblyOrderItem",
+   "native_id": "58385",
+   "attributes": {
+    "actualAmount": 1503.0,
+    "assemblyOrderId": "10718",
+    "finishedProductId": "1534",
+    "packagingId": "2047",
+    "qtyPerBatch": 1.0,
+    "qtyPerBatchBox": 4.0,
+    "quantity": 1509.0,
+    "sourceModel": "silver.assembly_order_items"
+   }
+  },
+  {
+   "type": "AssemblyOrderItem",
+   "native_id": "58386",
+   "attributes": {
+    "actualAmount": 375.75,
+    "assemblyOrderId": "10718",
+    "finishedProductId": "1534",
+    "packagingId": "1415",
+    "qtyPerBatch": 0.25,
+    "qtyPerBatchBox": 1.0,
+    "quantity": 378.0,
+    "sourceModel": "silver.assembly_order_items"
+   }
+  },
+  {
+   "type": "AssemblyOrderItem",
+   "native_id": "58387",
+   "attributes": {
+    "actualAmount": 751.5,
+    "assemblyOrderId": "10718",
+    "finishedProductId": "1534",
+    "packagingId": "152",
+    "qtyPerBatch": 0.5,
+    "qtyPerBatchBox": 2.0,
+    "quantity": 755.0,
+    "sourceModel": "silver.assembly_order_items"
+   }
+  },
+  {
+   "type": "AssemblyOrderLink",
+   "native_id": "1245",
+   "attributes": {
+    "assemblyOrderId": "10718",
+    "quantityManufactured": 1503.0,
+    "quantityManufacturedSourceField": "qtymfg_c",
+    "quantityPlanned": 0.0,
+    "quantityPlannedSourceField": "qtyplan_c",
+    "salesOrderLineId": "1140",
+    "sourceModel": "public.order_entry_item_assembly"
+   }
+  },
+  {
+   "type": "AssemblyOrderProductionTask",
+   "native_id": "14353",
+   "attributes": {
+    "assemblyOrderId": "10718",
+    "category": "AO",
+    "date_start": "2026-01-07",
+    "hours_total": 3.333333333333333,
+    "qty": 0.0,
+    "sourceModel": "silver.production_tasks",
+    "task_type": "Setup",
+    "time_finish": "17:20:00",
+    "time_start": "16:30:00"
+   }
+  },
+  {
+   "type": "AssemblyOrderProductionTask",
+   "native_id": "14354",
+   "attributes": {
+    "assemblyOrderId": "10718",
+    "category": "AO",
+    "date_start": "2026-01-07",
+    "hours_total": 0.0833333333333333,
+    "qty": 1.0,
+    "sourceModel": "silver.production_tasks",
+    "task_type": "Line clearance",
+    "time_finish": "17:25:00",
+    "time_start": "17:20:00"
+   }
+  },
+  {
+   "type": "AssemblyOrderProductionTask",
+   "native_id": "14355",
+   "attributes": {
+    "assemblyOrderId": "10718",
+    "category": "AO",
+    "date_start": "2026-01-07",
+    "hours_total": 17.333333333333332,
+    "qty": 1502.0,
+    "sourceModel": "silver.production_tasks",
+    "task_type": "Filling",
+    "time_finish": "21:45:00",
+    "time_start": "17:25:00"
+   }
+  },
+  {
+   "type": "AssemblyOrderProductionTask",
+   "native_id": "14356",
+   "attributes": {
+    "assemblyOrderId": "10718",
+    "category": "AO",
+    "date_start": "2026-01-05",
+    "hours_total": 3.0,
+    "qty": 0.0,
+    "sourceModel": "silver.production_tasks",
+    "task_type": "Cleaning",
+    "time_finish": "22:30:00",
+    "time_start": "21:45:00"
+   }
+  },
+  {
+   "type": "SalesOrder",
+   "native_id": "351",
+   "attributes": {
+    "customerId": "89",
+    "erpCode": "OR1000151885",
+    "orderDate": "2025-12-17",
+    "poReference": "PO12172025",
+    "requiredDate": "2026-01-01",
+    "sourceModel": "public.order_entry",
+    "sourceOrderId": "351",
+    "status": "Closed"
+   }
+  },
+  {
+   "type": "SalesOrderLine",
+   "native_id": "1140",
+   "attributes": {
+    "bulkProductId": "1091",
+    "productId": "1534",
+    "quantity": 1920.0,
+    "salesOrderId": "351",
+    "sourceModel": "public.order_entry_item",
+    "status": "Completed"
+   }
+  },
+  {
+   "type": "BulkProduct",
+   "native_id": "1091",
+   "attributes": {
+    "code": "DVS-5003",
+    "customerId": "89",
+    "name": "Terra Pure - Desert Breeze - Shampoo",
+    "productType": "bulk_product",
+    "sourceModel": "public.bulk_product",
+    "status": "Final"
+   }
+  },
+  {
+   "type": "Customer",
+   "native_id": "89",
+   "attributes": {
+    "code": "DVS",
+    "companyName": "Diversified ",
+    "sourceModel": "public.customer",
+    "status": "Active"
+   }
+  },
+  {
+   "type": "Packaging",
+   "native_id": "122",
+   "attributes": {
+    "code": "P-0121",
+    "name": "Petra, Cap, for Gallon with seal",
+    "sourceModel": "public.packaging",
+    "status": "Active"
+   }
+  },
+  {
+   "type": "Packaging",
+   "native_id": "1415",
+   "attributes": {
+    "code": "P-01274",
+    "name": "Petra, Box for Round Gallons",
+    "sourceModel": "public.packaging",
+    "status": "Active"
+   }
+  },
+  {
+   "type": "Packaging",
+   "native_id": "152",
+   "attributes": {
+    "code": "P-0147",
+    "name": "Petra, Label, 4X4 White",
+    "sourceModel": "public.packaging",
+    "status": "Active"
+   }
+  },
+  {
+   "type": "Packaging",
+   "native_id": "162",
+   "attributes": {
+    "code": "P-0156",
+    "name": "Gallon Jug US 3.78L (Round)",
+    "sourceModel": "public.packaging",
+    "status": "Active"
+   }
+  },
+  {
+   "type": "Packaging",
+   "native_id": "2047",
+   "attributes": {
+    "code": "P-01872",
+    "name": "DVS, Label (UPC: 850016128508), DVS-5003-A Terra Pure Green Tea and Lemongrass Shampoo, 1 Gal",
+    "sourceModel": "public.packaging",
+    "status": "Active"
+   }
+  },
+  {
+   "type": "Product",
+   "native_id": "1534",
+   "attributes": {
+    "code": "DVS-5003-3.78L-A",
+    "customerId": "89",
+    "name": "DVS-5003-A Green Tea Shampoo GAL01-Amazon",
+    "productType": "finished_product",
+    "sourceModel": "public.finished_product",
+    "status": "Unlocked"
+   }
+  }
+ ],
+ "relationship_types": [
+  "api_paged__fm_ao_item_bulk",
+  "api_paged__fm_ao_item_finished",
+  "api_paged__fm_ao_item_packaging",
+  "api_paged__fm_assembly_link_for_line",
+  "api_paged__fm_damage_for_assembly_item",
+  "api_paged__fm_damage_of_assembly_order",
+  "api_paged__fm_item_of_assembly_order",
+  "api_paged__fm_line_of_sales_order",
+  "api_paged__fm_linked_assembly_order",
+  "api_paged__fm_ordered_by",
+  "api_paged__fm_sales_line_bulk_product",
+  "api_paged__fm_sales_line_product",
+  "api_paged__fm_task_of_assembly_order"
+ ],
+ "timeline": [
+  {
+   "at": "2026-01-05",
+   "entity": "portal-fm-api-paged::AssemblyOrderProductionTask::14356"
+  },
+  {
+   "at": "2026-01-07",
+   "entity": "portal-fm-api-paged::AssemblyOrderProductionTask::14353"
+  },
+  {
+   "at": "2026-01-07",
+   "entity": "portal-fm-api-paged::AssemblyOrderProductionTask::14354"
+  },
+  {
+   "at": "2026-01-07",
+   "entity": "portal-fm-api-paged::AssemblyOrderProductionTask::14355"
+  },
+  {
+   "at": "2026-01-08",
+   "entity": "portal-fm-api-paged::AssemblyOrderDamage::5444"
+  },
+  {
+   "at": "2026-01-08",
+   "entity": "portal-fm-api-paged::AssemblyOrderDamage::5445"
+  },
+  {
+   "at": "2026-01-08",
+   "entity": "portal-fm-api-paged::AssemblyOrderDamage::5446"
+  },
+  {
+   "at": "2026-09-30T02:00:46.611503+00:00",
+   "entity": "portal-fm-api-paged::AssemblyOrder::10718"
+  },
+  {
+   "at": "2026-09-30T02:00:46.611503+00:00",
+   "entity": "portal-fm-api-paged::AssemblyOrderItem::58382"
+  },
+  {
+   "at": "2026-09-30T02:00:46.611503+00:00",
+   "entity": "portal-fm-api-paged::AssemblyOrderItem::58383"
+  },
+  {
+   "at": "2026-09-30T02:00:46.611503+00:00",
+   "entity": "portal-fm-api-paged::AssemblyOrderItem::58384"
+  },
+  {
+   "at": "2026-09-30T02:00:46.611503+00:00",
+   "entity": "portal-fm-api-paged::AssemblyOrderItem::58385"
+  },
+  {
+   "at": "2026-09-30T02:00:46.611503+00:00",
+   "entity": "portal-fm-api-paged::AssemblyOrderItem::58386"
+  },
+  {
+   "at": "2026-09-30T02:00:46.611503+00:00",
+   "entity": "portal-fm-api-paged::AssemblyOrderItem::58387"
+  },
+  {
+   "at": "2026-09-30T02:00:46.611503+00:00",
+   "entity": "portal-fm-api-paged::AssemblyOrderLink::1245"
+  },
+  {
+   "at": "2026-09-30T02:00:46.611503+00:00",
+   "entity": "portal-fm-api-paged::SalesOrder::351"
+  },
+  {
+   "at": "2026-09-30T02:00:46.611503+00:00",
+   "entity": "portal-fm-api-paged::SalesOrderLine::1140"
+  }
+ ]
+}

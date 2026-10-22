@@ -1,0 +1,200 @@
+{
+ "format": "plx-eval-item/v1",
+ "id": "dev-F7-0001-exposed",
+ "family": "F7",
+ "split": "dev",
+ "variant": "standard",
+ "question": {
+  "text": "For Dandylion P-02289 / customer reference PO-00269, was the receipt confirmation sent, and was the inventory complaint resolved?"
+ },
+ "root": {
+  "identifier": "PO-00269",
+  "identifier_kind": "customer_reference",
+  "object_type": "Receipt"
+ },
+ "as_known_at": {
+  "time": "2026-10-02T18:07:03Z",
+  "l1_generations": {
+   "advisory_r": "a5f4e154a62be713c0ac19421c1716212f85d25d08939203dfcc5ac9ec3e6949"
+  }
+ },
+ "closed_transaction": false,
+ "lineage_stratum": "mail",
+ "known_outcome": {
+  "answerability": "partial",
+  "values": [
+   {
+    "name": "packing_list_component_rows",
+    "object_type": "SourceDocument",
+    "value": 31,
+    "citations": [
+     {
+      "l1_handle": "original://sha256/691a8427d6db7df0057f36e29f5b3c9abc7303986450772ebe99f42c1a7c5ac2",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "packing_list_boxes",
+    "object_type": "SourceDocument",
+    "value": 29,
+    "citations": [
+     {
+      "l1_handle": "original://sha256/691a8427d6db7df0057f36e29f5b3c9abc7303986450772ebe99f42c1a7c5ac2",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "packing_list_names_the_references",
+    "object_type": "SourceDocument",
+    "value": false,
+    "citations": [
+     {
+      "l1_handle": "original://sha256/691a8427d6db7df0057f36e29f5b3c9abc7303986450772ebe99f42c1a7c5ac2",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "receipt_request_received_at",
+    "object_type": "SourceMessage",
+    "value": "2026-09-29T20:36:31Z",
+    "citations": [
+     {
+      "l1_handle": "graph-mail://unrecorded-mailbox/AAMkADY4MDc2NWY4LWMwMjgtNDM5Mi1iNTY2LWIwMGNmYzAxZWYwNABGAAAAAABi-q754syHRLp6yXpvmvMcBwA8fZBoqIkCSpe7VTTiwa8yAAAAAAEMAAA8fZBoqIkCSpe7VTTiwa8yAASeDQ9OAAA%3D#received_at=2026-09-29T20:36:31Z",
+      "field_path": "row.body"
+     }
+    ]
+   },
+   {
+    "name": "receipt_request_delivery_date",
+    "object_type": "SourceMessage",
+    "value": "2026-09-30",
+    "citations": [
+     {
+      "l1_handle": "graph-mail://unrecorded-mailbox/AAMkADY4MDc2NWY4LWMwMjgtNDM5Mi1iNTY2LWIwMGNmYzAxZWYwNABGAAAAAABi-q754syHRLp6yXpvmvMcBwA8fZBoqIkCSpe7VTTiwa8yAAAAAAEMAAA8fZBoqIkCSpe7VTTiwa8yAASeDQ9OAAA%3D#received_at=2026-09-29T20:36:31Z",
+      "field_path": "row.body"
+     }
+    ]
+   },
+   {
+    "name": "confirmation_sent_at",
+    "object_type": "SourceMessage",
+    "value": "2026-09-30T17:40:27Z",
+    "citations": [
+     {
+      "l1_handle": "graph-mail://unrecorded-mailbox/AAMkADY4MDc2NWY4LWMwMjgtNDM5Mi1iNTY2LWIwMGNmYzAxZWYwNABGAAAAAABi-q754syHRLp6yXpvmvMcBwA8fZBoqIkCSpe7VTTiwa8yAAAAAAEMAAA8fZBoqIkCSpe7VTTiwa8yAASexilSAAA%3D#received_at=2026-09-30T17:40:27Z",
+      "field_path": "row.body"
+     }
+    ]
+   },
+   {
+    "name": "confirmation_attachment",
+    "object_type": "SourceDocument",
+    "value": "2485.pdf",
+    "citations": [
+     {
+      "l1_handle": "graph-mail://unrecorded-mailbox/AAMkADY4MDc2NWY4LWMwMjgtNDM5Mi1iNTY2LWIwMGNmYzAxZWYwNABGAAAAAABi-q754syHRLp6yXpvmvMcBwA8fZBoqIkCSpe7VTTiwa8yAAAAAAEMAAA8fZBoqIkCSpe7VTTiwa8yAASexilSAAA%3D#received_at=2026-09-30T17:40:27Z",
+      "field_path": "row.body"
+     },
+     {
+      "l1_handle": "original://sha256/70c62b275ae3fda858c71fc4dcfa7fe784a93fb4f68e9f3ce7e33d11788aa742",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "confirmation_matches_packing_list",
+    "object_type": "SourceDocument",
+    "value": true,
+    "citations": [
+     {
+      "l1_handle": "original://sha256/70c62b275ae3fda858c71fc4dcfa7fe784a93fb4f68e9f3ce7e33d11788aa742",
+      "field_path": "row.text"
+     },
+     {
+      "l1_handle": "original://sha256/691a8427d6db7df0057f36e29f5b3c9abc7303986450772ebe99f42c1a7c5ac2",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "complaint_after_confirmation_at",
+    "object_type": "SourceMessage",
+    "value": "2026-10-02T15:46:30Z",
+    "citations": [
+     {
+      "l1_handle": "graph-mail://unrecorded-mailbox/AAMkADY4MDc2NWY4LWMwMjgtNDM5Mi1iNTY2LWIwMGNmYzAxZWYwNABGAAAAAABi-q754syHRLp6yXpvmvMcBwA8fZBoqIkCSpe7VTTiwa8yAAAAAAEMAAA8fZBoqIkCSpe7VTTiwa8yAASfqC9UAAA%3D#received_at=2026-10-02T15:46:30Z",
+      "field_path": "row.body"
+     }
+    ]
+   }
+  ],
+  "gaps": [
+   {
+    "state": "unknown",
+    "subject": "closure of the missing-inventory complaint reported after the confirmation was sent",
+    "reason": "not_established"
+   },
+   {
+    "state": "unknown",
+    "subject": "inventory posting of the received components",
+    "reason": "not_established"
+   },
+   {
+    "state": "unknown",
+    "subject": "mapping of P-02289 to the packing-list component rows",
+    "reason": "not_established"
+   },
+   {
+    "state": "unknown",
+    "subject": "handwritten SKU and date annotations on the received packing list",
+    "reason": "handwriting_unverified"
+   },
+   {
+    "state": "unknown",
+    "subject": "dock booking or complete receipt outcome",
+    "reason": "not_established"
+   },
+   {
+    "state": "unknown",
+    "subject": "chronology: the 2026-09-29 request refers to a 2026-09-30 delivery",
+    "reason": "conflicting_sources"
+   }
+  ]
+ },
+ "must_not": [
+  "propose_action",
+  "claim_uncited_number",
+  "invent_absent_value"
+ ],
+ "oracle": {
+  "id": "oracle:advisory-dev-batch-01@f2438ec3002e3917c5634a9d4e6a93e6e95dc129d648319fdff33fac61547996",
+  "interface": "plx-eval-oracle/v1",
+  "derived_from": [
+   "context/006786de5454dcb66a83cfdd2fad4974b2545e5f61a24a75aad1b74bc288b23e.json#/evaluation_batch/cases/1",
+   "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/case_acceptance/1",
+   "docs/reference/cases-and-artifacts.md#3.6",
+   "evals/exposed/sources.json#dandy-packing-mail",
+   "evals/exposed/sources.json#dandy-packing-workbook",
+   "evals/exposed/sources.json#dandy-receipt-request",
+   "evals/exposed/sources.json#dandy-confirmation-chase",
+   "evals/exposed/sources.json#dandy-attachment-repair",
+   "evals/exposed/sources.json#dandy-confirmation-sent",
+   "evals/exposed/sources.json#dandy-received-pdf",
+   "evals/exposed/sources.json#dandy-unresolved-complaint"
+  ],
+  "computed_at": "2026-10-03T21:18:48Z"
+ },
+ "label": {
+  "status": "oracle_only",
+  "note": "Exposed real case (source batch existing-packets-development-batch-01 unit DEV-002, cluster dandylion-sept2026-receipt): dev/regression only, never held-out. Expected values are the source-backed claims of the source records (oracle.derived_from), not a Workbench oracle run and not a human audit; every claim the records do not establish is a gap with state unknown. Pending human label: a person checks known_outcome against the originals in evals/exposed/sources.json, then sets human_audited (audited_by, audited_at) or disputed."
+ },
+ "scoring": {
+  "exact_values": true,
+  "gap_honesty": true,
+  "citations_required": true
+ },
+ "created_at": "2026-10-04"
+}

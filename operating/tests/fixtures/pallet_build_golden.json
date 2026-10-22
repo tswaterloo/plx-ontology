@@ -1,0 +1,8361 @@
+{
+ "portal_commit": "48d76e835660505091f764636ec0db0d38455f37",
+ "portal_src_files": {
+  "portal/src/lib/wms/pallet-build.ts": "ce7ad53047c4ecc27a1186f38bdc2eba3cacc6df805cc2fb4b2ac6a86aeb158e",
+  "portal/src/lib/wms/pallet-layout.ts": "7360d0e4aa1fbbb8dabf65722a7c2c28aa8328215f1ada5657766ca016171f82",
+  "portal/src/lib/3pl/skid-math.ts": "b71a4418c9af57466ad42c819901774ebde3f5f04047b1daa8dac46c4767d883"
+ },
+ "results": [
+  {
+   "fn": "casesPerLayer",
+   "args": [
+    12,
+    10,
+    48,
+    40,
+    true,
+    0
+   ],
+   "result": 16
+  },
+  {
+   "fn": "casesPerLayer",
+   "args": [
+    11,
+    9,
+    48,
+    40,
+    true,
+    0
+   ],
+   "result": 16
+  },
+  {
+   "fn": "casesPerLayer",
+   "args": [
+    9,
+    11,
+    48,
+    40,
+    false,
+    0
+   ],
+   "result": 15
+  },
+  {
+   "fn": "casesPerLayer",
+   "args": [
+    9,
+    11,
+    48,
+    40,
+    true,
+    0
+   ],
+   "result": 16
+  },
+  {
+   "fn": "casesPerLayer",
+   "args": [
+    60,
+    60,
+    48,
+    40,
+    true,
+    0
+   ],
+   "result": 0
+  },
+  {
+   "fn": "casesPerLayer",
+   "args": [
+    12.313,
+    12.313,
+    48,
+    40,
+    true,
+    5
+   ],
+   "result": 12
+  },
+  {
+   "fn": "dimWeight",
+   "args": [
+    12,
+    10,
+    8
+   ],
+   "result": 7
+  },
+  {
+   "fn": "dimWeight",
+   "args": [
+    16.5,
+    11.25,
+    9.75
+   ],
+   "result": 14
+  },
+  {
+   "fn": "densityPcf",
+   "args": [
+    20,
+    12,
+    10,
+    8
+   ],
+   "result": 36
+  },
+  {
+   "fn": "densityPcf",
+   "args": [
+    1960,
+    48,
+    40,
+    54
+   ],
+   "result": 32.666666666666664
+  },
+  {
+   "fn": "densityPcf",
+   "args": [
+    5,
+    0,
+    10,
+    8
+   ],
+   "result": 0
+  },
+  {
+   "fn": "freightClassFromDensity",
+   "args": [
+    [
+     0,
+     -1,
+     0.5,
+     1,
+     1.99,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     10.5,
+     11,
+     12,
+     13.5,
+     15,
+     22.5,
+     30,
+     35,
+     36,
+     50,
+     75
+    ]
+   ],
+   "result": [
+    500,
+    500,
+    500,
+    400,
+    400,
+    300,
+    250,
+    200,
+    175,
+    150,
+    125,
+    110,
+    100,
+    100,
+    92.5,
+    92.5,
+    85,
+    77.5,
+    70,
+    65,
+    60,
+    55,
+    55,
+    50,
+    50
+   ]
+  },
+  {
+   "fn": "buildPallets",
+   "args": {
+    "spec": "SPEC",
+    "quantityCases": 96,
+    "mode": "ltl"
+   },
+   "result": {
+    "ok": true,
+    "handlingUnits": [
+     {
+      "type": "pallet",
+      "quantity": 1,
+      "lengthIn": 48,
+      "widthIn": 40,
+      "heightIn": 54,
+      "weightLb": 1960,
+      "casesPerUnit": 96,
+      "stackable": true,
+      "description": "Product — 96 cs (16/layer × 6)",
+      "densityPcf": 32.67,
+      "dimWeightLb": null,
+      "billableWeightLb": 1960,
+      "freightClass": 60,
+      "nmfcCode": null,
+      "hazmat": false
+     }
+    ],
+    "totalWeightLb": 1960,
+    "totalBillableWeightLb": 1960,
+    "totalCubicFt": 60,
+    "totalCases": 96,
+    "casesPerLayer": 16,
+    "layersPerPallet": 6,
+    "casesPerPallet": 96,
+    "fullPallets": 1,
+    "partialPalletCases": 0,
+    "totalPallets": 1,
+    "mode": "ltl",
+    "missing": [],
+    "overhangPct": 0,
+    "pattern": "block",
+    "layerLayout": {
+     "pattern": "block",
+     "layerKey": "A",
+     "caseLengthIn": 12,
+     "caseWidthIn": 10,
+     "baseLengthIn": 48,
+     "baseWidthIn": 40,
+     "effectiveLengthIn": 48,
+     "effectiveWidthIn": 40,
+     "overhangPct": 0,
+     "count": 16,
+     "placements": [
+      {
+       "x": 0,
+       "y": 0,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 12,
+       "y": 0,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 0,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 36,
+       "y": 0,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 10,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 12,
+       "y": 10,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 10,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 36,
+       "y": 10,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 20,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 12,
+       "y": 20,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 20,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 36,
+       "y": 20,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 30,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 12,
+       "y": 30,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 30,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 36,
+       "y": 30,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      }
+     ],
+     "usedRotated": false
+    },
+    "layerPair": {
+     "pattern": "block",
+     "overhangPct": 0,
+     "casesPerLayer": 16,
+     "layerA": {
+      "pattern": "block",
+      "layerKey": "A",
+      "caseLengthIn": 12,
+      "caseWidthIn": 10,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 16,
+      "placements": [
+       {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     },
+     "layerB": {
+      "pattern": "block",
+      "layerKey": "B",
+      "caseLengthIn": 12,
+      "caseWidthIn": 10,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 16,
+      "placements": [
+       {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     }
+    }
+   }
+  },
+  {
+   "fn": "buildPallets",
+   "args": {
+    "spec": "SPEC",
+    "quantityCases": 100,
+    "mode": "ltl"
+   },
+   "result": {
+    "ok": true,
+    "handlingUnits": [
+     {
+      "type": "pallet",
+      "quantity": 1,
+      "lengthIn": 48,
+      "widthIn": 40,
+      "heightIn": 54,
+      "weightLb": 1960,
+      "casesPerUnit": 96,
+      "stackable": true,
+      "description": "Product — 96 cs (16/layer × 6)",
+      "densityPcf": 32.67,
+      "dimWeightLb": null,
+      "billableWeightLb": 1960,
+      "freightClass": 60,
+      "nmfcCode": null,
+      "hazmat": false
+     },
+     {
+      "type": "pallet",
+      "quantity": 1,
+      "lengthIn": 48,
+      "widthIn": 40,
+      "heightIn": 14,
+      "weightLb": 120,
+      "casesPerUnit": 4,
+      "stackable": true,
+      "description": "Product — 4 cs (16/layer × 1)",
+      "densityPcf": 7.71,
+      "dimWeightLb": null,
+      "billableWeightLb": 120,
+      "freightClass": 125,
+      "nmfcCode": null,
+      "hazmat": false
+     }
+    ],
+    "totalWeightLb": 2080,
+    "totalBillableWeightLb": 2080,
+    "totalCubicFt": 75.56,
+    "totalCases": 100,
+    "casesPerLayer": 16,
+    "layersPerPallet": 6,
+    "casesPerPallet": 96,
+    "fullPallets": 1,
+    "partialPalletCases": 4,
+    "totalPallets": 2,
+    "mode": "ltl",
+    "missing": [],
+    "overhangPct": 0,
+    "pattern": "block",
+    "layerLayout": {
+     "pattern": "block",
+     "layerKey": "A",
+     "caseLengthIn": 12,
+     "caseWidthIn": 10,
+     "baseLengthIn": 48,
+     "baseWidthIn": 40,
+     "effectiveLengthIn": 48,
+     "effectiveWidthIn": 40,
+     "overhangPct": 0,
+     "count": 16,
+     "placements": [
+      {
+       "x": 0,
+       "y": 0,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 12,
+       "y": 0,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 0,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 36,
+       "y": 0,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 10,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 12,
+       "y": 10,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 10,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 36,
+       "y": 10,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 20,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 12,
+       "y": 20,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 20,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 36,
+       "y": 20,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 30,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 12,
+       "y": 30,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 30,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 36,
+       "y": 30,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      }
+     ],
+     "usedRotated": false
+    },
+    "layerPair": {
+     "pattern": "block",
+     "overhangPct": 0,
+     "casesPerLayer": 16,
+     "layerA": {
+      "pattern": "block",
+      "layerKey": "A",
+      "caseLengthIn": 12,
+      "caseWidthIn": 10,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 16,
+      "placements": [
+       {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     },
+     "layerB": {
+      "pattern": "block",
+      "layerKey": "B",
+      "caseLengthIn": 12,
+      "caseWidthIn": 10,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 16,
+      "placements": [
+       {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     }
+    }
+   }
+  },
+  {
+   "fn": "buildPallets",
+   "args": {
+    "spec": "SPEC",
+    "quantityUnits": 25,
+    "mode": "ltl"
+   },
+   "result": {
+    "ok": true,
+    "handlingUnits": [
+     {
+      "type": "pallet",
+      "quantity": 1,
+      "lengthIn": 48,
+      "widthIn": 40,
+      "heightIn": 14,
+      "weightLb": 80,
+      "casesPerUnit": 2,
+      "stackable": true,
+      "description": "Product — 2 cs (16/layer × 1)",
+      "densityPcf": 5.14,
+      "dimWeightLb": null,
+      "billableWeightLb": 80,
+      "freightClass": 175,
+      "nmfcCode": null,
+      "hazmat": false
+     }
+    ],
+    "totalWeightLb": 80,
+    "totalBillableWeightLb": 80,
+    "totalCubicFt": 15.56,
+    "totalCases": 2,
+    "casesPerLayer": 16,
+    "layersPerPallet": 6,
+    "casesPerPallet": 96,
+    "fullPallets": 0,
+    "partialPalletCases": 2,
+    "totalPallets": 1,
+    "mode": "ltl",
+    "missing": [],
+    "overhangPct": 0,
+    "pattern": "block",
+    "layerLayout": {
+     "pattern": "block",
+     "layerKey": "A",
+     "caseLengthIn": 12,
+     "caseWidthIn": 10,
+     "baseLengthIn": 48,
+     "baseWidthIn": 40,
+     "effectiveLengthIn": 48,
+     "effectiveWidthIn": 40,
+     "overhangPct": 0,
+     "count": 16,
+     "placements": [
+      {
+       "x": 0,
+       "y": 0,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 12,
+       "y": 0,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 0,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 36,
+       "y": 0,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 10,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 12,
+       "y": 10,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 10,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 36,
+       "y": 10,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 20,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 12,
+       "y": 20,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 20,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 36,
+       "y": 20,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 30,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 12,
+       "y": 30,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 30,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 36,
+       "y": 30,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      }
+     ],
+     "usedRotated": false
+    },
+    "layerPair": {
+     "pattern": "block",
+     "overhangPct": 0,
+     "casesPerLayer": 16,
+     "layerA": {
+      "pattern": "block",
+      "layerKey": "A",
+      "caseLengthIn": 12,
+      "caseWidthIn": 10,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 16,
+      "placements": [
+       {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     },
+     "layerB": {
+      "pattern": "block",
+      "layerKey": "B",
+      "caseLengthIn": 12,
+      "caseWidthIn": 10,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 16,
+      "placements": [
+       {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     }
+    }
+   }
+  },
+  {
+   "fn": "buildPallets",
+   "args": {
+    "spec": "SPEC",
+    "quantityUnits": 12500
+   },
+   "result": {
+    "ok": true,
+    "handlingUnits": [
+     {
+      "type": "pallet",
+      "quantity": 5,
+      "lengthIn": 48,
+      "widthIn": 40,
+      "heightIn": 54,
+      "weightLb": 1960,
+      "casesPerUnit": 96,
+      "stackable": true,
+      "description": "Product — 96 cs (16/layer × 6)",
+      "densityPcf": 32.67,
+      "dimWeightLb": null,
+      "billableWeightLb": 1960,
+      "freightClass": 60,
+      "nmfcCode": null,
+      "hazmat": false
+     },
+     {
+      "type": "pallet",
+      "quantity": 1,
+      "lengthIn": 48,
+      "widthIn": 40,
+      "heightIn": 30,
+      "weightLb": 860,
+      "casesPerUnit": 41,
+      "stackable": true,
+      "description": "Product — 41 cs (16/layer × 3)",
+      "densityPcf": 25.8,
+      "dimWeightLb": null,
+      "billableWeightLb": 860,
+      "freightClass": 65,
+      "nmfcCode": null,
+      "hazmat": false
+     }
+    ],
+    "totalWeightLb": 10660,
+    "totalBillableWeightLb": 10660,
+    "totalCubicFt": 333.33,
+    "totalCases": 521,
+    "casesPerLayer": 16,
+    "layersPerPallet": 6,
+    "casesPerPallet": 96,
+    "fullPallets": 5,
+    "partialPalletCases": 41,
+    "totalPallets": 6,
+    "mode": "ltl",
+    "missing": [],
+    "overhangPct": 0,
+    "pattern": "block",
+    "layerLayout": {
+     "pattern": "block",
+     "layerKey": "A",
+     "caseLengthIn": 12,
+     "caseWidthIn": 10,
+     "baseLengthIn": 48,
+     "baseWidthIn": 40,
+     "effectiveLengthIn": 48,
+     "effectiveWidthIn": 40,
+     "overhangPct": 0,
+     "count": 16,
+     "placements": [
+      {
+       "x": 0,
+       "y": 0,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 12,
+       "y": 0,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 0,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 36,
+       "y": 0,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 10,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 12,
+       "y": 10,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 10,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 36,
+       "y": 10,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 20,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 12,
+       "y": 20,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 20,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 36,
+       "y": 20,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 30,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 12,
+       "y": 30,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 30,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 36,
+       "y": 30,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      }
+     ],
+     "usedRotated": false
+    },
+    "layerPair": {
+     "pattern": "block",
+     "overhangPct": 0,
+     "casesPerLayer": 16,
+     "layerA": {
+      "pattern": "block",
+      "layerKey": "A",
+      "caseLengthIn": 12,
+      "caseWidthIn": 10,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 16,
+      "placements": [
+       {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     },
+     "layerB": {
+      "pattern": "block",
+      "layerKey": "B",
+      "caseLengthIn": 12,
+      "caseWidthIn": 10,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 16,
+      "placements": [
+       {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     }
+    }
+   }
+  },
+  {
+   "fn": "buildPallets",
+   "args": {
+    "spec": "SPEC",
+    "patch": {
+     "maxStackWeightLb": 1000
+    },
+    "quantityCases": 48
+   },
+   "result": {
+    "ok": true,
+    "handlingUnits": [
+     {
+      "type": "pallet",
+      "quantity": 1,
+      "lengthIn": 48,
+      "widthIn": 40,
+      "heightIn": 30,
+      "weightLb": 1000,
+      "casesPerUnit": 48,
+      "stackable": true,
+      "description": "Product — 48 cs (16/layer × 3)",
+      "densityPcf": 30,
+      "dimWeightLb": null,
+      "billableWeightLb": 1000,
+      "freightClass": 65,
+      "nmfcCode": null,
+      "hazmat": false
+     }
+    ],
+    "totalWeightLb": 1000,
+    "totalBillableWeightLb": 1000,
+    "totalCubicFt": 33.33,
+    "totalCases": 48,
+    "casesPerLayer": 16,
+    "layersPerPallet": 3,
+    "casesPerPallet": 48,
+    "fullPallets": 1,
+    "partialPalletCases": 0,
+    "totalPallets": 1,
+    "mode": "ltl",
+    "missing": [],
+    "overhangPct": 0,
+    "pattern": "block",
+    "layerLayout": {
+     "pattern": "block",
+     "layerKey": "A",
+     "caseLengthIn": 12,
+     "caseWidthIn": 10,
+     "baseLengthIn": 48,
+     "baseWidthIn": 40,
+     "effectiveLengthIn": 48,
+     "effectiveWidthIn": 40,
+     "overhangPct": 0,
+     "count": 16,
+     "placements": [
+      {
+       "x": 0,
+       "y": 0,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 12,
+       "y": 0,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 0,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 36,
+       "y": 0,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 10,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 12,
+       "y": 10,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 10,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 36,
+       "y": 10,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 20,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 12,
+       "y": 20,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 20,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 36,
+       "y": 20,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 30,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 12,
+       "y": 30,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 30,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 36,
+       "y": 30,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      }
+     ],
+     "usedRotated": false
+    },
+    "layerPair": {
+     "pattern": "block",
+     "overhangPct": 0,
+     "casesPerLayer": 16,
+     "layerA": {
+      "pattern": "block",
+      "layerKey": "A",
+      "caseLengthIn": 12,
+      "caseWidthIn": 10,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 16,
+      "placements": [
+       {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     },
+     "layerB": {
+      "pattern": "block",
+      "layerKey": "B",
+      "caseLengthIn": 12,
+      "caseWidthIn": 10,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 16,
+      "placements": [
+       {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     }
+    }
+   }
+  },
+  {
+   "fn": "buildPallets",
+   "args": {
+    "spec": "SPEC",
+    "patch": {
+     "freightClass": 92.5
+    },
+    "quantityCases": 96
+   },
+   "result": {
+    "ok": true,
+    "handlingUnits": [
+     {
+      "type": "pallet",
+      "quantity": 1,
+      "lengthIn": 48,
+      "widthIn": 40,
+      "heightIn": 54,
+      "weightLb": 1960,
+      "casesPerUnit": 96,
+      "stackable": true,
+      "description": "Product — 96 cs (16/layer × 6)",
+      "densityPcf": 32.67,
+      "dimWeightLb": null,
+      "billableWeightLb": 1960,
+      "freightClass": 92.5,
+      "nmfcCode": null,
+      "hazmat": false
+     }
+    ],
+    "totalWeightLb": 1960,
+    "totalBillableWeightLb": 1960,
+    "totalCubicFt": 60,
+    "totalCases": 96,
+    "casesPerLayer": 16,
+    "layersPerPallet": 6,
+    "casesPerPallet": 96,
+    "fullPallets": 1,
+    "partialPalletCases": 0,
+    "totalPallets": 1,
+    "mode": "ltl",
+    "missing": [],
+    "overhangPct": 0,
+    "pattern": "block",
+    "layerLayout": {
+     "pattern": "block",
+     "layerKey": "A",
+     "caseLengthIn": 12,
+     "caseWidthIn": 10,
+     "baseLengthIn": 48,
+     "baseWidthIn": 40,
+     "effectiveLengthIn": 48,
+     "effectiveWidthIn": 40,
+     "overhangPct": 0,
+     "count": 16,
+     "placements": [
+      {
+       "x": 0,
+       "y": 0,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 12,
+       "y": 0,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 0,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 36,
+       "y": 0,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 10,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 12,
+       "y": 10,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 10,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 36,
+       "y": 10,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 20,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 12,
+       "y": 20,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 20,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 36,
+       "y": 20,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 30,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 12,
+       "y": 30,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 30,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 36,
+       "y": 30,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      }
+     ],
+     "usedRotated": false
+    },
+    "layerPair": {
+     "pattern": "block",
+     "overhangPct": 0,
+     "casesPerLayer": 16,
+     "layerA": {
+      "pattern": "block",
+      "layerKey": "A",
+      "caseLengthIn": 12,
+      "caseWidthIn": 10,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 16,
+      "placements": [
+       {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     },
+     "layerB": {
+      "pattern": "block",
+      "layerKey": "B",
+      "caseLengthIn": 12,
+      "caseWidthIn": 10,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 16,
+      "placements": [
+       {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     }
+    }
+   }
+  },
+  {
+   "fn": "buildPallets",
+   "args": {
+    "spec": "SPEC",
+    "quantityCases": 5,
+    "mode": "parcel"
+   },
+   "result": {
+    "ok": true,
+    "handlingUnits": [
+     {
+      "type": "carton",
+      "quantity": 5,
+      "lengthIn": 12,
+      "widthIn": 10,
+      "heightIn": 8,
+      "weightLb": 20,
+      "casesPerUnit": 1,
+      "stackable": true,
+      "description": "Product",
+      "densityPcf": 36,
+      "dimWeightLb": 7,
+      "billableWeightLb": 20,
+      "freightClass": 55,
+      "nmfcCode": null,
+      "hazmat": false
+     }
+    ],
+    "totalWeightLb": 100,
+    "totalBillableWeightLb": 100,
+    "totalCubicFt": 2.78,
+    "totalCases": 5,
+    "casesPerLayer": 16,
+    "layersPerPallet": 0,
+    "casesPerPallet": 0,
+    "fullPallets": 0,
+    "partialPalletCases": 5,
+    "totalPallets": 0,
+    "mode": "parcel",
+    "missing": [],
+    "overhangPct": 0,
+    "pattern": "block",
+    "layerLayout": null,
+    "layerPair": null
+   }
+  },
+  {
+   "fn": "buildPallets",
+   "args": {
+    "spec": "SPEC",
+    "patch": {
+     "caseHeightIn": null
+    },
+    "quantityCases": 10
+   },
+   "result": {
+    "ok": false,
+    "missing": [
+     "caseHeightIn"
+    ],
+    "mode": "ltl",
+    "totalCases": 10,
+    "casesPerLayer": 0,
+    "layersPerPallet": 0,
+    "casesPerPallet": 0,
+    "fullPallets": 0,
+    "partialPalletCases": 0,
+    "totalPallets": 0,
+    "totalWeightLb": 0,
+    "totalBillableWeightLb": 0,
+    "totalCubicFt": 0,
+    "handlingUnits": [],
+    "overhangPct": 0,
+    "pattern": "block",
+    "layerLayout": null,
+    "layerPair": null
+   }
+  },
+  {
+   "fn": "buildPallets",
+   "args": {
+    "spec": "SPEC",
+    "patch": {
+     "unitsPerCase": null
+    },
+    "quantityUnits": 100
+   },
+   "result": {
+    "ok": false,
+    "missing": [
+     "unitsPerCase"
+    ],
+    "mode": "ltl",
+    "totalCases": 0,
+    "casesPerLayer": 0,
+    "layersPerPallet": 0,
+    "casesPerPallet": 0,
+    "fullPallets": 0,
+    "partialPalletCases": 0,
+    "totalPallets": 0,
+    "totalWeightLb": 0,
+    "totalBillableWeightLb": 0,
+    "totalCubicFt": 0,
+    "handlingUnits": [],
+    "overhangPct": 0,
+    "pattern": "block",
+    "layerLayout": null,
+    "layerPair": null
+   }
+  },
+  {
+   "fn": "buildPallets",
+   "args": {
+    "spec": "SPEC",
+    "patch": {
+     "caseLengthIn": 60,
+     "caseWidthIn": 60
+    },
+    "quantityCases": 3
+   },
+   "result": {
+    "ok": true,
+    "handlingUnits": [
+     {
+      "type": "carton",
+      "quantity": 3,
+      "lengthIn": 60,
+      "widthIn": 60,
+      "heightIn": 8,
+      "weightLb": 20,
+      "casesPerUnit": 1,
+      "stackable": true,
+      "description": "Product",
+      "densityPcf": 1.2,
+      "dimWeightLb": 208,
+      "billableWeightLb": 208,
+      "freightClass": 400,
+      "nmfcCode": null,
+      "hazmat": false
+     }
+    ],
+    "totalWeightLb": 60,
+    "totalBillableWeightLb": 624,
+    "totalCubicFt": 50,
+    "totalCases": 3,
+    "casesPerLayer": 0,
+    "layersPerPallet": 0,
+    "casesPerPallet": 0,
+    "fullPallets": 0,
+    "partialPalletCases": 3,
+    "totalPallets": 0,
+    "mode": "ltl",
+    "missing": [],
+    "overhangPct": 0,
+    "pattern": "block",
+    "layerLayout": null,
+    "layerPair": null
+   }
+  },
+  {
+   "fn": "buildPallets",
+   "args": {
+    "spec": "SPEC"
+   },
+   "result": {
+    "ok": false,
+    "missing": [
+     "quantity"
+    ],
+    "mode": "ltl",
+    "totalCases": 0,
+    "casesPerLayer": 0,
+    "layersPerPallet": 0,
+    "casesPerPallet": 0,
+    "fullPallets": 0,
+    "partialPalletCases": 0,
+    "totalPallets": 0,
+    "totalWeightLb": 0,
+    "totalBillableWeightLb": 0,
+    "totalCubicFt": 0,
+    "handlingUnits": [],
+    "overhangPct": 0,
+    "pattern": "block",
+    "layerLayout": null,
+    "layerPair": null
+   }
+  },
+  {
+   "fn": "buildPallets",
+   "args": {
+    "spec": "SPEC",
+    "quantityCases": 0
+   },
+   "result": {
+    "ok": false,
+    "missing": [],
+    "mode": "ltl",
+    "totalCases": 0,
+    "casesPerLayer": 0,
+    "layersPerPallet": 0,
+    "casesPerPallet": 0,
+    "fullPallets": 0,
+    "partialPalletCases": 0,
+    "totalPallets": 0,
+    "totalWeightLb": 0,
+    "totalBillableWeightLb": 0,
+    "totalCubicFt": 0,
+    "handlingUnits": [],
+    "overhangPct": 0,
+    "pattern": "block",
+    "layerLayout": null,
+    "layerPair": null
+   }
+  },
+  {
+   "fn": "buildPallets",
+   "args": {
+    "spec": "SPEC",
+    "quantityCases": 250.4,
+    "maxLayers": 4.7,
+    "description": "Bottles"
+   },
+   "result": {
+    "ok": true,
+    "handlingUnits": [
+     {
+      "type": "pallet",
+      "quantity": 3,
+      "lengthIn": 48,
+      "widthIn": 40,
+      "heightIn": 38,
+      "weightLb": 1320,
+      "casesPerUnit": 64,
+      "stackable": true,
+      "description": "Bottles — 64 cs (16/layer × 4)",
+      "densityPcf": 31.26,
+      "dimWeightLb": null,
+      "billableWeightLb": 1320,
+      "freightClass": 60,
+      "nmfcCode": null,
+      "hazmat": false
+     },
+     {
+      "type": "pallet",
+      "quantity": 1,
+      "lengthIn": 48,
+      "widthIn": 40,
+      "heightIn": 38,
+      "weightLb": 1220,
+      "casesPerUnit": 59,
+      "stackable": true,
+      "description": "Bottles — 59 cs (16/layer × 4)",
+      "densityPcf": 28.89,
+      "dimWeightLb": null,
+      "billableWeightLb": 1220,
+      "freightClass": 65,
+      "nmfcCode": null,
+      "hazmat": false
+     }
+    ],
+    "totalWeightLb": 5180,
+    "totalBillableWeightLb": 5180,
+    "totalCubicFt": 168.89,
+    "totalCases": 251,
+    "casesPerLayer": 16,
+    "layersPerPallet": 4,
+    "casesPerPallet": 64,
+    "fullPallets": 3,
+    "partialPalletCases": 59,
+    "totalPallets": 4,
+    "mode": "ltl",
+    "missing": [],
+    "overhangPct": 0,
+    "pattern": "block",
+    "layerLayout": {
+     "pattern": "block",
+     "layerKey": "A",
+     "caseLengthIn": 12,
+     "caseWidthIn": 10,
+     "baseLengthIn": 48,
+     "baseWidthIn": 40,
+     "effectiveLengthIn": 48,
+     "effectiveWidthIn": 40,
+     "overhangPct": 0,
+     "count": 16,
+     "placements": [
+      {
+       "x": 0,
+       "y": 0,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 12,
+       "y": 0,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 0,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 36,
+       "y": 0,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 10,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 12,
+       "y": 10,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 10,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 36,
+       "y": 10,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 20,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 12,
+       "y": 20,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 20,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 36,
+       "y": 20,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 30,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 12,
+       "y": 30,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 30,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 36,
+       "y": 30,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      }
+     ],
+     "usedRotated": false
+    },
+    "layerPair": {
+     "pattern": "block",
+     "overhangPct": 0,
+     "casesPerLayer": 16,
+     "layerA": {
+      "pattern": "block",
+      "layerKey": "A",
+      "caseLengthIn": 12,
+      "caseWidthIn": 10,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 16,
+      "placements": [
+       {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     },
+     "layerB": {
+      "pattern": "block",
+      "layerKey": "B",
+      "caseLengthIn": 12,
+      "caseWidthIn": 10,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 16,
+      "placements": [
+       {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     }
+    }
+   }
+  },
+  {
+   "fn": "buildPallets",
+   "args": {
+    "spec": "SPEC",
+    "patch": {
+     "maxStackHeightIn": 0,
+     "palletBaseLengthIn": 0,
+     "palletTareWeightLb": 0,
+     "stackable": false,
+     "hazmat": true,
+     "nmfcCode": "156600"
+    },
+    "quantityCases": 333
+   },
+   "result": {
+    "ok": true,
+    "handlingUnits": [
+     {
+      "type": "pallet",
+      "quantity": 2,
+      "lengthIn": 48,
+      "widthIn": 40,
+      "heightIn": 62,
+      "weightLb": 2240,
+      "casesPerUnit": 112,
+      "stackable": false,
+      "description": "Product — 112 cs (16/layer × 7)",
+      "densityPcf": 32.52,
+      "dimWeightLb": null,
+      "billableWeightLb": 2240,
+      "freightClass": 60,
+      "nmfcCode": "156600",
+      "hazmat": true
+     },
+     {
+      "type": "pallet",
+      "quantity": 1,
+      "lengthIn": 48,
+      "widthIn": 40,
+      "heightIn": 62,
+      "weightLb": 2180,
+      "casesPerUnit": 109,
+      "stackable": false,
+      "description": "Product — 109 cs (16/layer × 7)",
+      "densityPcf": 31.65,
+      "dimWeightLb": null,
+      "billableWeightLb": 2180,
+      "freightClass": 60,
+      "nmfcCode": "156600",
+      "hazmat": true
+     }
+    ],
+    "totalWeightLb": 6660,
+    "totalBillableWeightLb": 6660,
+    "totalCubicFt": 206.67,
+    "totalCases": 333,
+    "casesPerLayer": 16,
+    "layersPerPallet": 7,
+    "casesPerPallet": 112,
+    "fullPallets": 2,
+    "partialPalletCases": 109,
+    "totalPallets": 3,
+    "mode": "ltl",
+    "missing": [],
+    "overhangPct": 0,
+    "pattern": "block",
+    "layerLayout": {
+     "pattern": "block",
+     "layerKey": "A",
+     "caseLengthIn": 12,
+     "caseWidthIn": 10,
+     "baseLengthIn": 48,
+     "baseWidthIn": 40,
+     "effectiveLengthIn": 48,
+     "effectiveWidthIn": 40,
+     "overhangPct": 0,
+     "count": 16,
+     "placements": [
+      {
+       "x": 0,
+       "y": 0,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 12,
+       "y": 0,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 0,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 36,
+       "y": 0,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 10,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 12,
+       "y": 10,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 10,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 36,
+       "y": 10,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 20,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 12,
+       "y": 20,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 20,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 36,
+       "y": 20,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 30,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 12,
+       "y": 30,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 30,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 36,
+       "y": 30,
+       "w": 12,
+       "h": 10,
+       "rotated": false
+      }
+     ],
+     "usedRotated": false
+    },
+    "layerPair": {
+     "pattern": "block",
+     "overhangPct": 0,
+     "casesPerLayer": 16,
+     "layerA": {
+      "pattern": "block",
+      "layerKey": "A",
+      "caseLengthIn": 12,
+      "caseWidthIn": 10,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 16,
+      "placements": [
+       {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     },
+     "layerB": {
+      "pattern": "block",
+      "layerKey": "B",
+      "caseLengthIn": 12,
+      "caseWidthIn": 10,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 16,
+      "placements": [
+       {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 0,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 10,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 20,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 36,
+        "y": 30,
+        "w": 12,
+        "h": 10,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     }
+    }
+   }
+  },
+  {
+   "fn": "buildPallets",
+   "args": {
+    "spec": "OC",
+    "quantityCases": 120,
+    "overhangPct": 5
+   },
+   "result": {
+    "ok": true,
+    "handlingUnits": [
+     {
+      "type": "pallet",
+      "quantity": 2,
+      "lengthIn": 48,
+      "widthIn": 40,
+      "heightIn": 54.5,
+      "weightLb": 1700.8,
+      "casesPerUnit": 48,
+      "stackable": true,
+      "description": "Gallon jugs — 48 cs (12/layer × 4)",
+      "densityPcf": 28.09,
+      "dimWeightLb": null,
+      "billableWeightLb": 1700.8,
+      "freightClass": 65,
+      "nmfcCode": null,
+      "hazmat": false
+     },
+     {
+      "type": "pallet",
+      "quantity": 1,
+      "lengthIn": 48,
+      "widthIn": 40,
+      "heightIn": 30.25,
+      "weightLb": 870.4,
+      "casesPerUnit": 24,
+      "stackable": true,
+      "description": "Gallon jugs — 24 cs (12/layer × 2)",
+      "densityPcf": 25.9,
+      "dimWeightLb": null,
+      "billableWeightLb": 870.4,
+      "freightClass": 65,
+      "nmfcCode": null,
+      "hazmat": false
+     }
+    ],
+    "totalWeightLb": 4272,
+    "totalBillableWeightLb": 4272,
+    "totalCubicFt": 154.72,
+    "totalCases": 120,
+    "casesPerLayer": 12,
+    "layersPerPallet": 4,
+    "casesPerPallet": 48,
+    "fullPallets": 2,
+    "partialPalletCases": 24,
+    "totalPallets": 3,
+    "mode": "ltl",
+    "missing": [],
+    "overhangPct": 5,
+    "pattern": "block",
+    "layerLayout": {
+     "pattern": "block",
+     "layerKey": "A",
+     "caseLengthIn": 12.313,
+     "caseWidthIn": 12.313,
+     "baseLengthIn": 48,
+     "baseWidthIn": 40,
+     "effectiveLengthIn": 50.400000000000006,
+     "effectiveWidthIn": 42,
+     "overhangPct": 5,
+     "count": 12,
+     "placements": [
+      {
+       "x": 0.5740000000000016,
+       "y": 2.5305,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      },
+      {
+       "x": 12.887000000000002,
+       "y": 2.5305,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      },
+      {
+       "x": 25.200000000000003,
+       "y": 2.5305,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      },
+      {
+       "x": 37.513000000000005,
+       "y": 2.5305,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      },
+      {
+       "x": 0.5740000000000016,
+       "y": 14.8435,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      },
+      {
+       "x": 12.887000000000002,
+       "y": 14.8435,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      },
+      {
+       "x": 25.200000000000003,
+       "y": 14.8435,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      },
+      {
+       "x": 37.513000000000005,
+       "y": 14.8435,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      },
+      {
+       "x": 0.5740000000000016,
+       "y": 27.1565,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      },
+      {
+       "x": 12.887000000000002,
+       "y": 27.1565,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      },
+      {
+       "x": 25.200000000000003,
+       "y": 27.1565,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      },
+      {
+       "x": 37.513000000000005,
+       "y": 27.1565,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      }
+     ],
+     "usedRotated": false
+    },
+    "layerPair": {
+     "pattern": "block",
+     "overhangPct": 5,
+     "casesPerLayer": 12,
+     "layerA": {
+      "pattern": "block",
+      "layerKey": "A",
+      "caseLengthIn": 12.313,
+      "caseWidthIn": 12.313,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 50.400000000000006,
+      "effectiveWidthIn": 42,
+      "overhangPct": 5,
+      "count": 12,
+      "placements": [
+       {
+        "x": 0.5740000000000016,
+        "y": 2.5305,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 12.887000000000002,
+        "y": 2.5305,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 25.200000000000003,
+        "y": 2.5305,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 37.513000000000005,
+        "y": 2.5305,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 0.5740000000000016,
+        "y": 14.8435,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 12.887000000000002,
+        "y": 14.8435,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 25.200000000000003,
+        "y": 14.8435,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 37.513000000000005,
+        "y": 14.8435,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 0.5740000000000016,
+        "y": 27.1565,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 12.887000000000002,
+        "y": 27.1565,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 25.200000000000003,
+        "y": 27.1565,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 37.513000000000005,
+        "y": 27.1565,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     },
+     "layerB": {
+      "pattern": "block",
+      "layerKey": "B",
+      "caseLengthIn": 12.313,
+      "caseWidthIn": 12.313,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 50.400000000000006,
+      "effectiveWidthIn": 42,
+      "overhangPct": 5,
+      "count": 12,
+      "placements": [
+       {
+        "x": 0.5740000000000016,
+        "y": 2.5305,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 12.887000000000002,
+        "y": 2.5305,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 25.200000000000003,
+        "y": 2.5305,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 37.513000000000005,
+        "y": 2.5305,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 0.5740000000000016,
+        "y": 14.8435,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 12.887000000000002,
+        "y": 14.8435,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 25.200000000000003,
+        "y": 14.8435,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 37.513000000000005,
+        "y": 14.8435,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 0.5740000000000016,
+        "y": 27.1565,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 12.887000000000002,
+        "y": 27.1565,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 25.200000000000003,
+        "y": 27.1565,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 37.513000000000005,
+        "y": 27.1565,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     }
+    }
+   }
+  },
+  {
+   "fn": "buildPallets",
+   "args": {
+    "spec": "OC",
+    "quantityCases": 120,
+    "overhangPct": 5,
+    "pattern": "brick"
+   },
+   "result": {
+    "ok": true,
+    "handlingUnits": [
+     {
+      "type": "pallet",
+      "quantity": 3,
+      "lengthIn": 48,
+      "widthIn": 40,
+      "heightIn": 54.5,
+      "weightLb": 1424,
+      "casesPerUnit": 40,
+      "stackable": true,
+      "description": "Gallon jugs — 40 cs (10/layer × 4, brick)",
+      "densityPcf": 23.52,
+      "dimWeightLb": null,
+      "billableWeightLb": 1424,
+      "freightClass": 65,
+      "nmfcCode": null,
+      "hazmat": false
+     }
+    ],
+    "totalWeightLb": 4272,
+    "totalBillableWeightLb": 4272,
+    "totalCubicFt": 181.67,
+    "totalCases": 120,
+    "casesPerLayer": 10,
+    "layersPerPallet": 4,
+    "casesPerPallet": 40,
+    "fullPallets": 3,
+    "partialPalletCases": 0,
+    "totalPallets": 3,
+    "mode": "ltl",
+    "missing": [],
+    "overhangPct": 5,
+    "pattern": "brick",
+    "layerLayout": {
+     "pattern": "brick",
+     "layerKey": "A",
+     "caseLengthIn": 12.313,
+     "caseWidthIn": 12.313,
+     "baseLengthIn": 48,
+     "baseWidthIn": 40,
+     "effectiveLengthIn": 50.400000000000006,
+     "effectiveWidthIn": 42,
+     "overhangPct": 5,
+     "count": 11,
+     "placements": [
+      {
+       "x": 0.5740000000000016,
+       "y": 2.5305,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      },
+      {
+       "x": 12.887000000000002,
+       "y": 2.5305,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      },
+      {
+       "x": 25.200000000000003,
+       "y": 2.5305,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      },
+      {
+       "x": 37.513000000000005,
+       "y": 2.5305,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      },
+      {
+       "x": 6.730500000000002,
+       "y": 14.8435,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      },
+      {
+       "x": 19.0435,
+       "y": 14.8435,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      },
+      {
+       "x": 31.356500000000004,
+       "y": 14.8435,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      },
+      {
+       "x": 0.5740000000000016,
+       "y": 27.1565,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      },
+      {
+       "x": 12.887000000000002,
+       "y": 27.1565,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      },
+      {
+       "x": 25.200000000000003,
+       "y": 27.1565,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      },
+      {
+       "x": 37.513000000000005,
+       "y": 27.1565,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      }
+     ],
+     "usedRotated": false
+    },
+    "layerPair": {
+     "pattern": "brick",
+     "overhangPct": 5,
+     "casesPerLayer": 10,
+     "layerA": {
+      "pattern": "brick",
+      "layerKey": "A",
+      "caseLengthIn": 12.313,
+      "caseWidthIn": 12.313,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 50.400000000000006,
+      "effectiveWidthIn": 42,
+      "overhangPct": 5,
+      "count": 11,
+      "placements": [
+       {
+        "x": 0.5740000000000016,
+        "y": 2.5305,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 12.887000000000002,
+        "y": 2.5305,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 25.200000000000003,
+        "y": 2.5305,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 37.513000000000005,
+        "y": 2.5305,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 6.730500000000002,
+        "y": 14.8435,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 19.0435,
+        "y": 14.8435,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 31.356500000000004,
+        "y": 14.8435,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 0.5740000000000016,
+        "y": 27.1565,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 12.887000000000002,
+        "y": 27.1565,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 25.200000000000003,
+        "y": 27.1565,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 37.513000000000005,
+        "y": 27.1565,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     },
+     "layerB": {
+      "pattern": "brick",
+      "layerKey": "B",
+      "caseLengthIn": 12.313,
+      "caseWidthIn": 12.313,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 50.400000000000006,
+      "effectiveWidthIn": 42,
+      "overhangPct": 5,
+      "count": 10,
+      "placements": [
+       {
+        "x": 6.730500000000002,
+        "y": 2.5305,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 19.0435,
+        "y": 2.5305,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 31.356500000000004,
+        "y": 2.5305,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 0.5740000000000016,
+        "y": 14.8435,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 12.887000000000002,
+        "y": 14.8435,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 25.200000000000003,
+        "y": 14.8435,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 37.513000000000005,
+        "y": 14.8435,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 6.730500000000002,
+        "y": 27.1565,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 19.0435,
+        "y": 27.1565,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 31.356500000000004,
+        "y": 27.1565,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     }
+    }
+   }
+  },
+  {
+   "fn": "buildPallets",
+   "args": {
+    "spec": "OC",
+    "quantityCases": 120,
+    "patch": {
+     "maxOverhangPct": 3
+    }
+   },
+   "result": {
+    "ok": true,
+    "handlingUnits": [
+     {
+      "type": "pallet",
+      "quantity": 2,
+      "lengthIn": 48,
+      "widthIn": 40,
+      "heightIn": 54.5,
+      "weightLb": 1700.8,
+      "casesPerUnit": 48,
+      "stackable": true,
+      "description": "Gallon jugs — 48 cs (12/layer × 4)",
+      "densityPcf": 28.09,
+      "dimWeightLb": null,
+      "billableWeightLb": 1700.8,
+      "freightClass": 65,
+      "nmfcCode": null,
+      "hazmat": false
+     },
+     {
+      "type": "pallet",
+      "quantity": 1,
+      "lengthIn": 48,
+      "widthIn": 40,
+      "heightIn": 30.25,
+      "weightLb": 870.4,
+      "casesPerUnit": 24,
+      "stackable": true,
+      "description": "Gallon jugs — 24 cs (12/layer × 2)",
+      "densityPcf": 25.9,
+      "dimWeightLb": null,
+      "billableWeightLb": 870.4,
+      "freightClass": 65,
+      "nmfcCode": null,
+      "hazmat": false
+     }
+    ],
+    "totalWeightLb": 4272,
+    "totalBillableWeightLb": 4272,
+    "totalCubicFt": 154.72,
+    "totalCases": 120,
+    "casesPerLayer": 12,
+    "layersPerPallet": 4,
+    "casesPerPallet": 48,
+    "fullPallets": 2,
+    "partialPalletCases": 24,
+    "totalPallets": 3,
+    "mode": "ltl",
+    "missing": [],
+    "overhangPct": 3,
+    "pattern": "block",
+    "layerLayout": {
+     "pattern": "block",
+     "layerKey": "A",
+     "caseLengthIn": 12.313,
+     "caseWidthIn": 12.313,
+     "baseLengthIn": 48,
+     "baseWidthIn": 40,
+     "effectiveLengthIn": 49.44,
+     "effectiveWidthIn": 41.2,
+     "overhangPct": 3,
+     "count": 12,
+     "placements": [
+      {
+       "x": 0.09399999999999764,
+       "y": 2.1305000000000014,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      },
+      {
+       "x": 12.406999999999998,
+       "y": 2.1305000000000014,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      },
+      {
+       "x": 24.72,
+       "y": 2.1305000000000014,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      },
+      {
+       "x": 37.033,
+       "y": 2.1305000000000014,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      },
+      {
+       "x": 0.09399999999999764,
+       "y": 14.443500000000002,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      },
+      {
+       "x": 12.406999999999998,
+       "y": 14.443500000000002,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      },
+      {
+       "x": 24.72,
+       "y": 14.443500000000002,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      },
+      {
+       "x": 37.033,
+       "y": 14.443500000000002,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      },
+      {
+       "x": 0.09399999999999764,
+       "y": 26.756500000000003,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      },
+      {
+       "x": 12.406999999999998,
+       "y": 26.756500000000003,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      },
+      {
+       "x": 24.72,
+       "y": 26.756500000000003,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      },
+      {
+       "x": 37.033,
+       "y": 26.756500000000003,
+       "w": 12.313,
+       "h": 12.313,
+       "rotated": false
+      }
+     ],
+     "usedRotated": false
+    },
+    "layerPair": {
+     "pattern": "block",
+     "overhangPct": 3,
+     "casesPerLayer": 12,
+     "layerA": {
+      "pattern": "block",
+      "layerKey": "A",
+      "caseLengthIn": 12.313,
+      "caseWidthIn": 12.313,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 49.44,
+      "effectiveWidthIn": 41.2,
+      "overhangPct": 3,
+      "count": 12,
+      "placements": [
+       {
+        "x": 0.09399999999999764,
+        "y": 2.1305000000000014,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 12.406999999999998,
+        "y": 2.1305000000000014,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 24.72,
+        "y": 2.1305000000000014,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 37.033,
+        "y": 2.1305000000000014,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 0.09399999999999764,
+        "y": 14.443500000000002,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 12.406999999999998,
+        "y": 14.443500000000002,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 24.72,
+        "y": 14.443500000000002,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 37.033,
+        "y": 14.443500000000002,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 0.09399999999999764,
+        "y": 26.756500000000003,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 12.406999999999998,
+        "y": 26.756500000000003,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 24.72,
+        "y": 26.756500000000003,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 37.033,
+        "y": 26.756500000000003,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     },
+     "layerB": {
+      "pattern": "block",
+      "layerKey": "B",
+      "caseLengthIn": 12.313,
+      "caseWidthIn": 12.313,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 49.44,
+      "effectiveWidthIn": 41.2,
+      "overhangPct": 3,
+      "count": 12,
+      "placements": [
+       {
+        "x": 0.09399999999999764,
+        "y": 2.1305000000000014,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 12.406999999999998,
+        "y": 2.1305000000000014,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 24.72,
+        "y": 2.1305000000000014,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 37.033,
+        "y": 2.1305000000000014,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 0.09399999999999764,
+        "y": 14.443500000000002,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 12.406999999999998,
+        "y": 14.443500000000002,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 24.72,
+        "y": 14.443500000000002,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 37.033,
+        "y": 14.443500000000002,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 0.09399999999999764,
+        "y": 26.756500000000003,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 12.406999999999998,
+        "y": 26.756500000000003,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 24.72,
+        "y": 26.756500000000003,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       },
+       {
+        "x": 37.033,
+        "y": 26.756500000000003,
+        "w": 12.313,
+        "h": 12.313,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     }
+    }
+   }
+  },
+  {
+   "fn": "buildPallets",
+   "args": {
+    "spec": "RECT",
+    "quantityCases": 77,
+    "pattern": "row"
+   },
+   "result": {
+    "ok": true,
+    "handlingUnits": [
+     {
+      "type": "pallet",
+      "quantity": 1,
+      "lengthIn": 48,
+      "widthIn": 40,
+      "heightIn": 62,
+      "weightLb": 1445.25,
+      "casesPerUnit": 77,
+      "stackable": true,
+      "description": "Product — 77 cs (12/layer × 7, row)",
+      "densityPcf": 20.98,
+      "dimWeightLb": null,
+      "billableWeightLb": 1445.25,
+      "freightClass": 70,
+      "nmfcCode": null,
+      "hazmat": false
+     }
+    ],
+    "totalWeightLb": 1445.25,
+    "totalBillableWeightLb": 1445.25,
+    "totalCubicFt": 68.89,
+    "totalCases": 77,
+    "casesPerLayer": 12,
+    "layersPerPallet": 7,
+    "casesPerPallet": 84,
+    "fullPallets": 0,
+    "partialPalletCases": 77,
+    "totalPallets": 1,
+    "mode": "ltl",
+    "missing": [],
+    "overhangPct": 0,
+    "pattern": "row",
+    "layerLayout": {
+     "pattern": "row",
+     "layerKey": "A",
+     "caseLengthIn": 16,
+     "caseWidthIn": 10,
+     "baseLengthIn": 48,
+     "baseWidthIn": 40,
+     "effectiveLengthIn": 48,
+     "effectiveWidthIn": 40,
+     "overhangPct": 0,
+     "count": 12,
+     "placements": [
+      {
+       "x": 0,
+       "y": 0,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 16,
+       "y": 0,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 32,
+       "y": 0,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 10,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 16,
+       "y": 10,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 32,
+       "y": 10,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 20,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 16,
+       "y": 20,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 32,
+       "y": 20,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 30,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 16,
+       "y": 30,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 32,
+       "y": 30,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      }
+     ],
+     "usedRotated": false
+    },
+    "layerPair": {
+     "pattern": "row",
+     "overhangPct": 0,
+     "casesPerLayer": 12,
+     "layerA": {
+      "pattern": "row",
+      "layerKey": "A",
+      "caseLengthIn": 16,
+      "caseWidthIn": 10,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 12,
+      "placements": [
+       {
+        "x": 0,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     },
+     "layerB": {
+      "pattern": "row",
+      "layerKey": "B",
+      "caseLengthIn": 16,
+      "caseWidthIn": 10,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 12,
+      "placements": [
+       {
+        "x": 0,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     }
+    }
+   }
+  },
+  {
+   "fn": "buildPallets",
+   "args": {
+    "spec": "RECT",
+    "quantityCases": 77,
+    "pattern": "pinwheel"
+   },
+   "result": {
+    "ok": true,
+    "handlingUnits": [
+     {
+      "type": "pallet",
+      "quantity": 1,
+      "lengthIn": 48,
+      "widthIn": 40,
+      "heightIn": 62,
+      "weightLb": 1189.75,
+      "casesPerUnit": 63,
+      "stackable": true,
+      "description": "Product — 63 cs (9/layer × 7, pinwheel)",
+      "densityPcf": 17.27,
+      "dimWeightLb": null,
+      "billableWeightLb": 1189.75,
+      "freightClass": 70,
+      "nmfcCode": null,
+      "hazmat": false
+     },
+     {
+      "type": "pallet",
+      "quantity": 1,
+      "lengthIn": 48,
+      "widthIn": 40,
+      "heightIn": 22,
+      "weightLb": 295.5,
+      "casesPerUnit": 14,
+      "stackable": true,
+      "description": "Product — 14 cs (9/layer × 2, pinwheel)",
+      "densityPcf": 12.09,
+      "dimWeightLb": null,
+      "billableWeightLb": 295.5,
+      "freightClass": 85,
+      "nmfcCode": null,
+      "hazmat": false
+     }
+    ],
+    "totalWeightLb": 1485.25,
+    "totalBillableWeightLb": 1485.25,
+    "totalCubicFt": 93.33,
+    "totalCases": 77,
+    "casesPerLayer": 9,
+    "layersPerPallet": 7,
+    "casesPerPallet": 63,
+    "fullPallets": 1,
+    "partialPalletCases": 14,
+    "totalPallets": 2,
+    "mode": "ltl",
+    "missing": [],
+    "overhangPct": 0,
+    "pattern": "pinwheel",
+    "layerLayout": {
+     "pattern": "pinwheel",
+     "layerKey": "A",
+     "caseLengthIn": 16,
+     "caseWidthIn": 10,
+     "baseLengthIn": 48,
+     "baseWidthIn": 40,
+     "effectiveLengthIn": 48,
+     "effectiveWidthIn": 40,
+     "overhangPct": 0,
+     "count": 9,
+     "placements": [
+      {
+       "x": 1,
+       "y": 0,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 17,
+       "y": 0,
+       "w": 10,
+       "h": 16,
+       "rotated": true
+      },
+      {
+       "x": 1,
+       "y": 10,
+       "w": 10,
+       "h": 16,
+       "rotated": true
+      },
+      {
+       "x": 11,
+       "y": 16,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 31,
+       "y": 0,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 31,
+       "y": 10,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 31,
+       "y": 20,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 1,
+       "y": 30,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 21,
+       "y": 30,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      }
+     ],
+     "usedRotated": true
+    },
+    "layerPair": {
+     "pattern": "pinwheel",
+     "overhangPct": 0,
+     "casesPerLayer": 9,
+     "layerA": {
+      "pattern": "pinwheel",
+      "layerKey": "A",
+      "caseLengthIn": 16,
+      "caseWidthIn": 10,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 9,
+      "placements": [
+       {
+        "x": 1,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 17,
+        "y": 0,
+        "w": 10,
+        "h": 16,
+        "rotated": true
+       },
+       {
+        "x": 1,
+        "y": 10,
+        "w": 10,
+        "h": 16,
+        "rotated": true
+       },
+       {
+        "x": 11,
+        "y": 16,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 31,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 31,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 31,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 1,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 21,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       }
+      ],
+      "usedRotated": true
+     },
+     "layerB": {
+      "pattern": "pinwheel",
+      "layerKey": "B",
+      "caseLengthIn": 16,
+      "caseWidthIn": 10,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 9,
+      "placements": [
+       {
+        "x": 32,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 22,
+        "y": 24,
+        "w": 10,
+        "h": 16,
+        "rotated": true
+       },
+       {
+        "x": 38,
+        "y": 14,
+        "w": 10,
+        "h": 16,
+        "rotated": true
+       },
+       {
+        "x": 22,
+        "y": 14,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 2,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 2,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 2,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       }
+      ],
+      "usedRotated": true
+     }
+    }
+   }
+  },
+  {
+   "fn": "buildPallets",
+   "args": {
+    "spec": "RECT",
+    "quantityCases": 77,
+    "pattern": "hybrid_pinwheel"
+   },
+   "result": {
+    "ok": true,
+    "handlingUnits": [
+     {
+      "type": "pallet",
+      "quantity": 1,
+      "lengthIn": 48,
+      "widthIn": 40,
+      "heightIn": 62,
+      "weightLb": 1189.75,
+      "casesPerUnit": 63,
+      "stackable": true,
+      "description": "Product — 63 cs (9/layer × 7, hybrid_pinwheel)",
+      "densityPcf": 17.27,
+      "dimWeightLb": null,
+      "billableWeightLb": 1189.75,
+      "freightClass": 70,
+      "nmfcCode": null,
+      "hazmat": false
+     },
+     {
+      "type": "pallet",
+      "quantity": 1,
+      "lengthIn": 48,
+      "widthIn": 40,
+      "heightIn": 22,
+      "weightLb": 295.5,
+      "casesPerUnit": 14,
+      "stackable": true,
+      "description": "Product — 14 cs (9/layer × 2, hybrid_pinwheel)",
+      "densityPcf": 12.09,
+      "dimWeightLb": null,
+      "billableWeightLb": 295.5,
+      "freightClass": 85,
+      "nmfcCode": null,
+      "hazmat": false
+     }
+    ],
+    "totalWeightLb": 1485.25,
+    "totalBillableWeightLb": 1485.25,
+    "totalCubicFt": 93.33,
+    "totalCases": 77,
+    "casesPerLayer": 9,
+    "layersPerPallet": 7,
+    "casesPerPallet": 63,
+    "fullPallets": 1,
+    "partialPalletCases": 14,
+    "totalPallets": 2,
+    "mode": "ltl",
+    "missing": [],
+    "overhangPct": 0,
+    "pattern": "hybrid_pinwheel",
+    "layerLayout": {
+     "pattern": "hybrid_pinwheel",
+     "layerKey": "A",
+     "caseLengthIn": 16,
+     "caseWidthIn": 10,
+     "baseLengthIn": 48,
+     "baseWidthIn": 40,
+     "effectiveLengthIn": 48,
+     "effectiveWidthIn": 40,
+     "overhangPct": 0,
+     "count": 9,
+     "placements": [
+      {
+       "x": 1,
+       "y": 0,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 17,
+       "y": 0,
+       "w": 10,
+       "h": 16,
+       "rotated": true
+      },
+      {
+       "x": 1,
+       "y": 10,
+       "w": 10,
+       "h": 16,
+       "rotated": true
+      },
+      {
+       "x": 11,
+       "y": 16,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 31,
+       "y": 0,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 31,
+       "y": 10,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 31,
+       "y": 20,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 1,
+       "y": 30,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 21,
+       "y": 30,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      }
+     ],
+     "usedRotated": true
+    },
+    "layerPair": {
+     "pattern": "hybrid_pinwheel",
+     "overhangPct": 0,
+     "casesPerLayer": 9,
+     "layerA": {
+      "pattern": "hybrid_pinwheel",
+      "layerKey": "A",
+      "caseLengthIn": 16,
+      "caseWidthIn": 10,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 9,
+      "placements": [
+       {
+        "x": 1,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 17,
+        "y": 0,
+        "w": 10,
+        "h": 16,
+        "rotated": true
+       },
+       {
+        "x": 1,
+        "y": 10,
+        "w": 10,
+        "h": 16,
+        "rotated": true
+       },
+       {
+        "x": 11,
+        "y": 16,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 31,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 31,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 31,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 1,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 21,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       }
+      ],
+      "usedRotated": true
+     },
+     "layerB": {
+      "pattern": "hybrid_pinwheel",
+      "layerKey": "B",
+      "caseLengthIn": 16,
+      "caseWidthIn": 10,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 9,
+      "placements": [
+       {
+        "x": 32,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 22,
+        "y": 24,
+        "w": 10,
+        "h": 16,
+        "rotated": true
+       },
+       {
+        "x": 38,
+        "y": 14,
+        "w": 10,
+        "h": 16,
+        "rotated": true
+       },
+       {
+        "x": 22,
+        "y": 14,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 2,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 2,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 2,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 12,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       }
+      ],
+      "usedRotated": true
+     }
+    }
+   }
+  },
+  {
+   "fn": "buildPallets",
+   "args": {
+    "spec": "RECT",
+    "quantityCases": 77,
+    "pattern": "split_row"
+   },
+   "result": {
+    "ok": true,
+    "handlingUnits": [
+     {
+      "type": "pallet",
+      "quantity": 1,
+      "lengthIn": 48,
+      "widthIn": 40,
+      "heightIn": 62,
+      "weightLb": 934.25,
+      "casesPerUnit": 49,
+      "stackable": true,
+      "description": "Product — 49 cs (7/layer × 7, split_row)",
+      "densityPcf": 13.56,
+      "dimWeightLb": null,
+      "billableWeightLb": 934.25,
+      "freightClass": 77.5,
+      "nmfcCode": null,
+      "hazmat": false
+     },
+     {
+      "type": "pallet",
+      "quantity": 1,
+      "lengthIn": 48,
+      "widthIn": 40,
+      "heightIn": 38,
+      "weightLb": 551,
+      "casesPerUnit": 28,
+      "stackable": true,
+      "description": "Product — 28 cs (7/layer × 4, split_row)",
+      "densityPcf": 13.05,
+      "dimWeightLb": null,
+      "billableWeightLb": 551,
+      "freightClass": 85,
+      "nmfcCode": null,
+      "hazmat": false
+     }
+    ],
+    "totalWeightLb": 1485.25,
+    "totalBillableWeightLb": 1485.25,
+    "totalCubicFt": 111.11,
+    "totalCases": 77,
+    "casesPerLayer": 7,
+    "layersPerPallet": 7,
+    "casesPerPallet": 49,
+    "fullPallets": 1,
+    "partialPalletCases": 28,
+    "totalPallets": 2,
+    "mode": "ltl",
+    "missing": [],
+    "overhangPct": 0,
+    "pattern": "split_row",
+    "layerLayout": {
+     "pattern": "split_row",
+     "layerKey": "A",
+     "caseLengthIn": 16,
+     "caseWidthIn": 10,
+     "baseLengthIn": 48,
+     "baseWidthIn": 40,
+     "effectiveLengthIn": 48,
+     "effectiveWidthIn": 40,
+     "overhangPct": 0,
+     "count": 7,
+     "placements": [
+      {
+       "x": 0,
+       "y": 7,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 16,
+       "y": 7,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 32,
+       "y": 7,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 17,
+       "w": 10,
+       "h": 16,
+       "rotated": true
+      },
+      {
+       "x": 10,
+       "y": 17,
+       "w": 10,
+       "h": 16,
+       "rotated": true
+      },
+      {
+       "x": 20,
+       "y": 17,
+       "w": 10,
+       "h": 16,
+       "rotated": true
+      },
+      {
+       "x": 30,
+       "y": 17,
+       "w": 10,
+       "h": 16,
+       "rotated": true
+      }
+     ],
+     "usedRotated": true
+    },
+    "layerPair": {
+     "pattern": "split_row",
+     "overhangPct": 0,
+     "casesPerLayer": 7,
+     "layerA": {
+      "pattern": "split_row",
+      "layerKey": "A",
+      "caseLengthIn": 16,
+      "caseWidthIn": 10,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 7,
+      "placements": [
+       {
+        "x": 0,
+        "y": 7,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 7,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 7,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 17,
+        "w": 10,
+        "h": 16,
+        "rotated": true
+       },
+       {
+        "x": 10,
+        "y": 17,
+        "w": 10,
+        "h": 16,
+        "rotated": true
+       },
+       {
+        "x": 20,
+        "y": 17,
+        "w": 10,
+        "h": 16,
+        "rotated": true
+       },
+       {
+        "x": 30,
+        "y": 17,
+        "w": 10,
+        "h": 16,
+        "rotated": true
+       }
+      ],
+      "usedRotated": true
+     },
+     "layerB": {
+      "pattern": "split_row",
+      "layerKey": "B",
+      "caseLengthIn": 16,
+      "caseWidthIn": 10,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 7,
+      "placements": [
+       {
+        "x": 32,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 38,
+        "y": 14,
+        "w": 10,
+        "h": 16,
+        "rotated": true
+       },
+       {
+        "x": 28,
+        "y": 14,
+        "w": 10,
+        "h": 16,
+        "rotated": true
+       },
+       {
+        "x": 18,
+        "y": 14,
+        "w": 10,
+        "h": 16,
+        "rotated": true
+       },
+       {
+        "x": 8,
+        "y": 14,
+        "w": 10,
+        "h": 16,
+        "rotated": true
+       }
+      ],
+      "usedRotated": true
+     }
+    }
+   }
+  },
+  {
+   "fn": "buildPallets",
+   "args": {
+    "spec": "RECT",
+    "patch": {
+     "allowRotate": false
+    },
+    "quantityCases": 77,
+    "pattern": "split_row"
+   },
+   "result": {
+    "ok": true,
+    "handlingUnits": [
+     {
+      "type": "pallet",
+      "quantity": 1,
+      "lengthIn": 48,
+      "widthIn": 40,
+      "heightIn": 62,
+      "weightLb": 1445.25,
+      "casesPerUnit": 77,
+      "stackable": true,
+      "description": "Product — 77 cs (12/layer × 7, split_row)",
+      "densityPcf": 20.98,
+      "dimWeightLb": null,
+      "billableWeightLb": 1445.25,
+      "freightClass": 70,
+      "nmfcCode": null,
+      "hazmat": false
+     }
+    ],
+    "totalWeightLb": 1445.25,
+    "totalBillableWeightLb": 1445.25,
+    "totalCubicFt": 68.89,
+    "totalCases": 77,
+    "casesPerLayer": 12,
+    "layersPerPallet": 7,
+    "casesPerPallet": 84,
+    "fullPallets": 0,
+    "partialPalletCases": 77,
+    "totalPallets": 1,
+    "mode": "ltl",
+    "missing": [],
+    "overhangPct": 0,
+    "pattern": "split_row",
+    "layerLayout": {
+     "pattern": "split_row",
+     "layerKey": "A",
+     "caseLengthIn": 16,
+     "caseWidthIn": 10,
+     "baseLengthIn": 48,
+     "baseWidthIn": 40,
+     "effectiveLengthIn": 48,
+     "effectiveWidthIn": 40,
+     "overhangPct": 0,
+     "count": 12,
+     "placements": [
+      {
+       "x": 0,
+       "y": 0,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 16,
+       "y": 0,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 32,
+       "y": 0,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 10,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 16,
+       "y": 10,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 32,
+       "y": 10,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 20,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 16,
+       "y": 20,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 32,
+       "y": 20,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 30,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 16,
+       "y": 30,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 32,
+       "y": 30,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      }
+     ],
+     "usedRotated": false
+    },
+    "layerPair": {
+     "pattern": "split_row",
+     "overhangPct": 0,
+     "casesPerLayer": 12,
+     "layerA": {
+      "pattern": "split_row",
+      "layerKey": "A",
+      "caseLengthIn": 16,
+      "caseWidthIn": 10,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 12,
+      "placements": [
+       {
+        "x": 0,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     },
+     "layerB": {
+      "pattern": "split_row",
+      "layerKey": "B",
+      "caseLengthIn": 16,
+      "caseWidthIn": 10,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 12,
+      "placements": [
+       {
+        "x": 32,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     }
+    }
+   }
+  },
+  {
+   "fn": "buildPallets",
+   "args": {
+    "spec": "RECT",
+    "patch": {
+     "allowRotate": false
+    },
+    "quantityCases": 77,
+    "pattern": "row"
+   },
+   "result": {
+    "ok": true,
+    "handlingUnits": [
+     {
+      "type": "pallet",
+      "quantity": 1,
+      "lengthIn": 48,
+      "widthIn": 40,
+      "heightIn": 62,
+      "weightLb": 1445.25,
+      "casesPerUnit": 77,
+      "stackable": true,
+      "description": "Product — 77 cs (12/layer × 7, row)",
+      "densityPcf": 20.98,
+      "dimWeightLb": null,
+      "billableWeightLb": 1445.25,
+      "freightClass": 70,
+      "nmfcCode": null,
+      "hazmat": false
+     }
+    ],
+    "totalWeightLb": 1445.25,
+    "totalBillableWeightLb": 1445.25,
+    "totalCubicFt": 68.89,
+    "totalCases": 77,
+    "casesPerLayer": 12,
+    "layersPerPallet": 7,
+    "casesPerPallet": 84,
+    "fullPallets": 0,
+    "partialPalletCases": 77,
+    "totalPallets": 1,
+    "mode": "ltl",
+    "missing": [],
+    "overhangPct": 0,
+    "pattern": "row",
+    "layerLayout": {
+     "pattern": "row",
+     "layerKey": "A",
+     "caseLengthIn": 16,
+     "caseWidthIn": 10,
+     "baseLengthIn": 48,
+     "baseWidthIn": 40,
+     "effectiveLengthIn": 48,
+     "effectiveWidthIn": 40,
+     "overhangPct": 0,
+     "count": 12,
+     "placements": [
+      {
+       "x": 0,
+       "y": 0,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 16,
+       "y": 0,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 32,
+       "y": 0,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 10,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 16,
+       "y": 10,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 32,
+       "y": 10,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 20,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 16,
+       "y": 20,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 32,
+       "y": 20,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 30,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 16,
+       "y": 30,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 32,
+       "y": 30,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      }
+     ],
+     "usedRotated": false
+    },
+    "layerPair": {
+     "pattern": "row",
+     "overhangPct": 0,
+     "casesPerLayer": 12,
+     "layerA": {
+      "pattern": "row",
+      "layerKey": "A",
+      "caseLengthIn": 16,
+      "caseWidthIn": 10,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 12,
+      "placements": [
+       {
+        "x": 0,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     },
+     "layerB": {
+      "pattern": "row",
+      "layerKey": "B",
+      "caseLengthIn": 16,
+      "caseWidthIn": 10,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 12,
+      "placements": [
+       {
+        "x": 0,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     }
+    }
+   }
+  },
+  {
+   "fn": "buildPallets",
+   "args": {
+    "spec": "RECT",
+    "quantityCases": 77,
+    "pattern": "column"
+   },
+   "result": {
+    "ok": true,
+    "handlingUnits": [
+     {
+      "type": "pallet",
+      "quantity": 1,
+      "lengthIn": 48,
+      "widthIn": 40,
+      "heightIn": 62,
+      "weightLb": 1445.25,
+      "casesPerUnit": 77,
+      "stackable": true,
+      "description": "Product — 77 cs (12/layer × 7)",
+      "densityPcf": 20.98,
+      "dimWeightLb": null,
+      "billableWeightLb": 1445.25,
+      "freightClass": 70,
+      "nmfcCode": null,
+      "hazmat": false
+     }
+    ],
+    "totalWeightLb": 1445.25,
+    "totalBillableWeightLb": 1445.25,
+    "totalCubicFt": 68.89,
+    "totalCases": 77,
+    "casesPerLayer": 12,
+    "layersPerPallet": 7,
+    "casesPerPallet": 84,
+    "fullPallets": 0,
+    "partialPalletCases": 77,
+    "totalPallets": 1,
+    "mode": "ltl",
+    "missing": [],
+    "overhangPct": 0,
+    "pattern": "block",
+    "layerLayout": {
+     "pattern": "block",
+     "layerKey": "A",
+     "caseLengthIn": 16,
+     "caseWidthIn": 10,
+     "baseLengthIn": 48,
+     "baseWidthIn": 40,
+     "effectiveLengthIn": 48,
+     "effectiveWidthIn": 40,
+     "overhangPct": 0,
+     "count": 12,
+     "placements": [
+      {
+       "x": 0,
+       "y": 0,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 16,
+       "y": 0,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 32,
+       "y": 0,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 10,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 16,
+       "y": 10,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 32,
+       "y": 10,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 20,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 16,
+       "y": 20,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 32,
+       "y": 20,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 30,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 16,
+       "y": 30,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 32,
+       "y": 30,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      }
+     ],
+     "usedRotated": false
+    },
+    "layerPair": {
+     "pattern": "block",
+     "overhangPct": 0,
+     "casesPerLayer": 12,
+     "layerA": {
+      "pattern": "block",
+      "layerKey": "A",
+      "caseLengthIn": 16,
+      "caseWidthIn": 10,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 12,
+      "placements": [
+       {
+        "x": 0,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     },
+     "layerB": {
+      "pattern": "block",
+      "layerKey": "B",
+      "caseLengthIn": 16,
+      "caseWidthIn": 10,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 12,
+      "placements": [
+       {
+        "x": 0,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     }
+    }
+   }
+  },
+  {
+   "fn": "buildPallets",
+   "args": {
+    "spec": "RECT",
+    "quantityCases": 77,
+    "pattern": "made-up"
+   },
+   "result": {
+    "ok": true,
+    "handlingUnits": [
+     {
+      "type": "pallet",
+      "quantity": 1,
+      "lengthIn": 48,
+      "widthIn": 40,
+      "heightIn": 62,
+      "weightLb": 1445.25,
+      "casesPerUnit": 77,
+      "stackable": true,
+      "description": "Product — 77 cs (12/layer × 7)",
+      "densityPcf": 20.98,
+      "dimWeightLb": null,
+      "billableWeightLb": 1445.25,
+      "freightClass": 70,
+      "nmfcCode": null,
+      "hazmat": false
+     }
+    ],
+    "totalWeightLb": 1445.25,
+    "totalBillableWeightLb": 1445.25,
+    "totalCubicFt": 68.89,
+    "totalCases": 77,
+    "casesPerLayer": 12,
+    "layersPerPallet": 7,
+    "casesPerPallet": 84,
+    "fullPallets": 0,
+    "partialPalletCases": 77,
+    "totalPallets": 1,
+    "mode": "ltl",
+    "missing": [],
+    "overhangPct": 0,
+    "pattern": "block",
+    "layerLayout": {
+     "pattern": "block",
+     "layerKey": "A",
+     "caseLengthIn": 16,
+     "caseWidthIn": 10,
+     "baseLengthIn": 48,
+     "baseWidthIn": 40,
+     "effectiveLengthIn": 48,
+     "effectiveWidthIn": 40,
+     "overhangPct": 0,
+     "count": 12,
+     "placements": [
+      {
+       "x": 0,
+       "y": 0,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 16,
+       "y": 0,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 32,
+       "y": 0,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 10,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 16,
+       "y": 10,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 32,
+       "y": 10,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 20,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 16,
+       "y": 20,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 32,
+       "y": 20,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 0,
+       "y": 30,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 16,
+       "y": 30,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      },
+      {
+       "x": 32,
+       "y": 30,
+       "w": 16,
+       "h": 10,
+       "rotated": false
+      }
+     ],
+     "usedRotated": false
+    },
+    "layerPair": {
+     "pattern": "block",
+     "overhangPct": 0,
+     "casesPerLayer": 12,
+     "layerA": {
+      "pattern": "block",
+      "layerKey": "A",
+      "caseLengthIn": 16,
+      "caseWidthIn": 10,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 12,
+      "placements": [
+       {
+        "x": 0,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     },
+     "layerB": {
+      "pattern": "block",
+      "layerKey": "B",
+      "caseLengthIn": 16,
+      "caseWidthIn": 10,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 12,
+      "placements": [
+       {
+        "x": 0,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 0,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 10,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 20,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 0,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 16,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       },
+       {
+        "x": 32,
+        "y": 30,
+        "w": 16,
+        "h": 10,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     }
+    }
+   }
+  },
+  {
+   "fn": "buildPallets",
+   "args": {
+    "spec": "ODD",
+    "quantityCases": 640,
+    "pattern": "pinwheel",
+    "overhangPct": 2.5
+   },
+   "result": {
+    "ok": true,
+    "handlingUnits": [
+     {
+      "type": "pallet",
+      "quantity": 8,
+      "lengthIn": 48,
+      "widthIn": 40,
+      "heightIn": 66,
+      "weightLb": 944,
+      "casesPerUnit": 80,
+      "stackable": true,
+      "description": "Product — 80 cs (10/layer × 8, pinwheel)",
+      "densityPcf": 12.87,
+      "dimWeightLb": null,
+      "billableWeightLb": 944,
+      "freightClass": 85,
+      "nmfcCode": null,
+      "hazmat": false
+     }
+    ],
+    "totalWeightLb": 7552,
+    "totalBillableWeightLb": 7552,
+    "totalCubicFt": 586.67,
+    "totalCases": 640,
+    "casesPerLayer": 10,
+    "layersPerPallet": 8,
+    "casesPerPallet": 80,
+    "fullPallets": 8,
+    "partialPalletCases": 0,
+    "totalPallets": 8,
+    "mode": "ltl",
+    "missing": [],
+    "overhangPct": 2.5,
+    "pattern": "pinwheel",
+    "layerLayout": {
+     "pattern": "pinwheel",
+     "layerKey": "A",
+     "caseLengthIn": 13.75,
+     "caseWidthIn": 9.125,
+     "baseLengthIn": 48,
+     "baseWidthIn": 40,
+     "effectiveLengthIn": 49.199999999999996,
+     "effectiveWidthIn": 41,
+     "overhangPct": 2.5,
+     "count": 10,
+     "placements": [
+      {
+       "x": 1.7249999999999979,
+       "y": 2.25,
+       "w": 13.75,
+       "h": 9.125,
+       "rotated": false
+      },
+      {
+       "x": 15.474999999999998,
+       "y": 2.25,
+       "w": 9.125,
+       "h": 13.75,
+       "rotated": true
+      },
+      {
+       "x": 1.7249999999999979,
+       "y": 11.375,
+       "w": 9.125,
+       "h": 13.75,
+       "rotated": true
+      },
+      {
+       "x": 10.849999999999998,
+       "y": 16,
+       "w": 13.75,
+       "h": 9.125,
+       "rotated": false
+      },
+      {
+       "x": 24.599999999999998,
+       "y": 2.25,
+       "w": 13.75,
+       "h": 9.125,
+       "rotated": false
+      },
+      {
+       "x": 38.349999999999994,
+       "y": 2.25,
+       "w": 9.125,
+       "h": 13.75,
+       "rotated": true
+      },
+      {
+       "x": 24.599999999999998,
+       "y": 11.375,
+       "w": 9.125,
+       "h": 13.75,
+       "rotated": true
+      },
+      {
+       "x": 33.724999999999994,
+       "y": 16,
+       "w": 13.75,
+       "h": 9.125,
+       "rotated": false
+      },
+      {
+       "x": 1.7249999999999979,
+       "y": 29.625,
+       "w": 13.75,
+       "h": 9.125,
+       "rotated": false
+      },
+      {
+       "x": 19.974999999999998,
+       "y": 29.625,
+       "w": 13.75,
+       "h": 9.125,
+       "rotated": false
+      }
+     ],
+     "usedRotated": true
+    },
+    "layerPair": {
+     "pattern": "pinwheel",
+     "overhangPct": 2.5,
+     "casesPerLayer": 10,
+     "layerA": {
+      "pattern": "pinwheel",
+      "layerKey": "A",
+      "caseLengthIn": 13.75,
+      "caseWidthIn": 9.125,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 49.199999999999996,
+      "effectiveWidthIn": 41,
+      "overhangPct": 2.5,
+      "count": 10,
+      "placements": [
+       {
+        "x": 1.7249999999999979,
+        "y": 2.25,
+        "w": 13.75,
+        "h": 9.125,
+        "rotated": false
+       },
+       {
+        "x": 15.474999999999998,
+        "y": 2.25,
+        "w": 9.125,
+        "h": 13.75,
+        "rotated": true
+       },
+       {
+        "x": 1.7249999999999979,
+        "y": 11.375,
+        "w": 9.125,
+        "h": 13.75,
+        "rotated": true
+       },
+       {
+        "x": 10.849999999999998,
+        "y": 16,
+        "w": 13.75,
+        "h": 9.125,
+        "rotated": false
+       },
+       {
+        "x": 24.599999999999998,
+        "y": 2.25,
+        "w": 13.75,
+        "h": 9.125,
+        "rotated": false
+       },
+       {
+        "x": 38.349999999999994,
+        "y": 2.25,
+        "w": 9.125,
+        "h": 13.75,
+        "rotated": true
+       },
+       {
+        "x": 24.599999999999998,
+        "y": 11.375,
+        "w": 9.125,
+        "h": 13.75,
+        "rotated": true
+       },
+       {
+        "x": 33.724999999999994,
+        "y": 16,
+        "w": 13.75,
+        "h": 9.125,
+        "rotated": false
+       },
+       {
+        "x": 1.7249999999999979,
+        "y": 29.625,
+        "w": 13.75,
+        "h": 9.125,
+        "rotated": false
+       },
+       {
+        "x": 19.974999999999998,
+        "y": 29.625,
+        "w": 13.75,
+        "h": 9.125,
+        "rotated": false
+       }
+      ],
+      "usedRotated": true
+     },
+     "layerB": {
+      "pattern": "pinwheel",
+      "layerKey": "B",
+      "caseLengthIn": 13.75,
+      "caseWidthIn": 9.125,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 49.199999999999996,
+      "effectiveWidthIn": 41,
+      "overhangPct": 2.5,
+      "count": 10,
+      "placements": [
+       {
+        "x": 35.449999999999996,
+        "y": 31.875,
+        "w": 13.75,
+        "h": 9.125,
+        "rotated": false
+       },
+       {
+        "x": 26.324999999999996,
+        "y": 27.25,
+        "w": 9.125,
+        "h": 13.75,
+        "rotated": true
+       },
+       {
+        "x": 40.074999999999996,
+        "y": 18.125,
+        "w": 9.125,
+        "h": 13.75,
+        "rotated": true
+       },
+       {
+        "x": 26.324999999999996,
+        "y": 18.125,
+        "w": 13.75,
+        "h": 9.125,
+        "rotated": false
+       },
+       {
+        "x": 12.574999999999996,
+        "y": 31.875,
+        "w": 13.75,
+        "h": 9.125,
+        "rotated": false
+       },
+       {
+        "x": 3.4499999999999957,
+        "y": 27.25,
+        "w": 9.125,
+        "h": 13.75,
+        "rotated": true
+       },
+       {
+        "x": 17.199999999999996,
+        "y": 18.125,
+        "w": 9.125,
+        "h": 13.75,
+        "rotated": true
+       },
+       {
+        "x": 3.4499999999999957,
+        "y": 18.125,
+        "w": 13.75,
+        "h": 9.125,
+        "rotated": false
+       },
+       {
+        "x": 35.449999999999996,
+        "y": 4.5,
+        "w": 13.75,
+        "h": 9.125,
+        "rotated": false
+       },
+       {
+        "x": 17.199999999999996,
+        "y": 4.5,
+        "w": 13.75,
+        "h": 9.125,
+        "rotated": false
+       }
+      ],
+      "usedRotated": true
+     }
+    }
+   }
+  },
+  {
+   "fn": "buildPallets",
+   "args": {
+    "spec": "ODD",
+    "quantityCases": 640,
+    "pattern": "brick"
+   },
+   "result": {
+    "ok": true,
+    "handlingUnits": [
+     {
+      "type": "pallet",
+      "quantity": 8,
+      "lengthIn": 48,
+      "widthIn": 40,
+      "heightIn": 66,
+      "weightLb": 944,
+      "casesPerUnit": 80,
+      "stackable": true,
+      "description": "Product — 80 cs (10/layer × 8, brick)",
+      "densityPcf": 12.87,
+      "dimWeightLb": null,
+      "billableWeightLb": 944,
+      "freightClass": 85,
+      "nmfcCode": null,
+      "hazmat": false
+     }
+    ],
+    "totalWeightLb": 7552,
+    "totalBillableWeightLb": 7552,
+    "totalCubicFt": 586.67,
+    "totalCases": 640,
+    "casesPerLayer": 10,
+    "layersPerPallet": 8,
+    "casesPerPallet": 80,
+    "fullPallets": 8,
+    "partialPalletCases": 0,
+    "totalPallets": 8,
+    "mode": "ltl",
+    "missing": [],
+    "overhangPct": 0,
+    "pattern": "brick",
+    "layerLayout": {
+     "pattern": "brick",
+     "layerKey": "A",
+     "caseLengthIn": 13.75,
+     "caseWidthIn": 9.125,
+     "baseLengthIn": 48,
+     "baseWidthIn": 40,
+     "effectiveLengthIn": 48,
+     "effectiveWidthIn": 40,
+     "overhangPct": 0,
+     "count": 10,
+     "placements": [
+      {
+       "x": 3.375,
+       "y": 1.75,
+       "w": 13.75,
+       "h": 9.125,
+       "rotated": false
+      },
+      {
+       "x": 17.125,
+       "y": 1.75,
+       "w": 13.75,
+       "h": 9.125,
+       "rotated": false
+      },
+      {
+       "x": 30.875,
+       "y": 1.75,
+       "w": 13.75,
+       "h": 9.125,
+       "rotated": false
+      },
+      {
+       "x": 10.25,
+       "y": 10.875,
+       "w": 13.75,
+       "h": 9.125,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 10.875,
+       "w": 13.75,
+       "h": 9.125,
+       "rotated": false
+      },
+      {
+       "x": 3.375,
+       "y": 20,
+       "w": 13.75,
+       "h": 9.125,
+       "rotated": false
+      },
+      {
+       "x": 17.125,
+       "y": 20,
+       "w": 13.75,
+       "h": 9.125,
+       "rotated": false
+      },
+      {
+       "x": 30.875,
+       "y": 20,
+       "w": 13.75,
+       "h": 9.125,
+       "rotated": false
+      },
+      {
+       "x": 10.25,
+       "y": 29.125,
+       "w": 13.75,
+       "h": 9.125,
+       "rotated": false
+      },
+      {
+       "x": 24,
+       "y": 29.125,
+       "w": 13.75,
+       "h": 9.125,
+       "rotated": false
+      }
+     ],
+     "usedRotated": false
+    },
+    "layerPair": {
+     "pattern": "brick",
+     "overhangPct": 0,
+     "casesPerLayer": 10,
+     "layerA": {
+      "pattern": "brick",
+      "layerKey": "A",
+      "caseLengthIn": 13.75,
+      "caseWidthIn": 9.125,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 10,
+      "placements": [
+       {
+        "x": 3.375,
+        "y": 1.75,
+        "w": 13.75,
+        "h": 9.125,
+        "rotated": false
+       },
+       {
+        "x": 17.125,
+        "y": 1.75,
+        "w": 13.75,
+        "h": 9.125,
+        "rotated": false
+       },
+       {
+        "x": 30.875,
+        "y": 1.75,
+        "w": 13.75,
+        "h": 9.125,
+        "rotated": false
+       },
+       {
+        "x": 10.25,
+        "y": 10.875,
+        "w": 13.75,
+        "h": 9.125,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 10.875,
+        "w": 13.75,
+        "h": 9.125,
+        "rotated": false
+       },
+       {
+        "x": 3.375,
+        "y": 20,
+        "w": 13.75,
+        "h": 9.125,
+        "rotated": false
+       },
+       {
+        "x": 17.125,
+        "y": 20,
+        "w": 13.75,
+        "h": 9.125,
+        "rotated": false
+       },
+       {
+        "x": 30.875,
+        "y": 20,
+        "w": 13.75,
+        "h": 9.125,
+        "rotated": false
+       },
+       {
+        "x": 10.25,
+        "y": 29.125,
+        "w": 13.75,
+        "h": 9.125,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 29.125,
+        "w": 13.75,
+        "h": 9.125,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     },
+     "layerB": {
+      "pattern": "brick",
+      "layerKey": "B",
+      "caseLengthIn": 13.75,
+      "caseWidthIn": 9.125,
+      "baseLengthIn": 48,
+      "baseWidthIn": 40,
+      "effectiveLengthIn": 48,
+      "effectiveWidthIn": 40,
+      "overhangPct": 0,
+      "count": 10,
+      "placements": [
+       {
+        "x": 10.25,
+        "y": 1.75,
+        "w": 13.75,
+        "h": 9.125,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 1.75,
+        "w": 13.75,
+        "h": 9.125,
+        "rotated": false
+       },
+       {
+        "x": 3.375,
+        "y": 10.875,
+        "w": 13.75,
+        "h": 9.125,
+        "rotated": false
+       },
+       {
+        "x": 17.125,
+        "y": 10.875,
+        "w": 13.75,
+        "h": 9.125,
+        "rotated": false
+       },
+       {
+        "x": 30.875,
+        "y": 10.875,
+        "w": 13.75,
+        "h": 9.125,
+        "rotated": false
+       },
+       {
+        "x": 10.25,
+        "y": 20,
+        "w": 13.75,
+        "h": 9.125,
+        "rotated": false
+       },
+       {
+        "x": 24,
+        "y": 20,
+        "w": 13.75,
+        "h": 9.125,
+        "rotated": false
+       },
+       {
+        "x": 3.375,
+        "y": 29.125,
+        "w": 13.75,
+        "h": 9.125,
+        "rotated": false
+       },
+       {
+        "x": 17.125,
+        "y": 29.125,
+        "w": 13.75,
+        "h": 9.125,
+        "rotated": false
+       },
+       {
+        "x": 30.875,
+        "y": 29.125,
+        "w": 13.75,
+        "h": 9.125,
+        "rotated": false
+       }
+      ],
+      "usedRotated": false
+     }
+    }
+   }
+  },
+  {
+   "fn": "buildPallets",
+   "args": {
+    "spec": "ODD",
+    "quantityCases": 640,
+    "mode": "parcel"
+   },
+   "result": {
+    "ok": true,
+    "handlingUnits": [
+     {
+      "type": "carton",
+      "quantity": 640,
+      "lengthIn": 13.75,
+      "widthIn": 9.13,
+      "heightIn": 7.5,
+      "weightLb": 11.3,
+      "casesPerUnit": 1,
+      "stackable": true,
+      "description": "Product",
+      "densityPcf": 20.75,
+      "dimWeightLb": 7,
+      "billableWeightLb": 11.3,
+      "freightClass": 70,
+      "nmfcCode": null,
+      "hazmat": false
+     }
+    ],
+    "totalWeightLb": 7232,
+    "totalBillableWeightLb": 7232,
+    "totalCubicFt": 348.72,
+    "totalCases": 640,
+    "casesPerLayer": 12,
+    "layersPerPallet": 0,
+    "casesPerPallet": 0,
+    "fullPallets": 0,
+    "partialPalletCases": 640,
+    "totalPallets": 0,
+    "mode": "parcel",
+    "missing": [],
+    "overhangPct": 0,
+    "pattern": "block",
+    "layerLayout": null,
+    "layerPair": null
+   }
+  },
+  {
+   "fn": "computeSkids",
+   "args": {
+    "cases": 250,
+    "spec": "SPEC"
+   },
+   "result": {
+    "casesPerSkid": 96,
+    "skids": 2.6041666666666665,
+    "volumeCuFt": 138.88888888888889,
+    "source": "pallet_build"
+   }
+  },
+  {
+   "fn": "computeSkids",
+   "args": {
+    "cases": 250,
+    "spec": "SPEC",
+    "patch": {
+     "fmCasesPerLayer": 10,
+     "fmLayersPerPallet": 5
+    }
+   },
+   "result": {
+    "casesPerSkid": 50,
+    "skids": 5,
+    "volumeCuFt": 138.88888888888889,
+    "source": "fm_ti_hi"
+   }
+  },
+  {
+   "fn": "computeSkids",
+   "args": {
+    "cases": 250,
+    "spec": "SPEC",
+    "explicitSkids": 3
+   },
+   "result": {
+    "casesPerSkid": 0,
+    "skids": 3,
+    "volumeCuFt": 138.88888888888889,
+    "source": "explicit"
+   }
+  },
+  {
+   "fn": "computeSkids",
+   "args": {
+    "cases": 250,
+    "spec": "SPEC",
+    "patch": {
+     "caseGrossWeightLb": null
+    }
+   },
+   "result": {
+    "casesPerSkid": 0,
+    "skids": 0,
+    "volumeCuFt": 138.88888888888889,
+    "source": "pallet_build"
+   }
+  },
+  {
+   "fn": "computeSkids",
+   "args": {
+    "cases": 250,
+    "spec": "SPEC",
+    "patch": {
+     "caseLengthIn": 60,
+     "caseWidthIn": 60
+    }
+   },
+   "result": {
+    "casesPerSkid": 0,
+    "skids": 0,
+    "volumeCuFt": 4166.666666666667,
+    "source": "pallet_build"
+   }
+  },
+  {
+   "fn": "computeSkids",
+   "args": {
+    "cases": 250
+   },
+   "result": {
+    "casesPerSkid": 0,
+    "skids": 0,
+    "volumeCuFt": 0,
+    "source": "pallet_build"
+   }
+  },
+  {
+   "fn": "computeSkids",
+   "args": {
+    "cases": 7,
+    "explicitSkids": 2
+   },
+   "result": {
+    "casesPerSkid": 0,
+    "skids": 2,
+    "volumeCuFt": 0,
+    "source": "explicit"
+   }
+  },
+  {
+   "fn": "caseVolumeCuFt",
+   "args": {
+    "spec": "ODD"
+   },
+   "result": 0.5445692274305556
+  },
+  {
+   "fn": "packSpecDimsComplete",
+   "args": {
+    "spec": "SPEC"
+   },
+   "result": true
+  },
+  {
+   "fn": "packSpecDimsComplete",
+   "args": {
+    "spec": "SPEC",
+    "patch": {
+     "caseHeightIn": 0
+    }
+   },
+   "result": false
+  },
+  {
+   "fn": "packSpecDimsComplete",
+   "args": {
+    "spec": "SPEC",
+    "patch": {
+     "caseHeightIn": null,
+     "fmCasesPerLayer": 8,
+     "fmLayersPerPallet": 6
+    }
+   },
+   "result": true
+  },
+  {
+   "fn": "packSpecDimsComplete",
+   "args": {},
+   "result": false
+  }
+ ]
+}

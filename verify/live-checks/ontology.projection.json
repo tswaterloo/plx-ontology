@@ -1,0 +1,229 @@
+{
+ "id": "ontology.projection",
+ "description": "Ontology projection on live captures: a full GET-only sync of the Portal Workbench reporting API into a throwaway mirror, two streamed projections of it under the curated schema into a throwaway store, then the L7 acceptance on real data. Pass = mirror_complete: every stable bound relation complete (completeness.complete_bound_relation_count equals completeness.bound_total, the figure from scripts.mirror_measure.completeness that mirror.full_coverage gates as all_bound_complete; the 93-relation catalog figure all_stable_served_complete is never gated), both builds have one content digest, every sampled value the reader is granted (2,000 spread over the store) passes the real claim gate at its L1 handle and field path, the reader is the served host's capture principal under a narrowed example audience (examples/projection_probe_mirror_audience.live-check.json: public and sage families without the customer and supplier masters, no silver), and neither an actor with no grant nor that reader on what the audience withholds from it (at least 50 objects, reader_denied_objects_probed) gets a row back from any read path or a withheld value's citation resolved (denied_leaks 0; a trim that did not run reports not_checked and fails), and the whole probe's peak resident memory stays under 1,536 MB (decision projection-memory: the build streams per binding; a synthetic 114,500-object build peaks at about 170 MB). Source removals (ING-09, REC-04): the served projection's object_removals stretches by basis (removal_stretches), records removed now (removed_objects, the store's one removal test), a sample of them read back as the reader (removal_reader: withheld ones never resolve, withheld_leaks 0; granted Portal ones hidden from mirror rows and resolve and readable through their citation with the label), the served review store's link decisions withdrawn source_removed (removal_reviews) and links on a removed record ended at the removal or open, by binding kind; removals_reach_projection is true when the mirror holds no soft-deleted row of a bound relation or the projection carries source_soft_delete stretches (mirror.full_coverage records rows_deleted_in_source_total 4385 on public.app_customer, 2026-10-13). A bound relation the mirror's catalog marks unavailable upstream (a reason such as approved columns missing or not granted after a Sage full load; later_ask portal-sage-regrant) is a blocked_upstream part with cause relation_unavailable naming it (mirror_unavailable_bound_count, mirror_unavailable_bound): mirror_complete is then judged over the available bound relations and the check is blocked, never a pass, while the rest must still meet every expectation (expect_blocked); a bound relation available but incomplete, or unserved without a reason, still fails. Output is counts, booleans, timings and gap codes only; never a row value, key or citation. live-unverified until a live result exists. --budget-seconds bounds the whole probe (the mirror sync gets 60% of it, 2,700 s of 4,500 s with --workers 3 like mirror.full_coverage; the clock is also checked between batches of both builds and inside the claim and leak loops, and a rebuild that cannot fit is skipped); a spent budget prints a partial report (status budget_exhausted, phase, counts so far) and exits 4 inside the budget (the 6,900 s spec timeout is 1.53x it). The claims phase stays under 300 s (json_max phase_seconds.claims; live 1,271 s of 1,588 s on 9.39M values before the sample was read by rowid seeks and the role contracts in one pass); claims_timing records its split (scan_seconds reading the sample, gate_seconds the served reads and the claim gate).",
+ "source": "portal-workbench-api+business-central",
+ "requires": [
+  "portal.health_catalog",
+  "mirror.full_coverage",
+  "ontology.session_projection"
+ ],
+ "command": [
+  "python3",
+  "-m",
+  "scripts.ontology_projection_probe",
+  "--db",
+  "{session_state}/mirror.sqlite",
+  "--store",
+  "{tmp}/ontology.sqlite",
+  "--session-projection",
+  "{session_state}/projection",
+  "--budget-seconds",
+  "4500",
+  "--checks-budget-seconds",
+  "2100",
+  "--workers",
+  "3",
+  "--claim-sample",
+  "2000",
+  "--max-rss-mb",
+  "1536",
+  "--mirror-audience",
+  "examples/projection_probe_mirror_audience.live-check.json",
+  "--previous-report={daily_report}"
+ ],
+ "timeout_seconds": 5400,
+ "requires_env": [
+  "PLX_WORKBENCH_API_URL",
+  "PLX_WORKBENCH_API_KEY"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "objects",
+   "values",
+   "links",
+   "identifiers",
+   "link_tiers",
+   "gap_codes",
+   "claim_pass_rate",
+   "build_seconds",
+   "maxrss_mb",
+   "max_rss_budget_mb",
+   "removal_stretches",
+   "removed_objects",
+   "removal_reader",
+   "removal_reviews",
+   "removal_links_ended",
+   "removal_links_open"
+  ],
+  "json_equals": {
+   "mirror_complete": true,
+   "rebuild_digest_equal": true,
+   "all_sampled_claims_pass": true,
+   "denied_leaks": 0,
+   "maxrss_within_budget": true,
+   "removals_reach_projection": true,
+   "removal_reader.withheld_leaks": 0,
+   "mirror_unavailable_bound_count": 0
+  },
+  "json_min": {
+   "objects": 1000,
+   "values": 10000,
+   "claims_checked": 1000,
+   "denied_objects_probed": 200,
+   "reader_denied_objects_probed": 50
+  },
+  "json_max": {
+   "phase_seconds.claims": 300
+  }
+ },
+ "expect_blocked": {
+  "exit_code": 0,
+  "json_fields": [
+   "objects",
+   "values",
+   "links",
+   "identifiers",
+   "link_tiers",
+   "gap_codes",
+   "claim_pass_rate",
+   "build_seconds",
+   "maxrss_mb",
+   "max_rss_budget_mb",
+   "removal_stretches",
+   "removed_objects",
+   "removal_reader",
+   "removal_reviews",
+   "removal_links_ended",
+   "removal_links_open"
+  ],
+  "json_equals": {
+   "mirror_complete": true,
+   "rebuild_digest_equal": true,
+   "all_sampled_claims_pass": true,
+   "denied_leaks": 0,
+   "maxrss_within_budget": true,
+   "removals_reach_projection": true,
+   "removal_reader.withheld_leaks": 0
+  },
+  "json_min": {
+   "objects": 1000,
+   "values": 10000,
+   "claims_checked": 1000,
+   "denied_objects_probed": 200,
+   "reader_denied_objects_probed": 50
+  },
+  "json_max": {
+   "phase_seconds.claims": 300
+  }
+ },
+ "record": [
+  "mirror_relation_count",
+  "rows_current_total",
+  "objects",
+  "versions",
+  "values",
+  "links",
+  "identifiers",
+  "events",
+  "etl_duplicates_collapsed",
+  "link_tiers",
+  "gap_codes",
+  "rebuild_digest_equal",
+  "build_seconds",
+  "maxrss_mb",
+  "values_total",
+  "claim_sample",
+  "claims_checked",
+  "claims_passed",
+  "claim_null_values",
+  "claim_problems",
+  "claim_failures",
+  "claim_pass_rate",
+  "all_sampled_claims_pass",
+  "denied_leaks",
+  "denied_objects_probed",
+  "reader_denied_objects_probed",
+  "claim_values_withheld",
+  "withheld_citations_probed",
+  "withheld_citations_resolved",
+  "max_rss_budget_mb",
+  "maxrss_within_budget",
+  "removal_stretches",
+  "removal_stretches_total",
+  "removed_objects",
+  "removed_objects_total",
+  "removal_reader",
+  "removal_reviews",
+  "removal_links_ended",
+  "removal_links_open",
+  "mirror_soft_deleted_bound",
+  "removals_reach_projection",
+  "completeness",
+  "mirror_unavailable_bound_count",
+  "mirror_unavailable_bound",
+  "capture_unstable_bindings",
+  "session_projection.mode",
+  "session_projection.units_rebuilt",
+  "store",
+  "claims_timing",
+  "phase_seconds"
+ ],
+ "record_keys": [
+  "completeness",
+  "removal_stretches",
+  "removed_objects",
+  "removal_reader",
+  "removal_reviews",
+  "removal_links_ended",
+  "removal_links_open",
+  "claims_timing",
+  "phase_seconds"
+ ],
+ "record_enums": [
+  "completeness",
+  "mirror_unavailable_bound",
+  "capture_unstable_bindings",
+  "session_projection.mode",
+  "store"
+ ],
+ "cadence": "daily",
+ "notes": "Daily, like mirror.full_coverage: the probe runs the same full GET-only Portal mirror sync before it projects, and a full sync does not fit the hourly run (run 494bcf2 (main 250eae4): mirror.full_coverage synced 53 of 93 relations in 1,501.9 s and stopped 35 on budget_exhausted), so a 1,200 s hourly budget could never reach mirror_complete. The probe budget is 4,500 s with --workers 3: the sync gets 60% (2,700 s; mirror.full_coverage uses 3,600 s, so mirror_complete here is a live-measured expectation) and the two streamed builds and checks the rest; a spent budget exits 4 with a partial report inside the 6,900 s timeout. Module tests: injected-transport (ontology/tests/test_projection.py ProbeTests; verify/tests/test_live_wiring.py runs this spec's argv over the fixture world under the curated schema). Live-unverified until the live check records a result. Session state (verify/live_verify.py): a consumer of mirror.full_coverage's {session_state}/mirror.sqlite under the same capture audience (session_audience: the Portal API read as its service key) (that requires never blocks it; without a filled producer in the session it syncs cold and records session_state.shared_store false). Timeout 5,400 s (the 4,500 s budget plus 900 s) so the daily rotation can run the producer (~1,550 s live) and this check in one 7,000 s command. Session projection: it also requires ontology.session_projection, its session producer of {session_state}/projection (Portal and BC under the service reader, so its source names business-central and the BC credentials are optional_env: it reads that projection's BC capture, never BC itself), which never blocks it. When this session committed that generation and every unit key matches (session_projection.mode reused), the probe neither syncs nor builds: its claims, trim and leak checks run over that generation (BC values included, under its generated BC grant) and the rebuild is one cold build of the same captures, so rebuild_digest_equal compares the session generation with a cold build; else it syncs and projects cold as before (mode cold). Removals: the live audience withholds public.app_customer, the one relation with live soft deletes (4,385 on 2026-10-13), from the reader, so removal_reader measures the trim on them (withheld, withheld_leaks 0) and readable_with_label stays 0 live; the served review store is the probe's throwaway one, so removal_reviews counts 0 live. Module test: tests/test_ontology_projection_probe_removals.py (injected-transport). Disk (owner order 42ad51823f9c): the checks run on the first build, its digest is kept and its store freed before the rebuild into {tmp}/ontology.sqlite.again (never two full stores at once); each full build first checks the free space it needs (short: error disk_insufficient with need_bytes and free_bytes; after the checks the report keeps them and has no rebuild_digest_equal); disk.peak is recorded; its session paths are session_reads. --checks-budget-seconds 2100 (2,700 before decision 2026-10-19-projection-shared-cost; a forecast until a shared run is measured; measured producers of 4,003-4,713 s need 7,153-7,863 s at it, over the 7,000 s window, and every measured session build (2,215-3,088 s) is over it, so no smaller budget fits with its rebuild: the decision's reversal section names the build cut that does) bounds the shared cost (claims, trim, removals and one cold rebuild, forecast from the session manifest's build_seconds) so the runner reads it as the non-build budget (option 2). The claim sample is streamed from the store (claims phase was SIGKILLed at 9.2 GB maxrss on 2026-10-16 when it materialised every value).",
+ "session_audience": {
+  "/mirror.sqlite": {
+   "sources": [
+    "portal-workbench-api"
+   ],
+   "env": [
+    "PLX_WORKBENCH_API_KEY",
+    "PLX_WORKBENCH_API_URL"
+   ],
+   "reader": "service"
+  },
+  "/projection": {
+   "sources": [
+    "business-central",
+    "portal-workbench-api"
+   ],
+   "env": [
+    "BC_CLIENT_ID",
+    "BC_CLIENT_SECRET",
+    "BC_ENVIRONMENT",
+    "BC_TENANT_ID",
+    "PLX_WORKBENCH_API_KEY",
+    "PLX_WORKBENCH_API_URL"
+   ],
+   "reader": "service"
+  }
+ },
+ "session_reads": [
+  "/mirror.sqlite",
+  "/projection"
+ ],
+ "optional_env": [
+  "BC_TENANT_ID",
+  "BC_CLIENT_ID",
+  "BC_CLIENT_SECRET",
+  "BC_ENVIRONMENT"
+ ]
+}

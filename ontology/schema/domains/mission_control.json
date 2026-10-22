@@ -1,0 +1,1476 @@
+{
+ "$schema": "../_format.schema.json",
+ "format": "plx-ontology-domain/v1",
+ "domain": "mission_control",
+ "origin": "curated",
+ "description": "Mission Control work records and brain knowledge as ontology objects: MCTask, MCApproval, MCBucket and MCTaskEvent from MC read tools, KnowledgeEntry from mc_search_knowledge, all captured by integrations/mc_sources.py into the versioned capture store (source mission_control, cited mc://<scope>/<collection>/<id>@<generation>-<capture>). Audience mc:<scope>/<collection>, plus /<project> for tasks, approvals, task events and buckets: an MC operator scope is what that operator's MC principal may see, MC scopes those per project (PLX_MC@eeb7db7 src/lib/permissions/project-acl.ts), and a reader sees a record only when the live audience grants it mc:<scope>:<collection> and, for those, mc:<scope>:project:<project> (the MC project id or unparented). These are work and knowledge records, never business facts. Identifiers written in task text, gate reasons and knowledge entries are stored lead links (MCTask.mentions_<type>, MCApproval.mentions_<type>, KnowledgeEntry.mentions_<type>, ontology/schema.py MC_MENTION_LINK_RULES). Approvable MC writes are action types written by ontology/generator/mcp.py from the pinned tool shapes (generated/meta/mcp_tools.json); do not edit them by hand.",
+ "object_types": [
+  {
+   "id": "MCTask",
+   "description": "One Mission Control task as the MC operator scope sees it (mc_get_context depth full; MC is the authority for work records, never for business facts). Restricted MC projects the operator may not see are not returned by MC at all. Title, description and comments are scanned for identifier mentions (lead links).",
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "mission_control.tasks",
+     "source": "mission_control",
+     "relation": "tasks",
+     "key": [
+      "scope",
+      "id"
+     ],
+     "lineage": {
+      "default": "mission_control"
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ],
+     "note": "One object per (operator scope, TASK id); one version per captured content (integrations/mc_sources.py). mc_get_context depth full is the capture read; mc_search_tasks returns the same ACL-filtered task records (PLX_MC@eeb7db7 src/lib/mcp/actions.ts actionSearchTasks).",
+     "registry_entries": [
+      "plx-mc.mcp_tool:mc_get_context",
+      "plx-mc.mcp_tool:mc_search_tasks"
+     ]
+    }
+   ],
+   "properties": [
+    {
+     "name": "task_id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "mission_control.tasks",
+       "path": "id",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "title",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "mission_control.tasks",
+       "path": "title",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "stage",
+     "description": "MC StageKey (backlog .. verified, or cancelled: closed, never done; PLX_MC@77a5af6 policy.ts TERMINAL_STAGES).",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "mission_control.tasks",
+       "path": "stage",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "bucket",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "mission_control.tasks",
+       "path": "bucket",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "priority",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "mission_control.tasks",
+       "path": "priority",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "assignee",
+     "description": "A person or agent:<slug>.",
+     "value_type": "text",
+     "markings": [
+      "pii"
+     ],
+     "sources": [
+      {
+       "binding": "mission_control.tasks",
+       "path": "assignee",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "reporter",
+     "value_type": "text",
+     "markings": [
+      "pii"
+     ],
+     "sources": [
+      {
+       "binding": "mission_control.tasks",
+       "path": "reporter",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "created_at",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "mission_control.tasks",
+       "path": "createdAt",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "updated_at",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "mission_control.tasks",
+       "path": "updatedAt",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    }
+   ],
+   "display": [
+    "title"
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "ctx.mc_model"
+    },
+    {
+     "kind": "ref",
+     "id": "wb.mc_sources"
+    }
+   ]
+  },
+  {
+   "id": "MCApproval",
+   "description": "One MC runtime approval gate (Task.approvalGates[], read by mc_get_task). Decided only in MC by a signed-in human other than the requester; this object only records what MC showed, it never authorizes anything (operating/action_path.py re-reads and re-checks the gate).",
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "mission_control.approvals",
+     "source": "mission_control",
+     "relation": "approvals",
+     "key": [
+      "scope",
+      "id"
+     ],
+     "lineage": {
+      "default": "mission_control"
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ],
+     "note": "One object per (operator scope, apg_ gate id); task_id is the task it was read on. Read by mc_get_task (Task.approvalGates).",
+     "registry_entries": [
+      "plx-mc.mcp_tool:mc_get_task"
+     ]
+    }
+   ],
+   "properties": [
+    {
+     "name": "gate_id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "mission_control.approvals",
+       "path": "id",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "task_id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "mission_control.approvals",
+       "path": "task_id",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "status",
+     "description": "pending, approved or rejected.",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "mission_control.approvals",
+       "path": "status",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "reason",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "mission_control.approvals",
+       "path": "reason",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "requested_by",
+     "value_type": "text",
+     "markings": [
+      "pii"
+     ],
+     "sources": [
+      {
+       "binding": "mission_control.approvals",
+       "path": "requestedBy",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "requested_runtime",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "mission_control.approvals",
+       "path": "requestedRuntime",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "requested_at",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "mission_control.approvals",
+       "path": "requestedAt",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "decided_by",
+     "value_type": "text",
+     "markings": [
+      "pii"
+     ],
+     "sources": [
+      {
+       "binding": "mission_control.approvals",
+       "path": "decidedBy",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "decided_at",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "mission_control.approvals",
+       "path": "decidedAt",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "note",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "mission_control.approvals",
+       "path": "note",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "workbench_intent_id",
+     "description": "The Workbench action intent (act_<24 hex>) a gate reason names, as written in the reason by operating/action_path.py; null when the gate is not a Workbench action.",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "mission_control.approvals",
+       "path": "workbench_intent_id",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    }
+   ],
+   "display": [
+    "reason"
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "ctx.mc_model"
+    },
+    {
+     "kind": "ref",
+     "id": "wb.mc_sources"
+    }
+   ]
+  },
+  {
+   "id": "MCBucket",
+   "description": "One MC bucket (BKT-*) visible to the operator scope (mc_list_buckets).",
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "mission_control.buckets",
+     "source": "mission_control",
+     "relation": "buckets",
+     "key": [
+      "scope",
+      "id"
+     ],
+     "lineage": {
+      "default": "mission_control"
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ],
+     "registry_entries": [
+      "plx-mc.mcp_tool:mc_list_buckets"
+     ]
+    }
+   ],
+   "properties": [
+    {
+     "name": "bucket_id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "mission_control.buckets",
+       "path": "id",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "name",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "mission_control.buckets",
+       "path": "name",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "project",
+     "description": "Its PRJ-* project id.",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "mission_control.buckets",
+       "path": "project",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "health",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "mission_control.buckets",
+       "path": "health",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    }
+   ],
+   "display": [
+    "name"
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "ctx.mc_model"
+    },
+    {
+     "kind": "ref",
+     "id": "wb.mc_sources"
+    }
+   ]
+  },
+  {
+   "id": "MCTaskEvent",
+   "description": "One event of an MC task's history as mc_get_task returns it (the latest 25 events, mcp.tool.invoked excluded): checkouts, progress, approval.requested/decided, completion. Older history is not captured (the unit is partial when a task returns the full window).",
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "mission_control.task_events",
+     "source": "mission_control",
+     "relation": "task_events",
+     "key": [
+      "scope",
+      "event_id"
+     ],
+     "lineage": {
+      "default": "mission_control"
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ],
+     "note": "One object per (operator scope, event_id = <task id>~<event seq or content digest>). Read by mc_get_task (latest 25 events).",
+     "registry_entries": [
+      "plx-mc.mcp_tool:mc_get_task"
+     ]
+    }
+   ],
+   "properties": [
+    {
+     "name": "task_id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "mission_control.task_events",
+       "path": "task_id",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "kind",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "mission_control.task_events",
+       "path": "kind",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "at",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "mission_control.task_events",
+       "path": "ts",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "actor",
+     "value_type": "text",
+     "markings": [
+      "pii"
+     ],
+     "sources": [
+      {
+       "binding": "mission_control.task_events",
+       "path": "actor",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    }
+   ],
+   "display": [
+    "kind"
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "ctx.mc_model"
+    },
+    {
+     "kind": "ref",
+     "id": "wb.mc_sources"
+    }
+   ]
+  },
+  {
+   "id": "KnowledgeEntry",
+   "description": "Derived engineering/agent knowledge from the brain: a hit of mc_search_knowledge for a configured query (the brain's own items are KnowledgeItem, captured per namespace by integrations/knowledge_source.py). Always an untrusted lead (T3), never a business fact; title and snippet are scanned for identifier mentions (lead links).",
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "mission_control.knowledge",
+     "source": "mission_control",
+     "relation": "knowledge",
+     "key": [
+      "scope",
+      "id"
+     ],
+     "lineage": {
+      "default": "mission_control"
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ],
+     "note": "mc_search_knowledge hits; queries is every configured query that returned the entry in that capture. MC relays the brain's agent/search (PLX_MC@eeb7db7 src/lib/brain-ask/client.ts), the searchKnowledge core plx-brain brain_search runs (agentic-swarm@e228067 apps/vmc-web/src/lib/vmc/knowledge/mcp-http-tools.ts runSearch); document hits are typed the same way.",
+     "registry_entries": [
+      "plx-brain.mcp_tool:brain_search",
+      "plx-mc.mcp_tool:mc_search_knowledge"
+     ]
+    }
+   ],
+   "properties": [
+    {
+     "name": "entry_id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "mission_control.knowledge",
+       "path": "id",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "title",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "mission_control.knowledge",
+       "path": "title",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "snippet",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "mission_control.knowledge",
+       "path": "snippet",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "score",
+     "description": "The brain's blended search score (upstream labels are not evidence).",
+     "value_type": "decimal",
+     "sources": [
+      {
+       "binding": "mission_control.knowledge",
+       "path": "score",
+       "parser": "decimal_text"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "namespace",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "mission_control.knowledge",
+       "path": "namespace",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "entry_source",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "mission_control.knowledge",
+       "path": "source",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "trust",
+     "description": "Always untrusted_lead (integrations/vmc.py UNTRUSTED_LEAD).",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "mission_control.knowledge",
+       "path": "trust",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    }
+   ],
+   "display": [
+    "title"
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "ctx.mc_model"
+    },
+    {
+     "kind": "ref",
+     "id": "wb.mc_sources"
+    }
+   ]
+  }
+ ],
+ "link_types": [
+  {
+   "id": "MCApproval.gate_of",
+   "from": "MCApproval",
+   "to": "MCTask",
+   "name": "gate_of",
+   "reverse_name": "approval_gates",
+   "cardinality": "N:1",
+   "description": "The task an approval gate was read on (MC task id; the same id captured in two operator scopes is an ambiguous lead, never a guess).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "mission_control.approvals",
+     "to_binding": "mission_control.tasks",
+     "pairs": [
+      {
+       "from": "task_id",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "MCTaskEvent.event_of",
+   "from": "MCTaskEvent",
+   "to": "MCTask",
+   "name": "event_of",
+   "reverse_name": "history",
+   "cardinality": "N:1",
+   "description": "The task an event was read on (MC task id; the same id captured in two operator scopes is an ambiguous lead, never a guess).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "mission_control.task_events",
+     "to_binding": "mission_control.tasks",
+     "pairs": [
+      {
+       "from": "task_id",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "MCTask.in_bucket",
+   "from": "MCTask",
+   "to": "MCBucket",
+   "name": "in_bucket",
+   "reverse_name": "tasks",
+   "cardinality": "N:1",
+   "description": "The bucket MC files a task under (BKT id; ambiguous across operator scopes, as above).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "mission_control.tasks",
+     "to_binding": "mission_control.buckets",
+     "pairs": [
+      {
+       "from": "bucket",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "event_types": [
+  {
+   "id": "MCApproval.requested",
+   "object_type": "MCApproval",
+   "description": "The gate was requested (MC requestedAt).",
+   "time_basis": "source_recorded",
+   "time": {
+    "binding": "mission_control.approvals",
+    "path": "requestedAt",
+    "parser": "iso_timestamp"
+   },
+   "qualifiers": [
+    {
+     "qualifier": "approval",
+     "object_type": "MCApproval",
+     "via": "self"
+    },
+    {
+     "qualifier": "task",
+     "object_type": "MCTask",
+     "via": "MCApproval.gate_of"
+    }
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "wb.mc_sources"
+    }
+   ]
+  },
+  {
+   "id": "MCApproval.decided",
+   "object_type": "MCApproval",
+   "description": "A human decided the gate in MC (MC decidedAt).",
+   "time_basis": "source_recorded",
+   "time": {
+    "binding": "mission_control.approvals",
+    "path": "decidedAt",
+    "parser": "iso_timestamp"
+   },
+   "qualifiers": [
+    {
+     "qualifier": "approval",
+     "object_type": "MCApproval",
+     "via": "self"
+    },
+    {
+     "qualifier": "task",
+     "object_type": "MCTask",
+     "via": "MCApproval.gate_of"
+    }
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "wb.mc_sources"
+    }
+   ]
+  },
+  {
+   "id": "MCTaskEvent.occurred",
+   "object_type": "MCTaskEvent",
+   "description": "MC recorded the task event (mc_events ts).",
+   "time_basis": "source_recorded",
+   "time": {
+    "binding": "mission_control.task_events",
+    "path": "ts",
+    "parser": "iso_timestamp"
+   },
+   "qualifiers": [
+    {
+     "qualifier": "event",
+     "object_type": "MCTaskEvent",
+     "via": "self"
+    },
+    {
+     "qualifier": "task",
+     "object_type": "MCTask",
+     "via": "MCTaskEvent.event_of"
+    }
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "wb.mc_sources"
+    }
+   ]
+  }
+ ],
+ "evidence_catalog": {
+  "wb.mc_sources": {
+   "kind": "workbench_code",
+   "path": "integrations/mc_sources.py",
+   "note": "Read-only MC/brain capture into the versioned capture store (read tools of integrations/mc_tool_policy.json only; per-unit completeness; tool, ids and read time per record)."
+  },
+  "wb.mentions": {
+   "kind": "workbench_code",
+   "path": "ontology/mentions.py",
+   "note": "Identifier mentions extracted by the one identifier grammar and resolved through the identifier index; stored as lead links (store_mention_links)."
+  },
+  "ctx.mc_model": {
+   "kind": "context_pack",
+   "ref": "docs/reference/mission-control.md#2",
+   "note": "MC data model: Task, Bucket, approval gates (Task.approvalGates), mc_events; read tools in section 3."
+  },
+  "ctx.mentions": {
+   "kind": "context_pack",
+   "ref": "docs/reference/ontology-design.md#C.2",
+   "note": "Document mentions any object: mention resolution (lead/corroborated)."
+  },
+  "wb.mc_write_door": {
+   "kind": "workbench_code",
+   "path": "integrations/mc.py",
+   "note": "MissionControlMcpClient: call_tool refuses every write before I/O; call_write_tool sends an opted-in approvable write once, with an McWriteAuthorization naming exactly that call from a configured human write approver, consumed in the durable WriteAuthorizationLedger."
+  }
+ },
+ "action_types": [
+  {
+   "id": "MCCheckoutTask",
+   "description": "The approvable Mission Control write mc_checkout_task (target: the MC task it acts on or creates), sent only through the MC write door with a per-call human approval and verified by reading the task back. Inputs the MC write door never sends: agent.",
+   "target": "MCTask",
+   "params": {
+    "repo": {
+     "type": "identifier",
+     "provenance": [
+      "cited_value"
+     ],
+     "required": false,
+     "description": "MC input repo."
+    },
+    "task_id": {
+     "type": "identifier",
+     "provenance": [
+      "cited_value"
+     ],
+     "required": true,
+     "description": "MC input taskId.",
+     "property_ref": "MCTask.task_id"
+    }
+   },
+   "submission_criteria": [
+    {
+     "id": "per_call_approval",
+     "description": "A configured human write approver authorized exactly this call (integrations/mc.py call_write_tool, McWriteAuthorization, single use in the durable WriteAuthorizationLedger); the read door refuses the tool."
+    },
+    {
+     "id": "approvable_write",
+     "description": "mc_checkout_task is in integrations/mc_tool_policy.json approvable_writes and opted in on the sending client."
+    }
+   ],
+   "owner_system": "mission_control",
+   "executor": "human_in_owner_system",
+   "approval": {
+    "route": "mc_request_approval",
+    "decider": "a configured human write approver, never the requester or an agent"
+   },
+   "verification": "read_back",
+   "idempotency": [
+    "target",
+    "params.task_id"
+   ],
+   "registry_entries": [
+    "plx-mc.mcp_tool:mc_checkout_task"
+   ],
+   "evidence": [
+    {
+     "kind": "upstream_code",
+     "repo": "PLX_MC",
+     "path": "src/lib/mcp/create-http-server.ts",
+     "commit": "5bf29d2ebb3714694d2276f17b909f1a6d14365a",
+     "lines": "309",
+     "note": "Registration and zod input shape (pinned in ontology/schema/generated/meta/mcp_tools.json)."
+    },
+    {
+     "kind": "ref",
+     "id": "wb.mc_write_door"
+    }
+   ]
+  },
+  {
+   "id": "MCCompleteTask",
+   "description": "The approvable Mission Control write mc_complete_task (target: the MC task it acts on or creates), sent only through the MC write door with a per-call human approval and verified by reading the task back. Inputs not typed here (arrays, objects or schema references): filesChanged, shots, testRun, verificationCommands. Inputs the MC write door never sends: outcome.",
+   "target": "MCTask",
+   "params": {
+    "checkout_id": {
+     "type": "identifier",
+     "provenance": [
+      "cited_value"
+     ],
+     "required": true,
+     "description": "MC input checkoutId."
+    },
+    "commit_sha": {
+     "type": "identifier",
+     "provenance": [
+      "cited_value"
+     ],
+     "required": false,
+     "description": "MC input commitSha."
+    },
+    "pr_url": {
+     "type": "identifier",
+     "provenance": [
+      "cited_value"
+     ],
+     "required": false,
+     "description": "MC input prUrl."
+    },
+    "rollback": {
+     "type": "text",
+     "provenance": [
+      "cited_value",
+      "user_objective"
+     ],
+     "required": true,
+     "description": "MC input rollback."
+    },
+    "summary": {
+     "type": "text",
+     "provenance": [
+      "cited_value",
+      "user_objective"
+     ],
+     "required": true,
+     "description": "MC input summary."
+    }
+   },
+   "submission_criteria": [
+    {
+     "id": "per_call_approval",
+     "description": "A configured human write approver authorized exactly this call (integrations/mc.py call_write_tool, McWriteAuthorization, single use in the durable WriteAuthorizationLedger); the read door refuses the tool."
+    },
+    {
+     "id": "approvable_write",
+     "description": "mc_complete_task is in integrations/mc_tool_policy.json approvable_writes and opted in on the sending client."
+    }
+   ],
+   "owner_system": "mission_control",
+   "executor": "human_in_owner_system",
+   "approval": {
+    "route": "mc_request_approval",
+    "decider": "a configured human write approver, never the requester or an agent"
+   },
+   "verification": "read_back",
+   "idempotency": [
+    "target",
+    "params.checkout_id",
+    "params.rollback",
+    "params.summary"
+   ],
+   "registry_entries": [
+    "plx-mc.mcp_tool:mc_complete_task"
+   ],
+   "evidence": [
+    {
+     "kind": "upstream_code",
+     "repo": "PLX_MC",
+     "path": "src/lib/mcp/create-http-server.ts",
+     "commit": "5bf29d2ebb3714694d2276f17b909f1a6d14365a",
+     "lines": "339",
+     "note": "Registration and zod input shape (pinned in ontology/schema/generated/meta/mcp_tools.json)."
+    },
+    {
+     "kind": "ref",
+     "id": "wb.mc_write_door"
+    }
+   ]
+  },
+  {
+   "id": "MCCreateTask",
+   "description": "The approvable Mission Control write mc_create_task (target: the MC task it acts on or creates), sent only through the MC write door with a per-call human approval and verified by reading the task back. Inputs not typed here (arrays, objects or schema references): repos. Inputs the MC write door never sends: kind, labels.",
+   "target": "MCTask",
+   "params": {
+    "assignee": {
+     "type": "identifier",
+     "provenance": [
+      "cited_value"
+     ],
+     "required": false,
+     "description": "MC input assignee.",
+     "property_ref": "MCTask.assignee"
+    },
+    "bucket": {
+     "type": "identifier",
+     "provenance": [
+      "cited_value"
+     ],
+     "required": true,
+     "description": "MC input bucket.",
+     "property_ref": "MCTask.bucket"
+    },
+    "description": {
+     "type": "text",
+     "provenance": [
+      "cited_value",
+      "user_objective"
+     ],
+     "required": false,
+     "description": "MC input description."
+    },
+    "idempotency_key": {
+     "type": "text",
+     "provenance": [
+      "cited_value",
+      "user_objective"
+     ],
+     "required": false,
+     "description": "MC input idempotencyKey."
+    },
+    "priority": {
+     "type": "text",
+     "provenance": [
+      "cited_value",
+      "user_objective"
+     ],
+     "required": false,
+     "description": "MC input priority.",
+     "property_ref": "MCTask.priority"
+    },
+    "reporter": {
+     "type": "identifier",
+     "provenance": [
+      "cited_value"
+     ],
+     "required": true,
+     "description": "MC input reporter.",
+     "property_ref": "MCTask.reporter"
+    },
+    "title": {
+     "type": "text",
+     "provenance": [
+      "cited_value",
+      "user_objective"
+     ],
+     "required": true,
+     "description": "MC input title.",
+     "property_ref": "MCTask.title"
+    }
+   },
+   "submission_criteria": [
+    {
+     "id": "per_call_approval",
+     "description": "A configured human write approver authorized exactly this call (integrations/mc.py call_write_tool, McWriteAuthorization, single use in the durable WriteAuthorizationLedger); the read door refuses the tool."
+    },
+    {
+     "id": "approvable_write",
+     "description": "mc_create_task is in integrations/mc_tool_policy.json approvable_writes and opted in on the sending client."
+    }
+   ],
+   "owner_system": "mission_control",
+   "executor": "human_in_owner_system",
+   "approval": {
+    "route": "mc_request_approval",
+    "decider": "a configured human write approver, never the requester or an agent"
+   },
+   "verification": "read_back",
+   "idempotency": [
+    "target",
+    "params.bucket",
+    "params.reporter",
+    "params.title"
+   ],
+   "registry_entries": [
+    "plx-mc.mcp_tool:mc_create_task"
+   ],
+   "evidence": [
+    {
+     "kind": "upstream_code",
+     "repo": "PLX_MC",
+     "path": "src/lib/mcp/create-http-server.ts",
+     "commit": "5bf29d2ebb3714694d2276f17b909f1a6d14365a",
+     "lines": "276",
+     "note": "Registration and zod input shape (pinned in ontology/schema/generated/meta/mcp_tools.json)."
+    },
+    {
+     "kind": "ref",
+     "id": "wb.mc_write_door"
+    }
+   ]
+  },
+  {
+   "id": "MCReportProgress",
+   "description": "The approvable Mission Control write mc_report_progress (target: the MC task it acts on or creates), sent only through the MC write door with a per-call human approval and verified by reading the task back. Inputs the MC write door never sends: cancelReason, note, replacedBy.",
+   "target": "MCTask",
+   "params": {
+    "notes": {
+     "type": "text",
+     "provenance": [
+      "cited_value",
+      "user_objective"
+     ],
+     "required": false,
+     "description": "MC input notes."
+    },
+    "progress_pct": {
+     "type": "decimal",
+     "provenance": [
+      "cited_value",
+      "user_objective"
+     ],
+     "required": false,
+     "description": "MC input progressPct."
+    },
+    "stage": {
+     "type": "text",
+     "provenance": [
+      "cited_value",
+      "user_objective"
+     ],
+     "required": false,
+     "description": "MC input stage.",
+     "property_ref": "MCTask.stage"
+    },
+    "task_id": {
+     "type": "identifier",
+     "provenance": [
+      "cited_value"
+     ],
+     "required": true,
+     "description": "MC input taskId.",
+     "property_ref": "MCTask.task_id"
+    }
+   },
+   "submission_criteria": [
+    {
+     "id": "per_call_approval",
+     "description": "A configured human write approver authorized exactly this call (integrations/mc.py call_write_tool, McWriteAuthorization, single use in the durable WriteAuthorizationLedger); the read door refuses the tool."
+    },
+    {
+     "id": "approvable_write",
+     "description": "mc_report_progress is in integrations/mc_tool_policy.json approvable_writes and opted in on the sending client."
+    }
+   ],
+   "owner_system": "mission_control",
+   "executor": "human_in_owner_system",
+   "approval": {
+    "route": "mc_request_approval",
+    "decider": "a configured human write approver, never the requester or an agent"
+   },
+   "verification": "read_back",
+   "idempotency": [
+    "target",
+    "params.task_id"
+   ],
+   "registry_entries": [
+    "plx-mc.mcp_tool:mc_report_progress"
+   ],
+   "evidence": [
+    {
+     "kind": "upstream_code",
+     "repo": "PLX_MC",
+     "path": "src/lib/mcp/create-http-server.ts",
+     "commit": "5bf29d2ebb3714694d2276f17b909f1a6d14365a",
+     "lines": "332",
+     "note": "Registration and zod input shape (pinned in ontology/schema/generated/meta/mcp_tools.json)."
+    },
+    {
+     "kind": "ref",
+     "id": "wb.mc_write_door"
+    }
+   ]
+  },
+  {
+   "id": "MCRequestApproval",
+   "description": "The approvable Mission Control write mc_request_approval (target: the MC task it acts on or creates), sent only through the MC write door with a per-call human approval and verified by reading the task back. Inputs the MC write door never sends: checkoutId, proposal.",
+   "target": "MCTask",
+   "params": {
+    "reason": {
+     "type": "text",
+     "provenance": [
+      "cited_value",
+      "user_objective"
+     ],
+     "required": true,
+     "description": "MC input reason."
+    },
+    "task_id": {
+     "type": "identifier",
+     "provenance": [
+      "cited_value"
+     ],
+     "required": true,
+     "description": "MC input taskId.",
+     "property_ref": "MCTask.task_id"
+    }
+   },
+   "submission_criteria": [
+    {
+     "id": "per_call_approval",
+     "description": "A configured human write approver authorized exactly this call (integrations/mc.py call_write_tool, McWriteAuthorization, single use in the durable WriteAuthorizationLedger); the read door refuses the tool."
+    },
+    {
+     "id": "approvable_write",
+     "description": "mc_request_approval is in integrations/mc_tool_policy.json approvable_writes and opted in on the sending client."
+    }
+   ],
+   "owner_system": "mission_control",
+   "executor": "human_in_owner_system",
+   "approval": {
+    "route": "mc_request_approval",
+    "decider": "a configured human write approver, never the requester or an agent"
+   },
+   "verification": "read_back",
+   "idempotency": [
+    "target",
+    "params.reason",
+    "params.task_id"
+   ],
+   "registry_entries": [
+    "plx-mc.mcp_tool:mc_request_approval"
+   ],
+   "evidence": [
+    {
+     "kind": "upstream_code",
+     "repo": "PLX_MC",
+     "path": "src/lib/mcp/approval-actions.ts",
+     "commit": "5bf29d2ebb3714694d2276f17b909f1a6d14365a",
+     "lines": "161",
+     "note": "Registration and zod input shape (pinned in ontology/schema/generated/meta/mcp_tools.json)."
+    },
+    {
+     "kind": "ref",
+     "id": "wb.mc_write_door"
+    }
+   ]
+  }
+ ]
+}

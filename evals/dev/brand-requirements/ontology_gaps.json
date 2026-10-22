@@ -1,0 +1,298 @@
+{
+ "format": "plx-case-ontology-gaps/v1",
+ "case": "brand-requirements",
+ "status": "What the ontology lacks to answer evals/dev/brand-requirements/proposed_items.json: one entry per stage area or rule group of Laura Abate's Draft 6 as the source record states it. The 12 stages and 15 rules themselves are stakeholder proposals; the map body is not read here, so a gap names an area, not a numbered stage. Each gap names the existing types and bindings it can reuse. A gap that needs a person names a question for Laura or Regulatory.",
+ "advisory": "advisory:51cf697a454b",
+ "gaps": [
+  {
+   "id": "BR-GAP-01",
+   "kind": "object",
+   "name": "CustomerBrandRequirement (a requirement scoped to customer, brand/product line and product exceptions, with category, source document, date, contact, completeness/currentness)",
+   "map_says": "account managers enter requirements; Regulatory reviews or is notified",
+   "implementation": "the draft states no portal code audit; any Portal statement is unverified",
+   "ontology_today": "Customer and Product exist; the Portal's customer and project requirement tables are not_served and unread for the map's fields.",
+   "needed_by": [
+    "BR-02",
+    "BR-09"
+   ],
+   "sources": [
+    {
+     "system": "ontology",
+     "relation": "Customer",
+     "ref": "OntologyProject:ontology/schema/domains/catalog_parties.json@df2a8ddfff4a:1391"
+    },
+    {
+     "system": "ontology",
+     "relation": "Product",
+     "ref": "OntologyProject:ontology/schema/domains/catalog_parties.json@df2a8ddfff4a:12-24"
+    },
+    {
+     "system": "portal",
+     "relation": "public.app_customer_requirement",
+     "ref": "OntologyProject:ontology/schema/generated/portal_not_served_a_e.json@df2a8ddfff4a:2092-2116"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Laura or Regulatory: do the Portal's customer and project requirement rows hold the map's scope, category, source document, date and contact, and who owns a requirement's currentness?"
+  },
+  {
+   "id": "BR-GAP-02",
+   "kind": "link",
+   "name": "Requirement.applies_to (brand/product line and product exceptions resolved to one product)",
+   "map_says": "requirements are scoped to brand and product line with product-level exceptions",
+   "implementation": "the draft states no portal code audit; any Portal statement is unverified",
+   "ontology_today": "Product carries no brand-line scope link and no requirement link.",
+   "needed_by": [
+    "BR-09"
+   ],
+   "sources": [
+    {
+     "system": "ontology",
+     "relation": "Product",
+     "ref": "OntologyProject:ontology/schema/domains/catalog_parties.json@df2a8ddfff4a:12-24"
+    },
+    {
+     "system": "ontology",
+     "relation": "Customer",
+     "ref": "OntologyProject:ontology/schema/domains/catalog_parties.json@df2a8ddfff4a:1391"
+    }
+   ]
+  },
+  {
+   "id": "BR-GAP-03",
+   "kind": "object",
+   "name": "ComplianceDocument on a supplier-specific raw-material R number (type, supported claims, issue and expiry dates, reviewer)",
+   "map_says": "compliance documents attach to supplier-specific R numbers",
+   "implementation": "the draft states no portal code audit; any Portal statement is unverified",
+   "ontology_today": "CertificateOfAnalysis holds product, lot, dates, supplier and test table as a supplier statement; it has no document type for a claim, no supported-claim list and no reviewer. FM raw material (R number) is served.",
+   "needed_by": [
+    "BR-03",
+    "BR-10",
+    "BR-12"
+   ],
+   "sources": [
+    {
+     "system": "ontology",
+     "relation": "CertificateOfAnalysis (document fields)",
+     "ref": "OntologyProject:ontology/schema/domains/quality.json@df2a8ddfff4a:132-140"
+    },
+    {
+     "system": "portal",
+     "relation": "public.raw_material",
+     "ref": "OntologyProject:ontology/schema/domains/catalog_parties.json@df2a8ddfff4a:86-102"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Laura or Regulatory: where are compliance documents (organic, kosher, RSPO and similar) filed today and which fields identify the R number and supplier?"
+  },
+  {
+   "id": "BR-GAP-04",
+   "kind": "link",
+   "name": "ComplianceDocument.supports_claim and the derived claim by product by material substantiation",
+   "map_says": "proposed derived substantiation is claim x product x material",
+   "implementation": "the draft states no portal code audit; any Portal statement is unverified",
+   "ontology_today": "No claim object or claim link exists; the Portal formula and ingredient tables are not_served.",
+   "needed_by": [
+    "BR-10",
+    "BR-14"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "public.app_formulation",
+     "ref": "OntologyProject:ontology/schema/generated/portal_not_served_f_o.json@df2a8ddfff4a:516"
+    },
+    {
+     "system": "portal",
+     "relation": "public.app_formulation_ingredient",
+     "ref": "OntologyProject:ontology/schema/generated/portal_not_served_f_o.json@df2a8ddfff4a:545"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Laura or Regulatory: how is a claim named and recorded against a product today, and is there a list of claims?"
+  },
+  {
+   "id": "BR-GAP-05",
+   "kind": "object",
+   "name": "RegulatoryReview (opened by a supplier or material switch, with Quality notified)",
+   "map_says": "a switch opens a Regulatory review and notifies Quality, including customer-supplied materials; the PO is not blocked",
+   "implementation": "the draft states no portal code audit; any Portal statement is unverified",
+   "ontology_today": "Portal ApprovalRecord exists but is not_served; no review or notification object is modelled.",
+   "needed_by": [
+    "BR-04",
+    "BR-11",
+    "BR-15"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "public.app_approval_record",
+     "ref": "OntologyProject:ontology/schema/generated/portal_not_served_a_e.json@df2a8ddfff4a:855"
+    },
+    {
+     "system": "portal",
+     "relation": "public.app_customer_supplied_item",
+     "ref": "OntologyProject:ontology/schema/generated/portal_not_served_a_e.json@df2a8ddfff4a:2121"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Regulatory: where is a Regulatory review recorded today, and where is Quality's notification kept?"
+  },
+  {
+   "id": "BR-GAP-06",
+   "kind": "link",
+   "name": "Product.supplier_material_switch (the change event of a product's supplier or material, with date)",
+   "map_says": "a supplier or material switch is the trigger",
+   "implementation": "the draft states no portal code audit; any Portal statement is unverified",
+   "ontology_today": "SupplierProduct is served as the current link; no change history or event exists.",
+   "needed_by": [
+    "BR-11",
+    "BR-14"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "public.app_supplier_product",
+     "ref": "OntologyProject:ontology/source_registry.json@df2a8ddfff4a:426"
+    },
+    {
+     "system": "ontology",
+     "relation": "Product",
+     "ref": "OntologyProject:ontology/schema/domains/catalog_parties.json@df2a8ddfff4a:12-24"
+    }
+   ]
+  },
+  {
+   "id": "BR-GAP-07",
+   "kind": "reader",
+   "name": "Batching gate: document review status and document expiry as separate conditions, reusing the lot restriction and expired-disposition findings",
+   "map_says": "documents must be reviewed before batching; expiry alerts do not block batching",
+   "implementation": "the draft states no portal code audit; any Portal statement is unverified",
+   "ontology_today": "Lot and its expiry exist (not_served in the Portal); expired-disposition gaps EMD-GAP-01 (restricted class, LotRestriction) and EMD-GAP-09 (lot allocated to a batch) already name the lot-side links. No document review status exists.",
+   "needed_by": [
+    "BR-05",
+    "BR-12"
+   ],
+   "sources": [
+    {
+     "system": "ontology",
+     "relation": "Lot",
+     "ref": "OntologyProject:ontology/schema/domains/items.json@df2a8ddfff4a:427-445"
+    },
+    {
+     "system": "ontology",
+     "relation": "CertificateOfAnalysis (document fields)",
+     "ref": "OntologyProject:ontology/schema/domains/quality.json@df2a8ddfff4a:132-140"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Laura: what does 'reviewed' mean for a document before batching, and does a restricted lot class also gate batching?"
+  },
+  {
+   "id": "BR-GAP-08",
+   "kind": "object",
+   "name": "FormulaVersion (pending or final, ingredient lines, allergen notes, supersedes link)",
+   "map_says": "pending and final formulas need ingredient lines, allergen notes and supersedes links",
+   "implementation": "the draft states no portal code audit; any Portal statement is unverified",
+   "ontology_today": "The Portal Formulation and FormulationIngredient are not_served; no supersedes link or allergen note is confirmed.",
+   "needed_by": [
+    "BR-06",
+    "BR-13"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "public.app_formulation",
+     "ref": "OntologyProject:ontology/schema/generated/portal_not_served_f_o.json@df2a8ddfff4a:516"
+    },
+    {
+     "system": "portal",
+     "relation": "public.app_formulation_ingredient",
+     "ref": "OntologyProject:ontology/schema/generated/portal_not_served_f_o.json@df2a8ddfff4a:545"
+    }
+   ]
+  },
+  {
+   "id": "BR-GAP-09",
+   "kind": "link",
+   "name": "Approval.binds_version (formula and artwork approval to one exact version), reusing the artwork lifecycle ArtworkVersion and CustomerApproval gaps AL-GAP-01 and AL-GAP-02",
+   "map_says": "approvals bind exact versions",
+   "implementation": "the draft states no portal code audit; any Portal statement is unverified",
+   "ontology_today": "ArtworkVersionDecision and ApprovalRecord exist in the Portal (not_served); no formula approval binds a version.",
+   "needed_by": [
+    "BR-06",
+    "BR-13"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "public.app_artwork_version_decision",
+     "ref": "OntologyProject:ontology/schema/generated/portal_not_served_a_e.json@df2a8ddfff4a:913"
+    }
+   ]
+  },
+  {
+   "id": "BR-GAP-10",
+   "kind": "link",
+   "name": "MaterialChange.reopens_formula_approval (a claim-affecting change reopens approval; a pre-production Regulatory review is proposed)",
+   "map_says": "claim-affecting material changes reopen formula approval; a pre-production Regulatory review is proposed",
+   "implementation": "the draft states no portal code audit; any Portal statement is unverified",
+   "ontology_today": "No change object, claim link or reopen rule exists.",
+   "needed_by": [
+    "BR-06",
+    "BR-14"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "public.app_approval_record",
+     "ref": "OntologyProject:ontology/schema/generated/portal_not_served_a_e.json@df2a8ddfff4a:855"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Regulatory: which material changes affect a claim, and is the pre-production review a gate or a notice?"
+  },
+  {
+   "id": "BR-GAP-11",
+   "kind": "reader",
+   "name": "The map's own body: 12 stages, 15 rules, 17 records, 11 relations, 8 identifiers and 5 checks (four marked fail, one open)",
+   "map_says": "the draft's data model is the companion JSON and CSVs",
+   "implementation": "the draft states no portal code audit; any Portal statement is unverified",
+   "ontology_today": "Only the source record's summary is read here; no read receipt of the four members exists, so no numbered stage or rule is quoted.",
+   "needed_by": [
+    "BR-01",
+    "BR-08"
+   ],
+   "sources": [
+    {
+     "system": "source-record",
+     "relation": "the map's source record (the claim, not a reader)",
+     "ref": "OntologyProject:context/51cf697a454be593964566fa4ad4b43be95c8d8583775fd1444cee1aed9066fe.json@3d9269e8012b"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Laura: may a read-only reader read the four members of regulatory-process-flow-mapper.zip so each stage and rule can be cited?"
+  },
+  {
+   "id": "BR-GAP-12",
+   "kind": "reader",
+   "name": "The Three Ships source bundle (switch, product, RSPO-document request, dates)",
+   "map_says": "a supplier switch is said to have introduced animal-derived content into a vegan product, found through a later RSPO-document request",
+   "implementation": "the draft states no portal code audit; any Portal statement is unverified",
+   "ontology_today": "No source is held; the account has approximate dates and no supporting bundle.",
+   "needed_by": [
+    "BR-07",
+    "BR-15"
+   ],
+   "sources": [
+    {
+     "system": "source-record",
+     "relation": "the map's source record (the claim, not a reader)",
+     "ref": "OntologyProject:context/51cf697a454be593964566fa4ad4b43be95c8d8583775fd1444cee1aed9066fe.json@3d9269e8012b"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Regulatory: where are the Three Ships purchase, the supplier change and the RSPO-document request recorded, and may they be read?"
+  }
+ ]
+}

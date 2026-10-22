@@ -1,0 +1,35 @@
+{
+  "schema": "plx-source-mirror-audience/v1",
+  "note": "EXAMPLE source-mirror audience for assembly-order cases (the FM assembly order, its order chain and the silver quality relations; the console fixture seed and the case tests use it), not authority. Principals must be confirmed by PLX before real use.",
+  "tenant": "plx",
+  "default_classification": "internal",
+  "audiences": {
+    "public.assembly_order": [
+      "staff:operations"
+    ],
+    "public.order_entry": [
+      "staff:operations"
+    ],
+    "public.order_entry_item": [
+      "staff:operations"
+    ],
+    "public.order_entry_item_assembly": [
+      "staff:operations"
+    ],
+    "public.app_manufacturing_order": [
+      "staff:operations"
+    ],
+    "silver.assembly_order_items": [
+      "staff:quality"
+    ],
+    "silver.production_tasks": [
+      "staff:quality"
+    ],
+    "silver.assembly_order_damage": [
+      "staff:quality"
+    ],
+    "public.packaging": [
+      "staff:operations"
+    ]
+  }
+}

@@ -1,0 +1,157 @@
+{
+ "id": "host.all_sources",
+ "description": "The product host (operating/host.py check) over every connected source in one cycle pair on one persistent state directory, each cycle by a new host process object (a restart between cycles), no interrupt: the Portal mirror of every relation of the offline catalog (with its persisted copy), Business Central company My Company (Production) with every entity set of integrations/bc_read.py CAPTURE_ENTITY_SETS, the six granted mailboxes (order-confirmation@, ship@, torontowh@, ap@, receiving@, qclabresults@) through the people-exclusion guard, and the SharePoint libraries the host already captures (QA/QC library, Customer Documents, AGENTS Ontology UseCases), each followed by the incremental projection build. Asserted: both cycles complete, every configured source ran (4 configured, none not run, each at generation > 0), no mail folder restarted, the projection chains and the second cycle rebuilds fewer units than the cold first, the projection read as a principal without any grant shows 0 objects and leaks nothing, and no projected value is in the output. Mail: while PLX_EXCLUDED_PEOPLE_OIDS (or PLX_EXCLUDED_PEOPLE_FILE) is unset the guard refuses the mailboxes and the mail source reports excluded_people_oids_absent in blocked_upstream: the check is then blocked (expect_blocked asserts every other part), never a pass of mail, and the guard is never widened. Counts, states and codes only.",
+ "source": "portal-workbench-api+microsoft-graph+business-central",
+ "cadence": "daily",
+ "tier": "capture",
+ "command": [
+  "python3",
+  "-m",
+  "operating.host",
+  "check",
+  "--state-dir",
+  "{tmp}/state",
+  "--config",
+  "examples/host.all-sources.live-check.json",
+  "--cycles",
+  "2"
+ ],
+ "timeout_seconds": 7000,
+ "requires_env": [
+  "PLX_WORKBENCH_API_URL",
+  "PLX_WORKBENCH_API_KEY",
+  "MICROSOFT_GRAPH_TENANT_ID",
+  "MICROSOFT_GRAPH_CLIENT_ID",
+  "MICROSOFT_GRAPH_CLIENT_SECRET",
+  "SHAREPOINT_SITE_ID",
+  "BC_TENANT_ID",
+  "BC_CLIENT_ID",
+  "BC_CLIENT_SECRET",
+  "BC_ENVIRONMENT"
+ ],
+ "optional_env": [
+  "PLX_EXCLUDED_PEOPLE_OIDS",
+  "PLX_EXCLUDED_PEOPLE_FILE"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "cycles[*].state",
+   "cycles[*].projection.units_rebuilt",
+   "status.sources[*].generation",
+   "status.projection.generation"
+  ],
+  "json_equals": {
+   "checks.cycles_run": 2,
+   "checks.sources_configured": 4,
+   "checks.sources_not_run": 0,
+   "checks.mail_folders_restarted": 0,
+   "checks.projection_chained": true,
+   "checks.later_rebuilds_fewer": true,
+   "trim.state": "checked",
+   "trim.withheld_principal_objects": 0,
+   "trim.withheld_leaks": 0,
+   "row_data_check.leaked": 0,
+   "cycles[*].state": "complete"
+  },
+  "json_min": {
+   "status.sources[*].generation": 1,
+   "trim.capture_principal_objects": 1,
+   "row_data_check.values_checked": 1
+  }
+ },
+ "expect_blocked": {
+  "exit_code": 0,
+  "json_fields": [
+   "blocked_upstream",
+   "cycles[*].state",
+   "cycles[*].projection.units_rebuilt",
+   "status.sources[*].generation",
+   "status.projection.generation"
+  ],
+  "json_equals": {
+   "checks.cycles_run": 2,
+   "checks.sources_configured": 4,
+   "checks.sources_not_run": 0,
+   "checks.mail_folders_restarted": 0,
+   "checks.projection_chained": true,
+   "checks.later_rebuilds_fewer": true,
+   "trim.state": "checked",
+   "trim.withheld_principal_objects": 0,
+   "trim.withheld_leaks": 0,
+   "row_data_check.leaked": 0,
+   "cycles[*].state": "complete"
+  },
+  "json_min": {
+   "trim.capture_principal_objects": 1,
+   "row_data_check.values_checked": 1
+  }
+ },
+ "record": [
+  "checks",
+  "trim",
+  "trim.state",
+  "row_data_check",
+  "blocked_upstream",
+  "blocked_upstream[*].part",
+  "blocked_upstream[*].error_code",
+  "cycles[*].state",
+  "cycles[*].projection.state",
+  "cycles[*].projection.mode",
+  "cycles[*].projection.units",
+  "cycles[*].projection.units_rebuilt",
+  "cycles[*].projection.objects",
+  "cycles[*].sources.portal.state",
+  "cycles[*].sources.portal.reasons",
+  "cycles[*].sources.portal.counts",
+  "cycles[*].sources.bc.state",
+  "cycles[*].sources.bc.reasons",
+  "cycles[*].sources.bc.modes",
+  "cycles[*].sources.bc.counts",
+  "cycles[*].sources.mail.state",
+  "cycles[*].sources.mail.reasons",
+  "cycles[*].sources.mail.resumed_from",
+  "cycles[*].sources.mail.counts",
+  "cycles[*].sources.sharepoint.state",
+  "cycles[*].sources.sharepoint.reasons",
+  "cycles[*].sources.sharepoint.counts",
+  "status.sources[*].source",
+  "status.sources[*].generation",
+  "status.sources[*].served_from",
+  "status.sources[*].complete",
+  "status.sources[*].stale_since",
+  "status.projection.generation",
+  "status.projection.objects"
+ ],
+ "record_keys": [
+  "checks",
+  "trim",
+  "row_data_check",
+  "cycles[*].sources.portal.counts",
+  "cycles[*].sources.bc.modes",
+  "cycles[*].sources.bc.counts",
+  "cycles[*].sources.mail.resumed_from",
+  "cycles[*].sources.mail.counts",
+  "cycles[*].sources.sharepoint.counts"
+ ],
+ "record_enums": [
+  "trim.state",
+  "blocked_upstream[*].part",
+  "blocked_upstream[*].error_code",
+  "cycles[*].state",
+  "cycles[*].projection.state",
+  "cycles[*].projection.mode",
+  "cycles[*].sources.portal.state",
+  "cycles[*].sources.portal.reasons",
+  "cycles[*].sources.bc.state",
+  "cycles[*].sources.bc.reasons",
+  "cycles[*].sources.mail.state",
+  "cycles[*].sources.mail.reasons",
+  "cycles[*].sources.sharepoint.state",
+  "cycles[*].sources.sharepoint.reasons",
+  "status.sources[*].source",
+  "status.sources[*].served_from",
+  "status.sources[*].stale_since"
+ ],
+ "notes": "Live-unverified until the live check runs it (GET only; the OAuth token POSTs are the guard's only non-GETs). Fold-in of every connected API (owner 2026-10-21): Portal, BC, the six mailboxes and SharePoint in one host cycle pair. Teams is not wired here (the config names no teams source, checks.sources_configured is 4). No interrupt or case-resume part (host.cycles asserts those). Mail through the people-exclusion guard: PLX_EXCLUDED_PEOPLE_OIDS or _FILE unset blocks the mail source with excluded_people_oids_absent (blocked_upstream part mail, recorded as that code), the check is blocked, never pass; the Portal, BC and SharePoint parts and the projection, trim and leak guards are still asserted by expect_blocked. Known gaps of config-only: (1) the host config takes an explicit Portal relation list, so the list is the offline catalog's (ontology/schema/generated/meta/portal_catalog.json, 104 relations), not whatever the live API serves; a relation the API does not serve fails the Portal source (unknown_relation or relation_unavailable), shown in the cycles' portal reasons and a failed cycle; (2) the host reports a mail source blocked by the guard with a generation that still advances (state partial), so generation > 0 is asserted for every source in expect only, where mail is not blocked; (3) completeness is recorded, not asserted: with capture budgets a large BC set, the item and general ledgers, or a SharePoint walk stay partial across two cycles and resume in the next run."
+}

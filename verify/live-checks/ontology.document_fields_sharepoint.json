@@ -1,0 +1,109 @@
+{
+ "id": "ontology.document_fields_sharepoint",
+ "description": "Quality AO packet projection over live SharePoint captures: one GET-only capture run of QCQA '/AOs/2026 - AOs' (integrations/capture_sharepoint.py through the GET-only Graph client; scanned PDFs OCR-read locally by poppler + tesseract, never a network service) into the check's temporary Workbench state, a projection of that capture alone (no Portal source, so it does not need portal.health_catalog), then for every AssemblyOrderPacket the document-field extractor projected (ontology/document_fields.py, class ao_packet, read from the scan's pinned OCR text): fields stated, gaps by reason, per-component damage entries, and whether every page/span citation of its evidence resolves against the captured bytes and OCR text; per field and per quantity role (planned, produced, inspected, accepted/released, damaged: separate rows) the denominators extracted / blank / unreadable / ambiguous / label_absent (the document never names the field) / label_seen_unread (it names it, by a label or a table row, where no value was read: a reader limit) (scripts/eval_document_fields_live.py), each label_seen_unread counted by why (unread_by: header_unseen, row_unaligned, single_spaced, no_key, handwritten_unkeyed, value_unplaced); role_documents counts each document once per role in its first bucket of extracted, label_seen_unread, other_gap, ambiguous, unreadable, blank, label_absent; roles_unread, the roles with a document left in a reader-limit bucket (label_seen_unread or other_gap: blank, ambiguous and unreadable are facts on the paper, reported per role, never unread), must be 0; a keyed box at least 3/4 of whose text OCR read in words below the handwriting bound (handwritten part codes OCR cannot key: label_seen_unread with unread handwritten_unkeyed, decision docs/decisions/2026-10-19-ao-handwritten-reader-limit.md) is its own bucket after the reader limits, counted in roles_unread_handwritten (reported, not gated: neither a pass nor hidden until an operator keys those boxes) with handwritten_packets naming each such packet's citation positions per role (page and span, never text), never in roles_unread; a printed box no key was read from stays in roles_unread; a checkbox reads only a known checked mark, else a gap; a quantity stated in several units reads in its field's default_unit and keeps the others as cited alternates; accuracy only against operator-interpreted (human_audited) items, 'no_operator_items' until one exists; then the exposed extraction items whose pinned original this capture holds (the P2/P8 bundle in evals/exposed) scored per field against the same reader by the eval tooling's live entry (scripts/eval_document_fields_live.py over evals/document_fields.py: correct / wrong / abstain / blocked counts, recorded, wrong must be 0). Counts, booleans and enums only; no names, paths, ids, identifiers, values or text.",
+ "source": "sharepoint",
+ "command": [
+  "python3",
+  "-m",
+  "scripts.eval_document_fields_live",
+  "--state-dir",
+  "{tmp}/state",
+  "--scope",
+  "examples/sharepoint_capture_scope.qcqa_aos.live-check.json",
+  "--live-audience",
+  "examples/sharepoint_capture_audience.live-check.json",
+  "--document-class",
+  "ao_packet",
+  "--min-documents",
+  "1",
+  "--capture-budget-seconds",
+  "900"
+ ],
+ "cadence": "daily",
+ "timeout_seconds": 1500,
+ "requires_env": [
+  "MICROSOFT_GRAPH_TENANT_ID",
+  "MICROSOFT_GRAPH_CLIENT_ID",
+  "MICROSOFT_GRAPH_CLIENT_SECRET",
+  "SHAREPOINT_SITE_ID"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "documents",
+   "documents_ocr",
+   "fields_stated",
+   "keyed_entries",
+   "citations",
+   "citations_resolved",
+   "gaps",
+   "capture.files_current",
+   "capture.texts_ocr",
+   "field_outcomes",
+   "role_outcomes",
+   "accuracy.status",
+   "capture_complete",
+   "role_documents",
+   "roles_unread",
+   "roles_unread_handwritten"
+  ],
+  "json_equals": {
+   "ok": true,
+   "check": "ontology.document_fields_sharepoint",
+   "object_type": "AssemblyOrderPacket",
+   "capture.texts_ocr_unavailable": 0,
+   "capture_complete": true
+  },
+  "json_min": {
+   "documents": 1,
+   "documents_ocr": 1,
+   "fields_stated": 1,
+   "citations": 1,
+   "capture.texts_ocr": 1
+  },
+  "json_max": {
+   "roles_unread": 0,
+   "exposed_fields.wrong": 0
+  }
+ },
+ "record": [
+  "ok",
+  "evidence_label",
+  "documents",
+  "documents_ocr",
+  "fields_stated",
+  "keyed_entries",
+  "citations",
+  "citations_resolved",
+  "gaps",
+  "links",
+  "capture",
+  "requests_sent",
+  "exposed_items",
+  "exposed_fields",
+  "capture_complete",
+  "field_outcomes",
+  "role_outcomes",
+  "accuracy",
+  "accuracy.status",
+  "role_documents",
+  "roles_unread",
+  "roles_unread_handwritten",
+  "handwritten_packets"
+ ],
+ "record_keys": [
+  "gaps",
+  "links",
+  "capture",
+  "field_outcomes",
+  "role_outcomes",
+  "accuracy",
+  "role_documents",
+  "handwritten_packets"
+ ],
+ "record_enums": [
+  "evidence_label",
+  "accuracy.status"
+ ],
+ "notes": "Live-unverified until the live check runs it; its test is injected-transport (ontology/tests/test_quality_packets.py runs operating.sharepoint_host_check --document-class with scripts.eval_document_fields_live.score_exposed over the in-process FakeDrive). Captured files live only in {tmp}/state and are deleted with the check's temporary directory. Unverified live assumptions: the runner host has poppler and tesseract (else capture.texts_ocr_unavailable > 0 fails visibly); the AO forms' OCR text carries a title cue the ao_packet profile knows ('assembly order', 'finished goods inspection') on a line start; how many fields a handwritten scan yields is measured here, never assumed (an unreadable or blank field, or a box without a known checked mark, is a gap). The capture walk is bounded (--capture-budget-seconds 900: a root it cuts is incomplete, capture_complete false, and the counts cover what was captured) so the check reaches a verdict inside its timeout and fits the daily resume budget; a budget-cut capture fails the check (json_equals capture_complete true), never a pass over part of the folder; until 2026-10-07 it never ran in a recorded result (always not_run). The FM-vs-paper conflicts need the Portal mirror and are proven by the fixture test only; this check does not claim them. Since 2026-10-18 (decision docs/decisions/2026-10-18-ao-ocr-layout-columns.md) a scanned page's OCR text is rebuilt from tesseract's TSV word boxes (one call per page, columns kept by position) and a shop-floor table cell is read by its x-overlap with its header cell; this check captures into a fresh {tmp}/state, so it always reads the rebuilt text (the rebuilt text ends in the layout mark; a persistent store's OCR text pinned before then has no mark, stays the plain psm-3 text it was and keeps the count rule until re-captured). If role_outcomes' unread_by shows header_unseen dominating, the next step is the OCR settings (psm, DPI), not more column fitting."
+}

@@ -1,0 +1,163 @@
+{
+ "id": "capture.sharepoint_containers",
+ "description": "Container originals projected member by member from a live SharePoint capture (ING-17): one GET-only capture run (integrations/capture_sharepoint.py) of the AGENTS site's '/Ontology UseCases' folder only (examples/sharepoint_capture_scope.containers.live-check.json) into the host's Workbench state kept across runs (PLX_WORKBENCH_STATE_DIR/sharepoint-containers-check; each run resumes the last), the projection of that capture alone (ontology/project.py SharePointCaptures, containerMembers through ontology/project_graph.py member_records) into a temporary store there, then offline counts (integrations/sharepoint_container_check.py): the capture's own resolve_check (every captured version resolves offline and its pinned bytes re-hash), containers, containers_unopened (files named or typed zip/.msg/.eml whose bytes were not captured: over the scope's declared content cap, 100 MB or unavailable; each still counted in containers, its members one unread part in members_by_state and members_unread with reason container_exceeds_cap or container_unavailable), container_members (ContainerMember objects; member_records the records they came from, equal or members were lost), members_typed (typed documents cited by a member handle), members_by_state and members_unread by reason, members_resolved offline for the capture audience, and the members a no-grant actor and a folder-only actor (folder granted, item permissions required, no source identity) pass the tools' item gate for (must be 0). Counts, booleans and enums only; no names, paths, identifiers, ids or text.",
+ "source": "sharepoint",
+ "cadence": "daily",
+ "command": [
+  "python3",
+  "-m",
+  "integrations.sharepoint_container_check",
+  "--scope",
+  "examples/sharepoint_capture_scope.containers.live-check.json",
+  "--live-audience",
+  "examples/sharepoint_capture_audience.live-check.json",
+  "--budget-seconds",
+  "200"
+ ],
+ "timeout_seconds": 300,
+ "requires_env": [
+  "MICROSOFT_GRAPH_TENANT_ID",
+  "MICROSOFT_GRAPH_CLIENT_ID",
+  "MICROSOFT_GRAPH_CLIENT_SECRET",
+  "SHAREPOINT_SITE_ID"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "containers",
+   "containers_unopened",
+   "container_members",
+   "member_records",
+   "members_typed",
+   "members_resolved",
+   "members_by_state",
+   "members_unread",
+   "capture.files_current",
+   "containers_opened",
+   "members_read",
+   "progress.forward",
+   "cursor.held",
+   "projection.items_deferred"
+  ],
+  "json_equals": {
+   "ok": true,
+   "projection_error": null,
+   "leak_check.no_grant_members_visible": 0,
+   "leak_check.folder_only_members_visible": 0,
+   "capture_leak_check.withheld_actor_rows": 0,
+   "capture_leak_check.withheld_actor_resolved": 0,
+   "capture_leak_check.folder_only_actor_rows": 0,
+   "capture_leak_check.folder_only_actor_resolved": 0,
+   "containers_unopened_truncated": false
+  },
+  "json_min": {
+   "capture.roots_complete": 1,
+   "containers": 1,
+   "container_members": 1
+  },
+  "json_same": {
+   "container_members": "member_records",
+   "members_resolved": "container_members",
+   "capture_resolve_check.resolved_offline": "capture_resolve_check.handles_checked",
+   "capture_resolve_check.content_bytes_verified": "capture_resolve_check.contents_checked"
+  },
+  "json_empty": [
+   "reasons"
+  ]
+ },
+ "expect_blocked": {
+  "exit_code": 0,
+  "json_fields": [
+   "containers",
+   "containers_unopened",
+   "container_members",
+   "member_records",
+   "members_typed",
+   "members_resolved",
+   "members_by_state",
+   "members_unread",
+   "capture.files_current",
+   "containers_opened",
+   "members_read",
+   "progress.forward",
+   "cursor.held",
+   "projection.items_deferred"
+  ],
+  "json_equals": {
+   "projection_error": null,
+   "leak_check.no_grant_members_visible": 0,
+   "leak_check.folder_only_members_visible": 0,
+   "capture_leak_check.withheld_actor_rows": 0,
+   "capture_leak_check.withheld_actor_resolved": 0,
+   "capture_leak_check.folder_only_actor_rows": 0,
+   "capture_leak_check.folder_only_actor_resolved": 0,
+   "containers_unopened_truncated": false
+  },
+  "json_min": {
+   "containers": 1
+  },
+  "json_same": {
+   "container_members": "member_records",
+   "members_resolved": "container_members",
+   "capture_resolve_check.resolved_offline": "capture_resolve_check.handles_checked",
+   "capture_resolve_check.content_bytes_verified": "capture_resolve_check.contents_checked"
+  }
+ },
+ "record": [
+  "ok",
+  "evidence_label",
+  "reasons",
+  "projection_error",
+  "incomplete_scope[*].target",
+  "incomplete_scope[*].root",
+  "incomplete_scope[*].reasons",
+  "incomplete_scope[*].resumable",
+  "incomplete_scope[*].persisted",
+  "incomplete_scope[*].later_ask",
+  "capture",
+  "capture_leak_check",
+  "capture_resolve_check",
+  "containers",
+  "containers_unopened",
+  "containers_unopened_truncated",
+  "containers_opened",
+  "container_members",
+  "member_records",
+  "members_typed",
+  "members_read",
+  "members_by_state",
+  "members_unread",
+  "members_resolved",
+  "leak_check",
+  "requests_sent",
+  "projection",
+  "progress",
+  "cursor",
+  "storage",
+  "blocked_upstream[*].part",
+  "blocked_upstream[*].cause"
+ ],
+ "record_keys": [
+  "capture",
+  "capture_leak_check",
+  "capture_resolve_check",
+  "members_by_state",
+  "members_unread",
+  "leak_check",
+  "projection",
+  "progress",
+  "cursor",
+  "storage"
+ ],
+ "record_enums": [
+  "evidence_label",
+  "reasons",
+  "projection_error",
+  "storage",
+  "incomplete_scope[*].target",
+  "incomplete_scope[*].reasons",
+  "incomplete_scope[*].later_ask",
+  "blocked_upstream[*].cause"
+ ],
+ "notes": "Live-pending: unverified until the live check records its first result (evidence label of its test: injected-transport, verify/tests/test_live_sharepoint_containers.py). Fails with named reasons (reasons, in this order): capture_incomplete (no root, or a root not complete: not visible, source error, time budget, a file whose bytes are unavailable), capture_stalled (still incomplete and neither containers_opened, members_read nor capture.contents_captured rose over the previous run's progress record and the cursor did not move: progress.walk_moved, a held walk resumed and listed more folders or finished listing), capture_leak (the capture's own withheld or folder-only read-back saw something), capture_unresolved (the capture's own resolve_check: a captured version, a plain file included, that does not resolve offline or whose pinned bytes do not re-hash; content_bytes_failed counts the latter by code, e.g. blob_digest_mismatch), capture_failed (the capture's ok is false for any other cause), projection_failed (projection_error names the code), projection_deferred (captured versions not yet verified this run: each version is projected alone and verified once, its counts kept in container-check-ledger.json in the state directory, counts and digests only, voided by any change of the version, the audience file, the principal or the roots; a run verifies new versions for at most 40 s after the capture, at least one, and defers the rest to the next run, projection.items_verified, items_carried, items_deferred; a carried container's leak counts are re-checked every run through its own gate), index_truncated (the capture index stopped at its 100,000-file limit: containers_unopened is a lower bound and containers_unopened_truncated is true), containers_unopened (no member was read and at least one container was captured unopened: over the scope's declared content cap, 100 MB or content unavailable; counted in containers_unopened whether or not the check fails), no_container_members (the folder holds no zip/.msg/.eml at all), members_not_projected (a containerMembers record without its ContainerMember object), members_unresolved (a member handle that does not resolve offline for the capture audience), no_grant_sees_members, folder_only_sees_members. Unverified live assumptions: the AGENTS site resolves on the SHAREPOINT_SITE_ID host and its '/Ontology UseCases' folder holds at least one container original (the use-case packet zips); the shared app may read item permissions. A container original whose bytes were captured but cannot be opened is still a member (state unread, reason container_unreadable), so it never reads as 0; one whose bytes were not captured (over the cap, unavailable) yields no member record: it is still a container (containers), counted in containers_unopened, its members one unread part with a typed reason (members_unread container_exceeds_cap or container_unavailable; live 2026-10-08 the scope's one file was over the cap and the check reported 0 containers); the scope then capped content at 20 MB, under its ~31 MB packet: it now declares the guard's one-download bound, and a container over 20 MB is read member by member, each member within its own 20 MB bound, so an estate of only such containers fails as containers_unopened, not no_container_members. Time: the first live pass (2026-10-13, on dd215e97) took 16 s for the one ~31 MB packet (216 members, 13 requests) and the injected-transport tests take about 2 s, so the timeout is 300 s, not 1800 s, which the daily rotation deferred for budget from 2026-10-08 until the starved-deferral rule ran it; --budget-seconds 200 bounds the capture under it, so a slow source is cut and reported capture_incomplete, never a timeout, with the projection and offline counts after it inside the timeout. Convergence (daily 2026-10-16/17 failed capture_incomplete, roots_complete 0 of 1, 12 containers 4 unopened, 357 requests in the 200 s budget, every run starting from an empty {tmp}/state): the capture store is now the host's (no --state-dir: PLX_WORKBENCH_STATE_DIR/sharepoint-containers-check/live, else XDG_STATE_HOME or HOME/.local/state; storage.state_base says which; only workbench_state_dir is kept between dailies, so set PLX_WORKBENCH_STATE_DIR on the credentialed host as for capture.sharepoint_estate). Its cursor is the capture's walk position: a budget-cut walk resumes there next run and never downloads a finished container again; each run first retries the containers whose bytes an earlier run could not read (cursor.containers_retried_first; each at most once a run, ahead of any failed plain file, in at most half the budget left), then resumes the walk; cursor.held, folders_left, items_held and containers_pending say what the next run resumes. containers_opened and members_read are recorded after each run (counts only, container-check-progress.json in the state directory) and progress gives the previous run's beside them (progress.forward). Live 2026-10-17 on 1f30e17 with a kept store: runs 1-5 rose 9 to 85 opened containers, but run 6 overran the 300 s timeout re-projecting the whole store (about 105 s for 1,451 members after the 200 s capture); verified versions are now carried, so a run's post-capture work is bounded by the new versions (an offline replay of that store: 40, 43, 40 and 8 s, then 0.1 s with every version carried, the same totals as one whole projection). The budget stays 200 s: the folder converges over runs, not by a larger budget. Live acceptance: this check passes, or containers_opened, members_read or capture.contents_captured rises between two daily runs with storage.carried true. The captured files persist in the host state directory (0700, outside every git tree; an injected transport its own injected-transport subdirectory); the projection is temporary and deleted after the counts; nothing captured is printed. incomplete_scope names each scope root the capture left incomplete (target id, root ordinal, typed reasons, resumable, persisted, later_ask live-host-persistent-state-dir where the store is not kept); a root the budget cut resumes next run from the kept store, never counted complete. Blocked, never passed: when capture_incomplete (with its deferred projection) is the whole failure and every incomplete root is cut by the time budget alone over a store that is not kept between runs, blocked_upstream names it (cause later_ask, live-host-persistent-state-dir) and expect_blocked checks the rest (leaks 0, resolved offline). Over a kept store the cut resumes and the check fails until it finishes or stalls visibly (capture_stalled). The content_exceeds_cap files are terminal and counted apart (decision 2026-10-17-artwork-oversize-archives): they never make a root incomplete."
+}

@@ -1,0 +1,105 @@
+{
+ "id": "case.proactive_gaps",
+ "description": "Proactive gaps: one host capture cycle (operating.host: the Portal sales orders and quotes into the source mirror, the PLXCUSTOMERS 'Customer Documents' folder through the GET-only Graph reader), then offline over those captures the workspace's own detection (operating.proactive_gaps): deterministic rules over the objects plx.find reaches through seeds built from the schema and the document-field rules read through plx.object, never a model guess. A gap is raised for a missing field (a captured document states a value the order holds empty), conflicting quantities (one unit and role, different values) and an expired quote (valid_until before the run date, no outcome); each is cited and carries a proposed follow-up a person sends. Passes with at least one detected gap carrying a citation; counts and enums only, never an identifier or value. The scan is repeated for a reader who reads the orders but no document.",
+ "source": "portal-workbench-api+microsoft-graph",
+ "cadence": "daily",
+ "command": [
+  "python3",
+  "-m",
+  "operating.proactive_gaps",
+  "--state-dir",
+  "{tmp}/state",
+  "--mirror-audience",
+  "examples/proactive_gaps_audience.live-check.json",
+  "--host-config",
+  "examples/proactive_gaps_host.live-check.json",
+  "--principal",
+  "staff:sales",
+  "--principal",
+  "staff:operations",
+  "--live-source-audience",
+  "examples/customer_po_missing_live_audience.live-check.json",
+  "--clearance",
+  "restricted",
+  "--reader",
+  "staff:operations"
+ ],
+ "timeout_seconds": 2400,
+ "requires_env": [
+  "PLX_WORKBENCH_API_URL",
+  "PLX_WORKBENCH_API_KEY",
+  "MICROSOFT_GRAPH_TENANT_ID",
+  "MICROSOFT_GRAPH_CLIENT_ID",
+  "MICROSOFT_GRAPH_CLIENT_SECRET",
+  "SHAREPOINT_SITE_ID"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "capture.sources",
+   "gaps_by_kind",
+   "readers[*].reader",
+   "readers[*].gaps_found",
+   "blocked_upstream"
+  ],
+  "json_equals": {
+   "capture.exit_code": 0,
+   "gaps_uncited": 0
+  },
+  "json_min": {
+   "scanned": 1,
+   "gaps_cited": 1
+  }
+ },
+ "expect_blocked": {
+  "exit_code": 0,
+  "json_fields": [
+   "capture.sources",
+   "gaps_by_kind",
+   "blocked_upstream"
+  ],
+  "json_equals": {
+   "capture.exit_code": 0,
+   "gaps_uncited": 0
+  }
+ },
+ "record": [
+  "capture.state",
+  "capture.sources",
+  "capture.projection",
+  "as_of",
+  "scanned",
+  "truncated",
+  "unscanned",
+  "unread",
+  "gaps_found",
+  "gaps_cited",
+  "gaps_uncited",
+  "with_follow_up",
+  "gaps_by_kind",
+  "no_gap_reason",
+  "readers[*].reader",
+  "readers[*].investigator",
+  "readers[*].scanned",
+  "readers[*].gaps_found",
+  "readers[*].gaps_by_kind",
+  "readers[*].no_gap_reason",
+  "blocked_upstream"
+ ],
+ "record_keys": [
+  "capture.sources",
+  "unread",
+  "gaps_by_kind",
+  "readers[*].gaps_by_kind"
+ ],
+ "record_enums": [
+  "unread",
+  "gaps_by_kind",
+  "no_gap_reason",
+  "readers[*].reader",
+  "readers[*].gaps_by_kind",
+  "readers[*].no_gap_reason",
+  "blocked_upstream"
+ ],
+ "notes": "Live-unverified until the verifier runs it; the module test is injected-transport (operating/tests/test_proactive_gaps.py LiveCheckTest: the spec's own command and host config over the case.customer_po_missing world plus Portal quotes in the in-process FakeWorkbench and a fake drive for the site; its expectations checked on the real summary; a Portal answering HTTP 500 at capture meets expect_blocked). Its own host config (examples/proactive_gaps_host.live-check.json) also mirrors public.app_quote, granted by examples/proactive_gaps_audience.live-check.json to staff:sales and svc:workbench-host only; it reuses the case.customer_po_missing live audience and SharePoint scope (read only). The check is green only with a detected gap that carries a citation (json_min gaps_cited >= 1), so a run that finds none is a truthful red ('missing' or below the minimum), never a pass; a Portal outage reads blocked through blocked_upstream (upstream_outage), never a pass. The three rules are fixture-proven in the module's DetectorTest; this live run can raise only the ones the day's captures hold (an open Portal quote past valid_until, or a customer-PO lead); a day with neither is a truthful red. A scan that cites no gap says why in a typed no_gap_reason (operating.proactive_gaps.NO_GAP_REASONS, first cause first: find_failed, nothing_found, nothing_read, evidence_withheld, no_rule_fired; null when a gap is cited), per reader too, so a red names the step that came up empty. The late_order rule here only detects; its never-sent supplier draft is worded by the scheduled engine (operating.proactive_engine.late_order_draft) and recorded on a case as workbench.draft.record only through the console's follow-up proposal. The capture walk is bounded by the scope (max_folders 5000); the scan lists at most 20 objects per seed and reads at most 60 (operating.proactive_gaps.MAX_SCAN), shared round-robin across the seeds so the quote seeds are read as early as the documents; it says truncated, with the found objects left unread (unscanned), when it stops there. An expired quote whose record holds no outcome field (ForwarderQuote) is raised as 'validity passed, outcome unknown'."
+}

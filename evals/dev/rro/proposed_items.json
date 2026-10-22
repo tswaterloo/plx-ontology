@@ -1,0 +1,587 @@
+{
+ "format": "plx-eval-case-cards/v1",
+ "status": "PROPOSED (14 comprehension, 12 arithmetic): an unexecuted proposal for lead triage, never gold. Draft 8 assertions are never ground truth; ERP-D-017/018 are proposals, not requirements.",
+ "source": {
+  "advisory": {
+   "ref": "source-records@a0411f7913931205755a7e149fadeb8ffcfb27bc",
+   "path": "context/70ef949974058738b66574cdf9e77f459d2cf1920e76d263cc5295f07959720c.json",
+   "source_id": "related-release-orders-draft8-evaluation-contract",
+   "contract_sha256": "0863e4bc022254075ae91cd18ece80898e7752e0346a38680a9733dca7e1b49c",
+   "created_at": "2026-10-06T21:59:38Z"
+  },
+  "original": {
+   "name": "Related Release Order Map.md",
+   "label": "Draft 8",
+   "sha256": "2d8b51b6fd493e7704955ff0064dd23e23bb7a0863812862a29de836ec110fbb",
+   "bytes": 93039,
+   "web_url": "https://petrasoap-my.sharepoint.com/personal/vince_petrasoap_com/Documents/Microsoft%20Teams%20Chat%20Files/Related%20Release%20Order%20Map.md?web=1",
+   "line_anchor_definition": "1-based inclusive lines in the exact hashed original Markdown",
+   "capture_route": "integrations.shared_link.read_shared_link only"
+  }
+ },
+ "layers": {
+  "comprehension": "source-conditioned: what Draft 8 says, with qualifiers (family F21)",
+  "arithmetic": "computations under the stated assumptions (family F22)",
+  "actual_case_answerability": "UNSCORED until the missing originals exist",
+  "live_product_capability": "separately authorized execution; not run here"
+ },
+ "provenance_conflicts": [
+  {
+   "subject": "Draft 8 attachment provenance: line 1257 says the final proforma and statement were supplied in the 29 Sep follow-up; line 1716 says those attachments were not provided",
+   "source_lines": [
+    [
+     1257,
+     1257
+    ],
+    [
+     1716,
+     1716
+    ]
+   ],
+   "status": "unresolved"
+  }
+ ],
+ "policy_status": [
+  {
+   "id": "ERP-D-014",
+   "status": "cited_by_draft_as_approved",
+   "note": "day-one MAKE gate, as Draft 8 cites it; not verified here"
+  },
+  {
+   "id": "ERP-D-017",
+   "status": "proposed",
+   "note": "day-one release flexibility; a proposal, not a requirement"
+  },
+  {
+   "id": "ERP-D-018",
+   "status": "proposed",
+   "note": "deposit method / default drawdown; a proposal, not a requirement"
+  }
+ ],
+ "missing_originals": [
+  "BOL page 2",
+  "kit SKU/BOM/case pack and price, invoices and payment",
+  "deposit receipt/location/application ledger and terms at receipt date",
+  "complete original order and final proforma/statement provenance",
+  "release-shipment-invoice IDs plus pick/lot/QC and short-close records"
+ ],
+ "real_example": {
+  "batch_id": "rro-draft8",
+  "exposure": "exposed",
+  "split": "dev",
+  "as_of": "2026-10-06T21:59:38Z",
+  "cards": [
+   {
+    "id": "RRO-01",
+    "layer": "comprehension",
+    "question": "What does this source establish, and what remains unverified?",
+    "criterion": "Attribute statements to Draft 8, distinguish current/target/cutover, and retain the contradictory attachment-provenance statements. No executed workflow or pinned code revision is supplied.",
+    "source_lines": [
+     [
+      1,
+      19
+     ],
+     [
+      1255,
+      1257
+     ],
+     [
+      1714,
+      1716
+     ],
+     [
+      1794,
+      1796
+     ],
+     [
+      1871,
+      1871
+     ]
+    ]
+   },
+   {
+    "id": "RRO-02",
+    "layer": "comprehension",
+    "question": "Which identifiers connect the production order and customer PO?",
+    "criterion": "Keep customer REMCO01, order OR1000152875, Production PO REM000002495 and retailer POs distinct; customer+PO is the stated key. Textual Billing order links and kit SKU aliases need original verification.",
+    "source_lines": [
+     [
+      1261,
+      1308
+     ],
+     [
+      1453,
+      1479
+     ],
+     [
+      1804,
+      1814
+     ],
+     [
+      1824,
+      1832
+     ]
+    ]
+   },
+   {
+    "id": "RRO-03",
+    "layer": "comprehension",
+    "question": "How do the nine releases, shipment grouping and invoices relate?",
+    "criterion": "Extract nine release/retailer-PO pairs, distinguish a shared pickup group from per-release shipments/invoices, and retain seven listed invoices plus two missing kit invoice accounts. BOL page 2 is absent.",
+    "source_lines": [
+     [
+      1423,
+      1439
+     ],
+     [
+      1463,
+      1489
+     ],
+     [
+      1529,
+      1576
+     ],
+     [
+      1689,
+      1700
+     ],
+     [
+      1828,
+      1830
+     ]
+    ]
+   },
+   {
+    "id": "RRO-04",
+    "layer": "comprehension",
+    "question": "What quantities and short yield can be reconciled?",
+    "criterion": "Reconcile 68,304 visible ordered, 68,160 final production, 144 short and 37,973 across seven AOs. Do not equate production with shipping or closure, or derive missing stock from the 100K title.",
+    "source_lines": [
+     [
+      1295,
+      1304
+     ],
+     [
+      1334,
+      1336
+     ],
+     [
+      1364,
+      1379
+     ],
+     [
+      1744,
+      1778
+     ],
+     [
+      1843,
+      1845
+     ]
+    ]
+   },
+   {
+    "id": "RRO-05",
+    "layer": "comprehension",
+    "question": "Was the stated deposit actually received and consistent with its terms?",
+    "criterion": "18,901.08 received is a comment claim without a receipt. Compare 15% calculations only with explicit original/final, tax and scope assumptions; neither arithmetic mismatch proves overpayment nor a zero line proves missing cash.",
+    "source_lines": [
+     [
+      1322,
+      1336
+     ],
+     [
+      1655,
+      1700
+     ],
+     [
+      1758,
+      1782
+     ],
+     [
+      1850,
+      1851
+     ]
+    ]
+   },
+   {
+    "id": "RRO-06",
+    "layer": "comprehension",
+    "question": "What does the invoice evidence support about missing billing or deposit application?",
+    "criterion": "Seven quoted invoices sum to 9,900; preserve invoice identifier \"1\" as anomalous, not corrected. IN1000180047 shows 1,188 due and zero less payment. Missing kit entries do not prove no billing/payment elsewhere.",
+    "source_lines": [
+     [
+      1645,
+      1726
+     ],
+     [
+      1794,
+      1796
+     ]
+    ]
+   },
+   {
+    "id": "RRO-07",
+    "layer": "comprehension",
+    "question": "What would each deposit drawdown rule imply under stated assumptions?",
+    "criterion": "Label 9,001.08 remaining after sequential application, or 1,485 applied/8,415 due proportionally, as conditional scenarios excluding unknown kit/other uses. They are not posted ledger balances.",
+    "source_lines": [
+     [
+      1616,
+      1641
+     ],
+     [
+      1724,
+      1730
+     ],
+     [
+      1827,
+      1831
+     ]
+    ]
+   },
+   {
+    "id": "RRO-08",
+    "layer": "comprehension",
+    "question": "Do cartons, unit counts and case packs reconcile?",
+    "criterion": "Reconcile 245 cartons at label assumptions versus 225 at Sage kit-pack assumptions. Keep kits and singles distinct, retain SKU spelling conflict, and require missing BOL detail before claiming all nine PO contents shipped.",
+    "source_lines": [
+     [
+      1423,
+      1435
+     ],
+     [
+      1475,
+      1479
+     ],
+     [
+      1529,
+      1588
+     ]
+    ]
+   },
+   {
+    "id": "RRO-09",
+    "layer": "comprehension",
+    "question": "What timing discrepancy is supported?",
+    "criterion": "Quoted invoice date 31 Aug precedes physical pickup 2 Sep by two days; distinguish those dates from system shipment posting and applicable accounting policy. Do not declare current overdue status or wrongdoing.",
+    "source_lines": [
+     [
+      1435,
+      1435
+     ],
+     [
+      1533,
+      1565
+     ],
+     [
+      1655,
+      1700
+     ],
+     [
+      1720,
+      1726
+     ]
+    ]
+   },
+   {
+    "id": "RRO-10",
+    "layer": "comprehension",
+    "question": "Which lot-trace questions remain unanswered?",
+    "criterion": "21F is absent from the reported lot list but two 21F AOs exist in the production table. Require pick/lot/QC evidence before asserting untracked shipping; AO code dates are not reliable fill dates.",
+    "source_lines": [
+     [
+      1364,
+      1393
+     ],
+     [
+      1493,
+      1525
+     ],
+     [
+      1846,
+      1846
+     ]
+    ]
+   },
+   {
+    "id": "RRO-11",
+    "layer": "comprehension",
+    "question": "Which day-one release rules are approved versus proposed?",
+    "criterion": "ERP-D-017 day-one flexibility is proposed; the draft cites ERP-D-014 as keeping the MAKE gate. Automatic release creation is a suggested reconciliation, not a recorded approval.",
+    "source_lines": [
+     [
+      179,
+      215
+     ],
+     [
+      1824,
+      1832
+     ],
+     [
+      1867,
+      1867
+     ]
+    ]
+   },
+   {
+    "id": "RRO-12",
+    "layer": "comprehension",
+    "question": "Can this production PO be closed?",
+    "criterion": "Close-never-delete is stated. Actual closure is undetermined without shipped/short-closed quantities, complete invoices and cash allocation; final yield is insufficient and residual deposit disposition is unspecified.",
+    "source_lines": [
+     [
+      731,
+      813
+     ],
+     [
+      1744,
+      1796
+     ],
+     [
+      1831,
+      1832
+     ],
+     [
+      1844,
+      1851
+     ]
+    ]
+   },
+   {
+    "id": "RRO-13",
+    "layer": "comprehension",
+    "question": "Which current-system and cutover gaps does the map claim?",
+    "criterion": "Attribute FileMaker dependence, missing deposits/linkage/closure and tax/ship-to observations to this unexecuted, unpinned code-reading map. Do not claim current deployed defects or OntologyProject live success.",
+    "source_lines": [
+     [
+      5,
+      19
+     ],
+     [
+      179,
+      215
+     ],
+     [
+      233,
+      277
+     ],
+     [
+      731,
+      821
+     ],
+     [
+      1804,
+      1814
+     ],
+     [
+      1856,
+      1871
+     ]
+    ]
+   },
+   {
+    "id": "RRO-14",
+    "layer": "comprehension",
+    "question": "What evidence should be requested next to make the case answerable?",
+    "criterion": "Prioritize original BOL page 2, kit identity/BOM/prices/invoices/payment, deposit ledger, complete order/proforma/statement provenance, and release/ship/invoice/lot links. Missing-source questions must remain explicit.",
+    "source_lines": [
+     [
+      1255,
+      1257
+     ],
+     [
+      1269,
+      1269
+     ],
+     [
+      1330,
+      1336
+     ],
+     [
+      1563,
+      1576
+     ],
+     [
+      1700,
+      1720
+     ],
+     [
+      1778,
+      1796
+     ]
+    ]
+   },
+   {
+    "id": "A01",
+    "layer": "arithmetic",
+    "question": "Under the stated assumption (visible ordered sales units), what does 10032*2 + 6000*3 + 3024*10 give from the figures at lines 1295-1304?",
+    "interpretation": "visible ordered sales units",
+    "calculation": "10032*2 + 6000*3 + 3024*10",
+    "result": "68304",
+    "source_lines": [
+     [
+      1295,
+      1304
+     ]
+    ]
+   },
+   {
+    "id": "A02",
+    "layer": "arithmetic",
+    "question": "Under the stated assumption (quoted final production units), what does 10000+10011+5984+5994+5984+30187 give from the figures at lines 1744-1752?",
+    "interpretation": "quoted final production units",
+    "calculation": "10000+10011+5984+5994+5984+30187",
+    "result": "68160",
+    "source_lines": [
+     [
+      1744,
+      1752
+     ]
+    ]
+   },
+   {
+    "id": "A03",
+    "layer": "arithmetic",
+    "question": "Under the stated assumption (short yield in visible comparison; not unshipped balance), what does 68304-68160 give from the figures at lines 1744-1752?",
+    "interpretation": "short yield in visible comparison; not unshipped balance",
+    "calculation": "68304-68160",
+    "result": "144",
+    "source_lines": [
+     [
+      1744,
+      1752
+     ]
+    ]
+   },
+   {
+    "id": "A04",
+    "layer": "arithmetic",
+    "question": "Under the stated assumption (seven AO production units), what does 5152+4848+5216+4795+5984+5994+5984 give from the figures at lines 1364-1373?",
+    "interpretation": "seven AO production units",
+    "calculation": "5152+4848+5216+4795+5984+5994+5984",
+    "result": "37973",
+    "source_lines": [
+     [
+      1364,
+      1373
+     ]
+    ]
+   },
+   {
+    "id": "A05",
+    "layer": "arithmetic",
+    "question": "Under the stated assumption (15% of visible original pre-tax subtotal), what does 68304*1.65*0.15 give from the figures at lines 1334-1336?",
+    "interpretation": "15% of visible original pre-tax subtotal",
+    "calculation": "68304*1.65*0.15",
+    "result": "16905.24",
+    "source_lines": [
+     [
+      1334,
+      1336
+     ]
+    ]
+   },
+   {
+    "id": "A06",
+    "layer": "arithmetic",
+    "question": "Under the stated assumption (15% of quoted final tax-inclusive total; not necessarily receipt basis), what does round_to_cents(123429.27*0.15) give from the figures at lines 1758-1782?",
+    "interpretation": "15% of quoted final tax-inclusive total; not necessarily receipt basis",
+    "calculation": "round_to_cents(123429.27*0.15)",
+    "result": "18514.39",
+    "source_lines": [
+     [
+      1758,
+      1782
+     ]
+    ]
+   },
+   {
+    "id": "A07",
+    "layer": "arithmetic",
+    "question": "Under the stated assumption (difference between unlike-time/basis claims, not proven overpayment), what does 18901.08-18514.39 give from the figures at lines 1776-1782?",
+    "interpretation": "difference between unlike-time/basis claims, not proven overpayment",
+    "calculation": "18901.08-18514.39",
+    "result": "386.69",
+    "source_lines": [
+     [
+      1776,
+      1782
+     ]
+    ]
+   },
+   {
+    "id": "A08",
+    "layer": "arithmetic",
+    "question": "Under the stated assumption (seven quoted statement invoices), what does 1584*5+792+1188 give from the figures at lines 1689-1698?",
+    "interpretation": "seven quoted statement invoices",
+    "calculation": "1584*5+792+1188",
+    "result": "9900.00",
+    "source_lines": [
+     [
+      1689,
+      1698
+     ]
+    ]
+   },
+   {
+    "id": "A09",
+    "layer": "arithmetic",
+    "question": "Under the stated assumption (conditional sequential balance before unknown kit/other uses), what does 18901.08-9900 give from the figures at lines 1622-1627?",
+    "interpretation": "conditional sequential balance before unknown kit/other uses",
+    "calculation": "18901.08-9900",
+    "result": "9001.08",
+    "source_lines": [
+     [
+      1622,
+      1627
+     ]
+    ]
+   },
+   {
+    "id": "A10",
+    "layer": "arithmetic",
+    "question": "Under the stated assumption (conditional proportional application and invoice balance), what does 9900*0.15; 9900*0.85 give from the figures at lines 1622-1627?",
+    "interpretation": "conditional proportional application and invoice balance",
+    "calculation": "9900*0.15; 9900*0.85",
+    "result": [
+     "1485.00",
+     "8415.00"
+    ],
+    "source_lines": [
+     [
+      1622,
+      1627
+     ]
+    ]
+   },
+   {
+    "id": "A11",
+    "layer": "arithmetic",
+    "question": "Under the stated assumption (cartons at label assumptions), what does 4800/48+960/10+480/48+720/48+240/10 give from the figures at lines 1567-1576?",
+    "interpretation": "cartons at label assumptions",
+    "calculation": "4800/48+960/10+480/48+720/48+240/10",
+    "result": "245",
+    "source_lines": [
+     [
+      1567,
+      1576
+     ]
+    ]
+   },
+   {
+    "id": "A12",
+    "layer": "arithmetic",
+    "question": "Under the stated assumption (cartons at Sage kit-pack assumption), what does 4800/48+960/12+480/48+720/48+240/12 give from the figures at lines 1567-1576?",
+    "interpretation": "cartons at Sage kit-pack assumption",
+    "calculation": "4800/48+960/12+480/48+720/48+240/12",
+    "result": "225",
+    "source_lines": [
+     [
+      1567,
+      1576
+     ]
+    ]
+   }
+  ]
+ }
+}

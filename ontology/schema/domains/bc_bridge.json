@@ -1,0 +1,231 @@
+{
+  "$schema": "../_format.schema.json",
+  "format": "plx-ontology-domain/v1",
+  "domain": "bc_bridge",
+  "origin": "curated",
+  "description": "Portal <-> Business Central bridges that are not BC data: the (unserved) Portal app_warehouse, whose code is the BC Location Code (its binding and the link to the generated BC locations are pending: ontology/schema/pending/bc_warehouse.json), and the BC number-series web-service actions as owner-system action types (a human runs them in BC after an MC approval; the Workbench never calls them).",
+  "upstream_pins": {
+    "plx-customer-portal": "48d76e835660"
+  },
+  "object_types": [
+    {
+      "id": "Warehouse",
+      "description": "A Portal warehouse (app_warehouse): a site whose code is the BC Location Code its stock posts to (warehouse-transfer-sync.ts resolveBcLocationCode: the upper-cased code unless BC_WAREHOUSE_LOCATION_MAP remaps it). Not served by the reporting API: its binding and its link to the BC locations (Warehouse.bc_location) are declared in ontology/schema/pending/bc_warehouse.json, which replaces this placeholder when loaded with include_pending; Portal warehouse_id references reach it through the pending links.",
+      "availability": {
+        "state": "not_served",
+        "reason": "public.app_warehouse is not an approved relation of the Portal reporting API (services/workbench-api/manifest/allowlist.json): no record of it is readable.",
+        "upstream_ask": "Q3"
+      },
+      "bindings": [],
+      "properties": [],
+      "evidence": [
+        {
+          "kind": "upstream_code",
+          "repo": "plx-customer-portal",
+          "path": "portal/prisma/schema.prisma",
+          "commit": "48d76e835660",
+          "lines": "2858-2888",
+          "note": "model Warehouse @@map(\"app_warehouse\"): code unique, the Sage / ERP site code (11, 15, 34, virtual 22 / VMI).",
+          "symbol": "Warehouse"
+        },
+        {
+          "kind": "upstream_code",
+          "repo": "plx-customer-portal",
+          "path": "portal/src/lib/business-central/warehouse-transfer-sync.ts",
+          "commit": "48d76e835660",
+          "lines": "150-160",
+          "note": "resolveBcLocationCode: BC Location Code = trim(upper(Warehouse.code)), unless the BC_WAREHOUSE_LOCATION_MAP environment value remaps it.",
+          "symbol": "resolveBcLocationCode"
+        }
+      ]
+    }
+  ],
+  "action_types": [
+    {
+      "id": "EnsurePurchaseOrderManualNos",
+      "description": "Turn on Manual Nos. for one BC company's purchase order (or other) number series (BC web-service action PLXPurchaseOrderRef_EnsureOrderManualNos; the series is the requestJson seriesCode, empty: the Purchases & Payables Setup Order Nos.) so Portal-assigned numbers post. The Portal's own sync also calls it, automatically, on every runBcSync run (the bc-sync workflow every 5 minutes, the cron route, Sync now), with no human and no MC approval, fail-open: each call's error goes to the run's errors and the sync continues (plx-customer-portal@f3e3a5399d42 sync-runner.ts). It sets three series there: the Setup Order Nos. (sync-runner.ts:358-368); the customer series, BC_CUSTOMER_NO_SERIES (default C-CUST) and then the Sales & Receivables Setup Customer Nos. (customer-manual-nos.ts ensureCustomerManualNos, never an empty seriesCode), for the company (sync-runner.ts:234) and, once the Distribution book is hydrated, for the Distribution company (sync-runner.ts:272); and the sales order series, the second fail-open fallback beside PLXSalesBridge_EnsureSalesOrderManualNos: seriesCode BC_SALES_ORDER_NO_SERIES, default S-ORD (sync-runner.ts:394-405; the Distribution company at 454-465). This action type is the human correction in BC when a Portal number still fails to post. A write to BC Production: a human runs it in BC after an MC approval. The Workbench never calls it (its BC client is GET-only and its grammar names no ODataV4 action) and serves no No. Series record, so it never reads the effect back: verification person_check, the person who ran it confirms the series' Manual Nos. in BC.",
+      "target": "BcCompany",
+      "params": {
+        "company": {
+          "type": "citation",
+          "provenance": [
+            "cited_value"
+          ],
+          "required": true,
+          "description": "The cited BC company (companies record) whose series is set."
+        },
+        "series_code": {
+          "type": "identifier",
+          "provenance": [
+            "cited_value"
+          ],
+          "required": false,
+          "description": "The No. Series code; absent: the Purchases & Payables Setup Order Nos.."
+        }
+      },
+      "submission_criteria": [
+        {
+          "id": "company_cited",
+          "description": "The company citation resolves now for the requester."
+        },
+        {
+          "id": "series_needed",
+          "description": "A cited Portal or BC record names the series a Portal number failed to post on."
+        }
+      ],
+      "owner_system": "bc",
+      "executor": "human_in_owner_system",
+      "approval": {
+        "route": "mc_request_approval",
+        "decider": "a human holding approval.decide who is not the requester"
+      },
+      "verification": "person_check",
+      "idempotency": [
+        "target",
+        "params.series_code"
+      ],
+      "registry_entries": [
+        "business-central.web_service_action:PLXPurchaseOrderRef_EnsureOrderManualNos"
+      ],
+      "evidence": [
+        {
+          "kind": "upstream_code",
+          "repo": "plx-customer-portal",
+          "path": "bc-extensions/plx-receipt-bridge/src/PlxPurchaseOrderRef.Codeunit.al",
+          "commit": "48d76e835660",
+          "lines": "7-27",
+          "note": "PLXPurchaseOrderRef_EnsureOrderManualNos: requestJson {\"seriesCode\": \"\"} (empty: the Purchases & Payables Setup Order Nos.); returns seriesCode, manualNos, changed; idempotent."
+        },
+        {
+          "kind": "upstream_code",
+          "repo": "plx-customer-portal",
+          "path": "portal/src/lib/business-central/sync-runner.ts",
+          "commit": "f3e3a5399d42",
+          "lines": "358-368",
+          "note": "PLXPurchaseOrderRef_EnsureOrderManualNos, requestJson \"{}\" (the Setup Order Nos.), called by runBcSync on every run through bcWebServiceAction (POST ODataV4), with no human and no MC approval; the catch records errors.poManualNos and the sync continues (fail-open).",
+          "symbol": "runBcSync"
+        },
+        {
+          "kind": "upstream_code",
+          "repo": "plx-customer-portal",
+          "path": "portal/src/lib/business-central/sync-runner.ts",
+          "commit": "f3e3a5399d42",
+          "lines": "232-245",
+          "note": "ensureCustomerManualNos(companyName): the customer series before the customer POST; the catch records errors.customerManualNos and the sync continues (fail-open).",
+          "symbol": "runBcSync"
+        },
+        {
+          "kind": "upstream_code",
+          "repo": "plx-customer-portal",
+          "path": "portal/src/lib/business-central/sync-runner.ts",
+          "commit": "f3e3a5399d42",
+          "lines": "265-283",
+          "note": "Once the Distribution book is hydrated, ensureCustomerManualNos(distName) (line 272): the Distribution company's customer series; the catch records errors.distCustomerManualNos and the sync continues (fail-open).",
+          "symbol": "runBcSync"
+        },
+        {
+          "kind": "upstream_code",
+          "repo": "plx-customer-portal",
+          "path": "portal/src/lib/business-central/sync-runner.ts",
+          "commit": "f3e3a5399d42",
+          "lines": "394-405",
+          "note": "The second fail-open fallback for the sales series: PLXPurchaseOrderRef_EnsureOrderManualNos with requestJson {seriesCode: BC_SALES_ORDER_NO_SERIES, default \"S-ORD\"}; the catch records errors.soManualNosFallback and the sync continues.",
+          "symbol": "runBcSync"
+        },
+        {
+          "kind": "upstream_code",
+          "repo": "plx-customer-portal",
+          "path": "portal/src/lib/business-central/sync-runner.ts",
+          "commit": "f3e3a5399d42",
+          "lines": "454-465",
+          "note": "The same S-ORD fallback for the Distribution company (PLXPurchaseOrderRef_EnsureOrderManualNos, distName); the catch records errors.distSoManualNosFallback and the sync continues (fail-open).",
+          "symbol": "runBcSync"
+        },
+        {
+          "kind": "upstream_code",
+          "repo": "plx-customer-portal",
+          "path": "portal/src/lib/business-central/customer-manual-nos.ts",
+          "commit": "2cb3760d2777",
+          "lines": "20-22",
+          "note": "CUSTOMER_MANUAL_NOS_SERVICE = PLXPurchaseOrderRef_EnsureOrderManualNos, DEFAULT_CUSTOMER_NO_SERIES = C-CUST: ensureCustomerManualNos calls this action with seriesCode BC_CUSTOMER_NO_SERIES (default C-CUST), then the Sales & Receivables Setup Customer Nos., never an empty seriesCode (defaultEnsureSeries, ensureCustomerManualNos).",
+          "symbol": "CUSTOMER_MANUAL_NOS_SERVICE"
+        }
+      ]
+    },
+    {
+      "id": "EnsureSalesOrderManualNos",
+      "description": "Turn on Manual Nos. for one BC company's sales order number series (BC web-service action PLXSalesBridge_EnsureSalesOrderManualNos; the series is the requestJson seriesCode, empty: the Sales & Receivables Setup Order Nos.) so Portal-assigned numbers post. The Portal's own sync also calls it, automatically, on every runBcSync run (the bc-sync workflow every 5 minutes, the cron route, Sync now), with no human and no MC approval, fail-open: each call's error goes to the run's errors and the sync continues (plx-customer-portal@f3e3a5399d42 sync-runner.ts). It sets the Setup Order Nos. for the company (sync-runner.ts:370-392) and, once the Distribution book is hydrated, for the Distribution company (sync-runner.ts:440-453). The sync's second fail-open path for the sales series is the purchase order action (EnsurePurchaseOrderManualNos) with seriesCode BC_SALES_ORDER_NO_SERIES, default S-ORD (sync-runner.ts:394-405). This action type is the human correction in BC when a Portal number still fails to post. A write to BC Production: a human runs it in BC after an MC approval. The Workbench never calls it (its BC client is GET-only and its grammar names no ODataV4 action) and serves no No. Series record, so it never reads the effect back: verification person_check, the person who ran it confirms the series' Manual Nos. in BC.",
+      "target": "BcCompany",
+      "params": {
+        "company": {
+          "type": "citation",
+          "provenance": [
+            "cited_value"
+          ],
+          "required": true,
+          "description": "The cited BC company (companies record) whose series is set."
+        },
+        "series_code": {
+          "type": "identifier",
+          "provenance": [
+            "cited_value"
+          ],
+          "required": false,
+          "description": "The No. Series code; absent: the Sales & Receivables Setup Order Nos.."
+        }
+      },
+      "submission_criteria": [
+        {
+          "id": "company_cited",
+          "description": "The company citation resolves now for the requester."
+        },
+        {
+          "id": "series_needed",
+          "description": "A cited Portal or BC record names the series a Portal number failed to post on."
+        }
+      ],
+      "owner_system": "bc",
+      "executor": "human_in_owner_system",
+      "approval": {
+        "route": "mc_request_approval",
+        "decider": "a human holding approval.decide who is not the requester"
+      },
+      "verification": "person_check",
+      "idempotency": [
+        "target",
+        "params.series_code"
+      ],
+      "registry_entries": [
+        "business-central.web_service_action:PLXSalesBridge_EnsureSalesOrderManualNos"
+      ],
+      "evidence": [
+        {
+          "kind": "upstream_code",
+          "repo": "plx-customer-portal",
+          "path": "bc-extensions/plx-receipt-bridge/src/PlxSalesBridge.Codeunit.al",
+          "commit": "48d76e835660",
+          "lines": "55-64",
+          "note": "PLXSalesBridge_EnsureSalesOrderManualNos: requestJson {\"seriesCode\": \"\"} (empty: the Sales & Receivables Setup Order Nos.); returns seriesCode, manualNos, changed; idempotent."
+        },
+        {
+          "kind": "upstream_code",
+          "repo": "plx-customer-portal",
+          "path": "portal/src/lib/business-central/sync-runner.ts",
+          "commit": "f3e3a5399d42",
+          "lines": "370-392",
+          "note": "PLXSalesBridge_EnsureSalesOrderManualNos, requestJson \"{}\", called by runBcSync on every run through bcWebServiceAction (POST ODataV4), with no human and no MC approval; the comment states both paths (this one and the S-ORD fallback through the purchase order action) are fail-open and never abort the sync.",
+          "symbol": "runBcSync"
+        },
+        {
+          "kind": "upstream_code",
+          "repo": "plx-customer-portal",
+          "path": "portal/src/lib/business-central/sync-runner.ts",
+          "commit": "f3e3a5399d42",
+          "lines": "440-453",
+          "note": "Once the Distribution book is hydrated, PLXSalesBridge_EnsureSalesOrderManualNos for the Distribution company (distName); the catch records errors.distSoManualNos and the sync continues (fail-open).",
+          "symbol": "runBcSync"
+        }
+      ]
+    }
+  ]
+}

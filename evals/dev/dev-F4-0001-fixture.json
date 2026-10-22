@@ -1,0 +1,250 @@
+{
+ "format": "plx-eval-item/v1",
+ "id": "dev-F4-0001-fixture",
+ "family": "F4",
+ "split": "dev",
+ "variant": "standard",
+ "question": {
+  "text": "Do the purchase order lines, receipts and supplier invoices for purchase order PO9200016 agree on quantities?"
+ },
+ "root": {
+  "identifier": "PO9200016",
+  "identifier_kind": "po_number",
+  "object_type": "PurchaseOrder",
+  "relation": "public.app_purchase_order",
+  "key": {
+   "id": "fx-po-16"
+  }
+ },
+ "as_known_at": {
+  "time": "2099-01-02T03:04:05Z",
+  "l1_generations": {
+   "portal_api": "8a5851cbdc2e491a",
+   "bc": "54b8678bf535f704"
+  }
+ },
+ "closed_transaction": true,
+ "lineage_stratum": "gold_etl_from_fm",
+ "known_outcome": {
+  "answerability": "answerable",
+  "values": [
+   {
+    "name": "item_1",
+    "object_type": "Product",
+    "property": "code",
+    "value": "FX-ITEM-004"
+   },
+   {
+    "name": "ordered_1",
+    "object_type": "PurchaseOrderLine",
+    "property": "quantity",
+    "value": "5",
+    "quantity_role": "ordered",
+    "unit": "kg",
+    "citations": [
+     {
+      "l1_handle": "api://public.app_purchase_order_line/%7B%22id%22%3A%22fx-pol-16-2%22%7D@8a5851cbdc2e491a",
+      "field_path": "row.quantity"
+     }
+    ]
+   },
+   {
+    "name": "received_1",
+    "object_type": "ReceiptLine",
+    "property": "quantity",
+    "value": "5",
+    "quantity_role": "received",
+    "unit": "kg",
+    "citations": [
+     {
+      "l1_handle": "api://public.app_receipt_line/%7B%22id%22%3A%22fx-rcl-16-2%22%7D@8a5851cbdc2e491a",
+      "field_path": "row.quantity"
+     }
+    ]
+   },
+   {
+    "name": "invoiced_1",
+    "object_type": "BcPurchaseInvoiceLine",
+    "property": "quantity",
+    "value": "5",
+    "unit": "KG",
+    "citations": [
+     {
+      "l1_handle": "bc://production/11111111-1111-1111-1111-111111111111/purchaseInvoiceLines/cccccccc-0000-0000-0000-000000005162@W%2F%225162%22",
+      "field_path": "row.quantity"
+     }
+    ]
+   },
+   {
+    "name": "match_1",
+    "value": true,
+    "citations": [
+     {
+      "l1_handle": "api://public.app_purchase_order_line/%7B%22id%22%3A%22fx-pol-16-2%22%7D@8a5851cbdc2e491a",
+      "field_path": "row.quantity"
+     },
+     {
+      "l1_handle": "api://public.app_receipt_line/%7B%22id%22%3A%22fx-rcl-16-2%22%7D@8a5851cbdc2e491a",
+      "field_path": "row.quantity"
+     },
+     {
+      "l1_handle": "bc://production/11111111-1111-1111-1111-111111111111/purchaseInvoiceLines/cccccccc-0000-0000-0000-000000005162@W%2F%225162%22",
+      "field_path": "row.quantity"
+     }
+    ]
+   },
+   {
+    "name": "item_2",
+    "object_type": "Product",
+    "property": "code",
+    "value": "FX-ITEM-017"
+   },
+   {
+    "name": "ordered_2",
+    "object_type": "PurchaseOrderLine",
+    "property": "quantity",
+    "value": "66",
+    "quantity_role": "ordered",
+    "unit": "ea",
+    "citations": [
+     {
+      "l1_handle": "api://public.app_purchase_order_line/%7B%22id%22%3A%22fx-pol-16-1%22%7D@8a5851cbdc2e491a",
+      "field_path": "row.quantity"
+     }
+    ]
+   },
+   {
+    "name": "received_2",
+    "object_type": "ReceiptLine",
+    "property": "quantity",
+    "value": "66",
+    "quantity_role": "received",
+    "unit": "ea",
+    "citations": [
+     {
+      "l1_handle": "api://public.app_receipt_line/%7B%22id%22%3A%22fx-rcl-16-1%22%7D@8a5851cbdc2e491a",
+      "field_path": "row.quantity"
+     }
+    ]
+   },
+   {
+    "name": "invoiced_2",
+    "object_type": "BcPurchaseInvoiceLine",
+    "property": "quantity",
+    "value": "66",
+    "unit": "PCS",
+    "citations": [
+     {
+      "l1_handle": "bc://production/11111111-1111-1111-1111-111111111111/purchaseInvoiceLines/cccccccc-0000-0000-0000-000000005161@W%2F%225161%22",
+      "field_path": "row.quantity"
+     }
+    ]
+   },
+   {
+    "name": "match_2",
+    "value": true,
+    "citations": [
+     {
+      "l1_handle": "api://public.app_purchase_order_line/%7B%22id%22%3A%22fx-pol-16-1%22%7D@8a5851cbdc2e491a",
+      "field_path": "row.quantity"
+     },
+     {
+      "l1_handle": "api://public.app_receipt_line/%7B%22id%22%3A%22fx-rcl-16-1%22%7D@8a5851cbdc2e491a",
+      "field_path": "row.quantity"
+     },
+     {
+      "l1_handle": "bc://production/11111111-1111-1111-1111-111111111111/purchaseInvoiceLines/cccccccc-0000-0000-0000-000000005161@W%2F%225161%22",
+      "field_path": "row.quantity"
+     }
+    ]
+   },
+   {
+    "name": "three_way_match",
+    "value": true
+   }
+  ],
+  "gaps": [],
+  "chain": [
+   {
+    "object_type": "PurchaseOrder",
+    "relation": "public.app_purchase_order",
+    "key": {
+     "id": "fx-po-16"
+    }
+   },
+   {
+    "object_type": "PurchaseOrderLine",
+    "relation": "public.app_purchase_order_line",
+    "key": {
+     "id": "fx-pol-16-1"
+    },
+    "hop_from": 0,
+    "fk": "po.lines"
+   },
+   {
+    "object_type": "PurchaseOrderLine",
+    "relation": "public.app_purchase_order_line",
+    "key": {
+     "id": "fx-pol-16-2"
+    },
+    "hop_from": 0,
+    "fk": "po.lines"
+   },
+   {
+    "object_type": "Receipt",
+    "relation": "public.app_receipt",
+    "key": {
+     "id": "fx-rcpt-16"
+    },
+    "hop_from": 0,
+    "fk": "po.receipts"
+   },
+   {
+    "object_type": "BcPurchaseInvoice",
+    "relation": "bc.purchase_invoices",
+    "key": {
+     "company_id": "11111111-1111-1111-1111-111111111111",
+     "id": "cccccccc-0000-0000-0000-000000000416"
+    },
+    "hop_from": 0,
+    "fk": "po.bc_purchase_invoice"
+   }
+  ]
+ },
+ "must_not": [
+  "claim_uncited_number",
+  "invent_absent_value"
+ ],
+ "oracle": {
+  "id": "oracle:f4_three_way_match@1c117db7f628",
+  "interface": "plx-eval-oracle/v1",
+  "derived_from": [
+   "docs/reference/portal-code-map.md#3.5 app_purchase_order.po_number (unique)",
+   "docs/reference/portal-code-map.md#3.5 app_purchase_order_line.quantity (purchase UoM)",
+   "docs/reference/portal-code-map.md#3.5 app_receipt_line.quantity by receipt of the PO",
+   "docs/reference/portal-code-map.md#3.6 app_product.code = BC Item No.; BC purchaseInvoiceLines.quantity by lineObjectNumber",
+   "docs/reference/portal-code-map.md#4.5 normalizeProductUom + PRODUCT_UOM_OPTIONS bcCode (P:src/lib/mrp/product-uom.ts:30)",
+   "docs/reference/portal-code-map.md#3.5 app_purchase_order_line.purchase_order_id -> app_purchase_order.id (P:prisma/schema.prisma:3449)",
+   "docs/reference/portal-code-map.md#3.5 app_receipt.purchase_order_id -> app_purchase_order.id (P:prisma/schema.prisma:3565)",
+   "docs/reference/portal-code-map.md#3.5 app_receipt_line.receipt_id -> app_receipt.id (P:prisma/schema.prisma:3620)",
+   "docs/reference/portal-code-map.md#3.11 BC purchase invoices by orderNumber (document-finance-queries.ts)",
+   "BC number matches trim both sides like Portal (P:src/lib/business-central/document-finance-queries.ts:326-327)",
+   "docs/reference/portal-code-map.md#3.5 app_receipt.vendor_invoice_number = BC purchase invoice vendorInvoiceNumber (document-finance-queries.ts:290-300)",
+   "docs/reference/source-notes.md BC number lookups are leads; identity needs one company and, for purchase invoices, the PO's vendor",
+   "docs/reference/portal-code-map.md#3.5 BC Vendor No. = app_supplier.code when Sage-style (P:src/lib/business-central/serializers.ts:156,208)",
+   "docs/reference/portal-code-map.md#3.5 derivePoFulfillmentCode over header + summed lines = RECEIVED, or closed_at (P@59b0548:src/lib/mrp/po-fulfillment-status.ts:12, apply-po-line-receive.ts:298)"
+  ],
+  "computed_at": "2099-01-02T04:00:00Z",
+  "query_digest": "ebc1a51f80c4c30fb8816b06ee55536f3988d4c71bc141266b85b62a8f1fcd07"
+ },
+ "label": {
+  "status": "oracle_only",
+  "note": "evidence: injected-transport fixture (synthetic FX rows from evals/oracle/fixture_world.py), not live PLX data."
+ },
+ "scoring": {
+  "exact_values": true,
+  "gap_honesty": true,
+  "citations_required": true
+ },
+ "created_at": "2099-01-02T04:00:00Z"
+}

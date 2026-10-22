@@ -1,0 +1,29 @@
+{
+  "schema": "plx-sharepoint-originals-expected/v1",
+  "note": "Expected identity of Ricardo's six Quality AO packets, used ONLY to compare what the read-only SharePoint reader returns (never as a value of any case). Not authority and not live-verified from the cloud: a Mac Graph listing and hash audit, docs/reference/cases-and-artifacts.md section 3.1 ([ADV 8e7b8ae2], [ADV cf8b2498]), read 2026-09-30.",
+  "site": "https://petrasoap.sharepoint.com/sites/QCQA",
+  "drive_id": "b!ubhBC91PLkOOCpyUeCUJMLOi0jT3ADZHi0QxVdjuwxvq6wHrgPmdQqNrzbAMxVqk",
+  "folder": "/AOs/2026 - AOs",
+  "name_pattern": "^(AO-\\d{5}[A-Z])\\.pdf$",
+  "drive_env": "PLX_QCQA_DRIVE_ID",
+  "files": [
+    {"name": "AO-26005B.pdf", "item_id": "01CXTNGXDLVPN56EC53BCZQFPZN4M5ADIJ", "bytes": 5159139,
+     "sha256": "bb40d85c7fdb2db6ad3763c9c3aa2eda70f49dfabe53c45258acb2024e72c259",
+     "quick_xor_hash": "ebznDdHN7P2H80cvZMasq3UW5iU="},
+    {"name": "AO-26005C.pdf", "item_id": "01CXTNGXFC7I2NZQG6PRB2OB4ICQOJ4WDX", "bytes": 5260697,
+     "sha256": "9ece292f735c3f400b0e155538fd58422a0f5e339d50f40e038fbc225f1d600b",
+     "quick_xor_hash": "UycYGnh4pL4NwaPvq7jocA92Zoo="},
+    {"name": "AO-26005E.pdf", "item_id": "01CXTNGXBIERE4R2WFXZE2TPV4OAAM56FC", "bytes": 4860227,
+     "sha256": "c0d518a9fa13a4a8746b05254c08346d0fa78ca80a6e01c955a752d02eccebd5",
+     "quick_xor_hash": "bYEI7Ww2VmNiKZ+AOgFUjMacaiI="},
+    {"name": "AO-26006C.pdf", "item_id": "01CXTNGXHOGHL7ZOGOEFFJB6AGF47BRZPA", "bytes": 4861346,
+     "sha256": "6c71d0de33518b2ae2a30b19a3e3fa600f2eeaa7efa97aa8334538842f9ba237",
+     "quick_xor_hash": "XCFdQppYPhbXZEZeTbrIqEgHKuQ="},
+    {"name": "AO-26007D.pdf", "item_id": "01CXTNGXF7SLWBTAAIDRA264S5U6JCJX7A", "bytes": 4827495,
+     "sha256": "7ffb0ee11caf8c7756a53aed69b2d9075ffb80dfd3f8874b2a19ee26116bc3d4",
+     "quick_xor_hash": "k4hpgqMmt74+mLUtAdk3XCL7T6w="},
+    {"name": "AO-26013C.pdf", "item_id": "01CXTNGXCMAKTJ27T3JZFIFTIH2BGFFH26", "bytes": 5114266,
+     "sha256": "de17b96d1172c23a4e837a48654989bb6eb720b96cd107ee223336f613ce220a",
+     "quick_xor_hash": "wQ/0+J00hhga+FCRNBv6l6p/l3U="}
+  ]
+}

@@ -1,0 +1,72 @@
+{
+ "schema": "plx-source-mirror-audience/v1",
+ "note": "EXAMPLE for the case.workspace_live live check (python3 -m operating.case_workspace_live), not authority: grants exactly the relations the ingestion step captures. svc:ingest is the ingestion runner's principal (it fills the mirror); staff:operations reads the FM AO/order chain, staff:quality the Portal manufacturing order (the AO's same-record twin the generic path cites) and the silver production rows, staff:purchasing the purchase-order chain, so a reader without quality or purchasing sees withheld markers. Principals must be confirmed by PLX before real use.",
+ "tenant": "plx",
+ "default_classification": "internal",
+ "audiences": {
+  "public.app_manufacturing_order": [
+   "staff:quality",
+   "svc:ingest"
+  ],
+  "public.app_purchase_order": [
+   "staff:purchasing",
+   "svc:ingest"
+  ],
+  "public.app_purchase_order_line": [
+   "staff:purchasing",
+   "svc:ingest"
+  ],
+  "public.app_receipt": [
+   "staff:purchasing",
+   "svc:ingest"
+  ],
+  "public.app_supplier": [
+   "staff:purchasing",
+   "svc:ingest"
+  ],
+  "public.assembly_order": [
+   "staff:operations",
+   "svc:ingest"
+  ],
+  "public.generated_purchase_order": [
+   "staff:purchasing",
+   "svc:ingest"
+  ],
+  "public.generated_purchase_order_item": [
+   "staff:purchasing",
+   "svc:ingest"
+  ],
+  "public.order_entry": [
+   "staff:operations",
+   "svc:ingest"
+  ],
+  "public.order_entry_item": [
+   "staff:operations",
+   "svc:ingest"
+  ],
+  "public.order_entry_item_assembly": [
+   "staff:operations",
+   "svc:ingest"
+  ],
+  "public.packaging": [
+   "staff:operations",
+   "svc:ingest"
+  ],
+  "public.receipt_packaging": [
+   "staff:purchasing",
+   "svc:ingest"
+  ],
+  "silver.assembly_order_damage": [
+   "staff:quality",
+   "svc:ingest"
+  ],
+  "silver.assembly_order_items": [
+   "staff:quality",
+   "svc:ingest"
+  ],
+  "silver.production_tasks": [
+   "staff:quality",
+   "svc:ingest"
+  ]
+ }
+}

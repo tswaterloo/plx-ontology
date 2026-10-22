@@ -1,0 +1,70 @@
+{
+ "format": "plx-case-ontology-gaps/v1",
+ "case": "vince-screening",
+ "status": "What the ontology lacks to answer evals/dev/screening/proposed_items.json. Conditioned on the source descriptor only; no source is cited because the map's own code references are unverified. 'source unknown' carries the question that would find one.",
+ "advisory": "advisory:4f8c497adb40",
+ "gaps": [
+  {
+   "id": "SC-GAP-01",
+   "kind": "object",
+   "name": "Screening Job (blank and screened SKUs, quantities, screener, artwork version, rate-card PO, proof and counts, transfers, conversion, invoice, GL)",
+   "ontology_today": "No curated screening-job object is known in the checked sources.",
+   "needed_by": [
+    "SC-01",
+    "SC-05",
+    "SC-07"
+   ],
+   "source": "source unknown",
+   "open_question": "Which Portal or Business Central tables, if any, hold a screening job or its parts, and at what commit?"
+  },
+  {
+   "id": "SC-GAP-02",
+   "kind": "link",
+   "name": "Blank-to-screened item conversion, option (a): the link from a blank SKU to its screened SKU",
+   "ontology_today": "The map reports missing blank-to-screened SKU links and missing job conversion; no such link exists in the checked sources.",
+   "needed_by": [
+    "SC-03",
+    "SC-04",
+    "SC-05"
+   ],
+   "source": "source unknown",
+   "open_question": "How does option (a) record which blank SKU was converted into which screened SKU, and where is that link stored?"
+  },
+  {
+   "id": "SC-GAP-03",
+   "kind": "object",
+   "name": "Full cost per good unit: blank, landed, screening and two-way freight cost over good units",
+   "ontology_today": "No cost-per-good-unit object or reader is known; good units and final unit cost are missing originals.",
+   "needed_by": [
+    "SC-02",
+    "SC-06"
+   ],
+   "source": "source unknown",
+   "open_question": "Where are good units and the final unit cost per screening job recorded, and who confirms them?"
+  },
+  {
+   "id": "SC-GAP-04",
+   "kind": "object",
+   "name": "Screening clearing account and the approved ERP-D-015 treatment for screening blanks",
+   "ontology_today": "Both are open accounting decisions in the map; the ontology holds no approved treatment or clearing account.",
+   "needed_by": [
+    "SC-03",
+    "SC-08"
+   ],
+   "source": "source unknown",
+   "open_question": "Has the ERP-D-015 exception for screening blanks and the screening clearing account been approved, by whom, and in which record?"
+  },
+  {
+   "id": "SC-GAP-05",
+   "kind": "reader",
+   "name": "Purchase order, receipt and invoice reads excluded from the BC sync (DPO and receipt exclusions) for quantity and invoice reconciliation",
+   "ontology_today": "The map reports the exclusions and the missing reconciliation; the reader coverage is not verified.",
+   "needed_by": [
+    "SC-04",
+    "SC-07"
+   ],
+   "source": "source unknown",
+   "open_question": "Which DPO and receipt records does the BC sync exclude, and can a GET-only read serve them with the screening quantities?"
+  }
+ ]
+}

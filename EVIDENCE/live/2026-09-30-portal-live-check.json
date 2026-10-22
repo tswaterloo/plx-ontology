@@ -1,0 +1,1029 @@
+{
+ "schema": "plx-live-read-evidence/v1",
+ "evidence_mode": "live-read (Portal Workbench reporting API, read-only)",
+ "client": "integrations/workbench_read_api.py WorkbenchReadApiClient",
+ "checked_at": "2026-09-30T01:38:49Z",
+ "health": {
+  "ok": true,
+  "recovery": true,
+  "replayLagSeconds": 0,
+  "generatedAt": "2026-09-30T01:38:50.958Z",
+  "unavailable": [],
+  "missingColumns": []
+ },
+ "relation_count": 93,
+ "relations": {
+  "public.app_assembly_order_damage": {
+   "columns": 15,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamp-utc"
+   },
+   "unavailable": null
+  },
+  "public.app_assembly_order_status": {
+   "columns": 18,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamp-utc"
+   },
+   "unavailable": null
+  },
+  "public.app_batch_record": {
+   "columns": 84,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamp-utc"
+   },
+   "unavailable": null
+  },
+  "public.app_batch_schedule": {
+   "columns": 14,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamp-utc"
+   },
+   "unavailable": null
+  },
+  "public.app_customer": {
+   "columns": 36,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamp-utc"
+   },
+   "unavailable": null
+  },
+  "public.app_customer_location": {
+   "columns": 16,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamp-utc"
+   },
+   "unavailable": null
+  },
+  "public.app_fg_item": {
+   "columns": 22,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamp-utc"
+   },
+   "unavailable": null
+  },
+  "public.app_manufacturer": {
+   "columns": 10,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamp-utc"
+   },
+   "unavailable": null
+  },
+  "public.app_manufacturing_job": {
+   "columns": 11,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "public.app_manufacturing_order": {
+   "columns": 56,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamp-utc"
+   },
+   "unavailable": null
+  },
+  "public.app_manufacturing_order_line": {
+   "columns": 19,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamp-utc"
+   },
+   "unavailable": null
+  },
+  "public.app_pr_line_item": {
+   "columns": 11,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamp-utc"
+   },
+   "unavailable": null
+  },
+  "public.app_product": {
+   "columns": 66,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamp-utc"
+   },
+   "unavailable": null
+  },
+  "public.app_production_task": {
+   "columns": 12,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamp-utc"
+   },
+   "unavailable": null
+  },
+  "public.app_purchase_order": {
+   "columns": 30,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamp-utc"
+   },
+   "unavailable": null
+  },
+  "public.app_purchase_order_line": {
+   "columns": 13,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamp-utc"
+   },
+   "unavailable": null
+  },
+  "public.app_purchase_requisition": {
+   "columns": 13,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamp-utc"
+   },
+   "unavailable": null
+  },
+  "public.app_quote": {
+   "columns": 20,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamp-utc"
+   },
+   "unavailable": null
+  },
+  "public.app_quote_line": {
+   "columns": 16,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamp-utc"
+   },
+   "unavailable": null
+  },
+  "public.app_receipt": {
+   "columns": 29,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamp-utc"
+   },
+   "unavailable": null
+  },
+  "public.app_receipt_line": {
+   "columns": 18,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamp-utc"
+   },
+   "unavailable": null
+  },
+  "public.app_sales_order": {
+   "columns": 23,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamp-utc"
+   },
+   "unavailable": null
+  },
+  "public.app_sales_order_line": {
+   "columns": 13,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamp-utc"
+   },
+   "unavailable": null
+  },
+  "public.app_ship_release": {
+   "columns": 18,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamp-utc"
+   },
+   "unavailable": null
+  },
+  "public.app_shipment": {
+   "columns": 24,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamp-utc"
+   },
+   "unavailable": null
+  },
+  "public.app_shipment_line": {
+   "columns": 10,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamp-utc"
+   },
+   "unavailable": null
+  },
+  "public.app_supplier": {
+   "columns": 30,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamp-utc"
+   },
+   "unavailable": null
+  },
+  "public.app_supplier_product": {
+   "columns": 24,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamp-utc"
+   },
+   "unavailable": null
+  },
+  "public.assembly_order": {
+   "columns": 27,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "audittimestampmodified",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "public.assembly_order_damage": {
+   "columns": 17,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "audittimestampmodified",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "public.assembly_order_item": {
+   "columns": 14,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "audittimestampmodified",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "public.assembly_order_status": {
+   "columns": 18,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "audittimestampmodified",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "public.batch": {
+   "columns": 74,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "audittimestampmodified",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "public.batch_calibration": {
+   "columns": 14,
+   "key": [
+    "id"
+   ],
+   "since": null,
+   "unavailable": null
+  },
+  "public.bulk_product": {
+   "columns": 11,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "audittimestampmodified",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "public.customer": {
+   "columns": 21,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "audittimestampmodified",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "public.finished_product": {
+   "columns": 17,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "audittimestampmodified",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "public.finished_product_item": {
+   "columns": 20,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "audittimestampmodified",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "public.generated_purchase_order": {
+   "columns": 16,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "audittimestampmodified",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "public.generated_purchase_order_item": {
+   "columns": 11,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "audittimestampmodified",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "public.manufacturer": {
+   "columns": 10,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "audittimestampmodified",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "public.order_entry": {
+   "columns": 11,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "audittimestampmodified",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "public.order_entry_item": {
+   "columns": 7,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "audittimestampmodified",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "public.order_entry_item_assembly": {
+   "columns": 11,
+   "key": [
+    "id"
+   ],
+   "since": null,
+   "unavailable": null
+  },
+  "public.order_entry_item_batch": {
+   "columns": 12,
+   "key": [
+    "id"
+   ],
+   "since": null,
+   "unavailable": null
+  },
+  "public.packaging": {
+   "columns": 21,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "audittimestampmodified",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "public.packaging_supplier": {
+   "columns": 13,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "audittimestampmodified",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "public.production": {
+   "columns": 12,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "audittimestampmodified",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "public.raw_material": {
+   "columns": 34,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "audittimestampmodified",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "public.raw_material_supplier": {
+   "columns": 18,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "audittimestampmodified",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "public.receipt": {
+   "columns": 21,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "audittimestampmodified",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "public.receipt_packaging": {
+   "columns": 12,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "audittimestampmodified",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "public.receipt_raw_material": {
+   "columns": 10,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "audittimestampmodified",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "public.supplier": {
+   "columns": 19,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "audittimestampmodified",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "sage.ar_customer": {
+   "columns": 139,
+   "key": [
+    "idcust"
+   ],
+   "since": {
+    "column": "audtdate",
+    "mode": "yyyymmdd-text"
+   },
+   "unavailable": null
+  },
+  "sage.ar_ship_to": {
+   "columns": 39,
+   "key": [
+    "_sage_pk"
+   ],
+   "since": {
+    "column": "audtdate",
+    "mode": "yyyymmdd-text"
+   },
+   "unavailable": null
+  },
+  "sage.ic_item": {
+   "columns": 67,
+   "key": [
+    "itemno"
+   ],
+   "since": {
+    "column": "audtdate",
+    "mode": "yyyymmdd-text"
+   },
+   "unavailable": null
+  },
+  "sage.ic_item_uom": {
+   "columns": 7,
+   "key": [
+    "_sage_pk"
+   ],
+   "since": {
+    "column": "audtdate",
+    "mode": "yyyymmdd-text"
+   },
+   "unavailable": null
+  },
+  "sage.oe_invoice_detail": {
+   "columns": 155,
+   "key": [
+    "_sage_pk"
+   ],
+   "since": {
+    "column": "audtdate",
+    "mode": "yyyymmdd-text"
+   },
+   "unavailable": null
+  },
+  "sage.oe_invoice_header": {
+   "columns": 182,
+   "key": [
+    "invuniq"
+   ],
+   "since": {
+    "column": "audtdate",
+    "mode": "yyyymmdd-text"
+   },
+   "unavailable": null
+  },
+  "sage.oe_order_detail": {
+   "columns": 141,
+   "key": [
+    "_sage_pk"
+   ],
+   "since": {
+    "column": "audtdate",
+    "mode": "yyyymmdd-text"
+   },
+   "unavailable": null
+  },
+  "sage.oe_order_header": {
+   "columns": 148,
+   "key": [
+    "orduniq"
+   ],
+   "since": {
+    "column": "audtdate",
+    "mode": "yyyymmdd-text"
+   },
+   "unavailable": null
+  },
+  "sage.oe_shipment_detail": {
+   "columns": 158,
+   "key": [
+    "_sage_pk"
+   ],
+   "since": {
+    "column": "audtdate",
+    "mode": "yyyymmdd-text"
+   },
+   "unavailable": null
+  },
+  "sage.oe_shipment_header": {
+   "columns": 181,
+   "key": [
+    "shiuniq"
+   ],
+   "since": {
+    "column": "audtdate",
+    "mode": "yyyymmdd-text"
+   },
+   "unavailable": null
+  },
+  "sage.po_detail": {
+   "columns": 109,
+   "key": [
+    "_sage_pk"
+   ],
+   "since": {
+    "column": "audtdate",
+    "mode": "yyyymmdd-text"
+   },
+   "unavailable": null
+  },
+  "sage.po_header": {
+   "columns": 159,
+   "key": [
+    "porhseq"
+   ],
+   "since": {
+    "column": "audtdate",
+    "mode": "yyyymmdd-text"
+   },
+   "unavailable": null
+  },
+  "sage.po_receipt_detail": {
+   "columns": 130,
+   "key": [
+    "_sage_pk"
+   ],
+   "since": {
+    "column": "audtdate",
+    "mode": "yyyymmdd-text"
+   },
+   "unavailable": null
+  },
+  "sage.po_receipt_header": {
+   "columns": 188,
+   "key": [
+    "rcphseq"
+   ],
+   "since": {
+    "column": "audtdate",
+    "mode": "yyyymmdd-text"
+   },
+   "unavailable": null
+  },
+  "silver.assembly_order_damage": {
+   "columns": 17,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "silver.assembly_order_items": {
+   "columns": 14,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "silver.assembly_order_statuses": {
+   "columns": 18,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "silver.batch_schedule": {
+   "columns": 14,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "silver.batches": {
+   "columns": 75,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "silver.bulk_products": {
+   "columns": 11,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "silver.customers": {
+   "columns": 20,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "silver.finished_product_items": {
+   "columns": 19,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "silver.finished_products": {
+   "columns": 17,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "silver.manufacturers": {
+   "columns": 10,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "silver.manufacturing_orders": {
+   "columns": 25,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "silver.order_entries": {
+   "columns": 11,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "silver.order_entry_items": {
+   "columns": 7,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "silver.packaging": {
+   "columns": 21,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "silver.packaging_suppliers": {
+   "columns": 13,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "silver.production_tasks": {
+   "columns": 12,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "silver.purchase_order_items": {
+   "columns": 10,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "silver.purchase_orders": {
+   "columns": 16,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "silver.raw_material_suppliers": {
+   "columns": 18,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "silver.raw_materials": {
+   "columns": 34,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "silver.receipt_pack_items": {
+   "columns": 11,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "silver.receipt_raw_items": {
+   "columns": 10,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "silver.receipts": {
+   "columns": 21,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  },
+  "silver.shipments": {
+   "columns": 12,
+   "key": [
+    "id"
+   ],
+   "since": null,
+   "unavailable": null
+  },
+  "silver.suppliers": {
+   "columns": 18,
+   "key": [
+    "id"
+   ],
+   "since": {
+    "column": "updated_at",
+    "mode": "timestamptz"
+   },
+   "unavailable": null
+  }
+ },
+ "row_page_check": "public.app_sales_order limit=3: keyset page with nextCursor; observed po_reference holding a person name; money as float-formatted strings"
+}

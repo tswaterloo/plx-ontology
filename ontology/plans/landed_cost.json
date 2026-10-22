@@ -1,0 +1,608 @@
+{
+ "$schema": "_plan.schema.json",
+ "format": "plx-investigate-plan/v1",
+ "id": "landed_cost",
+ "families": [
+  "F7"
+ ],
+ "title": "Landed cost of a purchase order, line by line, with every unknown visible",
+ "description": "Goods, freight and duty of any purchase order from projected cited values, computed by the one landed-cost engine (operating/landed_cost.py: po_line_landed, assess_freight_quote, compute_landed_cost). Goods: each line's cited unit price per its cited unit times its ordered quantity; a $0.000 line takes the cited amount of the proforma naming the PO (a lead) when it is that line's alone; differing proformas: PI_VERSION_UNRESOLVED; an unread amount: PI_AMOUNT_UNREAD; none picked. Freight: the Portal's allocatePoFreightPerUnit (plx-customer-portal@6e76a5b portal/src/lib/costing/project-landed-quote.ts:915-941, byte-identical to the golden pin 5724575) of the header shipping estimate over a fully received purchase order, or the receipt's posted actual; every freight step names its basis. Each forwarder quote naming the PO (a lead) is its own entry: its stated total is never multiplied, a per-container rate only by a cited container count; total freight only when its cited scope covers origin, main carriage and destination, it is valid on the as-of date and, priced per container, the count is cited; a destination-only, tax-excluded or expired quote stays a typed gap, and a header estimate equal to such a quote is not allocated. Duty: only a receipt actual or a cited rate; the ontology projects an HS code but no duty rate, so duty is HS_CODE_NOT_CITED or DUTY_RATE_SOURCE_ABSENT. Stages (LOG-09): counts of the confirmations, forwarder quotes, receipts, purchase invoices, vendor payments and G/L entries the walk reached, one count per binding; a stage nothing reached is not counted as zero. Packaging: cases per line from the item's units per case (differing records: UNITS_PER_CASE_CONFLICT); case dimensions (app_product_pack_spec) are not served, so no container count is derived. Two currencies, an unknown price denominator, an unreceived line or a missing estimate leave that line and the total null, typed. Every record is an analytic estimate, not item cost (ERP-D-015).",
+ "root": {
+  "object_types": [
+   "PurchaseOrder"
+  ],
+  "fallback_filters": [
+   {
+    "object_type": "PurchaseOrder",
+    "property": "po_number"
+   }
+  ]
+ },
+ "step_budget": 128,
+ "max_each": 50,
+ "steps": [
+  {
+   "id": "root_read",
+   "tool": "plx.object",
+   "from": "root",
+   "bind": "object_id"
+  },
+  {
+   "id": "twins",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrder.same_record_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "twin_read",
+   "tool": "plx.object",
+   "from": "twins",
+   "bind": "object_id"
+  },
+  {
+   "id": "lines",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrderLine.line_of",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   },
+   "required": true
+  },
+  {
+   "id": "line_read",
+   "tool": "plx.object",
+   "from": "lines",
+   "bind": "object_id",
+   "required": true
+  },
+  {
+   "id": "items",
+   "tool": "plx.around",
+   "from": "lines",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrderLine.for_item",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "item_read",
+   "tool": "plx.object",
+   "from": "items",
+   "bind": "object_id"
+  },
+  {
+   "id": "item_twins",
+   "tool": "plx.around",
+   "from": "items",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Product.same_record_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The same item's other records (FileMaker), whose units per case may disagree with the Portal's.",
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "item_twin_read",
+   "tool": "plx.object",
+   "from": "item_twins",
+   "bind": "object_id"
+  },
+  {
+   "id": "receipts",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Receipt.receives",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "receipt_read",
+   "tool": "plx.object",
+   "from": "receipts",
+   "bind": "object_id"
+  },
+  {
+   "id": "quotes",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "ForwarderQuote.for_purchase_order",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "quote_read",
+   "tool": "plx.object",
+   "from": "quotes",
+   "bind": "object_id"
+  },
+  {
+   "id": "confirmations",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SupplierConfirmation.confirms",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "Stage: the supplier's confirmation / proforma invoice naming the purchase order (a lead).",
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "confirmation_read",
+   "tool": "plx.object",
+   "from": "confirmations",
+   "bind": "object_id"
+  },
+  {
+   "id": "invoices",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseInvoice.invoices",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "Stage: the supplier's posted purchase invoices of the purchase order."
+  },
+  {
+   "id": "payments",
+   "tool": "plx.around",
+   "from": "invoices",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Payment.applies_to_purchase_invoice",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "Stage: deposits and payments applied to those invoices (BC payment journal lines; posted payments are not served)."
+  },
+  {
+   "id": "gl_entries",
+   "tool": "plx.around",
+   "from": "invoices",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "GeneralLedgerEntry.for_purchase_invoice",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "Stage: the G/L entries those invoices posted."
+  }
+ ],
+ "evidence": [
+  {
+   "name": "po_currency",
+   "kind": "property",
+   "object_type": "PurchaseOrder",
+   "properties": [
+    "currency"
+   ],
+   "required": true,
+   "single": true
+  },
+  {
+   "name": "freight_estimate",
+   "kind": "property",
+   "object_type": "PurchaseOrder",
+   "properties": [
+    "shipping_cost_estimate"
+   ]
+  },
+  {
+   "name": "duty_estimate",
+   "kind": "property",
+   "object_type": "PurchaseOrder",
+   "properties": [
+    "duties_cost_estimate"
+   ]
+  },
+  {
+   "name": "unit_price",
+   "kind": "property",
+   "object_type": "PurchaseOrderLine",
+   "properties": [
+    "unit_price"
+   ],
+   "required": true
+  },
+  {
+   "name": "ordered",
+   "kind": "property",
+   "object_type": "PurchaseOrderLine",
+   "properties": [
+    "ordered_quantity"
+   ],
+   "required": true,
+   "quantity_role": "ordered"
+  },
+  {
+   "name": "received",
+   "kind": "property",
+   "object_type": "PurchaseOrderLine",
+   "properties": [
+    "received_quantity"
+   ],
+   "quantity_role": "received"
+  },
+  {
+   "name": "hs_code",
+   "kind": "property",
+   "object_type": "Product",
+   "properties": [
+    "hs_code"
+   ]
+  },
+  {
+   "name": "freight_actual",
+   "kind": "property",
+   "object_type": "Receipt",
+   "properties": [
+    "freight_cost_actual"
+   ]
+  },
+  {
+   "name": "duty_actual",
+   "kind": "property",
+   "object_type": "Receipt",
+   "properties": [
+    "duties_cost_actual"
+   ]
+  },
+  {
+   "name": "units_per_box",
+   "kind": "property",
+   "object_type": "Product",
+   "properties": [
+    "units_per_box"
+   ]
+  },
+  {
+   "name": "quote_amount",
+   "kind": "property",
+   "object_type": "ForwarderQuote",
+   "properties": [
+    "amount"
+   ]
+  },
+  {
+   "name": "quote_valid_until",
+   "kind": "property",
+   "object_type": "ForwarderQuote",
+   "properties": [
+    "valid_until"
+   ]
+  },
+  {
+   "name": "quote_basis",
+   "kind": "property",
+   "object_type": "ForwarderQuote",
+   "properties": [
+    "basis"
+   ]
+  },
+  {
+   "name": "quote_basis_count",
+   "kind": "property",
+   "object_type": "ForwarderQuote",
+   "properties": [
+    "basis_count"
+   ]
+  },
+  {
+   "name": "quote_includes",
+   "kind": "property",
+   "object_type": "ForwarderQuote",
+   "properties": [
+    "includes"
+   ]
+  },
+  {
+   "name": "quote_excludes",
+   "kind": "property",
+   "object_type": "ForwarderQuote",
+   "properties": [
+    "excludes"
+   ]
+  },
+  {
+   "name": "quote_scope",
+   "kind": "property",
+   "object_type": "ForwarderQuote",
+   "properties": [
+    "scope"
+   ]
+  },
+  {
+   "name": "quote_rate",
+   "kind": "property",
+   "object_type": "ForwarderQuote",
+   "properties": [
+    "rate"
+   ]
+  },
+  {
+   "name": "quote_volume",
+   "kind": "property",
+   "object_type": "ForwarderQuote",
+   "properties": [
+    "volume"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "quote_weight",
+   "kind": "property",
+   "object_type": "ForwarderQuote",
+   "properties": [
+    "chargeable_weight"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "quote_pallets",
+   "kind": "property",
+   "object_type": "ForwarderQuote",
+   "properties": [
+    "pallet_count"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "confirmation_amount",
+   "kind": "property",
+   "object_type": "SupplierConfirmation",
+   "properties": [
+    "amount"
+   ]
+  },
+  {
+   "name": "confirmation_unit_price",
+   "kind": "property",
+   "object_type": "SupplierConfirmation",
+   "properties": [
+    "unit_price"
+   ]
+  },
+  {
+   "name": "confirmation_quantity",
+   "kind": "property",
+   "object_type": "SupplierConfirmation",
+   "properties": [
+    "quantity"
+   ]
+  },
+  {
+   "name": "landed_cost",
+   "kind": "compute",
+   "required": true,
+   "description": "Per line: (goods + freight + duty) / ordered quantity in the purchase order's currency; the purchase order total only when every line is computed.",
+   "engine": "landed_cost",
+   "engine_args": {
+    "roles": {
+     "currency": "po_currency",
+     "unit_price": "unit_price",
+     "quantity": "ordered",
+     "received": "received",
+     "freight_estimate": "freight_estimate",
+     "duty_estimate": "duty_estimate",
+     "classification": "hs_code",
+     "receipt_freight": "freight_actual",
+     "receipt_duty": "duty_actual",
+     "units_per_box": "units_per_box",
+     "quote_amount": "quote_amount",
+     "quote_valid_until": "quote_valid_until",
+     "quote_basis": "quote_basis",
+     "quote_basis_count": "quote_basis_count",
+     "quote_includes": "quote_includes",
+     "quote_excludes": "quote_excludes",
+     "quote_scope": "quote_scope",
+     "quote_rate": "quote_rate",
+     "quote_volume": "quote_volume",
+     "quote_weight": "quote_weight",
+     "quote_pallets": "quote_pallets",
+     "confirmation_amount": "confirmation_amount",
+     "confirmation_unit_price": "confirmation_unit_price",
+     "confirmation_quantity": "confirmation_quantity"
+    },
+    "item_link": "PurchaseOrderLine.for_item",
+    "line_link": "PurchaseOrderLine.line_of",
+    "quote_link": "ForwarderQuote.for_purchase_order",
+    "item_twin_link": "Product.same_record_as",
+    "confirmation_link": "SupplierConfirmation.confirms"
+   }
+  },
+  {
+   "name": "stage_confirmation_mail",
+   "kind": "count",
+   "object_type": "SupplierConfirmation",
+   "bindings": [
+    "graph_mail.supplier_confirmations"
+   ]
+  },
+  {
+   "name": "stage_confirmation_file",
+   "kind": "count",
+   "object_type": "SupplierConfirmation",
+   "bindings": [
+    "sharepoint.supplier_confirmations"
+   ]
+  },
+  {
+   "name": "stage_freight_quote_mail",
+   "kind": "count",
+   "object_type": "ForwarderQuote",
+   "bindings": [
+    "graph_mail.forwarder_quotes"
+   ]
+  },
+  {
+   "name": "stage_freight_quote_file",
+   "kind": "count",
+   "object_type": "ForwarderQuote",
+   "bindings": [
+    "sharepoint.forwarder_quotes"
+   ]
+  },
+  {
+   "name": "stage_receipt",
+   "kind": "count",
+   "object_type": "Receipt",
+   "bindings": [
+    "portal.app_receipt"
+   ]
+  },
+  {
+   "name": "stage_bc_receipt",
+   "kind": "count",
+   "object_type": "Receipt",
+   "bindings": [
+    "bc.purchase_receipts"
+   ]
+  },
+  {
+   "name": "stage_purchase_invoice",
+   "kind": "count",
+   "object_type": "PurchaseInvoice",
+   "bindings": [
+    "bc.purchase_invoices"
+   ]
+  },
+  {
+   "name": "stage_payment",
+   "kind": "count",
+   "object_type": "Payment",
+   "bindings": [
+    "bc.vendor_payments"
+   ]
+  },
+  {
+   "name": "stage_gl_entry",
+   "kind": "count",
+   "object_type": "GeneralLedgerEntry",
+   "bindings": [
+    "bc.general_ledger_entries"
+   ]
+  }
+ ]
+}

@@ -1,0 +1,122 @@
+{
+ "id": "ingest.use_cases",
+ "description": "Vince's use-case folder (the AGENTS site's default document library, /Ontology UseCases; the site is resolved by name at run time on the SHAREPOINT_SITE_ID host: GET /sites/{host}:/sites/AGENTS then /sites/{id}/drive through the GET-only Graph client, never a drive id, hardcoded host or sharing link) as a read-only continuous-ingestion unit: one ingestion run of sp.plxcustomers.agents-use-cases (GET-only SharePointReader, audience + item permissions), then operating.use_case_intake reads each new file once (sha256-pinned original, detected type, closed-world part accounting by operating.use_case_parts: every part of every original, archive members recursively, OOXML parts, MIME parts, .msg streams, PDF pages, images, annotations and embedded files, is extracted, unread with a reason or skipped_by_cap with its cap; evaluation-set stub with its deterministic dev/held_out split and a draft label that never invents an outcome; .msg files decoded by operating.msg_reader: property tables with sent/received dates, sender, recipients, plain/HTML/compressed-RTF bodies, named properties, attachments and attached messages recursively; images OCRed by local tesseract when installed) into the per-check temporary state only, then the command's eval tooling (scripts.eval_use_case_items, which runs operating.use_case_intake scan) rebuilds the evaluation items ( one plx-eval-item/v1 item per case unit, i.e. zip member, that states a labelled outcome and asks a question; dev exposed items only, never held out, in the state only). Records counts and detected types only (evaluation_items: unit and item counts): no names, paths, ids, URLs or document text. Nothing is written to SharePoint. A wrapper exit 0 is not document coverage, so the summary states its denominators: summary.parts_total = summary.parts_read + unread (summary.unread_by_reason) + skipped by a cap (summary.skipped_by_cap), summary.parts_panicked with summary.panicked_by_kind (part kind counts, never names), and evaluation_items.denominators (total = scorable, a human-audited label + oracle_only, pending a human label + failed, schema-invalid; cases with no extracted text are evaluation_items.no_text). Fails when no part was read (summary.parts_read < 1), when any part was left unread parser_panicked (summary.parts_panicked > 0), when more than 2 parts were skipped by a cap or when a part was left unread without a reason. Any panic fails (decided from the live evidence): the latest live result (main 120acb30, 2026-10-06 21:22Z) died after 7 s with pyo3_runtime.PanicException before any part was accounted, while the last pass on the same folder (main 67d8d678, 2026-10-05 19:04Z) read 1061 parts with no panic (PDFs parsed; only 23 catalog entries pdf_entry_not_parsed). A panic is the environment's native crypto provider failing, so every PDF it touches goes unread; the live baseline is 0 panicked parts and no live run showed a document that panics on its own. Item counts are recorded, never bounded (no quota). A capped part is honest incompleteness and the intake itself sends every capped part to extraction review (operating/use_case_intake.py UseCaseIntake._record adds skipped_by_cap:<cap> to the record's review reasons), so the check bounds the count and does not re-check the review. Live run 2026-10-05: 1 capped part, 1 in review.",
+ "source": "microsoft-graph",
+ "command": [
+  "python3",
+  "-m",
+  "scripts.eval_use_case_items",
+  "scan",
+  "--state-dir",
+  "{tmp}/state",
+  "--sources",
+  "examples/ingestion_sources.live-check.json",
+  "--live-audience",
+  "examples/ingestion_live_audience.live-check.json",
+  "--source-id",
+  "sp.plxcustomers.agents-use-cases",
+  "--max-items",
+  "25"
+ ],
+ "timeout_seconds": 900,
+ "requires_env": [
+  "MICROSOFT_GRAPH_TENANT_ID",
+  "MICROSOFT_GRAPH_CLIENT_ID",
+  "MICROSOFT_GRAPH_CLIENT_SECRET",
+  "SHAREPOINT_SITE_ID"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "use_case_folder.state",
+   "ingestion_unit.state",
+   "ingestion_unit.reasons",
+   "ingestion_unit.counts.items_returned",
+   "intake.counts.read",
+   "summary.artifacts",
+   "summary.by_type",
+   "summary.needs_extraction_review",
+   "summary.complete_artifacts",
+   "summary.parts",
+   "summary.unread_by_reason",
+   "summary.evaluation_stubs",
+   "row_data_check.values_checked",
+   "summary.outcomes_stated",
+   "summary.questions_found",
+   "evaluation_items.items",
+   "summary.parts_total",
+   "summary.panicked_by_kind",
+   "evaluation_items.denominators",
+   "summary.by_format",
+   "summary.parts_by_method",
+   "summary.markitdown_available",
+   "summary.unread_msg_properties",
+   "summary.text_parts_total",
+   "summary.non_content_msg_properties",
+   "summary.unread_pdf_entries"
+  ],
+  "json_equals": {
+   "reader": "environment",
+   "row_data_check.leaked": 0,
+   "ingest_row_data_check.leaked": 0,
+   "summary.unread_without_reason": 0,
+   "evaluation_items.invalid": 0,
+   "evaluation_items.text_unavailable": 0
+  },
+  "json_min": {
+   "ingestion_unit.counts.folders_listed": 1,
+   "summary.artifacts": 1,
+   "summary.parts_read": 1
+  },
+  "json_max": {
+   "summary.parts_skipped_by_cap": 2,
+   "summary.parts_panicked": 0
+  }
+ },
+ "complete_when": {
+  "ingestion_unit.state": "complete"
+ },
+ "record": [
+  "use_case_folder",
+  "use_case_folder.state",
+  "use_case_folder.reason",
+  "ingestion_unit.state",
+  "ingestion_unit.reasons",
+  "ingestion_unit.counts",
+  "intake.counts",
+  "intake.read_errors_by_class",
+  "summary",
+  "pending_total",
+  "row_data_check",
+  "ingest_row_data_check",
+  "evaluation_items"
+ ],
+ "record_keys": [
+  "ingestion_unit.counts",
+  "intake.counts",
+  "intake.read_errors_by_class",
+  "summary",
+  "summary.by_type",
+  "summary.review_reasons",
+  "summary.parts",
+  "summary.unread_by_reason",
+  "summary.skipped_by_cap",
+  "row_data_check",
+  "ingest_row_data_check",
+  "summary.by_split",
+  "evaluation_items",
+  "summary.panicked_by_kind",
+  "evaluation_items.denominators",
+  "summary.by_format",
+  "summary.parts_by_method",
+  "summary.non_content_msg_properties",
+  "summary.unread_pdf_entries"
+ ],
+ "record_enums": [
+  "ingestion_unit.state",
+  "ingestion_unit.reasons",
+  "use_case_folder.state",
+  "use_case_folder.reason"
+ ],
+ "notes": "Live-unverified until the live check runs it. The folder is not under the PLXCUSTOMERS drive (/AGENTS/Ontology UseCases answered 404, so the earlier run reported not_visible with folders_listed 0); it is at the root of the AGENTS site's default library ('Documents'), a different site from SHAREPOINT_SITE_ID. The unit now names site AGENTS (examples/ingestion_sources.live-check.json) and the live audience grants sharepoint:${site:AGENTS}:/Ontology UseCases and its subtree only (examples/ingestion_live_audience.live-check.json); ${site:AGENTS} is the resolved drive id, and no request is sent for a site the audience grants nothing on. The host is the host part of SHAREPOINT_SITE_ID; a resolved site on any other host is refused. If the site cannot be resolved the unit reports not_visible plus site_unresolved:not_found (or the error class plus site_unresolved:source_error) with folders_listed 0, and this check fails honestly on json_min. Items withheld by audience or item permission are counted (withheld:<n>), never read. Detected types and review reasons are counts; an empty folder passes with zero artifacts. The intake runs only when this CLI is invoked (cron or operator); the ingest worker lists the unit each cycle (it resolves the site once per worker start) but does not run the intake. Module tests are injected-transport: operating/tests/test_use_case_intake.py SiteResolvedUnitTests, integrations/tests/test_live_source_grammar_sites.py. Live run on c067a11 (results 98dc8a3): the folder was reached (folders_listed 1) and held one file, a zip of case originals over the old 20 MB intake cap and the 25 MB download bound, so it was not pinned (exceeds_cap 1, by_type other, originals_pinned 0). The intake cap and the guard's pre-authenticated download bound are now 100 MB (a bounded in-memory GET; an original over it is one skipped_by_cap part and counts as a capped part under the bound above). Contract (uci-2): every part of every original is accounted exactly once (extracted, unread with a reason, skipped_by_cap with its cap); an unhandled kind is unread by default and pinned as its own original; summary.complete_artifacts counts originals with nothing unread or skipped. The check fails when summary.parts_skipped_by_cap > 2 (e.g. delivered members over the 20 MB part bound), (the intake itself sends every capped part to extraction review, operating/use_case_intake.py UseCaseIntake._record, so no separate review check is needed) and on summary.unread_without_reason > 0; unread parts with a reason (images not OCRed, custom XML, binary .msg properties) are honest incompleteness, recorded in summary.unread_by_reason. use_case_folder.state is explicit: reached, empty (folder_has_no_files), withheld (withheld:<n>) or unreachable (the most specific unit reason, e.g. site_unresolved:not_found). Each evaluation stub (plx-use-case-eval-stub/v3, draft outcome_stated only for a labelled statement in extracted text, else no_stated_outcome; operating/use_case_eval_stub.schema.json) carries split dev or held_out from the case id only; the evaluation reads that file format, and held_out stubs stay in the live state, never committed. Regression: operating/tests/test_use_case_intake.py LiveDeliveryShapeTests and PartAccountingContractTests (injected-transport / isolated-fixture). Use-case evals (2026-10-05): the 2026-10-05 15:03Z live run (main 95abdc91) left 550 parts unread (470 msg_property_not_decoded, 51 images not OCRed, 23 pdf_entry_not_parsed, 6 msg_storage_not_parsed), 29 questions, 0 outcomes stated. .msg property tables (sent/received dates, flags, recipient type), compressed RTF bodies, the named-property map storage and identifier properties are now decoded (operating/msg_reader.py); a property type or binary property nobody listed stays unread msg_property_not_decoded, a malformed stream unread with a reason. Images (also inside PDF pages) are OCRed through the one local OCR path, integrations/document_understanding.py local_image_text (tesseract; method tesseract-ocr; without tesseract ocr_unavailable, vector formats image_format_unsupported, OCR time per artifact capped at 600 s and a capped image counts under the parts_skipped_by_cap bound). PDF catalog entries stay pdf_entry_not_parsed. Each scan rebuilds the evaluation items from the newest record of each case: a zip member (or the whole artifact) whose extracted text has a labelled outcome line and a question becomes one dev exposed item (family F20, label oracle_only: outcome pending human label; never held out) under <state>/use_cases/eval_items/dev with its exposed manifest, executable by python3 -m evals.runner run --items <that dir> --split dev. The check fails on an invalid item or an unreadable extraction; the item count is recorded, not bounded (it depends on what the delivered cases state; target >= 10). Expected unread counts are not pinned: this branch has no live run, so they are recorded and the next live result sets them. Live-unverified. Regression (isolated-fixture / injected-transport): operating/tests/test_use_case_intake.py PartAccountingContractTests (msg, malformed msg, OCR) and LiveDeliveryShapeTests. Live run on main 120acb30: the scan died after 7 s with pyo3_runtime.PanicException (exit 1, no JSON, ingestion_unit.state incomplete). pypdf imports its crypto provider, cryptography (Rust/pyo3), on import and decrypts encrypted files with it; a pyo3 panic derives from BaseException, so it passed every except Exception. Every pypdf call in operating/use_case_parts.py now contains a panic (known by name, pyo3_runtime.PanicException): the PDF (or page, entry, image, annotation) is unread with reason parser_panicked and the scan completes; an interrupt or exit still ends the run. Regression (injected-transport): operating/tests/test_use_case_intake.py CliTests.test_a_native_parser_panic_leaves_its_part_unread_and_the_scan_completes. A live environment whose cryptography panics leaves every PDF unread parser_panicked (recorded in summary.unread_by_reason); fixing that install is an environment task, not this check's. evaluation_items.text_unavailable counted every case with no extracted text (an unread PDF, an image without OCR), so that check failed on honest incompleteness; such a case is now counted evaluation_items.no_text (recorded, not bounded) and text_unavailable counts only a stored extraction that cannot be read back or fails its digest. check_expectations passes on the scan's output in that regression (injected-transport, not live). The item builder moved from operating/use_case_eval_items.py to scripts/eval_use_case_items.py (eval tooling, the check's command): product code may not read evals/ (no-hardcoded-cases eval_reference); the intake CLI takes the builder as a parameter. The check no longer passes on an all-panic or nothing-read scan; summary.parts_read >= 1 and summary.parts_panicked = 0 are enforced and the denominators recorded (decision and evidence in the description). Regression (injected-transport, check_expectations on real _summary output, not live): operating/tests/test_use_case_intake.py CliTests and verify/tests/test_live_verify_metric.py HonestSpecTest. Live-unverified. When pypdf cannot be imported or panics on a document, each page's text layer is read through the one local poppler path (integrations/document_understanding.py local_pdf_text_layer, method pdftotext-text) and the rest of the PDF is one unread part pdf_text_layer_only; a PDF is parser_panicked only when both readers fail. DOC-02/DOC-07: summary.by_format gives per file format (pdf, docx, pptx, xlsx, vsdx, msg, eml, zip, image, text, html, other; the innermost file a part belongs to) the parts read, unread and skipped_by_cap and the read parts by converter (methods), summary.parts_by_method the read parts by converter (stdlib, pypdf, pdftotext, ocr, markitdown) and summary.markitdown_available whether this host has it. Recorded, not bounded. Regression (injected-transport, check_expectations on real _summary output, not live): operating/tests/test_use_case_intake.py CliTests.test_a_parser_panic_falls_back_to_the_pdf_text_layer_and_counts_per_format. The text-layer fallback adds no OCR: in the fallback a page without a text layer is unread image_only (its images are not listed there), so summary.parts_read >= 1 is never met by empty pages; a PDF poppler cannot open without its user password is unread encrypted, and one over the fallback's bounds is skipped_by_cap (pages: 200; text_chars: 100000), never parser_panicked. (Superseded by pdf-one-reader: the part readers read a PDF through the one reader, integrations/document_understanding.py read_pages: pypdf first when it reads every page and some text, else MarkItDown when installed, else pypdf's partial reading or poppler's text layer, so summary.parts_by_method.markitdown counts only the PDFs pypdf did not read and can be 0 on a host that has it.) A record written before parts carried a format is grouped in summary.by_format by each part's own kind and path (operating/use_case_parts.py part_format), never under the outer file. Regression (injected-transport, check_expectations on real _summary output, not live): the same CliTests test and IntakeTests.test_a_record_written_before_part_formats_groups_by_its_own_parts. Live-unverified. An owner password never blocks extraction, only a user password does: a PDF whose only password is the owner's is read on every path, poppler's text layer included; poppler's user-password refusal is known by its exit status 1 and the word 'password' in any case. The part reader checks a PDF's page count before it reads a page: over 200 pages it is skipped_by_cap pages (also when pypdf reads it), over the parts room left skipped_by_cap parts; when MarkItDown's page breaks do not match the PDF's page count its text is one unpaged part (method markitdown), never read again page by page. A record written before parts carried a format groups a part of its own file whose name states no format under the record's detected_type. Regression (injected-transport / isolated-fixture, not live): operating/tests/test_use_case_intake.py and integrations/tests/test_document_understanding.py. Live-unverified. Msg property decode (DOC-02, DOC-07; live run on main 37e539e, which includes da1fca35: 1280 of 1513 parts read, msg 204 unread msg_property_not_decoded, pdf 26 pdf_text_layer_only and 2 image_only, markitdown_available false, parts_by_method pypdf 0 and markitdown 0): summary.unread_msg_properties counts the msg_property_not_decoded parts by MAPI property type and id (summary.unread_msg_properties.<type>.<id>; schema tags only, never values: a named property by its property set GUID or PS_MAPI/PS_PUBLIC_STRINGS and LID, 'named' for a string-named one; a table whose size is no whole number of entries is table.size, a stream that is no property stream.unknown, a named-property map stream nameid.<id>, a tag a record does not carry untagged); its counts sum to summary.unread_by_reason.msg_property_not_decoded, except that a property table part counts once under each entry it could not decode. operating/msg_reader.py OPAQUE_BINARY maps the identifier binaries MS-OXPROPS defines (the PidTag*EntryId family incl. PidTagRecipientEntryId, search, record, instance, source and change keys, PidTagConversationIndex and PidTagConversationId 0x3013) to their names; they are read msg-identifier with the part's property name, and every other property stays unread (closed world). Recorded, not bounded: the next live run sets the msg and pdf counts. Regression (injected-transport, check_expectations on real _summary output, not live): operating/tests/test_use_case_intake.py CliTests.test_undecoded_msg_properties_are_counted_by_tag_and_identifiers_are_read. Live-unverified. The address search keys (ADDRTYPE:ADDRESS), PidTagReplyRecipientEntries (0x004F, a FlatEntryList) and any entry id that is a one-off (MS-OXCDATA 2.2.5.1) or address book entry id (2.2.5.2) are read as their address text (method msg-address, operating/msg_reader.py ADDRESS_BINARY and binary_text), or unread msg_property_not_decoded by tag when they do not decode, never read with no text; a property table's tag lists every entry it could not decode. Same regression test. Live-unverified. Doc parts denominator (DOC-02, DOC-07; live run on main 50e06323, 2026-10-13 10:57Z: 1453 of 1624 parts read, markitdown_available true, parts_by_method.markitdown 0, unread 143 msg_property_not_decoded, all 0102 binaries, and 23 pdf_entry_not_parsed). DECIDED: binary MAPI metadata leaves the text denominator but stays counted. A binary (0102) .msg property that is protocol metadata (a MAPI-defined id below 0x6800 that no reader decodes, or a named property in a Microsoft property set, operating/use_case_parts.py MAPI_METADATA_SETS) is unread non_content_metadata with its tag: pinned, in summary.unread_by_reason and summary.non_content_msg_properties (by type and id), and out of summary.text_parts_total = summary.parts_total - summary.parts_non_content_metadata; a message-class-defined id (0x6800-0x7FFF) or a string-named or other-set named binary may be an application's content and stays msg_property_not_decoded. The record stays incomplete and in extraction review (unread is unread). Each pdf_entry_not_parsed part carries its entry (where and PDF name: catalog:/AcroForm, names:/JavaScript, annotation:/Widget, ...; a name the standard does not define is <where>:other, so file-chosen names never reach the output), counted in summary.unread_pdf_entries (untyped for an older record). An encrypted, malformed, image-only or over-cap PDF already has its own reason (encrypted, container_unreadable/unreadable, image_only, skipped_by_cap), so those 23 live parts are entries no reader reads, now typed. Recorded, not bounded: the next live run splits them. Regression (injected-transport, check_expectations on real _summary output, not live): operating/tests/test_use_case_intake.py CliTests.test_undecoded_msg_properties_are_counted_by_tag_and_identifiers_are_read and CliTests.test_each_unparsed_pdf_entry_carries_its_typed_entry. Live-unverified."
+}

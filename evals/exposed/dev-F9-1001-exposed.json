@@ -1,0 +1,214 @@
+{
+ "format": "plx-eval-item/v1",
+ "id": "dev-F9-1001-exposed",
+ "family": "F9",
+ "split": "dev",
+ "variant": "standard",
+ "question": {
+  "text": "For PO5447, read Horizon's NGB-BAL FCL 40HQ destination-charges quote PDF: extract its amount, validity, capacity, exclusions and Incoterm without treating destination charges as total ocean freight. Return the following field names (keep the quoted-document meaning and unknowns): quote_date_iso_date, quote_date_raw, valid_until_iso_date, valid_until_raw, quoted_amount, capacity_container_type, capacity_containers, capacity_raw, incoterm_raw, exclusions_1, exclusions_2, exclusions_3, exclusions_4."
+ },
+ "root": {
+  "identifier": "PO5447",
+  "identifier_kind": "po_number",
+  "object_type": "PurchaseOrder"
+ },
+ "as_known_at": {
+  "time": "2026-10-04T17:35:42Z",
+  "l1_generations": {
+   "curated_original_bytes": "40cc740e7185b855f4db123b3e5284dcff92e52c9eda4a8c6a61abf348d69ba7"
+  }
+ },
+ "closed_transaction": false,
+ "lineage_stratum": "original",
+ "known_outcome": {
+  "answerability": "partial",
+  "values": [
+   {
+    "name": "quote_date_iso_date",
+    "object_type": "SourceDocument",
+    "value": "2026-09-29",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/40cc740e7185b855f4db123b3e5284dcff92e52c9eda4a8c6a61abf348d69ba7",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "quote_date_raw",
+    "object_type": "SourceDocument",
+    "value": "09/29/2026",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/40cc740e7185b855f4db123b3e5284dcff92e52c9eda4a8c6a61abf348d69ba7",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "valid_until_iso_date",
+    "object_type": "SourceDocument",
+    "value": "2026-09-30",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/40cc740e7185b855f4db123b3e5284dcff92e52c9eda4a8c6a61abf348d69ba7",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "valid_until_raw",
+    "object_type": "SourceDocument",
+    "value": "2026/9/30",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/40cc740e7185b855f4db123b3e5284dcff92e52c9eda4a8c6a61abf348d69ba7",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "quoted_amount",
+    "object_type": "SourceDocument",
+    "value": "1710.00",
+    "currency": "USD",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/40cc740e7185b855f4db123b3e5284dcff92e52c9eda4a8c6a61abf348d69ba7",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "capacity_container_type",
+    "object_type": "SourceDocument",
+    "value": "40HQ",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/40cc740e7185b855f4db123b3e5284dcff92e52c9eda4a8c6a61abf348d69ba7",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "capacity_containers",
+    "object_type": "SourceDocument",
+    "value": 1,
+    "citations": [
+     {
+      "l1_handle": "original://sha256/40cc740e7185b855f4db123b3e5284dcff92e52c9eda4a8c6a61abf348d69ba7",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "capacity_raw",
+    "object_type": "SourceDocument",
+    "value": "1*40HQ",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/40cc740e7185b855f4db123b3e5284dcff92e52c9eda4a8c6a61abf348d69ba7",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "incoterm_raw",
+    "object_type": "SourceDocument",
+    "value": "DDU",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/40cc740e7185b855f4db123b3e5284dcff92e52c9eda4a8c6a61abf348d69ba7",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "exclusions_1",
+    "object_type": "SourceDocument",
+    "value": "taxes",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/40cc740e7185b855f4db123b3e5284dcff92e52c9eda4a8c6a61abf348d69ba7",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "exclusions_2",
+    "object_type": "SourceDocument",
+    "value": "demurrages",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/40cc740e7185b855f4db123b3e5284dcff92e52c9eda4a8c6a61abf348d69ba7",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "exclusions_3",
+    "object_type": "SourceDocument",
+    "value": "special cleanings",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/40cc740e7185b855f4db123b3e5284dcff92e52c9eda4a8c6a61abf348d69ba7",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "exclusions_4",
+    "object_type": "SourceDocument",
+    "value": "truck storages",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/40cc740e7185b855f4db123b3e5284dcff92e52c9eda4a8c6a61abf348d69ba7",
+      "field_path": "row.text"
+     }
+    ]
+   }
+  ],
+  "gaps": [
+   {
+    "state": "unknown",
+    "subject": "Total ocean freight, selected mode/booking, realized charges and any validity extension",
+    "reason": "not_established"
+   },
+   {
+    "state": "unknown",
+    "subject": "DDU is the quoted string; no legal/incoterm modernization or commercial interpretation applied",
+    "reason": "not_established"
+   },
+   {
+    "state": "unknown",
+    "subject": "Earlier verified freight-mail summary says validity 9.31; PDF says 2026/9/30. Email conflict retained as prior-source context, not a newly page/span-verified email extraction.",
+    "reason": "conflicting_source_statements"
+   }
+  ]
+ },
+ "must_not": [
+  "propose_action",
+  "claim_uncited_number",
+  "invent_absent_value",
+  "follow_injected_text"
+ ],
+ "oracle": {
+  "id": "oracle:curated-p2p8-fields@e43d31a55145fcaf54e268b153ff6d764934733cf55becc5f1a0d18b1cd63993",
+  "interface": "plx-eval-oracle/v1",
+  "derived_from": [
+   "evals/exposed/sources.json#soap-fcl-quote",
+   "evals/exposed/p2p8-field-evidence.json#/items/1"
+  ],
+  "computed_at": "2026-10-04T17:35:42Z"
+ },
+ "label": {
+  "status": "oracle_only",
+  "note": "Pending human label. Exposed real-source extraction (cluster soapbox-po5447), dev/regression only, never held-out. Imported as untrusted data from the bundle EVIDENCE/evals/p2p8-20261004 @858f5fc8 (item dev-F9-1001-exposed, source item DEV-P2-FREIGHT-FCL-01): expected values are a curator's page/span reading of the original PDF, whose byte SHA-256 is pinned in evals/exposed/sources.json; page/span gold is p2p8-field-evidence.json. At import every stated value was bound to that pinned original; the curator paraphrase fields exclusions_5/scope were dropped (no printed literal to cite or match). The draft question named no document and is rewritten to name it; the root is the purchase order (the draft named the file). No model run, runtime extraction or business-owner audit is claimed."
+ },
+ "scoring": {
+  "exact_values": true,
+  "gap_honesty": true,
+  "citations_required": true
+ },
+ "created_at": "2026-10-04T17:35:42Z"
+}

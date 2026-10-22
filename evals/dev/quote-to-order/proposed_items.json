@@ -1,0 +1,858 @@
+{
+ "format": "plx-eval-case-card-proposals/v1",
+ "status": "PROPOSED dev cards for lead triage, never gold. Vince's Quote-to-Order Map (22 stages, examples A to E, 16 ranked gaps; cards QO-*), the quote workbook and email originals of its three _Quote Workbooks folders (QW-*) and the cost-to-assembly user journey (CJ-*). The map is read only through its pinned advisory text; workbooks and emails are pinned by name, item id and SHA-256 from their advisory manifests and are not rows of examples/case_originals.json (their folders are watched there, so the next case.originals_read run reads them as discovered files). Each example records the quote inputs missing at quote time (examples.*.missing_at_quote), where the announced 'quoting with incomplete information' case slots in. Cards carry no prices, no message bodies and no expected values.",
+ "case": "quote-to-order",
+ "maps": {
+  "QO": {
+   "title": "Quote-to-Order Map",
+   "gaps": [
+    "gap-ba79665b1e75",
+    "gap-c6908655ad11"
+   ],
+   "advisories": [
+    "advisory:72bf7b7ae3f6",
+    "advisory:b663c5f3b388"
+   ]
+  },
+  "QW": {
+   "title": "Quote Examples: _Quote Workbooks originals",
+   "gaps": [
+    "gap-8831e5c7c5bd",
+    "gap-4f3881121f61"
+   ],
+   "advisories": [
+    "advisory:bb494ac6ba9d",
+    "advisory:0dc11f49acee"
+   ]
+  },
+  "CJ": {
+   "title": "User journey for cost workflows (cost to assembly)",
+   "gaps": [
+    "gap-cf0325bc0713"
+   ],
+   "advisories": [
+    "advisory:bc0e2a7d0f24"
+   ]
+  }
+ },
+ "source": {
+  "advisory": {
+   "id": "advisory:72bf7b7ae3f6",
+   "ref": "advisory@1cbde9b7abdeac872dad96f60ccee65efa0ee1a6",
+   "path": "context/72bf7b7ae3f6226fd904bef64a683147f878c16ac45f2549432089d975ed5827.json",
+   "record_sha256": "695d0715abb99945d06c3f730038e5b58eeb03925c943fb4f199b35176e9c734",
+   "source_revision": "user-html-export-sha256:f98f355a90d5823c7e6dd8f2b32d59f6715885d9ccc761e5ca08ac213b100c33",
+   "created_at": "2026-10-15T19:51:16Z"
+  },
+  "related_advisories": [
+   {
+    "id": "advisory:b663c5f3b388",
+    "role": "Vince's invitation to the Quote-to-Order Map (messages only, map pinned as advisory:72bf7b7ae3f6); gap-c6908655ad11, related only",
+    "ref": "advisory@9e79b8ddaad48675077cfd337d4528e37ad8677e",
+    "path": "context/b663c5f3b388a4af33d8fafcf2f482fde64e109085590366a99dc2daeb3b91c1.json",
+    "record_sha256": "3dbbab8245c43d23a125c6743f09f8503a61087dc456414f4a3c200b6dbdb5e4",
+    "source_revision": "selected-facts-sha256:e1ea3f191308a64b3780b47a801139023d370a9f6d5c1d9b076f1f238f24460e",
+    "created_at": "2026-10-15T19:18:44Z"
+   },
+   {
+    "id": "advisory:bb494ac6ba9d",
+    "role": "manifest of the 11 quote workbooks in the three _Quote Workbooks folders (bytes downloaded and hashed; bodies not delivered); gap-8831e5c7c5bd",
+    "ref": "advisory@8469459ed58ddd0593152ba3f7b801571374dcca",
+    "path": "context/bb494ac6ba9df883cd6afdbe39ff7731793355041ee7d077bf68094827f704b1.json",
+    "record_sha256": "f2b99accee63c792017ec8ee5dd8f7dd3166f2b3cc2e86380cb3b52933134181",
+    "source_revision": "verified-manifest-sha256:746af2164a06b8981d5ed4e334102b273faf95e44d5d2a0632c1200dceb26335",
+    "created_at": "2026-10-15T19:54:19Z"
+   },
+   {
+    "id": "advisory:0dc11f49acee",
+    "role": "manifest of the 17 other entries of the same folders (14 emails, 3 _summary.md; bytes hashed, bodies not assessed); gap-4f3881121f61",
+    "ref": "advisory@3d84813974f0c68b845254b094365be414044fc1",
+    "path": "context/0dc11f49aceec6d8a22c5a9e8070936bd6f15097d36a9648f41b0566ede0fbe4.json",
+    "record_sha256": "89d8f1612f742ea7bdd21800435ef2359afa265c2525d543728d99fa876ea2b7",
+    "source_revision": "manifest-sha256:45d617ec3ea060d398f49b214677c241d5aeb7e8dbb5f5ee587593d1ff1646ef",
+    "created_at": "2026-10-15T19:57:51Z"
+   },
+   {
+    "id": "advisory:bc0e2a7d0f24",
+    "role": "User journey for cost workflows (ZIP v1.0: 29-step cost-to-assembly design artifact); gap-cf0325bc0713",
+    "ref": "advisory@49a43337176673d859cdb3a734ffab3c7ac9d5c1",
+    "path": "context/bc0e2a7d0f24ab9ef1e8ec64e14550d9830df5bd7592dbf997eff0ee2a40aab5.json",
+    "record_sha256": "a2c7ddf5607c55cd24d7c359e88ad027c804b5fefa7202fca26499d16505ff21",
+    "source_revision": "1.0:2026-10-15T14:55:27Z",
+    "created_at": "2026-10-15T15:15:35Z"
+   },
+   {
+    "id": "advisory:c70b2464d73c",
+    "role": "Vince's announcement of the next case, quoting with incomplete information (planned, original not submitted); slots into examples.*.missing_at_quote",
+    "ref": "advisory@557a03722b1b7c0c4e4c4b2bf4d490453fb38175",
+    "path": "context/c70b2464d73c1afda78935dfddc3e72b5661b7efdaa3289003856124cd27e748.json",
+    "record_sha256": "a65572e503386b4d6d604c9df253c36e2e08e283a55600cd762db25846c7d3c9",
+    "source_revision": "ac3df1121e78b0f3a1cfa7bbbe3f3bbfed223f72e3fb39479753719b67282153",
+    "created_at": "2026-10-14T21:49:21Z"
+   }
+  ],
+  "originals_registry": "examples/case_originals.json",
+  "watched_originals": {
+   "note": "Pins copied from the two manifests; a read receipt of a watched file matches when its source.item_id and sha256 equal a pin here. Names only, no contents.",
+   "folders": {
+    "G2-Beauty": "wf-298255457f6d",
+    "SAHAJAN": "wf-ebf4f688252d",
+    "Soapbox": "wf-5b6c753bc00f"
+   },
+   "files": [
+    {
+     "case": "G2-Beauty",
+     "name": "2026-10-09 Vince Alton - G2_BEAUTY_Q20261009.1.xlsm (2).eml",
+     "item_id": "01RVPYB2FMP3LDXDCKPJDY5OKOTKMIGJXL",
+     "sha256": "2775fa7709d4a7568e6603b473bf9f3d01cdfcf5bd622cef60e3bd0fa6478e92",
+     "bytes": 345157,
+     "advisory": "advisory:0dc11f49acee"
+    },
+    {
+     "case": "G2-Beauty",
+     "name": "2026-10-09 Vince Alton - G2_BEAUTY_Q20261009.1.xlsm.eml",
+     "item_id": "01RVPYB2C4IT6SJDCXABAJJJBUO32DNVN3",
+     "sha256": "d5cd20ec6b16bcf6b8cb11a0ede199a31fd543b827910107d239e026aade15d5",
+     "bytes": 347501,
+     "advisory": "advisory:0dc11f49acee"
+    },
+    {
+     "case": "G2-Beauty",
+     "name": "2026-10-09 Vince Alton - Vince Alton shared _G2_BEAUTY_Q20261009.1_ with you.eml",
+     "item_id": "01RVPYB2EDZQQLMCHKD5GYJ3KHEOPCPWGE",
+     "sha256": "be99e6a842fce12c41051a6aaefb8c0fb6b8dd941c0734a2c083a6a2abd59b9a",
+     "bytes": 28658,
+     "advisory": "advisory:0dc11f49acee"
+    },
+    {
+     "case": "G2-Beauty",
+     "name": "_summary.md",
+     "item_id": "01RVPYB2BI6IDUIB2SJNFKYNL6ZZ6VNTKM",
+     "sha256": "5893ad344d326831a2a9a6417eb8269c466b7fe6293a12f91783718f6161f20c",
+     "bytes": 695,
+     "advisory": "advisory:0dc11f49acee"
+    },
+    {
+     "case": "G2-Beauty",
+     "name": "2026-10-09 G2_BEAUTY_Q20261009.1.xlsm",
+     "item_id": "01RVPYB2A765WMA2XU5BBLGWIN3CLSUXUV",
+     "sha256": "b5db59449c4d42951aef7ab3fa8cf22c77a43974001b72172f5a89680fbb6a28",
+     "bytes": 249972,
+     "advisory": "advisory:bb494ac6ba9d"
+    },
+    {
+     "case": "G2-Beauty",
+     "name": "G2_BEAUTY_Q20261009.1.xlsm",
+     "item_id": "01RVPYB2G3UFFR4UWGPZB2HUUOKK27S3VI",
+     "sha256": "c3a5a5ffb86217cbf9f6d04a10ba688afdaa8482943ed8c8a2e6fe7b8470d068",
+     "bytes": 251143,
+     "advisory": "advisory:bb494ac6ba9d"
+    },
+    {
+     "case": "SAHAJAN",
+     "name": "2026-09-08 Vince Alton - SAHAJAN_MINI_QUOTE.xlsx.eml",
+     "item_id": "01RVPYB2B44BLGTPVJFVC3GMKNZZRDTLHT",
+     "sha256": "0989a11289d454f9f843cdfa425245da67b61e328db6b3708b5498adac3297d4",
+     "bytes": 283461,
+     "advisory": "advisory:0dc11f49acee"
+    },
+    {
+     "case": "SAHAJAN",
+     "name": "2026-09-09 Vince Alton - SAHAJAN_MINI_QUOTE.xlsx.eml",
+     "item_id": "01RVPYB2EY6M6VLYOK45HYLW5Y3ITTL42Q",
+     "sha256": "44a144dd196d853ada19e0522e775db3dfff24d3480686512dd626d8d8d903b6",
+     "bytes": 283281,
+     "advisory": "advisory:0dc11f49acee"
+    },
+    {
+     "case": "SAHAJAN",
+     "name": "2026-10-07 Vince Alton - Manufacturing Orders EOY1 – prices + FM planned dates.eml",
+     "item_id": "01RVPYB2DCDFXJGFOBMNB24QCGXOEUVYWZ",
+     "sha256": "578c8b02d08eb9a4c9207bc4174cb23effe8a244f794aa503e287891c8a673cc",
+     "bytes": 61742,
+     "advisory": "advisory:0dc11f49acee"
+    },
+    {
+     "case": "SAHAJAN",
+     "name": "2026-10-07 Vince Alton - Manufacturing_Orders_EOY1_filled_v2.xlsx (2).eml",
+     "item_id": "01RVPYB2D5XLYOUYP2ZFDYFSXKVFCFIU76",
+     "sha256": "9c91d44ee6a936d51feb6a23fb73c3b0957c18ec87ca2eb9acda5122c9afacea",
+     "bytes": 164472,
+     "advisory": "advisory:0dc11f49acee"
+    },
+    {
+     "case": "SAHAJAN",
+     "name": "2026-10-07 Vince Alton - Manufacturing_Orders_EOY1_filled_v2.xlsx (3).eml",
+     "item_id": "01RVPYB2COUNTS2ESMSFEK3ZTFWVQZNSSB",
+     "sha256": "d0e27930470ddc28c1926853f80791669ca165a03a9c4ec0bf771f70db4be6fa",
+     "bytes": 160483,
+     "advisory": "advisory:0dc11f49acee"
+    },
+    {
+     "case": "SAHAJAN",
+     "name": "2026-10-07 Vince Alton - Manufacturing_Orders_EOY1_filled_v2.xlsx.eml",
+     "item_id": "01RVPYB2EENYBZQVJBCVAK6JSP3SEGFMHD",
+     "sha256": "9a2776196b498cd046e6de79f74785bac59adf0530f3bc97ce28fc3a680e9918",
+     "bytes": 160666,
+     "advisory": "advisory:0dc11f49acee"
+    },
+    {
+     "case": "SAHAJAN",
+     "name": "_summary.md",
+     "item_id": "01RVPYB2CCMNJASDWYNBBLQSPFWT54F3IR",
+     "sha256": "6e1c2647ddb545d632e717239564ffee704c4f53a4b4216b8e2961dc18fe1479",
+     "bytes": 1449,
+     "advisory": "advisory:0dc11f49acee"
+    },
+    {
+     "case": "SAHAJAN",
+     "name": "2026-09-09 SAHAJAN_MINI_QUOTE.xlsx",
+     "item_id": "01RVPYB2D3S7RXKMXEAJFJLKDW4VBYSUW5",
+     "sha256": "0f21fc7d57444dd174288d41b0cd7833fad028d3225f8dca705c7aa45356330e",
+     "bytes": 211035,
+     "advisory": "advisory:bb494ac6ba9d"
+    },
+    {
+     "case": "SAHAJAN",
+     "name": "2026-10-07 (2) Manufacturing_Orders_EOY1_filled_v2.xlsx",
+     "item_id": "01RVPYB2EC6G6CWBL5QFGZQHSKYHC5LKQE",
+     "sha256": "76127113afbe0c57cd86323786baf1e6620262964378be2a35e4efa33aa32b85",
+     "bytes": 121879,
+     "advisory": "advisory:bb494ac6ba9d"
+    },
+    {
+     "case": "SAHAJAN",
+     "name": "2026-10-07 (3) Manufacturing_Orders_EOY1_filled_v2.xlsx",
+     "item_id": "01RVPYB2CGOIPQHEWRKNCJFSVJ42VFVHKD",
+     "sha256": "0c3cbecdfa7c128fc0ce059746cb5421b165565c3b4e99a84fbe6f3a70a26c1d",
+     "bytes": 124757,
+     "advisory": "advisory:bb494ac6ba9d"
+    },
+    {
+     "case": "SAHAJAN",
+     "name": "2026-10-07 Manufacturing_Orders_EOY1_filled_v2.xlsx",
+     "item_id": "01RVPYB2AXJ4J7ZEQZ2NC2SC3QYVDP5NO2",
+     "sha256": "af7c40c62215d4ae52f2d3850241d835f3d06ef4d593f459162836ef99def664",
+     "bytes": 121900,
+     "advisory": "advisory:bb494ac6ba9d"
+    },
+    {
+     "case": "SAHAJAN",
+     "name": "Manufacturing_Orders_EOY1_filled_v2.xlsx",
+     "item_id": "01RVPYB2BUOYM4GNBRCZFJWR43PDKICI6I",
+     "sha256": "065930e4c93ccb92763eac3e74e57499dae694077861ec1a623322a3bfa9fd99",
+     "bytes": 46011,
+     "advisory": "advisory:bb494ac6ba9d"
+    },
+    {
+     "case": "SAHAJAN",
+     "name": "SAHAJAN_MINI_QUOTE.xlsx",
+     "item_id": "01RVPYB2ASLW2C4TSZNNEKASCMA6N5U3ZJ",
+     "sha256": "6a70f2b7ccd8645c44372c62ff49b0b2170673925738690f6ecc6e9b25979ccb",
+     "bytes": 211057,
+     "advisory": "advisory:bb494ac6ba9d"
+    },
+    {
+     "case": "Soapbox",
+     "name": "2026-02-06 Vince Alton - Soapbox Theoretical Pricing (Without Fragrance).xlsx.eml",
+     "item_id": "01RVPYB2H5WFN34CZTHZBZJC23G5CGJBCF",
+     "sha256": "28fa59128eb127f157fae1ee5c8738134578c6b07f3ace5527f82cc3036fa823",
+     "bytes": 109529,
+     "advisory": "advisory:0dc11f49acee"
+    },
+    {
+     "case": "Soapbox",
+     "name": "2026-09-01 Vince Alton - Vince Alton shared _2026-09-01-SOAPBOX_WORKING_QUOTE_ with you.eml",
+     "item_id": "01RVPYB2EQJPBIT2HBTRAZ3APQF4OLMYRE",
+     "sha256": "6d34eab79e2509fd16ce8cea4153d8397e0261a5f43d111566105117fdf2fe28",
+     "bytes": 39030,
+     "advisory": "advisory:0dc11f49acee"
+    },
+    {
+     "case": "Soapbox",
+     "name": "2026-09-24 Vince Alton - 2026-09-01-SOAPBOX_WB.xlsb.eml",
+     "item_id": "01RVPYB2HSDOHJHDA4MVFZLEPFVKAMCLQB",
+     "sha256": "8e5dc93e8fcb24b5a0b0163ee3245756f90ed78fb05fb106f2faa22f421e9933",
+     "bytes": 251891,
+     "advisory": "advisory:0dc11f49acee"
+    },
+    {
+     "case": "Soapbox",
+     "name": "2026-09-24 Vince Alton - 2026-09-24-SOAPBOX_WB.xlsb.eml",
+     "item_id": "01RVPYB2A5KUKKPT3Z7BEIT4TKRI3SUWZC",
+     "sha256": "5946f52005d7453aa9b5e22772ad651ff7041e29a49b081e7187797cd5e4a406",
+     "bytes": 251398,
+     "advisory": "advisory:0dc11f49acee"
+    },
+    {
+     "case": "Soapbox",
+     "name": "2026-09-24 Vince Alton - Vince Alton shared _2026-09-24-SOAPBOX_WB_1_ with you.eml",
+     "item_id": "01RVPYB2AD4RERUVXUE5E244MCVH4JX43Z",
+     "sha256": "a895d42ad31f21a6018f607a88b0e228b38143628505efb6e7c6e911b1f11577",
+     "bytes": 28907,
+     "advisory": "advisory:0dc11f49acee"
+    },
+    {
+     "case": "Soapbox",
+     "name": "_summary.md",
+     "item_id": "01RVPYB2F7ZEXEO3ZVIFAZUG6T43IJCNGX",
+     "sha256": "9747ca7932b916bf5a73c7819e714ed021d277672754f20a398264805b83c4d9",
+     "bytes": 1056,
+     "advisory": "advisory:0dc11f49acee"
+    },
+    {
+     "case": "Soapbox",
+     "name": "2026-09-01-SOAPBOX_WB.xlsb",
+     "item_id": "01RVPYB2COCV5JIOMLGVH2UKWVML7UK4OC",
+     "sha256": "af76e559bd8d251b04aa88c765136dfaf44a526b73a691b568db722487bb0de9",
+     "bytes": 181327,
+     "advisory": "advisory:bb494ac6ba9d"
+    },
+    {
+     "case": "Soapbox",
+     "name": "2026-09-24-SOAPBOX_WB.xlsb",
+     "item_id": "01RVPYB2BHXDASJ3SZTZFIR2SMLWHISF77",
+     "sha256": "839b011040478cf73e0222fa7b0553167a2849dea073998a09751841c75ceb58",
+     "bytes": 181336,
+     "advisory": "advisory:bb494ac6ba9d"
+    },
+    {
+     "case": "Soapbox",
+     "name": "Soapbox Theoretical Pricing (Without Fragrance).xlsx",
+     "item_id": "01RVPYB2BCDPJES22XYBELTJRIX7OQDJHS",
+     "sha256": "d50a7d99f8e3ed128821908077f312b317dc4002eaa5a7c8a55f1aa42148cd47",
+     "bytes": 58265,
+     "advisory": "advisory:bb494ac6ba9d"
+    }
+   ]
+  }
+ },
+ "planned_case": {
+  "advisory": "advisory:c70b2464d73c",
+  "gap": "gap-90e222260af4",
+  "state": "announced by Vince, original not submitted",
+  "slot": "examples.*.missing_at_quote"
+ },
+ "live_sources": [
+  {
+   "id": "portal.app_quote",
+   "system": "portal-reporting-api",
+   "relation": "public.app_quote (status DRAFT|SENT|NEGOTIATION|ACCEPTED|REJECTED|EXPIRED, valid_until, free-text terms and rejection_reason, custom_fields.convertedSalesOrderId)",
+   "reader": "served",
+   "evidence": "plx-customer-portal:services/workbench-api/manifest/allowlist.json@d4d1bb247708:602; plx-customer-portal:portal/prisma/schema.prisma@d4d1bb247708:5617-5650; plx-customer-portal:portal/prisma/schema.prisma@d4d1bb247708:697-704"
+  },
+  {
+   "id": "portal.app_quote_line",
+   "system": "portal-reporting-api",
+   "relation": "public.app_quote_line (quote_volume_id served; margin_percent, fp_code and planned_conversion_per_unit are not served columns)",
+   "reader": "served",
+   "evidence": "plx-customer-portal:services/workbench-api/manifest/allowlist.json@d4d1bb247708:630; plx-customer-portal:portal/prisma/schema.prisma@d4d1bb247708:5679-5718"
+  },
+  {
+   "id": "portal.app_quote_volume",
+   "system": "portal",
+   "relation": "public.app_quote_volume (the customer's asked volumes, one per pricing tier)",
+   "reader": "not_served",
+   "evidence": "plx-customer-portal:portal/prisma/schema.prisma@d4d1bb247708:5657-5677; OntologyProject:ontology/schema/generated/portal_not_served_p_r.json@4a5b5fe16a2e RelPublicAppQuoteVolume"
+  },
+  {
+   "id": "portal.app_sales_order",
+   "system": "portal-reporting-api",
+   "relation": "public.app_sales_order (po_reference, currency, custom_fields; no quote foreign key)",
+   "reader": "served",
+   "evidence": "plx-customer-portal:services/workbench-api/manifest/allowlist.json@d4d1bb247708:717; plx-customer-portal:portal/prisma/schema.prisma@d4d1bb247708:3968-4027"
+  },
+  {
+   "id": "portal.quote_convert",
+   "system": "portal",
+   "relation": "quote-to-order conversion: only ACCEPTED quotes, every quote line copied to the order",
+   "reader": "none",
+   "evidence": "plx-customer-portal:portal/src/lib/sales-order/convert.ts@d4d1bb247708:45-97; plx-customer-portal:portal/src/lib/sales-order/convert.ts@d4d1bb247708:109-133"
+  },
+  {
+   "id": "portal.bc_sales_quote_serializer",
+   "system": "portal",
+   "relation": "won quote posted to BC as a salesQuotes document on acceptance (Q2-E2)",
+   "reader": "none",
+   "evidence": "plx-customer-portal:portal/src/lib/business-central/serializers.ts@d4d1bb247708:1235-1245"
+  },
+  {
+   "id": "portal.app_supplier_product_tier",
+   "system": "portal",
+   "relation": "public.app_supplier_product_tier (vendor tier price per supplier product, min_qty, currency)",
+   "reader": "not_served",
+   "evidence": "plx-customer-portal:portal/prisma/schema.prisma@d4d1bb247708:1756-1772; OntologyProject:ontology/schema/generated/portal_not_served_s_z.json@4a5b5fe16a2e RelPublicAppSupplierProductTier"
+  },
+  {
+   "id": "portal.app_order_prepayment",
+   "system": "portal",
+   "relation": "public.app_order_prepayment (deposit received against an order number)",
+   "reader": "not_served",
+   "evidence": "plx-customer-portal:portal/prisma/schema.prisma@d4d1bb247708:4069-4096; OntologyProject:ontology/schema/generated/portal_not_served_f_o.json@4a5b5fe16a2e RelPublicAppOrderPrepayment"
+  },
+  {
+   "id": "bc.sales",
+   "system": "business-central",
+   "relation": "customers, salesQuotes, salesQuoteLines, salesOrders, salesOrderLines, salesInvoices, paymentTerms",
+   "reader": "served",
+   "evidence": "OntologyProject:integrations/live_source_grammar.py@4a5b5fe16a2e:72-83"
+  },
+  {
+   "id": "sharepoint.quote_workbooks",
+   "system": "sharepoint",
+   "relation": "AGENTS drive /Quote Examples/{G2-Beauty,SAHAJAN,Soapbox}/_Quote Workbooks (watch folders of examples/case_originals.json, read by scripts.case_originals read)",
+   "reader": "watch_read",
+   "evidence": "OntologyProject:scripts/case_originals.py@4a5b5fe16a2e:319-334; OntologyProject:context/bb494ac6ba9df883cd6afdbe39ff7731793355041ee7d077bf68094827f704b1.json@8469459ed58d; OntologyProject:context/0dc11f49aceec6d8a22c5a9e8070936bd6f15097d36a9648f41b0566ede0fbe4.json@3d84813974f0"
+  }
+ ],
+ "layers": {
+  "comprehension": "what the map, the workbooks and the journey say, attributed, with as practised, as built and as targeted kept apart",
+  "tracing": "joins from brief and quote through acceptance and conversion to a BC sales order, or to a lost reason; an unseen join is a gap, never a match",
+  "actual_case_answerability": "UNSCORED until the originals are read and the missing objects, links and readers exist (ontology_gaps.json)"
+ },
+ "examples": {
+  "A": {
+   "title": "Sahajan 30 mL minis quote (Sep 2026)",
+   "folder_case": "SAHAJAN",
+   "state_at_map": "open: Sahajan had not decided as of 15 Oct 2026",
+   "missing_outcome": [
+    "bc_order",
+    "lost_reason"
+   ],
+   "outcome_card": "QO-A1",
+   "missing_inputs_card": "QO-A2",
+   "missing_at_quote": [
+    {
+     "input": "line, speeds and crewing",
+     "status": "assumed",
+     "note": "seeded from another item, not actuals"
+    },
+    {
+     "input": "oil specific gravity",
+     "status": "assumed",
+     "note": "left at the template default"
+    },
+    {
+     "input": "primary packaging owner",
+     "status": "assumed",
+     "note": "assumed customer-supplied"
+    },
+    {
+     "input": "fragrance cost",
+     "status": "assumed",
+     "note": "assumed customer-supplied, priced at zero"
+    },
+    {
+     "input": "formula stability",
+     "status": "missing",
+     "note": "two formulas still in stability testing; prices indicative"
+    },
+    {
+     "input": "target price",
+     "status": "missing",
+     "note": "not in the brief"
+    },
+    {
+     "input": "annual forecast",
+     "status": "missing",
+     "note": "not in the brief"
+    },
+    {
+     "input": "deposit percentage",
+     "status": "missing",
+     "note": "not stated"
+    }
+   ]
+  },
+  "B": {
+   "title": "Sahajan full-size products (Feb to Oct 2026)",
+   "folder_case": "SAHAJAN",
+   "state_at_map": "won: customer POs, then the Manufacture and Supply Agreement, then Sage orders and pilot invoices",
+   "missing_outcome": [
+    "bc_order"
+   ],
+   "outcome_card": "QO-B1",
+   "missing_inputs_card": "QO-B2",
+   "missing_at_quote": [
+    {
+     "input": "won tier per SKU",
+     "status": "missing",
+     "note": "not recorded on the order"
+    },
+    {
+     "input": "payment terms",
+     "status": "unclear",
+     "note": "changed between quote, agreement and orders"
+    },
+    {
+     "input": "quote validity",
+     "status": "unclear",
+     "note": "printed window disagreed with the actual one"
+    }
+   ]
+  },
+  "C": {
+   "title": "G2 Beauty 12-piece body wash display (Sep to Oct 2026)",
+   "folder_case": "G2-Beauty",
+   "state_at_map": "open: price given by email, no formal quote; G2's decision still to come",
+   "missing_outcome": [
+    "bc_order",
+    "lost_reason"
+   ],
+   "outcome_card": "QO-C1",
+   "missing_inputs_card": "QO-C2",
+   "missing_at_quote": [
+    {
+     "input": "bottle vendor quote",
+     "status": "missing",
+     "note": ""
+    },
+    {
+     "input": "formula cost per kg",
+     "status": "missing",
+     "note": ""
+    },
+    {
+     "input": "display (PDQ) cost",
+     "status": "missing",
+     "note": ""
+    },
+    {
+     "input": "incoterms",
+     "status": "missing",
+     "note": ""
+    },
+    {
+     "input": "payment and deposit terms",
+     "status": "missing",
+     "note": ""
+    },
+    {
+     "input": "quote validity",
+     "status": "missing",
+     "note": ""
+    },
+    {
+     "input": "minimum order quantity",
+     "status": "missing",
+     "note": ""
+    },
+    {
+     "input": "price at the largest asked volume",
+     "status": "missing",
+     "note": ""
+    }
+   ]
+  },
+  "D": {
+   "title": "Soapbox gallons, refill bottles and pumps (Feb to Oct 2026)",
+   "folder_case": "Soapbox",
+   "state_at_map": "won: Supply Agreement 14 Sep 2026, customer POs 18 Sep 2026; sales invoices still to come",
+   "missing_outcome": [
+    "bc_order"
+   ],
+   "outcome_card": "QO-D1",
+   "missing_inputs_card": "QO-D2",
+   "missing_at_quote": [
+    {
+     "input": "refill bottle vendor price at the top tier",
+     "status": "missing",
+     "note": "the component sold below its later landed cost"
+    },
+    {
+     "input": "pump and bracket vendor prices",
+     "status": "missing",
+     "note": ""
+    },
+    {
+     "input": "mould costs",
+     "status": "missing",
+     "note": ""
+    }
+   ]
+  },
+  "E": {
+   "title": "Vince's quoting template as used for G2 (Oct 2026)",
+   "folder_case": "G2-Beauty",
+   "state_at_map": "issue date entered, no quote sent",
+   "missing_outcome": [
+    "bc_order",
+    "lost_reason"
+   ],
+   "outcome_card": "QO-E1",
+   "missing_inputs_card": "QO-E2",
+   "missing_at_quote": [
+    {
+     "input": "formula cost",
+     "status": "assumed",
+     "note": "typed as a placeholder while the formula sheet reads MISSING"
+    },
+    {
+     "input": "won-tier field",
+     "status": "missing",
+     "note": "the template has none"
+    }
+   ]
+  }
+ },
+ "open_questions": [
+  "which workbook revision is the quote of record for each example",
+  "which BC sales order, if any, carries the Sahajan full-size and Soapbox wins",
+  "which overhead standard applies to quotes issued now (ERP-D-022 or OD-14)"
+ ],
+ "non_goals": [
+  "Portal, Sage or BC writes",
+  "sending, approving or expiring a quote",
+  "choosing between the map's as-practised, as-built and target statements"
+ ],
+ "real_example": {
+  "batch_id": "quote-to-order-map",
+  "exposure": "dev-exposed",
+  "split": "dev",
+  "as_of": "2026-10-15T19:51:16Z",
+  "cards": [
+   {
+    "id": "QO-01",
+    "layer": "comprehension",
+    "question": "What does the Quote-to-Order Map cover, and what kind of evidence is it?",
+    "criterion": "Attribute to the map (Vince's artifact, exported 15 Oct 2026): 22 stages from the brief to a won order in Business Central or a lost quote, five worked examples A to E and 16 ranked gaps. Its Portal code readings are of staging at an unstated commit and were not rechecked by it. Call it a stakeholder use-case synthesis, not a verified report of deployed systems.",
+    "originals": [],
+    "live_sources": [],
+    "cites": [
+     "advisory:72bf7b7ae3f6",
+     "advisory:b663c5f3b388"
+    ]
+   },
+   {
+    "id": "QO-02",
+    "layer": "tracing",
+    "question": "How is a lost quote recorded today, and when does a quote expire?",
+    "criterion": "Keep three views apart, each attributed: as practised, lost quotes are not recorded (Vince, 15 Oct 2026); as built, a Portal quote can be REJECTED with an optional free-text reason or marked EXPIRED by hand, with a default validity window set at create; as targeted by the map, a reason from a set list and automatic expiry 30 days after issue. A count of lost quotes comes only from read quote rows.",
+    "originals": [],
+    "live_sources": [
+     "portal.app_quote"
+    ],
+    "cites": [
+     "advisory:72bf7b7ae3f6",
+     "portal.app_quote"
+    ]
+   },
+   {
+    "id": "QO-03",
+    "layer": "tracing",
+    "question": "When an accepted quote converts to an order, which volume tier and which currency does the order carry?",
+    "criterion": "As built, conversion accepts only ACCEPTED quotes and copies every quote line, so every asked-volume tier, onto the order; the map also reports that the quote's currency is dropped. The target is the won tier only, in the quote's currency, with the quote reference on the order. A tier match is shown only from read quote-volume and order lines; an unseen join is a gap, never a match.",
+    "originals": [],
+    "live_sources": [
+     "portal.app_quote",
+     "portal.app_quote_line",
+     "portal.app_quote_volume",
+     "portal.app_sales_order",
+     "portal.quote_convert"
+    ],
+    "cites": [
+     "advisory:72bf7b7ae3f6",
+     "portal.quote_convert"
+    ]
+   },
+   {
+    "id": "QO-A1",
+    "layer": "actual_case_answerability",
+    "question": "For the Sahajan 30 mL minis quote (example A), is there a Business Central sales order or a recorded lost reason?",
+    "criterion": "As of the map (15 Oct 2026) Sahajan had not decided: the map names neither a Business Central sales order nor a lost reason. The expected answer is still open, with no BC order and no lost reason found, after reading the Portal quote and order rows for the customer and BC salesQuotes and salesOrders. A record not found is reported as not found under the keys checked (customer, quote number, customer PO), never as lost; a quote past its validity with no reason is expired without a recorded reason, never a lost reason.",
+    "originals": [],
+    "live_sources": [
+     "portal.app_quote",
+     "portal.app_sales_order",
+     "bc.sales"
+    ],
+    "cites": [
+     "advisory:72bf7b7ae3f6",
+     "advisory:bb494ac6ba9d",
+     "advisory:0dc11f49acee"
+    ]
+   },
+   {
+    "id": "QO-A2",
+    "layer": "comprehension",
+    "question": "Which quote inputs were missing or assumed when the Sahajan minis quote was priced?",
+    "criterion": "Name each input of examples.A.missing_at_quote as missing or assumed, attributed to the map's reading of the workbook notes; never fill one with a value. The workbook's READY TO QUOTE result does not make an assumed input known.",
+    "originals": [],
+    "live_sources": [
+     "sharepoint.quote_workbooks"
+    ],
+    "cites": [
+     "advisory:72bf7b7ae3f6",
+     "advisory:bb494ac6ba9d"
+    ]
+   },
+   {
+    "id": "QO-B1",
+    "layer": "actual_case_answerability",
+    "question": "For the Sahajan full-size products (example B), which Business Central sales order carries the won quote?",
+    "criterion": "The map traces the win through customer POs (12 and 17 Jun 2026), the Manufacture and Supply Agreement (effective 18 Jun 2026) and orders keyed by hand into Sage; it names no Business Central sales order, and the invoice for the first production run is still to come. The expected answer is won, with the BC order unknown until read from BC salesOrders for the customer; the won tier per SKU is recorded nowhere and is reported missing. A record not found is reported as not found under the keys checked (customer, quote number, customer PO), never as lost; a quote past its validity with no reason is expired without a recorded reason, never a lost reason.",
+    "originals": [],
+    "live_sources": [
+     "bc.sales",
+     "portal.app_sales_order",
+     "portal.app_quote"
+    ],
+    "cites": [
+     "advisory:72bf7b7ae3f6",
+     "advisory:0dc11f49acee"
+    ]
+   },
+   {
+    "id": "QO-B2",
+    "layer": "comprehension",
+    "question": "Which terms of the Sahajan full-size quote changed between the quote, the contract and the orders?",
+    "criterion": "Attribute to the map: payment terms moved from the quote and the agreement to COD on the Sage orders and changed again later; the printed validity disagreed with the actual window; the won tier per SKU was not recorded. Report each as a difference between named documents and never choose one as correct.",
+    "originals": [],
+    "live_sources": [],
+    "cites": [
+     "advisory:72bf7b7ae3f6"
+    ]
+   },
+   {
+    "id": "QO-C1",
+    "layer": "actual_case_answerability",
+    "question": "For the G2 Beauty body wash display (example C), is there a Business Central sales order or a recorded lost reason?",
+    "criterion": "The map reports a price given by email before any cost existed, no formal quote and no terms; G2's decision (stages 13 to 18) is still to come. The expected answer is open: no formal quote, no BC sales order and no lost reason. A price in an email is not a quote. A record not found is reported as not found under the keys checked (customer, quote number, customer PO), never as lost; a quote past its validity with no reason is expired without a recorded reason, never a lost reason.",
+    "originals": [],
+    "live_sources": [
+     "portal.app_quote",
+     "bc.sales"
+    ],
+    "cites": [
+     "advisory:72bf7b7ae3f6",
+     "advisory:bb494ac6ba9d",
+     "advisory:0dc11f49acee"
+    ]
+   },
+   {
+    "id": "QO-C2",
+    "layer": "comprehension",
+    "question": "Which quote inputs were missing when G2 Beauty was given a price?",
+    "criterion": "Name each input of examples.C.missing_at_quote as missing, attributed to the map; a later vendor quote or formula cost does not make it known at quote time.",
+    "originals": [],
+    "live_sources": [
+     "portal.app_supplier_product_tier"
+    ],
+    "cites": [
+     "advisory:72bf7b7ae3f6"
+    ]
+   },
+   {
+    "id": "QO-D1",
+    "layer": "actual_case_answerability",
+    "question": "For Soapbox (example D), which Business Central sales order fulfils the won supply agreement, and has it been invoiced?",
+    "criterion": "The map reports a Supply Agreement dated 14 Sep 2026 and customer POs dated 18 Sep 2026; it names no Business Central sales order, and sales invoices to Soapbox are still to come. The expected answer is won, with the BC order unknown until read and no invoice yet. A customer PO is not a BC order. A record not found is reported as not found under the keys checked (customer, quote number, customer PO), never as lost; a quote past its validity with no reason is expired without a recorded reason, never a lost reason.",
+    "originals": [],
+    "live_sources": [
+     "bc.sales",
+     "portal.app_sales_order"
+    ],
+    "cites": [
+     "advisory:72bf7b7ae3f6",
+     "advisory:bb494ac6ba9d",
+     "advisory:0dc11f49acee"
+    ]
+   },
+   {
+    "id": "QO-D2",
+    "layer": "comprehension",
+    "question": "Which component prices were missing when Soapbox was quoted?",
+    "criterion": "Name each input of examples.D.missing_at_quote as missing, attributed to the map. A component PLX supplies with no vendor price is a missing input, never a zero cost.",
+    "originals": [],
+    "live_sources": [
+     "portal.app_supplier_product_tier"
+    ],
+    "cites": [
+     "advisory:72bf7b7ae3f6",
+     "advisory:bb494ac6ba9d"
+    ]
+   },
+   {
+    "id": "QO-E1",
+    "layer": "actual_case_answerability",
+    "question": "Was the G2 quote built in Vince's quoting template (example E) sent, and did it end in a Business Central sales order or a recorded lost reason?",
+    "criterion": "The map reads an issue date in the template but finds no quote sent, so there is no BC sales order and no lost reason. The expected answer is not sent, with neither outcome. A record not found is reported as not found under the keys checked (customer, quote number, customer PO), never as lost; a quote past its validity with no reason is expired without a recorded reason, never a lost reason.",
+    "originals": [],
+    "live_sources": [
+     "portal.app_quote",
+     "bc.sales"
+    ],
+    "cites": [
+     "advisory:72bf7b7ae3f6",
+     "advisory:bb494ac6ba9d"
+    ]
+   },
+   {
+    "id": "QO-E2",
+    "layer": "comprehension",
+    "question": "Which inputs were missing in the G2 quoting template while it reported ready to quote?",
+    "criterion": "Name each input of examples.E.missing_at_quote, attributed to the map's read of the template: a readiness result of READY TO QUOTE next to a formula sheet that reads MISSING is a contradiction to report, not a ready quote.",
+    "originals": [],
+    "live_sources": [
+     "sharepoint.quote_workbooks"
+    ],
+    "cites": [
+     "advisory:72bf7b7ae3f6",
+     "advisory:bb494ac6ba9d"
+    ]
+   },
+   {
+    "id": "QW-01",
+    "layer": "comprehension",
+    "question": "Which pinned workbook revisions belong to each quote example, and which one is the quote of record?",
+    "criterion": "Identify a workbook only by name, item id and SHA-256 from a read receipt that matches source.watched_originals; two files with one name are distinct revisions. Which revision is the quote of record is not stated anywhere read and stays unknown until a person answers.",
+    "originals": [],
+    "live_sources": [
+     "sharepoint.quote_workbooks"
+    ],
+    "cites": [
+     "advisory:bb494ac6ba9d",
+     "advisory:0dc11f49acee"
+    ]
+   },
+   {
+    "id": "QW-02",
+    "layer": "tracing",
+    "question": "When was each example's quote or price sent, and by whom (by role)?",
+    "criterion": "Answer from the pinned emails of the three folders only after they are read through scripts.case_originals read; record the date and the sender's role, never a body. The three _summary.md files are folder summaries, not quotes.",
+    "originals": [],
+    "live_sources": [
+     "sharepoint.quote_workbooks"
+    ],
+    "cites": [
+     "advisory:0dc11f49acee"
+    ]
+   },
+   {
+    "id": "CJ-01",
+    "layer": "comprehension",
+    "question": "What does the cost-to-assembly user journey describe, and is it a record of transactions?",
+    "criterion": "Attribute to the journey (ZIP version 1.0 in AGENTS/Ontology UseCases): 29 steps across six roles, from standard costs and line setup through the quote and finance review to assembly and batch cards and the BC posting. It is a design artifact, not evidence of any transaction.",
+    "originals": [],
+    "live_sources": [],
+    "cites": [
+     "advisory:bc0e2a7d0f24"
+    ]
+   },
+   {
+    "id": "CJ-02",
+    "layer": "tracing",
+    "question": "Which quote cost inputs does the journey take from standard costs, and which of them were missing in examples A to E?",
+    "criterion": "Join each journey cost step to examples.*.missing_at_quote by input kind; an input absent from both is unknown. Planned conversion per unit is not a served column, so a value for it needs a reader first.",
+    "originals": [],
+    "live_sources": [
+     "portal.app_quote_line"
+    ],
+    "cites": [
+     "advisory:bc0e2a7d0f24",
+     "advisory:72bf7b7ae3f6"
+    ]
+   }
+  ]
+ }
+}

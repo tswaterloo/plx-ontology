@@ -1,0 +1,838 @@
+{
+ "format": "plx-bc-generation-coverage/v1",
+ "metadata_digest": "sha256:09a82605df002ea217cdaf29a024d5d11795364fad4b30a0c73c0208f8a90e13",
+ "metadata_evidence_mode": "live-capture",
+ "inputs": {
+  "pin": "ontology/schema/generated/meta/bc_metadata.json",
+  "capture_scope": "integrations/bc_read.py:CAPTURE_ENTITY_SETS",
+  "registry": "ontology/source_registry.json",
+  "workbench": [
+   "ontology/schema/overrides/identity.json",
+   "ontology/schema/overrides/lineage.json",
+   "ontology/schema/overrides/markings.json",
+   "ontology/schema/overrides/money.json",
+   "ontology/schema/overrides/names.json"
+  ]
+ },
+ "counts": {
+  "entity_sets_in_pin": 150,
+  "generated_entity_sets": 9,
+  "curated_entity_sets": 27,
+  "object_types": 9,
+  "link_types": 22,
+  "properties": 137,
+  "not_served_types": 7
+ },
+ "entity_sets": {
+  "companies": {
+   "bound_by": {
+    "object_type": "BcCompany",
+    "binding": "bc.companies",
+    "file": "domains/bc_finance.json"
+   }
+  },
+  "purchaseOrders": {
+   "bound_by": {
+    "object_type": "PurchaseOrder",
+    "binding": "bc.purchase_orders",
+    "file": "domains/purchasing.json"
+   }
+  },
+  "purchaseReceipts": {
+   "bound_by": {
+    "object_type": "Receipt",
+    "binding": "bc.purchase_receipts",
+    "file": "domains/purchasing.json"
+   }
+  },
+  "purchaseInvoices": {
+   "bound_by": {
+    "object_type": "PurchaseInvoice",
+    "binding": "bc.purchase_invoices",
+    "file": "domains/purchasing.json"
+   }
+  },
+  "salesOrders": {
+   "bound_by": {
+    "object_type": "SalesOrder",
+    "binding": "bc.sales_orders",
+    "file": "domains/orders.json"
+   }
+  },
+  "salesInvoices": {
+   "bound_by": {
+    "object_type": "SalesInvoice",
+    "binding": "bc.sales_invoices",
+    "file": "domains/orders.json"
+   }
+  },
+  "salesShipments": {
+   "bound_by": {
+    "object_type": "Shipment",
+    "binding": "bc.sales_shipments",
+    "file": "domains/orders.json"
+   }
+  },
+  "salesCreditMemos": {
+   "bound_by": {
+    "object_type": "SalesCreditMemo",
+    "binding": "bc.sales_credit_memos",
+    "file": "domains/orders.json"
+   }
+  },
+  "purchaseCreditMemos": {
+   "bound_by": {
+    "object_type": "PurchaseCreditMemo",
+    "binding": "bc.purchase_credit_memos",
+    "file": "domains/purchasing.json"
+   }
+  },
+  "salesQuotes": {
+   "object_type": "RelBcSalesQuotes",
+   "binding": "gen.bc.sales_quotes"
+  },
+  "customers": {
+   "bound_by": {
+    "object_type": "Customer",
+    "binding": "bc.customers",
+    "file": "domains/catalog_parties.json"
+   }
+  },
+  "vendors": {
+   "bound_by": {
+    "object_type": "Supplier",
+    "binding": "bc.vendors",
+    "file": "domains/catalog_parties.json"
+   }
+  },
+  "contacts": {
+   "bound_by": {
+    "object_type": "Contact",
+    "binding": "bc.contacts",
+    "file": "domains/catalog_parties.json"
+   }
+  },
+  "items": {
+   "bound_by": {
+    "object_type": "Product",
+    "binding": "bc.items",
+    "file": "domains/catalog_parties.json"
+   }
+  },
+  "companyInformation": {
+   "object_type": "RelBcCompanyInformation",
+   "binding": "gen.bc.company_information"
+  },
+  "locations": {
+   "object_type": "RelBcLocations",
+   "binding": "gen.bc.locations"
+  },
+  "unitsOfMeasure": {
+   "object_type": "RelBcUnitsOfMeasure",
+   "binding": "gen.bc.units_of_measure"
+  },
+  "itemCategories": {
+   "object_type": "RelBcItemCategories",
+   "binding": "gen.bc.item_categories"
+  },
+  "currencyExchangeRates": {
+   "object_type": "RelBcCurrencyExchangeRates",
+   "binding": "gen.bc.currency_exchange_rates"
+  },
+  "customerPaymentJournals": {
+   "object_type": "RelBcCustomerPaymentJournals",
+   "binding": "gen.bc.customer_payment_journals"
+  },
+  "vendorPaymentJournals": {
+   "object_type": "RelBcVendorPaymentJournals",
+   "binding": "gen.bc.vendor_payment_journals"
+  },
+  "agedAccountsReceivables": {
+   "bound_by": {
+    "object_type": "AgedReceivable",
+    "binding": "bc.aged_accounts_receivables",
+    "file": "domains/bc_finance.json"
+   }
+  },
+  "agedAccountsPayables": {
+   "bound_by": {
+    "object_type": "AgedPayable",
+    "binding": "bc.aged_accounts_payables",
+    "file": "domains/bc_finance.json"
+   }
+  },
+  "itemLedgerEntries": {
+   "bound_by": {
+    "object_type": "ItemLedgerEntry",
+    "binding": "bc.item_ledger_entries",
+    "file": "domains/bc_finance.json"
+   }
+  },
+  "accounts": {
+   "bound_by": {
+    "object_type": "GlAccount",
+    "binding": "bc.accounts",
+    "file": "domains/bc_finance.json"
+   }
+  },
+  "generalLedgerEntries": {
+   "bound_by": {
+    "object_type": "GeneralLedgerEntry",
+    "binding": "bc.general_ledger_entries",
+    "file": "domains/bc_finance.json"
+   }
+  },
+  "purchaseOrderLines": {
+   "bound_by": {
+    "object_type": "PurchaseOrderLine",
+    "binding": "bc.purchase_order_lines",
+    "file": "domains/purchasing.json"
+   }
+  },
+  "purchaseReceiptLines": {
+   "bound_by": {
+    "object_type": "ReceiptLine",
+    "binding": "bc.purchase_receipt_lines",
+    "file": "domains/purchasing.json"
+   }
+  },
+  "purchaseInvoiceLines": {
+   "bound_by": {
+    "object_type": "PurchaseInvoiceLine",
+    "binding": "bc.purchase_invoice_lines",
+    "file": "domains/purchasing.json"
+   }
+  },
+  "salesOrderLines": {
+   "bound_by": {
+    "object_type": "SalesOrderLine",
+    "binding": "bc.sales_order_lines",
+    "file": "domains/orders.json"
+   }
+  },
+  "salesInvoiceLines": {
+   "bound_by": {
+    "object_type": "SalesInvoiceLine",
+    "binding": "bc.sales_invoice_lines",
+    "file": "domains/orders.json"
+   }
+  },
+  "salesCreditMemoLines": {
+   "bound_by": {
+    "object_type": "SalesCreditMemoLine",
+    "binding": "bc.sales_credit_memo_lines",
+    "file": "domains/orders.json"
+   }
+  },
+  "purchaseCreditMemoLines": {
+   "bound_by": {
+    "object_type": "PurchaseCreditMemoLine",
+    "binding": "bc.purchase_credit_memo_lines",
+    "file": "domains/purchasing.json"
+   }
+  },
+  "salesQuoteLines": {
+   "object_type": "RelBcSalesQuoteLines",
+   "binding": "gen.bc.sales_quote_lines"
+  },
+  "customerPayments": {
+   "bound_by": {
+    "object_type": "Payment",
+    "binding": "bc.customer_payments",
+    "file": "domains/bc_finance.json"
+   }
+  },
+  "vendorPayments": {
+   "bound_by": {
+    "object_type": "Payment",
+    "binding": "bc.vendor_payments",
+    "file": "domains/bc_finance.json"
+   }
+  },
+  "countriesRegions": {
+   "not_captured": "served, outside the capture scope"
+  },
+  "currencies": {
+   "not_captured": "served, outside the capture scope"
+  },
+  "dimensionValues": {
+   "not_captured": "served, outside the capture scope"
+  },
+  "dimensions": {
+   "not_captured": "served, outside the capture scope"
+  },
+  "paymentMethods": {
+   "not_captured": "served, outside the capture scope"
+  },
+  "paymentTerms": {
+   "not_captured": "served, outside the capture scope"
+  },
+  "salesShipmentLines": {
+   "not_captured": "served, outside the capture scope"
+  },
+  "shipmentMethods": {
+   "not_captured": "served, outside the capture scope"
+  }
+ },
+ "not_served": {
+  "pdfDocumentContent": {
+   "object_type": "RelBcPdfDocumentContent",
+   "upstream_name": "pdfDocumentContent",
+   "declared_by": "generated",
+   "code": "not_in_metadata"
+  },
+  "plxCustomerShipTos": {
+   "object_type": "RelBcPlxCustomerShipTos",
+   "upstream_name": "plxCustomerShipTos",
+   "declared_by": "generated",
+   "code": "custom_api"
+  },
+  "plxPostedSalesInvoiceLines": {
+   "object_type": "RelBcPlxPostedSalesInvoiceLines",
+   "upstream_name": "plxPostedSalesInvoiceLines",
+   "declared_by": "generated",
+   "code": "custom_api"
+  },
+  "plxPostedSalesInvoices": {
+   "object_type": "RelBcPlxPostedSalesInvoices",
+   "upstream_name": "plxPostedSalesInvoices",
+   "declared_by": "generated",
+   "code": "custom_api"
+  },
+  "plxSalesReceivablesSetups": {
+   "object_type": "RelBcPlxSalesReceivablesSetups",
+   "upstream_name": "plxSalesReceivablesSetups",
+   "declared_by": "generated",
+   "code": "custom_api"
+  },
+  "postedSalesInvoices": {
+   "object_type": "RelBcPostedSalesInvoices",
+   "upstream_name": "postedSalesInvoices",
+   "declared_by": "generated",
+   "code": "not_in_metadata"
+  },
+  "salesReceivablesSetup": {
+   "object_type": "RelBcSalesReceivablesSetup",
+   "upstream_name": "salesReceivablesSetup",
+   "declared_by": "generated",
+   "code": "not_in_metadata"
+  }
+ },
+ "served_not_captured": [],
+ "navigation_not_bound": [
+  {
+   "from": "purchaseOrders",
+   "navigation": "dimensionValue",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "purchaseOrders",
+   "navigation": "currency",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "purchaseOrders",
+   "navigation": "paymentTerm",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "purchaseOrders",
+   "navigation": "shipmentMethod",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "purchaseOrders",
+   "navigation": "pdfDocument",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "purchaseReceipts",
+   "navigation": "pdfDocument",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "purchaseInvoices",
+   "navigation": "dimensionValue",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "purchaseInvoices",
+   "navigation": "currency",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "purchaseInvoices",
+   "navigation": "pdfDocument",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "salesOrders",
+   "navigation": "dimensionValue",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "salesOrders",
+   "navigation": "currency",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "salesOrders",
+   "navigation": "paymentTerm",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "salesOrders",
+   "navigation": "shipmentMethod",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "salesOrders",
+   "navigation": "pdfDocument",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "salesInvoices",
+   "navigation": "currency",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "salesInvoices",
+   "navigation": "dimensionValue",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "salesInvoices",
+   "navigation": "paymentTerm",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "salesInvoices",
+   "navigation": "shipmentMethod",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "salesInvoices",
+   "navigation": "pdfDocument",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "salesShipments",
+   "navigation": "pdfDocument",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "salesCreditMemos",
+   "navigation": "dimensionValue",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "salesCreditMemos",
+   "navigation": "currency",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "salesCreditMemos",
+   "navigation": "paymentTerm",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "salesCreditMemos",
+   "navigation": "shipmentMethod",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "salesCreditMemos",
+   "navigation": "customerReturnReason",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "salesCreditMemos",
+   "navigation": "pdfDocument",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "purchaseCreditMemos",
+   "navigation": "dimensionValue",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "purchaseCreditMemos",
+   "navigation": "currency",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "purchaseCreditMemos",
+   "navigation": "paymentTerm",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "purchaseCreditMemos",
+   "navigation": "shipmentMethod",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "purchaseCreditMemos",
+   "navigation": "customerReturnReason",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "purchaseCreditMemos",
+   "navigation": "pdfDocument",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "salesQuotes",
+   "navigation": "dimensionValue",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "salesQuotes",
+   "navigation": "currency",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "salesQuotes",
+   "navigation": "paymentTerm",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "salesQuotes",
+   "navigation": "shipmentMethod",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "salesQuotes",
+   "navigation": "pdfDocument",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "customers",
+   "navigation": "currency",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "customers",
+   "navigation": "paymentTerm",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "customers",
+   "navigation": "shipmentMethod",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "customers",
+   "navigation": "paymentMethod",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "customers",
+   "navigation": "customerFinancialDetail",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "customers",
+   "navigation": "picture",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "vendors",
+   "navigation": "currency",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "vendors",
+   "navigation": "paymentTerm",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "vendors",
+   "navigation": "paymentMethod",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "vendors",
+   "navigation": "picture",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "contacts",
+   "navigation": "contactInformation",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "contacts",
+   "navigation": "picture",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "items",
+   "navigation": "inventoryPostingGroup",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "items",
+   "navigation": "generalProductPostingGroup",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "items",
+   "navigation": "picture",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "accounts",
+   "navigation": "trialBalance",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "purchaseOrderLines",
+   "navigation": "itemVariant",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "purchaseInvoiceLines",
+   "navigation": "itemVariant",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "salesOrderLines",
+   "navigation": "itemVariant",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "salesInvoiceLines",
+   "navigation": "itemVariant",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "salesCreditMemoLines",
+   "navigation": "itemVariant",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "purchaseCreditMemoLines",
+   "navigation": "itemVariant",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "salesQuoteLines",
+   "navigation": "itemVariant",
+   "reason": "target entity type not in the capture scope"
+  }
+ ],
+ "links_not_bound": [
+  {
+   "from": "agedAccountsPayables",
+   "field": "vendor",
+   "to": "vendors",
+   "reason": "both ends curated"
+  },
+  {
+   "from": "agedAccountsReceivables",
+   "field": "customer",
+   "to": "customers",
+   "reason": "both ends curated"
+  },
+  {
+   "from": "customerPayments",
+   "field": "customer",
+   "to": "customers",
+   "reason": "both ends curated"
+  },
+  {
+   "from": "customers",
+   "field": "agedAccountsReceivable",
+   "to": "agedAccountsReceivables",
+   "reason": "both ends curated"
+  },
+  {
+   "from": "generalLedgerEntries",
+   "field": "account",
+   "to": "accounts",
+   "reason": "both ends curated"
+  },
+  {
+   "from": "purchaseCreditMemoLines",
+   "field": "account",
+   "to": "accounts",
+   "reason": "both ends curated"
+  },
+  {
+   "from": "purchaseCreditMemoLines",
+   "field": "item",
+   "to": "items",
+   "reason": "both ends curated"
+  },
+  {
+   "from": "purchaseCreditMemoLines",
+   "field": "purchaseCreditMemo",
+   "to": "purchaseCreditMemos",
+   "reason": "both ends curated"
+  },
+  {
+   "from": "purchaseCreditMemos",
+   "field": "vendor",
+   "to": "vendors",
+   "reason": "both ends curated"
+  },
+  {
+   "from": "purchaseInvoiceLines",
+   "field": "account",
+   "to": "accounts",
+   "reason": "both ends curated"
+  },
+  {
+   "from": "purchaseInvoiceLines",
+   "field": "item",
+   "to": "items",
+   "reason": "both ends curated"
+  },
+  {
+   "from": "purchaseInvoiceLines",
+   "field": "purchaseInvoice",
+   "to": "purchaseInvoices",
+   "reason": "both ends curated"
+  },
+  {
+   "from": "purchaseInvoices",
+   "field": "vendor",
+   "to": "vendors",
+   "reason": "both ends curated"
+  },
+  {
+   "from": "purchaseOrderLines",
+   "field": "account",
+   "to": "accounts",
+   "reason": "both ends curated"
+  },
+  {
+   "from": "purchaseOrderLines",
+   "field": "item",
+   "to": "items",
+   "reason": "both ends curated"
+  },
+  {
+   "from": "purchaseOrderLines",
+   "field": "purchaseOrder",
+   "to": "purchaseOrders",
+   "reason": "both ends curated"
+  },
+  {
+   "from": "purchaseOrders",
+   "field": "vendor",
+   "to": "vendors",
+   "reason": "both ends curated"
+  },
+  {
+   "from": "purchaseReceiptLines",
+   "field": "purchaseReceipt",
+   "to": "purchaseReceipts",
+   "reason": "both ends curated"
+  },
+  {
+   "from": "salesCreditMemoLines",
+   "field": "account",
+   "to": "accounts",
+   "reason": "both ends curated"
+  },
+  {
+   "from": "salesCreditMemoLines",
+   "field": "item",
+   "to": "items",
+   "reason": "both ends curated"
+  },
+  {
+   "from": "salesCreditMemoLines",
+   "field": "salesCreditMemo",
+   "to": "salesCreditMemos",
+   "reason": "both ends curated"
+  },
+  {
+   "from": "salesCreditMemos",
+   "field": "customer",
+   "to": "customers",
+   "reason": "both ends curated"
+  },
+  {
+   "from": "salesInvoiceLines",
+   "field": "account",
+   "to": "accounts",
+   "reason": "both ends curated"
+  },
+  {
+   "from": "salesInvoiceLines",
+   "field": "item",
+   "to": "items",
+   "reason": "both ends curated"
+  },
+  {
+   "from": "salesInvoiceLines",
+   "field": "salesInvoice",
+   "to": "salesInvoices",
+   "reason": "both ends curated"
+  },
+  {
+   "from": "salesInvoices",
+   "field": "customer",
+   "to": "customers",
+   "reason": "both ends curated"
+  },
+  {
+   "from": "salesOrderLines",
+   "field": "account",
+   "to": "accounts",
+   "reason": "both ends curated"
+  },
+  {
+   "from": "salesOrderLines",
+   "field": "item",
+   "to": "items",
+   "reason": "both ends curated"
+  },
+  {
+   "from": "salesOrderLines",
+   "field": "salesOrder",
+   "to": "salesOrders",
+   "reason": "both ends curated"
+  },
+  {
+   "from": "salesOrders",
+   "field": "customer",
+   "to": "customers",
+   "reason": "both ends curated"
+  },
+  {
+   "from": "salesShipments",
+   "field": "customer",
+   "to": "customers",
+   "reason": "both ends curated"
+  },
+  {
+   "from": "vendorPayments",
+   "field": "vendor",
+   "to": "vendors",
+   "reason": "both ends curated"
+  },
+  {
+   "from": "vendors",
+   "field": "agedAccountsPayable",
+   "to": "agedAccountsPayables",
+   "reason": "both ends curated"
+  }
+ ],
+ "money": {
+  "salesQuoteLines.amountExcludingTax": "money: currency from its header's currencyCode column (RelBcSalesQuoteLines.sales_quote) (finance-marked)",
+  "salesQuoteLines.amountIncludingTax": "money: currency from its header's currencyCode column (RelBcSalesQuoteLines.sales_quote) (finance-marked)",
+  "salesQuoteLines.discountAmount": "money: currency from its header's currencyCode column (RelBcSalesQuoteLines.sales_quote); tax basis unknown: salesQuoteLines declares no pricesIncludeTax and its header (salesQuote) none either (finance-marked)",
+  "salesQuoteLines.netAmount": "money: currency from its header's currencyCode column (RelBcSalesQuoteLines.sales_quote) (finance-marked)",
+  "salesQuoteLines.netAmountIncludingTax": "money: currency from its header's currencyCode column (RelBcSalesQuoteLines.sales_quote) (finance-marked)",
+  "salesQuoteLines.netTaxAmount": "money: currency from its header's currencyCode column (RelBcSalesQuoteLines.sales_quote) (finance-marked)",
+  "salesQuoteLines.totalTaxAmount": "money: currency from its header's currencyCode column (RelBcSalesQuoteLines.sales_quote) (finance-marked)",
+  "salesQuoteLines.unitPrice": "money: currency from its header's currencyCode column (RelBcSalesQuoteLines.sales_quote); tax basis unknown: salesQuoteLines declares no pricesIncludeTax and its header (salesQuote) none either; price per the unit in unitOfMeasureCode (finance-marked)",
+  "salesQuotes.discountAmount": "money: currency from the record's currencyCode column; tax basis unknown: salesQuotes declares no pricesIncludeTax (finance-marked)",
+  "salesQuotes.totalAmountExcludingTax": "money: currency from the record's currencyCode column (finance-marked)",
+  "salesQuotes.totalAmountIncludingTax": "money: currency from the record's currencyCode column (finance-marked)",
+  "salesQuotes.totalTaxAmount": "money: currency from the record's currencyCode column (finance-marked)"
+ }
+}

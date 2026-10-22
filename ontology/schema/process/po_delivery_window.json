@@ -1,0 +1,362 @@
+{
+ "$schema": "_process.schema.json",
+ "format": "plx-process-graph/v1",
+ "id": "po_delivery_window",
+ "description": "Inbound delivery window of a purchase order (Ricardo's po-delivery-window map; Vince's Packaging Procure-to-GL Map stages 11 PO, 13 production complete and pickup, 16 receive): the PO issued, the supplier's confirmation (document-derived, optional), the vendor shipped (optional), and the goods received, which is due by the PO's planned arrival. It keeps planned arrival, actual shipment and actual receipt apart and never repairs a date. Chosen for an unnamed call when every root PO is open by the shared purchase-order status definition (open_when, operating.po_status: a Portal header not cancelled or draft whose lines' received quantity is below the ordered one, or a BC PO not fully received and not Draft; a Sage-only PO, an FM header alone, or an unmapped word is unknown, so it stays purchase_to_invoice unnamed); otherwise named calls only (implicit false). The receipt stage's lateness reads every requested-by date (FM datearrive and Sage exparrival first, then Portal expected_date, then the BC header requestedReceiptDate: the authority precedence of PurchaseOrder.expected_date; never a BC line's expected date or a supplier promise), the supplier's promised dates and the receipts. Not stages, because the ontology declares no record for them: map stages 01-10 (inquiry to requisition), 12 vendor prepayment, 14 packing slip / CI / BOL (a document lead only), 15 in transit, 17 landed cost, 18 relief; 19 G/L is purchase_to_invoice's.",
+ "root_type": "PurchaseOrder",
+ "tier_floor": "stored_by_text_join",
+ "implicit": false,
+ "open_when": {
+  "definition": "po_status",
+  "rules": [
+   {
+    "binding": "portal.app_purchase_order",
+    "property": "status"
+   },
+   {
+    "binding": "portal.fm_generated_purchase_order",
+    "property": "fm_status"
+   },
+   {
+    "binding": "bc.purchase_orders",
+    "property": "bc_fully_received"
+   },
+   {
+    "binding": "bc.purchase_orders",
+    "property": "bc_status"
+   },
+   {
+    "binding": "portal.sage_po_header",
+    "property": "sage_is_complete"
+   }
+  ],
+  "note": "The status values the shared definition reads (docs/decisions/2026-10-21-po-open-sage-fm.md): the Portal header holds the FileMaker words (Cancel, Complete, DRAFT, Pending, B.Order, Revised, Generated) and openness is by its lines' quantities (plx-customer-portal@d39d91b open-po-lines/route.ts:38-46,302-312); an FM header alone has no received quantity and a Sage iscomplete value is not mapped, so both stay unknown; BC reads fullyReceived and status (Draft: not issued)."
+ },
+ "stages": [
+  {
+   "id": "purchase_order",
+   "label": "Purchase order",
+   "description": "The PO is issued by the shared purchase-order status definition (operating.po_status: a draft is not issued, a cancelled PO is not live, an unmapped word is unknown), or an FM, Sage or BC purchase order record.",
+   "owner_role": "PROC",
+   "evidence": [
+    {
+     "object_type": "PurchaseOrder",
+     "bindings": [
+      "portal.app_purchase_order"
+     ],
+     "paths": [
+      []
+     ],
+     "predicate": {
+      "kind": "po_status",
+      "quantifier": "all"
+     },
+     "events": [
+      "PurchaseOrder.created",
+      "PurchaseOrder.approved"
+     ]
+    },
+    {
+     "object_type": "PurchaseOrder",
+     "bindings": [
+      "portal.fm_generated_purchase_order",
+      "bc.purchase_orders"
+     ],
+     "paths": [
+      []
+     ],
+     "predicate": {
+      "kind": "po_status",
+      "quantifier": "all"
+     },
+     "events": [
+      "PurchaseOrder.issued"
+     ],
+     "note": "The FileMaker generated_purchase_order and BC purchaseOrder headers read by the shared definition (operating.po_status), never by existence, as in purchase_to_invoice: an FM DRAFT or BC Draft is not issued, Cancel is ignored, an unmapped or null word leaves the stage unknown."
+    },
+    {
+     "object_type": "PurchaseOrder",
+     "bindings": [
+      "portal.sage_po_header"
+     ],
+     "paths": [
+      []
+     ],
+     "predicate": {
+      "kind": "exists"
+     },
+     "events": [
+      "PurchaseOrder.sage_ordered"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "supplier_confirmation",
+   "label": "Supplier confirmation",
+   "optional": true,
+   "description": "The supplier confirmed the PO (order confirmation / proforma invoice). Portal and BC record none (runner.ts po.sent_unconfirmed_3d; map stage 13: vendor confirmation and PI number are Missing), so the evidence is a document-derived SupplierConfirmation read from captured mail attachments and SharePoint files (ontology/document_fields.py) and linked to the PO it names. Such a link is a lead: reported in the stage's gap, never counted as present; a reviewed link counts. Optional: receiving never waits on it.",
+   "owner_role": "PROC",
+   "evidence": [
+    {
+     "object_type": "SupplierConfirmation",
+     "paths": [
+      [
+       {
+        "link": "SupplierConfirmation.confirms",
+        "direction": "reverse"
+       }
+      ]
+     ],
+     "predicate": {
+      "kind": "exists"
+     },
+     "note": "Document-field links (SupplierConfirmation.confirms, ontology/document_fields.py store_document_links) and recorded reviews; a machine-read reference alone is a lead, never evidence.",
+     "fallback_paths": [
+      [
+       {
+        "link": "PurchaseOrder.same_record_as",
+        "direction": "forward"
+       },
+       {
+        "link": "SupplierConfirmation.confirms",
+        "direction": "reverse"
+       }
+      ],
+      [
+       {
+        "link": "PurchaseOrder.same_record_as",
+        "direction": "reverse"
+       },
+       {
+        "link": "SupplierConfirmation.confirms",
+        "direction": "reverse"
+       }
+      ]
+     ]
+    }
+   ],
+   "requires": {
+    "*": [
+     "stage:purchase_order"
+    ]
+   },
+   "source_note": "plx-customer-portal:portal/src/lib/work-routing/runner.ts@c3ffda3 (po.sent_unconfirmed_3d: \"The portal records no vendor confirmation and no sent-at\"); operating/process_stage_map.json stage 13."
+  },
+  {
+   "id": "vendor_shipped",
+   "label": "Vendor shipped",
+   "optional": true,
+   "description": "The vendor shipped the goods (Portal 'Mark vendor shipped' records shipped_at; Vince's map stage 13, closest record: no cargo-ready status exists). Optional: Portal records it for origin INCO terms only, so receiving never waits on it.",
+   "owner_role": "PROC",
+   "evidence": [
+    {
+     "object_type": "PurchaseOrder",
+     "bindings": [
+      "portal.app_purchase_order"
+     ],
+     "paths": [
+      []
+     ],
+     "predicate": {
+      "kind": "event",
+      "event_types": [
+       "PurchaseOrder.vendor_shipped"
+      ]
+     }
+    }
+   ],
+   "requires": {
+    "*": [
+     "stage:purchase_order"
+    ]
+   }
+  },
+  {
+   "id": "receipt",
+   "label": "Receipt",
+   "description": "Goods were received against the PO (a receipt record of the PO; of its verified twin only when the PO's own system holds none): the actual arrival, never the expected one.",
+   "owner_role": "WH",
+   "evidence": [
+    {
+     "object_type": "Receipt",
+     "paths": [
+      [
+       {
+        "link": "Receipt.receives",
+        "direction": "reverse"
+       }
+      ]
+     ],
+     "predicate": {
+      "kind": "exists"
+     },
+     "fallback_paths": [
+      [
+       {
+        "link": "PurchaseOrder.same_record_as",
+        "direction": "forward"
+       },
+       {
+        "link": "Receipt.receives",
+        "direction": "reverse"
+       }
+      ],
+      [
+       {
+        "link": "PurchaseOrder.same_record_as",
+        "direction": "reverse"
+       },
+       {
+        "link": "Receipt.receives",
+        "direction": "reverse"
+       }
+      ]
+     ]
+    }
+   ],
+   "requires": {
+    "*": [
+     "stage:purchase_order"
+    ]
+   },
+   "due": {
+    "object_type": "PurchaseOrder",
+    "paths": [
+     [],
+     [
+      {
+       "link": "PurchaseOrder.same_record_as",
+       "direction": "forward"
+      }
+     ],
+     [
+      {
+       "link": "PurchaseOrder.same_record_as",
+       "direction": "reverse"
+      }
+     ]
+    ],
+    "event_types": [
+     "PurchaseOrder.fm_expected",
+     "PurchaseOrder.sage_expected",
+     "PurchaseOrder.expected",
+     "PurchaseOrder.bc_expected"
+    ],
+    "note": "The PO's requested-by date (Vince: the lateness reference): FM datearrive, Sage exparrival, Portal expected_date and the BC header requestedReceiptDate (BC API v2.0 purchaseOrder), of the PO and its twins. A BC line's expectedReceiptDate follows the promised date when one is set, so it is never the due date; the lateness lines report it as the line's expected date. For overdue, different dates are reported, never chosen (the header-vs-copy ETA disagreement Ricardo's map names); lateness names the governing one by the declared precedence and cites it, or reports it missing.",
+    "lateness": {
+     "precedence": [
+      [
+       "PurchaseOrder.fm_expected",
+       "PurchaseOrder.sage_expected"
+      ],
+      [
+       "PurchaseOrder.expected"
+      ],
+      [
+       "PurchaseOrder.bc_expected"
+      ]
+     ],
+     "promised": {
+      "object_type": "SupplierConfirmation",
+      "paths": [
+       [
+        {
+         "link": "SupplierConfirmation.confirms",
+         "direction": "reverse"
+        }
+       ],
+       [
+        {
+         "link": "PurchaseOrder.same_record_as",
+         "direction": "forward"
+        },
+        {
+         "link": "SupplierConfirmation.confirms",
+         "direction": "reverse"
+        }
+       ],
+       [
+        {
+         "link": "PurchaseOrder.same_record_as",
+         "direction": "reverse"
+        },
+        {
+         "link": "SupplierConfirmation.confirms",
+         "direction": "reverse"
+        }
+       ]
+      ],
+      "event_types": [
+       "SupplierConfirmation.promised",
+       "SupplierConfirmation.promised_on_file"
+      ],
+      "order_by": "document_date"
+     },
+     "received": {
+      "object_type": "Receipt",
+      "paths": [
+       [
+        {
+         "link": "Receipt.receives",
+         "direction": "reverse"
+        }
+       ],
+       [
+        {
+         "link": "PurchaseOrder.same_record_as",
+         "direction": "forward"
+        },
+        {
+         "link": "Receipt.receives",
+         "direction": "reverse"
+        }
+       ],
+       [
+        {
+         "link": "PurchaseOrder.same_record_as",
+         "direction": "reverse"
+        },
+        {
+         "link": "Receipt.receives",
+         "direction": "reverse"
+        }
+       ]
+      ],
+      "event_types": [
+       "Receipt.received",
+       "Receipt.fm_received",
+       "Receipt.sage_received",
+       "Receipt.posted"
+      ]
+     },
+     "lines": {
+      "object_type": "PurchaseOrderLine",
+      "paths": [
+       [
+        {
+         "link": "PurchaseOrderLine.line_of",
+         "direction": "reverse"
+        }
+       ]
+      ],
+      "expected": "bc_expected_receipt_date",
+      "ordered": "ordered_quantity",
+      "received": "received_quantity"
+     },
+     "note": "Precedence mirrors PurchaseOrder.expected_date's authority (fm_bronze, sage_bronze > gold_etl_from_fm > bc). A promise is a SupplierConfirmation's delivery date (a machine-read lead; its link counts at the graph's tier floor only), ordered by the confirmation's document date: a later differing one is the revision."
+    }
+   }
+  }
+ ],
+ "evidence": [
+  "docs/reference/cases-and-artifacts.md (1.3 map stages 11, 13, 14, 15, 16; 3.6 Ricardo's po-delivery-window map: planned arrival vs actual shipment vs actual receipt)",
+  "operating/po_status.py (the shared purchase-order status definition; plx-customer-portal portal/src/lib/mrp/po-fulfillment-status.ts derivePoFulfillmentCode and @d39d91b open-po-lines/route.ts:38-46,302-312: openness by quantity)",
+  "plx-customer-portal:portal/src/lib/work-routing/runner.ts@c3ffda3 (po.sent_unconfirmed_3d: no vendor confirmation is recorded)",
+  "ontology/schema/domains/purchasing.json (PurchaseOrder.expected, PurchaseOrder.bc_expected, PurchaseOrder.vendor_shipped)",
+  "operating/process_stage_map.json (the 19-stage map's machine copy)",
+  "plx-customer-portal:portal/src/lib/policies/seed-rules.ts@48d76e835 (ROUTING_DEPARTMENTS: owner_role is a Portal Department code, what a rule's PolicyApprovalTypeDepartment rows route a WorkItem to, portal/prisma/schema.prisma@48d76e835 :1099, :8467)",
+  "seed-rules.ts@48d76e835: Portal routes supplier_confirmation to PROC (procurement.po_awaiting_confirmation) and receipt discrepancies to WH (wms.cycle_count on receipt.discrepancy). Every other stage owner is this graph's declaration pending PLX review.",
+  "ontology/schema/domains/purchasing.json (PurchaseOrder.fm_expected, PurchaseOrder.sage_expected, PurchaseOrder.expected_date authority; SupplierConfirmation.promised, SupplierConfirmation.promised_on_file)"
+ ]
+}

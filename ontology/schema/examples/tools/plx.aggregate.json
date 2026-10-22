@@ -1,0 +1,162 @@
+{
+  "tool": "plx.aggregate",
+  "examples": [
+    {
+      "name": "sum by currency",
+      "input": {
+        "set": "set:abcdefgh5678",
+        "measure": {
+          "property": "total_amount",
+          "op": "sum"
+        },
+        "group_by": [
+          "customer_po"
+        ]
+      },
+      "output": {
+        "groups": [
+          {
+            "key": {
+              "customer_po": null
+            },
+            "value": "1250.50",
+            "currency": "CAD",
+            "inputs": 1,
+            "markings": [
+              "finance"
+            ],
+            "inputs_citations": [
+              {
+                "l1_handle": "api://public.app_sales_order/%7B%22id%22%3A%22ex-so-1%22%7D@0123456789abcdef-42",
+                "field_path": "row.total_amount",
+                "digest": "9bdd1080c047baefbeff07851d548876b8bc65d1d3dbd1574d7f11aeecc2e339",
+                "lineage": "gold_etl_from_fm"
+              }
+            ]
+          }
+        ],
+        "partial": true,
+        "gaps": [],
+        "withheld": {
+          "properties": null,
+          "objects": null,
+          "reason": "audience"
+        },
+        "completeness": {
+          "complete": false,
+          "truncated": false,
+          "reason": "withheld_inputs",
+          "returned": 1,
+          "total": null,
+          "next_cursor": null
+        },
+        "meta": {
+          "schema_digest": "df0ad6e43880f09c90ebf95f19110178aba6890df0010ebda7485029e2b543b4",
+          "as_known_at": "2099-01-02T03:04:05Z",
+          "freshness": [
+            {
+              "source": "portal_api",
+              "captured_at": "2099-01-02T03:00:00Z",
+              "lag_seconds": 245,
+              "completeness": "complete",
+              "stale": false
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "unknown unit refused",
+      "input": {
+        "set": "set:lines123456",
+        "measure": {
+          "property": "quantity",
+          "op": "sum"
+        }
+      },
+      "output": {
+        "groups": [],
+        "refused": {
+          "code": "unit_unknown",
+          "message": "2 of 5 line quantities have no recorded unit.",
+          "hint": "Read each item's unit of measure, or aggregate per item."
+        },
+        "partial": false,
+        "gaps": [
+          {
+            "state": "unknown",
+            "reason": "unit_unknown",
+            "subject": "SalesOrderLine.quantity",
+            "detail": "The FM line quantity is in the finished product's unit, which the line does not record."
+          }
+        ],
+        "completeness": {
+          "complete": true,
+          "truncated": false,
+          "returned": 0,
+          "total": 0,
+          "next_cursor": null
+        },
+        "meta": {
+          "schema_digest": "df0ad6e43880f09c90ebf95f19110178aba6890df0010ebda7485029e2b543b4",
+          "as_known_at": "2099-01-02T03:04:05Z",
+          "freshness": [
+            {
+              "source": "portal_api",
+              "captured_at": "2099-01-02T03:00:00Z",
+              "lag_seconds": 245,
+              "completeness": "complete",
+              "stale": false
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "fan-out refused",
+      "input": {
+        "set": "set:abcdefgh5678",
+        "measure": {
+          "property": "total_amount",
+          "op": "sum"
+        },
+        "path": [
+          {
+            "link_type": "SalesOrder.ordered_by",
+            "direction": "forward"
+          }
+        ]
+      },
+      "output": {
+        "groups": [],
+        "refused": {
+          "code": "fan_out",
+          "message": "Summing an order-grain amount across this hop repeats it.",
+          "hint": "Aggregate at SalesOrder grain."
+        },
+        "partial": false,
+        "gaps": [],
+        "completeness": {
+          "complete": true,
+          "truncated": false,
+          "returned": 0,
+          "total": 0,
+          "next_cursor": null
+        },
+        "meta": {
+          "schema_digest": "df0ad6e43880f09c90ebf95f19110178aba6890df0010ebda7485029e2b543b4",
+          "as_known_at": "2099-01-02T03:04:05Z",
+          "freshness": [
+            {
+              "source": "portal_api",
+              "captured_at": "2099-01-02T03:00:00Z",
+              "lag_seconds": 245,
+              "completeness": "complete",
+              "stale": false
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

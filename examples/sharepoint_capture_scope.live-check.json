@@ -1,0 +1,25 @@
+{
+ "schema": "plx-sharepoint-capture-scope/v1",
+ "note": "Live-check scope of capture.sharepoint and case.sharepoint_documents: the QA/QC Department (QCQA) library's '/AOs/2026 - AOs' folder (docs/reference/cases-and-artifacts.md 3.1) and the AGENTS site's '/Ontology UseCases' folder, the two folders those checks were written for before integrations/sharepoint_capture_scope.json widened to the whole QA/QC library and Customer Documents. Configuration, never a grant. Read-only.",
+ "max_content_bytes": 20000000,
+ "targets": [
+  {
+   "id": "qcqa.aos-2026",
+   "drive_id": "b!ubhBC91PLkOOCpyUeCUJMLOi0jT3ADZHi0QxVdjuwxvq6wHrgPmdQqNrzbAMxVqk",
+   "folders": [
+    "/AOs/2026 - AOs"
+   ],
+   "max_depth": 3,
+   "max_folders": 200
+  },
+  {
+   "id": "agents.ontology-use-cases",
+   "site": "AGENTS",
+   "folders": [
+    "/Ontology UseCases"
+   ],
+   "max_depth": 4,
+   "max_folders": 200
+  }
+ ]
+}

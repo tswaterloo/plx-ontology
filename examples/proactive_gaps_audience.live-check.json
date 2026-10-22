@@ -1,0 +1,17 @@
+{
+ "schema": "plx-source-mirror-audience/v1",
+ "note": "EXAMPLE for the case.proactive_gaps live check (examples/proactive_gaps_host.live-check.json), not authority: grants exactly the Portal relations that host cycle mirrors. svc:workbench-host is the host's capture principal (it fills the mirror); staff:sales and staff:operations read the sales orders as in examples/unfamiliar_case_audience.example.json; the quotes go to staff:sales only, so staff:operations (the check's --reader) sees no quote gap. Read-only mirror; principals must be confirmed by PLX before real use.",
+ "tenant": "plx",
+ "default_classification": "internal",
+ "audiences": {
+  "public.app_sales_order": [
+   "staff:operations",
+   "staff:sales",
+   "svc:workbench-host"
+  ],
+  "public.app_quote": [
+   "staff:sales",
+   "svc:workbench-host"
+  ]
+ }
+}

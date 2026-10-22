@@ -1,0 +1,153 @@
+{
+ "id": "case.po_sent_chain",
+ "description": "Issued purchase-order PDF -> sent message -> supplier reply -> served app_purchase_order status, and an explicit gap for every PO without a linked send (operating/issued_sends.py): one bounded GET-only mail capture of the purchasing Sent Items and the hub mailbox's inbox (examples/issued_sends_mail_capture_scope.live-check.json) and one GET-only SharePoint capture of the Portal's procurement folder with DocumentCategory (examples/issued_sends_sharepoint_capture_scope.live-check.json) into {tmp}/state, read back as staff:purchasing, plus the Portal PO relation through the source mirror. Counts only: sends by kind, renders by origin, byte matches by basis, chain outcomes and replies, PO gaps by kind and reason.",
+ "source": "portal-workbench-api+microsoft-graph",
+ "cadence": "daily",
+ "command": [
+  "python3",
+  "-m",
+  "operating.issued_sends",
+  "scan",
+  "--state-dir",
+  "{tmp}/state",
+  "--live-audience",
+  "examples/issued_sends_live_audience.live-check.json",
+  "--mirror-audience",
+  "examples/po_mail_links_mirror_audience.example.json",
+  "--principal",
+  "staff:purchasing",
+  "--mail-capture-scope",
+  "examples/issued_sends_mail_capture_scope.live-check.json",
+  "--capture-page-budget",
+  "4",
+  "--sharepoint-capture-scope",
+  "examples/issued_sends_sharepoint_capture_scope.live-check.json",
+  "--internal-domain",
+  "petrasoap.com",
+  "--internal-domain",
+  "petralabx.com"
+ ],
+ "timeout_seconds": 3600,
+ "requires_env": [
+  "PLX_WORKBENCH_API_URL",
+  "PLX_WORKBENCH_API_KEY",
+  "MICROSOFT_GRAPH_TENANT_ID",
+  "MICROSOFT_GRAPH_CLIENT_ID",
+  "MICROSOFT_GRAPH_CLIENT_SECRET",
+  "SHAREPOINT_SITE_ID"
+ ],
+ "optional_env": [
+  "BC_TENANT_ID",
+  "BC_CLIENT_ID",
+  "BC_CLIENT_SECRET",
+  "BC_ENVIRONMENT"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "counts.sends",
+   "counts.sends_by_kind",
+   "counts.byte_matches",
+   "counts.renders",
+   "counts.renders_by_origin",
+   "counts.chain_outcomes",
+   "counts.chain_replies",
+   "counts.po_gaps",
+   "counts.gap_reasons",
+   "sources.po.status",
+   "blocked_upstream"
+  ],
+  "json_equals": {
+   "evidence_label": "live-read",
+   "sources.mail.status": "read",
+   "sources.sharepoint.status": "read",
+   "sources.po.status": "read"
+  },
+  "json_min": {
+   "counts.messages_scanned": 1
+  }
+ },
+ "expect_blocked": {
+  "exit_code": 0,
+  "json_fields": [
+   "counts.sends",
+   "counts.sends_by_kind",
+   "counts.byte_matches",
+   "counts.renders",
+   "counts.renders_by_origin",
+   "blocked_upstream",
+   "source_read.inputs_read",
+   "source_read.unblocked_unread"
+  ],
+  "json_equals": {
+   "evidence_label": "live-read",
+   "sources.mail.status": "read",
+   "sources.sharepoint.status": "read"
+  },
+  "json_min": {
+   "source_read.inputs_read": 1
+  },
+  "json_empty": [
+   "source_read.unblocked_unread"
+  ]
+ },
+ "record": [
+  "counts.messages_scanned",
+  "counts.sends",
+  "counts.sends_by_kind",
+  "counts.issued_attachments",
+  "counts.attachment_bytes_unavailable",
+  "counts.renders",
+  "counts.render_names",
+  "counts.renders_superseded",
+  "counts.renders_by_origin",
+  "counts.byte_matches",
+  "counts.name_only",
+  "counts.unmatched",
+  "counts.chains",
+  "counts.chain_outcomes",
+  "counts.sent_render",
+  "counts.replies",
+  "counts.chain_replies",
+  "counts.po_gaps",
+  "counts.gap_reasons",
+  "sources",
+  "sources.mail.status",
+  "sources.sharepoint.status",
+  "sources.po.status",
+  "sources.po.reasons",
+  "capture_runs",
+  "blocked_upstream",
+  "blocked_upstream[*].part",
+  "blocked_upstream[*].source",
+  "blocked_upstream[*].error_code",
+  "source_read",
+  "source_read.unblocked_unread",
+  "blocked_upstream[*].permission"
+ ],
+ "record_keys": [
+  "counts.sends_by_kind",
+  "counts.renders_by_origin",
+  "counts.byte_matches",
+  "counts.chain_outcomes",
+  "counts.sent_render",
+  "counts.chain_replies",
+  "counts.po_gaps",
+  "counts.gap_reasons",
+  "sources",
+  "capture_runs",
+  "source_read"
+ ],
+ "record_enums": [
+  "sources.mail.status",
+  "sources.sharepoint.status",
+  "sources.po.status",
+  "sources.po.reasons",
+  "blocked_upstream[*].part",
+  "blocked_upstream[*].source",
+  "blocked_upstream[*].error_code",
+  "source_read.unblocked_unread",
+  "blocked_upstream[*].permission"
+ ],
+ "notes": "Live-unverified until the live check runs it (module tests are injected-transport). A send is a message in a mailbox's own Sent Items whose From is that mailbox; a subject starting '[STAGING → ' (plx-customer-portal email-redirect.ts, every non-production provider send) is a test_redirect: counted, never matched, never evidence. A vendor send's attachment named like a Portal PO PDF links to a captured render only by equal bytes (sha256, else quickXorHash); a name alone is a lead. A reply is a message in the send's conversation from a domain it went to, received after it. The legacy send path (purchase-order-legacy-send.ts, Resend from noreply@) keeps no mailbox copy, and the PDF route keeps the same ISSUED_PO render with no send, so every PO without a linked send is a gap (send_not_captured or send_not_linked) with its reasons, never 'not sent'. Expected honest gaps: the reporting API serves the staging replica while real sends come from production (chain_outcomes.po_not_served until go-live), every staging send is redirected, and most served POs have no captured send (gap_reasons.no_render_captured); the procurement folder comes from Portal code defaults and may not exist (sources.sharepoint.complete false, capture_runs.sharepoint.reasons). When the Portal fails the PO relation the output names it in blocked_upstream and expect_blocked holds. Counts are recorded, never asserted. BC is optional_env: the command's live readers (operating.case_runtime.build_live_readers) build a BC reader when its variables are set, which this check never reads; undeclared, the runner stopped the command at that read (undeclared_env BC_CLIENT_SECRET), and required, a host without BC would skip a check that does not need it. When Graph refused every in-scope mailbox with HTTP 403 or 401 (integrations/capture_mail.refused_parts, the one Graph part shape of capture_mail.graph_block) blocked_upstream also names the refused mail call (mail.mailbox_lookup or mail.folder_read) with error_code missing_permission and its missing application permission on 403 (User.Read.All; Mail.Read, which an Exchange application access policy may also scope out), or error_code unauthorized on 401, cause host_misconfiguration, and expect_blocked holds when the rest read something (source_read.inputs_read >= 1 over mail, SharePoint renders and PO rows) and mail, the one input a pass requires, read messages unless a part stopped it (source_read.unblocked_unread empty)."
+}

@@ -1,0 +1,319 @@
+{
+ "$schema": "_plan.schema.json",
+ "format": "plx-investigate-plan/v1",
+ "id": "customer_po_status",
+ "families": [
+  "F2"
+ ],
+ "title": "Status of a customer purchase order",
+ "description": "Which sales orders carry a customer PO and what has shipped. The PO text is not unique (Portal app_sales_order.po_reference, Sage oe_order_header.ponumber; docs/reference/portal-code-map.md 3.3), so every verified carrier is a root and each order is reported, never merged; order status and shipment status are the cited source values of each system's own field (a shipment without a status field: its ship date). Each order's same-record twins are followed, so a carrier recorded in one system still yields the order number and shipments the other system holds; counts are per system binding.",
+ "root": {
+  "object_types": [
+   "CustomerPurchaseOrder"
+  ],
+  "cardinality": "set",
+  "set_tiers": [
+   "verified",
+   "reviewed"
+  ]
+ },
+ "step_budget": 40,
+ "steps": [
+  {
+   "id": "orders",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrder.references_customer_po",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   },
+   "required": true
+  },
+  {
+   "id": "order_twins",
+   "tool": "plx.around",
+   "from": "orders",
+   "bind": "from",
+   "description": "The same order in another system (a FileMaker order entry's Portal copy): its number, status and shipments belong to the same customer PO; reached through a lead link its entries carry lead_basis.",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrder.same_record_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "order_twins_of",
+   "tool": "plx.around",
+   "from": "orders",
+   "bind": "from",
+   "description": "The same order in another system (a FileMaker order entry's Portal copy): its number, status and shipments belong to the same customer PO; reached through a lead link its entries carry lead_basis.",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrder.same_record_as",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "order_read",
+   "tool": "plx.object",
+   "from": "orders",
+   "bind": "object_id",
+   "required": true
+  },
+  {
+   "id": "twin_read",
+   "tool": "plx.object",
+   "from": "order_twins",
+   "bind": "object_id"
+  },
+  {
+   "id": "twin_of_read",
+   "tool": "plx.object",
+   "from": "order_twins_of",
+   "bind": "object_id"
+  },
+  {
+   "id": "shipments",
+   "tool": "plx.around",
+   "from": "orders",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Shipment.ships",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "twin_shipments",
+   "tool": "plx.around",
+   "from": "order_twins",
+   "bind": "from",
+   "description": "Shipments of the twin order.",
+   "args": {
+    "path": [
+     {
+      "link_type": "Shipment.ships",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "twin_of_shipments",
+   "tool": "plx.around",
+   "from": "order_twins_of",
+   "bind": "from",
+   "description": "Shipments of the twin order.",
+   "args": {
+    "path": [
+     {
+      "link_type": "Shipment.ships",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "shipment_read",
+   "tool": "plx.object",
+   "from": "shipments",
+   "bind": "object_id"
+  },
+  {
+   "id": "twin_shipment_read",
+   "tool": "plx.object",
+   "from": "twin_shipments",
+   "bind": "object_id"
+  },
+  {
+   "id": "twin_of_shipment_read",
+   "tool": "plx.object",
+   "from": "twin_of_shipments",
+   "bind": "object_id"
+  }
+ ],
+ "evidence": [
+  {
+   "name": "order_count",
+   "kind": "count",
+   "object_type": "SalesOrder",
+   "bindings": [
+    "portal.app_sales_order"
+   ]
+  },
+  {
+   "name": "fm_order_entry_count",
+   "kind": "count",
+   "object_type": "SalesOrder",
+   "bindings": [
+    "portal.fm_order_entry"
+   ]
+  },
+  {
+   "name": "sage_order_count",
+   "kind": "count",
+   "object_type": "SalesOrder",
+   "bindings": [
+    "portal.sage_oe_order_header"
+   ],
+   "zero": "complete_search"
+  },
+  {
+   "name": "bc_sales_order_count",
+   "kind": "count",
+   "object_type": "SalesOrder",
+   "bindings": [
+    "bc.sales_orders"
+   ]
+  },
+  {
+   "name": "order_number",
+   "kind": "property",
+   "required": true,
+   "object_type": "SalesOrder",
+   "properties": [
+    "order_number"
+   ]
+  },
+  {
+   "name": "order_status",
+   "kind": "property",
+   "required": true,
+   "object_type": "SalesOrder",
+   "properties": [
+    "status",
+    "bc_status",
+    "fm_status"
+   ],
+   "if_null": "absent_in_source",
+   "description": "The order's status in the system that holds it (Portal status, else BC's, else FileMaker's): each system's vocabulary is its own property, cited as such, never mapped."
+  },
+  {
+   "name": "required_date",
+   "kind": "property",
+   "object_type": "SalesOrder",
+   "properties": [
+    "required_date"
+   ],
+   "if_null": "absent_in_source"
+  },
+  {
+   "name": "shipment_count",
+   "kind": "count",
+   "object_type": "Shipment",
+   "bindings": [
+    "portal.app_shipment"
+   ]
+  },
+  {
+   "name": "silver_shipment_count",
+   "kind": "count",
+   "object_type": "Shipment",
+   "bindings": [
+    "portal.silver_shipments"
+   ]
+  },
+  {
+   "name": "sage_shipment_count",
+   "kind": "count",
+   "object_type": "Shipment",
+   "bindings": [
+    "portal.sage_oe_shipment_header"
+   ]
+  },
+  {
+   "name": "bc_sales_shipment_count",
+   "kind": "count",
+   "object_type": "Shipment",
+   "bindings": [
+    "bc.sales_shipments"
+   ]
+  },
+  {
+   "name": "shipment_status",
+   "kind": "property",
+   "required": true,
+   "object_type": "Shipment",
+   "properties": [
+    "status",
+    "ship_date"
+   ],
+   "if_null": "absent_in_source",
+   "description": "The shipment's status where its system records one (Portal); a BC posted sales shipment, a Sage OE shipment or an FM shipment records none, so its cited ship date stands for it (the record is the shipment)."
+  }
+ ]
+}

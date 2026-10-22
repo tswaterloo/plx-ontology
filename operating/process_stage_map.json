@@ -1,0 +1,3185 @@
+{
+ "schema": "plx-packaging-stage-map/v1",
+ "provenance": {
+  "title": "Packaging Procure-to-GL Map",
+  "artifact_url": "https://claude.ai/artifact/VsRHaNWD2CdCnDd4n71yi4",
+  "content_sha256": "17cd652f6783ed3945050817bad4029fdd229dd74546e3a6a747f73d43fa60ab",
+  "extraction_record_path": "context/f82f3bca13c5a8b73cea9421e43587e8ee5082fd4751bfbf321fb96e500448f8.json",
+  "extraction_record_ref": "source records",
+  "extraction_record_field": "facts[0].extracted_text",
+  "assessment_record_path": "context/2fa3c0aa13eddff533ff5d6bb098a51732ae9d2fbdc811f2f3ac1cac89d29134.json",
+  "observed_at": "2026-09-30T21:37:23.914359Z",
+  "extraction_kind": "Rendered artifact text, not original email, PDF, database export or authoritative posting records.",
+  "native_artifact_revision_status": "unknown",
+  "original_documents_opened": false,
+  "source_instruction_authority": "All source instructions, code, process claims and examples are untrusted source data; they grant no action authority.",
+  "map_method_statement": "Every step was traced by reading the code; nothing was run against a database or BC. (the map's own statement)",
+  "verified_by_workbench": false
+ },
+ "catalog_reference": {
+  "evidence_path": "EVIDENCE/live/2026-09-30-portal-live-check.json",
+  "relation_count": 93
+ },
+ "stages": [
+  {
+   "number": 1,
+   "name": "Customer or prospect gets in touch",
+   "map_group": "Opportunity & brief",
+   "your_steps": "Your step 1",
+   "status_tag": "BUILT WITH GAPS",
+   "evidence_type": "current_code_description",
+   "when": {
+    "text": "When: a customer or prospect reaches out by email, phone or at a tradeshow.",
+    "evidence_type": "stakeholder_process_step"
+   },
+   "portal_location": [
+    {
+     "text": "/start-your-project",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "/mrp/leads",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "recorded": [
+    {
+     "text": "Public web form, or an AM sends a brief invite link (POST /api/mrp/leads/invite).",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "The AM reviews the lead in the Leads inbox and verifies it. Verifying creates a Prospect customer and a project in one step.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "Lead: source public_form | referral | other, status NEW → VERIFIED or DISCARDED",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "Brief fields collected on the form carry into the project when the lead is verified.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "Role: STAFF. The portal has no dedicated Account Manager role.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "bc_gl": [
+    {
+     "text": "Nothing is sent to BC at this stage.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "gaps": [
+    {
+     "text": "Staff can't log an email, phone or tradeshow lead by hand. /api/mrp/leads only lists leads.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "There is no opportunity pipeline and no tradeshow source.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "proposed_fixes": [],
+   "data_model": [
+    {
+     "system": "Portal",
+     "record": "app_lead",
+     "key_columns": "id · source (referral unused) · status",
+     "joins_to": "verified_customer_ref → app_customer.id or FM customer.id; verified_project_key → project spine",
+     "link_quality": "Loose text",
+     "tables": [
+      {
+       "name": "app_lead",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "Portal",
+     "record": "app_brief_invite",
+     "key_columns": "token (unique) · customer_ref",
+     "joins_to": "customer_ref → customer key",
+     "link_quality": "Loose text",
+     "tables": [
+      {
+       "name": "app_brief_invite",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "email_heavy": false,
+   "email_heavy_basis": null
+  },
+  {
+   "number": 2,
+   "name": "Brief or Tech Transfer received",
+   "map_group": "Opportunity & brief",
+   "your_steps": "Your step 2",
+   "status_tag": "BUILT WITH GAPS",
+   "evidence_type": "current_code_description",
+   "when": {
+    "text": "When: after the first conversations, the customer sends a Brief or a Tech Transfer (TT).",
+    "evidence_type": "stakeholder_process_step"
+   },
+   "portal_location": [
+    {
+     "text": "/mrp/project-development/[id] → Overview & Intake",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "recorded": [
+    {
+     "text": "Upload the document as PROJECT_BRIEF or TECH_TRANSFER.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "Structured brief fields (benchmark, claims, key ingredients, no-fly list, specs) sit on the project.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "The file is saved as an Attachment on the project, stored in SharePoint.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "TT details: ProjectBriefExt.techTransfer (isTT, canSubUnsourced, matchBasis, fragrance)",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "bc_gl": [
+    {
+     "text": "Nothing is sent to BC at this stage.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "gaps": [
+    {
+     "text": "The brief can only be uploaded once a project exists.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "The customer-facing Customer Brief form (/forms/customer-brief) saves to an audit log and a SharePoint list, and isn't linked to the project.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "Brief documents are not parsed; staff re-type the details.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "proposed_fixes": [],
+   "data_model": [
+    {
+     "system": "Portal",
+     "record": "app_attachment",
+     "key_columns": "id · entity_type=RD_PROJECT · entity_id · category PROJECT_BRIEF | TECH_TRANSFER · sharepoint_item_id · web_url",
+     "joins_to": "entity_id → project spine key (polymorphic)",
+     "link_quality": "Loose text",
+     "tables": [
+      {
+       "name": "app_attachment",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "Portal",
+     "record": "app_project_brief_ext",
+     "key_columns": "fm_project_id (unique) · data.techTransfer",
+     "joins_to": "fm_project_id → FM public.project.id or app_project_local.id",
+     "link_quality": "Loose text",
+     "tables": [
+      {
+       "name": "app_project_brief_ext",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "email_heavy": false,
+   "email_heavy_basis": null
+  },
+  {
+   "number": 3,
+   "name": "Who specs the packaging",
+   "map_group": "Opportunity & brief",
+   "your_steps": "Your step 3",
+   "status_tag": "NOT BUILT",
+   "evidence_type": "current_code_description",
+   "when": {
+    "text": "When: the Brief or TT says whether PLX is to spec the packaging for the finished good.",
+    "evidence_type": "stakeholder_process_step"
+   },
+   "portal_location": [],
+   "recorded": [
+    {
+     "text": "No screen captures this.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "There is no field for PLX-sourced vs customer-supplied packaging.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "Nearest fields: ProjectArtwork.source=\"customer\" (artwork only) and InventoryOwnership CUSTOMER (3PL stock).",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "Which BOM lines need sourcing comes from the BOM template, not from the brief.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "bc_gl": [
+    {
+     "text": "Nothing is sent to BC at this stage.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "gaps": [
+    {
+     "text": "Without this flag, nothing tells the BOM which packaging PLX must source, or which packaging will arrive from the customer.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "proposed_fixes": [],
+   "data_model": [
+    {
+     "system": "Portal",
+     "record": "— (no column)",
+     "key_columns": "Who supplies each component: PLX, customer or consigned",
+     "joins_to": "Nearest: app_project_artwork.source (artwork only) · app_inventory_lot.ownership (stock only)",
+     "link_quality": "Missing",
+     "tables": [],
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "email_heavy": false,
+   "email_heavy_basis": null
+  },
+  {
+   "number": 4,
+   "name": "Project & Draft FG",
+   "map_group": "Opportunity & brief",
+   "your_steps": "Your step 4",
+   "status_tag": "BUILT",
+   "evidence_type": "current_code_description",
+   "when": {
+    "text": "When: the AM creates a project for the opportunity.",
+    "evidence_type": "stakeholder_process_step"
+   },
+   "portal_location": [
+    {
+     "text": "/mrp/project-development/new",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "/projects/new (customer self-serve)",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "recorded": [
+    {
+     "text": "From the new-project form or the pipeline board. Project type is Brief or Tech Transfer.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "Several SKUs from one brief become sibling projects that share a briefRef.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "POST /api/mrp/project-development/projects → createLocalProject",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "ProjectLocal (status Created; number suggested as PD-YY-NNN)",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "In the same transaction, mintDraftFgItem creates FgItem with state DRAFT and code FG-{project}. The live FG-xxxx number is assigned on activation.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "bc_gl": [
+    {
+     "text": "The Draft FG is not sent to BC. Only active FINAL_PRODUCT items are pushed.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "gaps": [],
+   "proposed_fixes": [],
+   "data_model": [
+    {
+     "system": "FM",
+     "record": "public.project",
+     "key_columns": "id · projectno · idcust · idfp",
+     "joins_to": "idcust → public.customer.id; idfp → public.fp.id",
+     "link_quality": "Foreign key",
+     "tables": [
+      {
+       "name": "public.project",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "Portal",
+     "record": "app_project_local",
+     "key_columns": "id · project_number (unique, PD-YY-NNN) · customer_id",
+     "joins_to": "customer_id → customer key (text)",
+     "link_quality": "Loose text",
+     "tables": [
+      {
+       "name": "app_project_local",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "Portal",
+     "record": "app_fg_item",
+     "key_columns": "id · project_key (unique) · code FG-{project} · state DRAFT",
+     "joins_to": "project_key → project spine (text); minted_product_id → app_product.id",
+     "link_quality": "Foreign key",
+     "tables": [
+      {
+       "name": "app_fg_item",
+       "reporting_api_relation": "public.app_fg_item"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "Portal",
+     "record": "app_customer",
+     "key_columns": "id · code (unique) · erp_code · account_manager_id · incoterms · fob_point",
+     "joins_to": "account_manager_id → app_user.id",
+     "link_quality": "Foreign key",
+     "tables": [
+      {
+       "name": "app_customer",
+       "reporting_api_relation": "public.app_customer"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "BC",
+     "record": "Customer (18) via customers API",
+     "key_columns": "No. = app_customer.erp_code (Sage IDCUST) · GUID",
+     "joins_to": "app_bc_entity_map entity_type=customer, source_id = app_customer.id",
+     "link_quality": "Entity map",
+     "tables": [
+      {
+       "name": "Customer (18) via customers API",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "email_heavy": false,
+   "email_heavy_basis": null
+  },
+  {
+   "number": 5,
+   "name": "Assembly BOM & sourcing request",
+   "map_group": "Sourcing & quoting",
+   "your_steps": "Your step 4 (cont.)",
+   "status_tag": "BUILT WITH GAPS",
+   "evidence_type": "current_code_description",
+   "when": {
+    "text": "When: the Draft FG exists and a packaging component on its BOM needs sourcing.",
+    "evidence_type": "stakeholder_process_step"
+   },
+   "portal_location": [
+    {
+     "text": "/mrp/project-development/[id]/assembly-bom",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "recorded": [
+    {
+     "text": "Staff build the Assembly BOM from a template, then turn on Needs sourcing for each Pack-Out line.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "The sourcing-request dialog is opened per BOM line.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "POST /api/mrp/assembly-boms creates the BOM from a template. POST /api/mrp/sourcing-requests → createAssemblySourcingRequest creates the request.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "AssemblySourcingRequest: materialType PACKAGING, status OPEN",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "Carried across automatically: project number, packaging type, UoM, reference URLs. The brief for the vendor (outboundBrief) is typed by hand.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "bc_gl": [
+    {
+     "text": "Nothing is sent to BC at this stage.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "gaps": [
+    {
+     "text": "Creating a project doesn't create the Assembly BOM, and nothing from the Draft FG or the brief fills it in.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "Customer name, annual volume, launch date and brief text don't carry into the sourcing request.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "The request route emails the Sourcing team before it rejects a PACKAGING request with a 400, so staff can get an email about a request that was never created.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "An MRP shortage never creates a sourcing request.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "proposed_fixes": [],
+   "data_model": [
+    {
+     "system": "Portal",
+     "record": "app_bill_of_materials",
+     "key_columns": "id · code (unique) · product_id · project_key",
+     "joins_to": "product_id → app_product.id; project_key → spine (text)",
+     "link_quality": "Foreign key",
+     "tables": [
+      {
+       "name": "app_bill_of_materials",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "Portal",
+     "record": "app_bom_line",
+     "key_columns": "id · bom_id · product_id (null until linked) · needs_sourcing · pms_codes",
+     "joins_to": "bom_id → app_bill_of_materials.id; product_id → app_product.id",
+     "link_quality": "Foreign key",
+     "tables": [
+      {
+       "name": "app_bom_line",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "Portal",
+     "record": "app_project_subassembly",
+     "key_columns": "fm_project_id + kind (unique) · bom_id",
+     "joins_to": "bom_id → BOM (text, no FK)",
+     "link_quality": "Loose text",
+     "tables": [
+      {
+       "name": "app_project_subassembly",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "Portal",
+     "record": "app_sourcing_request",
+     "key_columns": "id · request_no · material_type · status",
+     "joins_to": "bom_line_id → app_bom_line.id (FK); project_no, customer_id (text only)",
+     "link_quality": "Foreign key",
+     "tables": [
+      {
+       "name": "app_sourcing_request",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "email_heavy": false,
+   "email_heavy_basis": null
+  },
+  {
+   "number": 6,
+   "name": "Vendor brief & quote",
+   "map_group": "Sourcing & quoting",
+   "your_steps": "Your step 7",
+   "status_tag": "BUILT WITH GAPS",
+   "evidence_type": "current_code_description",
+   "when": {
+    "text": "When: the brief is emailed to a vendor, with back-and-forth until they send a quote.",
+    "evidence_type": "stakeholder_process_step"
+   },
+   "portal_location": [
+    {
+     "text": "/mrp/sourcing-requests",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "/mrp/sourcing-requests/[id]",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "recorded": [
+    {
+     "text": "Mark the brief as sent. A vendor package emails several briefs to one supplier.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "The vendor-response form captures unit cost, currency, MOQ, price tiers, lead time, tooling, INCO terms, country of origin and HS code.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "Samples: requested → received → accepted.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "Status flow: OPEN → BRIEF_SENT → VENDOR_RESPONDED → SAMPLE_* → LINKED",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "The vendor response is stored as JSON in vendorResponse, with briefSentAt and vendorRespondedAt timestamps.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "bc_gl": [
+    {
+     "text": "Nothing is sent to BC at this stage.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "gaps": [
+    {
+     "text": "Payment terms (deposit %, net terms) have no field on the quote. They can only go in the free-text response notes.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "Emails with the vendor are not logged. Email is send-only, and only vendor packages send from the portal.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "The quote PDF can only be attached as \"Other\"; there is no Quote category.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "The public /rfq form isn't linked to sourcing requests.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "proposed_fixes": [],
+   "data_model": [
+    {
+     "system": "Portal",
+     "record": "app_sourcing_request",
+     "key_columns": "vendor_response (JSON) · vendor_supplier_id · brief_sent_at",
+     "joins_to": "vendor_supplier_id → app_supplier.id",
+     "link_quality": "Foreign key",
+     "tables": [
+      {
+       "name": "app_sourcing_request",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "Portal",
+     "record": "app_sourcing_sample",
+     "key_columns": "id · status · paid_by · tracking_number",
+     "joins_to": "request_id → app_sourcing_request.id",
+     "link_quality": "Foreign key",
+     "tables": [
+      {
+       "name": "app_sourcing_sample",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "Portal",
+     "record": "app_sourcing_vendor_package (+ _line)",
+     "key_columns": "package_no · line.request_id (unique)",
+     "joins_to": "vendor_supplier_id → app_supplier.id; line.request_id → request",
+     "link_quality": "Foreign key",
+     "tables": [
+      {
+       "name": "app_sourcing_vendor_package",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "email_heavy": false,
+   "email_heavy_basis": null
+  },
+  {
+   "number": 7,
+   "name": "Shipping & pallet info",
+   "map_group": "Sourcing & quoting",
+   "your_steps": "Your step 8",
+   "status_tag": "NOT BUILT",
+   "evidence_type": "current_code_description",
+   "when": {
+    "text": "When: Sourcing asks the vendor how many fit in a carton, on a pallet, in a 20 ft container or a 40 ft HQ.",
+    "evidence_type": "stakeholder_process_step"
+   },
+   "portal_location": [],
+   "recorded": [
+    {
+     "text": "There is no screen for this on the sourcing request or the part page.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "ProductPackSpec has case dimensions, gross weight, units per case, cases per layer and layers per pallet. It is filled from FileMaker and used for outbound/WMS; only receiving updates it.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "There are no fields for units per 20 ft or 40 ft HQ container, or for CBM (cubic metres).",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "bc_gl": [
+    {
+     "text": "Nothing is sent to BC at this stage.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "gaps": [
+    {
+     "text": "The information the freight forwarder needs to quote isn't captured anywhere before the PO.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "proposed_fixes": [],
+   "data_model": [
+    {
+     "system": "Portal",
+     "record": "app_product_pack_spec",
+     "key_columns": "product_id (unique) · units_per_case · case dims/weight · fm_cases_per_layer · fm_layers_per_pallet",
+     "joins_to": "product_id → app_product.id",
+     "link_quality": "Foreign key",
+     "tables": [
+      {
+       "name": "app_product_pack_spec",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "BC",
+     "record": "Item (27) + Item Unit of Measure",
+     "key_columns": "Net/Gross Weight · Unit Volume",
+     "joins_to": "Set by PLXItemDimensions (codeunit 50124) from the item push",
+     "link_quality": "BC field / setup",
+     "tables": [
+      {
+       "name": "Item (27) + Item Unit of Measure",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "Portal",
+     "record": "— (no column)",
+     "key_columns": "Units per 20 ft / 40 ft HQ container · CBM",
+     "joins_to": "—",
+     "link_quality": "Missing",
+     "tables": [],
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "email_heavy": true,
+   "email_heavy_basis": "The map's Freight & Logistics banner: 'Your steps 8–16 happen almost entirely by email.'"
+  },
+  {
+   "number": 8,
+   "name": "Freight forwarder quote",
+   "map_group": "Sourcing & quoting",
+   "your_steps": "Your steps 9–10",
+   "status_tag": "BUILT WITH GAPS",
+   "evidence_type": "current_code_description",
+   "when": {
+    "text": "When: the shipping info goes to the freight forwarder, who sends back a shipping quote.",
+    "evidence_type": "stakeholder_process_step"
+   },
+   "portal_location": [
+    {
+     "text": "/mrp/sourcing-requests/[id] → Freight / delivery",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "recorded": [
+    {
+     "text": "Emailing the forwarder happens outside the portal.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "Staff type a single freight figure into the vendor response.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "The figure goes to deliveryCost, which becomes SupplierProduct.deliveryCost when the item is linked.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "It feeds quote-time landed cost: (tier price + duty) × multiplier + freight.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "bc_gl": [
+    {
+     "text": "Nothing is sent to BC at this stage.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "gaps": [
+    {
+     "text": "The portal has no forwarder, carrier or customs-broker record, and no way to send to a forwarder.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "There is no freight-quote record: no mode, container or validity date, and the code doesn't say whether the figure is per unit or per shipment. The formula adds it per unit.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "proposed_fixes": [],
+   "data_model": [
+    {
+     "system": "Portal",
+     "record": "app_supplier_product",
+     "key_columns": "delivery_cost (one number)",
+     "joins_to": "supplier_id + product_id (unique)",
+     "link_quality": "Foreign key",
+     "tables": [
+      {
+       "name": "app_supplier_product",
+       "reporting_api_relation": "public.app_supplier_product"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "Portal",
+     "record": "— (no table)",
+     "key_columns": "Forwarder · freight quote · mode · validity",
+     "joins_to": "—",
+     "link_quality": "Missing",
+     "tables": [],
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "email_heavy": true,
+   "email_heavy_basis": "The map's Freight & Logistics banner: 'Your steps 8–16 happen almost entirely by email.'"
+  },
+  {
+   "number": 9,
+   "name": "Item master & supplier item",
+   "map_group": "Item & purchase order",
+   "your_steps": "System step",
+   "status_tag": "BUILT WITH GAPS",
+   "evidence_type": "current_code_description",
+   "when": {
+    "text": "When: a sample is accepted and the sourcing request is linked to a packaging item.",
+    "evidence_type": "stakeholder_process_step"
+   },
+   "portal_location": [
+    {
+     "text": "/mrp/sourcing-requests/[id] → Link",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "/mrp/parts/packaging/[id]",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "recorded": [
+    {
+     "text": "Linking needs an accepted sample, a drawing, and an existing packaging item.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "There is no way to create a new packaging item, and no P-#### number series.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "linkAssemblySourcingProduct → writeVendorItemCard",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "SupplierProduct: cost, incoterms, country of origin, lead time, MOQ, tiers, deliveryCost",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "Product.hsCode is set here; the BOM line gets the item and cost.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "bc_gl": [
+    {
+     "text": "Items are pushed as FINAL_PRODUCT only by default. PACKAGING items reach BC only when an operator runs the CLI (category PACK, posting groups RAW MAT).",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "No HS code or country of origin is sent to BC.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "gaps": [
+    {
+     "text": "Creating new packaging items (MRP-M-148) is planned, not built.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "A supplier's default INCO terms can only be edited through the API.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "proposed_fixes": [],
+   "data_model": [
+    {
+     "system": "FM",
+     "record": "public.packaging / packaging_supplier",
+     "key_columns": "packaging.id · code; packaging_supplier.idpack · idsupp",
+     "joins_to": "Mirrored to app_product.external_id = fm-pack-<idpack>",
+     "link_quality": "Loose text",
+     "tables": [
+      {
+       "name": "public.packaging",
+       "reporting_api_relation": "public.packaging"
+      },
+      {
+       "name": "public.packaging_supplier",
+       "reporting_api_relation": "public.packaging_supplier"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "Portal",
+     "record": "app_product",
+     "key_columns": "id · code (unique, P-#####) · product_type · hs_code · standard_cost · unit_cost · costing_method",
+     "joins_to": "Referenced by BOM line, PO line, lot, supplier product",
+     "link_quality": "Foreign key",
+     "tables": [
+      {
+       "name": "app_product",
+       "reporting_api_relation": "public.app_product"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "Portal",
+     "record": "app_supplier",
+     "key_columns": "id · code (unique) · external_id (fm-supp-<id>) · incoterms · currency · payment_terms",
+     "joins_to": "—",
+     "link_quality": "Foreign key",
+     "tables": [
+      {
+       "name": "app_supplier",
+       "reporting_api_relation": "public.app_supplier"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "Portal",
+     "record": "app_supplier_product (+ _tier)",
+     "key_columns": "supplier_id + product_id (unique) · unit_cost · incoterms · country_of_origin · supplier_item_number · is_preferred",
+     "joins_to": "→ app_supplier.id, app_product.id",
+     "link_quality": "Foreign key",
+     "tables": [
+      {
+       "name": "app_supplier_product",
+       "reporting_api_relation": "public.app_supplier_product"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "BC",
+     "record": "Item (27) via items API",
+     "key_columns": "No. = app_product.code (≤20) · GUID · posting groups RAW MAT / RAW MAT · category PACK",
+     "joins_to": "app_bc_entity_map entity_type=item, source_id = app_product.id. Tariff No. and Country/Region of Origin Code exist on BC Item but are not sent",
+     "link_quality": "Entity map",
+     "tables": [
+      {
+       "name": "Item (27) via items API",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "BC",
+     "record": "Vendor (23) via vendors API",
+     "key_columns": "No. = app_supplier.code (Sage-style only) · GUID · posting group APUSD/APDEF",
+     "joins_to": "app_bc_entity_map entity_type=vendor, source_id = app_supplier.id. Supplier prices / Item Vendor not pushed",
+     "link_quality": "Entity map",
+     "tables": [
+      {
+       "name": "Vendor (23) via vendors API",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "email_heavy": false,
+   "email_heavy_basis": null
+  },
+  {
+   "number": 10,
+   "name": "Requisition & approval",
+   "map_group": "Item & purchase order",
+   "your_steps": "System step",
+   "status_tag": "BUILT WITH GAPS",
+   "evidence_type": "current_code_description",
+   "when": {
+    "text": "When: reorder or pack-reorder demand is hit, or a requisition is raised directly.",
+    "evidence_type": "stakeholder_process_step"
+   },
+   "portal_location": [
+    {
+     "text": "/mrp/generate-po",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "recorded": [
+    {
+     "text": "Tabs: Reorder, Pack reorder, Waiting list, Requisitions. Approving requires isPOApprover.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "PurchaseRequisition: DRAFT → PENDING_APPROVAL → APPROVED → CONVERTED_TO_PO",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "bc_gl": [
+    {
+     "text": "Nothing is sent to BC at this stage.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "gaps": [
+    {
+     "text": "Only the requisition is approved; there is no approval on the PO itself.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "proposed_fixes": [],
+   "data_model": [
+    {
+     "system": "Portal",
+     "record": "app_purchase_requisition",
+     "key_columns": "id · pr_number (unique) · status · approved_by",
+     "joins_to": "supplier_id → app_supplier.id; approved_by → app_user.id",
+     "link_quality": "Foreign key",
+     "tables": [
+      {
+       "name": "app_purchase_requisition",
+       "reporting_api_relation": "public.app_purchase_requisition"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "Portal",
+     "record": "app_pr_line_item / app_reorder_rule",
+     "key_columns": "line.product_id · reorder_rule_id · rule (product_id, ingredient_id) unique",
+     "joins_to": "→ app_product.id, app_reorder_rule.id",
+     "link_quality": "Foreign key",
+     "tables": [
+      {
+       "name": "app_pr_line_item",
+       "reporting_api_relation": "public.app_pr_line_item"
+      },
+      {
+       "name": "app_reorder_rule",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "BC",
+     "record": "Approval Entry (snapshot)",
+     "key_columns": "bc_approval_entry_snapshot.document_no · table_id 38",
+     "joins_to": "Joins to entity map bc_number (BC-side approvals only)",
+     "link_quality": "Entity map",
+     "tables": [
+      {
+       "name": "Approval Entry (snapshot)",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "email_heavy": false,
+   "email_heavy_basis": null
+  },
+  {
+   "number": 11,
+   "name": "Purchase order & send",
+   "map_group": "Item & purchase order",
+   "your_steps": "System step",
+   "status_tag": "BUILT WITH GAPS",
+   "evidence_type": "current_code_description",
+   "when": {
+    "text": "When: an approved requisition is converted into a PO.",
+    "evidence_type": "stakeholder_process_step"
+   },
+   "portal_location": [
+    {
+     "text": "/mrp/purchase-orders/[id]",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "recorded": [
+    {
+     "text": "The PO page has an Incoterms / Duties / Shipped panel and editable ETAs. Send emails the PO as a PDF, standard or customs version.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "createFmPurchaseOrder writes the FileMaker PO, then copies it to PurchaseOrder with status SUBMITTED.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "incoterms is copied from the supplier; paymentTerms is free text. Freight and duty are estimates. Currency is hard-coded to CAD.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "No HS code on PO lines. The customs PDF prints the tariff as 0%.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "bc_gl": [
+    {
+     "text": "The PO is pushed to BC every 5 minutes with vendor, currency, lines and unit cost.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "Not sent: INCO terms, payment terms, ETA, freight, duty, HS code, location.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "POs go to BC without any approval check.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "gaps": [
+    {
+     "text": "Sending doesn't set the PO to ORDERED or record when it was sent, and INCO terms aren't printed on the PDF.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "If the supplier or an item can't be matched, the PO is never copied to the portal PO table, with only a log warning, so it never reaches BC.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "proposed_fixes": [],
+   "data_model": [
+    {
+     "system": "FM",
+     "record": "public.generated_purchase_order (+ _item)",
+     "key_columns": "gpo.id · ponumber; gpi.id · idpogen · idproductsupp · itemcost · etadate",
+     "joins_to": "gpi.idpogen → gpo.id; idproductsupp → packaging_supplier.id",
+     "link_quality": "Foreign key",
+     "tables": [
+      {
+       "name": "public.generated_purchase_order",
+       "reporting_api_relation": "public.generated_purchase_order"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "Portal",
+     "record": "app_purchase_order",
+     "key_columns": "id · po_number (unique, but rewritten to the BC No.) · supplier_id · warehouse_id · incoterms · payment_terms · currency · shipping_cost · duties_cost",
+     "joins_to": "custom_fields.fmGeneratedPoId → gpo.id; custom_fields.fmPoNumber = FM ponumber",
+     "link_quality": "JSON field",
+     "tables": [
+      {
+       "name": "app_purchase_order",
+       "reporting_api_relation": "public.app_purchase_order"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "Portal",
+     "record": "app_purchase_order_line",
+     "key_columns": "id (fm-pol-<gpi.id> if migrated) · product_id · unit_price · quantity · quantity_received",
+     "joins_to": "purchase_order_id → app_purchase_order.id; product_id → app_product.id",
+     "link_quality": "Foreign key",
+     "tables": [
+      {
+       "name": "app_purchase_order_line",
+       "reporting_api_relation": "public.app_purchase_order_line"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "BC",
+     "record": "Purchase Header (38) / Purchase Line (39) via purchaseOrders",
+     "key_columns": "No. = po_number if PO10xxxx else BC allocates · GUID · Your Reference = fmPoNumber (codeunit 50115) · Direct Unit Cost = unit_price",
+     "joins_to": "app_bc_entity_map entity_type=purchaseOrder, source_id = app_purchase_order.id. Not sent: incoterms, payment terms, expected date, location, freight/duty",
+     "link_quality": "Entity map",
+     "tables": [
+      {
+       "name": "Purchase Header (38) / Purchase Line (39) via purchaseOrders",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "email_heavy": false,
+   "email_heavy_basis": null
+  },
+  {
+   "number": 12,
+   "name": "Vendor prepayment",
+   "map_group": "Production & freight",
+   "your_steps": "Your step 11",
+   "status_tag": "NOT BUILT",
+   "evidence_type": "current_code_description",
+   "when": {
+    "text": "When: a deposit is paid to the vendor so production can start.",
+    "evidence_type": "stakeholder_process_step"
+   },
+   "portal_location": [
+    {
+     "text": "/mrp/ap-payments (invoice-based only)",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "recorded": [
+    {
+     "text": "The AP payments screen can only pay against a posted purchase invoice, not against a PO.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "No vendor prepayment record. OrderPrepayment is for customer (AR) prepayments only.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "bc_gl": [
+    {
+     "text": "BC's Prepayment % on the PO is never set. AP handles deposits in BC by hand.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "gaps": [
+    {
+     "text": "The portal can't tell which POs are waiting on a deposit or which have been paid.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "proposed_fixes": [],
+   "data_model": [
+    {
+     "system": "Portal",
+     "record": "— (no table)",
+     "key_columns": "Vendor deposit / prepayment against a PO",
+     "joins_to": "app_order_prepayment is customer (AR) only",
+     "link_quality": "Missing",
+     "tables": [],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "BC",
+     "record": "Purchase Header (38) “Prepayment %”",
+     "key_columns": "Standard field, never set by the portal",
+     "joins_to": "—",
+     "link_quality": "Missing",
+     "tables": [
+      {
+       "name": "Purchase Header (38) “Prepayment %”",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "BC",
+     "record": "Vendor Ledger Entry via PLXPayments (50119) · bc_vendor_payment_snapshot",
+     "key_columns": "document PLXAP<invoice> · applies_to_invoice_id",
+     "joins_to": "Payments against posted invoices only",
+     "link_quality": "BC field / setup",
+     "tables": [
+      {
+       "name": "Vendor Ledger Entry via PLXPayments (50119) · bc_vendor_payment_snapshot",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "email_heavy": true,
+   "email_heavy_basis": "The map's Freight & Logistics banner: 'Your steps 8–16 happen almost entirely by email.'"
+  },
+  {
+   "number": 13,
+   "name": "Production complete & pickup",
+   "map_group": "Production & freight",
+   "your_steps": "Your steps 12–13",
+   "status_tag": "NOT BUILT",
+   "evidence_type": "current_code_description",
+   "when": {
+    "text": "When: the vendor emails that production is done, and PLX tells the forwarder to pick up.",
+    "evidence_type": "stakeholder_process_step"
+   },
+   "portal_location": [
+    {
+     "text": "/mrp/purchase-orders/[id] → Mark vendor shipped",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "recorded": [
+    {
+     "text": "Both emails happen outside the portal. The closest action is Mark vendor shipped, which only records a date (origin INCO terms only).",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "No status for production complete or cargo ready, and no cargo-ready date.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "A vendor order confirmation can be attached (ORDER_CONFIRMATION).",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "bc_gl": [
+    {
+     "text": "Nothing is sent to BC at this stage.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "gaps": [
+    {
+     "text": "Changing a line's ETA sets the whole PO to REVISED, which hides where it actually is.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "proposed_fixes": [],
+   "data_model": [
+    {
+     "system": "Portal",
+     "record": "app_purchase_order",
+     "key_columns": "shipped_at · expected_date · tracking_number (API only)",
+     "joins_to": "—",
+     "link_quality": "Foreign key",
+     "tables": [
+      {
+       "name": "app_purchase_order",
+       "reporting_api_relation": "public.app_purchase_order"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "FM",
+     "record": "generated_purchase_order_item",
+     "key_columns": "etadate (line ETA; no portal column)",
+     "joins_to": "—",
+     "link_quality": "Foreign key",
+     "tables": [
+      {
+       "name": "public.generated_purchase_order_item",
+       "reporting_api_relation": "public.generated_purchase_order_item"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "Portal",
+     "record": "— (no column)",
+     "key_columns": "Vendor confirmation · PI number · cargo-ready date",
+     "joins_to": "—",
+     "link_quality": "Missing",
+     "tables": [],
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "email_heavy": true,
+   "email_heavy_basis": "The map's Freight & Logistics banner: 'Your steps 8–16 happen almost entirely by email.'"
+  },
+  {
+   "number": 14,
+   "name": "Packing slip, commercial invoice & BOL",
+   "map_group": "Production & freight",
+   "your_steps": "Your steps 14–15",
+   "status_tag": "BUILT WITH GAPS",
+   "evidence_type": "current_code_description",
+   "when": {
+    "text": "When: the forwarder asks for the packing slip and commercial invoice, then issues the bill of lading.",
+    "evidence_type": "stakeholder_process_step"
+   },
+   "portal_location": [
+    {
+     "text": "/mrp/purchase-orders/[id] → Documents",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "recorded": [
+    {
+     "text": "Files can be uploaded to the PO. Categories: SIGNED_PO, QUOTE, ORDER_CONFIRMATION, COA, CUSTOMS, OTHER.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "Stored as an Attachment in SharePoint. There are no specific categories for commercial invoice, packing list or BOL.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "No BOL, container, vessel or ETD fields.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "The customs PDF is the PO restyled. It has no HS codes, country of origin or weights.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "bc_gl": [
+    {
+     "text": "Nothing is sent to BC at this stage.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "gaps": [
+    {
+     "text": "Commercial invoice and packing slip generators exist only for outbound sales. Inbound shipping documents are planned under GL-020 \"Later\".",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "proposed_fixes": [],
+   "data_model": [
+    {
+     "system": "Portal",
+     "record": "app_attachment",
+     "key_columns": "entity_type=PURCHASE_ORDER · entity_id · category (SIGNED_PO, QUOTE, ORDER_CONFIRMATION, COA, CUSTOMS, OTHER) · sharepoint_item_id",
+     "joins_to": "entity_id → app_purchase_order.id (polymorphic)",
+     "link_quality": "Loose text",
+     "tables": [
+      {
+       "name": "app_attachment",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "Portal",
+     "record": "— (no table)",
+     "key_columns": "BOL no. · container no. · vessel · ETD/ETA · commercial invoice",
+     "joins_to": "—",
+     "link_quality": "Missing",
+     "tables": [],
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "email_heavy": true,
+   "email_heavy_basis": "The map's Freight & Logistics banner: 'Your steps 8–16 happen almost entirely by email.'"
+  },
+  {
+   "number": 15,
+   "name": "In transit & status updates",
+   "map_group": "Production & freight",
+   "your_steps": "Your step 16",
+   "status_tag": "NOT BUILT",
+   "evidence_type": "current_code_description",
+   "when": {
+    "text": "When: Sourcing chases the forwarder for status until the goods arrive.",
+    "evidence_type": "stakeholder_process_step"
+   },
+   "portal_location": [
+    {
+     "text": "/mrp/purchase-orders/[id]",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "recorded": [
+    {
+     "text": "The PO page shows ETA and \"Vendor shipped\". trackingNumber can be set through the API but isn't shown anywhere.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "No inbound shipment model, no milestones and no ETA history. Shipment is used for outbound sales only.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "lib/procurement/incoterms.ts classifies terms: origin terms should put stock in the in-transit location GIT from the ship date.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "bc_gl": [
+    {
+     "text": "Nothing posts goods in transit. This is deferred under ERP-D-013 and ERP-D-016.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "Stock PLX owns under origin terms stays off the books until it is received.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "gaps": [],
+   "proposed_fixes": [],
+   "data_model": [
+    {
+     "system": "Portal",
+     "record": "app_purchase_order",
+     "key_columns": "incoterms · shipped_at",
+     "joins_to": "Origin terms should move stock to a GIT location",
+     "link_quality": "Foreign key",
+     "tables": [
+      {
+       "name": "app_purchase_order",
+       "reporting_api_relation": "public.app_purchase_order"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "Portal",
+     "record": "app_warehouse",
+     "key_columns": "code (unique; Sage site code) · exclude_from_valuation",
+     "joins_to": "Becomes BC Location Code for journals",
+     "link_quality": "BC field / setup",
+     "tables": [
+      {
+       "name": "app_warehouse",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "BC",
+     "record": "Location (14) GIT",
+     "key_columns": "Not used for purchase in-transit",
+     "joins_to": "—",
+     "link_quality": "Missing",
+     "tables": [
+      {
+       "name": "Location (14) GIT",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "email_heavy": true,
+   "email_heavy_basis": "The map's Freight & Logistics banner: 'Your steps 8–16 happen almost entirely by email.'"
+  },
+  {
+   "number": 16,
+   "name": "Receive, QC & put-away",
+   "map_group": "Receive & cost",
+   "your_steps": "Your step 17",
+   "status_tag": "BUILT WITH GAPS",
+   "evidence_type": "current_code_description",
+   "when": {
+    "text": "When: the shipment arrives against open PO lines.",
+    "evidence_type": "stakeholder_process_step"
+   },
+   "portal_location": [
+    {
+     "text": "/mrp/receiving",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "/mrp/receiving/pack/[id]",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "/mrp/wms/put-away",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "recorded": [
+    {
+     "text": "The receipt form captures supplier lot, expiry, vendor invoice number, actual freight and duty, and the packing slip.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "QC tests and CoA are recorded. Release is blocked with a 409 until every required test has passed.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "The receipt is written in FileMaker (status Quarantine), copied to the portal with upsertGoldReceipt, and the PO line's received quantity is updated.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "Receipt.freightCost and dutiesCost are recorded on the first receipt of the PO only.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "ReceiptLine has no cost field. Put-away creates an InventoryLot with no unit cost.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "bc_gl": [
+    {
+     "text": "PLXReceiptBridge_PostReceiveOnly posts quantity, lot and expiry per line (receive-only by default). BC values the receipt at the PO's unit cost.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "Only posted when the PO and its items are already linked in BC.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "gaps": [
+    {
+     "text": "QC release updates only the FileMaker row. The older receiving flow can release a line with no QC check.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "proposed_fixes": [],
+   "data_model": [
+    {
+     "system": "FM",
+     "record": "public.receiptpack / receiptraw",
+     "key_columns": "id · idlab / idlabid (lab id) · ponoqc (PO no. text) · idpogenitem · lotnoqc",
+     "joins_to": "idpogenitem → gpi.id",
+     "link_quality": "Foreign key",
+     "tables": [
+      {
+       "name": "public.receiptpack",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog",
+       "served_relation": "public.receipt_packaging",
+       "served_basis": "petralabx/plx-customer-portal scripts/migrations/20260327_2205_fm_snake_case_compat.sql@8da33e4 (lines 59-60: receiptraw -> receipt_raw_material, receiptpack -> receipt_packaging; the old names stay as compatibility views) and scripts/sql/workbench-readonly/allowlist.json@8da33e4 (the reporting API serves the base tables); both unchanged at staging 878705b. Live catalog 2026-09-30 and 2026-10-01 lists the base names only. A case cites the served relation. Added by the Workbench; not part of Vince's map."
+      },
+      {
+       "name": "public.receiptraw",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog",
+       "served_relation": "public.receipt_raw_material",
+       "served_basis": "petralabx/plx-customer-portal scripts/migrations/20260327_2205_fm_snake_case_compat.sql@8da33e4 (lines 59-60: receiptraw -> receipt_raw_material, receiptpack -> receipt_packaging; the old names stay as compatibility views) and scripts/sql/workbench-readonly/allowlist.json@8da33e4 (the reporting API serves the base tables); both unchanged at staging 878705b. Live catalog 2026-09-30 and 2026-10-01 lists the base names only. A case cites the served relation. Added by the Workbench; not part of Vince's map."
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "Portal",
+     "record": "app_receipt",
+     "key_columns": "id · receipt_number (unique = FM lab id) · po_reference · vendor_invoice_number · freight_cost · duties_cost · status",
+     "joins_to": "purchase_order_id set by matching TRIM(po_number) = ponoqc text",
+     "link_quality": "Loose text",
+     "tables": [
+      {
+       "name": "app_receipt",
+       "reporting_api_relation": "public.app_receipt"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "Portal",
+     "record": "app_receipt_line",
+     "key_columns": "id · supplier_lot_number · expiry_date · status · bin_location_id",
+     "joins_to": "receipt_id → app_receipt.id; product_id → app_product.id; bin_location_id (no FK)",
+     "link_quality": "Foreign key",
+     "tables": [
+      {
+       "name": "app_receipt_line",
+       "reporting_api_relation": "public.app_receipt_line"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "Portal",
+     "record": "app_inventory_lot",
+     "key_columns": "(product_id, lot_number) unique · status · ownership · cost_per_unit (not set at receipt)",
+     "joins_to": "bin_id → app_bin_location.id; receipt_id (text, no FK)",
+     "link_quality": "Loose text",
+     "tables": [
+      {
+       "name": "app_inventory_lot",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "Portal",
+     "record": "app_inventory_transaction",
+     "key_columns": "id · transaction_type PUT_AWAY · reference_type RECEIPT + reference_id",
+     "joins_to": "lot_id → app_inventory_lot.id",
+     "link_quality": "Foreign key",
+     "tables": [
+      {
+       "name": "app_inventory_transaction",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "BC",
+     "record": "Purch. Rcpt. Header (120) / Line (121), Reservation Entry (337), Item Ledger Entry (32)",
+     "key_columns": "Vendor Shipment No. = receiptNo · lot no. · expiry",
+     "joins_to": "PLXReceiptBridge_PostReceiveOnly (50100); app_bc_entity_map entity_type=purchaseReceipt, source_id = app_receipt.id; bc_receipt_snapshot.portal_receipt_id",
+     "link_quality": "Entity map",
+     "tables": [
+      {
+       "name": "Purch. Rcpt. Header (120) / Line (121), Reservation Entry (337), Item Ledger Entry (32)",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "email_heavy": false,
+   "email_heavy_basis": null
+  },
+  {
+   "number": 17,
+   "name": "Landed cost to the item",
+   "map_group": "Receive & cost",
+   "your_steps": "Your step 18",
+   "status_tag": "DECISION NEEDED",
+   "evidence_type": "current_code_description",
+   "when": {
+    "text": "When: tariffs, freight and other charges are known and should be added to the cost of the items received.",
+    "evidence_type": "stakeholder_process_step"
+   },
+   "portal_location": [
+    {
+     "text": "/mrp/receiving (freight & duty fields)",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "recorded": [
+    {
+     "text": "The receipt form states that freight and duty are \"expense to G/L… not added to item cost\".",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "Nothing spreads freight or duty across items (by value, weight or quantity).",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "Each charge goes to one G/L account, chosen by the most common product type on the receipt. Brokerage has no field.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "Lot cost is not set at receipt, so inventory in the portal is valued at purchase price only.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "bc_gl": [
+    {
+     "text": "Freight and duty are posted as G/L account lines on the purchase invoice. For packaging: freight 41130, duty 41131.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "BC Item Charges, which would add these costs to item cost, are not used. Carrier and broker bills are deferred to ERP-M-043.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "gaps": [
+    {
+     "text": "Your step 18 conflicts with ERP-D-015 (approved 10 Sep 2026), which chose to expense these charges and rejected capitalising them.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "proposed_fixes": [
+    {
+     "text": "Adding landed cost to items means revisiting that decision, then posting BC Item Charges and setting a cost on each lot at receipt.",
+     "evidence_type": "proposed_fix"
+    }
+   ],
+   "data_model": [
+    {
+     "system": "Portal",
+     "record": "app_receipt / app_purchase_order",
+     "key_columns": "receipt freight_cost, duties_cost (actual, first receipt only) · PO shipping_cost, duties_cost (estimate)",
+     "joins_to": "Chosen by resolvePostedLandedAmounts",
+     "link_quality": "Foreign key",
+     "tables": [
+      {
+       "name": "app_receipt",
+       "reporting_api_relation": "public.app_receipt"
+      },
+      {
+       "name": "app_purchase_order",
+       "reporting_api_relation": "public.app_purchase_order"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "BC",
+     "record": "Purch. Inv. Header (122) / Line (123) via purchaseInvoices",
+     "key_columns": "Vendor Invoice No. = app_receipt.vendor_invoice_number · item lines + G/L lines 41130 / 41131",
+     "joins_to": "app_bc_entity_map entity_type=purchaseInvoice, source_id = app_receipt.id; bc_purchase_invoice_snapshot (order_number, vendor_invoice_number)",
+     "link_quality": "Entity map",
+     "tables": [
+      {
+       "name": "Purch. Inv. Header (122) / Line (123) via purchaseInvoices",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "BC",
+     "record": "Item Charge (5800) / Item Charge Assignment (Purch) (5805)",
+     "key_columns": "Not used (ERP-D-015)",
+     "joins_to": "Would add freight/duty to Value Entry and item cost",
+     "link_quality": "Missing",
+     "tables": [
+      {
+       "name": "Item Charge (5800) / Item Charge Assignment (Purch) (5805)",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "email_heavy": false,
+   "email_heavy_basis": null
+  },
+  {
+   "number": 18,
+   "name": "Relief from inventory",
+   "map_group": "Relief & ledger",
+   "your_steps": "System step",
+   "status_tag": "BUILT",
+   "evidence_type": "current_code_description",
+   "when": {
+    "text": "When: components are consumed on a realized job, or stock is scrapped, counted, returned or shipped.",
+    "evidence_type": "stakeholder_process_step"
+   },
+   "portal_location": [
+    {
+     "text": "/mrp/wms/pick-lists",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "/mrp/wms/transactions",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "/mrp/wms/cycle-counts/[id]/execute",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "recorded": [
+    {
+     "text": "Picks hold stock aside for a job; adjustments, cycle counts, returns and shipment confirmation are recorded here.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "A cron job every 30 minutes writes ISSUE transactions for realized jobs. The other transaction types are AO_REALIZED, ADJUSTMENT_UP/DOWN, SCRAP, RETURN and SHIP.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "bc_gl": [
+    {
+     "text": "These are picked up by the posting step that follows.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "gaps": [
+    {
+     "text": "The older StockMovement / Inventory tables are never sent to BC.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "proposed_fixes": [],
+   "data_model": [
+    {
+     "system": "Portal",
+     "record": "app_pick_list / app_pick_line",
+     "key_columns": "pick_number (unique) · source_type + source_id · lot_id · consumed_qty",
+     "joins_to": "source_id polymorphic (no FK); lot_id → app_inventory_lot.id",
+     "link_quality": "Loose text",
+     "tables": [
+      {
+       "name": "app_pick_list",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      },
+      {
+       "name": "app_pick_line",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "Portal",
+     "record": "app_inventory_transaction",
+     "key_columns": "transaction_type ISSUE / AO_REALIZED / ADJUSTMENT_* / SCRAP / RETURN / SHIP · reference_type + reference_id",
+     "joins_to": "lot_id → app_inventory_lot.id; reference_id polymorphic (BC/AO job, CYCLE_COUNT, SHIPMENT)",
+     "link_quality": "Loose text",
+     "tables": [
+      {
+       "name": "app_inventory_transaction",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "Portal",
+     "record": "app_cycle_count (+ _line)",
+     "key_columns": "count_number (unique) · variance_qty",
+     "joins_to": "line → lot, bin, product",
+     "link_quality": "Foreign key",
+     "tables": [
+      {
+       "name": "app_cycle_count",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "FM",
+     "record": "public.assembly_order",
+     "key_columns": "id (aoId, stored in lot custom_fields)",
+     "joins_to": "Job that consumes the materials",
+     "link_quality": "JSON field",
+     "tables": [
+      {
+       "name": "public.assembly_order",
+       "reporting_api_relation": "public.assembly_order"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "email_heavy": false,
+   "email_heavy_basis": null
+  },
+  {
+   "number": 19,
+   "name": "Book to BC & the G/L",
+   "map_group": "Relief & ledger",
+   "your_steps": "System step",
+   "status_tag": "BUILT WITH GAPS",
+   "evidence_type": "current_code_description",
+   "when": {
+    "text": "When: every 5 minutes, as part of the scheduled BC sync.",
+    "evidence_type": "stakeholder_process_step"
+   },
+   "portal_location": [
+    {
+     "text": "/admin/integrations/business-central",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "recorded": [
+    {
+     "text": "Shows sync status and lets staff run a sync manually.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "bc_gl": [
+    {
+     "text": "PLXItemJournal_PostAdjustments posts to batches PLXISS (usage), PLXOUT (production output) and PLXADJ (adjustments). Cost used: the lot's cost, then standard cost, then unit cost.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "Only items linked in BC, and only transactions on or after the 22 Jul 2026 cutover.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "G/L entries come from BC's own posting setup, using the old Sage account numbers: Inventory 11300, Packaging applied 41499, COGS 41900.",
+     "evidence_type": "current_code_description"
+    },
+    {
+     "text": "Production-cost backflush is off by default.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "gaps": [
+    {
+     "text": "41499 is not included in the posting setup sent to BC. The G/L mapping is still awaiting accountant sign-off.",
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "proposed_fixes": [],
+   "data_model": [
+    {
+     "system": "Entity map",
+     "record": "app_bc_entity_map",
+     "key_columns": "entity_type=inventoryTransaction · source_id = app_inventory_transaction.id · bc_number = journal document no.",
+     "joins_to": "bc_system_id also holds the document no., not a GUID",
+     "link_quality": "Entity map",
+     "tables": [
+      {
+       "name": "app_bc_entity_map",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "BC",
+     "record": "Item Journal Line (83) → Item Ledger Entry (32) → Value Entry (5802)",
+     "key_columns": "Batches PLXISS / PLXOUT / PLXADJ / PLXXFR / PLX3PL / PLXOPEN · docs PLX-ISS-yyyymmdd-NNN · Location Code = app_warehouse.code · Lot No.",
+     "joins_to": "PLXItemJournal_PostAdjustments (50116)",
+     "link_quality": "BC field / setup",
+     "tables": [
+      {
+       "name": "Item Journal Line (83) → Item Ledger Entry (32) → Value Entry (5802)",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "BC",
+     "record": "G/L Entry (17) via Inventory Posting Setup (5813) & General Posting Setup (252)",
+     "key_columns": "Inventory 11300 · COGS 41900 · Inventory Adjmt. 41199 · Direct Cost Applied 41199 · COGS (Interim) 11229",
+     "joins_to": "Set by PLXPostingSetup (50111); expected-cost posting to G/L is on",
+     "link_quality": "BC field / setup",
+     "tables": [
+      {
+       "name": "G/L Entry (17) via Inventory Posting Setup (5813) & General Posting Setup (252)",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    },
+    {
+     "system": "BC",
+     "record": "Production: Item + Gen. Journal PLXPROD",
+     "key_columns": "PLX-AO-<code> · labour 41298/41299 · overhead 41399",
+     "joins_to": "PLXProductionCost_PostRealization (50118), off by default",
+     "link_quality": "BC field / setup",
+     "tables": [
+      {
+       "name": "Production: Item + Gen. Journal PLXPROD",
+       "reporting_api_relation": null,
+       "reason": "not_in_reporting_catalog"
+      }
+     ],
+     "evidence_type": "current_code_description"
+    }
+   ],
+   "email_heavy": false,
+   "email_heavy_basis": null
+  }
+ ],
+ "data_model": {
+  "crosswalk": [
+   {
+    "concept": "Customer",
+    "portal_key": "app_customer.id · code",
+    "filemaker_key": "public.customer.id",
+    "business_central": "Customer (18) No. = erp_code",
+    "join_mechanism": "Entity map · customer",
+    "strength": "Solid, if erp_code is set",
+    "evidence_type": "current_code_description"
+   },
+   {
+    "concept": "Project / opportunity",
+    "portal_key": "app_project_local.id · project_number",
+    "filemaker_key": "public.project.id",
+    "business_central": "—",
+    "join_mechanism": "Text key used by FG, BOM, brief, artwork",
+    "strength": "Loose (no FK)",
+    "evidence_type": "current_code_description"
+   },
+   {
+    "concept": "Finished good (draft)",
+    "portal_key": "app_fg_item.project_key · code",
+    "filemaker_key": "public.fp.id (fm_fp_id)",
+    "business_central": "Item (27) only once active FINAL_PRODUCT",
+    "join_mechanism": "Text key to project",
+    "strength": "Loose",
+    "evidence_type": "current_code_description"
+   },
+   {
+    "concept": "Packaging item",
+    "portal_key": "app_product.id · code (P-#####)",
+    "filemaker_key": "public.packaging.id (fm-pack-<id>)",
+    "business_central": "Item (27) No. = code",
+    "join_mechanism": "Entity map · item (packaging not pushed by default)",
+    "strength": "Solid, when pushed",
+    "evidence_type": "current_code_description"
+   },
+   {
+    "concept": "Supplier",
+    "portal_key": "app_supplier.id · code",
+    "filemaker_key": "supplier.id (fm-supp-<id>)",
+    "business_central": "Vendor (23) No. = code (Sage-style only)",
+    "join_mechanism": "Entity map · vendor",
+    "strength": "Solid, if code is Sage-style",
+    "evidence_type": "current_code_description"
+   },
+   {
+    "concept": "Supplier item & price",
+    "portal_key": "app_supplier_product (supplier_id, product_id)",
+    "filemaker_key": "packaging_supplier (idpack, idsupp)",
+    "business_central": "Not pushed (no Item Vendor / Purchase Price)",
+    "join_mechanism": "—",
+    "strength": "Missing in BC",
+    "evidence_type": "current_code_description"
+   },
+   {
+    "concept": "Sourcing request",
+    "portal_key": "app_sourcing_request.id · request_no",
+    "filemaker_key": "—",
+    "business_central": "—",
+    "join_mechanism": "FK to BOM line; text to project",
+    "strength": "Portal only",
+    "evidence_type": "current_code_description"
+   },
+   {
+    "concept": "Purchase order",
+    "portal_key": "app_purchase_order.id · po_number",
+    "filemaker_key": "generated_purchase_order.id · ponumber",
+    "business_central": "Purchase Header (38) No.; Your Reference = FM ponumber",
+    "join_mechanism": "Entity map · purchaseOrder; custom_fields JSON to FM",
+    "strength": "po_number changes; JSON link",
+    "evidence_type": "current_code_description"
+   },
+   {
+    "concept": "PO line",
+    "portal_key": "app_purchase_order_line.id",
+    "filemaker_key": "generated_purchase_order_item.id",
+    "business_central": "Purchase Line (39)",
+    "join_mechanism": "Reconciled by item GUID, not stored per line",
+    "strength": "Weak",
+    "evidence_type": "current_code_description"
+   },
+   {
+    "concept": "Receipt",
+    "portal_key": "app_receipt.id · receipt_number (lab id)",
+    "filemaker_key": "receiptpack.idlab / receiptraw.idlabid",
+    "business_central": "Purch. Rcpt. Header (120); Vendor Shipment No. = receiptNo",
+    "join_mechanism": "Entity map · purchaseReceipt; to PO by po_number text",
+    "strength": "Text join to PO",
+    "evidence_type": "current_code_description"
+   },
+   {
+    "concept": "Vendor invoice",
+    "portal_key": "app_receipt.vendor_invoice_number",
+    "filemaker_key": "—",
+    "business_central": "Purch. Inv. Header (122) Vendor Invoice No.",
+    "join_mechanism": "Entity map · purchaseInvoice (source = receipt id)",
+    "strength": "Solid",
+    "evidence_type": "current_code_description"
+   },
+   {
+    "concept": "Lot",
+    "portal_key": "app_inventory_lot (product_id, lot_number)",
+    "filemaker_key": "—",
+    "business_central": "Reservation Entry / Item Ledger Entry Lot No.",
+    "join_mechanism": "Lot no. text passed per line",
+    "strength": "Text match",
+    "evidence_type": "current_code_description"
+   },
+   {
+    "concept": "Inventory movement",
+    "portal_key": "app_inventory_transaction.id",
+    "filemaker_key": "assembly_order.id (via reference)",
+    "business_central": "Item Journal Line (83) → Item Ledger Entry (32)",
+    "join_mechanism": "Entity map · inventoryTransaction (bc_number = document no.)",
+    "strength": "Solid, per posting",
+    "evidence_type": "current_code_description"
+   },
+   {
+    "concept": "Warehouse",
+    "portal_key": "app_warehouse.code",
+    "filemaker_key": "Sage site code",
+    "business_central": "Location (14) Code",
+    "join_mechanism": "Same code (optional remap)",
+    "strength": "Code match",
+    "evidence_type": "current_code_description"
+   },
+   {
+    "concept": "G/L account",
+    "portal_key": "landed-gl.ts / sage-as-is-posting.ts constants",
+    "filemaker_key": "Sage accounts",
+    "business_central": "G/L Account; General & Inventory Posting Setup",
+    "join_mechanism": "Set in BC posting setup",
+    "strength": "Config, not data",
+    "evidence_type": "current_code_description"
+   }
+  ],
+  "weak_links": [
+   {
+    "title": "Project spine is text.",
+    "problem": {
+     "text": "fm_project_id / project_key is either an FM id or a portal cuid, with no FK. It links FG, BOM, brief, artwork and leads.",
+     "evidence_type": "current_code_description"
+    },
+    "fix": {
+     "text": "Make one project table the key owner and add FKs, or a registry table with a typed key.",
+     "evidence_type": "proposed_fix"
+    }
+   },
+   {
+    "title": "PO number is not stable.",
+    "problem": {
+     "text": "po_number gets an -FM<id> suffix on clashes and is overwritten with the BC No. once linked. Receipts join to POs by this text.",
+     "evidence_type": "current_code_description"
+    },
+    "fix": {
+     "text": "Join receipts to POs by app_purchase_order.id (or the FM gpo.id) instead of po_number text.",
+     "evidence_type": "proposed_fix"
+    }
+   },
+   {
+    "title": "FM PO link lives in JSON.",
+    "problem": {
+     "text": "app_purchase_order.custom_fields.fmGeneratedPoId is the only link to the FileMaker PO.",
+     "evidence_type": "current_code_description"
+    },
+    "fix": {
+     "text": "Promote it to a real column with an index.",
+     "evidence_type": "proposed_fix"
+    }
+   },
+   {
+    "title": "Lot → receipt has no FK.",
+    "problem": {
+     "text": "app_inventory_lot.receipt_id and app_receipt_line.bin_location_id are plain text.",
+     "evidence_type": "current_code_description"
+    },
+    "fix": {
+     "text": "Add FKs so lot cost and origin can be traced to the receipt and PO line.",
+     "evidence_type": "proposed_fix"
+    }
+   },
+   {
+    "title": "PO lines not mapped to BC lines.",
+    "problem": {
+     "text": "Only the PO header is in app_bc_entity_map. Lines are reconciled by item on each sync.",
+     "evidence_type": "current_code_description"
+    },
+    "fix": {
+     "text": "Store BC line numbers per app_purchase_order_line so receipts and invoices can be matched per line.",
+     "evidence_type": "proposed_fix"
+    }
+   },
+   {
+    "title": "External doc no. never written.",
+    "problem": {
+     "text": "app_bc_entity_map.bc_external_document_number is defined but never set, and the ship-only bridge overwrites the Sales Header “External Document No.” (the customer PO) with the shipment no.",
+     "evidence_type": "current_code_description"
+    },
+    "fix": {
+     "text": "Fill the column, and write the shipment no. to a different field.",
+     "evidence_type": "proposed_fix"
+    }
+   },
+   {
+    "title": "Journal rows store doc no. as “GUID”.",
+    "problem": {
+     "text": "For inventory journal rows, bc_system_id holds the document no., not a BC GUID.",
+     "evidence_type": "current_code_description"
+    },
+    "fix": {
+     "text": "Keep bc_system_id for GUIDs only; add Item Ledger Entry No. if line-level traceability is needed.",
+     "evidence_type": "proposed_fix"
+    }
+   },
+   {
+    "title": "HS code, origin and INCO terms stop at the portal.",
+    "problem": {
+     "text": "Product.hs_code and SupplierProduct.country_of_origin / incoterms are never sent. BC Item has standard Tariff No. and Country/Region of Origin Code fields.",
+     "evidence_type": "current_code_description"
+    },
+    "fix": {
+     "text": "Map hs_code → Item Tariff No., country_of_origin → Country/Region of Origin Code, incoterms → a Purchase Header field.",
+     "evidence_type": "proposed_fix"
+    }
+   }
+  ]
+ },
+ "relationship_diagram": {
+  "title": "Relationship diagram",
+  "legend": "Solid arrow: foreign key. Dotted arrow: text or JSON link. Thick arrow: synced through the entity map.",
+  "direction": "LR",
+  "evidence_type": "current_code_description",
+  "subgraphs": [
+   {
+    "id": "FM",
+    "label": "FileMaker (bronze)",
+    "nodes": [
+     {
+      "id": "fproj",
+      "label": "public.project<br/>id"
+     },
+     {
+      "id": "fpack",
+      "label": "public.packaging<br/>id · code"
+     },
+     {
+      "id": "fgpo",
+      "label": "generated_purchase_order<br/>id · ponumber"
+     },
+     {
+      "id": "fgpi",
+      "label": "generated_purchase_order_item<br/>id · idpogen"
+     },
+     {
+      "id": "frec",
+      "label": "receiptpack<br/>idlab · ponoqc"
+     }
+    ]
+   },
+   {
+    "id": "P",
+    "label": "Portal (gold)",
+    "nodes": [
+     {
+      "id": "lead",
+      "label": "app_lead"
+     },
+     {
+      "id": "cust",
+      "label": "app_customer<br/>code · erp_code"
+     },
+     {
+      "id": "projl",
+      "label": "app_project_local<br/>project_number"
+     },
+     {
+      "id": "fg",
+      "label": "app_fg_item<br/>project_key"
+     },
+     {
+      "id": "bom",
+      "label": "app_bill_of_materials<br/>code"
+     },
+     {
+      "id": "bl",
+      "label": "app_bom_line"
+     },
+     {
+      "id": "sr",
+      "label": "app_sourcing_request<br/>request_no"
+     },
+     {
+      "id": "sup",
+      "label": "app_supplier<br/>code"
+     },
+     {
+      "id": "prod",
+      "label": "app_product<br/>code · hs_code"
+     },
+     {
+      "id": "sp",
+      "label": "app_supplier_product<br/>incoterms · delivery_cost"
+     },
+     {
+      "id": "pr",
+      "label": "app_purchase_requisition<br/>pr_number"
+     },
+     {
+      "id": "po",
+      "label": "app_purchase_order<br/>po_number"
+     },
+     {
+      "id": "pol",
+      "label": "app_purchase_order_line"
+     },
+     {
+      "id": "rc",
+      "label": "app_receipt<br/>receipt_number = lab id"
+     },
+     {
+      "id": "rl",
+      "label": "app_receipt_line"
+     },
+     {
+      "id": "lot",
+      "label": "app_inventory_lot<br/>product_id + lot_number"
+     },
+     {
+      "id": "itx",
+      "label": "app_inventory_transaction"
+     },
+     {
+      "id": "wh",
+      "label": "app_warehouse<br/>code"
+     },
+     {
+      "id": "att",
+      "label": "app_attachment<br/>entity_type + entity_id"
+     }
+    ]
+   },
+   {
+    "id": "M",
+    "label": "Sync",
+    "nodes": [
+     {
+      "id": "map",
+      "label": "app_bc_entity_map<br/>entity_type · source_id → bc_system_id · bc_number"
+     }
+    ]
+   },
+   {
+    "id": "B",
+    "label": "Business Central",
+    "nodes": [
+     {
+      "id": "bcc",
+      "label": "Customer 18"
+     },
+     {
+      "id": "bcv",
+      "label": "Vendor 23"
+     },
+     {
+      "id": "bci",
+      "label": "Item 27"
+     },
+     {
+      "id": "bph",
+      "label": "Purchase Header 38 / Line 39"
+     },
+     {
+      "id": "bpr",
+      "label": "Purch. Rcpt. Header 120"
+     },
+     {
+      "id": "bpi",
+      "label": "Purch. Inv. Header 122"
+     },
+     {
+      "id": "bij",
+      "label": "Item Journal Line 83"
+     },
+     {
+      "id": "bile",
+      "label": "Item Ledger Entry 32 → Value Entry 5802"
+     },
+     {
+      "id": "bgl",
+      "label": "G/L Entry 17"
+     }
+    ]
+   }
+  ],
+  "edges": [
+   {
+    "from": "lead",
+    "to": "cust",
+    "kind": "text_or_json",
+    "label": "verified_customer_ref"
+   },
+   {
+    "from": "lead",
+    "to": "projl",
+    "kind": "text_or_json",
+    "label": "verified_project_key"
+   },
+   {
+    "from": "fproj",
+    "to": "projl",
+    "kind": "text_or_json",
+    "label": "same id"
+   },
+   {
+    "from": "projl",
+    "to": "fg",
+    "kind": "text_or_json",
+    "label": "project_key"
+   },
+   {
+    "from": "fg",
+    "to": "prod",
+    "kind": "foreign_key"
+   },
+   {
+    "from": "fg",
+    "to": "bom",
+    "kind": "text_or_json",
+    "label": "project_key"
+   },
+   {
+    "from": "bom",
+    "to": "bl",
+    "kind": "foreign_key"
+   },
+   {
+    "from": "bl",
+    "to": "prod",
+    "kind": "foreign_key"
+   },
+   {
+    "from": "sr",
+    "to": "bl",
+    "kind": "foreign_key"
+   },
+   {
+    "from": "sr",
+    "to": "sup",
+    "kind": "foreign_key"
+   },
+   {
+    "from": "sp",
+    "to": "sup",
+    "kind": "foreign_key"
+   },
+   {
+    "from": "sp",
+    "to": "prod",
+    "kind": "foreign_key"
+   },
+   {
+    "from": "fpack",
+    "to": "prod",
+    "kind": "text_or_json",
+    "label": "fm-pack-id"
+   },
+   {
+    "from": "pr",
+    "to": "sup",
+    "kind": "foreign_key"
+   },
+   {
+    "from": "po",
+    "to": "sup",
+    "kind": "foreign_key"
+   },
+   {
+    "from": "po",
+    "to": "wh",
+    "kind": "foreign_key"
+   },
+   {
+    "from": "pol",
+    "to": "po",
+    "kind": "foreign_key"
+   },
+   {
+    "from": "pol",
+    "to": "prod",
+    "kind": "foreign_key"
+   },
+   {
+    "from": "fgpi",
+    "to": "fgpo",
+    "kind": "foreign_key"
+   },
+   {
+    "from": "po",
+    "to": "fgpo",
+    "kind": "text_or_json",
+    "label": "custom_fields.fmGeneratedPoId"
+   },
+   {
+    "from": "att",
+    "to": "po",
+    "kind": "text_or_json",
+    "label": "entity_id"
+   },
+   {
+    "from": "frec",
+    "to": "fgpi",
+    "kind": "foreign_key"
+   },
+   {
+    "from": "rc",
+    "to": "po",
+    "kind": "text_or_json",
+    "label": "po_number text"
+   },
+   {
+    "from": "rl",
+    "to": "rc",
+    "kind": "foreign_key"
+   },
+   {
+    "from": "rl",
+    "to": "prod",
+    "kind": "foreign_key"
+   },
+   {
+    "from": "lot",
+    "to": "prod",
+    "kind": "foreign_key"
+   },
+   {
+    "from": "lot",
+    "to": "rc",
+    "kind": "text_or_json",
+    "label": "receipt_id"
+   },
+   {
+    "from": "itx",
+    "to": "lot",
+    "kind": "foreign_key"
+   },
+   {
+    "from": "cust",
+    "to": "map",
+    "kind": "entity_map"
+   },
+   {
+    "from": "sup",
+    "to": "map",
+    "kind": "entity_map"
+   },
+   {
+    "from": "prod",
+    "to": "map",
+    "kind": "entity_map"
+   },
+   {
+    "from": "po",
+    "to": "map",
+    "kind": "entity_map"
+   },
+   {
+    "from": "rc",
+    "to": "map",
+    "kind": "entity_map"
+   },
+   {
+    "from": "itx",
+    "to": "map",
+    "kind": "entity_map"
+   },
+   {
+    "from": "map",
+    "to": "bcc",
+    "kind": "entity_map"
+   },
+   {
+    "from": "map",
+    "to": "bcv",
+    "kind": "entity_map"
+   },
+   {
+    "from": "map",
+    "to": "bci",
+    "kind": "entity_map"
+   },
+   {
+    "from": "map",
+    "to": "bph",
+    "kind": "entity_map"
+   },
+   {
+    "from": "map",
+    "to": "bpr",
+    "kind": "entity_map"
+   },
+   {
+    "from": "map",
+    "to": "bpi",
+    "kind": "entity_map"
+   },
+   {
+    "from": "map",
+    "to": "bij",
+    "kind": "entity_map"
+   },
+   {
+    "from": "bij",
+    "to": "bile",
+    "kind": "foreign_key"
+   },
+   {
+    "from": "bpr",
+    "to": "bile",
+    "kind": "foreign_key"
+   },
+   {
+    "from": "bpi",
+    "to": "bile",
+    "kind": "foreign_key"
+   },
+   {
+    "from": "bile",
+    "to": "bgl",
+    "kind": "foreign_key"
+   },
+   {
+    "from": "bpi",
+    "to": "bgl",
+    "kind": "foreign_key"
+   }
+  ]
+ },
+ "field_tracer": {
+  "title": "Where INCO terms, HS codes, costs and shipping data live",
+  "note": "This table follows each field from sourcing through to Business Central. Stored means the field exists at that step. — means it does not.",
+  "evidence_type": "current_code_description",
+  "columns": [
+   "SOURCING RESPONSE",
+   "SUPPLIER / SUPPLIER ITEM",
+   "ITEM MASTER",
+   "PURCHASE ORDER",
+   "RECEIPT",
+   "BUSINESS CENTRAL"
+  ],
+  "rows": [
+   {
+    "field": "INCO terms",
+    "cells": [
+     {
+      "status": "Stored",
+      "detail": "vendorResponse JSON"
+     },
+     {
+      "status": "Stored",
+      "detail": "Supplier.incoterms (default; edit through API only) · SupplierProduct.incoterms"
+     },
+     {
+      "status": "—",
+      "detail": ""
+     },
+     {
+      "status": "Stored",
+      "detail": "PurchaseOrder.incoterms, copied from supplier, can be overridden. Not on the PDF."
+     },
+     {
+      "status": "—",
+      "detail": ""
+     },
+     {
+      "status": "Not sent",
+      "detail": "Not on vendor or PO. GIT in-transit not built."
+     }
+    ]
+   },
+   {
+    "field": "HS code",
+    "cells": [
+     {
+      "status": "Stored",
+      "detail": "vendorResponse JSON"
+     },
+     {
+      "status": "—",
+      "detail": ""
+     },
+     {
+      "status": "Stored",
+      "detail": "Product.hsCode, set at link; not editable on part page"
+     },
+     {
+      "status": "—",
+      "detail": "Not on PO lines. Customs PDF tariff hard-coded to \"0%\"."
+     },
+     {
+      "status": "—",
+      "detail": ""
+     },
+     {
+      "status": "Not sent",
+      "detail": "Item push has no tariff field."
+     }
+    ]
+   },
+   {
+    "field": "Country of origin",
+    "cells": [
+     {
+      "status": "Stored",
+      "detail": "vendorResponse JSON"
+     },
+     {
+      "status": "Stored",
+      "detail": "SupplierProduct.countryOfOrigin"
+     },
+     {
+      "status": "—",
+      "detail": "No field on Product"
+     },
+     {
+      "status": "—",
+      "detail": ""
+     },
+     {
+      "status": "—",
+      "detail": ""
+     },
+     {
+      "status": "Not sent",
+      "detail": ""
+     }
+    ]
+   },
+   {
+    "field": "Unit cost",
+    "cells": [
+     {
+      "status": "Stored",
+      "detail": "Quoted cost + tiers"
+     },
+     {
+      "status": "Stored",
+      "detail": "SupplierProduct cost / tiers"
+     },
+     {
+      "status": "Partial",
+      "detail": "standardCost, unitCost; AVERAGE method"
+     },
+     {
+      "status": "Stored",
+      "detail": "PurchaseOrderLine.unitPrice"
+     },
+     {
+      "status": "—",
+      "detail": "No line cost; lot cost left empty"
+     },
+     {
+      "status": "Sent",
+      "detail": "PO direct unit cost → receipt value → invoice"
+     }
+    ]
+   },
+   {
+    "field": "Freight & duty",
+    "cells": [
+     {
+      "status": "Quote only",
+      "detail": "deliveryCost, tariffRate"
+     },
+     {
+      "status": "—",
+      "detail": ""
+     },
+     {
+      "status": "—",
+      "detail": ""
+     },
+     {
+      "status": "Estimate",
+      "detail": "shippingCost, dutiesCost"
+     },
+     {
+      "status": "Actual",
+      "detail": "freightCost, dutiesCost (first receipt of the PO only)"
+     },
+     {
+      "status": "Expensed",
+      "detail": "G/L lines 41130 / 41131 on the purchase invoice, not added to item cost"
+     }
+    ]
+   },
+   {
+    "field": "Currency",
+    "cells": [
+     {
+      "status": "—",
+      "detail": ""
+     },
+     {
+      "status": "Stored",
+      "detail": "Supplier.currency"
+     },
+     {
+      "status": "—",
+      "detail": ""
+     },
+     {
+      "status": "Hard-coded",
+      "detail": "CAD in the FileMaker PO path; no exchange rate stored"
+     },
+     {
+      "status": "—",
+      "detail": ""
+     },
+     {
+      "status": "Sent",
+      "detail": "currencyCode on the PO"
+     }
+    ]
+   },
+   {
+    "field": "Payment terms",
+    "cells": [
+     {
+      "status": "—",
+      "detail": "Free-text notes only"
+     },
+     {
+      "status": "Free text",
+      "detail": "Supplier.paymentTerms, paymentMethod"
+     },
+     {
+      "status": "—",
+      "detail": ""
+     },
+     {
+      "status": "Free text",
+      "detail": "PurchaseOrder.paymentTerms. No deposit or prepayment field."
+     },
+     {
+      "status": "—",
+      "detail": ""
+     },
+     {
+      "status": "Not sent",
+      "detail": "BC Prepayment % never set"
+     }
+    ]
+   },
+   {
+    "field": "Pallet / container qty",
+    "cells": [
+     {
+      "status": "—",
+      "detail": ""
+     },
+     {
+      "status": "—",
+      "detail": ""
+     },
+     {
+      "status": "Partial",
+      "detail": "ProductPackSpec has case and pallet fields only (from FileMaker). No 20 ft / 40 ft HQ or CBM."
+     },
+     {
+      "status": "—",
+      "detail": ""
+     },
+     {
+      "status": "Updates",
+      "detail": "units per case refreshed after receipt"
+     },
+     {
+      "status": "—",
+      "detail": ""
+     }
+    ]
+   },
+   {
+    "field": "BOL / shipping docs",
+    "cells": [
+     {
+      "status": "—",
+      "detail": ""
+     },
+     {
+      "status": "—",
+      "detail": ""
+     },
+     {
+      "status": "—",
+      "detail": ""
+     },
+     {
+      "status": "Upload only",
+      "detail": "PO Documents tab: CUSTOMS or OTHER category. No BOL or container fields."
+     },
+     {
+      "status": "Upload only",
+      "detail": "Packing slip next to the CoA"
+     },
+     {
+      "status": "—",
+      "detail": ""
+     }
+    ]
+   }
+  ]
+ },
+ "proposed_fix_order": [
+  {
+   "title": "Decide on landed cost (your step 18 vs ERP-D-015).",
+   "text": "Today freight and duty are expensed, and received lots have no unit cost. If portal inventory should carry landed cost, revisit ERP-D-015, then build three pieces: spread charges across items, post BC Item Charges, and set a cost on each lot at receipt.",
+   "evidence_type": "proposed_fix"
+  },
+  {
+   "title": "Add an inbound shipment record that covers the freight forwarder (your steps 8–16).",
+   "text": "One record per PO shipment would hold pallet and container info, the forwarder and their quote, cargo-ready date, pickup, BOL and container number, milestones and ETA, and the documents. It would also feed the in-transit (GIT) posting for origin INCO terms.",
+   "evidence_type": "proposed_fix"
+  },
+  {
+   "title": "Record who specs the packaging, and connect the brief to the BOM (your steps 2–4).",
+   "text": "Add a field for PLX-sourced vs customer-supplied packaging. Create the Assembly BOM and packaging sourcing requests from the Draft FG, carrying across the brief, customer, volume and launch date.",
+   "evidence_type": "proposed_fix"
+  },
+  {
+   "title": "Allow new packaging items to be created, and push them to BC.",
+   "text": "Build MRP-M-148 so a new component can be created from a sourcing request. Include PACKAGING in the default item push so its POs, receipts and journals aren't skipped without warning.",
+   "evidence_type": "proposed_fix"
+  },
+  {
+   "title": "Carry the HS code, country of origin and INCO terms through.",
+   "text": "Add them to PO lines, the customs PDF and the commercial invoice, and send them to the BC item and PO.",
+   "evidence_type": "proposed_fix"
+  },
+  {
+   "title": "Record vendor terms and deposits.",
+   "text": "Capture payment terms and deposit % on the quote and the PO, and record a vendor prepayment against the PO (BC Prepayment %).",
+   "evidence_type": "proposed_fix"
+  },
+  {
+   "title": "Add a PO approval step and accurate PO status.",
+   "text": "Don't push unapproved POs to BC. Set status to ORDERED when a PO is sent, and add production-complete and shipped statuses so ETA edits don't mark the whole PO as REVISED.",
+   "evidence_type": "proposed_fix"
+  },
+  {
+   "title": "Smaller issues.",
+   "text": "Staff can't enter a lead by hand. Vendor emails aren't logged. QC release doesn't update the portal's receipt and lot records. G/L account 41499 isn't sent to BC and the account mapping isn't signed off. Currency is hard-coded to CAD. A PO that fails to copy to the portal only logs a warning. The sourcing route emails staff before rejecting a request.",
+   "evidence_type": "proposed_fix"
+  }
+ ],
+ "live_catalog_supplement": {
+  "note": "Added by the Workbench, not part of Vince's map: purchase-side relations the read-only reporting API serves that the map does not name, read by the purchase-side case tools. Column presence is live-verified (catalog read); what a column joins to is stated with its basis and is never a verified identity.",
+  "evidence_ref": "results/5f234e31bb73a5094c0e71b034da2f6cb1ff67f1.purchase_catalog.json (live catalog read, run live-2026-10-01T03:29:17Z, main 5f234e3); copy in operating/tests/fixtures/live_purchase_catalog_2026-10-01.json",
+  "observed_at": "2026-10-01T03:29:17Z",
+  "relations": [
+   {
+    "relation": "silver.purchase_orders",
+    "system": "FM",
+    "live_row_count": 5481,
+    "use": "lead_only",
+    "basis": "Silver copy of FM purchase orders (po_number). Searched by number and cited as a parallel record lead; never a case root (no verified join to public.generated_purchase_order or public.app_purchase_order)."
+   },
+   {
+    "relation": "silver.receipts",
+    "system": "FM",
+    "live_row_count": 3438,
+    "use": "lead_only",
+    "basis": "FM receipts; po_reference is PO-number text, so a match is a linked-by-text lead (map weak link: receipts join to POs by po_number text)."
+   },
+   {
+    "relation": "sage.po_header",
+    "system": "Sage",
+    "live_row_count": 5279,
+    "use": "lead_only",
+    "basis": "Sage purchase orders (ponumber). Searched by number and cited as a lead; never a case root."
+   },
+   {
+    "relation": "sage.po_receipt_header",
+    "system": "Sage",
+    "live_row_count": 6481,
+    "use": "lead_only",
+    "basis": "Sage receipts; ponumber is the Sage PO number text, so a match to a Portal or FM purchase order is a linked-by-text lead."
+   }
+  ]
+ },
+ "portal_code_readings": {
+  "note": "Added by the Workbench, not part of Vince's map: facts read from the Portal code (petralabx/plx-customer-portal, branch staging, commit 5724575 = 572457507bd7ff42f59e816690820e9a9918f213, read 2026-10-01; every cited file is byte-identical to its earlier 8da33e4/487862b reading except project-landed-quote.ts, where the TASK-2119 persist option moved the matrix caller from line 1431 to 1437; docs/reference/portal-code-map.md sections 2, 4.1, 4.10 and 9) that qualify the map text at the path named. Code readings, not runtime observations; the quote engine arithmetic is reproduced by operating/landed_cost.py and golden-tested against the later staging commit d4d1bb2 (operating.landed_cost.PORTAL_REVISION, re-pinned 2026-10-15), where landed-cost.ts, quote/matrix.ts, quote/workbook.ts, quote-advisories.ts and landed-gl.ts are unchanged and the project-landed-quote.ts callers sit at lines 823 and 1881. The BC-stage readings were re-read at staging 4243499 (4243499026f250e31122ae1c3d66d54b4563a130, 2026-10-14): each names the commit it was read at.",
+  "portal_commit": "5724575",
+  "items": [
+   {
+    "id": "landed_cost_expensed_erp_d_015",
+    "applies_to": "$.stages[16].gaps",
+    "map_says": "Your step 18 conflicts with ERP-D-015 (approved 10 Sep 2026), which chose to expense these charges and rejected capitalising them.",
+    "portal_fact": "Current Portal decision = expense (ERP-D-015, Approved 2026-09-10): freight and duty post to Sage G/L accounts (raw-material freight 41102, packaging freight 41130, raw-material duty 41101, packaging duty 41131, distribution import duty 41680); the PO header holds an estimate and the receipt the actual. Vince's step 18 asks to reopen it. Any landed cost the Workbench states is an analytic estimate, never item cost.",
+    "source": "docs/projects/business-central-erp-modernization/decision-log.md@5724575 (line 25, ERP-D-015 row; the row is unchanged at f3e3a53); portal/src/lib/procurement/landed-gl.ts@5724575 (LANDED_GL lines 8-14, buildLandedExpenseLines lines 57-85, resolvePostedLandedAmounts lines 88-104)"
+   },
+   {
+    "id": "quote_landed_cost_hard_constants_no_fx",
+    "applies_to": "$.field_tracer.rows[4].cells[0]",
+    "map_says": "Quote only: deliveryCost, tariffRate",
+    "portal_fact": "Quote landed cost per component unit = round4((tierPrice + round4(tierPrice x 0.065)) x 1.38 + deliveryCost). Every caller (project-landed-quote.ts, quote/matrix.ts, quote/workbook.ts, quote-advisories.ts) passes only tierPrice and freight, so the defaults 0.065 and 1.38 always apply: RateSettings.tariffRate, landedMultiplier and fxRateCadUsd have no effect, and no FX conversion is made. The Workbench reproduces the whole quote engine (operating.landed_cost.portal_quote_landed; the per-component call is portal_quote_landed_component), golden-tested bit for bit against the Portal's own TypeScript, and labels the result a Portal quote estimate.",
+    "source": "portal/src/lib/costing/landed-cost.ts@5724575 (landedComponentCost, lines 47-71); portal/src/lib/costing/rate-masters.ts@d4d1bb2 (RATE_MASTER_DEFAULTS, lines 34-57; unchanged since e3f8f19, 371b4cc only appended the rate-settings audit helpers after line 172); callers portal/src/lib/costing/project-landed-quote.ts@5724575 (lines 586 and 1437), portal/src/lib/quote/matrix.ts@5724575 (line 111), portal/src/lib/quote/workbook.ts@5724575 (line 208), portal/src/lib/costing/quote-advisories.ts@5724575 (line 407)"
+   },
+   {
+    "id": "receipt_tables_are_compat_views",
+    "applies_to": "$.stages[15].data_model[0].tables",
+    "map_says": "public.receiptpack / receiptraw",
+    "portal_fact": "public.receiptpack and public.receiptraw are compatibility views of public.receipt_packaging and public.receipt_raw_material; the reporting API serves the base tables, so a case cites public.receipt_packaging / public.receipt_raw_material.",
+    "source": "scripts/migrations/20260327_2205_fm_snake_case_compat.sql@5724575 (lines 59-60); scripts/sql/workbench-readonly/allowlist.json@5724575 (receipt_packaging line 1529, receipt_raw_material line 1549; both still served at f3e3a53, lines 1807 and 1839, at c09de5d, lines 1860 and 1892, at 0323e19c, the same lines, and at 52c9116, lines 1882 and 1914)"
+   },
+   {
+    "id": "receipt_to_po_inferred_text_join",
+    "applies_to": "$.data_model.crosswalk[9]",
+    "map_says": "Entity map · purchaseReceipt; to PO by po_number text",
+    "portal_fact": "app_receipt.purchase_order_id is filled by SELECT id FROM public.app_purchase_order WHERE TRIM(po_number) = TRIM($1) LIMIT 1: an inferred text join on a number that is suffixed on clashes and rewritten to the BC number, taking the first match. A receipt is a lead for a PO, never a firm join. Since 5cade1b (TASK-2652) a packaging receipt is written on Portal records (receivePackToPortal), and it links its PO the same way: the first app_purchase_order whose po_number equals the typed number, so it stays a lead too.",
+    "source": "portal/src/lib/mrp/upsert-gold-receipt.ts@5724575 (resolvePurchaseOrderId, line 117; called at line 184; unchanged at 4243499; the same query at f3e3a53, lines 128-141, called at line 192); portal/src/lib/mrp/pack-receipt-portal.ts@f3e3a53 (purchaseOrder.findFirst by poNumber, lines 243-248)",
+    "portal_commit": "4243499"
+   },
+   {
+    "id": "reporting_api_is_the_staging_primary_replica",
+    "applies_to": "$.catalog_reference",
+    "map_says": "(the map does not say which database the rows come from)",
+    "portal_fact": "Reporting-API rows come from plx-postgres-staging-reporting, the read-only replica of the staging primary (FM and Sage bronze, silver views and gold app_* built by ETL), not the UAT database behind staging.plxcustomer.io. A claim from these rows says 'staging primary replica (FM/Sage/gold ETL)', never 'what staff entered in the Portal'.",
+    "source": "scripts/db-targets.json@5724575 (staging_reporting, line 45); docs/runbooks/WORKBENCH-API.md@38cd3f3 (lines 6 and 9; the same two lines at f3e3a53)"
+   },
+   {
+    "id": "po_send_sets_ordered_through_the_email_hub",
+    "applies_to": "$.stages[10].gaps[0]",
+    "map_says": "Sending doesn't set the PO to ORDERED or record when it was sent, and INCO terms aren't printed on the PDF.",
+    "portal_fact": "Superseded in part by 5a0bb1b (TASK-2285, 2026-10-04): Send goes through the email hub type purchase-order.sent from purchase-order@; the server builds the PO PDF and stores it on the PO's documents. After a production send to the real vendor the hook sets the gold PO to ORDERED (a PO already ORDERED or further along keeps its status); redirected, non-production, redirect-mode and TEST-mode sends, and the legacy Resend path (type OFF or no admin row), never set ORDERED, so staging POs are set ORDERED by hand. Since d715f2e (TASK-2343) a send with locked recipient edits answers 409 and a legacy send is idempotent on its send id; neither changes when ORDERED is set. The PO still has no sent-at column: the send time is the email-hub message's sentAt. INCO terms reach the PDF only as its FOB Point: the gold PO prints the supplier's fobPoint, else the PO's incoterms, else Destination; the FileMaker PO prints fob_point. Since e59f1d7 (TASK-2627) the hub email also attaches the customer-approved artwork file of each artwork version the PO orders (up to 8, stored under SIGNED_PO like the PO PDF and named <item code>_v<version>_<file>), and a printed line's PDF text names that artwork version or 'to follow'; when ORDERED is set is unchanged.",
+    "source": "portal/src/lib/email-hub/types/purchase-order-sent.ts@12db891 (orderedHookSkipReason, markPurchaseOrderOrdered); portal/src/lib/mrp/api-handlers/purchase-order-send.ts@12db891; portal/src/lib/mrp/purchase-order-legacy-send.ts@4af6957; portal/src/lib/mrp/purchase-order-document.ts@790256c (fobPoint, lines 320 and 388); portal/src/lib/email-hub/outbox.ts@790256c (sentAt); portal/src/lib/email-hub/types/purchase-order-sent.ts@4243499 (artworkAttachmentBuilders, lines 148-158; added to the attachments, line 185); portal/src/lib/mrp/po-artwork-files.ts@4243499 (poArtworkFileName, lines 113-116; SIGNED_PO, line 140); portal/src/lib/mrp/purchase-order-document.ts@4243499 (withArtworkNote, lines 356-366)",
+    "portal_commit": "790256c"
+   },
+   {
+    "id": "po_bc_outbox_skips_draft_and_test_pos",
+    "applies_to": "$.stages[10].bc_gl[2]",
+    "map_says": "POs go to BC without any approval check.",
+    "portal_fact": "Qualified by 4a42899 (TASK-2348, 2026-10-04): DRAFT POs are no longer enqueued for BC (BC_SKIP_DRAFT_POS, on by default in every environment), and test/UAT suppliers and PO numbers are kept out of the BC outbox (isBcExcludedTestRecord, BC_EXCLUDE_TEST_RECORDS on by default outside Vercel production; the drain dead-letters a queued test row without a BC request). A non-draft PO still goes to BC with no approval check. Unchanged at 4243499: the producer's PO guard moved to line 581 only, and the one new test-record-guard switch, BC_CREDIT_MEMO_DRAFT_ENABLED (off by default everywhere, TASK-2710), gates return credit memo drafts, not POs.",
+    "source": "portal/src/lib/business-central/test-record-guard.ts@4243499 (BC_SKIP_DRAFT_POS line 39, isBcCreditMemoDraftEnabled line 44, BC_EXCLUDE_TEST_RECORDS, isBcExcludedTestRecord line 136); portal/src/lib/business-central/outbox-producer.ts@4243499 (line 581); portal/src/lib/business-central/outbox-drain.ts@4243499 (isTestRecordRow, line 1326)",
+    "portal_commit": "4243499"
+   },
+   {
+    "id": "qc_release_is_a_regulated_signature",
+    "applies_to": "$.stages[15].recorded[1]",
+    "map_says": "QC tests and CoA are recorded. Release is blocked with a 409 until every required test has passed.",
+    "portal_fact": "Qualified by 4304012 (TASK-2602, 2026-10-11) and re-read at f3e3a53 (2026-10-19; the five cited files carry the same lines at 52c9116, 2026-10-20: four unchanged, pack-receipt-portal.ts only gains lines 882-927 from 4d9522be2 TASK-1927): releasing a quarantined raw or packaging receipt is a regulated electronic signature. The route records an 'Approved By' signature (entity RECEIPT_RAW or RECEIPT_PACK) through createSignature before it writes the status, and it re-authenticates the signer first: a verified Microsoft MFA step-up that belongs to the signer, else the signer's portal password (403 when a required step-up is missing or a Microsoft account has neither, 400 when another account gives no password, 401 on a wrong one). Since TASK-3017 the signature binds a hash of the QC results it covers (record_sha256). Reject is not a signature. A released receipt therefore has a matching signature row in app_electronic_signature (not served by the reporting API), and no Workbench action can release one. A raw receipt release still answers 409 until every required QC test has passed (qcReleaseConflict), before the signature. A packaging release no longer blocks on QC: since TASK-3130 (Vince, 2026-10-13) Form #012 is warn only (missing, incomplete or failed: an AuditLog row of kind pack_receipt_release_incoming_qc_warning and incomingQcWarnings in the response), and since TASK-3138 (Vince, 2026-10-16) pack QC tests are warn only too (a Rejected test or one with no result releases, is named in the signature reason and the signed record, gets an AuditLog row of kind pack_receipt_release_qc_test_warning and comes back as qcTestWarnings). Artwork gaps have only warned since b5311a9 (TASK-2775; AuditLog kind pack_receipt_release_artwork_warning). The only QC refusal left on a pack release is 409 QC_CHANGED: the QC results under the row lock no longer hash to the record the signer signed, and nothing is written. A released packaging receipt is therefore no evidence that its QC tests passed, that its Form #012 was complete or passed, or that its artwork matched an approved version; the warning AuditLog rows and the signed record say which.",
+    "source": "portal/src/app/api/mrp/receiving/raw/[id]/release/route.ts@52c9116 (QC conflict 409, lines 72-80; signature with the QC record binding, lines 81-91); portal/src/app/api/mrp/receiving/pack/[id]/release/route.ts@52c9116 (header, lines 17-32; packReleaseQcBinding and the signature, lines 71-90; decidePortalPackReceipt with signedQc, lines 93-94; warnings in the response, lines 104-106); portal/src/lib/mrp/pack-receipt-portal.ts@52c9116 (packReleaseQcBinding, lines 612-623; warning kinds, lines 641-645; QC_CHANGED under the lock, lines 683-696; Form #012 and artwork warn only, lines 698-709); portal/src/lib/mrp/incoming-qc-form.ts@52c9116 (incomingQcReleaseBlock, lines 110-132, now read as a warning on a pack release); portal/src/lib/services/regulated-signature.ts@52c9116 (recordRegulatedSignature, lines 133-144)",
+    "portal_commit": "52c9116"
+   },
+   {
+    "id": "vendor_payment_initiation_is_bc_only",
+    "applies_to": "$.stages[11].recorded[0]",
+    "map_says": "The AP payments screen can only pay against a posted purchase invoice, not against a PO.",
+    "portal_fact": "Superseded by fdf51b5 (TASK-1616, 2026-10-12): the Portal stages and posts no payment at all. Every write to the AP payments and AP settle routes answers 403 payment_initiation_disabled_bc_only before any BC call, and the payment helpers keep a hard-off switch behind them; payments are entered and posted in Business Central, and the Portal keeps read-only status and reconciliation views. A BC reply that is not a well-formed result never counts as a posted payment. So no Portal record shows a payment the Portal made, and no Workbench action initiates one (operating/action_catalog.py BC_FINANCIAL_ROUTES).",
+    "source": "portal/src/lib/business-central/payment-boundary.ts@4243499 (lines 1-38); portal/src/app/api/mrp/ap-payments/route.ts@4243499 (lines 10-28); portal/src/app/api/mrp/ap-settle/route.ts@4243499 (GET line 12, refused writes lines 37-51); portal/src/lib/business-central/vendor-payment.ts@4243499 (line 41); portal/src/lib/business-central/applied-payment.ts@4243499 (line 17)",
+    "portal_commit": "4243499"
+   },
+   {
+    "id": "generate_po_writes_portal_po_only",
+    "applies_to": "$.stages[10].recorded[1]",
+    "map_says": "createFmPurchaseOrder writes the FileMaker PO, then copies it to PurchaseOrder with status SUBMITTED.",
+    "portal_fact": "Superseded by 359e2f0 (TASK-2651, 2026-10-12): Generate PO (create-po and requisition convert) writes one app_purchase_order with its lines in one transaction, status SUBMITTED, numbered PO100000+ under the series lock and idempotent on a key, the requisition ids or a short-window content hash; it writes no FileMaker generated_purchase_order. A PO raised from staging 38cd3f3 on has app_purchase_order as its only record and no fmGeneratedPoId or fmPoNumber; FileMaker POs are earlier rows the Portal still reads.",
+    "source": "portal/src/lib/mrp/create-portal-purchase-order.ts@38cd3f3 (createPortalPurchaseOrder, line 207); portal/src/app/api/mrp/generate-po/create-po/route.ts@38cd3f3; portal/src/lib/mrp/create-fm-purchase-order.ts@38cd3f3 (header: the FileMaker writer is gone)",
+    "portal_commit": "38cd3f3"
+   },
+   {
+    "id": "unresolved_po_party_is_refused_not_fm_only",
+    "applies_to": "$.stages[10].gaps[1]",
+    "map_says": "If the supplier or an item can't be matched, the PO is never copied to the portal PO table, with only a log warning, so it never reaches BC.",
+    "portal_fact": "Superseded by 359e2f0 (TASK-2651): the portal writer refuses a supplier or item it cannot resolve (422 SUPPLIER_NOT_RESOLVED or PRODUCT_NOT_RESOLVED) instead of leaving an FM-only PO, so no new PO exists outside app_purchase_order and the BC outbox.",
+    "source": "portal/src/lib/mrp/create-portal-purchase-order.ts@38cd3f3 (lines 163 and 227)",
+    "portal_commit": "38cd3f3"
+   },
+   {
+    "id": "pack_release_moves_portal_receipt_and_lot",
+    "applies_to": "$.stages[15].gaps[0]",
+    "map_says": "QC release updates only the FileMaker row. The older receiving flow can release a line with no QC check.",
+    "portal_fact": "Qualified by 5cade1b (TASK-2652): releasing or rejecting a packaging receipt updates the portal receipt line, the receipt and its lot(s) in one transaction with an audit row (decidePortalPackReceipt), after the regulated signature; a FileMaker receiptpack id answers 409 legacy_receipt_read_only. Raw release still updates only the FileMaker receiptraw row.",
+    "source": "portal/src/app/api/mrp/receiving/pack/[id]/release/route.ts@f3e3a53 (legacy 409, lines 51-60; decidePortalPackReceipt, line 94); portal/src/app/api/mrp/receiving/raw/[id]/release/route.ts@f3e3a53 (UPDATE public.receiptraw, lines 98-99)",
+    "portal_commit": "f3e3a53"
+   },
+   {
+    "id": "pack_receipt_on_portal_records",
+    "applies_to": "$.stages[15].recorded[2]",
+    "map_says": "The receipt is written in FileMaker (status Quarantine), copied to the portal with upsertGoldReceipt, and the PO line's received quantity is updated.",
+    "portal_fact": "Qualified by 5cade1b (TASK-2652, 2026-10-12) for packaging: a pack receipt is one app_receipt (receipt number = the RP lab id, purchase_order_id set by an exact po_number match, idempotency_key: a repeat of the same key returns the first receipt and writes nothing), one app_receipt_line (QC results in qc_results) and one unbinned app_inventory_lot in QUARANTINE, written with the PO line roll-up (applyPoLineReceive, in the PO line's purchase UoM) in one transaction; QC release or reject updates them in one transaction; nothing is written to public.receiptpack (receipt_packaging), whose rows stay read-only until the cutover load. The receipt is a PO_RECEIPT of the Portal PO, so the existing purchaseReceipt producer posts it to BC. Raw receipts are unchanged. A packaging receipt after 2026-10-12 is therefore in app_receipt, not in receipt_packaging.",
+    "source": "portal/src/lib/mrp/pack-receipt-portal.ts@f3e3a53 (header, lines 1-17; receivePackToPortal, lines 176-395: idempotency_key lines 195-216, exact po_number match lines 243-248, PO line roll-up lines 273-284; read at 4243499, the receive path unchanged at f3e3a53)",
+    "portal_commit": "f3e3a53"
+   },
+   {
+    "id": "production_cost_reads_portal_records",
+    "applies_to": "$.stages[18].bc_gl[3]",
+    "map_says": "Production-cost backflush is off by default.",
+    "portal_fact": "Still off by default. Since 38cd3f3 (TASK-2653, 2026-10-12) the backflush roll-up reads only Portal records: AO, AO items, batch and batch items for quantities and stored line prices, and app_product for item code, name and unit cost through the fm-pack/fm-bulk/fm-raw/fm-fp external_id crosswalk (a Portal-born AO takes its FG from assembly_order.portal_product_id); no silver view or FileMaker master table. A component with no Portal product stops the roll-up with an error; a zero-cost line is a warning, not a stop.",
+    "source": "portal/src/lib/business-central/production-cost.ts@4243499 (cost reads, lines 370-382; FG resolution loadAoHeader, lines 398-431; raw lines loadBatchRawLines, lines 433-467)",
+    "portal_commit": "4243499"
+   }
+  ]
+ },
+ "vocabulary": {
+  "source": "plx-customer-portal/.claude/skills/process-flow-mapper/{SKILL.md,scripts/build_map.py}@48d76e835660505091f764636ec0db0d38455f37",
+  "rule": "Canonical enums are the process-flow-mapper skill's own values. Stage and data-model rows keep their original labels; every label maps through an explicit alias here. An unmapped label is a validation error, never a silent relabel.",
+  "status": {
+   "canonical": [
+    "built",
+    "partial",
+    "policy",
+    "decision",
+    "missing"
+   ],
+   "aliases": {
+    "BUILT": "built",
+    "BUILT WITH GAPS": "partial",
+    "BY DESIGN": "policy",
+    "DECISION NEEDED": "decision",
+    "NOT BUILT": "missing"
+   }
+  },
+  "link_type": {
+   "canonical": [
+    "fk",
+    "loose",
+    "json",
+    "map",
+    "bcfield",
+    "gap"
+   ],
+   "aliases": {
+    "Foreign key": "fk",
+    "Loose text": "loose",
+    "JSON field": "json",
+    "Entity map": "map",
+    "BC field / setup": "bcfield",
+    "Missing": "gap"
+   }
+  },
+  "system": {
+   "canonical": [
+    "FM",
+    "Sage",
+    "Portal",
+    "BC",
+    "Map"
+   ],
+   "aliases": {
+    "FM": "FM",
+    "Portal": "Portal",
+    "BC": "BC",
+    "Entity map": "Map"
+   }
+  }
+ }
+}

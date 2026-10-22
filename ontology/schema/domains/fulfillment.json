@@ -1,0 +1,143 @@
+{
+ "$schema": "../_format.schema.json",
+ "format": "plx-ontology-domain/v1",
+ "domain": "fulfillment",
+ "origin": "curated",
+ "description": "Warehouse fulfilment documents of a gold sales order that the order lifecycle rail reads (portal/src/lib/sales-order/load-order-lifecycle.ts): ship releases (served) and pick lists (not served by the reporting API). Declared so the process stage graphs (ontology/schema/process/*.json) can name them.",
+ "upstream_pins": {
+  "plx-customer-portal": "38cd3f3"
+ },
+ "object_types": [
+  {
+   "id": "ShipRelease",
+   "description": "A sales release that authorises the warehouse to pick a made-to-ship order (SR-YYYYMMDD-NNNN). One object per app_ship_release row.",
+   "anchor": true,
+   "availability": {"state": "served"},
+   "bindings": [
+    {
+     "id": "portal.app_ship_release",
+     "source": "portal_api",
+     "relation": "public.app_ship_release",
+     "key": ["id"],
+     "lineage": {"default": "gold_native_staging"},
+     "evidence": [
+      {"kind": "ref", "id": "prisma.ship_release"},
+      {"kind": "ref", "id": "catalog.app_ship_release"}
+     ],
+     "note": "Portal-native rows (created by the release flow); no ETL marker, so their origin is not provable from the row."
+    }
+   ],
+   "properties": [
+    {
+     "name": "release_number",
+     "value_type": "identifier",
+     "identifier_kind": "ship_release",
+     "sources": [{"binding": "portal.app_ship_release", "path": "release_number", "parser": "identifier"}],
+     "evidence": [{"kind": "ref", "id": "prisma.ship_release"}]
+    },
+    {
+     "name": "status",
+     "value_type": "enum",
+     "description": "ShipReleaseStatus.",
+     "enum_values": ["DRAFT", "RELEASED", "FULFILLED", "CANCELLED"],
+     "sources": [{"binding": "portal.app_ship_release", "path": "status", "parser": "trim"}],
+     "evidence": [{"kind": "ref", "id": "prisma.ship_release_status"}]
+    },
+    {
+     "name": "order_ref",
+     "value_type": "text",
+     "description": "Compatibility ref since Portal 8665d4d (TASK-2641): the portal SalesOrder.id for a portal order, the FM order_entry.id for a legacy release; sales_order_id is the canonical order key.",
+     "sources": [{"binding": "portal.app_ship_release", "path": "order_ref", "parser": "trim"}],
+     "evidence": [{"kind": "ref", "id": "prisma.ship_release"}]
+    },
+    {
+     "name": "released_at",
+     "value_type": "timestamp",
+     "sources": [{"binding": "portal.app_ship_release", "path": "released_at", "parser": "iso_timestamp"}],
+     "evidence": [{"kind": "ref", "id": "prisma.ship_release"}]
+    },
+    {
+     "name": "fulfilled_at",
+     "value_type": "timestamp",
+     "sources": [{"binding": "portal.app_ship_release", "path": "fulfilled_at", "parser": "iso_timestamp"}],
+     "evidence": [{"kind": "ref", "id": "prisma.ship_release"}]
+    }
+   ],
+   "identity_keys": [
+    {
+     "name": "release_number",
+     "properties": ["release_number"],
+     "identifier_kind": "ship_release",
+     "tier": "verified",
+     "unique": true,
+     "scope": "within_binding",
+     "evidence": [{"kind": "ref", "id": "prisma.ship_release"}]
+    }
+   ],
+   "display": ["release_number"],
+   "evidence": [{"kind": "ref", "id": "portal.order_lifecycle"}]
+  }
+ ],
+ "link_types": [
+  {
+   "id": "ShipRelease.for_sales_order",
+   "from": "ShipRelease",
+   "to": "SalesOrder",
+   "name": "for_sales_order",
+   "reverse_name": "ship_releases",
+   "cardinality": "N:1",
+   "description": "The order a release authorises. sales_order_id is the canonical key since Portal 8665d4d (TASK-2641: releases and their lines keyed by portal SalesOrder/SalesOrderLine ids, existing rows backfilled from exact ids, then a unique fmId; the auto release at confirm, 1e40b64 TASK-2400, is keyed the same way). Portal's single-order lifecycle loader reads releases by salesOrderId and, when none carries it, by orderRef = the order's FM id; the Orders-list loader (attachListLifecycles) unions the orderRef releases with the order's own, deduplicated by release id (load-order-lifecycle.ts). The second binding reaches the FM order_entry twin of a legacy release only: a portal order's order_ref is its cuid, which an integer_id compare never matches.",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "portal.app_ship_release",
+     "to_binding": "portal.app_sales_order",
+     "pairs": [{"from": "sales_order_id", "to": "id", "compare": "text_id"}],
+     "evidence": [{"kind": "ref", "id": "prisma.ship_release"}, {"kind": "ref", "id": "portal.load_order_lifecycle"}]
+    },
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "portal.app_ship_release",
+     "to_binding": "portal.fm_order_entry",
+     "pairs": [{"from": "order_ref", "to": "id", "compare": "integer_id"}],
+     "evidence": [{"kind": "ref", "id": "prisma.ship_release"}, {"kind": "ref", "id": "portal.load_order_lifecycle"}]
+    }
+   ]
+  }
+ ],
+ "event_types": [
+  {
+   "id": "ShipRelease.released",
+   "object_type": "ShipRelease",
+   "description": "Sales released the order to the warehouse.",
+   "time_basis": "source_recorded",
+   "time": {"binding": "portal.app_ship_release", "path": "released_at", "parser": "iso_timestamp"},
+   "qualifiers": [
+    {"qualifier": "release", "object_type": "ShipRelease", "via": "self"},
+    {"qualifier": "order", "object_type": "SalesOrder", "via": "ShipRelease.for_sales_order"}
+   ],
+   "evidence": [{"kind": "ref", "id": "prisma.ship_release"}]
+  },
+  {
+   "id": "ShipRelease.fulfilled",
+   "object_type": "ShipRelease",
+   "description": "The release was fulfilled.",
+   "time_basis": "source_recorded",
+   "time": {"binding": "portal.app_ship_release", "path": "fulfilled_at", "parser": "iso_timestamp"},
+   "qualifiers": [
+    {"qualifier": "release", "object_type": "ShipRelease", "via": "self"},
+    {"qualifier": "order", "object_type": "SalesOrder", "via": "ShipRelease.for_sales_order"}
+   ],
+   "evidence": [{"kind": "ref", "id": "prisma.ship_release"}]
+  }
+ ],
+ "evidence_catalog": {
+  "prisma.ship_release": {"kind": "upstream_code", "repo": "plx-customer-portal", "path": "portal/prisma/schema.prisma", "commit": "38cd3f3", "symbol": "ShipRelease", "note": "releaseNumber SR-YYYYMMDD-NNNN (unique), salesOrderId = the canonical portal SalesOrder link (TASK-2641), orderRef = compatibility ref (portal id for a portal order, FM order_entry.id for a legacy one), status ShipReleaseStatus, releasedAt, fulfilledAt; ShipReleaseLine.salesOrderLineId (not served)."},
+  "prisma.ship_release_status": {"kind": "upstream_code", "repo": "plx-customer-portal", "path": "portal/prisma/schema.prisma", "commit": "38cd3f3", "symbol": "ShipReleaseStatus", "note": "DRAFT, RELEASED, FULFILLED, CANCELLED."},
+  "portal.order_lifecycle": {"kind": "upstream_code", "repo": "plx-customer-portal", "path": "portal/src/lib/sales-order/order-lifecycle.ts", "commit": "38cd3f3", "symbol": "buildOrderLifecycle", "note": "MAKE: sales order, manufacturing order, release order, pick list, then (999dac8 TASK-2396) shipment and complete from the order status; DISTRIBUTE skips manufacturing order and release order. Stale against the shipment confirm route, which gates the release per line (a DISTRIBUTE order with a MAKE line needs one)."},
+  "portal.load_order_lifecycle": {"kind": "upstream_code", "repo": "plx-customer-portal", "path": "portal/src/lib/sales-order/load-order-lifecycle.ts", "commit": "38cd3f3", "symbol": "loadOrderLifecycle", "note": "loadOrderLifecycle: releases by salesOrderId, plus by orderRef = customFields.fmId when none matches. attachListLifecycles (list path): FM rows resolved to gold by NULLIF(TRIM(custom_fields->>'fmId'), ''); releases found by orderRef are unioned with the order's own, deduplicated by id."},
+  "catalog.app_ship_release": {"kind": "data_profile", "ref": "ontology/schema/generated/meta/portal_catalog.json#public.app_ship_release", "note": "Served with key id and the columns bound here."}
+ }
+}

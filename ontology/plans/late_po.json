@@ -1,0 +1,480 @@
+{
+ "$schema": "_plan.schema.json",
+ "format": "plx-investigate-plan/v1",
+ "id": "late_po",
+ "families": [
+  "F14"
+ ],
+ "title": "Which purchase orders are late, by how much and why",
+ "description": "For one PO, or every PO of one supplier, plx.process po_delivery_window's own lateness verdict on the receipt stage (ontology/schema/process/po_delivery_window.json due.lateness): the governing planned arrival by the declared precedence (FM datearrive and Sage exparrival, then Portal expected_date, then BC dates), the supplier's promised and revised dates, the received date, days late and the reason chain, each with the cited dates it rests on. The plan never compares dates itself; a verdict the process leaves undecided stays null with its gap. A PO root also reads the chain behind it, each link optional and cited: the PO's same-record twins in FileMaker, Sage or BC, the order lines (a BC line's own expected receipt date), the supplier's confirmations, freight bills and forwarder quotes, receipts and the mail naming the PO; a document reached only through a machine-read reference is a lead (lead_basis). A Supplier root keeps the per-PO summary.",
+ "root": {
+  "object_types": [
+   "PurchaseOrder",
+   "Supplier"
+  ],
+  "fallback_filters": [
+   {
+    "object_type": "PurchaseOrder",
+    "property": "po_number"
+   }
+  ]
+ },
+ "step_budget": 64,
+ "steps": [
+  {
+   "id": "supplier_pos",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrder.ordered_from",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 15
+   },
+   "description": "A supplier root: its purchase orders (a PO root skips this step: the path starts at Supplier)."
+  },
+  {
+   "id": "lateness",
+   "tool": "plx.process",
+   "from": [
+    "root",
+    "supplier_pos"
+   ],
+   "bind": "from",
+   "object_types": [
+    "PurchaseOrder"
+   ],
+   "args": {
+    "process": "po_delivery_window"
+   },
+   "description": "One call per PO (lateness is single-root): the declared delivery-window graph decides late, days late and the reasons.",
+   "required": true
+  },
+  {
+   "id": "po_read",
+   "tool": "plx.object",
+   "from": [
+    "root",
+    "supplier_pos"
+   ],
+   "bind": "object_id",
+   "object_types": [
+    "PurchaseOrder"
+   ]
+  },
+  {
+   "id": "twin",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "description": "The same PO in another system (FileMaker, Sage, BC): its need date, lines and documents belong to the same order.",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrder.same_record_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "twin_of",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "description": "The records the root is the twin of.",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrder.same_record_as",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "twin_read",
+   "tool": "plx.object",
+   "from": "twin",
+   "bind": "object_id"
+  },
+  {
+   "id": "twin_of_read",
+   "tool": "plx.object",
+   "from": "twin_of",
+   "bind": "object_id"
+  },
+  {
+   "id": "lines",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "twin",
+    "twin_of"
+   ],
+   "bind": "from",
+   "description": "The order lines: in BC each carries its own expected receipt date.",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrderLine.line_of",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "line_read",
+   "tool": "plx.object",
+   "from": "lines",
+   "bind": "object_id"
+  },
+  {
+   "id": "confirmations",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "twin",
+    "twin_of"
+   ],
+   "bind": "from",
+   "description": "Supplier confirmations naming the PO or a twin (SharePoint or mail, machine-read: leads).",
+   "args": {
+    "path": [
+     {
+      "link_type": "SupplierConfirmation.confirms",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "confirmation_read",
+   "tool": "plx.object",
+   "from": "confirmations",
+   "bind": "object_id"
+  },
+  {
+   "id": "freight",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "twin",
+    "twin_of"
+   ],
+   "bind": "from",
+   "description": "Freight bills and bookings naming the PO or a twin.",
+   "args": {
+    "path": [
+     {
+      "link_type": "FreightBill.for_purchase_order",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "freight_read",
+   "tool": "plx.object",
+   "from": "freight",
+   "bind": "object_id"
+  },
+  {
+   "id": "quotes",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "twin",
+    "twin_of"
+   ],
+   "bind": "from",
+   "description": "Forwarder quotes naming the PO or a twin.",
+   "args": {
+    "path": [
+     {
+      "link_type": "ForwarderQuote.for_purchase_order",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "quote_read",
+   "tool": "plx.object",
+   "from": "quotes",
+   "bind": "object_id"
+  },
+  {
+   "id": "receipts",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "twin",
+    "twin_of"
+   ],
+   "bind": "from",
+   "description": "Receipts of the PO or a twin.",
+   "args": {
+    "path": [
+     {
+      "link_type": "Receipt.receives",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "receipt_read",
+   "tool": "plx.object",
+   "from": "receipts",
+   "bind": "object_id"
+  },
+  {
+   "id": "mail",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "twin"
+   ],
+   "bind": "from",
+   "description": "Messages that mention the PO's number (a text mention: a lead).",
+   "args": {
+    "path": [
+     {
+      "link_type": "Email.mentions_purchase_order",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "mail_read",
+   "tool": "plx.object",
+   "from": "mail",
+   "bind": "object_id"
+  }
+ ],
+ "evidence": [
+  {
+   "name": "po",
+   "kind": "property",
+   "object_type": "PurchaseOrder",
+   "properties": [
+    "po_number"
+   ],
+   "numbering": "value"
+  },
+  {
+   "name": "late",
+   "kind": "select",
+   "required": true,
+   "description": "Per PO: plx.process's lateness verdict (null when it is undecided: see its gap), with the cited dates it rests on.",
+   "step": "lateness",
+   "path": "lateness.*.late",
+   "reduce": "all",
+   "per": "root",
+   "number_as": "po"
+  },
+  {
+   "name": "days_late",
+   "kind": "select",
+   "description": "Per PO: days past the governing date (only when late).",
+   "step": "lateness",
+   "path": "lateness.*.days_late",
+   "reduce": "first",
+   "per": "root",
+   "number_as": "po"
+  },
+  {
+   "name": "governing",
+   "kind": "select",
+   "description": "Per PO: the governing planned date (absent when the top-ranked dates disagree or are not proven).",
+   "step": "lateness",
+   "path": "lateness.*.governing_date",
+   "reduce": "first",
+   "per": "root",
+   "number_as": "po"
+  },
+  {
+   "name": "why",
+   "kind": "select",
+   "description": "Per PO: the reason chain (no_expected_date, no_confirmation, promise_slipped, partial_receipt, not_received, ...), stated only from proven records.",
+   "step": "lateness",
+   "path": "lateness.*.chain",
+   "reduce": "first",
+   "per": "root",
+   "number_as": "po"
+  },
+  {
+   "name": "need_date",
+   "kind": "property",
+   "object_type": "PurchaseOrder",
+   "properties": [
+    "expected_date"
+   ],
+   "if_null": "absent_in_source",
+   "description": "The PO's planned arrival as each system holding it records it, the PO and its same-record twins (Portal expected_date, FileMaker datearrive, Sage exparrival, BC requestedReceiptDate); lateness itself is plx.process's verdict above."
+  },
+  {
+   "name": "line_expected_date",
+   "kind": "property",
+   "object_type": "PurchaseOrderLine",
+   "properties": [
+    "bc_expected_receipt_date"
+   ],
+   "omit_empty": true,
+   "description": "A BC line's own expected receipt date (the supplier side; never the PO's requested-by date)."
+  },
+  {
+   "name": "confirmed_delivery_date",
+   "kind": "property",
+   "object_type": "SupplierConfirmation",
+   "properties": [
+    "delivery_date"
+   ],
+   "description": "The delivery date the supplier confirmed.",
+   "omit_empty": true
+  },
+  {
+   "name": "confirmation_date",
+   "kind": "property",
+   "object_type": "SupplierConfirmation",
+   "properties": [
+    "document_date"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "freight_ship_date",
+   "kind": "property",
+   "object_type": "FreightBill",
+   "properties": [
+    "ship_date"
+   ],
+   "description": "When the freight booking says the goods ship.",
+   "omit_empty": true
+  },
+  {
+   "name": "freight_eta",
+   "kind": "property",
+   "object_type": "FreightBill",
+   "properties": [
+    "eta"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "freight_quote_date",
+   "kind": "property",
+   "object_type": "ForwarderQuote",
+   "properties": [
+    "document_date"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "received_date",
+   "kind": "property",
+   "object_type": "Receipt",
+   "properties": [
+    "received_date"
+   ],
+   "description": "When goods against the PO were received.",
+   "omit_empty": true
+  },
+  {
+   "name": "last_mail_at",
+   "kind": "property",
+   "object_type": "Email",
+   "properties": [
+    "received_at",
+    "sent_at"
+   ],
+   "omit_empty": true
+  }
+ ]
+}

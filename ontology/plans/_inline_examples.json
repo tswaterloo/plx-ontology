@@ -1,0 +1,127 @@
+{
+ "description": "Worked inline plans for plx.investigate's plan argument (format plx-investigate-plan/v1, _plan.schema.json): what a planner writes for a question no stored family answers, checked by plan_problems against the live schema before anything runs. Ask a stored family first when one fits. Each example states the question, the plan, and what plx.investigate does with it: answered (the same engines, tiers, gaps and claim gate as a stored plan) or the typed refusal plan_<code> its hint repairs. The refusals are the mistakes a planner makes most: a link type the schema does not declare, a property a type does not have, a budget over the maximum. Used by operating/tests/test_investigate_inline_plans.py and the live check tools.investigate_inline_plans.",
+ "examples": [
+  {
+   "question": "Which of supplier V00010's open purchase orders are past their expected date (asked on 2026-10-20)?",
+   "expect": "answered",
+   "plan": {
+    "$schema": "_plan.schema.json",
+    "format": "plx-investigate-plan/v1",
+    "id": "supplier_orders_past_due",
+    "families": ["F8"],
+    "title": "A supplier's purchase orders past their expected date",
+    "description": "The supplier's purchase orders whose expected date is before the date asked about (a plx.around filter, so only those are read), each with its expected date and status cited on the order's own record; open is read from the cited status, never assumed.",
+    "root": {"object_types": ["Supplier"], "fallback_filters": [{"object_type": "Supplier", "property": "code"}]},
+    "step_budget": 48,
+    "steps": [
+     {"id": "past_due", "tool": "plx.around", "from": "root", "bind": "from",
+      "args": {"path": [{"link_type": "PurchaseOrder.ordered_from", "direction": "reverse"}],
+               "filters": [{"property": "expected_date", "op": "lt", "value": "2026-10-20"}], "limit": 50},
+      "retry": {"on_gap_reasons": ["below_tier_floor"], "set_args": {"tier_floor": "lead"}, "note_gap": "lead_tier_links_followed"},
+      "required": true},
+     {"id": "order_read", "tool": "plx.object", "from": "past_due", "bind": "object_id",
+      "args": {"properties": ["expected_date", "status", "bc_status"]}}
+    ],
+    "evidence": [
+     {"name": "expected_date", "kind": "property", "required": true, "object_type": "PurchaseOrder", "properties": ["expected_date"]},
+     {"name": "status", "kind": "property", "required": true, "object_type": "PurchaseOrder", "properties": ["status", "bc_status"]}
+    ]
+   }
+  },
+  {
+   "question": "Which items on purchase order PO100012 have nothing received?",
+   "expect": "answered",
+   "plan": {
+    "$schema": "_plan.schema.json",
+    "format": "plx-investigate-plan/v1",
+    "id": "order_lines_not_received",
+    "families": ["F4"],
+    "title": "The lines of a purchase order with nothing received",
+    "description": "The order's lines whose received quantity is 0 (a plx.around filter), each with its item description and ordered and received quantities cited in the line's own unit; a line whose received quantity is empty is not listed as unreceived.",
+    "root": {"object_types": ["PurchaseOrder"], "fallback_filters": [{"object_type": "PurchaseOrder", "property": "po_number"}]},
+    "step_budget": 48,
+    "steps": [
+     {"id": "open_lines", "tool": "plx.around", "from": "root", "bind": "from",
+      "args": {"path": [{"link_type": "PurchaseOrderLine.line_of", "direction": "reverse"}],
+               "filters": [{"property": "received_quantity", "op": "eq", "value": 0}], "limit": 50},
+      "retry": {"on_gap_reasons": ["below_tier_floor"], "set_args": {"tier_floor": "lead"}, "note_gap": "lead_tier_links_followed"},
+      "required": true},
+     {"id": "line_read", "tool": "plx.object", "from": "open_lines", "bind": "object_id",
+      "args": {"properties": ["description", "ordered_quantity", "received_quantity"]}}
+    ],
+    "evidence": [
+     {"name": "item", "kind": "property", "required": true, "object_type": "PurchaseOrderLine", "properties": ["description"]},
+     {"name": "ordered", "kind": "property", "required": true, "object_type": "PurchaseOrderLine", "properties": ["ordered_quantity"], "quantity_role": "ordered", "canonical_unit": true},
+     {"name": "received", "kind": "property", "required": true, "object_type": "PurchaseOrderLine", "properties": ["received_quantity"], "quantity_role": "received", "canonical_unit": true}
+    ]
+   }
+  },
+  {
+   "question": "Which documents are linked to shipment SH100001?",
+   "expect": "answered",
+   "plan": {
+    "$schema": "_plan.schema.json",
+    "format": "plx-investigate-plan/v1",
+    "id": "shipment_documents",
+    "families": ["F6"],
+    "title": "The documents that name a shipment",
+    "description": "The shipment's number, and the typed documents that name it: every mention link the schema declares into Shipment from a document-field type, read from the schema when the step runs; a copy filed and mailed counts once. No document reached is a gap, never zero.",
+    "root": {"object_types": ["Shipment"], "fallback_filters": [{"object_type": "Shipment", "property": "shipment_number"}]},
+    "step_budget": 24,
+    "steps": [
+     {"id": "root_read", "tool": "plx.object", "from": "root", "bind": "object_id"},
+     {"id": "documents", "tool": "plx.around", "from": "root", "bind": "from",
+      "links": {"binding_kind": "mention", "direction": "reverse", "far_relation": "documentFields"},
+      "args": {"limit": 50},
+      "retry": {"on_gap_reasons": ["below_tier_floor"], "set_args": {"tier_floor": "lead"}, "note_gap": "lead_tier_links_followed"}}
+    ],
+    "evidence": [
+     {"name": "shipment_number", "kind": "property", "required": true, "object_type": "Shipment", "properties": ["shipment_number", "bc_number"]},
+     {"name": "freight_bill_count", "kind": "count", "object_type": "FreightBill", "bindings": ["graph_mail.freight_bills", "sharepoint.freight_bills"], "distinct": "content"},
+     {"name": "delivery_receipt_count", "kind": "count", "object_type": "DeliveryReceipt", "bindings": ["graph_mail.delivery_receipts", "sharepoint.delivery_receipts"], "distinct": "content"}
+    ]
+   }
+  },
+  {
+   "question": "Which carrier shipped purchase order PO100012? (a link the schema does not declare)",
+   "expect": "plan_undeclared_link",
+   "plan": {
+    "$schema": "_plan.schema.json",
+    "format": "plx-investigate-plan/v1",
+    "id": "order_carrier",
+    "families": ["F6"],
+    "title": "The carrier of a purchase order",
+    "description": "Walks a link type no schema declares; refused before anything runs.",
+    "root": {"object_types": ["PurchaseOrder"]},
+    "step_budget": 8,
+    "steps": [
+     {"id": "shipments", "tool": "plx.around", "from": "root", "bind": "from",
+      "args": {"path": [{"link_type": "Shipment.ships_purchase_order", "direction": "reverse"}]}}
+    ],
+    "evidence": [
+     {"name": "carrier", "kind": "property", "object_type": "Shipment", "properties": ["carrier"]}
+    ]
+   }
+  },
+  {
+   "question": "When is purchase order PO100012 due? (a property the type does not have)",
+   "expect": "plan_unknown_property",
+   "plan": {
+    "$schema": "_plan.schema.json",
+    "format": "plx-investigate-plan/v1",
+    "id": "order_due_date",
+    "families": ["F8"],
+    "title": "The due date of a purchase order",
+    "description": "Reads a property PurchaseOrder does not declare (its date is expected_date); refused before anything runs.",
+    "root": {"object_types": ["PurchaseOrder"]},
+    "step_budget": 8,
+    "steps": [
+     {"id": "root_read", "tool": "plx.object", "from": "root", "bind": "object_id", "args": {"properties": ["due_date"]}}
+    ],
+    "evidence": [
+     {"name": "due", "kind": "property", "object_type": "PurchaseOrder", "properties": ["due_date"]}
+    ]
+   }
+  }
+ ]
+}

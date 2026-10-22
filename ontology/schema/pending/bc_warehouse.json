@@ -1,0 +1,182 @@
+{
+  "$schema": "../_format.schema.json",
+  "format": "plx-ontology-domain/v1",
+  "domain": "bc_warehouse",
+  "origin": "curated",
+  "description": "PENDING (not loaded by default; ontology.schema load_schema(include_pending=True)). The Portal warehouse (app_warehouse) and its BC locations: Location Code = upper(app_warehouse.code), a lead (no BC company on the Portal row; BC_WAREHOUSE_LOCATION_MAP may remap a code). Replaces the Warehouse placeholder of domains/bc_bridge.json when loaded; the Portal warehouse_id foreign keys become links to it (ontology/schema.py pending_links).",
+  "upstream_pins": {
+    "plx-customer-portal": "48d76e835660"
+  },
+  "object_types": [
+    {
+      "id": "Warehouse",
+      "description": "Portal warehouse (app_warehouse), pending: bound and tested ahead of the upstream ask Q3; its code is the BC Location Code (Warehouse.bc_location). Moves to domains/bc_bridge.json, replacing the placeholder there, when the reporting API serves it.",
+      "availability": {
+        "state": "partial",
+        "reason": "Pending: public.app_warehouse is outside the reporting-API allowlist; the BC location a code names is per company and BC_WAREHOUSE_LOCATION_MAP can remap it.",
+        "upstream_ask": "Q3"
+      },
+      "bindings": [
+        {
+          "id": "portal.app_warehouse",
+          "source": "portal_api",
+          "relation": "public.app_warehouse",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "default": "gold_native_staging"
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "portal.warehouse_model"
+            }
+          ]
+        }
+      ],
+      "properties": [
+        {
+          "name": "code",
+          "value_type": "text",
+          "description": "The site code (unique); its upper-cased form is the BC Location Code.",
+          "sources": [
+            {
+              "binding": "portal.app_warehouse",
+              "path": "code",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "name",
+          "value_type": "text",
+          "description": "Site name (unique).",
+          "sources": [
+            {
+              "binding": "portal.app_warehouse",
+              "path": "name",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "location_type",
+          "value_type": "text",
+          "description": "MANUFACTURING | STORAGE | THIRD_PARTY | OTHER.",
+          "sources": [
+            {
+              "binding": "portal.app_warehouse",
+              "path": "location_type",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "exclude_from_valuation",
+          "value_type": "boolean",
+          "description": "3PL / consignment site: customer-owned stock posted to BC at $0.",
+          "sources": [
+            {
+              "binding": "portal.app_warehouse",
+              "path": "exclude_from_valuation",
+              "parser": "boolean_text"
+            }
+          ]
+        },
+        {
+          "name": "is_active",
+          "value_type": "boolean",
+          "description": "Active site.",
+          "sources": [
+            {
+              "binding": "portal.app_warehouse",
+              "path": "is_active",
+              "parser": "boolean_text"
+            }
+          ]
+        }
+      ],
+      "identity_keys": [
+        {
+          "name": "code",
+          "properties": [
+            "code"
+          ],
+          "tier": "verified",
+          "unique": true,
+          "scope": "within_binding",
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "portal.warehouse_model"
+            }
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "portal.warehouse_model"
+        },
+        {
+          "kind": "ref",
+          "id": "portal.bc_location_code"
+        }
+      ]
+    }
+  ],
+  "link_types": [
+    {
+      "id": "Warehouse.bc_location",
+      "from": "Warehouse",
+      "to": "RelBcLocations",
+      "name": "bc_location",
+      "reverse_name": "portal_warehouses",
+      "cardinality": "1:N",
+      "description": "The BC location of each company whose Location Code is this warehouse's code (upper-cased, as the Portal posts it). A lead: the Portal row names no BC company (one code names a location in every company holding it) and BC_WAREHOUSE_LOCATION_MAP can remap a code.",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.app_warehouse",
+          "to_binding": "gen.bc.locations",
+          "pairs": [
+            {
+              "from": "code",
+              "to": "code",
+              "compare": "identifier",
+              "identifier_kind": "bc_document_no"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "portal.bc_location_code"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "evidence_catalog": {
+    "portal.warehouse_model": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "48d76e835660",
+      "lines": "2858-2888",
+      "note": "model Warehouse @@map(\"app_warehouse\"): id cuid PK; name and code unique (the Sage / ERP site code); location_type, exclude_from_valuation, is_active.",
+      "symbol": "Warehouse"
+    },
+    "portal.bc_location_code": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/src/lib/business-central/warehouse-transfer-sync.ts",
+      "commit": "48d76e835660",
+      "lines": "150-160",
+      "note": "resolveBcLocationCode(warehouseCode): trim + upper-case, then the optional BC_WAREHOUSE_LOCATION_MAP remap; the BC locationCode the Portal posts (three-pl-intake-sync.ts: locationCode = Warehouse.code).",
+      "symbol": "resolveBcLocationCode"
+    }
+  }
+}

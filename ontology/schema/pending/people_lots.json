@@ -1,0 +1,712 @@
+{
+ "$schema": "../_format.schema.json",
+ "format": "plx-ontology-domain/v1",
+ "domain": "people_lots",
+ "origin": "curated",
+ "description": "PENDING (not loaded by default; ontology.schema load_schema(include_pending=True)). Person (app_user) and Lot (app_inventory_lot) bindings, declared ahead of the upstream ask Q3 so they are reviewed and tested; when the reporting API serves a relation, move its type into domains/ (replacing the not_served placeholder in people.json or items.json) and its links next to it. Links from served relations to Person or Lot are not declared here: ontology/schema.py pending_links derives them from the generator's foreign keys to an unserved relation (generated/meta/coverage.json prisma_relations_not_bound); they apply to pending files only, so moving a type to domains/ declares them by hand.",
+ "upstream_pins": {
+  "plx-customer-portal": "790256ca43"
+ },
+ "object_types": [
+  {
+   "id": "Person",
+   "description": "A Portal user: an employee (ADMIN .. ACCOUNTING roles) or a customer/supplier portal login (CUSTOMER, SUPPLIER). Secrets (password, 2FA, reset tokens) and phone are never bound.",
+   "availability": {
+    "state": "partial",
+    "reason": "Pending: the reporting-API allowlist (services/workbench-api/manifest/allowlist.json@790256ca43) does not serve public.app_user (nor app_person/people): Portal users are not readable, so a person appears only as an id or a name typed in another record.",
+    "upstream_ask": "Q3"
+   },
+   "markings": [
+    "pii"
+   ],
+   "bindings": [
+    {
+     "id": "portal.app_user",
+     "source": "portal_api",
+     "relation": "public.app_user",
+     "key": [
+      "id"
+     ],
+     "lineage": {
+      "default": "gold_native_staging"
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.user"
+      }
+     ]
+    }
+   ],
+   "properties": [
+    {
+     "name": "name",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "portal.app_user",
+       "path": "name",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.user"
+      }
+     ]
+    },
+    {
+     "name": "email",
+     "value_type": "text",
+     "description": "Login email (unique); compare with a mail sender only after the same trim and case fold.",
+     "sources": [
+      {
+       "binding": "portal.app_user",
+       "path": "email",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.user"
+      }
+     ]
+    },
+    {
+     "name": "job_title",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "portal.app_user",
+       "path": "job_title",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.user"
+      }
+     ]
+    },
+    {
+     "name": "user_role",
+     "value_type": "enum",
+     "enum_values": [
+      "ADMIN",
+      "MANAGER",
+      "OPERATOR",
+      "QC_ANALYST",
+      "R_AND_D",
+      "PROCUREMENT",
+      "SALES",
+      "ACCOUNTING",
+      "CUSTOMER",
+      "SUPPLIER"
+     ],
+     "sources": [
+      {
+       "binding": "portal.app_user",
+       "path": "user_role",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.user_role"
+      }
+     ]
+    },
+    {
+     "name": "department_id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "portal.app_user",
+       "path": "department_id",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.user"
+      }
+     ]
+    },
+    {
+     "name": "is_active",
+     "value_type": "boolean",
+     "sources": [
+      {
+       "binding": "portal.app_user",
+       "path": "is_active",
+       "parser": "boolean_text"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.user"
+      }
+     ]
+    }
+   ],
+   "display": [
+    "name"
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "prisma.user"
+    }
+   ]
+  },
+  {
+   "id": "Lot",
+   "description": "An inventory lot of one product (lot number BASE@BINCODE) with on-hand, reserved and available quantities, QC status, ownership and expiry.",
+   "availability": {
+    "state": "partial",
+    "reason": "Pending: the reporting-API allowlist (services/workbench-api/manifest/allowlist.json@790256ca43) does not serve public.app_inventory_lot (portal-code-map.md 3.9: no lot or inventory relation is served); lot numbers appear only as text on AO, MO, batch and receipt rows.",
+    "upstream_ask": "Q3"
+   },
+   "bindings": [
+    {
+     "id": "portal.app_inventory_lot",
+     "source": "portal_api",
+     "relation": "public.app_inventory_lot",
+     "key": [
+      "id"
+     ],
+     "lineage": {
+      "default": "gold_native_staging",
+      "rules": [
+       {
+        "when": [
+         {
+          "path": "id",
+          "op": "prefix",
+          "value": "fm-wlp-"
+         }
+        ],
+        "lineage": "gold_etl_from_fm",
+        "evidence": [
+         {
+          "kind": "ref",
+          "id": "portal.etl_wms_lots"
+         }
+        ]
+       },
+       {
+        "when": [
+         {
+          "path": "lot_number",
+          "op": "prefix",
+          "value": "SAGE-"
+         }
+        ],
+        "lineage": "gold_etl_from_sage",
+        "evidence": [
+         {
+          "kind": "ref",
+          "id": "portal.etl_sage_lots"
+         }
+        ]
+       }
+      ]
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.inventory_lot"
+      },
+      {
+       "kind": "ref",
+       "id": "context.portal.3.9"
+      }
+     ],
+     "note": "Quantities are a ledger snapshot the WMS ETL overwrites; never authority."
+    }
+   ],
+   "properties": [
+    {
+     "name": "lot_number",
+     "value_type": "identifier",
+     "identifier_kind": "lot_number",
+     "description": "BASE@BINCODE; unique per product.",
+     "sources": [
+      {
+       "binding": "portal.app_inventory_lot",
+       "path": "lot_number",
+       "parser": "identifier"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.inventory_lot"
+      }
+     ]
+    },
+    {
+     "name": "batch_number",
+     "value_type": "identifier",
+     "identifier_kind": "batch_code",
+     "identifies": "reference",
+     "description": "The batch record the lot was manufactured in.",
+     "sources": [
+      {
+       "binding": "portal.app_inventory_lot",
+       "path": "batch_number",
+       "parser": "identifier"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.inventory_lot"
+      }
+     ]
+    },
+    {
+     "name": "supplier_lot_number",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "portal.app_inventory_lot",
+       "path": "supplier_lot_number",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.inventory_lot"
+      }
+     ]
+    },
+    {
+     "name": "quantity_on_hand",
+     "value_type": "decimal",
+     "sources": [
+      {
+       "binding": "portal.app_inventory_lot",
+       "path": "quantity_on_hand",
+       "parser": "decimal_text",
+       "unit_from": "uom"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.inventory_lot"
+      }
+     ]
+    },
+    {
+     "name": "quantity_reserved",
+     "value_type": "quantity",
+     "quantity_role": "committed",
+     "description": "Committed to picks (reserved).",
+     "sources": [
+      {
+       "binding": "portal.app_inventory_lot",
+       "path": "quantity_reserved",
+       "parser": "decimal_text",
+       "unit_from": "uom"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.inventory_lot"
+      }
+     ]
+    },
+    {
+     "name": "quantity_available",
+     "value_type": "decimal",
+     "description": "On hand minus reserved, as stored.",
+     "sources": [
+      {
+       "binding": "portal.app_inventory_lot",
+       "path": "quantity_available",
+       "parser": "decimal_text",
+       "unit_from": "uom"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.inventory_lot"
+      }
+     ]
+    },
+    {
+     "name": "uom",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "portal.app_inventory_lot",
+       "path": "uom",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.inventory_lot"
+      }
+     ]
+    },
+    {
+     "name": "status",
+     "value_type": "enum",
+     "enum_values": [
+      "QUARANTINE",
+      "RELEASED",
+      "REJECTED",
+      "ON_HOLD",
+      "EXPIRED"
+     ],
+     "sources": [
+      {
+       "binding": "portal.app_inventory_lot",
+       "path": "status",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.inventory_status"
+      }
+     ]
+    },
+    {
+     "name": "ownership",
+     "value_type": "enum",
+     "enum_values": [
+      "PETRA",
+      "CUSTOMER"
+     ],
+     "sources": [
+      {
+       "binding": "portal.app_inventory_lot",
+       "path": "ownership",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.inventory_status"
+      }
+     ]
+    },
+    {
+     "name": "expiry_date",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "portal.app_inventory_lot",
+       "path": "expiry_date",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.inventory_lot"
+      }
+     ]
+    },
+    {
+     "name": "received_date",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "portal.app_inventory_lot",
+       "path": "received_date",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.inventory_lot"
+      }
+     ]
+    }
+   ],
+   "display": [
+    "lot_number"
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "prisma.inventory_lot"
+    },
+    {
+     "kind": "ref",
+     "id": "context.portal.3.9"
+    }
+   ]
+  }
+ ],
+ "link_types": [
+  {
+   "id": "Lot.of_item",
+   "from": "Lot",
+   "to": "Product",
+   "name": "of_item",
+   "reverse_name": "lots",
+   "cardinality": "N:1",
+   "description": "The product the lot holds (product_id FK).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "portal.app_inventory_lot",
+     "to_binding": "portal.app_product",
+     "pairs": [
+      {
+       "from": "product_id",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.inventory_lot"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "Lot.from_batch",
+   "from": "Lot",
+   "to": "Batch",
+   "name": "from_batch",
+   "reverse_name": "lots",
+   "cardinality": "N:1",
+   "description": "The batch record the lot was manufactured in (batch_number).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "portal.app_inventory_lot",
+     "to_binding": "portal.app_batch_record",
+     "pairs": [
+      {
+       "from": "batch_number",
+       "to": "batch_number",
+       "compare": "identifier",
+       "identifier_kind": "batch_code"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.inventory_lot"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "Lot.from_assembly_order",
+   "from": "Lot",
+   "to": "AssemblyOrder",
+   "name": "from_assembly_order",
+   "reverse_name": "lots",
+   "cardinality": "N:1",
+   "description": "The FM assembly order the stock was put away from (customFields.aoId).",
+   "bindings": [
+    {
+     "kind": "json_path",
+     "tier_ceiling": "verified",
+     "from_binding": "portal.app_inventory_lot",
+     "to_binding": "portal.fm_assembly_order",
+     "pairs": [
+      {
+       "from": "custom_fields.aoId",
+       "to": "id",
+       "compare": "integer_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.lot_ao_id"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "Lot.received_in",
+   "from": "Lot",
+   "to": "Receipt",
+   "name": "received_in",
+   "reverse_name": "lots",
+   "cardinality": "N:1",
+   "description": "The receipt that brought the lot in (receipt_id, no FK).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "portal.app_inventory_lot",
+     "to_binding": "portal.app_receipt",
+     "pairs": [
+      {
+       "from": "receipt_id",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.inventory_lot"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "Lot.owned_by",
+   "from": "Lot",
+   "to": "Customer",
+   "name": "owned_by",
+   "reverse_name": "owned_lots",
+   "cardinality": "N:1",
+   "description": "The customer that owns CUSTOMER-owned stock (owner_customer_id, informational, no FK).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "lead",
+     "from_binding": "portal.app_inventory_lot",
+     "to_binding": "portal.app_customer",
+     "pairs": [
+      {
+       "from": "owner_customer_id",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.inventory_lot"
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "event_types": [
+  {
+   "id": "Lot.expires",
+   "object_type": "Lot",
+   "description": "Lot expiry date.",
+   "time_basis": "planned",
+   "time": {
+    "binding": "portal.app_inventory_lot",
+    "path": "expiry_date",
+    "parser": "iso_timestamp"
+   },
+   "qualifiers": [
+    {
+     "qualifier": "lot",
+     "object_type": "Lot",
+     "via": "self"
+    },
+    {
+     "qualifier": "item",
+     "object_type": "Product",
+     "via": "Lot.of_item"
+    }
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "prisma.inventory_lot"
+    }
+   ]
+  }
+ ],
+ "evidence_catalog": {
+  "prisma.user": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/prisma/schema.prisma",
+   "commit": "790256ca43",
+   "note": "User -> app_user: unique email, name/firstName/lastName, phone, jobTitle, userRole UserRole, departmentId, isActive, Entra ids, password/2FA/reset secrets.",
+   "symbol": "User",
+   "lines": "778-940"
+  },
+  "prisma.user_role": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/prisma/schema.prisma",
+   "commit": "790256ca43",
+   "note": "enum UserRole: ADMIN, MANAGER, OPERATOR, QC_ANALYST, R_AND_D, PROCUREMENT, SALES, ACCOUNTING, CUSTOMER, SUPPLIER.",
+   "symbol": "UserRole",
+   "lines": "38-49"
+  },
+  "prisma.inventory_lot": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/prisma/schema.prisma",
+   "commit": "790256ca43",
+   "note": "InventoryLot -> app_inventory_lot: productId FK, lotNumber (unique with productId), batchNumber, supplierLotNumber, Float quantityOnHand/Reserved/Available, free-text uom, status InventoryStatus, ownership PETRA|CUSTOMER, ownerCustomerId (no FK), dates, receiptId (no FK), customFields.",
+   "symbol": "InventoryLot",
+   "lines": "3124-3166"
+  },
+  "prisma.inventory_status": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/prisma/schema.prisma",
+   "commit": "790256ca43",
+   "note": "enum InventoryStatus: QUARANTINE, RELEASED, REJECTED, ON_HOLD, EXPIRED; enum InventoryOwnership: PETRA, CUSTOMER.",
+   "symbol": "InventoryStatus",
+   "lines": "242-256"
+  },
+  "portal.lot_ao_id": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/src/lib/wms/bin-inquiry-merge.ts",
+   "commit": "790256ca43",
+   "note": "parseAoIdFromCustomFields: a lot's customFields.aoId is the FM assembly_order id (number or numeric text) the stock was put away from; pick lists allocate lots by it.",
+   "symbol": "parseAoIdFromCustomFields",
+   "lines": "34-44"
+  },
+  "portal.etl_wms_lots": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/scripts/etl-wms-silver-to-gold.ts",
+   "commit": "790256ca43",
+   "note": "The WMS ETL writes FM lots with id 'fm-wlp-{id}' and lot_number '{idlab}@{idloc}', overwriting quantities and status on each run.",
+   "lines": "239-317"
+  },
+  "portal.etl_sage_lots": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/scripts/etl-sage-distribution-gold.mjs",
+   "commit": "790256ca43",
+   "note": "Sage distribution lots carry lot_number 'SAGE-{loc}-{bin}-{item}'.",
+   "lines": "1085-1095"
+  },
+  "context.portal.3.9": {
+   "kind": "context_pack",
+   "ref": "docs/reference/portal-code-map.md#3.9",
+   "note": "Lot ledger app_inventory_lot; not served by the reporting API."
+  }
+ }
+}

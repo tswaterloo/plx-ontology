@@ -1,0 +1,72 @@
+{
+ "id": "eval.use_case_proposal",
+ "description": "The 26 PROPOSED Related Release Orders items (14 comprehension F21, 12 arithmetic F22; evals/dev/rro/proposed_items.json) over Vince's 'Related Release Order Map.md' Draft 8: the original is captured only through the guarded shared-link reader (integrations.shared_link.read_shared_link: GET /v1.0/shares/{u!base64url}/driveItem, then the drive item's /content through the GET-only GuardedTransport; operating.use_case_eval_items.capture_shared_original) and pinned in {tmp}/state only when its bytes hash to sha256 2d8b51b6...0fbb (a mismatch stores nothing); then scripts.eval_use_case_items writes the 26 plx-eval-item/v1 items into the state, loads them through evals.runner.load_items and reports per item on the recorded capture: anchors in range with excerpt digests (never text), each calculation recomputed by the case calculation evaluator, comprehension unscored (a proposed rubric is never gold), actual-case answerability scored (answerable / partial / blocked from what the run read: per item, anchors in range and a verified arithmetic result or a human-audited outcome, against the declared missing originals and unresolved conflicts), the line-1257 vs 1716 provenance conflict unresolved. Nothing is written to SharePoint.",
+ "source": "microsoft-graph",
+ "tier": "harness",
+ "command": [
+  "python3",
+  "-m",
+  "scripts.eval_use_case_items",
+  "proposal",
+  "run",
+  "--cards",
+  "evals/dev/rro/proposed_items.json",
+  "--state-dir",
+  "{tmp}/state",
+  "--evidence-label",
+  "live-captures",
+  "--capture"
+ ],
+ "timeout_seconds": 300,
+ "requires_env": [
+  "MICROSOFT_GRAPH_TENANT_ID",
+  "MICROSOFT_GRAPH_CLIENT_ID",
+  "MICROSOFT_GRAPH_CLIENT_SECRET",
+  "SHAREPOINT_SITE_ID"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "original.lines",
+   "original.bytes",
+   "actual_case_answerability.answerability"
+  ],
+  "json_equals": {
+   "original.sha256": "2d8b51b6fd493e7704955ff0064dd23e23bb7a0863812862a29de836ec110fbb",
+   "original.bytes": 93039,
+   "original.body_read": "proven_by_recorded_capture",
+   "items.loaded": 26,
+   "items.by_layer.comprehension": 14,
+   "items.by_layer.arithmetic": 12,
+   "anchors.out_of_range": 0,
+   "arithmetic.not_consistent": 0,
+   "actual_case_answerability.answerability": "partial"
+  }
+ },
+ "record": [
+  "original.lines",
+  "original.bytes",
+  "original.body_read",
+  "items.loaded",
+  "items.by_layer",
+  "anchors",
+  "arithmetic",
+  "actual_case_answerability.status",
+  "actual_case_answerability.answerability",
+  "actual_case_answerability.items",
+  "actual_case_answerability.missing_original_count",
+  "actual_case_answerability.unresolved_conflicts"
+ ],
+ "record_keys": [
+  "items.by_layer",
+  "anchors",
+  "arithmetic",
+  "actual_case_answerability.items"
+ ],
+ "record_enums": [
+  "original.body_read",
+  "actual_case_answerability.status",
+  "actual_case_answerability.answerability"
+ ],
+ "notes": "Tier harness, never an eval: the command checks the proposal arithmetic and anchors over a captured document and never calls the product. Live-unverified until the live check records a pass. Module tests are injected-transport over a synthetic stand-in original (tests/test_rro_eval.py), never the real Draft 8 body. Unverified live: that Graph resolves this OneDrive webUrl (the tenant's -my host, a personal drive) through /shares/ for the app-only token, and that the bytes still hash to the pinned Draft 8 sha256 (a newer draft fails as sha256_mismatch, never a pass). actual_case_answerability.answerability is asserted, not its status: with every anchor in range the three comprehension cards on the conflict's lines (1257, 1716) are partial items, and the five declared missing originals and the unresolved conflict keep the case from answerable, so the measured value on the pinned Draft 8 is partial; undetermined (nothing judged) or blocked fails. The per-item operand counts (figures of each calculation found on its anchored lines) are output, not expectations. Agent answers to the written items are the separate check eval.use_case_answers (the same command with --answer: hosts seeded from the recorded capture, results in scored / agreement_with_proposed / unscored buckets); they are not part of this check."
+}

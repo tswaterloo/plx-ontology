@@ -1,0 +1,112 @@
+{
+ "id": "case.proactive_engine",
+ "description": "A9 (scheduled proactive engine): one host capture cycle (operating.host: the Portal sales orders into the source mirror, the PLXCUSTOMERS 'Customer Documents' folder through the GET-only Graph reader), the projection built, then offline over it the scheduled engine (operating.proactive_engine): set-based SQL rules over every current record of the projection store (late or unconfirmed purchase orders, PO line versus receipt quantity, receipts without a QC record, sales orders without a customer PO from operating.customer_po_coverage's full mirror scan, expired quotes, conflicting quantities) plus the attested-document card rules, folded into the persisted gap inbox; then the inbox read per reader, trimmed by that reader's grant. Passes with scanned covering the whole store (scope_truncated false) and at least one cited gap; counts and enums only, never an identifier or value.",
+ "source": "portal-workbench-api+microsoft-graph",
+ "cadence": "daily",
+ "command": [
+  "python3",
+  "-m",
+  "operating.proactive_engine",
+  "--state-dir",
+  "{tmp}/state",
+  "--mirror-audience",
+  "examples/unfamiliar_case_audience.example.json",
+  "--host-config",
+  "examples/customer_po_missing_host.live-check.json",
+  "--principal",
+  "staff:sales",
+  "--principal",
+  "staff:operations",
+  "--live-source-audience",
+  "examples/customer_po_missing_live_audience.live-check.json",
+  "--clearance",
+  "restricted",
+  "--reader",
+  "staff:operations"
+ ],
+ "timeout_seconds": 200,
+ "requires_env": [
+  "PLX_WORKBENCH_API_URL",
+  "PLX_WORKBENCH_API_KEY",
+  "MICROSOFT_GRAPH_TENANT_ID",
+  "MICROSOFT_GRAPH_CLIENT_ID",
+  "MICROSOFT_GRAPH_CLIENT_SECRET",
+  "SHAREPOINT_SITE_ID"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "capture.sources",
+   "gaps_by_kind",
+   "detectors",
+   "readers[*].reader",
+   "readers[*].shown",
+   "blocked_upstream"
+  ],
+  "json_equals": {
+   "capture.exit_code": 0,
+   "gaps_uncited": 0,
+   "scope_truncated": false
+  },
+  "json_min": {
+   "scanned": 1,
+   "gaps_cited": 1
+  }
+ },
+ "expect_blocked": {
+  "exit_code": 0,
+  "json_fields": [
+   "capture.sources",
+   "gaps_by_kind",
+   "blocked_upstream"
+  ],
+  "json_equals": {
+   "capture.exit_code": 0,
+   "gaps_uncited": 0
+  }
+ },
+ "record": [
+  "capture.state",
+  "capture.sources",
+  "capture.projection",
+  "as_of",
+  "scanned",
+  "scope_truncated",
+  "truncated",
+  "gaps_found",
+  "gaps_cited",
+  "gaps_uncited",
+  "with_follow_up",
+  "gaps_by_kind",
+  "detectors",
+  "not_evaluated",
+  "po_lateness.pos",
+  "po_lateness.classes",
+  "po_lateness.evaluated",
+  "po_lateness.late",
+  "po_lateness.at_risk",
+  "po_lateness.unconfirmed",
+  "readers[*].reader",
+  "readers[*].investigator",
+  "readers[*].scanned",
+  "readers[*].shown",
+  "readers[*].gaps_by_kind",
+  "blocked_upstream"
+ ],
+ "record_keys": [
+  "capture.sources",
+  "gaps_by_kind",
+  "detectors",
+  "not_evaluated",
+  "po_lateness.classes",
+  "readers[*].gaps_by_kind"
+ ],
+ "record_enums": [
+  "gaps_by_kind",
+  "detectors",
+  "readers[*].reader",
+  "readers[*].gaps_by_kind",
+  "blocked_upstream"
+ ],
+ "notes": "Live-unverified until the live check runs it; the module test is injected-transport (operating/tests/test_proactive_engine.py LiveCheckTest: the spec's own command over the case.customer_po_missing world, the in-process FakeWorkbench and a fake drive for the site; its expectations checked on the real summary; a Portal answering HTTP 500 at capture meets expect_blocked). It reuses that check's host config and live audience files (read only). scanned is the count of every current record in the projection store the set-based detectors ran over; scope_truncated is true when one of them was truncated or failed (the customer-PO detector is truncated when the mirror scan was not complete), so the check is red then rather than a pass on a partial store. Green needs a detected gap that carries a citation (json_min gaps_cited >= 1); a run that finds none is a truthful red, never a pass. receipt_without_qc reads blocked (qc_link_not_declared) while the schema declares no QC relation (upstream ask Q3); the card rules read at most operating.proactive_engine.CARD_BOUND document cards and say truncated past it. The detectors are fixture-proven in the module's DetectorTest; this live run can raise only the ones the day's captures hold."
+}

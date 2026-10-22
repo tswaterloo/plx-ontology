@@ -1,0 +1,36 @@
+{
+ "schema": "plx-sharepoint-capture-scope/v1",
+ "note": "SharePoint capture scope (the Workbench keeps what it captures in its own capture store under the Workbench state directory, and SharePointFile objects feed the documents domain). Targets: the whole QA/QC Department (QCQA) library (AOs, QA Documents such as Quality Risk Management, cases-and-artifacts.md 3.1), the PLXCUSTOMERS site's 'Customer Documents' folder (its default library, resolved by site name at run time on the SHAREPOINT_SITE_ID host) and the AGENTS site's '/Ontology UseCases' folder. The first run of a root is a full walk; later runs follow the drive's change feed and a full walk repeats every full_walk_hours (and whenever the feed cannot settle a change). A root's skipped permission re-reads are bounded by permission_reread_hours: once its permission position is older, its next follow re-reads every feed entry by item id, the unchanged versions too, so a grant revoked without the sharing annotation is stale at most that bound plus the runs the re-read takes (a re-read the time budget cuts resumes past what it read). A walk bound (max_depth, max_folders) that is reached leaves the root incomplete with that reason, never silently whole. This file grants nothing: the capture principal still needs the live-source audience for every folder and item, and every reader is re-gated per item (path keys and item permissions recorded at capture). Read-only: nothing is ever written to SharePoint.",
+ "max_content_bytes": 20000000,
+ "full_walk_hours": 24,
+ "permission_reread_hours": 24,
+ "targets": [
+  {
+   "id": "qcqa.library",
+   "drive_id": "b!ubhBC91PLkOOCpyUeCUJMLOi0jT3ADZHi0QxVdjuwxvq6wHrgPmdQqNrzbAMxVqk",
+   "folders": [
+    "/"
+   ],
+   "max_depth": 8,
+   "max_folders": 5000
+  },
+  {
+   "id": "plxcustomers.customer-documents",
+   "site": "PLXCUSTOMERS",
+   "folders": [
+    "/Customer Documents"
+   ],
+   "max_depth": 8,
+   "max_folders": 5000
+  },
+  {
+   "id": "agents.ontology-use-cases",
+   "site": "AGENTS",
+   "folders": [
+    "/Ontology UseCases"
+   ],
+   "max_depth": 4,
+   "max_folders": 200
+  }
+ ]
+}

@@ -1,0 +1,40 @@
+{
+ "schema": "plx-host-config/v1",
+ "note": "Host config of the landed_cost.estimate live check (verify/live-checks/landed_cost.estimate.json): the case.packaging_landed_cost capture (the purchase-order Portal relations through the source mirror and the AGENTS site's '/Ontology UseCases' containers, GET only), with every store marking (finance, l5, pii, quality_controlled) granted to the check's own verifier principal svc:landed-cost-verifier only, never to an employee principal: an estimate pro-rates header freight over every line of a purchase order, so it is stated only for a reader whose scope is proven to show every line (operating.ontology_tools_investigate.read_scope: every store marking); the check prints counts and codes only. EXAMPLE ONLY, not a PLX-confirmed grant.",
+ "tenant": "plx",
+ "capture_audience": "packaging_landed_cost_live_audience.live-check.json",
+ "live_audience": "packaging_landed_cost_live_audience.live-check.json",
+ "marking_grants": {
+  "finance": [
+   "svc:landed-cost-verifier"
+  ],
+  "l5": [
+   "svc:landed-cost-verifier"
+  ],
+  "pii": [
+   "svc:landed-cost-verifier"
+  ],
+  "quality_controlled": [
+   "svc:landed-cost-verifier"
+  ]
+ },
+ "mirror_audience": "packaging_landed_cost_mirror_audience.live-check.json",
+ "portal": {
+  "relations": [
+   "public.app_purchase_order",
+   "public.app_purchase_order_line",
+   "public.app_supplier",
+   "public.app_product",
+   "public.app_receipt",
+   "public.app_receipt_line",
+   "public.generated_purchase_order",
+   "public.generated_purchase_order_item",
+   "public.receipt_packaging"
+  ],
+  "budget_seconds": 900
+ },
+ "sharepoint": {
+  "scope": "sharepoint_capture_scope.containers.live-check.json",
+  "budget_seconds": 1200
+ }
+}

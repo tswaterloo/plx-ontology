@@ -1,0 +1,174 @@
+{
+ "id": "process.po_lateness",
+ "description": "PO lateness: over live captures the L7 probe (scripts.ontology_projection_probe --build-only) builds or reuses the session projection; then, offline and with no client, scripts.po_lateness_probe calls plx.process with no process name through the served host as its capture principal on up to 400 PurchaseOrder roots the reader's policy grants (lowest SHA-256 of the object id first). An unnamed call answers po_delivery_window exactly when the PO is open by the graph's open_when, the shared purchase-order status definition (operating.po_status: header not cancelled or draft and its lines' received quantity below the ordered one); those are the open POs. Recorded: open POs, open POs with a governing planned date and its share (target >= 0.8, recorded, not asserted), the counts late and at risk (Vince's rule: late once the requested-by date has passed; at risk while the supplier's latest promise is after it), lateness states, reasons and gap reasons by count, the governing date's source property by count, and up to 3 sample reason chains of late open POs with their cited dates as property, source relation, field path and authority rank only (never a value, key, identifier or l1 handle). Pass = no contract failure, no process error, budget held. Live-unverified until the live check records a result.",
+ "source": "portal-workbench-api+business-central",
+ "cadence": "daily",
+ "tier": "deterministic_tools",
+ "command": [
+  "python3",
+  "-m",
+  "scripts.po_lateness_probe",
+  "--db",
+  "{session_state}/mirror.sqlite",
+  "--store",
+  "{tmp}/ontology.sqlite",
+  "--session-projection",
+  "{session_state}/projection",
+  "--budget-seconds",
+  "2600",
+  "--lateness-budget-seconds",
+  "900",
+  "--workers",
+  "3",
+  "--scan",
+  "400",
+  "--live-audience",
+  "examples/projection_probe_audience.live-check.json",
+  "--bc-capture",
+  "--previous-report={daily_report}"
+ ],
+ "timeout_seconds": 3600,
+ "requires_env": [
+  "BC_TENANT_ID",
+  "BC_CLIENT_ID",
+  "BC_CLIENT_SECRET",
+  "BC_ENVIRONMENT"
+ ],
+ "optional_env": [
+  "PLX_WORKBENCH_API_URL",
+  "PLX_WORKBENCH_API_KEY"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "roots_scanned",
+   "open_pos",
+   "open_with_governing",
+   "late",
+   "at_risk",
+   "states",
+   "reasons",
+   "samples",
+   "sources",
+   "blocked_upstream"
+  ],
+  "json_equals": {
+   "contract_failures": 0,
+   "process_errors": 0,
+   "budget_exhausted": false,
+   "bc_capture.evidence_label": "live-read",
+   "bc_capture.environment_is_production": true
+  },
+  "json_min": {
+   "open_pos": 5
+  }
+ },
+ "expect_blocked": {
+  "exit_code": 0,
+  "json_fields": [
+   "roots_scanned",
+   "sources",
+   "blocked_upstream"
+  ],
+  "json_equals": {
+   "contract_failures": 0,
+   "process_errors": 0,
+   "budget_exhausted": false
+  }
+ },
+ "blocked_when": "sources_blocked",
+ "record": [
+  "roots_scanned",
+  "roots_withheld",
+  "open_pos",
+  "open_with_governing",
+  "governing_share",
+  "late",
+  "at_risk",
+  "states",
+  "reasons",
+  "gap_reasons",
+  "governing_sources",
+  "contract_failures",
+  "process_errors",
+  "error_codes",
+  "budget_exhausted",
+  "seconds",
+  "mirror_complete",
+  "sources",
+  "sources_blocked",
+  "blocked_upstream",
+  "bc_capture",
+  "bc_capture.evidence_label",
+  "bc_capture.stopped_reason",
+  "bc_capture.reason",
+  "session_projection.mode",
+  "samples[*].chain",
+  "samples[*].state",
+  "samples[*].days_late",
+  "samples[*].governing",
+  "samples[*].cited[*].property",
+  "samples[*].cited[*].relation",
+  "samples[*].cited[*].field_path",
+  "samples[*].cited[*].authority_rank"
+ ],
+ "record_keys": [
+  "error_codes",
+  "states",
+  "reasons",
+  "gap_reasons",
+  "governing_sources",
+  "bc_capture"
+ ],
+ "record_enums": [
+  "sources",
+  "sources_blocked",
+  "blocked_upstream",
+  "bc_capture.evidence_label",
+  "bc_capture.stopped_reason",
+  "bc_capture.reason",
+  "session_projection.mode",
+  "samples[*].chain",
+  "samples[*].state",
+  "samples[*].governing",
+  "samples[*].cited[*].property",
+  "samples[*].cited[*].relation",
+  "samples[*].cited[*].field_path"
+ ],
+ "notes": "Registered, live-unverified: no live-check result yet. Module test: injected-transport (verify/tests/test_live_po_lateness.py runs this spec's own argv over the fixture world with the Portal and BC transports injected and checks it with live_verify.check_expectations; only the live size floor and the live-read label may miss there). The governing share is data for the >= 80% target, never a pass or failure. Session projection, disk and timing as process.dependencies (same build, same session reads).",
+ "requires": [
+  "mirror.full_coverage",
+  "ontology.session_projection"
+ ],
+ "session_audience": {
+  "/mirror.sqlite": {
+   "sources": [
+    "portal-workbench-api"
+   ],
+   "env": [
+    "PLX_WORKBENCH_API_KEY",
+    "PLX_WORKBENCH_API_URL"
+   ],
+   "reader": "service"
+  },
+  "/projection": {
+   "sources": [
+    "business-central",
+    "portal-workbench-api"
+   ],
+   "env": [
+    "BC_CLIENT_ID",
+    "BC_CLIENT_SECRET",
+    "BC_ENVIRONMENT",
+    "BC_TENANT_ID",
+    "PLX_WORKBENCH_API_KEY",
+    "PLX_WORKBENCH_API_URL"
+   ],
+   "reader": "service"
+  }
+ },
+ "session_reads": [
+  "/mirror.sqlite",
+  "/projection"
+ ]
+}

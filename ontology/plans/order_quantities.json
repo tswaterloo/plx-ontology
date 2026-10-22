@@ -1,0 +1,200 @@
+{
+ "$schema": "_plan.schema.json",
+ "format": "plx-investigate-plan/v1",
+ "id": "order_quantities",
+ "families": [
+  "F3"
+ ],
+ "title": "Ordered, produced and shipped quantities of a sales order",
+ "description": "Each quantity role is read from the record that carries it and never mixed: ordered from the order lines, produced from the assembly (manufacturing) orders made for those lines, shipped from the shipment lines of the order's shipments. Upstream: Portal app_sales_order_line.quantity, app_manufacturing_order.yield_actual (= FM finalqty), app_shipment_line.quantity (docs/reference/portal-code-map.md 3.2, 3.8, 3.10). Produced is the Portal's qty manufactured fallback (yield_actual): the Portal never reads FM totalprodqty_c, which is not served either (03 3.8). Each read asks only for the quantity it states, and each quantity is stated in the canonical unit of ontology/units.py on the line it cites. No assembly order linked to a line, or no shipment of the order, is not_ingested: the FM ETL never sets sales_order_line_id and shipments may be recorded outside the Portal, so neither says nothing was made or shipped (oracle-f3-definitions).",
+ "root": {
+  "object_types": [
+   "SalesOrder"
+  ],
+  "fallback_filters": [
+   {
+    "object_type": "SalesOrder",
+    "property": "order_number"
+   }
+  ]
+ },
+ "step_budget": 24,
+ "steps": [
+  {
+   "id": "root_read",
+   "tool": "plx.object",
+   "from": "root",
+   "bind": "object_id"
+  },
+  {
+   "id": "lines",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrderLine.line_of",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   },
+   "required": true
+  },
+  {
+   "id": "line_read",
+   "tool": "plx.object",
+   "from": "lines",
+   "bind": "object_id",
+   "required": true,
+   "args": {
+    "properties": [
+     "ordered_quantity"
+    ]
+   }
+  },
+  {
+   "id": "assemblies",
+   "tool": "plx.around",
+   "from": "lines",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "AssemblyOrder.for_order_line",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "assembly_read",
+   "tool": "plx.object",
+   "from": "assemblies",
+   "bind": "object_id",
+   "args": {
+    "properties": [
+     "final_quantity"
+    ]
+   }
+  },
+  {
+   "id": "shipments",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Shipment.ships",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "shipment_lines",
+   "tool": "plx.around",
+   "from": "shipments",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "ShipmentLine.line_of",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "shipment_line_read",
+   "tool": "plx.object",
+   "from": "shipment_lines",
+   "bind": "object_id",
+   "args": {
+    "properties": [
+     "shipped_quantity"
+    ]
+   }
+  }
+ ],
+ "evidence": [
+  {
+   "name": "ordered",
+   "kind": "property",
+   "required": true,
+   "object_type": "SalesOrderLine",
+   "properties": [
+    "ordered_quantity"
+   ],
+   "quantity_role": "ordered",
+   "canonical_unit": true
+  },
+  {
+   "name": "produced",
+   "kind": "property",
+   "required": true,
+   "object_type": "AssemblyOrder",
+   "properties": [
+    "final_quantity"
+   ],
+   "quantity_role": "produced",
+   "if_null": "absent_in_source",
+   "canonical_unit": true,
+   "if_no_object": "not_ingested"
+  },
+  {
+   "name": "shipped",
+   "kind": "property",
+   "required": true,
+   "object_type": "ShipmentLine",
+   "properties": [
+    "shipped_quantity"
+   ],
+   "quantity_role": "shipped",
+   "if_null": "absent_in_source",
+   "canonical_unit": true,
+   "if_no_object": "not_ingested"
+  }
+ ]
+}

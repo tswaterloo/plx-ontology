@@ -1,0 +1,295 @@
+{
+ "format": "plx-case-ontology-gaps/v1",
+ "case": "vince-artwork",
+ "status": "What the ontology lacks to answer evals/dev/artwork-lifecycle/proposed_items.json. Sources are named, never read here; 'source unknown' carries the question that would find one.",
+ "advisory": "advisory:0cd0f444ac49",
+ "gaps": [
+  {
+   "id": "AL-GAP-01",
+   "kind": "object",
+   "name": "ArtworkVersion / Proof (an exact proof attachment version with its approval status and approver)",
+   "ontology_today": "No curated artwork or proof type; only the generated not_served types RelPublicAppAttachment and RelPublicAppArtworkVersionDecision.",
+   "needed_by": [
+    "AL-02",
+    "AL-06",
+    "AL-07",
+    "AL-08"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "public.app_attachment (version, approval_status, approved_by_id, approved_at)",
+     "ref": "plx-customer-portal:portal/prisma/schema.prisma@1f2d42d1e832:5858-5904"
+    },
+    {
+     "system": "portal",
+     "relation": "public.app_artwork_version_decision",
+     "ref": "plx-customer-portal:portal/prisma/schema.prisma@1f2d42d1e832:9348-9370"
+    }
+   ]
+  },
+  {
+   "id": "AL-GAP-02",
+   "kind": "object",
+   "name": "CustomerApproval (customer sign-off on one exact proof version, channel and reference, recorder kept apart)",
+   "ontology_today": "No customer-approval object; MCApproval and the not_served RelPublicAppApprovalRecord are generic and carry no proof-version binding.",
+   "needed_by": [
+    "AL-06"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "public.app_approval_record type pd.artwork_customer_signoff",
+     "ref": "plx-customer-portal:portal/src/lib/artwork/customer-signoff.ts@1f2d42d1e832:1-18"
+    },
+    {
+     "system": "portal",
+     "relation": "public.app_approval_record",
+     "ref": "plx-customer-portal:portal/prisma/schema.prisma@1f2d42d1e832:1131-1159"
+    }
+   ]
+  },
+  {
+   "id": "AL-GAP-03",
+   "kind": "object",
+   "name": "QA artwork acceptance and Regulatory review, with the gate strength in force",
+   "ontology_today": "No QA-acceptance or regulatory-review object; the soft-gate rule exists only as Portal code paths, and no source of the deployed gate setting is known.",
+   "needed_by": [
+    "AL-03",
+    "AL-04",
+    "AL-05"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "public.app_artwork_version_decision.qa_approved_at",
+     "ref": "plx-customer-portal:portal/prisma/schema.prisma@1f2d42d1e832:9348-9370"
+    },
+    {
+     "system": "portal",
+     "relation": "public.app_project_artwork (regulatory sign-off, market checklist)",
+     "ref": "plx-customer-portal:portal/prisma/schema.prisma@1f2d42d1e832:5109-5125"
+    },
+    {
+     "system": "portal",
+     "relation": "soft-gate code path (approval with a warning)",
+     "ref": "plx-customer-portal:portal/src/lib/artwork/decide-proof.ts@1f2d42d1e832:295"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Is the artwork QA gate deployed on staging/UAT as a soft warning with a waiver or as a block, where is that setting held, and does accepting artwork for an unreleased formula warn or block?"
+  },
+  {
+   "id": "AL-GAP-04",
+   "kind": "link",
+   "name": "Printed-component lineage (proof version -> minted P-item -> previous item with held lots -> FG revision)",
+   "ontology_today": "FgItem and the served app_product exist, but no link from a proof version to its P-item, to the item it replaced, or to the FG revision that froze it.",
+   "needed_by": [
+    "AL-02",
+    "AL-07",
+    "AL-13"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "public.app_artwork_version_packaging_item (product_id, previous_product_id)",
+     "ref": "plx-customer-portal:portal/prisma/schema.prisma@1f2d42d1e832:5906-5927"
+    },
+    {
+     "system": "portal",
+     "relation": "public.app_fg_item_revision",
+     "ref": "plx-customer-portal:portal/prisma/schema.prisma@1f2d42d1e832:7156-7191"
+    },
+    {
+     "system": "portal-reporting-api",
+     "relation": "public.app_product",
+     "ref": "plx-customer-portal:services/workbench-api/manifest/allowlist.json@1f2d42d1e832:428"
+    }
+   ]
+  },
+  {
+   "id": "AL-GAP-05",
+   "kind": "link",
+   "name": "Artwork version on PO line, receipt line and incoming QC",
+   "ontology_today": "PurchaseOrderLine and ReceiptLine exist, but the reporting API serves them without artwork_attachment_id / artwork_version, and app_incoming_qc_record is not served.",
+   "needed_by": [
+    "AL-08",
+    "AL-14"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "public.app_purchase_order_line.artwork_attachment_id, artwork_version",
+     "ref": "plx-customer-portal:portal/prisma/schema.prisma@1f2d42d1e832:3620-3649"
+    },
+    {
+     "system": "portal",
+     "relation": "public.app_receipt_line, public.app_incoming_qc_record",
+     "ref": "plx-customer-portal:portal/prisma/schema.prisma@1f2d42d1e832:3875-3948"
+    },
+    {
+     "system": "portal-reporting-api",
+     "relation": "allowlist columns of app_purchase_order_line and app_receipt_line",
+     "ref": "plx-customer-portal:services/workbench-api/manifest/allowlist.json@1f2d42d1e832:560,691"
+    }
+   ]
+  },
+  {
+   "id": "AL-GAP-06",
+   "kind": "object",
+   "name": "AO label reconciliation (Form #013B lines, QA sign-off, in-process inspection #010, release acknowledgement)",
+   "ontology_today": "AssemblyOrder exists, but no label-reconciliation, sign-off or release-acknowledgement object; only the generated not_served types RelPublicAppAoLabelReconciliationLine, RelPublicAppAoLabelVerificationSignoff and RelPublicAppAoQcReleaseAck.",
+   "needed_by": [
+    "AL-05",
+    "AL-09",
+    "AL-10"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "public.app_ao_label_reconciliation_line, app_ao_label_verification_signoff, app_ao_line_inspection, app_ao_qc_release_ack",
+     "ref": "plx-customer-portal:portal/prisma/schema.prisma@1f2d42d1e832:9413-9508"
+    }
+   ]
+  },
+  {
+   "id": "AL-GAP-07",
+   "kind": "reader",
+   "name": "Portal artwork and label relations through the reporting API",
+   "ontology_today": "None of app_attachment, app_artwork_version_*, app_approval_record, app_ao_label_* or app_ao_qc_release_ack is an approved relation, so no record is readable.",
+   "needed_by": [
+    "AL-06",
+    "AL-07",
+    "AL-09",
+    "AL-10",
+    "AL-11"
+   ],
+   "sources": [
+    {
+     "system": "portal-reporting-api",
+     "relation": "allowlist (absent entries)",
+     "ref": "plx-customer-portal:services/workbench-api/manifest/allowlist.json@1f2d42d1e832"
+    },
+    {
+     "system": "workbench",
+     "relation": "generated not_served types",
+     "ref": "OntologyProject:ontology/schema/generated/portal_not_served_a_e.json@2003e14a91ee"
+    }
+   ]
+  },
+  {
+   "id": "AL-GAP-08",
+   "kind": "link",
+   "name": "Artwork version to formula / ingredient-list basis",
+   "ontology_today": "No link from an artwork version to the formula version and ingredient list it was checked against; only the generated not_served RelPublicAppArtworkVersionBasis.",
+   "needed_by": [
+    "AL-04",
+    "AL-11"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "public.app_artwork_version_basis",
+     "ref": "plx-customer-portal:portal/prisma/schema.prisma@1f2d42d1e832:9510-9541"
+    }
+   ]
+  },
+  {
+   "id": "AL-GAP-09",
+   "kind": "link",
+   "name": "Portal P-item to FileMaker packaging and BC item identity",
+   "ontology_today": "No crosswalk from a Portal-minted P-item to a FileMaker packaging id or a BC item; the map reports new P-items cannot flow through FileMaker-resolved receiving, reorder and AO paths.",
+   "needed_by": [
+    "AL-07",
+    "AL-13"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "public.app_bc_entity_map (portal/FM id <-> BC systemId)",
+     "ref": "plx-customer-portal:scripts/migrations/20260615_create_app_bc_integration.sql@1f2d42d1e832:67-80"
+    },
+    {
+     "system": "portal-reporting-api",
+     "relation": "public.packaging, public.receipt_packaging",
+     "ref": "plx-customer-portal:services/workbench-api/manifest/allowlist.json@1f2d42d1e832:1362,1529"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Which record maps a Portal-minted P-item to its FileMaker packaging id during cutover, and is app_bc_entity_map populated for printed-component items?"
+  },
+  {
+   "id": "AL-GAP-10",
+   "kind": "reader",
+   "name": "BC AO component consumption of printed labels",
+   "ontology_today": "The GET-only BC grammar serves items and itemLedgerEntries but names no assembly-order entity set, so AO consumption of a label lot is unreadable as such.",
+   "needed_by": [
+    "AL-09"
+   ],
+   "sources": [
+    {
+     "system": "business-central",
+     "relation": "BC_ENTITY_SETS (no assembly orders)",
+     "ref": "OntologyProject:integrations/live_source_grammar.py@2003e14a91ee:72-83"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "After cutover, which BC record holds AO consumption of a printed label lot (assembly orders, production order consumption or item ledger entries), and in which company?"
+  },
+  {
+   "id": "AL-GAP-11",
+   "kind": "reader",
+   "name": "Digital Form #008 capture",
+   "ontology_today": "The map's target captures Forms #013B, #010 and #008; Portal has tables for #013B and #010, and no #008 table was found.",
+   "needed_by": [
+    "AL-10"
+   ],
+   "source": "source unknown",
+   "open_question": "What does Form #008 record on an AO, and where is it captured today (paper, FileMaker or a Portal table)?"
+  },
+  {
+   "id": "AL-GAP-12",
+   "kind": "reader",
+   "name": "Open question from the Artwork Handoff cases: artwork-department owner",
+   "ontology_today": "Not in the ontology; named by the handoff request, whose originals are unread here (read receipt pending).",
+   "needed_by": [
+    "AL-06"
+   ],
+   "source": "source unknown",
+   "open_question": "Who owns the artwork department decision on a proof (a named role or person), and where is that owner recorded?"
+  },
+  {
+   "id": "AL-GAP-13",
+   "kind": "reader",
+   "name": "Open question from the Artwork Handoff cases: die-line owner",
+   "ontology_today": "Not in the ontology; named by the handoff request, whose originals are unread here (read receipt pending).",
+   "needed_by": [
+    "AL-02"
+   ],
+   "source": "source unknown",
+   "open_question": "Who owns the die-line for a printed component, and where is its version held?"
+  },
+  {
+   "id": "AL-GAP-14",
+   "kind": "reader",
+   "name": "Open question from the Artwork Handoff cases: legacy proof attachment",
+   "ontology_today": "Not in the ontology; named by the handoff request, whose originals are unread here (read receipt pending).",
+   "needed_by": [
+    "AL-07"
+   ],
+   "source": "source unknown",
+   "open_question": "How is a proof attached before the Portal (email, FileMaker or SharePoint), and which record links it to its printed component?"
+  },
+  {
+   "id": "AL-GAP-15",
+   "kind": "reader",
+   "name": "Open question from the Artwork Handoff cases: print-ready artifacts",
+   "ontology_today": "Not in the ontology; named by the handoff request, whose originals are unread here (read receipt pending).",
+   "needed_by": [
+    "AL-02"
+   ],
+   "source": "source unknown",
+   "open_question": "Which print-ready artifacts go to the printer for an approved version, and where are they stored?"
+  }
+ ]
+}

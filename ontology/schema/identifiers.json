@@ -1,0 +1,2912 @@
+{
+ "format": "plx-identifiers/v1",
+ "description": "The one identifier grammar of the Workbench: every identifier kind (pattern, normaliser, alias kinds, carrying fields per system with the upstream code that writes them), the mention patterns used to find identifiers in text, technical identifier grammars of live sources, and the cross-system keys declared as link bindings. ontology/identifiers.py loads and compiles this file.",
+ "upstream": {
+  "portal": "plx-customer-portal@b46934a",
+  "portal_context_pack": "docs/reference/portal-code-map.md (pin 6c94159; re-read at b46934a)"
+ },
+ "tiers": {
+  "verified": "A key the owning system writes and resolves on; may still be non-unique (then a candidate, never a merge).",
+  "lead": "A reference only: it finds candidates and never asserts identity."
+ },
+ "identity_rules": {
+  "auto_merge": "No PurchaseOrder, SalesOrder, AssemblyOrder or invoice ever auto-merges on a normalised value.",
+  "exact": "An exact match is the literal comparison the owning system makes (Portal TRIM/ILIKE).",
+  "normalised": "A normalised value or blocking key only finds candidates.",
+  "exact_compare": "Per kind, the literal comparison that makes a match exact (a case root), read by plx.find and find_root through ontology/identifiers.exact_compare: trim = equal after trimming both sides, case-sensitive (Portal resolveOrderByNumber: order_number = TRIM($1), plx-customer-portal@59b0548 portal/src/lib/orders/order-identity.ts:92-99); trim_casefold = equal after trimming, case-insensitive, with no wildcard (Portal TRIM(po_number) ILIKE TRIM($1), portal/src/app/api/mrp/receiving/open-po-lines/route.ts:279; a % or _ in the value is literal); normalized = equal after the kind's own normaliser on both sides (Portal customer PO: normalizePoReference, trimmed, inner whitespace collapsed, upper case, plx-customer-portal@40f7802 portal/src/lib/orders/customer-po.ts:17-24).",
+  "carrier_roles": "primary: the field the owning system resolves the identifier on; alias: a field holding the same record's number in another system or column (its record is the primary's twin, operating/ontology_tools_investigate._root_twins); linked_alias: an alias whose record is the primary's twin only when a verified same-record link joins them, because its writer renames on a clash (a same-number match alone names another record); separate_row: another record holding the same number; lead: a reference that finds candidates only; mention: free text.",
+  "identity_scope": "A kind that declares identity_scope is unique only within it: its identity is (scope space, scope value, normalised value), read through ontology/identifiers.identity_key with the carrier's scope_field from the same record (identity_scope). Two values of two scopes are two identities; a value whose record holds no scope value names no identity. A query names no scope, so plx.find and find_root (operating/ontology_tools.exact_match, identity_scopes) make such a value exact only on a record holding a scope value whose scope space holds the value under that one scope, and then by its literal trimmed text, not exact_compare: any other match is a lead. A carrier may qualify its scope with scope_within (company: the record's BC company, as BC numbers repeat across companies) and name records that never hold the value with scope_excludes (field and values: the Portal skips a cancelled order); an excluded record is a lead and never makes the value ambiguous."
+ },
+ "environment_prefixes": [
+  {
+   "prefix": "UAT-",
+   "meaning": "The Portal's environment reference prefix (NEXT_PUBLIC_UAT_REF_PREFIX): numbers a Portal database issues while the variable is set start with it. The Portal's own series checks strip it (isCanonicalSalesOrderNumber, isCanonicalShipmentNumber, isLegacyFmPoNumber) but every join compares the literal value. A value carrying it was issued by a prefix-setting Portal database; the staging app that drains Business Central writes plx-postgres-uat, while the reporting API serves the replica of plx-postgres-staging, so such a number may name a row the reporting API never serves. A diagnosis only: never stripped for a match. The one list of prefixes: a kind marked environment_prefixed accepts its value_pattern behind any of them (ontology/identifiers.py compiles the prefix into the grammar), so no value_pattern writes a prefix itself; petra_po keeps its own parser for the UAT- part of a Petra PO.",
+   "upstream": "plx-customer-portal@c3ffda3:portal/src/lib/utils/uat-prefix.ts:16-25; portal/src/lib/mrp/sales-order-number-series.ts:56; portal/src/lib/wms/shipment-number-series.ts:36; portal/src/lib/mrp/po-number-series.ts:74; scripts/db-targets.json (staging -> uat; staging_reporting = replica of staging)"
+  }
+ ],
+ "kinds": {
+  "petra_po": {
+   "object_type": "PurchaseOrder",
+   "description": "A Petra purchase-order number in any written form. Normalised to the series prefix plus the number without separators or leading zeros (PO#4821, PO 4821, Our PO 4821, P.O. # 4821 -> PO4821). The normalised value is a blocking key for candidates; an exact match against a row is still the literal TRIM/ILIKE comparison Portal makes. A bare stored number (Sage and FM ponumber hold some numbers without a series: 4821, 4821-FM12) reads as a series-less number (4821); it is never the PO-series number PO4821, only its same-number twin.",
+   "value_pattern": "(?:our\\s+)?(?:UAT-)?(?:D?PO|P\\.\\s?O\\.?|purchase\\s+order)(?:\\s*(?:no\\.?|number|num\\.?))?\\s?[#:.\\-]?\\s*\\d{1,9}(?:-FM\\d{1,9})?|(?:UAT-)?PO-(?=[A-Za-z0-9]{0,7}\\d)[A-Za-z0-9]{3,8}|\\d{1,9}(?:-FM\\d{1,9})?",
+   "flags": "i",
+   "normalizer": "petra_po",
+   "identity": "anchor",
+   "exact_compare": "trim_casefold",
+   "exact_compare_upstream": "plx-customer-portal@f7e3f8c:portal/src/app/api/mrp/receiving/open-po-lines/route.ts:279 (resolveGoldPoIdByNumber TRIM ILIKE)",
+   "portal_lookup": {
+    "function": "resolveGoldPoIdByNumber",
+    "upstream": "plx-customer-portal@f7e3f8c:portal/src/app/api/mrp/receiving/open-po-lines/route.ts:268-291",
+    "rules": [
+     {
+      "rule": "po_number",
+      "compare": "TRIM(apo.po_number) ILIKE TRIM($1)",
+      "workbench": "carrier",
+      "note": "The carrier public.app_purchase_order.po_number (trim_casefold)."
+     },
+     {
+      "rule": "custom_fields.fmPoNumber",
+      "compare": "TRIM(COALESCE(apo.custom_fields->>'fmPoNumber', '')) ILIKE TRIM($1)",
+      "workbench": "carrier",
+      "note": "The carrier public.app_purchase_order.custom_fields.fmPoNumber: the number a PO had before align-portal-po-number.ts@f7e3f8c:44-61 rewrote po_number to the BC No."
+     },
+     {
+      "rule": "app_bc_entity_map.bc_number",
+      "compare": "TRIM(COALESCE(bcm.bc_number, '')) ILIKE TRIM($1)",
+      "join": "LEFT JOIN app_bc_entity_map bcm ON bcm.entity_type = 'purchaseOrder' AND bcm.source_system = 'portal' AND bcm.source_id = apo.id AND bcm.status = 'LINKED'",
+      "workbench": "gap",
+      "note": "Not adopted: the reporting API does not serve public.app_bc_entity_map (plx-customer-portal@f7e3f8c:scripts/sql/workbench-readonly/allowlist.json names no app_bc_entity_map; bc_document_no carrier served false), so a BC No. held only in the map (alignment skipped because another gold row owns that number, align-portal-po-number.ts@f7e3f8c:31-41) names no served row. A PO the alignment renumbered carries the BC No. in po_number and custom_fields.renumberedTo and is found through those carriers."
+     },
+     {
+      "rule": "po_number_substring",
+      "compare": "TRIM(apo.po_number) ILIKE '%' || TRIM($1) || '%'",
+      "workbench": "not_taken",
+      "note": "Never an exact match (identity_rules.exact): PO#52 is inside PO#5280. The Portal ranks it last and keeps one row; it is a lead at most."
+     }
+    ],
+    "order": "The Portal ranks po_number, bc_number, fmPoNumber, substring, then the newest date_generated, and keeps one row (LIMIT 1). The Workbench takes no rank and no LIMIT: every row an exact rule matches is returned, and two rows are ambiguous, never a pick.",
+    "renumbered_to": "custom_fields.renumberedTo is not one of the lookup's rules at f7e3f8c; align-portal-po-number.ts@f7e3f8c:49-61 writes it equal to the BC No. it sets as po_number, so the carrier holds the same record's number and stays an alias.",
+    "read_by": "operating/issued_sends.py (served PO rows by PO number)"
+   },
+   "auto_merge": false,
+   "alias_kinds": [
+    "petra_po_fm_number",
+    "bc_document_no",
+    "petra_po_fm_twin_number"
+   ],
+   "forms": [
+    {
+     "form": "canonical",
+     "example": "PO100000",
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/mrp/po-number-series.ts"
+    },
+    {
+     "form": "distribution",
+     "example": "DPO100000",
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/mrp/po-number-series.ts"
+    },
+    {
+     "form": "legacy_fm",
+     "example": "PO#5280",
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/mrp/po-number-series.ts"
+    },
+    {
+     "form": "legacy_uat",
+     "example": "UAT-PO#5283",
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/mrp/po-number-series.ts"
+    },
+    {
+     "form": "legacy_dash",
+     "example": "PO-4821",
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/mrp/po-number-series.ts:isLegacyFmPoNumber"
+    },
+    {
+     "form": "legacy_base36",
+     "example": "PO-MUT20W00",
+     "upstream": "plx-customer-portal@82549dd:portal/src/app/api/operations/purchase-orders/route.ts:33 (prefixRef(`PO-${Date.now().toString(36).toUpperCase()}`): PO- plus a millisecond time in base 36, at most 8 characters before 2059; no DPO- form, the distribution series is numeric only: portal/src/lib/mrp/po-number-series.ts); docs/reference/portal-code-map.md s3.5"
+    },
+    {
+     "form": "fm_suffixed_clash",
+     "example": "PO#5300-FM77",
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/mrp/create-fm-purchase-order.ts:279-291"
+    },
+    {
+     "form": "mail_labelled",
+     "example": "Our PO 4821",
+     "upstream": "docs/reference/cases-and-artifacts.md (deposit wire reference)"
+    },
+    {
+     "form": "document_labelled",
+     "example": "Purchase Order No. 106089",
+     "upstream": "ontology/identifiers.py find_identifiers (petra_po value_pattern purchase order + no.; mention_profiles petra_po_labelled), read by ontology/mentions.py extract"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "portal",
+     "relation": "public.app_purchase_order",
+     "field": "po_number",
+     "role": "primary",
+     "served": true,
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/business-central/align-portal-po-number.ts",
+     "note": "Rewritten to the BC No. once LINKED; not immutable."
+    },
+    {
+     "system": "portal",
+     "relation": "public.app_purchase_order",
+     "field": "custom_fields.fmPoNumber",
+     "role": "alias",
+     "served": true,
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/business-central/align-portal-po-number.ts"
+    },
+    {
+     "system": "portal",
+     "relation": "public.app_purchase_order",
+     "field": "custom_fields.renumberedTo",
+     "role": "alias",
+     "served": true,
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/business-central/align-portal-po-number.ts"
+    },
+    {
+     "system": "fm",
+     "relation": "public.generated_purchase_order",
+     "field": "ponumber",
+     "role": "alias",
+     "served": true,
+     "upstream": "plx-customer-portal@b46934a:portal/src/app/mrp/purchase-orders/po-queries.ts:resolveGoldPoIdForFmPo"
+    },
+    {
+     "system": "sage",
+     "relation": "sage.po_header",
+     "field": "ponumber",
+     "role": "separate_row",
+     "served": true,
+     "upstream": "ontology/resolve.py SameNumberIndex (a same-number twin, a lead); no Sage<->gold PO link is declared upstream: plx-customer-portal@f7e3f8c portal/src names no po_header"
+    },
+    {
+     "system": "bc",
+     "relation": "purchaseOrders",
+     "field": "number",
+     "role": "alias",
+     "served": true,
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/business-central/align-portal-po-number.ts"
+    },
+    {
+     "system": "bc",
+     "relation": "purchaseOrders",
+     "field": "Your Reference",
+     "role": "alias",
+     "served": false,
+     "upstream": "docs/reference/cases-and-artifacts.md (codeunit 50115: Your Reference = fmPoNumber)"
+    },
+    {
+     "system": "portal",
+     "relation": "public.app_receipt",
+     "field": "po_reference",
+     "role": "lead",
+     "served": true,
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/mrp/upsert-gold-receipt.ts (TRIM text join)"
+    }
+   ],
+   "same_number": {
+    "description": "Two stored values hold the same number when these parts are equal: separators, leading zeros and an -FM<id> clash suffix aside, the UAT stamp and the series kept, and a series-less (bare) number matching any series. Same-number rows in two systems are twins: leads naming every row, never a merge (identity_rules.auto_merge).",
+    "parts": [
+     "uat",
+     "number"
+    ],
+    "required": [
+     "number"
+    ],
+    "blank_matches_any": [
+     "series"
+    ],
+    "upstream": "ontology/resolve.py SameNumberIndex (Sage sage.po_header.ponumber and FM generated_purchase_order.ponumber store bare numbers); plx-customer-portal@b46934a:portal/src/lib/mrp/create-fm-purchase-order.ts:279-291 (-FM<id> clash suffix)"
+   }
+  },
+  "customer_po": {
+   "object_type": "CustomerPurchaseOrder",
+   "description": "The customer's own PO number, unique only per customer: two customers can use the same PO number, so a PO names an order only together with its customer (Portal TASK-2401). Portal compares it on customer plus the normalised value (trimmed, inner whitespace collapsed, upper case); the blocking key (leading PO marker removed, digit groups joined) only finds candidates. One customer can reuse a PO on several live orders (a Portal warning, not a constraint), and the column can hold a person's name.",
+   "value_pattern": "[^\\x00-\\x1f]{1,80}",
+   "flags": "",
+   "normalizer": "customer_po",
+   "identity": "lead",
+   "exact_compare": "normalized",
+   "auto_merge": false,
+   "alias_kinds": [
+    "bc_external_document_no"
+   ],
+   "identity_scope": {
+    "party": "customer",
+    "why": "A customer PO is unique per customer, not across customers: the Portal matches a PO only with the order's customer (no customer: the PO step is skipped) and warns, without refusing, when one customer reuses a PO on another live order. No unique (customer, po_reference) index exists.",
+    "upstream": "plx-customer-portal@40f7802:portal/src/lib/orders/order-identity.ts:resolveOrderByNumber:98-152, resolvePortalCustomerIdFromBc:158-175, resolveOrderFromBcInvoiceId:205-221 (the BC invoice's customer through app_bc_entity_map); portal/src/lib/orders/customer-po.ts:findCustomerPoReuse:51-89"
+   },
+   "forms": [
+    {
+     "form": "as_written",
+     "example": "PO20260312",
+     "upstream": "(SalesOrder 351)"
+    },
+    {
+     "form": "marked",
+     "example": "PO# 4500 12",
+     "upstream": "docs/reference/case-runtime.md",
+     "marker": "(?:P\\.?\\s?O\\.?|PURCHASE\\s+ORDER)\\s*#\\s*",
+     "marker_note": "A PO word and # before the value (PO#PO-6000, PO #PO-6000, PO# 7000), matched case-insensitively at the start (ontology/identifiers.marked_value). plx.find reads such a query as a lead to the customer POs whose blocking key the marked value shares (reason marked_form), never as that PO: the Portal compares the whole text (normalizePoReference keeps the marker), so a marked text roots nothing (docs/decisions/2026-10-10-customer-po-scope-entry-points.md)."
+    }
+   ],
+   "carriers": [
+    {
+     "system": "portal",
+     "relation": "public.app_sales_order",
+     "field": "po_reference",
+     "role": "primary",
+     "served": true,
+     "upstream": "plx-customer-portal@40f7802:portal/src/lib/orders/order-identity.ts:resolveOrderByNumber:98-152",
+     "scope_field": "customer_id",
+     "scope_excludes": {
+      "field": "status",
+      "values": [
+       "CANCELLED"
+      ],
+      "upstream": "plx-customer-portal@40f7802:portal/src/lib/orders/order-identity.ts:125-137 (status <> 'CANCELLED': a cancelled order never matches its PO, so it never makes the PO ambiguous)"
+     }
+    },
+    {
+     "system": "fm",
+     "relation": "public.order_entry",
+     "field": "custpocode",
+     "role": "alias",
+     "served": true,
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/wms/ensure-fm-oe-from-sales-order.ts",
+     "note": "Bridge writes po_reference ?? order_number: can be the SO number.",
+     "scope_field": "idcust"
+    },
+    {
+     "system": "sage",
+     "relation": "sage.oe_order_header",
+     "field": "ponumber",
+     "role": "alias",
+     "served": true,
+     "upstream": "plx-customer-portal@b46934a:portal/scripts/etl-sage-distribution-gold.mjs",
+     "scope_field": "customer"
+    },
+    {
+     "system": "bc",
+     "relation": "salesOrders",
+     "field": "externalDocumentNumber",
+     "role": "alias",
+     "served": true,
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/business-central/serializers.ts:1157",
+     "note": "The scope is BC's own customer number on the order within its company (a scope space of its own, never compared with a Portal customer: the Portal reaches the customer of a BC document only through app_bc_entity_map). BC numbers are unique only within a company, so two companies' customers sharing a number are two scopes (scope_within company: the environment and company of the record's capture handle, ontology/project_bc.py).",
+     "scope_field": "customerNumber",
+     "scope_within": "company"
+    }
+   ],
+   "no_fixed_format": {
+    "why": "Customer free text: the customer chooses the number and Portal stores what was typed, trimmed (no format check); po_reference can hold a person's name or the SO number (FM bridge writes po_reference ?? order_number). \"PO\" is ambiguous: this is the customer's, never a Petra PO.",
+    "upstream": "plx-customer-portal@82549dd:portal/prisma/schema.prisma:3673 (SalesOrder.poReference String?, \"Customer's PO number\"); portal/src/lib/sales-order/service.ts:479 (input.poReference?.trim()); portal/src/lib/business-central/serializers.ts:1157-1158 (sent as externalDocumentNumber, cut to 35)"
+   },
+   "exact_compare_upstream": "plx-customer-portal@40f7802:portal/src/lib/orders/order-identity.ts:125-137 (customer_id = $1 AND PO_REFERENCE_NORM_SQL = normalizePoReference($2), status <> 'CANCELLED', LIMIT 2: one row matches, two are ambiguous and match none); portal/src/lib/orders/customer-po.ts:17-24"
+  },
+  "so_number": {
+   "object_type": "SalesOrder",
+   "description": "Gold SalesOrder.orderNumber (canonical order key; rewritten to the BC document No. after drain) and its earlier numbers.",
+   "value_pattern": "[A-Za-z0-9][A-Za-z0-9_./#-]{0,39}",
+   "flags": "",
+   "normalizer": "upper_trim",
+   "identity": "anchor",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [
+    "bc_document_no",
+    "bc_external_document_no"
+   ],
+   "forms": [
+    {
+     "form": "make_create",
+     "example": "SO-2026-0012",
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/sales-order/service.ts:generateSalesOrderNumber"
+    },
+    {
+     "form": "fm_ensure",
+     "example": "SO100000",
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/mrp/sales-order-number-series.ts"
+    },
+    {
+     "form": "distribution",
+     "example": "DSO100000",
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/mrp/sales-order-number-series.ts"
+    },
+    {
+     "form": "legacy_fm",
+     "example": "SO-FM-351",
+     "upstream": "docs/reference/portal-code-map.md s3.2"
+    },
+    {
+     "form": "fm_order_entry",
+     "example": "OR1000123456",
+     "upstream": "(SalesOrder 351)"
+    },
+    {
+     "form": "environment_prefixed",
+     "example": "UAT-SO100018",
+     "upstream": "plx-customer-portal@c3ffda3:portal/src/lib/wms/ensure-sales-order-from-fm-oe.ts:508 (prefixRef); portal/src/lib/mrp/sales-order-number-series.ts:56"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "portal",
+     "relation": "public.app_sales_order",
+     "field": "order_number",
+     "role": "primary",
+     "served": true,
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/orders/order-identity.ts:resolveOrderByNumber"
+    },
+    {
+     "system": "portal",
+     "relation": "public.app_sales_order",
+     "field": "custom_fields.fmOeNumber",
+     "role": "alias",
+     "served": true,
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/business-central/align-portal-so-number.ts"
+    },
+    {
+     "system": "portal",
+     "relation": "public.app_sales_order",
+     "field": "custom_fields.renumberedTo",
+     "role": "alias",
+     "served": true,
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/business-central/align-portal-so-number.ts"
+    },
+    {
+     "system": "portal",
+     "relation": "public.app_sales_order",
+     "field": "custom_fields.erpCode",
+     "role": "alias",
+     "served": true,
+     "upstream": "plx-customer-portal@c3ffda3:portal/src/lib/business-central/document-finance-queries.ts:76-79 (resolveSalesOrderFinanceMatchKeys)"
+    },
+    {
+     "system": "portal",
+     "relation": "public.app_sales_order",
+     "field": "custom_fields.sageOrdNumber",
+     "role": "alias",
+     "served": true,
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/wms/sage-ship-queue.ts"
+    },
+    {
+     "system": "fm",
+     "relation": "public.order_entry",
+     "field": "erpcode",
+     "role": "alias",
+     "served": true,
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/wms/ensure-fm-oe-from-sales-order.ts"
+    },
+    {
+     "system": "sage",
+     "relation": "sage.oe_order_header",
+     "field": "ordnumber",
+     "role": "linked_alias",
+     "served": true,
+     "upstream": "plx-customer-portal@82549dd:portal/scripts/etl-sage-distribution-gold.mjs:1456-1560 (upsertOpenOeOrders)",
+     "note": "The Sage ETL creates the gold order from this header with this ordnumber as its order_number, or {prefix}-{ordnumber} when another gold order already holds the number, and stamps custom_fields.sageSourceOrdUniq (SalesOrder.same_record_as). So a header holding the number is the gold order's twin only when that link joins them; else it is another order."
+    },
+    {
+     "system": "bc",
+     "relation": "salesInvoices",
+     "field": "externalDocumentNumber",
+     "role": "lead",
+     "served": true,
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/business-central/serializers.ts:1049"
+    }
+   ],
+   "no_fixed_format": {
+    "why": "Several writers with different series: SO-YYYY-NNNN, SO/DSO plus a number (prefix configurable by environment), the FM order number as entered or SO-{id}, the Sage order number or {prefix}-{ordnumber} on a clash, and the BC No. after alignment. No one pattern covers them.",
+    "upstream": "plx-customer-portal@82549dd:portal/src/lib/sales-order/service.ts:105-112; portal/src/lib/mrp/sales-order-number-series.ts:19-29 (BC_SO_NUMBER_PREFIX/SO_NUMBER_PREFIX); portal/scripts/etl-silver-to-gold.ts:1727; portal/scripts/etl-sage-distribution-gold.mjs:1456,1560; portal/src/lib/business-central/align-portal-so-number.ts:21"
+   }
+  },
+  "bc_document_no": {
+   "object_type": "BcDocument",
+   "description": "A Business Central document or master No. (Code[20]). BC upper-cases Code fields, so the normalised form is upper case.",
+   "value_pattern": "[A-Za-z0-9](?:[A-Za-z0-9._/#-]| (?=[A-Za-z0-9._/#-])){0,19}",
+   "flags": "",
+   "normalizer": "upper_trim",
+   "identity": "anchor",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [
+    "petra_po",
+    "so_number"
+   ],
+   "forms": [
+    {
+     "form": "purchase_order",
+     "example": "PO100523",
+     "upstream": "docs/reference/portal-code-map.md s3.5"
+    },
+    {
+     "form": "production_cost_ao_code",
+     "example": "PLX-AO-AO-26197B",
+     "pattern": "PLX-AO-(?P<code>(?:UAT-)?AO-\\d{3,5}[A-Z]{1,2})",
+     "reads": {
+      "code": {
+       "kind": "ao_code",
+       "object_type": "AssemblyOrder",
+       "meaning": "the AO name (gold ManufacturingOrder.mo_code)"
+      }
+     },
+     "upstream": "plx-customer-portal@6e76a5b:portal/src/lib/business-central/production-cost-sync.ts:269 (PLX-AO-{aoCode ?? aoKey}); production-cost.ts:464 (aoCode = gold mo_code), :216-217 (e.g. AO-26197B)"
+    },
+    {
+     "form": "production_cost_date",
+     "example": "PLX-AO-2026-10-04",
+     "pattern": "PLX-AO-(?P<date>\\d{4}-\\d{2}-\\d{2})",
+     "reads": {
+      "date": {
+       "kind": null,
+       "meaning": "the UTC day the request was built (no AO named): never an AO, a lead to that day's production-cost postings at most"
+      }
+     },
+     "upstream": "plx-customer-portal@6e76a5b:portal/src/lib/business-central/production-cost.ts:265-271 (today = new Date().toISOString().slice(0, 10); PLX-AO-{aoCode ?? today} when no documentNo is supplied)"
+    },
+    {
+     "form": "production_cost_ao",
+     "example": "PLX-AO-9035",
+     "upstream": "plx-customer-portal@6e76a5b:portal/src/lib/business-central/production-cost-sync.ts:268-269 (aoKey = String(aoId); PLX-AO-{aoCode ?? aoKey}, cut to 15 then 20 characters)",
+     "pattern": "PLX-AO-(?P<id>\\d{1,13})",
+     "reads": {
+      "id": {
+       "kind": "fm_id",
+       "object_type": "AssemblyOrder",
+       "meaning": "assembly_order.id"
+      }
+     }
+    },
+    {
+     "form": "fm_material_relief_ao",
+     "example": "PLX-FMAO-9035",
+     "pattern": "PLX-FMAO-(?P<id>\\d{1,11})",
+     "reads": {
+      "id": {
+       "kind": "fm_id",
+       "object_type": "AssemblyOrder",
+       "meaning": "assembly_order.id"
+      }
+     },
+     "upstream": "plx-customer-portal@6e76a5b:portal/src/lib/business-central/fm-material-relief-sync.ts:308 (aoKey = String(aoId)), :386 (PLX-FMAO-{aoKey}, cut to 20 characters)"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "portal",
+     "relation": "public.app_bc_entity_map",
+     "field": "bc_number",
+     "role": "primary",
+     "served": false,
+     "upstream": "docs/reference/portal-code-map.md s4.10"
+    },
+    {
+     "system": "bc",
+     "relation": "purchaseOrders|salesOrders|salesInvoices|salesCreditMemos|purchaseReceipts|purchaseInvoices|purchaseCreditMemos",
+     "field": "number",
+     "role": "primary",
+     "served": true,
+     "upstream": "integrations/bc_read.py"
+    }
+   ],
+   "no_fixed_format": {
+    "why": "A BC Code[20] from a number series configured inside Business Central, not in Portal code; Portal only reads and aligns to it.",
+    "upstream": "plx-customer-portal@82549dd:portal/src/lib/business-central/align-portal-po-number.ts:10, align-portal-so-number.ts:21 (rewrite to the BC No. BC returns)"
+   }
+  },
+  "bc_external_document_no": {
+   "object_type": "BcDocument",
+   "description": "BC externalDocumentNumber (Code[35]): customer PO on sales orders, Portal order number on sales invoices.",
+   "value_pattern": "[A-Za-z0-9](?:[A-Za-z0-9._/#-]| (?=[A-Za-z0-9._/#-])){0,34}",
+   "flags": "",
+   "normalizer": "upper_trim",
+   "identity": "lead",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [
+    "customer_po",
+    "so_number"
+   ],
+   "forms": [
+    {
+     "form": "sales_order",
+     "example": "PO20260312",
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/business-central/serializers.ts:1157"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "bc",
+     "relation": "salesOrders",
+     "field": "externalDocumentNumber",
+     "role": "primary",
+     "served": true,
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/business-central/serializers.ts:1157"
+    },
+    {
+     "system": "bc",
+     "relation": "salesInvoices",
+     "field": "externalDocumentNumber",
+     "role": "primary",
+     "served": true,
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/business-central/serializers.ts:1049"
+    }
+   ],
+   "no_fixed_format": {
+    "why": "BC Code[35] free text: the customer PO (po_reference) on sales orders, the Portal order number or SO-{id} on sales invoices, each cut to 35 characters.",
+    "upstream": "plx-customer-portal@82549dd:portal/src/lib/business-central/serializers.ts:1049 (invoices), :1157-1158 (orders)"
+   }
+  },
+  "bc_system_id": {
+   "object_type": "BcDocument",
+   "description": "Business Central record GUID (systemId / id).",
+   "value_pattern": "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+   "flags": "",
+   "normalizer": "lower_trim",
+   "identity": "anchor",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [],
+   "forms": [
+    {
+     "form": "guid",
+     "example": "bbbbbbbb-0000-0000-0000-000000000009",
+     "upstream": "docs/reference/portal-code-map.md s4.10"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "portal",
+     "relation": "public.app_bc_entity_map",
+     "field": "bc_system_id",
+     "role": "primary",
+     "served": false,
+     "upstream": "docs/reference/portal-code-map.md s4.10"
+    },
+    {
+     "system": "bc",
+     "relation": "*",
+     "field": "id",
+     "role": "primary",
+     "served": true,
+     "upstream": "integrations/bc_read.py"
+    }
+   ]
+  },
+  "ao_code": {
+   "object_type": "AssemblyOrder",
+   "description": "FM assembly order name AO-{YY}{day of year}{letter(s)} = gold ManufacturingOrder.code (mo_code). The letter suffix is part of the identity: every writer of nameamo_c appends one (assembly/create/route.ts:136, inventory/assembly-order-number.ts:89). Unsuffixed AO-<digits> strings are not AO names and never match one: a gold lot base AO-<assembly_order.id> (wms/fp-bridge.ts:890, read back as an id by wms/put-away-ao-context.ts:56), the BC fallback document PLX-AO-<assembly_order.id> (business-central/production-cost-sync.ts:268), and the admin/next-codes/route.ts:26 GET-only suggestion AO-NNNN, which is never persisted. A five-digit row id such as AO-12345 would otherwise read as an AO of year 12, day 345; AO-26006 is never AO-26006B. A day prefix AO-{YY}{day of year} typed without its letter is a lead to every AO of that day (prefix_forms day_prefix), never one AO.",
+   "value_pattern": "AO-\\d{3,5}[A-Z]{1,2}",
+   "environment_prefixed": true,
+   "flags": "i",
+   "normalizer": "upper_trim",
+   "identity": "anchor",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [
+    "mo_code"
+   ],
+   "forms": [
+    {
+     "form": "fm_padded",
+     "example": "AO-26012C",
+     "upstream": "(AO-26012C)"
+    },
+    {
+     "form": "portal_create",
+     "example": "AO-26119A",
+     "upstream": "plx-customer-portal@b46934a:portal/src/app/api/mrp/assembly/create/route.ts:136"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "fm",
+     "relation": "public.assembly_order",
+     "field": "nameamo_c",
+     "role": "primary",
+     "served": true,
+     "upstream": "plx-customer-portal@b46934a:portal/src/app/api/mrp/assembly/create/route.ts:136"
+    },
+    {
+     "system": "portal",
+     "relation": "public.app_manufacturing_order",
+     "field": "mo_code",
+     "role": "alias",
+     "served": true,
+     "upstream": "docs/reference/portal-code-map.md s3.8 (etlManufacturingOrders)"
+    }
+   ],
+   "prefix_forms": [
+    {
+     "form": "day_prefix",
+     "example": "AO-26042",
+     "pattern": "AO-(?P<yy>\\d{2})(?P<doy>\\d{1,3})",
+     "integer_ranges": {
+      "doy": [
+       1,
+       366
+      ]
+     },
+     "spellings": [
+      "AO-{yy}{doy:03d}",
+      "AO-{yy}{doy:d}"
+     ],
+     "rest_pattern": "[A-Z]{1,2}",
+     "meaning": "Every AO of that day: an AO name is the prefix plus its letter suffix. The Portal writes the day of year unpadded and FM pads it to three digits, so both spellings of the day are leads; AO-2642A (day 42) is never a lead of AO-264 (day 4): only letters may follow the prefix. The same text is also the unsuffixed row-id form AO-<assembly_order.id> (lot_number fp_bridge_ao_row_id), never an AO name.",
+     "upstream": "plx-customer-portal@6e76a5b:portal/src/lib/inventory/assembly-order-number.ts:16-22 (usedAlphaCodesForDay: prefix AO-${twoDigitYear}${doy}), :81-89 (^AO-(\\d{2})(\\d{1,3})([A-Z]+)$, AO-${twoDigitYear}${newDoy}${alpha}); ao_code form fm_padded (FM pads the day: AO-26012C)"
+    }
+   ],
+   "letter_suffix_upstream": "plx-customer-portal@82549dd:portal/src/lib/inventory/lot-alpha.ts:4-9 (alphaForIndex: A..Z then AA..ZZ, at most two letters), :19-21 (nextFreeAlphaCode searches 26*27 codes); callers: portal/src/app/api/mrp/assembly/create/route.ts:133-136, portal/src/lib/inventory/assembly-order-number.ts:87-89, portal/src/lib/inventory/batch-lot-number.ts:93-95"
+  },
+  "mo_code": {
+   "object_type": "AssemblyOrder",
+   "description": "Portal manufacturing order code: MO-{base36} (Portal-native), MO-FM-{id} (FM migration), or the FM AO name the ETL copies into mo_code.",
+   "value_pattern": "MO-FM-\\d+|MO-[A-Za-z0-9]{3,24}|AO-\\d{3,5}[A-Z]{1,2}",
+   "environment_prefixed": true,
+   "flags": "i",
+   "normalizer": "upper_trim",
+   "identity": "anchor",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [
+    "ao_code"
+   ],
+   "forms": [
+    {
+     "form": "portal_native",
+     "example": "MO-K3J9X2",
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/mrp/api-handlers/manufacturing-orders.ts:288"
+    },
+    {
+     "form": "fm_migrated",
+     "example": "MO-FM-20457",
+     "upstream": "plx-customer-portal@b46934a:scripts/migrate-fm-to-portal.sql:402"
+    },
+    {
+     "form": "etl_copy_of_fm_ao",
+     "example": "AO-26119A",
+     "upstream": "docs/reference/portal-code-map.md s3.8 (etlManufacturingOrders)"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "portal",
+     "relation": "public.app_manufacturing_order",
+     "field": "mo_code",
+     "role": "primary",
+     "served": true,
+     "upstream": "docs/reference/portal-code-map.md s3.8"
+    }
+   ]
+  },
+  "batch_code": {
+   "object_type": "Batch",
+   "description": "FM batch name BC-{YY}{day of year}{letter} (also the gold lot_number of the MO).",
+   "value_pattern": "BC-\\d{3,5}[A-Z]{1,2}",
+   "environment_prefixed": true,
+   "flags": "i",
+   "normalizer": "upper_trim",
+   "identity": "anchor",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [],
+   "forms": [
+    {
+     "form": "fm",
+     "example": "BC-26119A",
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/inventory/batch-lot-number.ts"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "fm",
+     "relation": "public.batch",
+     "field": "namebatch_c",
+     "role": "primary",
+     "served": true,
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/inventory/batch-lot-number.ts"
+    },
+    {
+     "system": "portal",
+     "relation": "public.app_batch_record",
+     "field": "batch_number",
+     "role": "alias",
+     "served": true,
+     "upstream": "docs/reference/portal-code-map.md s3.8"
+    },
+    {
+     "system": "portal",
+     "relation": "public.app_manufacturing_order",
+     "field": "lot_number",
+     "role": "alias",
+     "served": true,
+     "upstream": "docs/reference/portal-code-map.md s3.8"
+    },
+    {
+     "system": "fm",
+     "relation": "public.batch_calibration",
+     "field": "namebatch",
+     "role": "alias",
+     "served": true,
+     "upstream": "plx-customer-portal@790256ca43:scripts/migrations/20260410_enhance_batching_detail.sql:149-165 (namebatch AS batch_name)"
+    }
+   ],
+   "letter_suffix_upstream": "plx-customer-portal@82549dd:portal/src/lib/inventory/lot-alpha.ts:4-9 (alphaForIndex: A..Z then AA..ZZ, at most two letters), :19-21 (nextFreeAlphaCode searches 26*27 codes); callers: portal/src/app/api/mrp/assembly/create/route.ts:133-136, portal/src/lib/inventory/assembly-order-number.ts:87-89, portal/src/lib/inventory/batch-lot-number.ts:93-95"
+  },
+  "receipt_lab_id": {
+   "object_type": "Receipt",
+   "description": "Receipt lab id: raw YYDDD-N, packaging RP+7 digits, optionally UAT-prefixed. = app_receipt.receipt_number on the MRP path.",
+   "value_pattern": "(?:\\d{5}-\\d{1,4}|RP\\d{7})",
+   "environment_prefixed": true,
+   "flags": "i",
+   "normalizer": "upper_trim",
+   "identity": "anchor",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [],
+   "forms": [
+    {
+     "form": "raw",
+     "example": "26161-1",
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/mrp/receipt-lab-id.ts"
+    },
+    {
+     "form": "packaging",
+     "example": "RP0008270",
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/mrp/receipt-lab-id.ts"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "portal",
+     "relation": "public.app_receipt",
+     "field": "receipt_number",
+     "role": "primary",
+     "served": true,
+     "upstream": "docs/reference/portal-code-map.md s3.5"
+    },
+    {
+     "system": "portal",
+     "relation": "public.app_receipt_line",
+     "field": "lab_id",
+     "role": "alias",
+     "served": true,
+     "upstream": "docs/reference/portal-code-map.md s3.5"
+    }
+   ]
+  },
+  "lot_number": {
+   "object_type": "Lot",
+   "description": "Stored lot number BASE@BINCODE; the identity is the base (lotNumberBase).",
+   "value_pattern": "[^@\\s][^@]{0,79}(?:@[^@\\s]{1,40})?",
+   "flags": "",
+   "normalizer": "lot_number",
+   "identity": "alias",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [
+    "receipt_lab_id",
+    "batch_code"
+   ],
+   "forms": [
+    {
+     "form": "with_bin",
+     "example": "26161-1@A01",
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/wms/lot-numbers.ts:lotNumberBase"
+    },
+    {
+     "form": "etl",
+     "example": "fm-wlp-123",
+     "upstream": "docs/reference/portal-code-map.md s3.9"
+    },
+    {
+     "form": "sage",
+     "example": "SAGE-11-A1-ABC-1001",
+     "upstream": "docs/reference/portal-code-map.md s3.9"
+    },
+    {
+     "form": "fp_bridge_ao_row_id",
+     "example": "AO-9035",
+     "upstream": "plx-customer-portal@6e76a5be4:portal/src/lib/wms/fp-bridge.ts:890 (lot fallback AO-${aoId}; put-away-ao-context.ts:56 reads the digits back as assembly_order.id)"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "portal",
+     "relation": "app_inventory_lot",
+     "field": "lot_number",
+     "role": "primary",
+     "served": false,
+     "upstream": "docs/reference/portal-code-map.md s3.9"
+    }
+   ],
+   "no_fixed_format": {
+    "why": "BASE@BINCODE where the base is any origin's lot text (receipt lab id, batch code, ETL fm-wlp-*, Sage SAGE-*, the fp-bridge AO-{id} fallback, supplier lots); only the @ split is fixed.",
+    "upstream": "plx-customer-portal@82549dd:portal/src/lib/wms/lot-numbers.ts:24-27 (lotNumberBase), :62; portal/prisma/schema.prisma:2587,2669,2808 (lotNumber String?)"
+   }
+  },
+  "quote_number": {
+   "object_type": "Quote",
+   "description": "Portal quote number QUO-YYYY-NNNN; supplier quote references are free text.",
+   "value_pattern": "[A-Za-z0-9][A-Za-z0-9_./-]{1,79}",
+   "flags": "",
+   "normalizer": "upper_trim",
+   "identity": "lead",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [],
+   "forms": [
+    {
+     "form": "portal",
+     "example": "QUO-2026-0042",
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/quote/service.ts:generateQuoteNumber"
+    },
+    {
+     "form": "vendor",
+     "example": "QT.150126.07",
+     "upstream": "docs/reference/cases-and-artifacts.md"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "portal",
+     "relation": "public.app_quote",
+     "field": "quote_number",
+     "role": "primary",
+     "served": true,
+     "upstream": "docs/reference/portal-code-map.md s3.12"
+    }
+   ],
+   "no_fixed_format": {
+    "why": "Portal quotes are QUO-YYYY-NNNN, but the kind also names supplier quote references read from mail and documents (mail_labelled and document_labelled profiles), which are the supplier's own text.",
+    "upstream": "plx-customer-portal@82549dd:portal/src/lib/quote/service.ts:123-133 (generateQuoteNumber); supplier quote references: no upstream writer found in plx-customer-portal@82549dd paths searched: portal/src, portal/prisma, portal/scripts, scripts (supplierQuote, supplier_quote, vendorQuote, quoteReference, quote_reference)"
+   }
+  },
+  "pi_ref": {
+   "object_type": "SupplierDocument",
+   "description": "Supplier proforma invoice reference. One document can carry several (PI-ABC001234 printed, PI-ABC005678 file name, PI-5678 in mail); the blocking key is the number without its letter prefix or leading zeros.",
+   "value_pattern": "PI-?[A-Z]{0,5}\\d{3,12}",
+   "flags": "i",
+   "normalizer": "pi_ref",
+   "identity": "lead",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [
+    "vendor_confirmation"
+   ],
+   "reference_alias": {
+    "of": [
+     "PurchaseOrder"
+    ],
+    "why": "A supplier's proforma invoice number names the order it bills; a document whose link to one PO two independent features corroborate proposes it as the PO's alias, a lead a person accepts or rejects (ontology/mentions.py propose_reference_aliases).",
+    "upstream": "ER-02 and ER-05; docs/decisions/2026-10-19-reference-alias-leads.md"
+   },
+   "forms": [
+    {
+     "form": "printed",
+     "example": "PI-ABC001234",
+     "upstream": "docs/reference/cases-and-artifacts.md F02"
+    },
+    {
+     "form": "file_name",
+     "example": "PI-ABC005678",
+     "upstream": "docs/reference/cases-and-artifacts.md F02"
+    },
+    {
+     "form": "mail",
+     "example": "PI-5678",
+     "upstream": "docs/reference/cases-and-artifacts.md F02"
+    },
+    {
+     "form": "attached",
+     "example": "PI40404",
+     "upstream": "docs/reference/cases-and-artifacts.md (samples stage)"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "mail",
+     "relation": "graph-mail",
+     "field": "subject|body|attachment_name",
+     "role": "mention",
+     "served": true,
+     "upstream": "ontology/identifiers.py find_identifiers (mention_profiles pi_attached), read by ontology/mentions.py extract"
+    }
+   ]
+  },
+  "vendor_confirmation": {
+   "object_type": "SupplierDocument",
+   "description": "A supplier's own order / confirmation / proforma number (alias of a PO only once corroborated).",
+   "value_pattern": "[A-Za-z0-9][A-Za-z0-9_./#-]{1,79}",
+   "flags": "",
+   "normalizer": "upper_trim",
+   "identity": "lead",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [
+    "pi_ref"
+   ],
+   "reference_alias": {
+    "of": [
+     "PurchaseOrder"
+    ],
+    "why": "The supplier writes its own order or confirmation number beside the PO it confirms; a document whose link to one PO two independent features corroborate proposes that number as the PO's alias, a lead a person accepts or rejects (ontology/mentions.py propose_reference_aliases).",
+    "upstream": "ER-02 and ER-05; docs/decisions/2026-10-19-reference-alias-leads.md"
+   },
+   "forms": [
+    {
+     "form": "labelled",
+     "example": "SO-88812",
+     "upstream": "ontology/identifiers.py mention_profiles mail_labelled (vendor_confirmation), read by ontology/mentions.py extract"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "mail",
+     "relation": "graph-mail",
+     "field": "subject|body",
+     "role": "mention",
+     "served": true,
+     "upstream": "ontology/identifiers.py mention_profiles mail_labelled (vendor_confirmation), read by ontology/mentions.py extract"
+    },
+    {
+     "system": "portal",
+     "relation": "public.app_printer_order_confirmation",
+     "field": "confirmationNumber",
+     "role": "index",
+     "served": false,
+     "gap": "unserved:public.app_printer_order_confirmation",
+     "upstream": "plx-customer-portal@55e78ca portal/prisma/schema.prisma PrinterOrderConfirmation.confirmationNumber, purchaseOrderId @unique (about 3631-3632 and 3677-3690, added by 90f9d1d 2026-10-16); the Workbench reporting API allow-list does not serve it, so no row is read until it does"
+    }
+   ],
+   "no_fixed_format": {
+    "why": "A supplier's own order or confirmation number: a buyer records one per PO in the Portal (PrinterOrderConfirmation, not yet served) and the supplier states it in mail, which is read here.",
+    "upstream": "plx-customer-portal@55e78ca:portal/prisma/schema.prisma:3677-3690 PrinterOrderConfirmation.confirmationNumber (the commit was not reachable from the build checkout to verify); the earlier plx-customer-portal@82549dd search found no writer"
+   }
+  },
+  "invoice_number": {
+   "object_type": "SupplierDocument",
+   "description": "A vendor invoice number (labelled only).",
+   "value_pattern": "[A-Za-z0-9][A-Za-z0-9_./#-]{1,79}",
+   "flags": "",
+   "normalizer": "upper_trim",
+   "identity": "lead",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [],
+   "forms": [
+    {
+     "form": "labelled",
+     "example": "INV-7781",
+     "upstream": "ontology/identifiers.py"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "portal",
+     "relation": "public.app_receipt",
+     "field": "vendor_invoice_number",
+     "role": "primary",
+     "served": true,
+     "upstream": "docs/reference/portal-code-map.md s3.5"
+    },
+    {
+     "system": "bc",
+     "relation": "purchaseInvoices",
+     "field": "vendorInvoiceNumber",
+     "role": "alias",
+     "served": true,
+     "upstream": "integrations/bc_read.py"
+    }
+   ],
+   "no_fixed_format": {
+    "why": "A vendor's invoice number as the receiving clerk types it (free text) and BC purchaseInvoices.vendorInvoiceNumber.",
+    "upstream": "plx-customer-portal@82549dd:portal/src/app/api/mrp/receiving/raw/route.ts:27,167 and receiving/pack/route.ts:27,178 (vendor_invoice_number from the request body); portal/prisma/schema.prisma:3578"
+   }
+  },
+  "shipment_number": {
+   "object_type": "Shipment",
+   "description": "Portal shipment code SH100000+, written with a declared environment reference prefix (environment_prefixes, e.g. UAT-) when the issuing database sets one (create-shipment.ts prefixRef). The prefix stays part of the value: two databases allocate the series independently, so UAT-SH100017 and SH100017 are different shipments.",
+   "value_pattern": "SH\\d{6,9}",
+   "environment_prefixed": true,
+   "flags": "i",
+   "normalizer": "upper_trim",
+   "identity": "anchor",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [],
+   "forms": [
+    {
+     "form": "portal",
+     "example": "SH100000",
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/wms/shipment-number-series.ts"
+    },
+    {
+     "form": "environment_prefixed",
+     "example": "UAT-SH100017",
+     "upstream": "plx-customer-portal@c3ffda3:portal/src/lib/wms/create-shipment.ts:29 (prefixRef); portal/src/lib/wms/shipment-number-series.ts:36; portal/src/lib/business-central/document-finance-queries.ts:4"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "portal",
+     "relation": "public.app_shipment",
+     "field": "shipment_code",
+     "role": "primary",
+     "served": true,
+     "upstream": "docs/reference/portal-code-map.md s3.10"
+    }
+   ]
+  },
+  "shipment_reference": {
+   "object_type": "Shipment",
+   "description": "A labelled shipment / carrier reference (free text).",
+   "value_pattern": "[A-Za-z0-9][A-Za-z0-9_./-]{1,79}",
+   "flags": "",
+   "normalizer": "upper_trim",
+   "identity": "lead",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [
+    "tracking_number"
+   ],
+   "forms": [
+    {
+     "form": "labelled",
+     "example": "SHP-2026-114",
+     "upstream": "ontology/identifiers.py"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "mail",
+     "relation": "graph-mail",
+     "field": "subject|body",
+     "role": "mention",
+     "served": true,
+     "upstream": "ontology/identifiers.py"
+    }
+   ],
+   "no_fixed_format": {
+    "why": "A labelled shipment or carrier reference in mail text: the sender's free text; no Portal writer.",
+    "upstream": "no upstream writer found in plx-customer-portal@82549dd paths searched: portal/src, portal/prisma, portal/scripts, scripts (shipmentReference, shipment_reference, carrierReference)"
+   }
+  },
+  "tracking_number": {
+   "object_type": "Shipment",
+   "description": "Carrier tracking number; normalised without spaces, upper case. No mention pattern: carrier formats overlap other numbers.",
+   "value_pattern": "(?:[A-Za-z0-9][ -]?){5,40}",
+   "flags": "",
+   "normalizer": "compact_upper",
+   "identity": "lead",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [
+    "shipment_reference"
+   ],
+   "forms": [
+    {
+     "form": "carrier",
+     "example": "1Z 999 AA1 0123 4567 84",
+     "upstream": "docs/reference/portal-code-map.md s3.10"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "portal",
+     "relation": "public.app_shipment",
+     "field": "tracking_number",
+     "role": "primary",
+     "served": true,
+     "upstream": "docs/reference/portal-code-map.md s3.10"
+    },
+    {
+     "system": "portal",
+     "relation": "public.app_purchase_order",
+     "field": "tracking_number",
+     "role": "alias",
+     "served": true,
+     "upstream": "results/5f234e3 purchase_catalog (claude/verify-live)"
+    }
+   ],
+   "no_fixed_format": {
+    "why": "A carrier tracking number as typed on the shipment (free text); carrier formats overlap other numbers.",
+    "upstream": "plx-customer-portal@82549dd:portal/prisma/schema.prisma:2382 (trackingNumber String?); portal/src/app/api/mrp/wms/shipments/[id]/route.ts:101,170"
+   }
+  },
+  "ship_release": {
+   "object_type": "ShipRelease",
+   "description": "Ship release SR-YYYYMMDD-NNNN.",
+   "value_pattern": "SR-\\d{8}-\\d{4}",
+   "flags": "i",
+   "normalizer": "upper_trim",
+   "identity": "anchor",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [],
+   "forms": [
+    {
+     "form": "portal",
+     "example": "SR-20260115-0003",
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/ship-release/index.ts"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "portal",
+     "relation": "public.app_ship_release",
+     "field": "release_number",
+     "role": "primary",
+     "served": true,
+     "upstream": "docs/reference/portal-code-map.md s3.10"
+    }
+   ]
+  },
+  "pr_number": {
+   "object_type": "PurchaseRequisition",
+   "description": "Purchase requisition PR-YYYYMMDD-NNNN, written with a declared environment reference prefix (environment_prefixes, e.g. UAT-) when the issuing database sets one (generatePRNumber prefixRef). The prefix stays part of the value.",
+   "value_pattern": "PR-\\d{8}-\\d{4}",
+   "environment_prefixed": true,
+   "flags": "i",
+   "normalizer": "upper_trim",
+   "identity": "anchor",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [],
+   "forms": [
+    {
+     "form": "portal",
+     "example": "PR-20260901-0001",
+     "upstream": "plx-customer-portal@b46934a:portal/src/app/api/mrp/generate-po/requisition/route.ts:generatePRNumber"
+    },
+    {
+     "form": "environment_prefixed",
+     "example": "UAT-PR-20260901-0001",
+     "upstream": "plx-customer-portal@790256ca43:portal/src/app/api/mrp/generate-po/requisition/route.ts:53-82 (generatePRNumber returns prefixRef(stem + seq))"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "portal",
+     "relation": "public.app_purchase_requisition",
+     "field": "pr_number",
+     "role": "primary",
+     "served": true,
+     "upstream": "docs/reference/portal-code-map.md s3.5"
+    }
+   ]
+  },
+  "eqms_number": {
+   "object_type": "QualityRecord",
+   "description": "eQMS record number {D|CC|CAPA|QRM}-{YY}{seq:3}.",
+   "value_pattern": "(?:CAPA|QRM|CC|D)-\\d{5,7}",
+   "flags": "i",
+   "normalizer": "upper_trim",
+   "identity": "anchor",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [],
+   "forms": [
+    {
+     "form": "portal",
+     "example": "CAPA-26004",
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/quality/eqms/service.ts"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "portal",
+     "relation": "app_eqms_record",
+     "field": "number",
+     "role": "primary",
+     "served": false,
+     "upstream": "docs/reference/portal-code-map.md s3.15"
+    }
+   ]
+  },
+  "formula_code": {
+   "object_type": "Formulation",
+   "description": "FM formula code F-YY-#### with an optional final letter suffix.",
+   "value_pattern": "F-\\d{2}-\\d{4}(?:-[A-Z])?",
+   "flags": "i",
+   "normalizer": "upper_trim",
+   "identity": "anchor",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [],
+   "forms": [
+    {
+     "form": "fm",
+     "example": "F-26-0123-A",
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/formulas/write.ts:nextFormulaCode"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "fm",
+     "relation": "public.formula",
+     "field": "code",
+     "role": "primary",
+     "served": false,
+     "upstream": "docs/reference/portal-code-map.md s3.7"
+    }
+   ]
+  },
+  "manufacturing_job": {
+   "object_type": "ManufacturingJob",
+   "description": "Manufacturing job MJ-{yyyy}-{base36}.",
+   "value_pattern": "MJ-\\d{4}-[A-Za-z0-9]{2,16}",
+   "flags": "i",
+   "normalizer": "upper_trim",
+   "identity": "anchor",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [],
+   "forms": [
+    {
+     "form": "portal",
+     "example": "MJ-2026-K3J9",
+     "upstream": "docs/reference/portal-code-map.md s3.8"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "portal",
+     "relation": "public.app_manufacturing_job",
+     "field": "code",
+     "role": "primary",
+     "served": true,
+     "upstream": "docs/reference/portal-code-map.md s3.8"
+    }
+   ]
+  },
+  "packing_slip": {
+   "object_type": "SupplierDocument",
+   "description": "Labelled packing slip number (free text).",
+   "value_pattern": "[A-Za-z0-9][A-Za-z0-9_./-]{1,79}",
+   "flags": "",
+   "normalizer": "upper_trim",
+   "identity": "lead",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [],
+   "forms": [
+    {
+     "form": "labelled",
+     "example": "PS-4410",
+     "upstream": "integrations/document_understanding.py"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "sharepoint",
+     "relation": "Receiving/*",
+     "field": "file",
+     "role": "mention",
+     "served": true,
+     "upstream": "docs/reference/portal-code-map.md s3.5 (receiving documents)"
+    }
+   ],
+   "no_fixed_format": {
+    "why": "A supplier's packing slip number on a receiving document; no Portal writer.",
+    "upstream": "no upstream writer found in plx-customer-portal@82549dd paths searched: portal/src, portal/prisma, portal/scripts, scripts (packingSlip, packing_slip, packingslip); portal/src/lib/mrp/receiving-docs.ts:1-9 stores a packing slip only as a PDF file, no number"
+   }
+  },
+  "item_code": {
+   "object_type": "Item",
+   "description": "Portal/FM product code = today's BC Item No. (trimmed, compared case-insensitively). The full code is the identity; only the form BC receives (bcItemNumber: cut to 20 characters, the app_product carrier's sent_to rule) is compared with a BC item No.",
+   "value_pattern": "[A-Za-z0-9][A-Za-z0-9_./ -]{0,79}",
+   "flags": "",
+   "normalizer": "bc_item_number",
+   "identity": "anchor",
+   "exact_compare": "trim_casefold",
+   "exact_compare_upstream": "bcItemNumber: trimmed, compared case-insensitively (see description)",
+   "auto_merge": false,
+   "alias_kinds": [
+    "erp_item_code",
+    "fm_external_id"
+   ],
+   "forms": [
+    {
+     "form": "bulk",
+     "example": "ABC-1001",
+     "upstream": "(AO-26012C)"
+    },
+    {
+     "form": "finished",
+     "example": "ABC-1001-3.78L-A",
+     "upstream": "(AO-26012C)"
+    },
+    {
+     "form": "packaging",
+     "example": "P-01234",
+     "upstream": "docs/reference/cases-and-artifacts.md (packaging PO lines)"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "portal",
+     "relation": "public.app_product",
+     "field": "code",
+     "role": "primary",
+     "served": true,
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/business-central/serializers.ts:bcItemNumber",
+     "sent_to": [
+      {
+       "system": "bc",
+       "max_length": 20,
+       "meaning": "The Portal sends app_product.code as the BC item No. trimmed and cut to 20 characters (bcItemNumber), so two codes that share their first 20 characters are one BC item No. and still two products.",
+       "upstream": "plx-customer-portal@82549dd:portal/src/lib/business-central/serializers.ts:828-836 (BC_ITEM_NUMBER_MAX 20)"
+      }
+     ]
+    },
+    {
+     "system": "bc",
+     "relation": "items",
+     "field": "number",
+     "role": "alias",
+     "served": true,
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/business-central/serializers.ts:bcItemNumbersEqual"
+    }
+   ],
+   "no_fixed_format": {
+    "why": "Product codes come from several generators and imports (R-{n} raw codes, FP-NNNN finished goods, RM-/PK-/FP- examples, FM and Sage codes); BC sees the code trimmed and cut to 20 characters.",
+    "upstream": "plx-customer-portal@82549dd:portal/prisma/schema.prisma:1722 (code String @unique); portal/src/lib/raw-materials/write.ts:158-168; portal/src/lib/final-products/fg-activation.ts:419-425; portal/src/lib/business-central/serializers.ts:828-836 (BC_ITEM_NUMBER_MAX 20)"
+   }
+  },
+  "erp_item_code": {
+   "object_type": "Item",
+   "description": "Sage IC item No. (app_product.erp_code): the cutover match key, not the BC No.",
+   "value_pattern": "[A-Za-z0-9][A-Za-z0-9_./ -]{0,39}",
+   "flags": "",
+   "normalizer": "upper_trim",
+   "identity": "alias",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [
+    "item_code"
+   ],
+   "forms": [
+    {
+     "form": "sage",
+     "example": "ABC1001",
+     "upstream": "docs/reference/portal-code-map.md s3.6"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "portal",
+     "relation": "public.app_product",
+     "field": "erp_code",
+     "role": "primary",
+     "served": true,
+     "upstream": "docs/reference/portal-code-map.md s3.6"
+    },
+    {
+     "system": "sage",
+     "relation": "sage.ic_item",
+     "field": "itemno",
+     "role": "alias",
+     "served": true,
+     "upstream": "docs/reference/portal-code-map.md s3.6"
+    },
+    {
+     "system": "sage",
+     "relation": "sage.ic_item_uom",
+     "field": "itemno",
+     "role": "alias",
+     "served": true,
+     "upstream": "plx-customer-portal@790256ca43:docs/modules/3pl-billing/powerbi-model-appendix.md:379 (ICUNIT itemno|unit)"
+    }
+   ],
+   "no_fixed_format": {
+    "why": "The Sage IC item No. as Sage holds it; Portal copies it.",
+    "upstream": "plx-customer-portal@82549dd:portal/prisma/schema.prisma:1755 (erpCode String?)"
+   }
+  },
+  "customer_erp_code": {
+   "object_type": "Customer",
+   "description": "Sage IDCUST = BC customer No. (app_customer.erp_code); not unique.",
+   "value_pattern": "[A-Za-z0-9][A-Za-z0-9_./ -]{0,19}",
+   "flags": "",
+   "normalizer": "upper_trim",
+   "identity": "lead",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [],
+   "forms": [
+    {
+     "form": "sage",
+     "example": "TAKE5",
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/customers/legacy-refs.ts"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "portal",
+     "relation": "public.app_customer",
+     "field": "erp_code",
+     "role": "primary",
+     "served": true,
+     "upstream": "docs/reference/portal-code-map.md s3.1",
+     "sent_to": [
+      {
+       "system": "bc",
+       "max_length": 20,
+       "meaning": "The Portal sends app_customer.erp_code (Sage IDCUST) as the BC customer No., cut to 20 characters.",
+       "upstream": "plx-customer-portal@c3ffda3:portal/src/lib/business-central/serializers.ts:149, 164-175 (resolveCustomerBcNumber)"
+      }
+     ]
+    },
+    {
+     "system": "sage",
+     "relation": "sage.ar_customer",
+     "field": "idcust",
+     "role": "alias",
+     "served": true,
+     "upstream": "docs/reference/portal-code-map.md s3.1"
+    },
+    {
+     "system": "bc",
+     "relation": "customers",
+     "field": "number",
+     "role": "alias",
+     "served": true,
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/business-central/serializers.ts:resolveCustomerBcNumber"
+    }
+   ],
+   "no_fixed_format": {
+    "why": "The Sage IDCUST as Sage holds it (not unique); BC gets it cut to 20 characters as the customer No.",
+    "upstream": "plx-customer-portal@82549dd:portal/prisma/schema.prisma:1303 (erpCode String?); portal/src/lib/business-central/serializers.ts:149,169-175 (BC_PARTY_NUMBER_MAX 20)"
+   }
+  },
+  "supplier_code": {
+   "object_type": "Supplier",
+   "description": "app_supplier.code (BC vendor No. when Sage-style).",
+   "value_pattern": "[A-Za-z0-9][A-Za-z0-9_./ -]{0,19}",
+   "flags": "",
+   "normalizer": "upper_trim",
+   "identity": "alias",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [
+    "fm_external_id"
+   ],
+   "forms": [
+    {
+     "form": "portal",
+     "example": "ACME",
+     "upstream": "docs/reference/portal-code-map.md s3.5"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "portal",
+     "relation": "public.app_supplier",
+     "field": "code",
+     "role": "primary",
+     "served": true,
+     "upstream": "docs/reference/portal-code-map.md s3.5",
+     "sent_to": [
+      {
+       "system": "bc",
+       "when_pattern": "[A-Za-z]",
+       "max_length": 20,
+       "meaning": "The Portal sends app_supplier.code as the BC vendor No. only when it is Sage-style (has a letter; a pure-digit FileMaker code such as an FM surrogate is never sent, BC auto-numbers that vendor), cut to 20 characters. A code it never sends cannot be compared with a BC vendor No.",
+       "upstream": "plx-customer-portal@c3ffda3:portal/src/lib/business-central/serializers.ts:149-161 (BC_PARTY_NUMBER_MAX, isSageStyleVendorCode), 204-214 (resolveVendorBcNumber)"
+      }
+     ]
+    },
+    {
+     "system": "bc",
+     "relation": "vendors",
+     "field": "number",
+     "role": "alias",
+     "served": true,
+     "upstream": "docs/reference/ontology-design.md (Supplier)"
+    }
+   ],
+   "no_fixed_format": {
+    "why": "A PLX supplier code entered or imported (Sage-style codes double as the BC vendor No.); no generator.",
+    "upstream": "plx-customer-portal@82549dd:portal/prisma/schema.prisma:1484 (code String? @unique); portal/src/lib/business-central/serializers.ts:149 (BC_PARTY_NUMBER_MAX 20)"
+   }
+  },
+  "fm_id": {
+   "object_type": "FmRecord",
+   "description": "A FileMaker integer record id as stored in Portal JSON (number or its string; float-formatted values are integral). FM order entries with id >= 900000 were created by the Portal bridge.",
+   "value_pattern": "-?\\d{1,12}(?:\\.0+)?",
+   "flags": "",
+   "normalizer": "int_text",
+   "identity": "anchor",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [
+    "fm_external_id"
+   ],
+   "forms": [
+    {
+     "form": "integer",
+     "example": "10422",
+     "upstream": "(AssemblyOrder 10422)"
+    },
+    {
+     "form": "float_text",
+     "example": "351.0",
+     "upstream": "(money/number float strings)"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "portal",
+     "relation": "public.app_sales_order",
+     "field": "custom_fields.fmId",
+     "role": "alias",
+     "served": true,
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/orders/order-identity.ts:resolveOrderFromFmOrderId"
+    },
+    {
+     "system": "portal",
+     "relation": "public.app_purchase_order",
+     "field": "custom_fields.fmGeneratedPoId",
+     "role": "alias",
+     "served": true,
+     "upstream": "plx-customer-portal@b46934a:portal/src/app/mrp/purchase-orders/po-queries.ts:resolveGoldPoIdForFmPo"
+    },
+    {
+     "system": "fm",
+     "relation": "public.customer",
+     "field": "id",
+     "role": "primary",
+     "served": true,
+     "upstream": "plx-customer-portal@8e3a951:services/workbench-api/manifest/allowlist.json (public.customer served with its id column); portal/prisma/schema.prisma:1326,1372 (model Customer: FM rows are not Prisma models; the gold row keeps fm-cust-{id} in externalId)"
+    },
+    {
+     "system": "fm",
+     "relation": "public.raw_material",
+     "field": "id",
+     "role": "primary",
+     "served": true,
+     "upstream": "plx-customer-portal@8e3a951:services/workbench-api/manifest/allowlist.json (public.raw_material served with its id column)"
+    },
+    {
+     "system": "fm",
+     "relation": "public.packaging",
+     "field": "id",
+     "role": "primary",
+     "served": true,
+     "upstream": "plx-customer-portal@8e3a951:services/workbench-api/manifest/allowlist.json (public.packaging served with its id column)"
+    },
+    {
+     "system": "fm",
+     "relation": "public.bulk_product",
+     "field": "id",
+     "role": "primary",
+     "served": true,
+     "upstream": "plx-customer-portal@8e3a951:services/workbench-api/manifest/allowlist.json (public.bulk_product served with its id column)"
+    },
+    {
+     "system": "fm",
+     "relation": "public.finished_product",
+     "field": "id",
+     "role": "primary",
+     "served": true,
+     "upstream": "plx-customer-portal@8e3a951:services/workbench-api/manifest/allowlist.json (public.finished_product served with its id column)"
+    }
+   ]
+  },
+  "fm_external_id": {
+   "object_type": "FmRecord",
+   "description": "Portal externalId that names a FileMaker/Sage/local source record: fm-{entity}-{id}, local-cust-{cuid}, sage-cust-{IDCUST}.",
+   "value_pattern": "(?:fm-(?:cust|supp|raw|pack|bulk|fp|form|wlp|proj)-[A-Za-z0-9]{1,24}|local-cust-[a-z0-9]{8,40}|sage-cust-[A-Za-z0-9_.-]{1,24})",
+   "flags": "i",
+   "normalizer": "external_id",
+   "identity": "anchor",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [
+    "fm_id"
+   ],
+   "forms": [
+    {
+     "form": "customer",
+     "example": "fm-cust-89",
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/customers/legacy-refs.ts:filemakerIdFromExternalId"
+    },
+    {
+     "form": "supplier",
+     "example": "fm-supp-7",
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/mrp/fm-supplier-id.ts:parseFmSupplierId"
+    },
+    {
+     "form": "raw",
+     "example": "fm-raw-123",
+     "upstream": "docs/reference/portal-code-map.md s3.6"
+    },
+    {
+     "form": "pack",
+     "example": "fm-pack-45",
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/mrp/create-fm-purchase-order.ts:FM_EXTERNAL_ID_RE"
+    },
+    {
+     "form": "formula",
+     "example": "fm-form-12",
+     "upstream": "docs/reference/portal-code-map.md s3.7"
+    },
+    {
+     "form": "sage_customer",
+     "example": "sage-cust-TAKE5",
+     "upstream": "docs/reference/portal-code-map.md s3.1"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "portal",
+     "relation": "public.app_customer",
+     "field": "external_id",
+     "role": "primary",
+     "served": true,
+     "upstream": "docs/reference/portal-code-map.md s3.1"
+    },
+    {
+     "system": "portal",
+     "relation": "public.app_supplier",
+     "field": "external_id",
+     "role": "primary",
+     "served": true,
+     "upstream": "docs/reference/portal-code-map.md s3.5"
+    },
+    {
+     "system": "portal",
+     "relation": "public.app_product",
+     "field": "external_id",
+     "role": "alias",
+     "served": true,
+     "upstream": "docs/reference/portal-code-map.md s3.6"
+    }
+   ]
+  },
+  "fm_supplier_id": {
+   "object_type": "FmRecord",
+   "description": "A FileMaker supplier id as the Portal stores it: fm-supp-{id} in app_supplier.externalId (the silver-to-gold ETL's stored key) or the bare FM id; parseFmSupplierId reads both as one FM supplier id, so both forms normalise to the bare integer text. Another prefix, a non-integer or a negative id is no FM supplier id.",
+   "value_pattern": "fm-supp-\\d{1,12}|\\d{1,12}(?:\\.0+)?",
+   "flags": "i",
+   "normalizer": "prefixed_int",
+   "id_prefix": "fm-supp-",
+   "identity": "anchor",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [
+    "fm_external_id"
+   ],
+   "forms": [
+    {
+     "form": "prefixed",
+     "example": "fm-supp-7",
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/mrp/fm-supplier-id.ts:parseFmSupplierId"
+    },
+    {
+     "form": "bare",
+     "example": "7",
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/mrp/fm-supplier-id.ts:parseFmSupplierId"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "portal",
+     "relation": "public.app_supplier",
+     "field": "external_id",
+     "role": "alias",
+     "served": true,
+     "upstream": "plx-customer-portal@b46934a:portal/scripts/etl-silver-to-gold.ts:etlSuppliers (externalId fm-supp-{FM id}); portal/src/lib/mrp/fm-supplier-id.ts:parseFmSupplierId"
+    },
+    {
+     "system": "fm",
+     "relation": "public.supplier",
+     "field": "id",
+     "role": "primary",
+     "served": true,
+     "upstream": "plx-customer-portal@b46934a:services/workbench-api/manifest/allowlist.json (public.supplier served with its id column)"
+    }
+   ]
+  },
+  "sage_ord_uniq": {
+   "object_type": "SalesOrder",
+   "description": "Sage OE ORDUNIQ: the key of a Sage-imported gold sales order.",
+   "value_pattern": "\\d{1,15}(?:\\.0+)?",
+   "flags": "",
+   "normalizer": "int_text",
+   "identity": "anchor",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [],
+   "forms": [
+    {
+     "form": "decimal",
+     "example": "123456",
+     "upstream": "plx-customer-portal@b46934a:portal/scripts/etl-sage-distribution-gold.mjs:1464"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "portal",
+     "relation": "public.app_sales_order",
+     "field": "custom_fields.sageOrdUniq",
+     "role": "alias",
+     "served": true,
+     "upstream": "plx-customer-portal@b46934a:portal/scripts/etl-sage-distribution-gold.mjs:1464"
+    },
+    {
+     "system": "portal",
+     "relation": "public.app_sales_order",
+     "field": "custom_fields.sageSourceOrdUniq",
+     "role": "alias",
+     "served": true,
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/wms/sage-ship-queue.ts"
+    },
+    {
+     "system": "sage",
+     "relation": "sage.oe_order_header",
+     "field": "orduniq",
+     "role": "primary",
+     "served": true,
+     "upstream": "docs/reference/portal-code-map.md s3.2"
+    }
+   ]
+  },
+  "project_key": {
+   "object_type": "Project",
+   "description": "Canonical project key: FM public.project.id as text or a local cuid (app_project_local.id); never app_project.id.",
+   "value_pattern": "\\d{1,12}|c[a-z0-9]{20,40}",
+   "flags": "i",
+   "normalizer": "trim",
+   "identity": "anchor",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [],
+   "forms": [
+    {
+     "form": "fm",
+     "example": "95",
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/projects/project-identity.ts:isCanonicalProjectKey"
+    },
+    {
+     "form": "local",
+     "example": "clx0abcdefghijklmnopqrst",
+     "upstream": "plx-customer-portal@b46934a:portal/src/lib/projects/project-identity.ts:isCanonicalProjectKey"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "portal",
+     "relation": "app_project",
+     "field": "project_key",
+     "role": "primary",
+     "served": false,
+     "upstream": "docs/reference/portal-code-map.md s3.12"
+    },
+    {
+     "system": "portal",
+     "relation": "public.app_quote",
+     "field": "project_id",
+     "role": "alias",
+     "served": true,
+     "upstream": "docs/reference/portal-code-map.md s3.12",
+     "note": "Mutable in place (TASK-2182)."
+    },
+    {
+     "system": "portal",
+     "relation": "app_formulation",
+     "field": "project_key",
+     "role": "alias",
+     "served": false,
+     "upstream": "docs/reference/portal-code-map.md s3.7"
+    },
+    {
+     "system": "portal",
+     "relation": "app_bill_of_materials",
+     "field": "project_key",
+     "role": "alias",
+     "served": false,
+     "upstream": "docs/reference/portal-code-map.md s3.7"
+    },
+    {
+     "system": "portal",
+     "relation": "public.app_fg_item",
+     "field": "project_key",
+     "role": "alias",
+     "served": true,
+     "upstream": "plx-customer-portal@790256ca43:portal/prisma/schema.prisma:6681-6731 (FgItem.projectKey @unique, not an FK)"
+    }
+   ]
+  },
+  "internet_message_id": {
+   "object_type": "Email",
+   "description": "The RFC 5322 Message-ID the sending server writes once per message (Graph internetMessageId). Every mailbox the message was delivered to holds its own copy (its own Graph id, change key and mailbox permission) with the same Message-ID, so equal values name copies of one message, never two messages and never one record: no copy is merged into another. Normalised without the angle brackets that delimit it; compared case-sensitively.",
+   "value_pattern": "<[A-Za-z0-9!#$%&'*+/=?^_`{|}~.-]{1,180}@[A-Za-z0-9!#$%&'*+/=?^_`{|}~.\\[\\]:-]{1,180}>|[A-Za-z0-9!#$%&'*+/=?^_`{|}~.-]{1,180}@[A-Za-z0-9!#$%&'*+/=?^_`{|}~.\\[\\]:-]{1,180}",
+   "flags": "",
+   "normalizer": "message_id",
+   "identity": "anchor",
+   "exact_compare": "normalized",
+   "auto_merge": false,
+   "alias_kinds": [],
+   "copies": {
+    "why": "One message delivered to several mailboxes is one Graph message per mailbox, each with its own id, change key and mailbox permission, and one Message-ID: the evidence its copies carry is one message's. The sender writes the Message-ID, so a forged or reused one is no copy by itself: its carrier names the header and body fields every copy holds equal (copy_content), and a message whose fields differ is its own evidence.",
+    "upstream": "RFC 5322 section 3.6.4 (msg-id, unique per message); integrations/graph_read.py message record internet_message_id from Graph internetMessageId"
+   },
+   "no_fixed_format": {
+    "why": "Each sending mail server chooses the left part of its Message-IDs: any dot-atom text up to the line limit, so a sender can write words into it. Read from mail it is source text, never a bare identifier.",
+    "upstream": "plx-customer-portal@0b12c3376:portal/src/lib/project-development/pinned-communications.ts:43 (internetMessageId: any trimmed string up to 1,000 characters, as Graph returns it)"
+   },
+   "forms": [
+    {
+     "form": "rfc5322",
+     "example": "<CAF1x2y3.4z@mail.example.com>",
+     "upstream": "RFC 5322 section 3.6.4"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "mail",
+     "relation": "messages",
+     "field": "internet_message_id",
+     "role": "alias",
+     "served": true,
+     "copy_content": [
+      "from",
+      "to",
+      "cc",
+      "sent_at",
+      "subject",
+      "body_preview"
+     ],
+     "upstream": "integrations/graph_read.py (Graph message internetMessageId; from, toRecipients, ccRecipients, sentDateTime, subject and bodyPreview, the same in every mailbox's copy and held by every captured message record, the body text itself only by some)"
+    }
+   ]
+  },
+  "content_sha256": {
+   "object_type": "Attachment",
+   "description": "The SHA-256 of a captured file's bytes, computed by the capture from the bytes it pinned (mail attachments, SharePoint drive items and the members of a zip/.msg/.eml container alike, cited #sha256=<hex>). Equal digests are equal bytes: an attachment, a SharePoint file and a container member with one digest are copies of one file, never one record (each keeps its own citation, metadata and permissions). Lower-case hex.",
+   "value_pattern": "[0-9a-fA-F]{64}",
+   "flags": "",
+   "normalizer": "lower_trim",
+   "identity": "anchor",
+   "exact_compare": "trim_casefold",
+   "auto_merge": false,
+   "alias_kinds": [],
+   "copies": {
+    "why": "Equal SHA-256 digests are equal bytes: one file mailed as an attachment, stored in SharePoint or packed in a zip/.msg/.eml container (or attached to several mails) is one document's evidence, however many copies hold it.",
+    "upstream": "integrations/capture_mail.py and integrations/capture_sharepoint.py (content_sha256 of the pinned bytes, content-addressed blobs)"
+   },
+   "forms": [
+    {
+     "form": "hex",
+     "example": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+     "upstream": "integrations/graph_evidence.py (sha256 hexdigest)"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "mail",
+     "relation": "attachments",
+     "field": "content_sha256",
+     "role": "alias",
+     "served": true,
+     "upstream": "integrations/capture_mail.py (attachment bytes pinned by sha256)"
+    },
+    {
+     "system": "sharepoint",
+     "relation": "driveItems",
+     "field": "content_sha256",
+     "role": "alias",
+     "served": true,
+     "upstream": "integrations/capture_sharepoint.py (item bytes pinned by sha256)"
+    },
+    {
+     "system": "mail",
+     "relation": "containerMembers",
+     "field": "content_sha256",
+     "role": "alias",
+     "served": true,
+     "upstream": "ontology/project_graph.py member_rows (a zip/.msg/.eml attachment member's bytes, sha256 from integrations/captured_text.py container_members)"
+    },
+    {
+     "system": "sharepoint",
+     "relation": "containerMembers",
+     "field": "content_sha256",
+     "role": "alias",
+     "served": true,
+     "upstream": "ontology/project_graph.py member_rows (a zip/.msg/.eml drive item member's bytes, sha256 from integrations/captured_text.py container_members)"
+    }
+   ]
+  }
+ },
+ "label_kind_map": {
+  "sales_order": "so_number",
+  "assembly_order": "ao_code",
+  "product_code": "item_code"
+ },
+ "system_kinds": {
+  "guid": {
+   "pattern": "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+   "description": "Entra object id / BC system id.",
+   "used_by": [
+    "integrations/live_source_grammar.py"
+   ]
+  },
+  "upn": {
+   "pattern": "[A-Za-z0-9_+'-]{1,64}(?:\\.[A-Za-z0-9_+'-]{1,64})*@[A-Za-z0-9-]{1,63}(?:\\.[A-Za-z0-9-]{1,63})+",
+   "description": "Mailbox user principal name (strict).",
+   "used_by": [
+    "integrations/live_source_grammar.py"
+   ]
+  },
+  "graph_mail_id": {
+   "pattern": "[A-Za-z0-9_=-]{1,512}",
+   "description": "Graph message/folder id.",
+   "used_by": [
+    "integrations/live_source_grammar.py"
+   ]
+  },
+  "graph_drive_id": {
+   "pattern": "[A-Za-z0-9_=!-]{1,256}",
+   "description": "Graph drive / drive item id.",
+   "used_by": [
+    "integrations/live_source_grammar.py"
+   ]
+  },
+  "graph_search_text": {
+   "pattern": "[A-Za-z0-9](?:[A-Za-z0-9#._-]{0,62}[A-Za-z0-9])?",
+   "description": "One Graph search term (a document number as written): drive search q and mail $search.",
+   "used_by": [
+    "integrations/live_source_grammar.py"
+   ]
+  },
+  "graph_share_id": {
+   "pattern": "u![A-Za-z0-9_-]{1,2800}",
+   "description": "Encoded sharing URL for Graph /shares/{id}: u! + unpadded base64url.",
+   "used_by": [
+    "integrations/live_source_grammar.py"
+   ]
+  },
+  "sharepoint_site_id": {
+   "pattern": "[a-z0-9][a-z0-9-]{0,62}\\.sharepoint\\.com,[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12},[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+   "description": "Graph composite site id.",
+   "used_by": [
+    "integrations/live_source_grammar.py"
+   ]
+  },
+  "sharepoint_host": {
+   "pattern": "[a-z0-9][a-z0-9-]{0,62}\\.sharepoint\\.com",
+   "description": "SharePoint tenant host name.",
+   "used_by": [
+    "integrations/live_source_grammar.py"
+   ]
+  },
+  "sharepoint_site_name": {
+   "pattern": "[A-Za-z0-9][A-Za-z0-9_-]{0,127}",
+   "description": "SharePoint site URL name (sites/<name>).",
+   "used_by": [
+    "integrations/live_source_grammar.py"
+   ]
+  },
+  "entra_tenant": {
+   "pattern": "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[a-z0-9][a-z0-9-]{0,62}(?:\\.[a-z0-9][a-z0-9-]{0,62})+",
+   "description": "Tenant GUID or DNS name.",
+   "used_by": [
+    "integrations/live_source_grammar.py"
+   ]
+  },
+  "bc_environment": {
+   "pattern": "[A-Za-z0-9_-]{1,50}",
+   "description": "BC environment name.",
+   "used_by": [
+    "integrations/live_source_grammar.py"
+   ]
+  },
+  "bc_number_literal": {
+   "pattern": "[A-Za-z0-9](?:[A-Za-z0-9._/#-]| (?=[A-Za-z0-9._/#-])){0,34}",
+   "description": "Any BC Code[20]/Code[35] number usable as an OData string literal (no quote, single inner spaces, no trailing space).",
+   "used_by": [
+    "integrations/live_source_grammar.py"
+   ]
+  },
+  "bc_field_name": {
+   "pattern": "[A-Za-z][A-Za-z0-9]{0,63}",
+   "description": "BC API field name.",
+   "used_by": [
+    "integrations/live_source_grammar.py"
+   ]
+  },
+  "sharepoint_column_name": {
+   "pattern": "[A-Za-z_][A-Za-z0-9_]{0,63}",
+   "description": "SharePoint internal column name.",
+   "used_by": [
+    "integrations/live_source_grammar.py"
+   ]
+  },
+  "mail_address": {
+   "pattern": "[^@\\s<>\\\"]{1,64}@[a-z0-9-]{1,63}(?:\\.[a-z0-9-]{1,63})+",
+   "description": "A lower-case mail address as Graph evidence stores it.",
+   "used_by": [
+    "integrations/graph_evidence.py"
+   ]
+  },
+  "dns_domain": {
+   "pattern": "[a-z0-9-]+(?:\\.[a-z0-9-]+)+",
+   "description": "Lower-case DNS domain (mail/web).",
+   "used_by": [
+    "ontology/mentions.py"
+   ]
+  },
+  "sha256_hex": {
+   "pattern": "[0-9a-f]{64}",
+   "description": "Lower-case SHA-256 digest.",
+   "used_by": [
+    "integrations/graph_evidence.py"
+   ]
+  },
+  "amazon_shipment_id": {
+   "pattern": "FBA[0-9A-Z]{6,12}",
+   "description": "Amazon FBA inbound shipment id as Amazon issues it (Fulfillment Inbound ShipmentId, e.g. FBA15ABC1234): upper-case FBA then 6-12 upper-case letters or digits, compared exactly after trim and upper-casing. The key joining an Amazon inbound shipment to a freight booking (decision 2026-10-19-fba-external-sources).",
+   "used_by": [
+    "integrations/live_source_grammar.py",
+    "integrations/amazon_sp_read.py",
+    "integrations/freightcom_read.py"
+   ]
+  },
+  "amazon_marketplace_id": {
+   "pattern": "[A-Z0-9]{10,14}",
+   "description": "Amazon marketplace id (e.g. ATVPDKIKX0DER US, A2EUQ1WTGCTBG2 CA).",
+   "used_by": [
+    "integrations/live_source_grammar.py",
+    "integrations/amazon_sp_read.py"
+   ]
+  },
+  "amazon_seller_sku": {
+   "pattern": "[A-Za-z0-9](?:[A-Za-z0-9._/#+-]| (?=[A-Za-z0-9._/#+-])){0,39}",
+   "description": "An Amazon seller SKU usable as an SP-API query value (single inner spaces, at most 40 characters). Not a PLX item code: equal-looking codes are no match (FBA-05).",
+   "used_by": [
+    "integrations/live_source_grammar.py",
+    "integrations/amazon_sp_read.py"
+   ]
+  },
+  "freightcom_id": {
+   "pattern": "[A-Za-z0-9][A-Za-z0-9_-]{0,63}",
+   "description": "Freightcom Customer API shipment (booking) id, one path segment.",
+   "used_by": [
+    "integrations/live_source_grammar.py",
+    "integrations/freightcom_read.py"
+   ]
+  }
+ },
+ "mention_profiles": {
+  "mail_labelled": {
+   "description": "Label-backed identifier claims in mail/document text for Graph evidence; the delimiter after the label is optional (callers then require a digit).",
+   "used_by": [
+    "ontology/identifiers.py"
+   ],
+   "patterns": [
+    {
+     "kind": "quote_number",
+     "pattern": "\\b(?:quote|quotation)\\s*(?:(?:number|no\\.?)\\s*)?(?:[:#]\\s*)?([A-Z0-9][A-Z0-9._/-]{1,79})",
+     "flags": "i",
+     "group": 1
+    },
+    {
+     "kind": "customer_po",
+     "pattern": "\\bcustomer\\s+(?:PO|purchase\\s+order)\\s*(?:number\\s*)?(?:[:#]\\s*)?([A-Z0-9][A-Z0-9._/-]{1,79})",
+     "flags": "i",
+     "group": 1
+    },
+    {
+     "kind": "petra_po",
+     "pattern": "\\bPetra\\s+(?:PO|purchase\\s+order)\\s*(?:number\\s*)?(?:[:#]\\s*)?([A-Z0-9][A-Z0-9._/-]{1,79})",
+     "flags": "i",
+     "group": 1
+    },
+    {
+     "kind": "vendor_confirmation",
+     "pattern": "\\b(?:vendor|supplier)\\s+confirmation\\s*(?:number\\s*)?(?:[:#]\\s*)?([A-Z0-9][A-Z0-9._/-]{1,79})",
+     "flags": "i",
+     "group": 1
+    },
+    {
+     "kind": "shipment_reference",
+     "pattern": "\\bshipment\\s+(?:reference|ref)\\s*(?:number\\s*)?(?:[:#]\\s*)?([A-Z0-9][A-Z0-9._/-]{1,79})",
+     "flags": "i",
+     "group": 1
+    },
+    {
+     "kind": "invoice_number",
+     "pattern": "\\binvoice\\s+(?:number|no\\.?)\\s*(?:[:#]\\s*)?([A-Z0-9][A-Z0-9._/-]{1,79})",
+     "flags": "i",
+     "group": 1
+    },
+    {
+     "kind": "sales_order",
+     "pattern": "\\bsales\\s+order\\s*(?:number\\s*)?(?:[:#]\\s*)?([A-Z0-9][A-Z0-9._/-]{1,79})",
+     "flags": "i",
+     "group": 1
+    },
+    {
+     "kind": "receipt_lab_id",
+     "pattern": "\\b(?:receipt(?:\\s+lab\\s+id)?|lab\\s+id)\\s*(?:(?:number|no\\.?)\\s*)?(?:[:#]\\s*)?((?:UAT-)?(?:\\d{5}-\\d{1,4}|RP\\d{7}))(?![A-Za-z0-9-])",
+     "flags": "i",
+     "group": 1,
+     "upstream": "the receipt_lab_id grammar behind a receipt / receipt lab id / lab id label (a bare \"lab\" stays the RP shape): the raw YYDDD-N form has no self-delimiting shape, so prose (\"linked to receipt 26161-1\") reads it only by its label"
+    },
+    {
+     "kind": "bc_document_no",
+     "pattern": "\\b(?:Business\\s+Central|BC)\\s+(?:document\\s*(?:(?:number|no\\.?)\\s*)?|(?:number|no\\.?)\\s*)(?:[:#]\\s*)?([A-Z0-9][A-Z0-9._/#-]{0,19})(?![A-Za-z0-9._/#-])",
+     "flags": "i",
+     "group": 1,
+     "upstream": "a Business Central document No. (Code[20], the bc_document_no grammar) behind a Business Central / BC document label; the free Code[20] has no shape of its own"
+    }
+   ]
+  },
+  "document_labelled": {
+   "description": "Label-backed identifier claims in extracted document text (a ':' or '#' delimiter is required; the value ends at whitespace or a separator).",
+   "used_by": [
+    "integrations/document_understanding.py:_extract_claims"
+   ],
+   "patterns": [
+    {
+     "kind": "assembly_order",
+     "pattern": "\\b(?:assembly\\s+order|AO)\\s*(?:(?:number|no\\.?|#)\\s*)?[:#]\\s*(AO-[A-Z0-9-]{3,40})\\b",
+     "flags": "i",
+     "group": 1
+    },
+    {
+     "kind": "assembly_order",
+     "pattern": "\\bAO[ \\t]+LOT[ \\t]*#[ \\t]*(?:[:.][ \\t]*)?(AO-[A-Z0-9-]{3,40})\\b",
+     "flags": "i",
+     "group": 1
+    },
+    {
+     "kind": "quote_number",
+     "pattern": "\\b(?:quote|quotation)\\s*(?:(?:number|no\\.?)\\s*)?[:#]\\s*([A-Z0-9][A-Z0-9_./-]{1,79})(?=[\\s,;:|)\\]}>\"']|$)",
+     "flags": "i",
+     "group": 1
+    },
+    {
+     "kind": "customer_po",
+     "pattern": "\\bcustomer\\s+(?:PO|purchase\\s+order)\\s*(?:number\\s*)?[:#]\\s*([A-Z0-9][A-Z0-9_./-]{1,79})(?=[\\s,;:|)\\]}>\"']|$)",
+     "flags": "i",
+     "group": 1
+    },
+    {
+     "kind": "petra_po",
+     "pattern": "\\bPetra\\s+(?:PO|purchase\\s+order)\\s*(?:number\\s*)?[:#]\\s*([A-Z0-9][A-Z0-9_./-]{1,79})(?=[\\s,;:|)\\]}>\"']|$)",
+     "flags": "i",
+     "group": 1
+    },
+    {
+     "kind": "vendor_confirmation",
+     "pattern": "\\b(?:vendor|supplier)\\s+confirmation\\s*(?:number\\s*)?[:#]\\s*([A-Z0-9][A-Z0-9_./-]{1,79})(?=[\\s,;:|)\\]}>\"']|$)",
+     "flags": "i",
+     "group": 1
+    },
+    {
+     "kind": "shipment_reference",
+     "pattern": "\\bshipment\\s+(?:reference|ref)\\s*(?:number\\s*)?[:#]\\s*([A-Z0-9][A-Z0-9_./-]{1,79})(?=[\\s,;:|)\\]}>\"']|$)",
+     "flags": "i",
+     "group": 1
+    },
+    {
+     "kind": "invoice_number",
+     "pattern": "\\binvoice\\s+(?:number|no\\.?|#)\\s*(?:[:#]\\s*)?([A-Z0-9][A-Z0-9_./-]{1,79})(?=[\\s,;:|)\\]}>\"']|$)",
+     "flags": "i",
+     "group": 1
+    },
+    {
+     "kind": "sales_order",
+     "pattern": "\\bsales\\s+order\\s*(?:number\\s*)?[:#]\\s*([A-Z0-9][A-Z0-9_./-]{1,79})(?=[\\s,;:|)\\]}>\"']|$)",
+     "flags": "i",
+     "group": 1
+    },
+    {
+     "kind": "packing_slip",
+     "pattern": "\\bpacking\\s+slip\\s*(?:number\\s*)?[:#]\\s*([A-Z0-9][A-Z0-9_./-]{1,79})(?=[\\s,;:|)\\]}>\"']|$)",
+     "flags": "i",
+     "group": 1
+    },
+    {
+     "kind": "project_key",
+     "pattern": "\\b(?:project|project\\s+key)\\s*(?:(?:number|no\\.?)\\s*)?[:#]\\s*([A-Z0-9][A-Z0-9_./-]{1,79})(?=[\\s,;:|)\\]}>\"']|$)",
+     "flags": "i",
+     "group": 1
+    },
+    {
+     "kind": "product_code",
+     "pattern": "\\b(?:product|SKU|item|part)[ \\t]*(?:(?:code|number|no\\.?)[ \\t]*)?[:#][ \\t]*([A-Z0-9][A-Z0-9_./-]{1,79})(?=[\\s,;:|)\\]}>\"']|$)",
+     "flags": "i",
+     "group": 1
+    }
+   ]
+  },
+  "ao_form": {
+   "description": "Short shop-floor AO form labels; mapping them to Product / SalesOrder is an interpretation (review-grade).",
+   "used_by": [
+    "integrations/document_understanding.py:_extract_claims"
+   ],
+   "patterns": [
+    {
+     "kind": "product_code",
+     "pattern": "\\bERP[ \\t]+CODE[ \\t]*[:#][ \\t]*((?=[A-Z0-9._/-]*[0-9])[A-Z0-9][A-Z0-9._/-]{1,79})",
+     "flags": "i",
+     "group": 1,
+     "confidence": "review"
+    },
+    {
+     "kind": "sales_order",
+     "pattern": "\\bOE[ \\t]*[:#][ \\t]*(OR[0-9]{5,20})(?![A-Z0-9])",
+     "flags": "i",
+     "group": 1,
+     "confidence": "review"
+    }
+   ]
+  },
+  "document_item_line": {
+   "description": "A labelled item code that heads a line-item block.",
+   "used_by": [
+    "integrations/document_understanding.py:line items"
+   ],
+   "patterns": [
+    {
+     "kind": "product_code",
+     "pattern": "\\b(?:item|part|sku|product)\\s*[:#]\\s*(?P<code>[A-Za-z0-9][A-Za-z0-9_./-]{1,79})(?=[\\s,;:|)\\]}>\"']|$)",
+     "flags": "i",
+     "group": "code"
+    }
+   ]
+  },
+  "document_title_ao": {
+   "description": "An AO code in a file name or title: an identity lead, never source-asserted.",
+   "used_by": [
+    "integrations/document_understanding.py:document title"
+   ],
+   "patterns": [
+    {
+     "kind": "assembly_order",
+     "pattern": "(?<![A-Za-z0-9])AO-[A-Za-z0-9-]{3,40}(?![A-Za-z0-9])",
+     "flags": "i",
+     "group": 0,
+     "confidence": "review"
+    }
+   ]
+  },
+  "petra_po_attached": {
+   "description": "Petra PO numbers written with their prefix (po-number-series.ts / create-fm-purchase-order.ts shapes).",
+   "used_by": [
+    "ontology/mentions.py:extract",
+    "ontology/identifiers.py:find_identifiers"
+   ],
+   "patterns": [
+    {
+     "kind": "petra_po",
+     "pattern": "(?<![A-Za-z0-9#-])((?:UAT-)?D?PO(?:#|-)?\\d{1,9}(?:-FM\\d{1,9})?|PO-(?=[A-Za-z0-9]{0,7}\\d)[A-Za-z0-9]{3,8})(?![A-Za-z0-9])",
+     "flags": "i",
+     "group": 1
+    }
+   ]
+  },
+  "petra_po_labelled": {
+   "description": "A PO number separated from its label ('PO 4821', 'P.O. # 4821', 'Our PO 4821', 'Purchase Order No. 106089'); the value is the number as written.",
+   "used_by": [
+    "ontology/mentions.py:extract",
+    "ontology/identifiers.py:find_identifiers"
+   ],
+   "patterns": [
+    {
+     "kind": "petra_po",
+     "pattern": "(?<![A-Za-z0-9])(?:P\\.?\\s?O\\.?|purchase\\s+order)\\s*(?:(?:no\\.?|number|num\\.?|#)\\s*)?(?:[:#.]\\s*)?(\\d{3,10}(?:-FM\\d{1,9})?)(?![A-Za-z0-9])",
+     "flags": "i",
+     "group": 1
+    }
+   ]
+  },
+  "supplier_reference": {
+   "description": "A supplier's own labelled number (order / confirmation / proforma / invoice / reference); group 1 is the label, group 2 the value.",
+   "used_by": [],
+   "patterns": [
+    {
+     "kind": "vendor_confirmation",
+     "pattern": "(?<![A-Za-z0-9])(?:our\\s+)?(sales\\s+order|order|S/?O|confirmation|conf\\.?|proforma(?:\\s+invoice)?|PI|invoice|reference|ref\\.?)\\s*(?:no\\.?|number|#)\\s*(?:[:#]\\s*)?([A-Z0-9][A-Z0-9/-]{2,30})(?![A-Za-z0-9])",
+     "flags": "i",
+     "group": 2,
+     "label_group": 1
+    }
+   ]
+  },
+  "pi_attached": {
+   "description": "A proforma-invoice reference written as one token (PI-ABC001234, PI40404).",
+   "used_by": [
+    "ontology/identifiers.py:find_identifiers"
+   ],
+   "patterns": [
+    {
+     "kind": "pi_ref",
+     "pattern": "(?<![A-Za-z0-9])(PI-?[A-Z]{0,5}\\d{3,12})(?![A-Za-z0-9])",
+     "flags": "i",
+     "group": 1
+    }
+   ]
+  },
+  "shapes": {
+   "description": "Self-delimiting identifier shapes the scanner finds without a label.",
+   "used_by": [
+    "ontology/identifiers.py:find_identifiers"
+   ],
+   "patterns": [
+    {
+     "kind": "ao_code",
+     "pattern": "(?<![A-Za-z0-9-])((?:UAT-)?AO-\\d{3,5}[A-Z]{1,2})(?![A-Za-z0-9])",
+     "flags": "i",
+     "group": 1
+    },
+    {
+     "kind": "batch_code",
+     "pattern": "(?<![A-Za-z0-9-])((?:UAT-)?BC-\\d{3,5}[A-Z]{1,2})(?![A-Za-z0-9])",
+     "flags": "i",
+     "group": 1
+    },
+    {
+     "kind": "mo_code",
+     "pattern": "(?<![A-Za-z0-9-])(MO-(?=[A-Za-z0-9]{0,23}\\d)[A-Za-z0-9]{3,24})(?![A-Za-z0-9])",
+     "flags": "i",
+     "group": 1
+    },
+    {
+     "kind": "so_number",
+     "pattern": "(?<![A-Za-z0-9-])(D?SO\\d{6,9}|SO-\\d{4}-\\d{3,6}|SO-FM-\\d{1,9}|OR\\d{8,12})(?![A-Za-z0-9])",
+     "flags": "i",
+     "group": 1
+    },
+    {
+     "kind": "quote_number",
+     "pattern": "(?<![A-Za-z0-9-])(QUO-\\d{4}-\\d{3,6})(?![A-Za-z0-9])",
+     "flags": "i",
+     "group": 1
+    },
+    {
+     "kind": "shipment_number",
+     "pattern": "(?<![A-Za-z0-9-])(SH\\d{6,9})(?![A-Za-z0-9])",
+     "flags": "i",
+     "group": 1
+    },
+    {
+     "kind": "ship_release",
+     "pattern": "(?<![A-Za-z0-9-])(SR-\\d{8}-\\d{4})(?![A-Za-z0-9])",
+     "flags": "i",
+     "group": 1
+    },
+    {
+     "kind": "pr_number",
+     "pattern": "(?<![A-Za-z0-9-])(PR-\\d{8}-\\d{4})(?![A-Za-z0-9])",
+     "flags": "i",
+     "group": 1
+    },
+    {
+     "kind": "eqms_number",
+     "pattern": "(?<![A-Za-z0-9-])((?:CAPA|QRM|CC|D)-\\d{5,7})(?![A-Za-z0-9])",
+     "flags": "i",
+     "group": 1
+    },
+    {
+     "kind": "formula_code",
+     "pattern": "(?<![A-Za-z0-9-])(F-\\d{2}-\\d{4}(?:-[A-Z])?)(?![A-Za-z0-9])",
+     "flags": "i",
+     "group": 1
+    },
+    {
+     "kind": "manufacturing_job",
+     "pattern": "(?<![A-Za-z0-9-])(MJ-\\d{4}-[A-Za-z0-9]{2,16})(?![A-Za-z0-9])",
+     "flags": "i",
+     "group": 1
+    },
+    {
+     "kind": "receipt_lab_id",
+     "pattern": "(?<![A-Za-z0-9-])((?:UAT-)?RP\\d{7})(?![A-Za-z0-9])",
+     "flags": "i",
+     "group": 1
+    },
+    {
+     "kind": "fm_external_id",
+     "pattern": "(?<![A-Za-z0-9-])(fm-(?:cust|supp|raw|pack|bulk|fp|form|wlp|proj)-\\d{1,12})(?![A-Za-z0-9])",
+     "flags": "i",
+     "group": 1
+    }
+   ]
+  }
+ },
+ "link_bindings": [
+  {
+   "name": "fm_order_entry_to_sales_order",
+   "identifier_kind": "fm_id",
+   "from": {
+    "system": "fm",
+    "relation": "public.order_entry",
+    "field": "id"
+   },
+   "to": {
+    "system": "portal",
+    "relation": "public.app_sales_order",
+    "field": "custom_fields.fmId"
+   },
+   "tier": "verified",
+   "served": {
+    "from": true,
+    "to": true
+   },
+   "upstream": "plx-customer-portal@b46934a:portal/src/lib/orders/order-identity.ts:resolveOrderFromFmOrderId:187",
+   "note": "FM OE <-> gold SO bridge; written by ensure-sales-order-from-fm-oe. Hollow-stub order numbers are not filtered on this path."
+  },
+  {
+   "name": "sage_order_to_sales_order",
+   "identifier_kind": "sage_ord_uniq",
+   "from": {
+    "system": "sage",
+    "relation": "sage.oe_order_header",
+    "field": "orduniq"
+   },
+   "to": {
+    "system": "portal",
+    "relation": "public.app_sales_order",
+    "field": "custom_fields.sageOrdUniq"
+   },
+   "tier": "verified",
+   "served": {
+    "from": true,
+    "to": true
+   },
+   "upstream": "plx-customer-portal@b46934a:portal/scripts/etl-sage-distribution-gold.mjs:1464",
+   "note": "Sage ETL upserts gold SOs keyed by sageOrdUniq."
+  },
+  {
+   "name": "portal_entity_to_bc_number",
+   "identifier_kind": "bc_document_no",
+   "from": {
+    "system": "portal",
+    "relation": "public.app_bc_entity_map",
+    "field": "(entity_type, source_system, source_id)"
+   },
+   "to": {
+    "system": "bc",
+    "relation": "*",
+    "field": "number"
+   },
+   "tier": "verified",
+   "served": {
+    "from": false,
+    "to": true
+   },
+   "upstream": "docs/reference/portal-code-map.md s4.10",
+   "note": "app_bc_entity_map.bc_number (status LINKED) is the identity link; the map is not served by the reporting API."
+  },
+  {
+   "name": "portal_entity_to_bc_system_id",
+   "identifier_kind": "bc_system_id",
+   "from": {
+    "system": "portal",
+    "relation": "public.app_bc_entity_map",
+    "field": "(entity_type, source_system, source_id)"
+   },
+   "to": {
+    "system": "bc",
+    "relation": "*",
+    "field": "id"
+   },
+   "tier": "verified",
+   "served": {
+    "from": false,
+    "to": true
+   },
+   "upstream": "docs/reference/portal-code-map.md s4.10 / plx-customer-portal@b46934a:portal/src/lib/orders/order-identity.ts:resolveOrderFromBcInvoiceId:142",
+   "note": "bc_system_id; not served."
+  },
+  {
+   "name": "sales_order_po_reference_to_bc_sales_order",
+   "identifier_kind": "customer_po",
+   "from": {
+    "system": "portal",
+    "relation": "public.app_sales_order",
+    "field": "po_reference"
+   },
+   "to": {
+    "system": "bc",
+    "relation": "salesOrders",
+    "field": "externalDocumentNumber"
+   },
+   "tier": "lead",
+   "served": {
+    "from": true,
+    "to": true
+   },
+   "upstream": "plx-customer-portal@b46934a:portal/src/lib/business-central/serializers.ts:1157",
+   "note": "externalDocumentNumber = po_reference (truncated to 35). po_reference is not unique and can hold a name. The PO is unique only per customer: a lead across two customers is never one identity (identity_scope)."
+  },
+  {
+   "name": "sales_order_number_to_bc_sales_invoice",
+   "identifier_kind": "so_number",
+   "from": {
+    "system": "portal",
+    "relation": "public.app_sales_order",
+    "field": "order_number"
+   },
+   "to": {
+    "system": "bc",
+    "relation": "salesInvoices",
+    "field": "externalDocumentNumber"
+   },
+   "tier": "lead",
+   "served": {
+    "from": true,
+    "to": true
+   },
+   "upstream": "plx-customer-portal@b46934a:portal/src/lib/business-central/serializers.ts:1049 / plx-customer-portal@b46934a:portal/src/lib/orders/order-identity.ts:resolveOrderFromBcInvoiceId:142",
+   "note": "Invoice externalDocumentNumber = order_number at posting; order_number is rewritten to the BC No. after drain."
+  },
+  {
+   "name": "gold_po_to_fm_po",
+   "identifier_kind": "fm_id",
+   "from": {
+    "system": "portal",
+    "relation": "public.app_purchase_order",
+    "field": "custom_fields.fmGeneratedPoId"
+   },
+   "to": {
+    "system": "fm",
+    "relation": "public.generated_purchase_order",
+    "field": "id"
+   },
+   "tier": "verified",
+   "served": {
+    "from": true,
+    "to": true
+   },
+   "upstream": "plx-customer-portal@b46934a:portal/src/app/mrp/purchase-orders/po-queries.ts:resolveGoldPoIdForFmPo:464",
+   "note": "The FM PO with a gold twin is the gold PO; its ponumber is an alias of the gold row."
+  },
+  {
+   "name": "gold_po_fm_number",
+   "identifier_kind": "petra_po",
+   "from": {
+    "system": "portal",
+    "relation": "public.app_purchase_order",
+    "field": "custom_fields.fmPoNumber"
+   },
+   "to": {
+    "system": "fm",
+    "relation": "public.generated_purchase_order",
+    "field": "ponumber"
+   },
+   "tier": "verified",
+   "served": {
+    "from": true,
+    "to": true
+   },
+   "upstream": "plx-customer-portal@b46934a:portal/src/app/mrp/purchase-orders/po-queries.ts:resolveGoldPoIdForFmPo:500",
+   "note": "Number fallback when fmGeneratedPoId is absent."
+  },
+  {
+   "name": "gold_po_renumbered_to_bc",
+   "identifier_kind": "bc_document_no",
+   "from": {
+    "system": "portal",
+    "relation": "public.app_purchase_order",
+    "field": "custom_fields.renumberedTo"
+   },
+   "to": {
+    "system": "bc",
+    "relation": "purchaseOrders",
+    "field": "number"
+   },
+   "tier": "verified",
+   "served": {
+    "from": true,
+    "to": true
+   },
+   "upstream": "plx-customer-portal@b46934a:portal/src/lib/business-central/align-portal-po-number.ts:10",
+   "note": "Written together with po_number = BC No.; fmPoNumber keeps the earlier number."
+  },
+  {
+   "name": "bc_po_your_reference",
+   "identifier_kind": "petra_po",
+   "from": {
+    "system": "bc",
+    "relation": "purchaseOrders",
+    "field": "Your Reference"
+   },
+   "to": {
+    "system": "portal",
+    "relation": "public.app_purchase_order",
+    "field": "custom_fields.fmPoNumber"
+   },
+   "tier": "lead",
+   "served": {
+    "from": false,
+    "to": true
+   },
+   "upstream": "docs/reference/cases-and-artifacts.md (codeunit 50115) / plx-customer-portal@b46934a:portal/src/lib/business-central/align-portal-po-number.ts:yourReferenceForBcPo",
+   "note": "Your Reference is not in BC API v2.0 purchaseOrders."
+  },
+  {
+   "name": "sales_order_renumbered_to_bc",
+   "identifier_kind": "so_number",
+   "from": {
+    "system": "portal",
+    "relation": "public.app_sales_order",
+    "field": "custom_fields.renumberedTo"
+   },
+   "to": {
+    "system": "bc",
+    "relation": "salesOrders",
+    "field": "number"
+   },
+   "tier": "verified",
+   "served": {
+    "from": true,
+    "to": true
+   },
+   "upstream": "plx-customer-portal@b46934a:portal/src/lib/business-central/align-portal-so-number.ts",
+   "note": "fmOeNumber keeps the earlier order number."
+  },
+  {
+   "name": "product_to_bc_item",
+   "identifier_kind": "item_code",
+   "from": {
+    "system": "portal",
+    "relation": "public.app_product",
+    "field": "code"
+   },
+   "to": {
+    "system": "bc",
+    "relation": "items",
+    "field": "number"
+   },
+   "tier": "verified",
+   "served": {
+    "from": true,
+    "to": true
+   },
+   "upstream": "plx-customer-portal@b46934a:portal/src/lib/business-central/serializers.ts:bcItemNumber:831",
+   "note": "BC Item No. = code truncated to 20, compared case-insensitively."
+  },
+  {
+   "name": "product_to_sage_item",
+   "identifier_kind": "erp_item_code",
+   "from": {
+    "system": "portal",
+    "relation": "public.app_product",
+    "field": "erp_code"
+   },
+   "to": {
+    "system": "sage",
+    "relation": "sage.ic_item",
+    "field": "itemno"
+   },
+   "tier": "verified",
+   "served": {
+    "from": true,
+    "to": true
+   },
+   "upstream": "docs/reference/portal-code-map.md s3.6",
+   "note": "Cutover match key, not the BC No."
+  },
+  {
+   "name": "product_to_fm_record",
+   "identifier_kind": "fm_external_id",
+   "from": {
+    "system": "portal",
+    "relation": "public.app_product",
+    "field": "external_id"
+   },
+   "to": {
+    "system": "fm",
+    "relation": "public.raw_material|packaging|bulk_product|finished_product",
+    "field": "id"
+   },
+   "tier": "lead",
+   "served": {
+    "from": true,
+    "to": true
+   },
+   "upstream": "docs/reference/portal-code-map.md s3.6",
+   "note": "external_id is not unique on app_product."
+  },
+  {
+   "name": "customer_to_fm_customer",
+   "identifier_kind": "fm_external_id",
+   "from": {
+    "system": "portal",
+    "relation": "public.app_customer",
+    "field": "external_id"
+   },
+   "to": {
+    "system": "fm",
+    "relation": "public.customer",
+    "field": "id"
+   },
+   "tier": "verified",
+   "served": {
+    "from": true,
+    "to": true
+   },
+   "upstream": "plx-customer-portal@b46934a:portal/src/lib/customers/legacy-refs.ts:filemakerIdFromExternalId:36",
+   "note": "fm-cust-{FM id}."
+  },
+  {
+   "name": "customer_to_sage_and_bc",
+   "identifier_kind": "customer_erp_code",
+   "from": {
+    "system": "portal",
+    "relation": "public.app_customer",
+    "field": "erp_code"
+   },
+   "to": {
+    "system": "bc",
+    "relation": "customers",
+    "field": "number"
+   },
+   "tier": "lead",
+   "served": {
+    "from": true,
+    "to": true
+   },
+   "upstream": "plx-customer-portal@b46934a:portal/src/lib/business-central/serializers.ts:resolveCustomerBcNumber:169",
+   "note": "erp_code = Sage IDCUST = BC customer No.; not unique."
+  },
+  {
+   "name": "supplier_to_fm_supplier",
+   "identifier_kind": "fm_supplier_id",
+   "from": {
+    "system": "portal",
+    "relation": "public.app_supplier",
+    "field": "external_id"
+   },
+   "to": {
+    "system": "fm",
+    "relation": "public.supplier",
+    "field": "id"
+   },
+   "tier": "verified",
+   "served": {
+    "from": true,
+    "to": true
+   },
+   "upstream": "plx-customer-portal@b46934a:portal/src/lib/mrp/fm-supplier-id.ts:parseFmSupplierId",
+   "note": "fm-supp-{n} or the bare FM id, one key under fm_supplier_id (Supplier.same_record_as, verified)."
+  },
+  {
+   "name": "project_key",
+   "identifier_kind": "project_key",
+   "from": {
+    "system": "portal",
+    "relation": "public.app_quote",
+    "field": "project_id"
+   },
+   "to": {
+    "system": "fm",
+    "relation": "public.project",
+    "field": "id"
+   },
+   "tier": "verified",
+   "served": {
+    "from": true,
+    "to": false
+   },
+   "upstream": "plx-customer-portal@b46934a:portal/src/lib/projects/project-identity.ts:isCanonicalProjectKey",
+   "note": "Holds the project KEY; mutable in place on DRAFT/SENT/NEGOTIATION quotes."
+  },
+  {
+   "name": "manufacturing_order_to_fm_ao",
+   "identifier_kind": "ao_code",
+   "from": {
+    "system": "portal",
+    "relation": "public.app_manufacturing_order",
+    "field": "mo_code"
+   },
+   "to": {
+    "system": "fm",
+    "relation": "public.assembly_order",
+    "field": "nameamo_c"
+   },
+   "tier": "verified",
+   "served": {
+    "from": true,
+    "to": true
+   },
+   "upstream": "docs/reference/portal-code-map.md s3.8",
+   "note": "Gold MO is the AO."
+  },
+  {
+   "name": "receipt_to_po_text_join",
+   "identifier_kind": "petra_po",
+   "from": {
+    "system": "portal",
+    "relation": "public.app_receipt",
+    "field": "purchase_order_id"
+   },
+   "to": {
+    "system": "portal",
+    "relation": "public.app_purchase_order",
+    "field": "id"
+   },
+   "tier": "lead",
+   "served": {
+    "from": true,
+    "to": true
+   },
+   "upstream": "plx-customer-portal@b46934a:portal/src/lib/mrp/upsert-gold-receipt.ts:117",
+   "note": "Set by a TRIM(po_number) text match at receipt time."
+  },
+  {
+   "name": "supplier_name",
+   "identifier_kind": "supplier_code",
+   "from": {
+    "system": "any",
+    "relation": "*",
+    "field": "supplier name"
+   },
+   "to": {
+    "system": "portal",
+    "relation": "public.app_supplier",
+    "field": "name"
+   },
+   "tier": "lead",
+   "served": {
+    "from": true,
+    "to": true
+   },
+   "upstream": "(identity: leads only)",
+   "note": "Names never anchor an identity."
+  },
+  {
+   "name": "mail_sender_domain",
+   "identifier_kind": "supplier_code",
+   "from": {
+    "system": "mail",
+    "relation": "graph-mail",
+    "field": "from/to domain"
+   },
+   "to": {
+    "system": "portal",
+    "relation": "public.app_supplier",
+    "field": "email|website"
+   },
+   "tier": "lead",
+   "served": {
+    "from": true,
+    "to": true
+   },
+   "upstream": "ontology/mentions.py party_domain (MENTION_FEATURES: a counterparty domain under a distinctive domain of a party the target links to corroborates a stored mention link)",
+   "note": "A distinctive domain corroborates; it never names the supplier alone."
+  },
+  {
+   "name": "mail_and_sharepoint_mentions",
+   "identifier_kind": "*",
+   "from": {
+    "system": "mail|sharepoint",
+    "relation": "*",
+    "field": "text span"
+   },
+   "to": {
+    "system": "any",
+    "relation": "*",
+    "field": "identifier carrier"
+   },
+   "tier": "lead",
+   "served": {
+    "from": true,
+    "to": true
+   },
+   "upstream": "ontology/mentions.py",
+   "note": "A mention found by find_identifiers is a lead to any carrier of its kind; only the identity layer decides."
+  }
+ ]
+}

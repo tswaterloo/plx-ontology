@@ -1,0 +1,303 @@
+{
+ "format": "plx-eval-case-card-proposals/v1",
+ "status": "PROPOSED dev cards for lead triage, never gold. Stephen's brief is a stakeholder proposal; its counts and weak links are source-reported and not rechecked. The brief body read by the Workbench is not proven (case_originals record_body_status not_verified_in_checked_evidence), so the cards carry no line anchors and no expected values; anchors come after a verified read through scripts.case_originals read.",
+ "case": "stephen-assets",
+ "source": {
+  "advisory": {
+   "id": "advisory:0abdc81c06d0",
+   "ref": "source-records@083dbe71167c59d93cd9569c37398931e22bd635",
+   "path": "context/0abdc81c06d0f93fecf079052a9f7d92509dc473b4703d428848194d3a1c4971.json",
+   "record_sha256": "01d824fd3bf1cec69699ddd9377ff8055463a491fe9ba2dc158db2d5b559c725",
+   "source_revision": "abc75d0af4e9cbf5859b5c7c21901e75d92ef5b8b802483cf6d1bf32638c63a0",
+   "created_at": "2026-10-05T21:04:46.163029Z"
+  },
+  "originals_registry": {
+   "path": "examples/case_originals.json",
+   "latest_delta": "source record 470a5d60b982",
+   "rows": {
+    "co-2b32fe4f123c": "the brief, Asset Tracker - Context Ontology Use Case (Capitalize vs Expense).md (pinned, 21,154 bytes)",
+    "co-14f12ea167ed": "PetraLabX_Asset & Expense_Tracker.xlsx, current revision 197.0 (pinned), linked from the brief",
+    "co-b24bd7f7afb9": "the same workbook, the submission-date revision (unfetched)",
+    "gap-c6eac8f2325d": "tracker source revision: current bytes are not the Oct 5 snapshot",
+    "co-81d7ee151c6e": "Stephen's Grants Program brief (shared Purchase / grant Cost Line entity)"
+   }
+  }
+ },
+ "live_sources": [
+  {
+   "id": "portal.app_purchase_order",
+   "system": "portal-reporting-api",
+   "relation": "public.app_purchase_order",
+   "reader": "served",
+   "evidence": "plx-customer-portal:services/workbench-api/manifest/allowlist.json@71f7214acdc9:522"
+  },
+  {
+   "id": "portal.app_equipment",
+   "system": "portal",
+   "relation": "public.app_equipment",
+   "reader": "not_served",
+   "evidence": "plx-customer-portal:portal/prisma/schema.prisma@71f7214acdc9:4717-4763; OntologyProject:ontology/schema/generated/portal_not_served_a_e.json@77f57dc39341 RelPublicAppEquipment"
+  },
+  {
+   "id": "portal.app_equipment_asset",
+   "system": "portal",
+   "relation": "public.app_equipment_asset",
+   "reader": "not_served",
+   "evidence": "plx-customer-portal:scripts/migrations/20260731_create_app_equipment_asset.sql@71f7214acdc9:37-52; plx-customer-portal:scripts/migrations/20260917180000_equipment_asset_fiix.sql@71f7214acdc9:21-24"
+  },
+  {
+   "id": "sage.po",
+   "system": "portal-reporting-api",
+   "relation": "sage.po_header, sage.po_detail, sage.po_receipt_header",
+   "reader": "served",
+   "evidence": "plx-customer-portal:services/workbench-api/manifest/allowlist.json@71f7214acdc9:2891,3008,3313"
+  },
+  {
+   "id": "bc.purchase_invoices",
+   "system": "business-central",
+   "relation": "purchaseInvoices, purchaseInvoiceLines, generalLedgerEntries",
+   "reader": "served",
+   "evidence": "OntologyProject:integrations/live_source_grammar.py@77f57dc39341:72-84"
+  },
+  {
+   "id": "fiix",
+   "system": "fiix",
+   "relation": "Fiix MACMMS asset (petra-hygienic.macmms.com)",
+   "reader": "none",
+   "evidence": "plx-customer-portal:portal/src/lib/equipment/fiix-asset-id.ts@71f7214acdc9:1-7"
+  },
+  {
+   "id": "sharepoint.tracker",
+   "system": "sharepoint",
+   "relation": "Operations site, CM Operations Files, the tracker workbook (co-14f12ea167ed)",
+   "reader": "case_originals",
+   "evidence": "OntologyProject:examples/case_originals.json@77f57dc39341 co-14f12ea167ed"
+  }
+ ],
+ "layers": {
+  "comprehension": "what the brief and the tracker say, attributed, with qualifiers",
+  "tracing": "joins across Sage, the tracker, Fiix, BC and Portal; an unseen join is a gap, never a match",
+  "actual_case_answerability": "UNSCORED until the brief and the tracker revision are read and the missing readers exist (ontology_gaps.json)"
+ },
+ "open_questions": [
+  "CFO contact and capitalization threshold",
+  "tracker versus Fiix ownership of the asset register",
+  "Sage vendor-versus-invoice coding"
+ ],
+ "non_goals": [
+  "Sage writes",
+  "depreciation engine",
+  "encoded accounting rule",
+  "cleanup of the historical rows"
+ ],
+ "real_example": {
+  "batch_id": "asset-tracker-brief",
+  "exposure": "dev-exposed",
+  "split": "dev",
+  "as_of": "2026-10-05T21:04:46Z",
+  "cards": [
+   {
+    "id": "AT-01",
+    "layer": "comprehension",
+    "question": "What does Stephen's asset-tracker brief ask for, and what does it rule out?",
+    "criterion": "Attribute to the brief: a source-grounded asset map, stage status, keys/crosswalk, weak links and a tracer across Sage, the maintenance tracker, Fiix, BC and Portal. State the non-goals (no Sage writes, depreciation engine, encoded accounting rule or historical-row cleanup) and the three open questions. Call it a stakeholder proposal, not implemented capability.",
+    "originals": [
+     "co-2b32fe4f123c"
+    ],
+    "live_sources": [],
+    "cites": [
+     "advisory:0abdc81c06d0",
+     "co-2b32fe4f123c"
+    ]
+   },
+   {
+    "id": "AT-02",
+    "layer": "comprehension",
+    "question": "How many assets are in the tracker, and which of their fields are blank?",
+    "criterion": "Report the brief's count and blank cost/date/book-value fields as source-reported, not rechecked. A recount needs the tracker read at a named revision: the current revision differs from the submission-date one, which is unfetched, so current bytes are never presented as the Oct 5 snapshot.",
+    "originals": [
+     "co-2b32fe4f123c",
+     "co-14f12ea167ed",
+     "co-b24bd7f7afb9"
+    ],
+    "live_sources": [
+     "sharepoint.tracker"
+    ],
+    "cites": [
+     "advisory:0abdc81c06d0",
+     "co-14f12ea167ed",
+     "gap-c6eac8f2325d"
+    ]
+   },
+   {
+    "id": "AT-03",
+    "layer": "tracing",
+    "question": "Which purchase order or invoice paid for this tracker asset?",
+    "criterion": "The brief reports no invoice or Sage key in the tracker, so the asset-to-purchase join is unseen: name it as a gap with the keys tried (Sage PO, BC purchase invoice, Portal PO). A vendor, amount or date coincidence is a candidate, never a match.",
+    "originals": [
+     "co-14f12ea167ed"
+    ],
+    "live_sources": [
+     "sharepoint.tracker",
+     "sage.po",
+     "bc.purchase_invoices",
+     "portal.app_purchase_order"
+    ],
+    "cites": [
+     "advisory:0abdc81c06d0",
+     "co-14f12ea167ed"
+    ]
+   },
+   {
+    "id": "AT-04",
+    "layer": "tracing",
+    "question": "Did the purchaser classify this purchase as new, replacement or repair, and who did?",
+    "criterion": "Give the purchaser's classification with its source and the person who made it. If no source holds it, say so; never infer it from amount, vendor or G/L account. Keep it separate from the CFO's capital/expense decision.",
+    "originals": [
+     "co-2b32fe4f123c",
+     "co-14f12ea167ed"
+    ],
+    "live_sources": [
+     "sharepoint.tracker"
+    ],
+    "cites": [
+     "advisory:0abdc81c06d0"
+    ]
+   },
+   {
+    "id": "AT-05",
+    "layer": "tracing",
+    "question": "Did the CFO decide to capitalize or expense this purchase, and when?",
+    "criterion": "Give the CFO decision with its decider, date and source. Without a recorded decision the answer is open; never derive it from the purchaser's classification or from a threshold (the threshold is an open question and no accounting rule is encoded).",
+    "originals": [
+     "co-2b32fe4f123c"
+    ],
+    "live_sources": [],
+    "cites": [
+     "advisory:0abdc81c06d0"
+    ]
+   },
+   {
+    "id": "AT-06",
+    "layer": "comprehension",
+    "question": "Where do the purchaser's classification and the CFO's decision disagree?",
+    "criterion": "Show both side by side, each with provenance and decider, and leave the disagreement visible. The Workbench does not resolve it or apply an accounting rule.",
+    "originals": [
+     "co-2b32fe4f123c",
+     "co-14f12ea167ed"
+    ],
+    "live_sources": [
+     "sharepoint.tracker"
+    ],
+    "cites": [
+     "advisory:0abdc81c06d0"
+    ]
+   },
+   {
+    "id": "AT-07",
+    "layer": "tracing",
+    "question": "Which equipment purchases made outside maintenance are missing from the tracker?",
+    "criterion": "Compare purchases (Sage PO and receipts, BC purchase invoices, Portal POs) against the tracker on named keys. Because the tracker carries no purchase keys, report 'not found under the keys checked', never 'missing'. The brief's claim stays source-reported.",
+    "originals": [
+     "co-14f12ea167ed"
+    ],
+    "live_sources": [
+     "sharepoint.tracker",
+     "sage.po",
+     "bc.purchase_invoices",
+     "portal.app_purchase_order"
+    ],
+    "cites": [
+     "advisory:0abdc81c06d0",
+     "co-14f12ea167ed"
+    ]
+   },
+   {
+    "id": "AT-08",
+    "layer": "comprehension",
+    "question": "Which tracker asset IDs are duplicated, and is each pair the same machine?",
+    "criterion": "List duplicate IDs as the brief reports them. Do not merge records on a shared ID: a Portal asset tag or Fiix asset id may disambiguate only where readable, and otherwise identity stays unresolved.",
+    "originals": [
+     "co-14f12ea167ed"
+    ],
+    "live_sources": [
+     "sharepoint.tracker",
+     "portal.app_equipment_asset",
+     "fiix"
+    ],
+    "cites": [
+     "advisory:0abdc81c06d0",
+     "co-14f12ea167ed"
+    ]
+   },
+   {
+    "id": "AT-09",
+    "layer": "tracing",
+    "question": "Which production line is this asset on, and do the tracker, Fiix and Portal agree?",
+    "criterion": "Read the line from each source with its provenance. The Portal asset-to-registry link is a fuzzy match and is labelled weak; tracker-versus-Fiix ownership is open, so a conflict is shown, not resolved.",
+    "originals": [
+     "co-14f12ea167ed"
+    ],
+    "live_sources": [
+     "sharepoint.tracker",
+     "portal.app_equipment_asset",
+     "portal.app_equipment",
+     "fiix"
+    ],
+    "cites": [
+     "advisory:0abdc81c06d0",
+     "portal.app_equipment_asset"
+    ]
+   },
+   {
+    "id": "AT-10",
+    "layer": "comprehension",
+    "question": "Is a grant-funded equipment purchase the same record as the grant's Cost Line?",
+    "criterion": "Per the brief, a Purchase and a grants Cost Line are one shared entity with an asset edge and a funder-claim edge, never two records reconciled after the fact.",
+    "originals": [
+     "co-2b32fe4f123c",
+     "co-81d7ee151c6e"
+    ],
+    "live_sources": [],
+    "cites": [
+     "advisory:0abdc81c06d0",
+     "co-81d7ee151c6e"
+    ]
+   },
+   {
+    "id": "AT-11",
+    "layer": "comprehension",
+    "question": "Does Sage code this equipment purchase by vendor or by invoice?",
+    "criterion": "This is an open question in the brief. Answer that it is unknown and name what would settle it (Sage AP/G-L coding, which the reporting API does not serve); do not guess from the served PO relations.",
+    "originals": [
+     "co-2b32fe4f123c"
+    ],
+    "live_sources": [
+     "sage.po"
+    ],
+    "cites": [
+     "advisory:0abdc81c06d0"
+    ]
+   },
+   {
+    "id": "AT-12",
+    "layer": "comprehension",
+    "question": "What is this asset's cost, in-service date and book value?",
+    "criterion": "The brief reports these blank in the tracker. Give a cost only from a cited purchase document (Decimal, currency stated); never compute depreciation or book value (a non-goal).",
+    "originals": [
+     "co-14f12ea167ed"
+    ],
+    "live_sources": [
+     "sharepoint.tracker",
+     "sage.po",
+     "bc.purchase_invoices",
+     "portal.app_equipment"
+    ],
+    "cites": [
+     "advisory:0abdc81c06d0",
+     "co-14f12ea167ed"
+    ]
+   }
+  ]
+ }
+}

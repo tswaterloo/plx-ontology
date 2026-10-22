@@ -1,0 +1,348 @@
+{
+ "$schema": "../_format.schema.json",
+ "format": "plx-ontology-domain/v1",
+ "domain": "production",
+ "origin": "curated",
+ "description": "FM production schedule slots (batch_calibration) linked to their bulk batch. FM bronze is authoritative; the gold copy app_batch_schedule is deliberately left to its generated raw type (docs/decisions/2026-10-07-schema-coverage-etl-duplicates.md). Slots of staging test batches are gold_native_staging.",
+ "upstream_pins": {
+  "plx-customer-portal": "790256ca43"
+ },
+ "object_types": [
+  {
+   "id": "BatchSchedule",
+   "description": "A scheduled production slot of a bulk batch on a line (FM batch_calibration, the source of silver.batch_schedule and of the ETL-only gold app_batch_schedule): dates, times, line, status. It can lag the batch itself, so a missing slot is not proof of no booking.",
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "portal.fm_batch_calibration",
+     "source": "portal_api",
+     "relation": "public.batch_calibration",
+     "key": [
+      "id"
+     ],
+     "lineage": {
+      "default": "fm_bronze",
+      "rules": [
+       {
+        "when": [
+         {
+          "path": "idbatch",
+          "op": "gte",
+          "value": 9000000
+         }
+        ],
+        "lineage": "gold_native_staging",
+        "evidence": [
+         {
+          "kind": "ref",
+          "id": "context.portal.4.6.test-batch"
+         }
+        ]
+       }
+      ]
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "allowlist.public.batch_calibration"
+      },
+      {
+       "kind": "ref",
+       "id": "portal.silver_batch_schedule"
+      }
+     ],
+     "note": "A slot of a staging test batch (idbatch >= 9000000) is gold_native_staging, never fm_bronze."
+    }
+   ],
+   "properties": [
+    {
+     "name": "batch_name",
+     "value_type": "identifier",
+     "identifier_kind": "batch_code",
+     "identifies": "reference",
+     "description": "The scheduled batch's code BC-{YY}{doy}{letter}.",
+     "sources": [
+      {
+       "binding": "portal.fm_batch_calibration",
+       "path": "namebatch",
+       "parser": "identifier"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.silver_batch_schedule"
+      }
+     ]
+    },
+    {
+     "name": "status",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "portal.fm_batch_calibration",
+       "path": "status",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.silver_batch_schedule"
+      }
+     ]
+    },
+    {
+     "name": "line",
+     "value_type": "text",
+     "description": "Production line or tank.",
+     "sources": [
+      {
+       "binding": "portal.fm_batch_calibration",
+       "path": "line",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.silver_batch_schedule"
+      }
+     ]
+    },
+    {
+     "name": "title",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "portal.fm_batch_calibration",
+       "path": "title_c",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.silver_batch_schedule"
+      }
+     ]
+    },
+    {
+     "name": "bulk_code",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "portal.fm_batch_calibration",
+       "path": "bulkcode",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.silver_batch_schedule"
+      }
+     ]
+    },
+    {
+     "name": "bulk_name",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "portal.fm_batch_calibration",
+       "path": "bulkname",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.silver_batch_schedule"
+      }
+     ]
+    },
+    {
+     "name": "start_time",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "portal.fm_batch_calibration",
+       "path": "timestart",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.batch_schedule_reader"
+      }
+     ]
+    },
+    {
+     "name": "end_time",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "portal.fm_batch_calibration",
+       "path": "timeend",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.batch_schedule_reader"
+      }
+     ]
+    }
+   ],
+   "display": [
+    "batch_name"
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "portal.silver_batch_schedule"
+    },
+    {
+     "kind": "ref",
+     "id": "portal.batch_schedule_reader"
+    },
+    {
+     "kind": "ref",
+     "id": "context.portal.3.8"
+    }
+   ]
+  }
+ ],
+ "link_types": [
+  {
+   "id": "BatchSchedule.for_batch",
+   "from": "BatchSchedule",
+   "to": "Batch",
+   "name": "for_batch",
+   "reverse_name": "schedule_slots",
+   "cardinality": "N:1",
+   "description": "The FM batch the slot schedules (batch_calibration.idbatch).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "portal.fm_batch_calibration",
+     "to_binding": "portal.fm_batch",
+     "pairs": [
+      {
+       "from": "idbatch",
+       "to": "id",
+       "compare": "integer_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.silver_batch_schedule"
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "event_types": [
+  {
+   "id": "BatchSchedule.starts",
+   "object_type": "BatchSchedule",
+   "description": "Scheduled start date of the slot.",
+   "time_basis": "planned",
+   "time": {
+    "binding": "portal.fm_batch_calibration",
+    "path": "datestart",
+    "parser": "iso_date"
+   },
+   "qualifiers": [
+    {
+     "qualifier": "slot",
+     "object_type": "BatchSchedule",
+     "via": "self"
+    },
+    {
+     "qualifier": "batch",
+     "object_type": "Batch",
+     "via": "BatchSchedule.for_batch"
+    }
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "portal.silver_batch_schedule"
+    }
+   ]
+  },
+  {
+   "id": "BatchSchedule.ends",
+   "object_type": "BatchSchedule",
+   "description": "Scheduled end date of the slot.",
+   "time_basis": "planned",
+   "time": {
+    "binding": "portal.fm_batch_calibration",
+    "path": "dateend",
+    "parser": "iso_date"
+   },
+   "qualifiers": [
+    {
+     "qualifier": "slot",
+     "object_type": "BatchSchedule",
+     "via": "self"
+    },
+    {
+     "qualifier": "batch",
+     "object_type": "Batch",
+     "via": "BatchSchedule.for_batch"
+    }
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "portal.silver_batch_schedule"
+    }
+   ]
+  }
+ ],
+ "evidence_catalog": {
+  "allowlist.public.batch_calibration": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "services/workbench-api/manifest/allowlist.json",
+   "commit": "790256ca43",
+   "note": "Reporting API allowlist entry public.batch_calibration: every cited column is served. Full reload only: the relation has no since column.",
+   "symbol": "public.batch_calibration"
+  },
+  "portal.silver_batch_schedule": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "scripts/migrations/20260410_enhance_batching_detail.sql",
+   "commit": "790256ca43",
+   "note": "silver.batch_schedule is a view over public.batch_calibration: idbatch AS batch_id, datestart/dateend, timestart/timeend, status, bulkname/bulkcode, namebatch AS batch_name, line, title_c AS title.",
+   "lines": "149-165"
+  },
+  "portal.batch_schedule_reader": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/src/app/mrp/batching/batch-queries.ts",
+   "commit": "790256ca43",
+   "note": "Schedule-conflict detection takes a batch's time window on its line from silver.batch_schedule (latest date_start) and notes that the schedule table lags and misses rows for many active batches.",
+   "lines": "240-288"
+  },
+  "context.portal.3.8": {
+   "kind": "context_pack",
+   "ref": "docs/reference/portal-code-map.md#3.8",
+   "note": "AO / batch domain; FM bronze is authoritative, app_batch_schedule is an ETL-only gold copy."
+  },
+  "context.portal.4.6.test-batch": {
+   "kind": "context_pack",
+   "ref": "docs/reference/portal-code-map.md#4.6",
+   "note": "Portal acc0c53 (TASK-2351): a batch using a staging test lot takes public.batch ids >= 9000000; FileMaker never issues them."
+  }
+ }
+}

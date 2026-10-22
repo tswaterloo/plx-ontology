@@ -1,0 +1,417 @@
+{
+ "$schema": "_plan.schema.json",
+ "format": "plx-investigate-plan/v1",
+ "id": "decision_evidence",
+ "families": [
+  "F11"
+ ],
+ "title": "Evidence behind past decisions about a record",
+ "description": "The recorded decisions about one record (an order, an invoice, a shipment, a customer: any record MC and mail can name), in time order, each cited with its actor and time: Mission Control approval gates, the decisions in the history of MC tasks whose text names the record, and decision records (approval, release, sign-off and ruling documents captured from mail and SharePoint, ontology/schema/domains/decisions.json) that name it. A decision record's date, decider or signature, outcome and basis are machine-read leads cited to the document's bytes; a blank one is its gap, never a decision made. Mail naming the record is cited context (who wrote what when), never counted as a decision. A person's review decision (ontology/reviews.py) on a link the walk crosses is listed with its reviewer and time when plx.around serves it to this reader and the review store re-reads it in force; a review withheld from the reader, retracted or superseded (naming the review in force) is a typed gap. MC and mail reach the record through mention links, so each such decision carries lead_basis: the record names the root, nothing more. A decision is listed only with a time its citation states; its basis is the note the decider recorded (an MC gate's reason is the requester's reason for asking, never the basis), and a decision without one, or a record with no decision, is a typed gap: a reason is never inferred from another record. What this reader may not read is reported withheld by the primitives, never absent. The steps walk those mention links by their navigation names, so the root types are every type that Mission Control approvals, MC tasks and mail can all name (a type the schema gives those links is covered with no plan edit); another type is no_plan.",
+ "root": {
+  "links": [
+   "mentioned_in_mc_approval",
+   "mentioned_in_mc_task",
+   "mentioned_in_email"
+  ]
+ },
+ "step_budget": 96,
+ "max_each": 20,
+ "steps": [
+  {
+   "id": "approvals",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "description": "Mission Control approval gates whose text names the root (a lead link: the gate's connection to the root rests on the mention).",
+   "args": {
+    "path": [
+     {
+      "link": "mentioned_in_mc_approval"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "approval_reads",
+   "tool": "plx.object",
+   "from": "approvals",
+   "bind": "object_id"
+  },
+  {
+   "id": "task_events",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "description": "Decisions in the history of the Mission Control tasks whose text names the root: approval.decided, task.completed and task.cancelled events (PLX_MC@2f653cf src/lib/compliance/approvals.ts, service.ts, src/lib/sync/cancel.ts: a cancel is a human's decision to stop the task, with its reason); other task events are not decisions.",
+   "args": {
+    "path": [
+     {
+      "link": "mentioned_in_mc_task"
+     },
+     {
+      "link_type": "MCTaskEvent.event_of",
+      "direction": "reverse"
+     }
+    ],
+    "filters": [
+     {
+      "property": "kind",
+      "op": "in",
+      "value": [
+       "approval.decided",
+       "task.completed",
+       "task.cancelled"
+      ]
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "event_reads",
+   "tool": "plx.object",
+   "from": "task_events",
+   "bind": "object_id"
+  },
+  {
+   "id": "decision_docs",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "description": "Decision records (approval, release, sign-off, ruling documents read from mail attachments and SharePoint files) that name the root: a lead mention link; the root types without such a link skip this step.",
+   "args": {
+    "path": [
+     {
+      "link": "decision_records"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "decision_doc_reads",
+   "tool": "plx.object",
+   "from": "decision_docs",
+   "bind": "object_id"
+  },
+  {
+   "id": "mails",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "description": "Mail naming the root (a lead link), each read as the record of who wrote what when; its text is never taken as the reason for another record's decision.",
+   "args": {
+    "path": [
+     {
+      "link": "mentioned_in_email"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "mail_reads",
+   "tool": "plx.object",
+   "from": "mails",
+   "bind": "object_id"
+  }
+ ],
+ "evidence": [
+  {
+   "name": "approval_decided_at",
+   "kind": "property",
+   "object_type": "MCApproval",
+   "properties": [
+    "decided_at"
+   ]
+  },
+  {
+   "name": "approval_decided_by",
+   "kind": "property",
+   "object_type": "MCApproval",
+   "properties": [
+    "decided_by"
+   ]
+  },
+  {
+   "name": "approval_status",
+   "kind": "property",
+   "object_type": "MCApproval",
+   "properties": [
+    "status"
+   ]
+  },
+  {
+   "name": "approval_note",
+   "kind": "property",
+   "object_type": "MCApproval",
+   "properties": [
+    "note"
+   ],
+   "description": "The decider's note (MC Task.approvalGates[].note, PLX_MC@2f653cf approvals.ts): the only recorded basis of a gate's decision; an empty note is a decision_basis_not_recorded gap."
+  },
+  {
+   "name": "approval_reason",
+   "kind": "property",
+   "object_type": "MCApproval",
+   "properties": [
+    "reason"
+   ],
+   "description": "The reason the requester gave for asking (MC Task.approvalGates[].reason): what the gate asked, never the basis of its decision."
+  },
+  {
+   "name": "event_at",
+   "kind": "property",
+   "object_type": "MCTaskEvent",
+   "properties": [
+    "at"
+   ]
+  },
+  {
+   "name": "event_actor",
+   "kind": "property",
+   "object_type": "MCTaskEvent",
+   "properties": [
+    "actor"
+   ]
+  },
+  {
+   "name": "event_kind",
+   "kind": "property",
+   "object_type": "MCTaskEvent",
+   "properties": [
+    "kind"
+   ]
+  },
+  {
+   "name": "document_decided_on",
+   "kind": "property",
+   "object_type": "DecisionRecord",
+   "properties": [
+    "decided_on"
+   ],
+   "description": "The decision date as written on the document (a bare date: its whole day, so it is ordered against an instant only when no time zone puts both on one day)."
+  },
+  {
+   "name": "document_decided_by",
+   "kind": "property",
+   "object_type": "DecisionRecord",
+   "properties": [
+    "decided_by"
+   ]
+  },
+  {
+   "name": "document_signature",
+   "kind": "property",
+   "object_type": "DecisionRecord",
+   "properties": [
+    "signature"
+   ],
+   "description": "The signature field as read: the decider when no name is written; a blank signature with no name is a decision_actor_not_recorded gap."
+  },
+  {
+   "name": "document_outcome",
+   "kind": "property",
+   "object_type": "DecisionRecord",
+   "properties": [
+    "outcome"
+   ]
+  },
+  {
+   "name": "document_approved",
+   "kind": "property",
+   "object_type": "DecisionRecord",
+   "properties": [
+    "approved"
+   ]
+  },
+  {
+   "name": "document_rejected",
+   "kind": "property",
+   "object_type": "DecisionRecord",
+   "properties": [
+    "rejected"
+   ]
+  },
+  {
+   "name": "document_released",
+   "kind": "property",
+   "object_type": "DecisionRecord",
+   "properties": [
+    "released"
+   ]
+  },
+  {
+   "name": "document_on_hold",
+   "kind": "property",
+   "object_type": "DecisionRecord",
+   "properties": [
+    "on_hold"
+   ]
+  },
+  {
+   "name": "document_basis",
+   "kind": "property",
+   "object_type": "DecisionRecord",
+   "properties": [
+    "basis"
+   ],
+   "description": "The basis the decider wrote on the document: the only basis of its decision; a blank one is a decision_basis_not_recorded gap."
+  },
+  {
+   "name": "mail_sent_at",
+   "kind": "property",
+   "object_type": "Email",
+   "properties": [
+    "sent_at",
+    "received_at"
+   ]
+  },
+  {
+   "name": "mail_sender",
+   "kind": "property",
+   "object_type": "Email",
+   "properties": [
+    "sender"
+   ]
+  },
+  {
+   "name": "mail_subject",
+   "kind": "property",
+   "object_type": "Email",
+   "properties": [
+    "subject"
+   ]
+  },
+  {
+   "name": "mail_body",
+   "kind": "property",
+   "object_type": "Email",
+   "properties": [
+    "body_preview"
+   ],
+   "description": "The captured body preview: what the mail itself records."
+  },
+  {
+   "name": "decisions",
+   "kind": "compute",
+   "required": true,
+   "engine": "decision_evidence",
+   "description": "Every decision the plan reached, in time order, each with the cited entries of its time, actor, outcome and recorded basis (operating/decision_evidence.py: MC approval gates, MC task events and decision records alike), then each mail naming the root as cited context, never counted as a decision; a decision without a recorded basis, or none at all, is a typed gap.",
+   "engine_args": {
+    "records": [
+     {
+      "label": "mc_approval",
+      "time": [
+       "approval_decided_at"
+      ],
+      "actor": [
+       "approval_decided_by"
+      ],
+      "outcome": [
+       "approval_status"
+      ],
+      "basis": [
+       "approval_note"
+      ]
+     },
+     {
+      "label": "mc_task_event",
+      "time": [
+       "event_at"
+      ],
+      "actor": [
+       "event_actor"
+      ],
+      "outcome": [
+       "event_kind"
+      ]
+     },
+     {
+      "label": "decision_document",
+      "time": [
+       "document_decided_on"
+      ],
+      "actor": [
+       "document_decided_by",
+       "document_signature"
+      ],
+      "outcome": [
+       "document_outcome",
+       "document_approved",
+       "document_rejected",
+       "document_released",
+       "document_on_hold"
+      ],
+      "basis": [
+       "document_basis"
+      ],
+      "decided_by_any": [
+       "actor",
+       "outcome"
+      ],
+      "open_outcomes": [
+       "pending",
+       "awaiting",
+       "not yet",
+       "to be decided",
+       "tbd",
+       "draft",
+       "open"
+      ]
+     }
+    ],
+    "context": [
+     {
+      "label": "mail",
+      "time": [
+       "mail_sent_at"
+      ],
+      "cites": [
+       "mail_sender",
+       "mail_subject",
+       "mail_body"
+      ]
+     }
+    ]
+   }
+  }
+ ]
+}

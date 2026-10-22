@@ -1,0 +1,54 @@
+{
+ "id": "session.employee_recorded",
+ "description": "A9/WS-16: one recorded employee session in which an employee signed in to the console with their PLX Microsoft account (an Entra access token verified per request, operating.oidc_auth; journal proof entra_access_token), read from the console's own journal and ticket audit file in PLX_WORKBENCH_STATE_DIR (python3 -m scripts.session_employee_recorded, operator_ui.session_journal check; offline, no client, nothing is written). Pass = at least one session proven only by Entra sign-in, by one employee identity other than PLX_EVAL_READER's, in which the same session opened an object or case view whose timeline, originals and conflicts panels each showed items, and asked (/api/object-ask) or investigated (/api/investigate) with citations. A session on a ticket the host minted (console_ticket mint, the loopback operator's stand-in) is counted as host_minted and never qualifies. Blocked, with the typed blocked_reason: entra_app_registration_absent, entra_app_registration_incomplete or entra_app_registration_invalid (cause later_ask) while the console's plx-entra-resource/v1 file (PLX_CONSOLE_ENTRA_RESOURCE, unset the committed operating/entra_resource.json) is missing, still holds a typed unset field or has no signing key, i.e. until the console's Entra app registration exists; then (cause source_gap) no state directory, no journal, no authenticated session or an unset (eval_reader_unset) or unusable (eval_reader_unusable) PLX_EVAL_READER, which the check needs to tell the eval reader's sessions apart (it never qualifies a session without it); once a session exists, a missing condition fails the check. Counts and booleans only; no uid, e-mail, object id, case id, tenant id or session reference is read into the output.",
+ "source": "console-journal",
+ "cadence": "daily",
+ "tier": "employee_usable",
+ "command": [
+  "python3",
+  "-m",
+  "scripts.session_employee_recorded"
+ ],
+ "timeout_seconds": 60,
+ "optional_env": [
+  "PLX_WORKBENCH_STATE_DIR",
+  "PLX_EVAL_READER",
+  "PLX_CONSOLE_ENTRA_RESOURCE"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "sessions",
+   "host_minted",
+   "signed_in",
+   "employee_identity",
+   "with_view",
+   "with_citations",
+   "qualifying_sessions"
+  ],
+  "json_min": {
+   "qualifying_sessions": 1
+  }
+ },
+ "blocked_when": "blocked_reason",
+ "blocked_cause": "source_gap",
+ "blocked_causes": {
+  "entra_app_registration_absent": "later_ask",
+  "entra_app_registration_incomplete": "later_ask",
+  "entra_app_registration_invalid": "later_ask"
+ },
+ "record": [
+  "blocked_reason",
+  "sessions",
+  "host_minted",
+  "signed_in",
+  "employee_identity",
+  "with_view",
+  "with_citations",
+  "qualifying_sessions"
+ ],
+ "record_enums": [
+  "blocked_reason"
+ ],
+ "notes": "Registered, live-unverified: no Entra app registration for the console exists yet (later_ask: the app registration, its client id and Application ID URI, the delegated scope and the console's redirect URI, and the tenant's JWKS file), so it reads blocked with cause later_ask (entra_app_registration_incomplete: the committed operating/entra_resource.json holds only the tenant id, every other field a typed unset of later ask console-entra-app-registration) until that file is complete or PLX_CONSOLE_ENTRA_RESOURCE names a complete one; then blocked (source_gap, reason state_dir_unset, journal_absent, no_session_recorded or eval_reader_unset) until the run book's session is held. Module tests: isolated-fixture (tests/test_session_employee_recorded.py builds journals, audit files and a fixture resource file and checks the printed summary with live_verify.check_expectations; operating/tests/test_session_identity.py signs fixture Entra tokens with a generated key and drives the console over loopback). PLX_EVAL_READER excludes the eval reader's own sessions and must be set; no tenant id, client id or claim is in this spec, and none is printed (the tenant id is in the committed resource file, never in the output)."
+}

@@ -1,0 +1,144 @@
+{
+  "schema": "plx-source-unit-contracts/v1",
+  "note": "Each contract fixes the scale (unit) and/or the quantity role a source column is recorded in, with its evidence. It never asserts that values are present, current or correct. Add a contract only with evidence that names the relation and column.",
+  "contracts": [
+    {
+      "id": "silver-formula-items-percentage-fraction",
+      "relation": "silver.formula_items",
+      "column": "percentage",
+      "unit": "1",
+      "meaning": "Share of the formula as a 0-1 fraction (0.125 means 12.5 %). Declare percentages as a separate unit (for example 'percent') and convert explicitly with a cited or literal factor of 100 percent.",
+      "evidence": [
+        "Upstream petralabx/plx-customer-portal portal/src/lib/formulas/line-percent.ts at merge commit d7a23d7e05935e321e37811c18d929283b27dca6 (PR #1665, TASK-2117, merged to staging 2026-09-30) documents batch_item.percentage and silver.formula_items.percentage as fraction-valued; its silver.formula_items statement is conditional on the TASK-2110 migration (PR #1661) being applied. Relayed by advisory context a7f329968b4873ab12c27aa59daa1398110b37b921d3d12f8844dc4b5e2b758d.",
+        "PR #1661 (TASK-2110, open when recorded) fixes silver formula_items.percentage because FM perctentry is NULL/stale versus the Portal formula page.",
+        "Inference (not a relayed fact): the same upstream file places FM perctentry on the 0-1 scale, so the column is taken as fraction-valued whether or not the TASK-2110 migration has been applied; values may be missing or stale either way.",
+        "Live catalog read 2026-10-01 (run live-2026-10-01T03:29:17Z on main 5f234e3, results/5f234e31bb73a5094c0e71b034da2f6cb1ff67f1.json, check queue6.formula_items_percentage): silver.formula_items is not among the 93 reporting-API relations, so the contract cannot be checked against live data."
+      ],
+      "verification": "unverified: relation absent from live catalog (2026-10-01). The scale rests on upstream source inspection relayed by a source record, with the scale before the TASK-2110 migration inferred; the relation is not served by the reporting API, so no live value range was checked."
+    },
+    {
+      "id": "silver-assembly-order-items-quantity-planned",
+      "relation": "silver.assembly_order_items",
+      "column": "quantity",
+      "role": "planned",
+      "meaning": "Planned quantity of one assembly-order component, in that component's own unit (FM assembly_order_item.qty_c): qty_per_batch x the AO's planned finished-good units, rounded up for fractional components (for example a component at 0.25 per batch on 1000 planned units gives 250). It is finished-good units only when qty_per_batch is 1; divide by qty_per_batch to read planned finished goods.",
+      "evidence": [
+        "EVIDENCE/live/2026-09-30-ao-26005b-live-trace.json (live read of the Portal reporting API, 2026-09-30): packaging item 58383 of AO 10718 records quantity 1509.0, the AO's planned 1,509.",
+        "docs/reference/portal-code-map.md section 4.8 (Portal staging, read 2026-09-30): assembly_order_item.qty_c / actualamount surface as silver assembly_order_items.quantity / actual_amount; planned component qty."
+      ],
+      "verification": "one live assembly-order transaction; the column's meaning on other assembly orders is not separately verified, and the role says nothing about the value being present, current or correct."
+    },
+    {
+      "id": "silver-assembly-order-items-actual-amount-actual",
+      "relation": "silver.assembly_order_items",
+      "column": "actual_amount",
+      "role": "actual",
+      "meaning": "Derived component consumption, not a count: FM actualamount = qty_per_batch x the AO's total produced finished-good units including samples (totalprodqty_c, not served by the reporting API), cascaded by the Portal (lib/inventory/assembly-lifecycle.ts:cascadeAssemblyActualQty). Every line equals the produced finished-good units x its BOM ratio (for example 1000 produced units x 0.25 gives 250). Divide by qty_per_batch to read produced finished goods. Not the same quantity as planned.",
+      "evidence": [
+        "EVIDENCE/live/2026-09-30-ao-26005b-live-trace.json (live read of the Portal reporting API, 2026-09-30): items 58382-58387 of AO 10718 record actual_amount 5974.425 / 1503.0 / 1503.0 / 1503.0 / 375.75 / 751.5 against qty_per_batch 3.975 / 1 / 1 / 1 / 0.25 / 0.5, i.e. 1503 x qty_per_batch on every line (docs/reference/cases-and-artifacts.md section 3.4: derived, not counted).",
+        "docs/reference/portal-code-map.md section 4.8 (Portal staging, read 2026-09-30): actualamount = qty_per_batch x totalprodqty_c (lib/inventory/assembly-lifecycle.ts:cascadeAssemblyActualQty:198); totalprodqty_c includes samples."
+      ],
+      "verification": "one live assembly-order transaction; the column's meaning on other assembly orders is not separately verified, and the role says nothing about the value being present, current or correct."
+    },
+    {
+      "id": "public-order-entry-item-assembly-qtymfg-c-manufactured",
+      "relation": "public.order_entry_item_assembly",
+      "column": "qtymfg_c",
+      "role": "manufactured",
+      "meaning": "Quantity manufactured on the AO link to a sales order line. An FM link-table calculation that no Portal code reads (docs/reference/portal-code-map.md section 4.8); finished-good quantities come from the AO, not from this column.",
+      "evidence": [
+        "EVIDENCE/live/2026-09-30-ao-26005b-live-trace.json (live read of the Portal reporting API, 2026-09-30): link 1245 (AO 10718 to order line 1140) records qtymfg_c 1503.0, the AO's manufactured 1,503.",
+        "docs/reference/portal-code-map.md section 4.8 (Portal staging, read 2026-09-30): order_entry_item_assembly.qtyplan(_c), qtymfg(_c) are FM link-table calcs; no Portal code reads them."
+      ],
+      "verification": "one live assembly-order transaction; the column's meaning on other assembly orders is not separately verified, and the role says nothing about the value being present, current or correct."
+    },
+    {
+      "id": "public-order-entry-item-assembly-qtyplan-c-planned",
+      "relation": "public.order_entry_item_assembly",
+      "column": "qtyplan_c",
+      "role": "planned",
+      "meaning": "Planned quantity on the AO link to a sales order line (it can be 0.0 on a link, in which case the planned figure is on the AO item). An FM link-table calculation that no Portal code reads (docs/reference/portal-code-map.md section 4.8); finished-good quantities come from the AO, not from this column.",
+      "evidence": [
+        "EVIDENCE/live/2026-09-30-ao-26005b-live-trace.json (live read of the Portal reporting API, 2026-09-30): link 1245 records qtyplan_c 0.0 next to qtymfg_c 1503.0.",
+        "docs/reference/portal-code-map.md section 4.8 (Portal staging, read 2026-09-30): order_entry_item_assembly.qtyplan(_c), qtymfg(_c) are FM link-table calcs; no Portal code reads them."
+      ],
+      "verification": "one live assembly-order transaction; the column's meaning on other assembly orders is not separately verified, and the role says nothing about the value being present, current or correct."
+    },
+    {
+      "id": "public-order-entry-item-qty-ordered",
+      "relation": "public.order_entry_item",
+      "column": "qty",
+      "role": "ordered",
+      "meaning": "Quantity ordered on one sales order line.",
+      "evidence": [
+        "EVIDENCE/live/2026-09-30-ao-26005b-live-trace.json (live read of the Portal reporting API, 2026-09-30): order line 1140 of sales order 351 (OR1000151885) orders 1,920."
+      ],
+      "verification": "one live assembly-order transaction; the column's meaning on other assembly orders is not separately verified, and the role says nothing about the value being present, current or correct."
+    },
+    {
+      "id": "silver-assembly-order-damage-qty-damaged-damaged",
+      "relation": "silver.assembly_order_damage",
+      "column": "qty_damaged",
+      "role": "damaged",
+      "meaning": "Quantity recorded as damaged on one AO damage row, in the unit of the component the row names (assembly_item_id): component-level damage, not finished-good units. Rows of different components are different units and are never summed into one 'pack' total.",
+      "evidence": [
+        "EVIDENCE/live/2026-09-30-ao-26005b-live-trace.json (live read of the Portal reporting API, 2026-09-30): damage rows 5444-5446 of AO 10718 record qty_damaged 20.0 (item 58386, box), 3.0 (item 58383, jug) and 7.0 (item 58384, cap), all damage_type Pack.",
+        "docs/reference/portal-code-map.md section 4.8 (Portal staging, read 2026-09-30): assembly_order_damage.qty_damaged is component-level damage; finished-good damage is app_manufacturing_order.qty_damaged."
+      ],
+      "verification": "one live assembly-order transaction; the column's meaning on other assembly orders is not separately verified, and the role says nothing about the value being present, current or correct."
+    },
+    {
+      "id": "public-app-manufacturing-order-quantity-planned",
+      "relation": "public.app_manufacturing_order",
+      "column": "quantity",
+      "role": "planned",
+      "meaning": "The manufacturing order's header quantity to make (FM qtytotal via silver.manufacturing_orders.quantity), set before any production happens; a planned figure, never a produced, filled or accepted count. Its unit is the row's uom (the ETL defaults it to kg), so no unit is pinned.",
+      "evidence": [
+        "plx-customer-portal portal/src/app/mrp/assembly/assembly-queries.ts@8da33e4 lines 444-451: qtytotal is the 'header-level quantity-to-make, used by silver as m.quantity — populated even on Allocated/Committed AOs before any production happens', ranked below the produced (totalprodqty_c) and accepted (qtyacc_c) quantities.",
+        "plx-customer-portal portal/scripts/etl-silver-to-gold.ts@8da33e4 etlManufacturingOrders (lines 674-735): app_manufacturing_order.quantity is copied from silver.manufacturing_orders.quantity, uom defaults to kg.",
+        "docs/reference/cases-and-artifacts.md section 3.4: the verified assembly order's planned 1,509 is the printed estimate."
+      ],
+      "verification": "one live assembly-order transaction for the value; the role rests on Portal source inspection at 8da33e4. The role says nothing about the value being present, current or correct."
+    },
+    {
+      "id": "public-app-manufacturing-order-size-pieces-planned",
+      "relation": "public.app_manufacturing_order",
+      "column": "size_pieces",
+      "role": "planned",
+      "meaning": "Planned production quantity in pieces (FM sizepieces); a change cascades the planned component quantities (qty_c = qty_per_batch x size_pieces). Never a produced, filled or accepted count.",
+      "evidence": [
+        "plx-customer-portal portal/src/app/mrp/assembly/assembly-queries.ts@8da33e4 line 448: 'sizepieces (planned production qty)'.",
+        "plx-customer-portal portal/src/lib/api-schemas/assembly.ts@8da33e4 lines 252 and 286-288: size_pieces change cascades qty_c = qtybatch x size_pieces on every assembly_order_item (the planned component quantity, contract silver-assembly-order-items-quantity-planned).",
+        "plx-customer-portal portal/scripts/etl-silver-to-gold.ts@8da33e4 lines 683 and 733: app_manufacturing_order.size_pieces is copied from silver.manufacturing_orders.size_pieces."
+      ],
+      "verification": "one live assembly-order transaction for the value; the role rests on Portal source inspection at 8da33e4. The role says nothing about the value being present, current or correct."
+    },
+    {
+      "id": "public-app-manufacturing-order-qty-damaged-damaged",
+      "relation": "public.app_manufacturing_order",
+      "column": "qty_damaged",
+      "role": "damaged",
+      "meaning": "Finished-good units damaged or rejected on the manufacturing order (not component damage, which is silver.assembly_order_damage).",
+      "evidence": [
+        "plx-customer-portal portal/prisma/schema.prisma@8da33e4 lines 2534-2535: qtyDamaged @map(\"qty_damaged\") '/** FG units damaged/rejected. Unit cost denominator is good qty = produced − this. */'."
+      ],
+      "verification": "one live assembly-order transaction for the value; the role rests on Portal source inspection at 8da33e4. The role says nothing about the value being present, current or correct."
+    },
+    {
+      "id": "silver-production-tasks-qty-filled-on-filling",
+      "relation": "silver.production_tasks",
+      "column": "qty",
+      "role": "filled",
+      "when": {
+        "column": "task_type",
+        "equals": "Filling"
+      },
+      "meaning": "On a Filling task row, the quantity filled on the line in that task. Other task types (Setup, Line clearance, ...) record other quantities in the same column and get no role from this contract.",
+      "evidence": [
+        "plx-customer-portal portal/src/app/mrp/assembly/assembly-queries.ts@8da33e4 lines 1117-1180: silver.production_tasks (= FM public.production) rows of category 'AO' are the assembly-line tasks (Setup, Line clearance, Filling, ...) of the AO (mo_id = AO id), each with task_type, qty and uom.",
+        "EVIDENCE/live/2026-09-30-ao-26005b-live-trace.json: Filling task 14355 of AO 10718 records qty 1502, which the paper packet's filled count (1502, labels used 1502) agrees with (docs/reference/cases-and-artifacts.md section 3.4)."
+      ],
+      "verification": "one live assembly-order transaction; the condition is the row's task_type text exactly 'Filling'. The role says nothing about the value being present, current or correct."
+    }
+  ]
+}

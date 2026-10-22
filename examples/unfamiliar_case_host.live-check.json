@@ -1,0 +1,36 @@
+{
+ "schema": "plx-host-config/v1",
+ "note": "Host config of the case.unfamiliar_order live check (verify/live-checks/case.unfamiliar_order.json): one capture cycle of the sales- and purchase-order Portal relations through the source mirror and of the BC sales invoices and customer cards of every pinned company, so a join pick (pick=SalesInvoice>SalesOrder) can root a case in one system from an identifier the other carries (a customer PO only within the invoice's customer: SalesInvoice.billed_to reaches the BC customer card; a shipment code through the Portal shipment to its order: public.app_shipment). Configuration, never a grant: the audiences decide what the capture principal may read.",
+ "tenant": "plx",
+ "capture_audience": "unfamiliar_case_live_audience.live-check.json",
+ "live_audience": "unfamiliar_case_live_audience.live-check.json",
+ "mirror_audience": "unfamiliar_case_audience.example.json",
+ "portal": {
+  "relations": [
+   "public.app_sales_order",
+   "public.app_sales_order_line",
+   "public.app_customer",
+   "public.app_shipment",
+   "public.order_entry",
+   "public.order_entry_item",
+   "public.order_entry_item_assembly",
+   "public.assembly_order",
+   "public.app_purchase_order",
+   "public.app_purchase_order_line",
+   "public.app_supplier",
+   "public.app_receipt",
+   "public.generated_purchase_order",
+   "public.generated_purchase_order_item",
+   "public.receipt_packaging",
+   "public.receipt_raw_material"
+  ],
+  "budget_seconds": 900
+ },
+ "bc": {
+  "entity_sets": [
+   "salesInvoices",
+   "customers"
+  ],
+  "budget_seconds": 600
+ }
+}

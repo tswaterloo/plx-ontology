@@ -1,0 +1,47 @@
+# Runtime state, caches and dependencies (never versioned)
+__pycache__/
+*.py[co]
+.pytest_cache/
+.mypy_cache/
+node_modules/
+venv/
+.venv/
+env/
+*.egg-info/
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.wal
+*.shm
+state/
+outputs/
+.DS_Store
+
+# Secrets and private runtime configuration
+.env
+.env.*
+*.pem
+*.key
+secrets/
+.plx-private/
+
+# Customer originals stay outside the repository; fixtures are explicit exceptions
+*.pdf
+!integrations/tests/fixtures/*.pdf
+
+# Local Claude session settings (project .claude/agents and settings.json are versioned)
+.claude/settings.local.json
+
+# Local tooling and run output (2026-10-04 audit)
+/*.log
+.coverage
+htmlcov/
+.ruff_cache/
+.claude/worktrees/
+*.pfx
+*.p12
+id_rsa*
+/credentials*.json
+/token*.json
+/secrets.json

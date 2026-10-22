@@ -1,0 +1,79 @@
+{
+  "tool": "plx.schema",
+  "examples": [
+    {
+      "name": "one type",
+      "input": {
+        "object_type": "SalesOrder"
+      },
+      "output": {
+        "schema_digest": "df0ad6e43880f09c90ebf95f19110178aba6890df0010ebda7485029e2b543b4",
+        "object_types": [
+          {
+            "id": "SalesOrder",
+            "availability": "served",
+            "properties": [
+              {
+                "name": "total_amount",
+                "value_type": "money",
+                "markings": [
+                  "finance"
+                ]
+              },
+              {
+                "name": "ordered_quantity",
+                "value_type": "quantity",
+                "unit": "each",
+                "quantity_role": "ordered",
+                "availability": "degraded"
+              }
+            ]
+          }
+        ],
+        "link_types": [
+          {
+            "id": "SalesOrder.ordered_by",
+            "from": "SalesOrder",
+            "to": "Customer",
+            "cardinality": "N:1",
+            "tier_ceiling": "verified"
+          }
+        ],
+        "event_types": [
+          {
+            "id": "SalesOrder.required",
+            "object_type": "SalesOrder",
+            "time_basis": "planned"
+          }
+        ],
+        "action_types": [
+          {
+            "id": "SetCustomerPO",
+            "target": "SalesOrder",
+            "executor": "human_in_owner_system"
+          }
+        ],
+        "completeness": {
+          "complete": true,
+          "truncated": false,
+          "returned": 1,
+          "total": 1,
+          "next_cursor": null
+        },
+        "meta": {
+          "schema_digest": "df0ad6e43880f09c90ebf95f19110178aba6890df0010ebda7485029e2b543b4",
+          "as_known_at": "2099-01-02T03:04:05Z",
+          "freshness": [
+            {
+              "source": "portal_api",
+              "captured_at": "2099-01-02T03:00:00Z",
+              "lag_seconds": 245,
+              "completeness": "complete",
+              "stale": false
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

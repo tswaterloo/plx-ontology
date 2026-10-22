@@ -1,0 +1,24 @@
+{
+ "schema": "plx-ingest-sources/v1",
+ "tenant": "plx",
+ "note": "Scope of operating.ingestion units still read by operating.use_case_intake (verify/live-checks/ingest.use_cases.json, unit sp.plxcustomers.agents-use-cases); the host.cycles check (examples/host.live-check.json) replaced ingest.live_sources and ingest.worker_cycles. Read-only sources only: two Portal relations through the source mirror, one allowlisted shared operational inbox (ACCESS-DELTA L54, ING-13), Ricardo's QCQA '2026 - AOs' folder (docs/reference/cases-and-artifacts.md 3.1), the PLXCUSTOMERS drive root, the PLXCUSTOMERS '/AGENTS/Ontology UseCases' folder and BC purchaseOrders of every company. Caps are deliberate: a capped source is reported incomplete, never complete.",
+ "actor": {"principals": ["svc:ingest", "staff:operations"], "clearance": "restricted"},
+ "sources": [
+  {"id": "portal.assembly-order", "kind": "portal_relation", "relation": "public.assembly_order"},
+  {"id": "portal.app-sales-order", "kind": "portal_relation", "relation": "public.app_sales_order"},
+  {"id": "mail.purchase-order.inbox", "kind": "mail_folder", "mailbox": "purchase-order@petrasoap.com",
+   "folder": "inbox", "initial_window_days": 7, "overlap_seconds": 900,
+   "page_size": 50, "max_pages": 10, "max_items": 500},
+  {"id": "sp.qcqa.aos-2026", "kind": "sharepoint_folder",
+   "drive_id": "b!ubhBC91PLkOOCpyUeCUJMLOi0jT3ADZHi0QxVdjuwxvq6wHrgPmdQqNrzbAMxVqk",
+   "path": "/AOs/2026 - AOs", "recursive": true, "max_depth": 3, "max_folders_per_run": 20},
+  {"id": "sp.plxcustomers.root", "kind": "sharepoint_folder", "drive_id": "${SHAREPOINT_DRIVE_ID}",
+   "path": "/", "recursive": false},
+  {"id": "sp.plxcustomers.agents-use-cases", "kind": "sharepoint_folder",
+   "site": "AGENTS", "path": "/Ontology UseCases",
+   "recursive": true, "max_depth": 4, "max_folders_per_run": 50,
+   "note": "Vince's delivered use cases (historical cases with known outcomes, process maps, employee questions, desired agent actions, locations, permissions). Read-only; the AGENTS site's default document library, resolved by site name at run time on the SHAREPOINT_SITE_ID host, never by a drive id or sharing link. New/changed files are taken in by operating.use_case_intake."},
+  {"id": "bc.purchase-orders", "kind": "bc_entity_set", "entity_set": "purchaseOrders",
+   "companies": "all", "page_size": 500, "max_pages": 10, "max_items": 5000}
+ ]
+}

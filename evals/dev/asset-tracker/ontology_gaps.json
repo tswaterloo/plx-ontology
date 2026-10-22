@@ -1,0 +1,228 @@
+{
+ "format": "plx-case-ontology-gaps/v1",
+ "case": "stephen-assets",
+ "status": "What the ontology lacks to answer evals/dev/asset-tracker/proposed_items.json. Sources are named, never read here; 'source unknown' carries the question that would find one.",
+ "advisory": "advisory:0abdc81c06d0",
+ "gaps": [
+  {
+   "id": "AT-GAP-01",
+   "kind": "object",
+   "name": "Asset (a tracked machine with tag, line, Fiix id and purchase lineage)",
+   "ontology_today": "No curated Asset type; only the generated not_served types RelPublicAppEquipment and RelPublicAppEquipmentAsset.",
+   "needed_by": [
+    "AT-02",
+    "AT-08",
+    "AT-09",
+    "AT-12"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "public.app_equipment_asset",
+     "ref": "plx-customer-portal:scripts/migrations/20260731_create_app_equipment_asset.sql@71f7214acdc9:37-52"
+    },
+    {
+     "system": "portal",
+     "relation": "public.app_equipment",
+     "ref": "plx-customer-portal:portal/prisma/schema.prisma@71f7214acdc9:4717-4763"
+    },
+    {
+     "system": "sharepoint",
+     "relation": "tracker workbook",
+     "ref": "OntologyProject:examples/case_originals.json@77f57dc39341 co-14f12ea167ed"
+    }
+   ]
+  },
+  {
+   "id": "AT-GAP-02",
+   "kind": "reader",
+   "name": "Portal equipment relations through the reporting API",
+   "ontology_today": "public.app_equipment, public.app_equipment_asset and public.app_maintenance_work_order are not approved relations, so no record is readable.",
+   "needed_by": [
+    "AT-08",
+    "AT-09",
+    "AT-12"
+   ],
+   "sources": [
+    {
+     "system": "portal-reporting-api",
+     "relation": "allowlist (absent entries)",
+     "ref": "plx-customer-portal:services/workbench-api/manifest/allowlist.json@71f7214acdc9"
+    },
+    {
+     "system": "workbench",
+     "relation": "generated not_served types",
+     "ref": "OntologyProject:ontology/schema/generated/portal_not_served_a_e.json@77f57dc39341"
+    }
+   ]
+  },
+  {
+   "id": "AT-GAP-03",
+   "kind": "reader",
+   "name": "Fiix MACMMS asset register",
+   "ontology_today": "No Fiix reader; the only Fiix key the Workbench could see is app_equipment_asset.fiix_asset_id, which is not served.",
+   "needed_by": [
+    "AT-08",
+    "AT-09"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "public.app_equipment_asset.fiix_asset_id",
+     "ref": "plx-customer-portal:scripts/migrations/20260917180000_equipment_asset_fiix.sql@71f7214acdc9:21"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Does PLX have read-only API access to Fiix (petra-hygienic.macmms.com) for its asset list, and is the asset register owned by the tracker workbook or by Fiix?"
+  },
+  {
+   "id": "AT-GAP-04",
+   "kind": "reader",
+   "name": "Tracker workbook at the submission-date revision",
+   "ontology_today": "The current revision is pinned but its body read is not proven; the submission-date revision is unfetched (gap-c6eac8f2325d).",
+   "needed_by": [
+    "AT-02",
+    "AT-03",
+    "AT-07",
+    "AT-08"
+   ],
+   "sources": [
+    {
+     "system": "sharepoint",
+     "relation": "Operations site, CM Operations Files, version history",
+     "ref": "OntologyProject:examples/case_originals.json@77f57dc39341 co-14f12ea167ed, co-b24bd7f7afb9"
+    }
+   ]
+  },
+  {
+   "id": "AT-GAP-05",
+   "kind": "object",
+   "name": "CapitalizationDecision and its approver (the CFO)",
+   "ontology_today": "No decision object; MCApproval and the not_served RelPublicAppApprovalRecord are generic and carry no capital/expense type.",
+   "needed_by": [
+    "AT-05",
+    "AT-06"
+   ],
+   "source": "source unknown",
+   "open_question": "Where does the CFO record a capitalize-versus-expense decision for an equipment purchase (Sage, BC, mail, the tracker or elsewhere), who is the CFO contact, and what threshold applies?"
+  },
+  {
+   "id": "AT-GAP-06",
+   "kind": "object",
+   "name": "PurchaserClassification (new / replacement / repair) and its classifier",
+   "ontology_today": "No such attribute or object; no classification field found on the Portal PurchaseOrder or PurchaseRequisition models.",
+   "needed_by": [
+    "AT-04",
+    "AT-06"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "PurchaseOrder / PurchaseRequisition (no such field)",
+     "ref": "plx-customer-portal:portal/prisma/schema.prisma@71f7214acdc9:3564-3617"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Where does the purchaser record new, replacement or repair for an equipment purchase: a tracker column, the PO or requisition, or mail?"
+  },
+  {
+   "id": "AT-GAP-07",
+   "kind": "link",
+   "name": "Asset to Purchase lineage (asset -> PO / receipt / purchase invoice)",
+   "ontology_today": "Purchase objects exist (Sage PO relations served, BC purchase invoices, Portal POs) but no link to an asset; the brief reports no invoice or Sage key in the tracker.",
+   "needed_by": [
+    "AT-03",
+    "AT-07",
+    "AT-12"
+   ],
+   "sources": [
+    {
+     "system": "portal-reporting-api",
+     "relation": "sage.po_header, sage.po_detail, sage.po_receipt_header",
+     "ref": "plx-customer-portal:services/workbench-api/manifest/allowlist.json@71f7214acdc9:2891,3008,3313"
+    },
+    {
+     "system": "business-central",
+     "relation": "purchaseInvoices, purchaseInvoiceLines",
+     "ref": "OntologyProject:integrations/live_source_grammar.py@77f57dc39341:72-84"
+    },
+    {
+     "system": "portal-reporting-api",
+     "relation": "public.app_purchase_order",
+     "ref": "plx-customer-portal:services/workbench-api/manifest/allowlist.json@71f7214acdc9:522"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Which key, if any, ties a tracker asset to its Sage PO or invoice or its BC purchase invoice (asset tag on the PO line, invoice number in the tracker, something else)?"
+  },
+  {
+   "id": "AT-GAP-08",
+   "kind": "reader",
+   "name": "Sage AP invoice and G/L coding",
+   "ontology_today": "The reporting API serves Sage PO and order relations but no AP or G/L relation, so vendor-versus-invoice coding is unreadable.",
+   "needed_by": [
+    "AT-11"
+   ],
+   "source": "source unknown",
+   "open_question": "Which Sage AP or G/L tables hold the coding of equipment invoices, and can the reporting API serve them read-only?"
+  },
+  {
+   "id": "AT-GAP-09",
+   "kind": "link",
+   "name": "Asset to production line",
+   "ontology_today": "No line object link; line data sits in not_served Portal columns.",
+   "needed_by": [
+    "AT-09"
+   ],
+   "sources": [
+    {
+     "system": "portal",
+     "relation": "public.app_equipment_asset.line_number, line_label",
+     "ref": "plx-customer-portal:scripts/migrations/20260731_create_app_equipment_asset.sql@71f7214acdc9:44-45"
+    },
+    {
+     "system": "portal",
+     "relation": "public.app_work_center_equipment",
+     "ref": "plx-customer-portal:portal/prisma/schema.prisma@71f7214acdc9:7049-7064"
+    }
+   ]
+  },
+  {
+   "id": "AT-GAP-10",
+   "kind": "link",
+   "name": "Purchase as grant Cost Line (funder-claim edge)",
+   "ontology_today": "No grant, Cost Line or funder-claim object or link.",
+   "needed_by": [
+    "AT-10"
+   ],
+   "sources": [
+    {
+     "system": "sharepoint",
+     "relation": "Grants Program brief",
+     "ref": "OntologyProject:examples/case_originals.json@77f57dc39341 co-81d7ee151c6e"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Where are grant claims and their cost lines recorded (funder portal exports, a workbook, Sage), and which purchase key do they carry?"
+  },
+  {
+   "id": "AT-GAP-11",
+   "kind": "reader",
+   "name": "Business Central fixed assets",
+   "ontology_today": "The GET-only BC grammar names no fixed-asset entity set.",
+   "needed_by": [
+    "AT-05",
+    "AT-12"
+   ],
+   "sources": [
+    {
+     "system": "business-central",
+     "relation": "BC_ENTITY_SETS (no fixed assets)",
+     "ref": "OntologyProject:integrations/live_source_grammar.py@77f57dc39341:72-84"
+    }
+   ],
+   "source": "source unknown",
+   "open_question": "Does PLX use Business Central Fixed Assets (or plan to) for capitalized equipment, and in which of the three companies?"
+  }
+ ]
+}

@@ -1,0 +1,88 @@
+{
+ "id": "case.packaging_landed_cost",
+ "description": "Landed cost end to end (LOG-01/05/06/10): the packaging purchase order PO5447, whose Portal lines are $0.000, opened the way every case opens over a host cycle (scripts/eval_packaging_oracle_check.py landed-cost: operating.host captures the purchase-order Portal relations and the AGENTS site's '/Ontology UseCases' containers, GET only; operating.case_workspace_live opens petra_po=PO5447 offline), then plx.investigate landed_cost on the case's root as staff:operations together with the check's own verifier principal svc:landed-cost-verifier, the one principal the check's host config grants the finance marking (marking_grants; no employee principal holds it, docs/decisions/2026-10-18-landed-cost-host-money-and-page-size.md), so the cited money is read without widening any employee's access, every page, graded by the independent oracle evals/oracle/landed_cost.py against the pinned rows of examples/case_originals.json: the proforma invoice member co-707cc1b0ead2 and the forwarder quote members co-fce402cf438c (40HQ, destination charges) and co-b748fae544b6 (air, all-in) of the use-case zip co-8fabde0ade07. Every cited supplier-confirmation and quote value must resolve, as that reader, to bytes whose SHA-256 is a pinned row (the member re-read from the container's captured bytes, never the digest the citation states); each quote's assessment must carry a scope or exclusion code; the goods must equal one confirmed amount, or be unknown with a PI_VERSION_UNRESOLVED conflict listing every differing amount (never a picked version), or unknown for a typed engine reason the goods entry names (e.g. confirmation_currency_differs: the check is blocked on that code and oracle_check.missing names the value a person must supply); the total must be unknown while the duty-source gap stands. Any other answer fails (oracle_check.reasons). A pinned quote or proforma invoice no answer entry cites is the typed case.missing code quote_not_linked_to_po (a person must link the forwarder quote to the purchase order it prices) or pi_not_linked_to_po (a person must link the proforma invoice to the purchase order it confirms): the command exits 0 and the check is blocked (blocked_when) with cause source_gap, never a pass; oracle_check.missing names each pin and the value it needs.",
+ "source": "portal-workbench-api+microsoft-graph",
+ "cadence": "daily",
+ "requires": [
+  "portal.health_catalog"
+ ],
+ "command": [
+  "python3",
+  "-m",
+  "scripts.eval_packaging_oracle_check",
+  "landed-cost",
+  "--state-dir",
+  "{tmp}/state",
+  "--host-config",
+  "examples/packaging_landed_cost_host.live-check.json",
+  "--principal",
+  "staff:operations",
+  "--principal",
+  "svc:landed-cost-verifier",
+  "--po",
+  "PO5447",
+  "--registry",
+  "examples/case_originals.json",
+  "--proforma",
+  "co-707cc1b0ead2",
+  "--quote",
+  "co-fce402cf438c",
+  "--quote",
+  "co-b748fae544b6"
+ ],
+ "timeout_seconds": 3600,
+ "requires_env": [
+  "PLX_WORKBENCH_API_URL",
+  "PLX_WORKBENCH_API_KEY",
+  "MICROSOFT_GRAPH_TENANT_ID",
+  "MICROSOFT_GRAPH_CLIENT_ID",
+  "MICROSOFT_GRAPH_CLIENT_SECRET",
+  "SHAREPOINT_SITE_ID"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "case.root_type",
+   "case.entries",
+   "oracle_check.status",
+   "oracle_check.quotes",
+   "oracle_check.goods"
+  ],
+  "json_equals": {
+   "case.ok": true,
+   "oracle_check.status": "agree",
+   "oracle_check.total_unknown": true
+  },
+  "json_min": {
+   "oracle_check.cited_pinned": 2
+  }
+ },
+ "blocked_when": "case.missing",
+ "blocked_cause": "source_gap",
+ "record": [
+  "case",
+  "case.missing",
+  "case.root_type",
+  "oracle_check",
+  "oracle_check.status",
+  "oracle_check.reasons",
+  "oracle_check.missing_codes",
+  "oracle_check.goods",
+  "capture",
+  "blocked_upstream"
+ ],
+ "record_keys": [
+  "case",
+  "oracle_check",
+  "capture"
+ ],
+ "record_enums": [
+  "case.missing",
+  "case.root_type",
+  "oracle_check.status",
+  "oracle_check.reasons",
+  "oracle_check.missing_codes",
+  "oracle_check.goods"
+ ],
+ "notes": "Live-unverified until the live check runs it. Module test is injected-transport: verify/tests/test_live_verify_landed_cost.py runs this spec's own command in-process over a FakeWorkbench (the packaging fixture, lines at $0.000) and an injected Graph transport serving a SYNTHETIC zip in the AGENTS '/Ontology UseCases' folder with a synthetic registry pinning its members, then replays the report through verify live_verify run_spec: pass; fail when a cited member's bytes differ from its pin; blocked (quote_not_linked_to_po) when a quote names no purchase order."
+}

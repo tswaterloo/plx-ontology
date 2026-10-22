@@ -1,0 +1,111 @@
+{
+ "id": "schema.portal_queryable",
+ "description": "Every Portal reporting-API relation the compiled ontology schema binds is evaluated on live rows, each relation on its own: one GET-only keyset page (up to 100 rows) of each, projected into a throwaway store under the committed schema, every binding read back through plx.find and plx.object as a principal granted every audience and marking (scripts/source_registry.probe_binding, the fixture_queryable probe, here on live rows), and a principal granted nothing gets no candidate. Pass = the run is complete (complete_when), the queryable share (queryable over bound relations: read_empty, unsampled, unavailable, unreached and failing ones all count against it) reaches the floor, declared only here as expect.json_min.queryable_share and read by the probe (recorded as queryable_floor; json_min names the share when it falls short), and no candidate leaked. A relation that fails (a read error, rows that break the projection on their own, a binding that does not read back) is named under not_queryable (ids only) with its code counted under not_queryable_codes, and costs only its share; the others are still evaluated and named. Served relations whose page was empty are named under read_empty: bound but unexercised, never queryable (re-read daily; they flip when rows appear). One total deadline (--budget-seconds) bounds the run; relations it did not reach are counted (unreached_count), never named, and the run is complete only when none is unreached, none unavailable and none unsampled; an incomplete run fails (ok false), its counts recorded. Bound relations the live catalog lists but does not serve (marked unavailable or unpaged there) are named under unavailable and reported as blocked_upstream parts (cause relation_unavailable, the catalog's reason; later_ask portal-sage-regrant for the sage ones, and sage.ar_ship_to and sage.oe_shipment_header under later_ask q3-portal-allowlist-expansion): a run whose only shortfall is those relations (served_ok true: everything else complete, the queryable share over the relations served at the floor, no leak; the recorded share still counts them against it) is recorded blocked with their names, never pass; any other shortfall beside them fails, a bound relation absent from the catalog included (not_queryable code catalog_absent: catalog drift). Names are grouped by schema; the result never holds a row value. live-unverified until the live check records a result.",
+ "source": "portal-workbench-api",
+ "tier": "projected",
+ "cadence": "daily",
+ "requires": [
+  "portal.health_catalog"
+ ],
+ "command": [
+  "python3",
+  "-m",
+  "scripts.live_read_probes",
+  "schema-queryable",
+  "--rows",
+  "100",
+  "--budget-seconds",
+  "4800"
+ ],
+ "timeout_seconds": 5400,
+ "requires_env": [
+  "PLX_WORKBENCH_API_URL",
+  "PLX_WORKBENCH_API_KEY"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "bound_relation_count",
+   "named_relation_count",
+   "not_queryable",
+   "read_empty",
+   "queryable",
+   "bindings_probed"
+  ],
+  "json_equals": {
+   "ok": true,
+   "denied_leaks": 0
+  },
+  "json_min": {
+   "queryable_share": 0.9,
+   "bindings_probed": 1
+  }
+ },
+ "expect_blocked": {
+  "exit_code": 0,
+  "json_fields": [
+   "bound_relation_count",
+   "named_relation_count",
+   "not_queryable",
+   "read_empty",
+   "queryable",
+   "unavailable",
+   "blocked_upstream",
+   "bindings_probed"
+  ],
+  "json_equals": {
+   "served_ok": true,
+   "denied_leaks": 0
+  },
+  "json_min": {
+   "bindings_probed": 1
+  }
+ },
+ "complete_when": {
+  "unavailable_count": 0,
+  "unsampled_count": 0,
+  "unreached_count": 0
+ },
+ "record": [
+  "bound_relation_count",
+  "named_relation_count",
+  "not_queryable_codes",
+  "unreached_count",
+  "unsampled_count",
+  "not_queryable_count",
+  "unavailable_count",
+  "read_empty_count",
+  "queryable_count",
+  "queryable_share",
+  "queryable_floor",
+  "served_ok",
+  "bindings_probed",
+  "denied_leaks",
+  "rows_per_relation",
+  "budget_seconds",
+  "not_queryable",
+  "unavailable",
+  "read_empty",
+  "queryable"
+ ],
+ "record_enums": [
+  "queryable",
+  "read_empty",
+  "not_queryable",
+  "not_queryable_codes",
+  "unavailable"
+ ],
+ "registry_names": {
+  "pass": [
+   "queryable"
+  ],
+  "fail": [
+   "not_queryable",
+   "unavailable"
+  ],
+  "unexercised": [
+   "read_empty"
+  ]
+ },
+ "notes": "Closes the registry's no_live_check for the Portal relations, Prisma models and routes it names, per relation (registry_names: scripts/source_registry.py LiveIndex credits only names under queryable, and only when the check passed; a not_queryable or unavailable name is live_not_passing (an unavailable relation is bound and named, so it is never no_live_check:), a read_empty name live_unexercised; a Portal table may appear by its bare name). Every name list (queryable, not_queryable, unavailable, read_empty) is asserted present in expect and expect_blocked (the probe always records each, {} when empty), so the runner's detail cap (verify/live_verify.py _cap) keeps all four first, smallest first; the rest is kept in record order where it fits, the counts no list carries first (not_queryable_codes, then unreached_count and unsampled_count: those relations are never named), then the ones a list already carries, which the cap drops first (the daily of 2026-10-21, blocked by 6 unavailable relations beside 10 catalog_absent and 7 empty ones, recorded 3,936 characters and the cap dropped read_empty, so its relations, the Prisma models and the two MRP routes on them read no_live_check; a failing record is longest, with the blocked parts, unverified and failures beside the lists); not_queryable holds ids only (codes are counted under not_queryable_codes), so every bound relation's name fits the cap even when all 104 of the manifest at Portal 52c9116 fail (the largest group, public_app, holds 31 of the 50 a group may hold) (docs/decisions/2026-10-07-portal-queryable-floor.md). Daily cadence: the worst case is the catalog read plus 104 relations x a 40 s read (the client's timeout), 4,200 s, inside the 4,800 s budget (room for 14 more relations); timeout_seconds 5,400 covers the budget, one read in flight at the deadline (40 s), the probe's 300 s grace (scripts/live_read_probes.py QUERYABLE_GRACE_SECONDS) and start-up; a slower run's unreached relations leave it incomplete, never pass. Groups hold at most 50 names (verify/live_verify.py MAX_ITEMS). Module test: tests/test_schema_queryable_probe.py runs this spec's probe over an injected client serving schema-generated rows (ontology/generator/fixture.py) and feeds the recorded detail to the source registry; injected-transport, never live."
+}

@@ -1,0 +1,6 @@
+{
+  "schema": "plx-people-exclusion/v1",
+  "note": "Entra object IDs of the people whose mailboxes, chats, sent messages and OneDrives are never read, stored or indexed (later_ask excluded-people-oids). Never commit IDs here: set PLX_EXCLUDED_PEOPLE_OIDS in the environment or point PLX_EXCLUDED_PEOPLE_FILE at a file of this shape outside the git tree. With no IDs the guard fails closed.",
+  "env": ["PLX_EXCLUDED_PEOPLE_OIDS", "PLX_EXCLUDED_PEOPLE_FILE"],
+  "object_ids": []
+}

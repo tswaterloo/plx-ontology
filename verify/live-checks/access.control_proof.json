@@ -1,0 +1,91 @@
+{
+ "id": "access.control_proof",
+ "description": "A6 Permissions: three requests are refused with a typed reason and an excluded person's data is served to nobody, read from the host's own captures (python3 -m scripts.access_control_proof; offline, no client, no live reader, nothing written to the host's state). Every active user of the Portal access snapshot (plx-portal-access-snapshot/v1, the in-repo role model) of the employee policy's tenant is a reader (at most 60); each asks, through CaseRuntime.resolve_citation, the item gate and the claim gate's row reader, for up to 10 stored records of each kind: another person's captured mail (mail_other), Teams content of a conversation they are not a member of (teams_other), a finance-only SharePoint file without finance clearance (finance_non_finance), any record of an excluded person (excluded_person), and mail whose sender the check cannot resolve to an object id offline (no captured mailbox records the address) in a tenant domain, or that is no address (sender_unresolved: it may be an excluded colleague's, so it is served to nobody; senders_unresolved counts them). Pass = at least one request of each of the three kinds, every request refused with a typed reason (untyped 0; a code shaped like an object id is untyped), denied_leaks 0 across every consumer and excluded_held 0 (no stored record of a person in PLX_EXCLUDED_PEOPLE_OIDS / PLX_EXCLUDED_PEOPLE_FILE). Readers the check's own oracle admits are controls (controls_served shows the guards are not refusing everything). Blocked with a typed blocked_reason while the host has no config, state, exclusion list or Portal snapshot (portal_role_tables_unshared, cause later_ask) or a capture holds no request of a kind (<kind>_requests_absent). Counts and reason codes only; no object id, e-mail, handle or tenant id is in the output.",
+ "source": "host-captures",
+ "cadence": "daily",
+ "tier": "employee_usable",
+ "command": [
+  "python3",
+  "-m",
+  "scripts.access_control_proof"
+ ],
+ "timeout_seconds": 60,
+ "optional_env": [
+  "PLX_WORKBENCH_HOST_CONFIG",
+  "PLX_WORKBENCH_STATE_DIR",
+  "PLX_EXCLUDED_PEOPLE_OIDS",
+  "PLX_EXCLUDED_PEOPLE_FILE"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "kinds",
+   "denied_leaks",
+   "untyped",
+   "excluded_held",
+   "senders_unresolved",
+   "readers",
+   "probes"
+  ],
+  "json_equals": {
+   "ok": true,
+   "denied_leaks": 0,
+   "untyped": 0,
+   "excluded_held": 0
+  },
+  "json_min": {
+   "kinds.mail_other.requests": 1,
+   "kinds.teams_other.requests": 1,
+   "kinds.finance_non_finance.requests": 1
+  }
+ },
+ "blocked_when": "blocked_reason",
+ "blocked_cause": "source_gap",
+ "blocked_causes": {
+  "portal_role_tables_unshared": "later_ask",
+  "excluded_people_oids_absent": "later_ask",
+  "host_config_invalid": "host_misconfiguration",
+  "host_inputs_invalid": "host_misconfiguration",
+  "excluded_people_oids_invalid": "host_misconfiguration",
+  "excluded_people_file_unreadable": "host_misconfiguration",
+  "excluded_people_file_in_git": "host_misconfiguration",
+  "excluded_people_unresolved": "host_misconfiguration",
+  "entra_directory_credentials_unavailable": "host_misconfiguration"
+ },
+ "record": [
+  "blocked_reason",
+  "evidence_label",
+  "denied_leaks",
+  "untyped",
+  "excluded_held",
+  "excluded_people",
+  "senders_unresolved",
+  "readers",
+  "probes",
+  "kinds.mail_other.requests",
+  "kinds.mail_other.refused",
+  "kinds.mail_other.controls_served",
+  "kinds.teams_other.requests",
+  "kinds.teams_other.refused",
+  "kinds.teams_other.controls_served",
+  "kinds.finance_non_finance.requests",
+  "kinds.finance_non_finance.refused",
+  "kinds.finance_non_finance.controls_served",
+  "kinds.excluded_person.requests",
+  "kinds.excluded_person.refused",
+  "kinds.sender_unresolved.requests",
+  "kinds.sender_unresolved.refused"
+ ],
+ "record_keys": [
+  "kinds.mail_other.reasons",
+  "kinds.teams_other.reasons",
+  "kinds.finance_non_finance.reasons",
+  "kinds.excluded_person.reasons",
+  "kinds.sender_unresolved.reasons"
+ ],
+ "record_enums": [
+  "blocked_reason",
+  "evidence_label"
+ ],
+ "notes": "Registered, live-unverified: no host run has produced this output; it reads blocked (later_ask portal-role-tables: the Portal role tables are not served by the read-only reporting API, docs/reference/permissions.md blocker 3, so a host needs a portal_access snapshot file) until the host config names a Portal access snapshot, an employee policy and a live audience, and the captures hold each request kind. Module tests: isolated-fixture and injected-transport (tests/test_access_control_proof.py captures mail, Teams and SharePoint through the GET-only client over fake Graph transports into a temporary state directory and checks the printed summary with live_verify.check_expectations). The finance kind needs the host's Entra directory (department) to clear a finance reader; without it every reader is refused and no control is served."
+}

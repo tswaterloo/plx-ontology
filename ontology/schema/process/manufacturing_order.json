@@ -1,0 +1,508 @@
+{
+ "$schema": "_process.schema.json",
+ "format": "plx-process-graph/v1",
+ "id": "manufacturing_order",
+ "description": "Make-to-order manufacturing from one assembly order (FM assembly_order = Portal manufacturing order, MRP-M-154): the sales order it serves, the AO itself, its bulk batch made and QC-released, the filling run on the shop floor, the AO realized, and the order shipped. Status sets mirror Portal's rail (order-lifecycle.ts MO_DONE / MO_IGNORE); the rest are FM's own vocabulary (Batch statusqc Released, production type Filling). Due dates come only from declared planned date columns: the AO's scheduled date for the filling run, the order's required date (Portal and FM; a disagreement is reported, never chosen) for shipment. Not stages: finished-goods QC release (FM assembly_order.statusqc is not served by the reporting API; the paper release sheet is the ao_packet process and its FM-vs-paper conflicts), and the pick list (app_pick_list not served). Shipment is the order's: an order line may be served by several AOs, so a shipped order does not prove this AO's units shipped.",
+ "root_type": "AssemblyOrder",
+ "tier_floor": "stored_by_text_join",
+ "stages": [
+  {
+   "id": "sales_order",
+   "label": "Sales order",
+   "optional": true,
+   "description": "The sales order whose line this AO serves (FM order_entry_item_assembly allocation, or the Portal MO's order line). Optional: a make-to-stock AO serves no order.",
+   "owner_role": "SALES",
+   "evidence": [
+    {
+     "object_type": "SalesOrder",
+     "paths": [
+      [
+       {
+        "link": "AssemblyOrderAllocation.allocates",
+        "direction": "reverse"
+       },
+       {
+        "link": "AssemblyOrderAllocation.for_order_line",
+        "direction": "forward"
+       },
+       {
+        "link": "SalesOrderLine.line_of",
+        "direction": "forward"
+       }
+      ],
+      [
+       {
+        "link": "AssemblyOrder.for_order_line",
+        "direction": "forward"
+       },
+       {
+        "link": "SalesOrderLine.line_of",
+        "direction": "forward"
+       }
+      ]
+     ],
+     "predicate": {
+      "kind": "exists"
+     },
+     "events": [
+      "SalesOrder.created",
+      "SalesOrder.ordered"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "assembly_order",
+   "label": "Assembly order",
+   "description": "The AO exists and is not cancelled (MO_IGNORE).",
+   "owner_role": "OPS",
+   "evidence": [
+    {
+     "object_type": "AssemblyOrder",
+     "paths": [
+      []
+     ],
+     "predicate": {
+      "kind": "exists",
+      "ignore": {
+       "property": "status",
+       "compare": "upper",
+       "values": [
+        "CANCELLED"
+       ]
+      }
+     },
+     "events": [
+      "AssemblyOrder.created",
+      "AssemblyOrder.scheduled",
+      "AssemblyOrder.portal_scheduled_start"
+     ],
+     "exclude_present": {
+      "property": "deleted_at",
+      "evidence": "plx-customer-portal:portal/src/lib/sales-order/load-order-lifecycle.ts@59b0548 manufacturingOrders where: { deletedAt: null }"
+     }
+    }
+   ]
+  },
+  {
+   "id": "bulk_batch",
+   "label": "Bulk batch made",
+   "description": "The bulk batch the AO fills from has a manufactured or realized date (FM batch datemfg_c / daterealized).",
+   "owner_role": "COMPOUND",
+   "requires": {
+    "*": [
+     "stage:assembly_order"
+    ]
+   },
+   "evidence": [
+    {
+     "object_type": "Batch",
+     "paths": [
+      [
+       {
+        "link": "AssemblyOrder.fills_from",
+        "direction": "forward"
+       }
+      ]
+     ],
+     "predicate": {
+      "kind": "event",
+      "event_types": [
+       "Batch.manufactured",
+       "Batch.realized"
+      ]
+     },
+     "events": [
+      "Batch.scheduled"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "bulk_qc_release",
+   "label": "Bulk QC release",
+   "description": "QC released the bulk batch (FM batch statusqc Released; On-Hold and Rejected are not released). Quality-controlled: a reader without that marking sees the stage withheld.",
+   "owner_role": "QC",
+   "requires": {
+    "*": [
+     "stage:bulk_batch"
+    ]
+   },
+   "evidence": [
+    {
+     "object_type": "Batch",
+     "paths": [
+      [
+       {
+        "link": "AssemblyOrder.fills_from",
+        "direction": "forward"
+       }
+      ]
+     ],
+     "predicate": {
+      "kind": "status",
+      "property": "quality_status",
+      "compare": "upper",
+      "done": [
+       "RELEASED"
+      ],
+      "quantifier": "any"
+     },
+     "events": [
+      "Batch.released",
+      "Batch.tested"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "filling",
+   "label": "Filling",
+   "description": "A Filling run is recorded on the shop floor for this AO (FM production rows of category AO; Setup, Line clearance and Cleaning rows are not filling).",
+   "owner_role": "PROD",
+   "evidence": [
+    {
+     "object_type": "ProductionTask",
+     "bindings": [
+      "portal.fm_production_ao"
+     ],
+     "paths": [
+      [
+       {
+        "link": "ProductionTask.task_of_order",
+        "direction": "reverse"
+       }
+      ]
+     ],
+     "predicate": {
+      "kind": "status",
+      "property": "task_type",
+      "compare": "upper",
+      "done": [
+       "FILLING"
+      ],
+      "quantifier": "any"
+     },
+     "events": [
+      "ProductionTask.started"
+     ]
+    }
+   ],
+   "due": {
+    "object_type": "AssemblyOrder",
+    "paths": [
+     []
+    ],
+    "event_types": [
+     "AssemblyOrder.scheduled",
+     "AssemblyOrder.portal_scheduled_start"
+    ],
+    "note": "The AO's planned start (FM datescheduled, Portal scheduled_start_date)."
+   }
+  },
+  {
+   "id": "assembly_realized",
+   "label": "AO realized",
+   "description": "The AO is done (MO_DONE: COMPLETED, REALIZED, CLOSED; FM Completed = Realized), as Portal's rail marks the manufacturing step done.",
+   "owner_role": "PROD",
+   "prerequisites": [
+    {
+     "process": "purchase_to_invoice",
+     "stage": "receipt",
+     "object_type": "PurchaseOrder",
+     "applies_from": "purchase_order",
+     "proves_dependency": false,
+     "paths": [
+      [
+       {
+        "link": "AssemblyOrderComponent.component_of",
+        "direction": "reverse"
+       },
+       {
+        "link": "AssemblyOrderComponent.uses_item",
+        "direction": "forward"
+       },
+       {
+        "link": "Product.same_record_as",
+        "direction": "reverse"
+       },
+       {
+        "link": "PurchaseOrderLine.for_item",
+        "direction": "reverse"
+       },
+       {
+        "link": "PurchaseOrderLine.line_of",
+        "direction": "forward"
+       }
+      ],
+      [
+       {
+        "link": "AssemblyOrderComponent.component_of",
+        "direction": "reverse"
+       },
+       {
+        "link": "AssemblyOrderComponent.uses_item",
+        "direction": "forward"
+       },
+       {
+        "link": "Product.same_record_as",
+        "direction": "reverse"
+       },
+       {
+        "link": "Product.same_record_as",
+        "direction": "forward"
+       },
+       {
+        "link": "PurchaseOrderLine.for_item",
+        "direction": "reverse"
+       },
+       {
+        "link": "PurchaseOrderLine.line_of",
+        "direction": "forward"
+       }
+      ],
+      [
+       {
+        "link": "AssemblyOrder.same_record_as",
+        "direction": "forward"
+       },
+       {
+        "link": "AssemblyOrderComponent.component_of",
+        "direction": "reverse"
+       },
+       {
+        "link": "AssemblyOrderComponent.uses_item",
+        "direction": "forward"
+       },
+       {
+        "link": "Product.same_record_as",
+        "direction": "reverse"
+       },
+       {
+        "link": "PurchaseOrderLine.for_item",
+        "direction": "reverse"
+       },
+       {
+        "link": "PurchaseOrderLine.line_of",
+        "direction": "forward"
+       }
+      ],
+      [
+       {
+        "link": "AssemblyOrder.same_record_as",
+        "direction": "forward"
+       },
+       {
+        "link": "AssemblyOrderComponent.component_of",
+        "direction": "reverse"
+       },
+       {
+        "link": "AssemblyOrderComponent.uses_item",
+        "direction": "forward"
+       },
+       {
+        "link": "Product.same_record_as",
+        "direction": "reverse"
+       },
+       {
+        "link": "Product.same_record_as",
+        "direction": "forward"
+       },
+       {
+        "link": "PurchaseOrderLine.for_item",
+        "direction": "reverse"
+       },
+       {
+        "link": "PurchaseOrderLine.line_of",
+        "direction": "forward"
+       }
+      ]
+     ],
+     "note": "Issued POs of the AO's component items (FM assembly-order rows; Portal serves no MO component relation), Portal and BC (the item's BC twin: a BC-only PO). Linked by item, as MRP pools demand: an open PO is an inbound dependency, not proof this AO waits on it, and stock is not read.",
+     "schedule": {
+      "needed_by": "filling",
+      "available_by": {
+       "process": "po_delivery_window",
+       "stage": "receipt"
+      },
+      "note": "A component PO due after the AO's planned filling start (FM datescheduled, Portal scheduled_start_date) is a schedule risk; its planned arrival is po_delivery_window's receipt due, of the PO and its twins. Stock on hand is not read."
+     }
+    }
+   ],
+   "evidence": [
+    {
+     "object_type": "AssemblyOrder",
+     "paths": [
+      []
+     ],
+     "predicate": {
+      "kind": "status",
+      "property": "status",
+      "compare": "upper",
+      "done": [
+       "COMPLETED",
+       "REALIZED",
+       "CLOSED"
+      ],
+      "ignore": [
+       "CANCELLED"
+      ],
+      "quantifier": "all"
+     },
+     "events": [
+      "AssemblyOrder.realized",
+      "AssemblyOrder.portal_completed"
+     ],
+     "exclude_present": {
+      "property": "deleted_at",
+      "evidence": "plx-customer-portal:portal/src/lib/sales-order/load-order-lifecycle.ts@59b0548 manufacturingOrders where: { deletedAt: null }"
+     }
+    }
+   ]
+  },
+  {
+   "id": "shipment",
+   "label": "Shipment",
+   "description": "The order is shipped, read as the sales_order_lifecycle shipment stage of each order the AO serves (the FM order and its Portal twin): a Portal shipment SHIPPED or DELIVERED, or a posted Sage or BC shipment. That stage is unknown, never missing, for an FM-kept order (its absence_unproven), so here too.",
+   "owner_role": "SHIP",
+   "evidence_of": {
+    "process": "sales_order_lifecycle",
+    "stage": "shipment",
+    "object_type": "SalesOrder",
+    "paths": [
+     [
+      {
+       "link": "AssemblyOrderAllocation.allocates",
+       "direction": "reverse"
+      },
+      {
+       "link": "AssemblyOrderAllocation.for_order_line",
+       "direction": "forward"
+      },
+      {
+       "link": "SalesOrderLine.line_of",
+       "direction": "forward"
+      }
+     ],
+     [
+      {
+       "link": "AssemblyOrderAllocation.allocates",
+       "direction": "reverse"
+      },
+      {
+       "link": "AssemblyOrderAllocation.for_order_line",
+       "direction": "forward"
+      },
+      {
+       "link": "SalesOrderLine.line_of",
+       "direction": "forward"
+      },
+      {
+       "link": "SalesOrder.same_record_as",
+       "direction": "forward"
+      }
+     ],
+     [
+      {
+       "link": "AssemblyOrder.for_order_line",
+       "direction": "forward"
+      },
+      {
+       "link": "SalesOrderLine.line_of",
+       "direction": "forward"
+      }
+     ],
+     [
+      {
+       "link": "AssemblyOrder.for_order_line",
+       "direction": "forward"
+      },
+      {
+       "link": "SalesOrderLine.line_of",
+       "direction": "forward"
+      },
+      {
+       "link": "SalesOrder.same_record_as",
+       "direction": "forward"
+      }
+     ]
+    ]
+   },
+   "due": {
+    "object_type": "SalesOrder",
+    "paths": [
+     [
+      {
+       "link": "AssemblyOrderAllocation.allocates",
+       "direction": "reverse"
+      },
+      {
+       "link": "AssemblyOrderAllocation.for_order_line",
+       "direction": "forward"
+      },
+      {
+       "link": "SalesOrderLine.line_of",
+       "direction": "forward"
+      }
+     ],
+     [
+      {
+       "link": "AssemblyOrderAllocation.allocates",
+       "direction": "reverse"
+      },
+      {
+       "link": "AssemblyOrderAllocation.for_order_line",
+       "direction": "forward"
+      },
+      {
+       "link": "SalesOrderLine.line_of",
+       "direction": "forward"
+      },
+      {
+       "link": "SalesOrder.same_record_as",
+       "direction": "forward"
+      }
+     ],
+     [
+      {
+       "link": "AssemblyOrder.for_order_line",
+       "direction": "forward"
+      },
+      {
+       "link": "SalesOrderLine.line_of",
+       "direction": "forward"
+      }
+     ],
+     [
+      {
+       "link": "AssemblyOrder.for_order_line",
+       "direction": "forward"
+      },
+      {
+       "link": "SalesOrderLine.line_of",
+       "direction": "forward"
+      },
+      {
+       "link": "SalesOrder.same_record_as",
+       "direction": "forward"
+      }
+     ]
+    ],
+    "event_types": [
+     "SalesOrder.required",
+     "SalesOrder.fm_required"
+    ],
+    "note": "The customer's required date on the order (Portal required_date, FM datereq)."
+   }
+  }
+ ],
+ "evidence": [
+  "plx-customer-portal:portal/src/lib/sales-order/order-lifecycle.ts@790256c (MO_DONE, MO_IGNORE, synthesizeFmOrderLifecycle: an FM order is a MAKE lane)",
+  "plx-customer-portal:portal/src/lib/sales-order/load-order-lifecycle.ts@59b0548 (manufacturingOrders where deletedAt null)",
+  "plx-customer-portal:portal/src/app/mrp/assembly/assembly-queries.ts@b46934a (AO_DETAIL_SQL_FULL: statusqc read from bronze, not served)",
+  "docs/reference/cases-and-artifacts.md (3.2 packet pages, 3.4 FM production rows Setup/Line clearance/Filling/Cleaning)",
+  "ontology/schema/domains/manufacturing.json (Batch.quality_status On-Hold/Released/Rejected; AssemblyOrder.status Generated, Allocated, Committed, Realized, Cancelled)",
+  "plx-customer-portal:portal/src/lib/policies/seed-rules.ts@48d76e835 (ROUTING_DEPARTMENTS: owner_role is a Portal Department code, what a rule's PolicyApprovalTypeDepartment rows route a WorkItem to, portal/prisma/schema.prisma@48d76e835 :1099, :8467)",
+  "seed-rules.ts@48d76e835: Portal routes bulk_qc_release to QC (qc.batch_release_test on batch.entered_testing). Every other stage owner is this graph's declaration pending PLX review."
+ ]
+}

@@ -1,0 +1,8778 @@
+{
+ "format": "plx-bc-metadata-pin/v1",
+ "evidence_mode": "live-capture",
+ "note": "Read from BC through the GET-only client (names, types and computed flags).",
+ "document": {
+  "path": "GET /v2.0/{tenant}/{environment}/api/v2.0/$metadata",
+  "sha256": "09a82605df002ea217cdaf29a024d5d11795364fad4b30a0c73c0208f8a90e13",
+  "bytes": 570442,
+  "captured_at": "2026-10-13T11:01:25Z"
+ },
+ "namespaces": [
+  "Microsoft.NAV"
+ ],
+ "entity_set_names": [
+  "accountingPeriods",
+  "accounts",
+  "agedAccountsPayables",
+  "agedAccountsReceivables",
+  "apicategoryroutes",
+  "applyVendorEntries",
+  "approvalEntries",
+  "approvalUserSetups",
+  "assemblyOrderLines",
+  "assemblyOrders",
+  "attachments",
+  "balanceSheets",
+  "bankAccounts",
+  "blanketPurchaseOrderLines",
+  "blanketPurchaseOrders",
+  "blanketSalesOrderLines",
+  "blanketSalesOrders",
+  "cashFlowStatements",
+  "companies",
+  "companyInformation",
+  "contacts",
+  "contactsInformation",
+  "countriesRegions",
+  "currencies",
+  "currencyExchangeRates",
+  "customerContacts",
+  "customerFinancialDetails",
+  "customerPaymentJournals",
+  "customerPayments",
+  "customerReturnReasons",
+  "customerSales",
+  "customers",
+  "defaultDimensions",
+  "dimensionSetLines",
+  "dimensionValues",
+  "dimensions",
+  "disputeStatus",
+  "documentAttachments",
+  "employees",
+  "entityDefinitions",
+  "externalbusinesseventdefinitions",
+  "externaleventsubscriptions",
+  "fixedAssetLocations",
+  "fixedAssets",
+  "generalLedgerEntries",
+  "generalLedgerSetup",
+  "generalProductPostingGroups",
+  "incomeStatements",
+  "inventoryPostingGroups",
+  "inventoryReceiptLines",
+  "inventoryReceipts",
+  "inventoryShipmentLines",
+  "inventoryShipments",
+  "itemCategories",
+  "itemLedgerEntries",
+  "itemVariants",
+  "items",
+  "jobQueueEntries",
+  "jobQueueLogEntries",
+  "journalLines",
+  "journals",
+  "locations",
+  "opportunities",
+  "paymentMethods",
+  "paymentTerms",
+  "pdfDocument",
+  "physicalInventoryOrderLines",
+  "physicalInventoryOrders",
+  "physicalInventoryRecordingLines",
+  "physicalInventoryRecordings",
+  "pictures",
+  "postedApprovalEntries",
+  "postedAssemblyOrderLines",
+  "postedAssemblyOrders",
+  "postedDirectTransferLines",
+  "postedDirectTransfers",
+  "postedInventoryReceiptLines",
+  "postedInventoryReceipts",
+  "postedInventoryShipmentLines",
+  "postedInventoryShipments",
+  "postedPhysicalInventoryOrderLines",
+  "postedPhysicalInventoryOrders",
+  "postedPhysicalInventoryRecordingLines",
+  "postedPhysicalInventoryRecordings",
+  "projects",
+  "purchaseBlanketOrderArchiveLines",
+  "purchaseBlanketOrderArchives",
+  "purchaseCreditMemoLines",
+  "purchaseCreditMemos",
+  "purchaseInvoiceLines",
+  "purchaseInvoices",
+  "purchaseOrderArchiveLines",
+  "purchaseOrderArchives",
+  "purchaseOrderLines",
+  "purchaseOrders",
+  "purchaseQuoteArchiveLines",
+  "purchaseQuoteArchives",
+  "purchaseQuoteLines",
+  "purchaseQuotes",
+  "purchaseReceiptLines",
+  "purchaseReceipts",
+  "purchaseReturnOrderArchiveLines",
+  "purchaseReturnOrderArchives",
+  "purchaseReturnOrderLines",
+  "purchaseReturnOrders",
+  "purchaseReturnShipments",
+  "retainedEarningsStatements",
+  "returnReceipts",
+  "salesBlanketOrderArchiveLines",
+  "salesBlanketOrderArchives",
+  "salesCreditMemoLines",
+  "salesCreditMemos",
+  "salesInvoiceLines",
+  "salesInvoices",
+  "salesOrderArchiveLines",
+  "salesOrderArchives",
+  "salesOrderLines",
+  "salesOrders",
+  "salesQuoteArchiveLines",
+  "salesQuoteArchives",
+  "salesQuoteLines",
+  "salesQuotes",
+  "salesReturnOrderArchiveLines",
+  "salesReturnOrderArchives",
+  "salesReturnOrderLines",
+  "salesReturnOrders",
+  "salesShipmentLines",
+  "salesShipments",
+  "salespeoplePurchasers",
+  "shipmentMethods",
+  "subscriptions",
+  "taxAreas",
+  "taxGroups",
+  "timeRegistrationEntries",
+  "transferOrderLines",
+  "transferOrders",
+  "transferReceiptLines",
+  "transferReceipts",
+  "transferShipmentLines",
+  "transferShipments",
+  "trialBalances",
+  "unitsOfMeasure",
+  "vendorPaymentJournals",
+  "vendorPayments",
+  "vendorPurchases",
+  "vendors",
+  "workflowApprovers",
+  "workflowResponseOptions",
+  "workflowSteps",
+  "workflows"
+ ],
+ "entity_sets": {
+  "accounts": {
+   "entity_type": "account",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "number",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "displayName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "category",
+     "type": "enum:glAccountCategory",
+     "nullable": true
+    },
+    {
+     "name": "subCategory",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "blocked",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "accountType",
+     "type": "enum:glAccountType",
+     "nullable": true
+    },
+    {
+     "name": "directPosting",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "netChange",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "consolidationTranslationMethod",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "consolidationDebitAccount",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "consolidationCreditAccount",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "excludeFromConsolidation",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "trialBalance",
+     "target": "trialBalance",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "accountId"
+      ]
+     ]
+    }
+   ]
+  },
+  "agedAccountsPayables": {
+   "entity_type": "agedAccountsPayable",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "vendorId"
+   ],
+   "properties": [
+    {
+     "name": "vendorId",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "vendorNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "name",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "currencyCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "balanceDue",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "currentAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "period1Amount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "period2Amount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "period3Amount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "agedAsOfDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "periodLengthFilter",
+     "type": "Edm.String",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "vendor",
+     "target": "vendor",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "vendorId",
+       "id"
+      ]
+     ]
+    }
+   ]
+  },
+  "agedAccountsReceivables": {
+   "entity_type": "agedAccountsReceivable",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "customerId"
+   ],
+   "properties": [
+    {
+     "name": "customerId",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "customerNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "name",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "currencyCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "balanceDue",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "currentAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "period1Label",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "period1Amount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "period2Label",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "period2Amount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "period3Label",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "period3Amount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "agedAsOfDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "periodLengthFilter",
+     "type": "Edm.String",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "customer",
+     "target": "customer",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "customerId",
+       "id"
+      ]
+     ]
+    }
+   ]
+  },
+  "companies": {
+   "entity_type": "company",
+   "scope": "environment",
+   "parents": [],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "systemVersion",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "timestamp",
+     "type": "Edm.Int64",
+     "nullable": true
+    },
+    {
+     "name": "name",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "displayName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "businessProfileId",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "systemCreatedAt",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    },
+    {
+     "name": "systemCreatedBy",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "systemModifiedAt",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    },
+    {
+     "name": "systemModifiedBy",
+     "type": "Edm.Guid",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "workflows",
+     "target": "workflow",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "workflowSteps",
+     "target": "workflowStep",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "workflowResponseOptions",
+     "target": "workflowResponseOption",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "workflowApprovers",
+     "target": "workflowApprover",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "blanketPurchaseOrders",
+     "target": "blanketPurchaseOrder",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "dimensionSetLines",
+     "target": "dimensionSetLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "blanketPurchaseOrderLines",
+     "target": "blanketPurchaseOrderLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "pdfDocument",
+     "target": "pdfDocument",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "attachments",
+     "target": "attachment",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "documentAttachments",
+     "target": "documentAttachment",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "items",
+     "target": "item",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "inventoryPostingGroups",
+     "target": "inventoryPostingGroup",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "generalProductPostingGroups",
+     "target": "generalProductPostingGroup",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "unitsOfMeasure",
+     "target": "unitOfMeasure",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "pictures",
+     "target": "picture",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "defaultDimensions",
+     "target": "defaultDimension",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "itemVariants",
+     "target": "itemVariant",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "customers",
+     "target": "customer",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "customerFinancialDetails",
+     "target": "customerFinancialDetail",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "agedAccountsReceivables",
+     "target": "agedAccountsReceivable",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "contactsInformation",
+     "target": "contactInformation",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "contacts",
+     "target": "contact",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "vendors",
+     "target": "vendor",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "agedAccountsPayables",
+     "target": "agedAccountsPayable",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "companyInformation",
+     "target": "companyInformation",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "salesInvoices",
+     "target": "salesInvoice",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "salesInvoiceLines",
+     "target": "salesInvoiceLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "locations",
+     "target": "location",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "customerPaymentJournals",
+     "target": "customerPaymentJournal",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "customerPayments",
+     "target": "customerPayment",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "accounts",
+     "target": "account",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "taxGroups",
+     "target": "taxGroup",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "journals",
+     "target": "journal",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "journalLines",
+     "target": "journalLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "employees",
+     "target": "employee",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "timeRegistrationEntries",
+     "target": "timeRegistrationEntry",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "generalLedgerEntries",
+     "target": "generalLedgerEntry",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "currencies",
+     "target": "currency",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "paymentMethods",
+     "target": "paymentMethod",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "dimensions",
+     "target": "dimension",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "dimensionValues",
+     "target": "dimensionValue",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "paymentTerms",
+     "target": "paymentTerm",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "shipmentMethods",
+     "target": "shipmentMethod",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "itemCategories",
+     "target": "itemCategory",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "cashFlowStatements",
+     "target": "cashFlowStatement",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "countriesRegions",
+     "target": "countryRegion",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "salesOrders",
+     "target": "salesOrder",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "salesOrderLines",
+     "target": "salesOrderLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "retainedEarningsStatements",
+     "target": "retainedEarningsStatement",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "balanceSheets",
+     "target": "balanceSheet",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "trialBalances",
+     "target": "trialBalance",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "incomeStatements",
+     "target": "incomeStatement",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "taxAreas",
+     "target": "taxArea",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "salesQuotes",
+     "target": "salesQuote",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "salesQuoteLines",
+     "target": "salesQuoteLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "salesCreditMemos",
+     "target": "salesCreditMemo",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "salesCreditMemoLines",
+     "target": "salesCreditMemoLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "purchaseInvoices",
+     "target": "purchaseInvoice",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "purchaseInvoiceLines",
+     "target": "purchaseInvoiceLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "projects",
+     "target": "project",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "bankAccounts",
+     "target": "bankAccount",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "blanketSalesOrders",
+     "target": "blanketSalesOrder",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "blanketSalesOrderLines",
+     "target": "blanketSalesOrderLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "vendorPayments",
+     "target": "vendorPayment",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "applyVendorEntries",
+     "target": "applyVendorEntry",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "vendorPaymentJournals",
+     "target": "vendorPaymentJournal",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "salesShipments",
+     "target": "salesShipment",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "salesShipmentLines",
+     "target": "salesShipmentLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "purchaseReceipts",
+     "target": "purchaseReceipt",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "purchaseReceiptLines",
+     "target": "purchaseReceiptLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "purchaseOrders",
+     "target": "purchaseOrder",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "purchaseOrderLines",
+     "target": "purchaseOrderLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "itemLedgerEntries",
+     "target": "itemLedgerEntry",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "opportunities",
+     "target": "opportunity",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "salespeoplePurchasers",
+     "target": "salespersonPurchaser",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "customerReturnReasons",
+     "target": "customerReturnReason",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "purchaseCreditMemos",
+     "target": "purchaseCreditMemo",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "purchaseCreditMemoLines",
+     "target": "purchaseCreditMemoLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "currencyExchangeRates",
+     "target": "currencyExchangeRate",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "accountingPeriods",
+     "target": "accountingPeriod",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "generalLedgerSetup",
+     "target": "generalLedgerSetup",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "disputeStatus",
+     "target": "disputeStatus",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "customerContacts",
+     "target": "customerContact",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "jobQueueLogEntries",
+     "target": "jobQueueLogEntry",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "jobQueueEntries",
+     "target": "jobQueueEntry",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "postedApprovalEntries",
+     "target": "postedApprovalEntry",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "approvalEntries",
+     "target": "approvalEntry",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "approvalUserSetups",
+     "target": "approvalUserSetup",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "fixedAssetLocations",
+     "target": "fixedAssetLocation",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "fixedAssets",
+     "target": "fixedAsset",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "purchaseQuotes",
+     "target": "purchaseQuote",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "purchaseQuoteLines",
+     "target": "purchaseQuoteLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "purchaseReturnShipments",
+     "target": "purchaseReturnShipment",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "salesReturnOrderLines",
+     "target": "salesReturnOrderLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "transferOrders",
+     "target": "transferOrder",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "transferOrderLines",
+     "target": "transferOrderLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "transferShipments",
+     "target": "transferShipment",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "transferShipmentLines",
+     "target": "transferShipmentLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "transferReceipts",
+     "target": "transferReceipt",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "transferReceiptLines",
+     "target": "transferReceiptLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "postedDirectTransfers",
+     "target": "postedDirectTransfer",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "postedDirectTransferLines",
+     "target": "postedDirectTransferLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "salesQuoteArchives",
+     "target": "salesQuoteArchive",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "salesQuoteArchiveLines",
+     "target": "salesQuoteArchiveLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "salesOrderArchives",
+     "target": "salesOrderArchive",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "salesOrderArchiveLines",
+     "target": "salesOrderArchiveLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "purchaseQuoteArchives",
+     "target": "purchaseQuoteArchive",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "purchaseQuoteArchiveLines",
+     "target": "purchaseQuoteArchiveLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "purchaseOrderArchives",
+     "target": "purchaseOrderArchive",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "purchaseOrderArchiveLines",
+     "target": "purchaseOrderArchiveLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "salesReturnOrderArchives",
+     "target": "salesReturnOrderArchive",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "salesReturnOrderArchiveLines",
+     "target": "salesReturnOrderArchiveLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "purchaseReturnOrderArchives",
+     "target": "purchaseReturnOrderArchive",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "purchaseReturnOrderArchiveLines",
+     "target": "purchaseReturnOrderArchiveLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "assemblyOrders",
+     "target": "assemblyOrder",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "assemblyOrderLines",
+     "target": "assemblyOrderLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "postedAssemblyOrders",
+     "target": "postedAssemblyOrder",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "postedAssemblyOrderLines",
+     "target": "postedAssemblyOrderLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "salesBlanketOrderArchives",
+     "target": "salesBlanketOrderArchive",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "salesBlanketOrderArchiveLines",
+     "target": "salesBlanketOrderArchiveLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "purchaseBlanketOrderArchives",
+     "target": "purchaseBlanketOrderArchive",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "purchaseBlanketOrderArchiveLines",
+     "target": "purchaseBlanketOrderArchiveLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "physicalInventoryOrders",
+     "target": "physicalInventoryOrder",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "physicalInventoryOrderLines",
+     "target": "physicalInventoryOrderLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "postedPhysicalInventoryOrders",
+     "target": "postedPhysicalInventoryOrder",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "postedPhysicalInventoryOrderLines",
+     "target": "postedPhysicalInventoryOrderLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "physicalInventoryRecordings",
+     "target": "physicalInventoryRecording",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "physicalInventoryRecordingLines",
+     "target": "physicalInventoryRecordingLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "postedPhysicalInventoryRecordings",
+     "target": "postedPhysicalInventoryRecording",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "postedPhysicalInventoryRecordingLines",
+     "target": "postedPhysicalInventoryRecordingLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "inventoryShipments",
+     "target": "inventoryShipment",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "inventoryShipmentLines",
+     "target": "inventoryShipmentLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "inventoryReceipts",
+     "target": "inventoryReceipt",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "inventoryReceiptLines",
+     "target": "inventoryReceiptLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "postedInventoryShipments",
+     "target": "postedInventoryShipment",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "postedInventoryShipmentLines",
+     "target": "postedInventoryShipmentLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "postedInventoryReceipts",
+     "target": "postedInventoryReceipt",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "postedInventoryReceiptLines",
+     "target": "postedInventoryReceiptLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "purchaseReturnOrderLines",
+     "target": "purchaseReturnOrderLine",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "purchaseReturnOrders",
+     "target": "purchaseReturnOrder",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "salesReturnOrders",
+     "target": "salesReturnOrder",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "returnReceipts",
+     "target": "returnReceipt",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "customerSales",
+     "target": "customerSale",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "vendorPurchases",
+     "target": "vendorPurchase",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    }
+   ]
+  },
+  "companyInformation": {
+   "entity_type": "companyInformation",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "displayName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "addressLine1",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "addressLine2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "city",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "state",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "country",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "postalCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "phoneNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "faxNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "email",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "website",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "taxRegistrationNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "currencyCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "currentFiscalYearStartDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "industry",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "picture",
+     "type": "Edm.Stream",
+     "nullable": true
+    },
+    {
+     "name": "experience",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    }
+   ],
+   "navigation": []
+  },
+  "contacts": {
+   "entity_type": "contact",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "number",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "type",
+     "type": "enum:contactType",
+     "nullable": true
+    },
+    {
+     "name": "displayName",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "jobTitle",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "companyNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "companyName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "contactBusinessRelation",
+     "type": "enum:contactBusinessRelation",
+     "nullable": true
+    },
+    {
+     "name": "addressLine1",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "addressLine2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "city",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "state",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "country",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "postalCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "phoneNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "mobilePhoneNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "email",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "website",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "searchName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "privacyBlocked",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "taxRegistrationNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "lastInteractionDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "contactInformation",
+     "target": "contactInformation",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "contactId"
+      ]
+     ]
+    },
+    {
+     "name": "picture",
+     "target": "picture",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "id"
+      ]
+     ]
+    }
+   ]
+  },
+  "countriesRegions": {
+   "entity_type": "countryRegion",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "code",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "displayName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "addressFormat",
+     "type": "enum:countryRegionAddressFormat",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    }
+   ],
+   "navigation": []
+  },
+  "currencies": {
+   "entity_type": "currency",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "code",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "displayName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "symbol",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "amountDecimalPlaces",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "amountRoundingPrecision",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    }
+   ],
+   "navigation": []
+  },
+  "currencyExchangeRates": {
+   "entity_type": "currencyExchangeRate",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "currencyCode",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "startingDate",
+     "type": "Edm.Date",
+     "nullable": false
+    },
+    {
+     "name": "exchangeRateAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "relationalCurrencyCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "relationalExchangeRateAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    }
+   ],
+   "navigation": []
+  },
+  "customerPaymentJournals": {
+   "entity_type": "customerPaymentJournal",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "code",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "displayName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    },
+    {
+     "name": "balancingAccountId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "balancingAccountNumber",
+     "type": "Edm.String",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "customerPayments",
+     "target": "customerPayment",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "journalId"
+      ]
+     ]
+    }
+   ]
+  },
+  "customerPayments": {
+   "entity_type": "customerPayment",
+   "scope": "company",
+   "parents": [
+    "customerPaymentJournals"
+   ],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "journalId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "journalDisplayName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "lineNumber",
+     "type": "Edm.Int32",
+     "nullable": true
+    },
+    {
+     "name": "customerId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "customerNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "postingDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "documentNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "externalDocumentNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "amount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "appliesToInvoiceId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "appliesToInvoiceNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "description",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "comment",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "customerPaymentJournal",
+     "target": "customerPaymentJournal",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "journalId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "customer",
+     "target": "customer",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "customerId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "dimensionSetLines",
+     "target": "dimensionSetLine",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    }
+   ]
+  },
+  "customers": {
+   "entity_type": "customer",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "number",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "displayName",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "type",
+     "type": "enum:contactType",
+     "nullable": true
+    },
+    {
+     "name": "addressLine1",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "addressLine2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "city",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "state",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "country",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "postalCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "phoneNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "email",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "website",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "salespersonCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "balanceDue",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "creditLimit",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "taxLiable",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "taxAreaId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "taxAreaDisplayName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "taxRegistrationNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "currencyId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "currencyCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "paymentTermsId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "shipmentMethodId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "paymentMethodId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "blocked",
+     "type": "enum:customerBlocked",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "currency",
+     "target": "currency",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "currencyId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "paymentTerm",
+     "target": "paymentTerm",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "paymentTermsId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "shipmentMethod",
+     "target": "shipmentMethod",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "shipmentMethodId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "paymentMethod",
+     "target": "paymentMethod",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "paymentMethodId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "customerFinancialDetail",
+     "target": "customerFinancialDetail",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "picture",
+     "target": "picture",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "defaultDimensions",
+     "target": "defaultDimension",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "agedAccountsReceivable",
+     "target": "agedAccountsReceivable",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "customerId"
+      ]
+     ]
+    },
+    {
+     "name": "contactsInformation",
+     "target": "contactInformation",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "relatedId"
+      ]
+     ]
+    },
+    {
+     "name": "documentAttachments",
+     "target": "documentAttachment",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    }
+   ]
+  },
+  "dimensionValues": {
+   "entity_type": "dimensionValue",
+   "scope": "company",
+   "parents": [
+    "dimensions"
+   ],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "code",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "dimensionId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "displayName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "consolidationCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "dimension",
+     "target": "dimension",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "dimensionId",
+       "id"
+      ]
+     ]
+    }
+   ]
+  },
+  "dimensions": {
+   "entity_type": "dimension",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "code",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "displayName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "consolidationCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "dimensionValues",
+     "target": "dimensionValue",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "dimensionId"
+      ]
+     ]
+    }
+   ]
+  },
+  "generalLedgerEntries": {
+   "entity_type": "generalLedgerEntry",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "entryNumber",
+     "type": "Edm.Int32",
+     "nullable": true
+    },
+    {
+     "name": "postingDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "documentNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "documentType",
+     "type": "enum:genJournalDocumentType",
+     "nullable": true
+    },
+    {
+     "name": "accountId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "accountNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "description",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "debitAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "creditAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "additionalCurrencyDebitAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "additionalCurrencyCreditAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "account",
+     "target": "account",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "accountId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "attachments",
+     "target": "attachment",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "dimensionSetLines",
+     "target": "dimensionSetLine",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    }
+   ]
+  },
+  "itemCategories": {
+   "entity_type": "itemCategory",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "code",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "displayName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    }
+   ],
+   "navigation": []
+  },
+  "itemLedgerEntries": {
+   "entity_type": "itemLedgerEntry",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "entryNumber",
+     "type": "Edm.Int32",
+     "nullable": true
+    },
+    {
+     "name": "itemNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "postingDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "entryType",
+     "type": "enum:itemLedgerEntryType",
+     "nullable": true
+    },
+    {
+     "name": "sourceNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "sourceType",
+     "type": "enum:analysisSourceType",
+     "nullable": true
+    },
+    {
+     "name": "documentNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "documentType",
+     "type": "enum:itemLedgerDocumentType",
+     "nullable": true
+    },
+    {
+     "name": "description",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "quantity",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "salesAmountActual",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "costAmountActual",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    }
+   ],
+   "navigation": []
+  },
+  "items": {
+   "entity_type": "item",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "number",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "displayName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "displayName2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "type",
+     "type": "enum:itemType",
+     "nullable": true
+    },
+    {
+     "name": "itemCategoryId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "itemCategoryCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "blocked",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "gtin",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "inventory",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "unitPrice",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "priceIncludesTax",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "unitCost",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "taxGroupId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "taxGroupCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "baseUnitOfMeasureId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "baseUnitOfMeasureCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "generalProductPostingGroupId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "generalProductPostingGroupCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "inventoryPostingGroupId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "inventoryPostingGroupCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "itemCategory",
+     "target": "itemCategory",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "itemCategoryId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "inventoryPostingGroup",
+     "target": "inventoryPostingGroup",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "inventoryPostingGroupId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "generalProductPostingGroup",
+     "target": "generalProductPostingGroup",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "generalProductPostingGroupId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "unitOfMeasure",
+     "target": "unitOfMeasure",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "baseUnitOfMeasureId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "picture",
+     "target": "picture",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "defaultDimensions",
+     "target": "defaultDimension",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "itemVariants",
+     "target": "itemVariant",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "itemId"
+      ]
+     ]
+    },
+    {
+     "name": "documentAttachments",
+     "target": "documentAttachment",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    }
+   ]
+  },
+  "locations": {
+   "entity_type": "location",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "code",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "displayName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "contact",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "addressLine1",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "addressLine2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "city",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "state",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "country",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "postalCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "phoneNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "email",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "website",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    }
+   ],
+   "navigation": []
+  },
+  "paymentMethods": {
+   "entity_type": "paymentMethod",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "code",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "displayName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    }
+   ],
+   "navigation": []
+  },
+  "paymentTerms": {
+   "entity_type": "paymentTerm",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "code",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "displayName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "dueDateCalculation",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "discountDateCalculation",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "discountPercent",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "calculateDiscountOnCreditMemos",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    }
+   ],
+   "navigation": []
+  },
+  "purchaseCreditMemoLines": {
+   "entity_type": "purchaseCreditMemoLine",
+   "scope": "company",
+   "parents": [
+    "purchaseCreditMemos"
+   ],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "documentId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "sequence",
+     "type": "Edm.Int32",
+     "nullable": true
+    },
+    {
+     "name": "itemId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "accountId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "lineType",
+     "type": "enum:invoiceLineAggLineType",
+     "nullable": true
+    },
+    {
+     "name": "lineObjectNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "description",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "unitOfMeasureId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "unitOfMeasureCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "unitCost",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "quantity",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "discountAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "discountPercent",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "discountAppliedBeforeTax",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "amountExcludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "taxCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "taxPercent",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "totalTaxAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "amountIncludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "invoiceDiscountAllocation",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "netAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "netTaxAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "netAmountIncludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "itemVariantId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "locationId",
+     "type": "Edm.Guid",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "purchaseCreditMemo",
+     "target": "purchaseCreditMemo",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "documentId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "item",
+     "target": "item",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "itemId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "account",
+     "target": "account",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "accountId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "unitOfMeasure",
+     "target": "unitOfMeasure",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "unitOfMeasureId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "itemVariant",
+     "target": "itemVariant",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "itemVariantId",
+       "id"
+      ],
+      [
+       "lineObjectNumber",
+       "itemNumber"
+      ]
+     ]
+    },
+    {
+     "name": "dimensionSetLines",
+     "target": "dimensionSetLine",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "location",
+     "target": "location",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "locationId",
+       "id"
+      ]
+     ]
+    }
+   ]
+  },
+  "purchaseCreditMemos": {
+   "entity_type": "purchaseCreditMemo",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "number",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "creditMemoDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "postingDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "dueDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "vendorId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "vendorNumber",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "vendorName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "vendorCreditMemoNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "payToVendorId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "payToVendorNumber",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "payToName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "buyFromAddressLine1",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "buyFromAddressLine2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "buyFromCity",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "buyFromCountry",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "buyFromState",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "buyFromPostCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "payToAddressLine1",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "payToAddressLine2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "payToCity",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "payToCountry",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "payToState",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "payToPostCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shortcutDimension1Code",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shortcutDimension2Code",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "currencyId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "currencyCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "paymentTermsId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "shipmentMethodId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "purchaser",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "pricesIncludeTax",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "discountAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "discountAppliedBeforeTax",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "totalAmountExcludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "totalTaxAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "totalAmountIncludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "status",
+     "type": "enum:purchCrMemoEntityStatus",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    },
+    {
+     "name": "invoiceId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "invoiceNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "vendorReturnReasonId",
+     "type": "Edm.Guid",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "vendor",
+     "target": "vendor",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "vendorId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "dimensionValue",
+     "target": "dimensionValue",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "shortcutDimension1Code",
+       "code"
+      ]
+     ]
+    },
+    {
+     "name": "currency",
+     "target": "currency",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "currencyId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "paymentTerm",
+     "target": "paymentTerm",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "paymentTermsId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "shipmentMethod",
+     "target": "shipmentMethod",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "shipmentMethodId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "customerReturnReason",
+     "target": "customerReturnReason",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "vendorReturnReasonId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "dimensionSetLines",
+     "target": "dimensionSetLine",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "purchaseCreditMemoLines",
+     "target": "purchaseCreditMemoLine",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "documentId"
+      ]
+     ]
+    },
+    {
+     "name": "pdfDocument",
+     "target": "pdfDocument",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "attachments",
+     "target": "attachment",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "documentAttachments",
+     "target": "documentAttachment",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    }
+   ]
+  },
+  "purchaseInvoiceLines": {
+   "entity_type": "purchaseInvoiceLine",
+   "scope": "company",
+   "parents": [
+    "purchaseInvoices"
+   ],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "documentId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "sequence",
+     "type": "Edm.Int32",
+     "nullable": true
+    },
+    {
+     "name": "itemId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "accountId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "lineType",
+     "type": "enum:invoiceLineAggLineType",
+     "nullable": true
+    },
+    {
+     "name": "lineObjectNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "description",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "description2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "unitOfMeasureId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "unitOfMeasureCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "unitCost",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "quantity",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "discountAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "discountPercent",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "discountAppliedBeforeTax",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "amountExcludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "taxCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "taxPercent",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "totalTaxAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "amountIncludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "invoiceDiscountAllocation",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "netAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "netTaxAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "netAmountIncludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "expectedReceiptDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "itemVariantId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "locationId",
+     "type": "Edm.Guid",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "purchaseInvoice",
+     "target": "purchaseInvoice",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "documentId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "item",
+     "target": "item",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "itemId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "account",
+     "target": "account",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "accountId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "unitOfMeasure",
+     "target": "unitOfMeasure",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "unitOfMeasureId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "itemVariant",
+     "target": "itemVariant",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "itemVariantId",
+       "id"
+      ],
+      [
+       "lineObjectNumber",
+       "itemNumber"
+      ]
+     ]
+    },
+    {
+     "name": "dimensionSetLines",
+     "target": "dimensionSetLine",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "location",
+     "target": "location",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "locationId",
+       "id"
+      ]
+     ]
+    }
+   ]
+  },
+  "purchaseInvoices": {
+   "entity_type": "purchaseInvoice",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "number",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "postingDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "invoiceDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "dueDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "vendorInvoiceNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "vendorId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "vendorNumber",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "vendorName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "payToName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "payToContact",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "payToVendorId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "payToVendorNumber",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "shipToName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToContact",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "buyFromAddressLine1",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "buyFromAddressLine2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "buyFromCity",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "buyFromCountry",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "buyFromState",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "buyFromPostCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToAddressLine1",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToAddressLine2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToCity",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToCountry",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToState",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToPostCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "payToAddressLine1",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "payToAddressLine2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "payToCity",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "payToCountry",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "payToState",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "payToPostCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shortcutDimension1Code",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shortcutDimension2Code",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "currencyId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "currencyCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "orderId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "orderNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "purchaser",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "pricesIncludeTax",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "discountAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "discountAppliedBeforeTax",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "totalAmountExcludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "totalTaxAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "totalAmountIncludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "status",
+     "type": "enum:invoiceEntityAggregateStatus",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "vendor",
+     "target": "vendor",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "vendorId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "dimensionValue",
+     "target": "dimensionValue",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "shortcutDimension1Code",
+       "code"
+      ]
+     ]
+    },
+    {
+     "name": "currency",
+     "target": "currency",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "currencyId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "dimensionSetLines",
+     "target": "dimensionSetLine",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "purchaseInvoiceLines",
+     "target": "purchaseInvoiceLine",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "documentId"
+      ]
+     ]
+    },
+    {
+     "name": "pdfDocument",
+     "target": "pdfDocument",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "attachments",
+     "target": "attachment",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "documentAttachments",
+     "target": "documentAttachment",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    }
+   ]
+  },
+  "purchaseOrderLines": {
+   "entity_type": "purchaseOrderLine",
+   "scope": "company",
+   "parents": [
+    "purchaseOrders"
+   ],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "documentId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "sequence",
+     "type": "Edm.Int32",
+     "nullable": true
+    },
+    {
+     "name": "itemId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "accountId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "lineType",
+     "type": "enum:invoiceLineAggLineType",
+     "nullable": true
+    },
+    {
+     "name": "lineObjectNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "description",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "description2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "unitOfMeasureId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "unitOfMeasureCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "quantity",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "directUnitCost",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "discountAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "discountPercent",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "discountAppliedBeforeTax",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "amountExcludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "taxCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "taxPercent",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "totalTaxAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "amountIncludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "invoiceDiscountAllocation",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "netAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "netTaxAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "netAmountIncludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "expectedReceiptDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "receivedQuantity",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "invoicedQuantity",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "invoiceQuantity",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "receiveQuantity",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "itemVariantId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "locationId",
+     "type": "Edm.Guid",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "purchaseOrder",
+     "target": "purchaseOrder",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "documentId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "item",
+     "target": "item",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "itemId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "account",
+     "target": "account",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "accountId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "unitOfMeasure",
+     "target": "unitOfMeasure",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "unitOfMeasureId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "itemVariant",
+     "target": "itemVariant",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "itemVariantId",
+       "id"
+      ],
+      [
+       "lineObjectNumber",
+       "itemNumber"
+      ]
+     ]
+    },
+    {
+     "name": "dimensionSetLines",
+     "target": "dimensionSetLine",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "location",
+     "target": "location",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "locationId",
+       "id"
+      ]
+     ]
+    }
+   ]
+  },
+  "purchaseOrders": {
+   "entity_type": "purchaseOrder",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "number",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "orderDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "postingDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "vendorId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "vendorNumber",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "vendorName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "payToName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "payToVendorId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "payToVendorNumber",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "shipToName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToContact",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "buyFromAddressLine1",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "buyFromAddressLine2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "buyFromCity",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "buyFromCountry",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "buyFromState",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "buyFromPostCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "payToAddressLine1",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "payToAddressLine2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "payToCity",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "payToCountry",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "payToState",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "payToPostCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToAddressLine1",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToAddressLine2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToCity",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToCountry",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToState",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToPostCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shortcutDimension1Code",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shortcutDimension2Code",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "currencyId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "currencyCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "pricesIncludeTax",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "paymentTermsId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "shipmentMethodId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "purchaser",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "requestedReceiptDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "discountAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "discountAppliedBeforeTax",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "totalAmountExcludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "totalTaxAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "totalAmountIncludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "fullyReceived",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "status",
+     "type": "enum:purchaseOrderEntityBufferStatus",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "vendor",
+     "target": "vendor",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "vendorId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "dimensionValue",
+     "target": "dimensionValue",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "shortcutDimension1Code",
+       "code"
+      ]
+     ]
+    },
+    {
+     "name": "currency",
+     "target": "currency",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "currencyId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "paymentTerm",
+     "target": "paymentTerm",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "paymentTermsId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "shipmentMethod",
+     "target": "shipmentMethod",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "shipmentMethodId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "purchaseOrderLines",
+     "target": "purchaseOrderLine",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "documentId"
+      ]
+     ]
+    },
+    {
+     "name": "pdfDocument",
+     "target": "pdfDocument",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "attachments",
+     "target": "attachment",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "dimensionSetLines",
+     "target": "dimensionSetLine",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "documentAttachments",
+     "target": "documentAttachment",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    }
+   ]
+  },
+  "purchaseReceiptLines": {
+   "entity_type": "purchaseReceiptLine",
+   "scope": "company",
+   "parents": [
+    "purchaseReceipts"
+   ],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "documentId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "sequence",
+     "type": "Edm.Int32",
+     "nullable": true
+    },
+    {
+     "name": "lineType",
+     "type": "enum:purchaseLineType",
+     "nullable": true
+    },
+    {
+     "name": "lineObjectNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "description",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "description2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "unitOfMeasureCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "unitCost",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "quantity",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "discountPercent",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "taxPercent",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "expectedReceiptDate",
+     "type": "Edm.Date",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "purchaseReceipt",
+     "target": "purchaseReceipt",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "documentId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "dimensionSetLines",
+     "target": "dimensionSetLine",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    }
+   ]
+  },
+  "purchaseReceipts": {
+   "entity_type": "purchaseReceipt",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "number",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "invoiceDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "postingDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "dueDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "vendorNumber",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "vendorName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "payToName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "payToContact",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "payToVendorNumber",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "shipToName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToContact",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "buyFromAddressLine1",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "buyFromAddressLine2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "buyFromCity",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "buyFromCountry",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "buyFromState",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "buyFromPostCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToAddressLine1",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToAddressLine2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToCity",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToCountry",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToState",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToPostCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "payToAddressLine1",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "payToAddressLine2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "payToCity",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "payToCountry",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "payToState",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "payToPostCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "currencyCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "orderNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "purchaseReceiptLines",
+     "target": "purchaseReceiptLine",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "documentId"
+      ]
+     ]
+    },
+    {
+     "name": "dimensionSetLines",
+     "target": "dimensionSetLine",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "pdfDocument",
+     "target": "pdfDocument",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "attachments",
+     "target": "attachment",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "documentAttachments",
+     "target": "documentAttachment",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    }
+   ]
+  },
+  "salesCreditMemoLines": {
+   "entity_type": "salesCreditMemoLine",
+   "scope": "company",
+   "parents": [
+    "salesCreditMemos"
+   ],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "documentId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "sequence",
+     "type": "Edm.Int32",
+     "nullable": true
+    },
+    {
+     "name": "itemId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "accountId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "lineType",
+     "type": "enum:invoiceLineAggLineType",
+     "nullable": true
+    },
+    {
+     "name": "lineObjectNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "description",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "description2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "unitOfMeasureId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "unitOfMeasureCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "unitPrice",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "quantity",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "discountAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "discountPercent",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "discountAppliedBeforeTax",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "amountExcludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "taxCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "taxPercent",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "totalTaxAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "amountIncludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "invoiceDiscountAllocation",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "netAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "netTaxAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "netAmountIncludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "shipmentDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "itemVariantId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "locationId",
+     "type": "Edm.Guid",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "salesCreditMemo",
+     "target": "salesCreditMemo",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "documentId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "item",
+     "target": "item",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "itemId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "account",
+     "target": "account",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "accountId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "unitOfMeasure",
+     "target": "unitOfMeasure",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "unitOfMeasureId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "itemVariant",
+     "target": "itemVariant",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "itemVariantId",
+       "id"
+      ],
+      [
+       "lineObjectNumber",
+       "itemNumber"
+      ]
+     ]
+    },
+    {
+     "name": "dimensionSetLines",
+     "target": "dimensionSetLine",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "location",
+     "target": "location",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "locationId",
+       "id"
+      ]
+     ]
+    }
+   ]
+  },
+  "salesCreditMemos": {
+   "entity_type": "salesCreditMemo",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "number",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "externalDocumentNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "creditMemoDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "postingDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "dueDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "customerId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "customerNumber",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "customerName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToCustomerId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "billToCustomerNumber",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "sellToAddressLine1",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "sellToAddressLine2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "sellToCity",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "sellToCountry",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "sellToState",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "sellToPostCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToAddressLine1",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToAddressLine2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToCity",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToCountry",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToState",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToPostCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shortcutDimension1Code",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shortcutDimension2Code",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "currencyId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "currencyCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "paymentTermsId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "shipmentMethodId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "salesperson",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "pricesIncludeTax",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "discountAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "discountAppliedBeforeTax",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "totalAmountExcludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "totalTaxAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "totalAmountIncludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "status",
+     "type": "enum:salesCrMemoEntityBufferStatus",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    },
+    {
+     "name": "invoiceId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "invoiceNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "phoneNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "email",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "customerReturnReasonId",
+     "type": "Edm.Guid",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "customer",
+     "target": "customer",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "customerId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "dimensionValue",
+     "target": "dimensionValue",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "shortcutDimension1Code",
+       "code"
+      ]
+     ]
+    },
+    {
+     "name": "currency",
+     "target": "currency",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "currencyId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "paymentTerm",
+     "target": "paymentTerm",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "paymentTermsId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "shipmentMethod",
+     "target": "shipmentMethod",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "shipmentMethodId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "customerReturnReason",
+     "target": "customerReturnReason",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "customerReturnReasonId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "dimensionSetLines",
+     "target": "dimensionSetLine",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "salesCreditMemoLines",
+     "target": "salesCreditMemoLine",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "documentId"
+      ]
+     ]
+    },
+    {
+     "name": "pdfDocument",
+     "target": "pdfDocument",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "attachments",
+     "target": "attachment",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "documentAttachments",
+     "target": "documentAttachment",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    }
+   ]
+  },
+  "salesInvoiceLines": {
+   "entity_type": "salesInvoiceLine",
+   "scope": "company",
+   "parents": [
+    "salesInvoices"
+   ],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "documentId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "sequence",
+     "type": "Edm.Int32",
+     "nullable": true
+    },
+    {
+     "name": "itemId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "accountId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "lineType",
+     "type": "enum:invoiceLineAggLineType",
+     "nullable": true
+    },
+    {
+     "name": "lineObjectNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "description",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "description2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "unitOfMeasureId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "unitOfMeasureCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "quantity",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "unitPrice",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "discountAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "discountPercent",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "discountAppliedBeforeTax",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "amountExcludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "taxCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "taxPercent",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "totalTaxAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "amountIncludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "invoiceDiscountAllocation",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "netAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "netTaxAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "netAmountIncludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "shipmentDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "itemVariantId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "locationId",
+     "type": "Edm.Guid",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "salesInvoice",
+     "target": "salesInvoice",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "documentId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "item",
+     "target": "item",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "itemId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "account",
+     "target": "account",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "accountId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "unitOfMeasure",
+     "target": "unitOfMeasure",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "unitOfMeasureId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "itemVariant",
+     "target": "itemVariant",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "itemVariantId",
+       "id"
+      ],
+      [
+       "lineObjectNumber",
+       "itemNumber"
+      ]
+     ]
+    },
+    {
+     "name": "dimensionSetLines",
+     "target": "dimensionSetLine",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "location",
+     "target": "location",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "locationId",
+       "id"
+      ]
+     ]
+    }
+   ]
+  },
+  "salesInvoices": {
+   "entity_type": "salesInvoice",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "number",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "externalDocumentNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "invoiceDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "postingDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "dueDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "promisedPayDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "customerPurchaseOrderReference",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "customerId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "customerNumber",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "customerName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToCustomerId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "billToCustomerNumber",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "shipToName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToContact",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "sellToAddressLine1",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "sellToAddressLine2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "sellToCity",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "sellToCountry",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "sellToState",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "sellToPostCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToAddressLine1",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToAddressLine2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToCity",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToCountry",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToState",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToPostCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToAddressLine1",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToAddressLine2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToCity",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToCountry",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToState",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToPostCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "currencyId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "shortcutDimension1Code",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shortcutDimension2Code",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "currencyCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "orderId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "orderNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "paymentTermsId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "shipmentMethodId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "salesperson",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "disputeStatusId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "disputeStatus",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "pricesIncludeTax",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "remainingAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "discountAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "discountAppliedBeforeTax",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "totalAmountExcludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "totalTaxAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "totalAmountIncludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "status",
+     "type": "enum:invoiceEntityAggregateStatus",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    },
+    {
+     "name": "phoneNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "email",
+     "type": "Edm.String",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "customer",
+     "target": "customer",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "customerId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "currency",
+     "target": "currency",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "currencyId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "dimensionValue",
+     "target": "dimensionValue",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "shortcutDimension1Code",
+       "code"
+      ]
+     ]
+    },
+    {
+     "name": "paymentTerm",
+     "target": "paymentTerm",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "paymentTermsId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "shipmentMethod",
+     "target": "shipmentMethod",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "shipmentMethodId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "dimensionSetLines",
+     "target": "dimensionSetLine",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "salesInvoiceLines",
+     "target": "salesInvoiceLine",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "documentId"
+      ]
+     ]
+    },
+    {
+     "name": "pdfDocument",
+     "target": "pdfDocument",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "attachments",
+     "target": "attachment",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "documentAttachments",
+     "target": "documentAttachment",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    }
+   ]
+  },
+  "salesOrderLines": {
+   "entity_type": "salesOrderLine",
+   "scope": "company",
+   "parents": [
+    "salesOrders"
+   ],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "documentId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "sequence",
+     "type": "Edm.Int32",
+     "nullable": true
+    },
+    {
+     "name": "itemId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "accountId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "lineType",
+     "type": "enum:invoiceLineAggLineType",
+     "nullable": true
+    },
+    {
+     "name": "lineObjectNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "description",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "description2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "unitOfMeasureId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "unitOfMeasureCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "quantity",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "unitPrice",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "discountAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "discountPercent",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "discountAppliedBeforeTax",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "amountExcludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "taxCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "taxPercent",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "totalTaxAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "amountIncludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "invoiceDiscountAllocation",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "netAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "netTaxAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "netAmountIncludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "shipmentDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "shippedQuantity",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "invoicedQuantity",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "invoiceQuantity",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "shipQuantity",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "itemVariantId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "locationId",
+     "type": "Edm.Guid",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "salesOrder",
+     "target": "salesOrder",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "documentId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "item",
+     "target": "item",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "itemId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "account",
+     "target": "account",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "accountId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "unitOfMeasure",
+     "target": "unitOfMeasure",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "unitOfMeasureId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "itemVariant",
+     "target": "itemVariant",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "itemVariantId",
+       "id"
+      ],
+      [
+       "lineObjectNumber",
+       "itemNumber"
+      ]
+     ]
+    },
+    {
+     "name": "dimensionSetLines",
+     "target": "dimensionSetLine",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "location",
+     "target": "location",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "locationId",
+       "id"
+      ]
+     ]
+    }
+   ]
+  },
+  "salesOrders": {
+   "entity_type": "salesOrder",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "number",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "externalDocumentNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "orderDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "postingDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "customerId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "customerNumber",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "customerName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToCustomerId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "billToCustomerNumber",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "shipToName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToContact",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "sellToAddressLine1",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "sellToAddressLine2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "sellToCity",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "sellToCountry",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "sellToState",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "sellToPostCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToAddressLine1",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToAddressLine2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToCity",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToCountry",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToState",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToPostCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToAddressLine1",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToAddressLine2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToCity",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToCountry",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToState",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToPostCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shortcutDimension1Code",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shortcutDimension2Code",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "currencyId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "currencyCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "pricesIncludeTax",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "paymentTermsId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "shipmentMethodId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "salesperson",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "partialShipping",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "requestedDeliveryDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "discountAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "discountAppliedBeforeTax",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "totalAmountExcludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "totalTaxAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "totalAmountIncludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "fullyShipped",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "status",
+     "type": "enum:salesOrderEntityBufferStatus",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    },
+    {
+     "name": "phoneNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "email",
+     "type": "Edm.String",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "customer",
+     "target": "customer",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "customerId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "dimensionValue",
+     "target": "dimensionValue",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "shortcutDimension1Code",
+       "code"
+      ]
+     ]
+    },
+    {
+     "name": "currency",
+     "target": "currency",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "currencyId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "paymentTerm",
+     "target": "paymentTerm",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "paymentTermsId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "shipmentMethod",
+     "target": "shipmentMethod",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "shipmentMethodId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "dimensionSetLines",
+     "target": "dimensionSetLine",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "salesOrderLines",
+     "target": "salesOrderLine",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "documentId"
+      ]
+     ]
+    },
+    {
+     "name": "pdfDocument",
+     "target": "pdfDocument",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "attachments",
+     "target": "attachment",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "documentAttachments",
+     "target": "documentAttachment",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    }
+   ]
+  },
+  "salesQuoteLines": {
+   "entity_type": "salesQuoteLine",
+   "scope": "company",
+   "parents": [
+    "salesQuotes"
+   ],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "documentId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "sequence",
+     "type": "Edm.Int32",
+     "nullable": true
+    },
+    {
+     "name": "itemId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "accountId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "lineType",
+     "type": "enum:invoiceLineAggLineType",
+     "nullable": true
+    },
+    {
+     "name": "lineObjectNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "description",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "description2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "unitOfMeasureId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "unitOfMeasureCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "unitPrice",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "quantity",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "discountAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "discountPercent",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "discountAppliedBeforeTax",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "amountExcludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "taxCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "taxPercent",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "totalTaxAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "amountIncludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "netAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "netTaxAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "netAmountIncludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "itemVariantId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "locationId",
+     "type": "Edm.Guid",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "salesQuote",
+     "target": "salesQuote",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "documentId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "item",
+     "target": "item",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "itemId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "account",
+     "target": "account",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "accountId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "unitOfMeasure",
+     "target": "unitOfMeasure",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "unitOfMeasureId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "itemVariant",
+     "target": "itemVariant",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "itemVariantId",
+       "id"
+      ],
+      [
+       "lineObjectNumber",
+       "itemNumber"
+      ]
+     ]
+    },
+    {
+     "name": "dimensionSetLines",
+     "target": "dimensionSetLine",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "location",
+     "target": "location",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "locationId",
+       "id"
+      ]
+     ]
+    }
+   ]
+  },
+  "salesQuotes": {
+   "entity_type": "salesQuote",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "number",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "externalDocumentNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "documentDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "postingDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "dueDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "customerId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "customerNumber",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "customerName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToCustomerId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "billToCustomerNumber",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "shipToName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToContact",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "sellToAddressLine1",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "sellToAddressLine2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "sellToCity",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "sellToCountry",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "sellToState",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "sellToPostCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToAddressLine1",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToAddressLine2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToCity",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToCountry",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToState",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToPostCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToAddressLine1",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToAddressLine2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToCity",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToCountry",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToState",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToPostCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shortcutDimension1Code",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shortcutDimension2Code",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "currencyId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "currencyCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "paymentTermsId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "shipmentMethodId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "salesperson",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "discountAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "totalAmountExcludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "totalTaxAmount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "totalAmountIncludingTax",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "status",
+     "type": "enum:salesQuoteEntityBufferStatus",
+     "nullable": true
+    },
+    {
+     "name": "sentDate",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    },
+    {
+     "name": "validUntilDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "acceptedDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    },
+    {
+     "name": "phoneNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "email",
+     "type": "Edm.String",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "customer",
+     "target": "customer",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "customerId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "dimensionValue",
+     "target": "dimensionValue",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "shortcutDimension1Code",
+       "code"
+      ]
+     ]
+    },
+    {
+     "name": "currency",
+     "target": "currency",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "currencyId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "paymentTerm",
+     "target": "paymentTerm",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "paymentTermsId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "shipmentMethod",
+     "target": "shipmentMethod",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "shipmentMethodId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "dimensionSetLines",
+     "target": "dimensionSetLine",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "salesQuoteLines",
+     "target": "salesQuoteLine",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "documentId"
+      ]
+     ]
+    },
+    {
+     "name": "pdfDocument",
+     "target": "pdfDocument",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "attachments",
+     "target": "attachment",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "documentAttachments",
+     "target": "documentAttachment",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    }
+   ]
+  },
+  "salesShipmentLines": {
+   "entity_type": "salesShipmentLine",
+   "scope": "company",
+   "parents": [
+    "salesShipments"
+   ],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "documentId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "documentNo",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "sequence",
+     "type": "Edm.Int32",
+     "nullable": true
+    },
+    {
+     "name": "lineType",
+     "type": "enum:salesLineType",
+     "nullable": true
+    },
+    {
+     "name": "lineObjectNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "description",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "description2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "unitOfMeasureCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "unitPrice",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "quantity",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "discountPercent",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "taxPercent",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "shipmentDate",
+     "type": "Edm.Date",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "salesShipment",
+     "target": "salesShipment",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "documentId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "dimensionSetLines",
+     "target": "dimensionSetLine",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    }
+   ]
+  },
+  "salesShipments": {
+   "entity_type": "salesShipment",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "number",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "externalDocumentNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "invoiceDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "postingDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "dueDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "customerPurchaseOrderReference",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "customerId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "customerNumber",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "customerName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToCustomerId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "billToName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToCustomerNumber",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "shipToName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToContact",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "sellToAddressLine1",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "sellToAddressLine2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "sellToCity",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "sellToCountry",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "sellToState",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "sellToPostCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToAddressLine1",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToAddressLine2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToCity",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToCountry",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToState",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "billToPostCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToAddressLine1",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToAddressLine2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToCity",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToCountry",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToState",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipToPostCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "currencyCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "orderNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "paymentTermsCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "shipmentMethodCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "salesperson",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "pricesIncludeTax",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    },
+    {
+     "name": "phoneNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "email",
+     "type": "Edm.String",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "customer",
+     "target": "customer",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "customerId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "salesShipmentLines",
+     "target": "salesShipmentLine",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "documentId"
+      ]
+     ]
+    },
+    {
+     "name": "pdfDocument",
+     "target": "pdfDocument",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "attachments",
+     "target": "attachment",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "documentAttachments",
+     "target": "documentAttachment",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "dimensionSetLines",
+     "target": "dimensionSetLine",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    }
+   ]
+  },
+  "shipmentMethods": {
+   "entity_type": "shipmentMethod",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "code",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "displayName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    }
+   ],
+   "navigation": []
+  },
+  "unitsOfMeasure": {
+   "entity_type": "unitOfMeasure",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "code",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "displayName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "internationalStandardCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "symbol",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    }
+   ],
+   "navigation": []
+  },
+  "vendorPaymentJournals": {
+   "entity_type": "vendorPaymentJournal",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "code",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "displayName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "balancingAccountId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "balancingAccountNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "vendorPayments",
+     "target": "vendorPayment",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "journalId"
+      ]
+     ]
+    }
+   ]
+  },
+  "vendorPayments": {
+   "entity_type": "vendorPayment",
+   "scope": "company",
+   "parents": [
+    "vendorPaymentJournals"
+   ],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "journalId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "journalDisplayName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "lineNumber",
+     "type": "Edm.Int32",
+     "nullable": true
+    },
+    {
+     "name": "vendorId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "vendorNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "postingDate",
+     "type": "Edm.Date",
+     "nullable": true
+    },
+    {
+     "name": "documentNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "externalDocumentNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "amount",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "appliesToInvoiceId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "appliesToInvoiceNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "description",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "comment",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "customerPaymentJournal",
+     "target": "customerPaymentJournal",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "journalId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "vendor",
+     "target": "vendor",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "vendorId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "dimensionSetLines",
+     "target": "dimensionSetLine",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "applyVendorEntries",
+     "target": "applyVendorEntry",
+     "collection": true,
+     "contained": true,
+     "constraints": []
+    },
+    {
+     "name": "vendorPaymentJournal",
+     "target": "vendorPaymentJournal",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "journalId",
+       "id"
+      ]
+     ]
+    }
+   ]
+  },
+  "vendors": {
+   "entity_type": "vendor",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "number",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "displayName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "addressLine1",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "addressLine2",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "city",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "state",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "country",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "postalCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "phoneNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "email",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "website",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "taxRegistrationNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "currencyId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "currencyCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "irs1099Code",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "paymentTermsId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "paymentMethodId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "taxLiable",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "blocked",
+     "type": "enum:vendorBlocked",
+     "nullable": true
+    },
+    {
+     "name": "balance",
+     "type": "Edm.Decimal",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "currency",
+     "target": "currency",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "currencyId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "paymentTerm",
+     "target": "paymentTerm",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "paymentTermsId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "paymentMethod",
+     "target": "paymentMethod",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "paymentMethodId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "picture",
+     "target": "picture",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "defaultDimensions",
+     "target": "defaultDimension",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "agedAccountsPayable",
+     "target": "agedAccountsPayable",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "vendorId"
+      ]
+     ]
+    },
+    {
+     "name": "contactsInformation",
+     "target": "contactInformation",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "relatedId"
+      ]
+     ]
+    },
+    {
+     "name": "documentAttachments",
+     "target": "documentAttachment",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    }
+   ]
+  }
+ },
+ "enum_types": {
+  "analysisSourceType": [
+   "_x0020_",
+   "Customer",
+   "Vendor",
+   "Item"
+  ],
+  "contactBusinessRelation": [
+   "_x0020_",
+   "Customer",
+   "Vendor",
+   "Bank_x0020_Account",
+   "Employee",
+   "None",
+   "Other",
+   "Multiple"
+  ],
+  "contactType": [
+   "Company",
+   "Person"
+  ],
+  "countryRegionAddressFormat": [
+   "Post_x0020_Code_x002B_City",
+   "City_x002B_Post_x0020_Code",
+   "City_x002B_County_x002B_Post_x0020_Code",
+   "Blank_x0020_Line_x002B_Post_x0020_Code_x002B_City",
+   "City_x002B_County_x002B_New_x0020_Line_x002B_Post_x0020_Code",
+   "Post_x0020_Code_x002B_City_x002B_County",
+   "Custom"
+  ],
+  "customerBlocked": [
+   "_x0020_",
+   "Ship",
+   "Invoice",
+   "All"
+  ],
+  "genJournalDocumentType": [
+   "_x0020_",
+   "Payment",
+   "Invoice",
+   "Credit_x0020_Memo",
+   "Finance_x0020_Charge_x0020_Memo",
+   "Reminder",
+   "Refund"
+  ],
+  "glAccountCategory": [
+   "_x0020_",
+   "Assets",
+   "Liabilities",
+   "Equity",
+   "Income",
+   "Cost_x0020_of_x0020_Goods_x0020_Sold",
+   "Expense"
+  ],
+  "glAccountType": [
+   "Posting",
+   "Heading",
+   "Total",
+   "Begin_x002D_Total",
+   "End_x002D_Total"
+  ],
+  "invoiceEntityAggregateStatus": [
+   "_x0020_",
+   "Draft",
+   "In_x0020_Review",
+   "Open",
+   "Paid",
+   "Canceled",
+   "Corrective"
+  ],
+  "invoiceLineAggLineType": [
+   "Comment",
+   "Account",
+   "Item",
+   "Resource",
+   "Fixed_x0020_Asset",
+   "Charge",
+   "Allocation_x0020_Account"
+  ],
+  "itemLedgerDocumentType": [
+   "_x0020_",
+   "Sales_x0020_Shipment",
+   "Sales_x0020_Invoice",
+   "Sales_x0020_Return_x0020_Receipt",
+   "Sales_x0020_Credit_x0020_Memo",
+   "Purchase_x0020_Receipt",
+   "Purchase_x0020_Invoice",
+   "Purchase_x0020_Return_x0020_Shipment",
+   "Purchase_x0020_Credit_x0020_Memo",
+   "Transfer_x0020_Shipment",
+   "Transfer_x0020_Receipt",
+   "Service_x0020_Shipment",
+   "Service_x0020_Invoice",
+   "Service_x0020_Credit_x0020_Memo",
+   "Posted_x0020_Assembly",
+   "Inventory_x0020_Receipt",
+   "Inventory_x0020_Shipment",
+   "Direct_x0020_Transfer"
+  ],
+  "itemLedgerEntryType": [
+   "Purchase",
+   "Sale",
+   "Positive_x0020_Adjmt_x002E_",
+   "Negative_x0020_Adjmt_x002E_",
+   "Transfer",
+   "Consumption",
+   "Output",
+   "_x0020_",
+   "Assembly_x0020_Consumption",
+   "Assembly_x0020_Output"
+  ],
+  "itemType": [
+   "Inventory",
+   "Service",
+   "Non_x002D_Inventory"
+  ],
+  "purchCrMemoEntityStatus": [
+   "Draft",
+   "In_x0020_Review",
+   "Open",
+   "Canceled",
+   "Corrective",
+   "Paid"
+  ],
+  "purchaseLineType": [
+   "_x0020_",
+   "G_x002F_L_x0020_Account",
+   "Item",
+   "Resource",
+   "Fixed_x0020_Asset",
+   "Charge_x0020__x0028_Item_x0029_",
+   "Allocation_x0020_Account"
+  ],
+  "purchaseOrderEntityBufferStatus": [
+   "Draft",
+   "In_x0020_Review",
+   "Open"
+  ],
+  "salesCrMemoEntityBufferStatus": [
+   "Draft",
+   "In_x0020_Review",
+   "Open",
+   "Canceled",
+   "Corrective",
+   "Paid"
+  ],
+  "salesLineType": [
+   "_x0020_",
+   "G_x002F_L_x0020_Account",
+   "Item",
+   "Resource",
+   "Fixed_x0020_Asset",
+   "Charge_x0020__x0028_Item_x0029_",
+   "Allocation_x0020_Account",
+   "Service_x0020_Object"
+  ],
+  "salesOrderEntityBufferStatus": [
+   "Draft",
+   "In_x0020_Review",
+   "Open"
+  ],
+  "salesQuoteEntityBufferStatus": [
+   "Draft",
+   "Sent",
+   "Accepted",
+   "Expired_x0020_"
+  ],
+  "vendorBlocked": [
+   "_x0020_",
+   "Payment",
+   "All"
+  ]
+ }
+}

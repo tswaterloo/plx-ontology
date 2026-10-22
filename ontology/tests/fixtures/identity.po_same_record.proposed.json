@@ -1,0 +1,113 @@
+{
+ "id": "identity.po_same_record",
+ "description": "Firm Portal-BC purchase-order twins (ontology.identity_scoring.corroborate_po_twins, the twins build step) over the session's live projection: scripts.po_twin_probe opens ontology.session_projection's {session_state}/ontology.sqlite read-only and, offline with no client, counts the BC purchase orders, the number-text leads of PurchaseOrder.same_record_as, the corroborated same_record rows the build wrote, and judges every lead again without writing (outcome per code: firm, ambiguous, rejected, already_firm, lineage_not_authority, number_not_exact, supplier_conflict, supplier_not_agreed, supplier_ambiguous, conflict, no_secondary_agreement), with up to three samples as outcome, feature names and evidence counts per scheme. It also records leads per number-series pair (lead_shapes, masked) and the supplier verdicts the outcomes imply. Pass = exit 0, at least one BC order with a firm twin (a firm count of 0 is never a pass), nothing written through the connection, and the written firm twins equal the leads judged firm now. Counts, codes and scheme names only; never a value, key, identifier, citation or name. Live-unverified until the verifier records a result.",
+ "source": "portal-workbench-api+business-central",
+ "cadence": "daily",
+ "tier": "deterministic_tools",
+ "command": [
+  "python3",
+  "-m",
+  "scripts.po_twin_probe",
+  "--store",
+  "{session_state}/ontology.sqlite",
+  "--samples",
+  "3"
+ ],
+ "timeout_seconds": 600,
+ "requires_env": [
+  "BC_TENANT_ID",
+  "BC_CLIENT_ID",
+  "BC_CLIENT_SECRET",
+  "BC_ENVIRONMENT"
+ ],
+ "optional_env": [
+  "PLX_WORKBENCH_API_URL",
+  "PLX_WORKBENCH_API_KEY"
+ ],
+ "expect": {
+  "exit_code": 0,
+  "json_fields": [
+   "open_pos",
+   "bc_pos",
+   "bc_pos_with_lead",
+   "bc_pos_with_firm_twin",
+   "leads",
+   "firm_twins",
+   "judged_firm",
+   "outcomes",
+   "conflicts",
+   "samples",
+   "lead_shapes",
+   "supplier_verdicts"
+  ],
+  "json_equals": {
+   "links_written": 0,
+   "firm_mismatch": 0
+  },
+  "json_min": {
+   "bc_pos_with_firm_twin": 1
+  }
+ },
+ "expect_blocked": {
+  "exit_code": 0,
+  "json_fields": [
+   "sources_blocked"
+  ]
+ },
+ "blocked_when": "sources_blocked",
+ "record": [
+  "open_pos",
+  "bc_pos",
+  "bc_pos_with_lead",
+  "bc_pos_with_firm_twin",
+  "leads",
+  "leads_judged",
+  "firm_twins",
+  "judged_firm",
+  "outcomes",
+  "conflicts",
+  "firm_mismatch",
+  "links_written",
+  "samples",
+  "sources_blocked",
+  "evidence_label",
+  "seconds",
+  "lead_shapes",
+  "supplier_verdicts"
+ ],
+ "record_keys": [
+  "open_pos",
+  "outcomes",
+  "samples",
+  "lead_shapes",
+  "supplier_verdicts"
+ ],
+ "record_enums": [
+  "sources_blocked",
+  "evidence_label"
+ ],
+ "notes": "Registered, live-unverified: no verifier result yet. Module test: isolated-fixture (ontology/tests/test_po_identity_firm.py runs this spec's argv over a synthetic projection and checks it with live_verify.check_expectations). A firm count of 0 fails. On the flagship captured state it is 0: every lead pairs a BC PO###### number with the Portal order whose number was rewritten to it, and the supplier names conflict on 180 of 186 (the date or total on 6); the vendor-number masks differ, so no code is compared. Reader is the service; the read tools apply each reader's scope on top (corroborated links fall to lead when a reader cannot read what they cite).",
+ "requires": [
+  "ontology.session_projection"
+ ],
+ "session_audience": {
+  "/ontology.sqlite": {
+   "sources": [
+    "business-central",
+    "portal-workbench-api"
+   ],
+   "env": [
+    "BC_CLIENT_ID",
+    "BC_CLIENT_SECRET",
+    "BC_ENVIRONMENT",
+    "BC_TENANT_ID",
+    "PLX_WORKBENCH_API_KEY",
+    "PLX_WORKBENCH_API_URL"
+   ],
+   "reader": "service"
+  }
+ },
+ "session_reads": [
+  "/ontology.sqlite"
+ ]
+}

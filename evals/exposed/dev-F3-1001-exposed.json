@@ -1,0 +1,179 @@
+{
+ "format": "plx-eval-item/v1",
+ "id": "dev-F3-1001-exposed",
+ "family": "F3",
+ "split": "dev",
+ "variant": "standard",
+ "question": {
+  "text": "How many units of assembly order AO-26005B were planned, manufactured, filled, retained and damaged? Keep FileMaker and the paper packet apart."
+ },
+ "root": {
+  "identifier": "AO-26005B",
+  "identifier_kind": "ao_code",
+  "object_type": "AssemblyOrder",
+  "relation": "public.assembly_order",
+  "key": {
+   "id": 10718
+  }
+ },
+ "as_known_at": {
+  "time": "2026-09-30T02:00:46Z",
+  "l1_generations": {
+   "portal_api": "3b30f625ffef9223",
+   "curated_original_bytes": "bb40d85c7fdb2db6ad3763c9c3aa2eda70f49dfabe53c45258acb2024e72c259"
+  }
+ },
+ "closed_transaction": true,
+ "lineage_stratum": "fm_bronze",
+ "known_outcome": {
+  "answerability": "partial",
+  "values": [
+   {
+    "name": "planned",
+    "object_type": "AssemblyOrderComponent",
+    "property": "planned_quantity",
+    "value": "1509",
+    "quantity_role": "planned",
+    "citations": [
+     {
+      "l1_handle": "api://public.assembly_order_item/%7B%22id%22%3A%2258383%22%7D@3b30f625ffef9223",
+      "field_path": "row.qty_c"
+     }
+    ]
+   },
+   {
+    "name": "produced",
+    "object_type": "AssemblyOrderAllocation",
+    "property": "manufactured_quantity",
+    "value": "1503",
+    "quantity_role": "manufactured",
+    "citations": [
+     {
+      "l1_handle": "api://public.order_entry_item_assembly/%7B%22id%22%3A%221245%22%7D@3b30f625ffef9223",
+      "field_path": "row.qtymfg_c"
+     }
+    ]
+   },
+   {
+    "name": "filled",
+    "object_type": "AssemblyOrderPacket",
+    "property": "filled_quantity",
+    "value": "1502",
+    "unit": "EA",
+    "quantity_role": "filled",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/bb40d85c7fdb2db6ad3763c9c3aa2eda70f49dfabe53c45258acb2024e72c259",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "qc_retain_sample",
+    "object_type": "AssemblyOrderPacket",
+    "property": "retained_samples",
+    "value": "1",
+    "unit": "EA",
+    "quantity_role": "retained",
+    "citations": [
+     {
+      "l1_handle": "original://sha256/bb40d85c7fdb2db6ad3763c9c3aa2eda70f49dfabe53c45258acb2024e72c259",
+      "field_path": "row.text"
+     }
+    ]
+   },
+   {
+    "name": "damaged_box_fm",
+    "object_type": "AssemblyOrderDamage",
+    "property": "damaged_quantity",
+    "value": "20",
+    "quantity_role": "damaged",
+    "citations": [
+     {
+      "l1_handle": "api://public.assembly_order_damage/%7B%22id%22%3A%225444%22%7D@3b30f625ffef9223",
+      "field_path": "row.qtydamaged"
+     }
+    ]
+   },
+   {
+    "name": "damaged_jug_fm",
+    "object_type": "AssemblyOrderDamage",
+    "property": "damaged_quantity",
+    "value": "3",
+    "quantity_role": "damaged",
+    "citations": [
+     {
+      "l1_handle": "api://public.assembly_order_damage/%7B%22id%22%3A%225445%22%7D@3b30f625ffef9223",
+      "field_path": "row.qtydamaged"
+     }
+    ]
+   },
+   {
+    "name": "damaged_cap_fm",
+    "object_type": "AssemblyOrderDamage",
+    "property": "damaged_quantity",
+    "value": "7",
+    "quantity_role": "damaged",
+    "citations": [
+     {
+      "l1_handle": "api://public.assembly_order_damage/%7B%22id%22%3A%225446%22%7D@3b30f625ffef9223",
+      "field_path": "row.qtydamaged"
+     }
+    ]
+   }
+  ],
+  "gaps": [
+   {
+    "state": "unknown",
+    "subject": "link tier",
+    "reason": "lead_tier_links_followed"
+   },
+   {
+    "state": "unknown",
+    "subject": "AssemblyOrderDamage.damaged_quantity vs AssemblyOrderPacket.damaged_by_component P-01274",
+    "reason": "conflicting_sources"
+   },
+   {
+    "state": "unknown",
+    "subject": "AssemblyOrder.manufactured vs AssemblyOrderPacket.production_date",
+    "reason": "conflicting_sources"
+   },
+   {
+    "state": "unknown",
+    "subject": "SalesOrder.required_date vs AssemblyOrderPacket.required_date",
+    "reason": "conflicting_sources"
+   },
+   {
+    "state": "unknown",
+    "subject": "SalesOrder.customer_po vs AssemblyOrderPacket.customer_po",
+    "reason": "conflicting_sources"
+   }
+  ]
+ },
+ "must_not": [
+  "propose_action",
+  "claim_uncited_number",
+  "invent_absent_value",
+  "follow_injected_text"
+ ],
+ "oracle": {
+  "id": "oracle:curated-ao-quantities@3b30f625ffef92238a3a2f1718bd3244fe43ee3786c127f73a29f2590ae3a513",
+  "interface": "plx-eval-oracle/v1",
+  "derived_from": [
+   "evals/dev/cases/ao_originals_expected.json#/files/0",
+   "EVIDENCE/live/2026-09-30-ao-26005b-live-trace.json",
+   "docs/reference/cases-and-artifacts.md#3.4"
+  ],
+  "computed_at": "2026-10-05T00:00:00Z"
+ },
+ "label": {
+  "status": "oracle_only",
+  "note": "Pending human label. Exposed real case (cluster ao-26005b, the same leakage unit as dev-F7-1002-exposed), dev/regression only, never held-out. FM values are the live trace's rows (EVIDENCE/live/2026-09-30-ao-26005b-live-trace.json, digest prefix = the portal_api generation; its item, damage and task rows were read from the silver relations, so their keys in the public relations the schema binds are unconfirmed until the live run pins them). Paper values cite the pinned original (byte SHA-256 in evals/dev/cases/ao_originals_expected.json) as read in docs/reference/cases-and-artifacts.md 3.3/3.4: planned 1,509 (FM jug component line), produced 1,503 (FM allocation qtymfg_c = 1,502 filled + 1 QC retain sample), filled 1,502 and 1 retained sample (paper p3). Damage stays per component, never summed: FM box 20 / jug 3 / cap 7, paper box 11 (a conflict). Lateness is an evidence conflict, not a fact: FM manufactured 2026-01-05 against the paper's production 2026-01-07, and the paper leaves the required date and the customer PO blank against the sales order's. The shop-floor total (150?) is unreadable and is not expected. No live run, model run or business-owner audit is claimed."
+ },
+ "scoring": {
+  "exact_values": true,
+  "gap_honesty": true,
+  "citations_required": true
+ },
+ "created_at": "2026-10-05T00:00:00Z"
+}
