@@ -18,8 +18,8 @@ Known gaps:
 ## v0.2 (2026-10-22)
 
 Added:
-- Root README: business objective, use cases, processes and folder map.
-- `context/` folder: how-to guide, release notes, feedback log.
+- A front page with how to use it, what's new and all 11 use cases.
+- A simple how-to guide, these release notes and one feedback log.
 
 Must keep working:
 - Everything in v0.1.
@@ -27,8 +27,7 @@ Must keep working:
 ## v0.1 (initial import)
 
 Added:
-- Ontology schemas, computed business model, read-only connectors, operator
-  console, use-case evals and tests.
+- The business model, the question console and the use cases.
 
 Known gaps:
 - Some use-case evals still run on synthetic fixtures, not live PLX data.
