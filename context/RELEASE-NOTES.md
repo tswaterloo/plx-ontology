@@ -15,6 +15,23 @@ Must keep working:
 Known gaps:
 ```
 
+## v0.4 (2026-10-26)
+
+Added:
+- Late purchase orders come first on the home list, longest late first. A PO is late when its requested date has passed and it is not fully received.
+- Purchase orders in Business Central and the Portal are matched through the FileMaker PO number ("Your Reference"), so one order can be followed across both systems.
+- Landed cost uses the duty PLX actually paid (from customs broker charges in Sage) when it is recorded, and says when it falls back to a rule or a default.
+- HS codes are proposed from item descriptions for people to confirm; a proposal is never treated as fact until someone confirms it.
+
+Changed:
+- Duty rules from the business (incoterms, US to Canada) are marked as provisional until confirmed.
+
+Must keep working:
+- Everything in v0.3.
+
+Known gaps:
+- Few HS codes or countries of origin are recorded in PLX systems today, so most duty figures come from actual broker charges or a labelled default.
+
 ## v0.3 (2026-10-22)
 
 Added:
