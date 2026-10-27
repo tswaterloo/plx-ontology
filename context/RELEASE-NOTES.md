@@ -15,6 +15,31 @@ Must keep working:
 Known gaps:
 ```
 
+## v0.6 (2026-10-27)
+
+Added:
+- Mail from every mailbox and Teams chats and channels are read, and chats and channels are linked to the people in them.
+- "Who is working on this order?" and "What did we last tell this supplier, and who said it?" are answered from mail, Teams and Mission Control, with the messages cited.
+- R&D: the bi-weekly R&D agenda is assembled from its chats, tasks and lists; sample requests link to raw materials and suppliers; ingredient lists are matched to one formula version, and mix-ups are flagged.
+- A late purchase order shows which customer orders depend on it. Finance readers also see the margin at stake.
+- When two systems disagree about the same purchase order, both values are shown and the answer says which one it trusts.
+- Purchasing staff can see purchase order line prices. Margins and other finance figures stay with Finance.
+
+Changed:
+- Answers state only what they could check against a source. Anything they could not check is listed as not confirmed.
+- Late-order answers come back in about 2 seconds and cite every late line.
+- Each answer says how old its data is.
+
+Fixed:
+- Some accounting amounts were visible to everyone. They are now limited to Finance.
+
+Must keep working:
+- Everything in v0.5.
+
+Known gaps:
+- Scanned attachments are read for text later, not straight away.
+- Older mail is being read in stages.
+
 ## v0.5 (2026-10-27)
 
 Added:
