@@ -21,7 +21,6 @@ Added:
 - Mail from every mailbox and Teams chats and channels are read, and chats and channels are linked to the people in them.
 - "Who is working on this order?" and "What did we last tell this supplier, and who said it?" are answered from mail, Teams and Mission Control, with the messages cited.
 - R&D: the bi-weekly R&D agenda is assembled from its chats, tasks and lists; sample requests link to raw materials and suppliers; ingredient lists are matched to one formula version, and mix-ups are flagged.
-- A late purchase order shows which customer orders depend on it. Finance readers also see the margin at stake.
 - When two systems disagree about the same purchase order, both values are shown and the answer says which one it trusts.
 - Purchasing staff can see purchase order line prices. Margins and other finance figures stay with Finance.
 
@@ -37,6 +36,7 @@ Must keep working:
 - Everything in v0.5.
 
 Known gaps:
+- Showing which customer orders depend on a late purchase order, and the margin at stake, is built and being checked on live data.
 - Scanned attachments are read for text later, not straight away.
 - Older mail is being read in stages.
 
