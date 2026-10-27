@@ -15,6 +15,23 @@ Must keep working:
 Known gaps:
 ```
 
+## v0.5 (2026-10-27)
+
+Added:
+- Every table the Portal serves (248) is now part of the model and can be searched, not only the main ones.
+- Mission Control projects, buckets and tasks are read in full, so questions about internal work can cite them.
+- Landed cost gives a total for every purchase order. When PLX has no recorded freight or duty for an order, the figure is estimated from PLX's own history and clearly marked as an estimate, with what it was based on.
+
+Changed:
+- Answers quote files and mail more reliably, and say plainly what they could not confirm.
+- New data from every connected system is read continuously.
+
+Must keep working:
+- Everything in v0.4.
+
+Known gaps:
+- Freight charges in the books rarely name a purchase order, so freight is mostly an estimate until a link is recorded.
+
 ## v0.4 (2026-10-26)
 
 Added:
