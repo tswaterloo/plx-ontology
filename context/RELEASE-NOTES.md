@@ -15,6 +15,32 @@ Must keep working:
 Known gaps:
 ```
 
+## v0.8 (2026-10-28)
+
+Added:
+- Process maps saved as web pages can now be read and quoted, including the Expired Material, Screening and Quote-to-Order maps.
+- Asking about a use case by name brings up that use case's own documents first.
+- An answer can give a total or a difference of figures from a document, and quotes each figure it used.
+
+Changed:
+- Document search is much faster. Most searches now take a few seconds instead of up to a minute.
+- Units are understood however they are written, such as grams, kg, tonnes or pcs. When a unit cannot be checked, the answer shows the number without a unit.
+- A date printed without a year is used only when the document shows the year clearly.
+- When a file has no readable text, the answer says so instead of treating the file as empty.
+- When an answer holds back a value it could not check, it keeps the rest of the answer and says what is missing.
+
+Fixed:
+- Some correct figures from tables and from scanned documents were refused.
+- A note the agent wrote about what it could not find was sometimes lost.
+
+Must keep working:
+- Everything in v0.7.
+
+Known gaps:
+- The data is still as of 27 October. Newer data arrives once the Workbench moves to its larger machine, which is being set up now.
+- Mission Control tasks created since 27 October are not read yet.
+- The brand-requirements map is not in any folder the Workbench reads.
+
 ## v0.7 (2026-10-28)
 
 Added:
