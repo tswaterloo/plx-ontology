@@ -15,6 +15,34 @@ Must keep working:
 Known gaps:
 ```
 
+## v0.7 (2026-10-28)
+
+Added:
+- Late-order answers now cite the emails, files and Teams messages that name the order, when you are allowed to see them.
+- Case briefs shared in Teams chats can be opened by the people in those chats.
+- Document search finds files by what they say, not only by their file name.
+
+Changed:
+- Answers come back much faster. Most questions now take under a minute.
+- The late-order home list loads in seconds instead of many minutes.
+- When the sources answer part of a question, the answer gives that part with its sources and lists what is missing, instead of giving up.
+- An answer says when it rests on only part of a long file.
+- Each late order appears once on the home list, even when two systems hold it.
+
+Fixed:
+- Some late-order answers did not list the late lines.
+- An order whose lines are all received is no longer called late because another system still shows it open.
+- Landed cost shows again for every late order.
+- Some scanned order forms could not be read.
+
+Must keep working:
+- Everything in v0.6.
+
+Known gaps:
+- The data is as of the afternoon of 27 October. Newer data arrives once the Workbench moves to its larger machine.
+- A few case files are still not readable.
+- The margin at stake is not shown for the current late orders, because no customer order uses their items yet.
+
 ## v0.6 (2026-10-27)
 
 Added:
