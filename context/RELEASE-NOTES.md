@@ -32,6 +32,8 @@ Changed:
 Fixed:
 - Some correct figures from tables and from scanned documents were refused.
 - A note the agent wrote about what it could not find was sometimes lost.
+- Some correct totals were worked out but then left out of the answer.
+- When a document contradicts itself, the answer now says so and cites both places.
 
 Must keep working:
 - Everything in v0.7.
