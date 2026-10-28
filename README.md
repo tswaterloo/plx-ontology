@@ -16,6 +16,11 @@ Full guide: [`context/HOW-TO-USE.md`](context/HOW-TO-USE.md).
 
 ## What's new
 
+- **v0.8:** process maps saved as web pages can be read; asking about a use case brings up its own documents first; much faster search; totals worked out from documents, with each figure quoted.
+- **v0.7:** faster answers; late-order answers cite the emails, files and Teams messages about the order; partial answers with sources instead of giving up.
+- **v0.6:** all mail and Teams read; "who is working on this order?" answered with the messages cited; answers state only what they could check.
+- **v0.5:** every Portal table (248) in the model; Mission Control read in full; landed cost for every purchase order.
+- **v0.4:** late purchase orders first on the home list; one order followed across Business Central and the Portal.
 - **v0.3:** a full page for every use case in [`use-cases/`](use-cases/).
 - **v0.2:** this page, a simple how-to guide, release notes and one feedback log.
 - **v0.1:** first version: the business model, the console and the use cases below.
