@@ -12,11 +12,11 @@ mirror's relation-family audience (default deny) runs before any fill, read or
 count: an actor without a grant gets the mirror's ``not_visible`` denial and no
 rows, no counts. Nothing here writes Portal, any other system or a case.
 
-Rules (deterministic, documented in devloop/CASE-RUNTIME.md section 4):
+Rules (deterministic):
 
 * Origin, from ``custom_fields`` of the cited row only, mirroring the Portal
   (petralabx/plx-customer-portal staging@8da33e4, the cited files unchanged
-  since 6c9415973; ``devloop/CONTEXT/03-PORTAL.md`` sections 3.2-3.4 and 9):
+  since 6c9415973):
   Sage-backed as in the JS predicate
   ``lib/wms/sage-ship-queue.ts:isSageBackedSalesOrder`` (not Portal's SQL
   helpers, which differ): ``sageOrdUniq`` or ``sageSourceOrdUniq`` non-empty

@@ -473,7 +473,7 @@ class McSourcesTests(unittest.TestCase):
                  ("tool", "forbidden"): ("source_error", "tool_forbidden"),
                  ("tool", "invalid_query"): ("source_error", "tool_invalid_query"),
                  ("tool", "PO100234 gone"): ("source_error", "tool_other"),
-                 # Each no-retry producer names its own cause (directive a3950d4456df).
+                 # Each no-retry producer names its own cause.
                  ("http", 400): ("source_error", "http_400"),
                  ("http", 404): ("source_error", "http_404"),
                  ("rpc", "oops"): ("source_error", "jsonrpc_code_invalid")}
@@ -1033,7 +1033,7 @@ class LiveCheckSpecTests(unittest.TestCase):
                       lv.check_expectations(SPEC, code, document))
 
     def test_the_spec_command_run_as_main_resolves_handles_and_prints_json(self):
-        # The live verifier runs the command as ``__main__`` (devloop/live_verify.py
+        # The live verifier runs the command as ``__main__`` (the live verifier
         # ENV_GUARD, ``runpy``). Resolving the captured handles loads the capture
         # adapters, which import this module again: two registered ``mission_control``
         # kinds raised ``source_kind_conflict`` after a complete capture, so the run

@@ -1,6 +1,6 @@
 {
  "format": "plx-source-scope/v1",
- "_usage": "Decided source scope for scripts/source_registry.py: a scope (<system>.<kind>, or one registry entry id, which wins) -> the devloop/DECISIONS record (status: decided) that puts it out of scope. Its entries get status out_of_scope and leave the gaps document's uncovered list. A decision file that is missing or not decided is refused.",
+ "_usage": "Its entries get status out_of_scope and leave the gaps document's uncovered list. A decision file that is missing or not decided is refused.",
  "out_of_scope": {
   "external.env_group": "devloop/DECISIONS/2026-10-07-external-infra-ops-not-sources.md",
   "external.env_group:GITHUB": "devloop/DECISIONS/2026-10-07-source-scope-out-of-scope.md",

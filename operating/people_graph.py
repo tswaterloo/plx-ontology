@@ -12,8 +12,7 @@ produced (``resolver``), and they decide nobody's access: whatever a primitive w
 the reader (a mailbox, a marking, a Teams conversation) never reaches them, so a person's link
 to a conversation the reader may not read is never formed, not even counted.
 
-**Person.** One employee, resolved conservatively (decision
-``devloop/DECISIONS/2026-10-27-people-graph-person-fields.md``):
+**Person.** One employee, resolved conservatively:
 
 * A shared key joins observations into one person, and only a shared key: an Entra object id
   (a Teams author's ``from.user.id``, a captured mailbox's id) or a mail address, joined

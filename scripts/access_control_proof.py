@@ -1,14 +1,13 @@
 """Live check ``access.control_proof``: no employee is served another person's mail or Teams
 content, a finance-only file to a reader without finance clearance, or anything of an
-excluded person (ROADMAP A6: ``denied_leaks`` 0 with real employee identities).
+excluded person.
 
 ``python3 -m scripts.access_control_proof [--default-host-config FILE]`` reads the host the
 way its sessions serve it (``PLX_WORKBENCH_HOST_CONFIG``, ``PLX_WORKBENCH_STATE_DIR``; with
 no host config in the environment, ``--default-host-config``: the live spec names the
 verifier's host, and ``host_config_from`` says which was read): the mail, Teams and SharePoint
 captures, the employee policy and the Portal access snapshot (the in-repo role model,
-``plx-portal-access-snapshot/v1``, since the reporting API does not serve the Portal role
-tables: devloop/PERMISSIONS.md blocker 3). Every active snapshot user of the policy's tenant
+``plx-portal-access-snapshot/v1``). Every active snapshot user of the policy's tenant
 is a reader (at most ``MAX_READERS``, ordered by a digest of the object id); every reader
 asks for up to ``MAX_TARGETS`` stored records of each kind through every consumer that
 serves a citation: ``CaseRuntime.resolve_citation`` (whose refusal is the typed reason),

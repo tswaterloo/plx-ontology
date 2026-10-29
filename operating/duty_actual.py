@@ -393,7 +393,7 @@ def actual_freight_for_po_line(po: Any, po_rates: Mapping[str, Mapping[str, Any]
 
 def choose_duty(actual: Mapping[str, Any] | None, cited: Mapping[str, Any]) -> dict[str, Any]:
     """Which duty a landed cost uses, and why: an actual recorded duty first, then a recorded
-    HS x origin rate, then a provisional owner rule, then the labelled default. ``cited`` is
+    HS x origin rate, then a provisional business rule, then the labelled default. ``cited`` is
     ``hs_tariff.cite_duty``'s answer. ``basis`` says which; ``rate`` is None on a gap."""
     if actual is not None:
         return {"basis": BASIS_ACTUAL, "rate": Decimal(actual["rate"]), "actual": actual,

@@ -1,6 +1,6 @@
 """Remote MCP host: Streamable HTTP for many employees, each request an Entra-signed-in one.
 
-Lead decision devloop/DECISIONS/2026-10-05-employee-door.md (D1). The host serves the
+The host serves the
 tools of the stdio host (``operating.mcp_server``, the same ``MCPServer`` per session)
 at one endpoint, ``/mcp``, as an OAuth 2.0 resource server (MCP authorization, spec
 revision 2025-06-18):
@@ -12,7 +12,7 @@ revision 2025-06-18):
   (``session_identity.replay_guard_for``, shared with the console) and the employee is
   resolved through the employee resolver (Portal role ∩ Entra groups, the PLX-confirmed
   policy file; item ACLs on every read), so a revoked employee is refused on the next
-  request. There is no fallback principal and no fixture identity (10-DECISION #7).
+  request. There is no fallback principal and no fixture identity.
 * 401 carries ``WWW-Authenticate: Bearer resource_metadata=...`` and the RFC 9728
   metadata is served at ``/.well-known/oauth-protected-resource`` (and its ``/mcp``
   suffix form): the authorization server is the tenant's Entra v2 endpoint.
@@ -27,8 +27,8 @@ revision 2025-06-18):
   confirmation form) is answered as a short SSE stream (the request, then the
   response). GET (no server stream is offered) is 405; DELETE ends a session.
 * Bound to loopback only: a non-loopback address is refused at start-up. Where a
-  production host runs, and its TLS, is decided: Tailscale Funnel
-  (devloop/DECISIONS/2026-10-08-employee-host-hosting.md); nothing is deployed.
+  production host runs, and its TLS, is decided: Tailscale Funnel;
+  nothing is deployed.
 * An ``Origin`` header (a browser) must be one of ``--allowed-origin`` (DNS rebinding).
 
 One request at a time (``http.server.HTTPServer``): the case runtime's SQLite stores
@@ -36,7 +36,7 @@ are used from the serving thread only.
 
 Evidence: isolated-fixture (tokens signed in the tests with a generated key, JWKS
 injected); live-unverified (no Workbench Entra app registration, no
-GroupMember.Read.All, Portal RBAC rows unserved: devloop/PERMISSIONS.md blockers 1-3).
+GroupMember.Read.All).
 """
 
 from __future__ import annotations

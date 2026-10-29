@@ -1,4 +1,4 @@
-"""Real-agent accuracy (lane real-agent-accuracy): the product fixes behind the causes the
+"""Real-agent accuracy: the product fixes behind the causes the
 classification of the real agent's fixture answers found (``evals/bench/real_agent_failures.json``).
 
 Evidence label: ``isolated-fixture``. Every test drives the product boundary an MCP client
@@ -352,7 +352,7 @@ class HomeRuleCoverageTests(unittest.TestCase):
                 self.assertFalse(found["completeness"]["complete"])
 
     def test_a_skip_a_hidden_record_caused_is_not_counted_so_it_hints_at_nothing(self):
-        # Review of b665a049: a skip over an identity cluster was counted against every
+        # A skip over an identity cluster was counted against every
         # member, so a reader of one member learnt that a record it may not read (a twin
         # disputing the need date, a lead from a hidden confirmation, a value at a marking
         # it does not hold) made the rule skip. Each hidden part below is the whole cause

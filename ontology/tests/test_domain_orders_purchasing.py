@@ -1,6 +1,6 @@
-"""Curated domain files ontology/schema/domains/orders.json and purchasing.json (lane L5a).
+"""Curated domain files ontology/schema/domains/orders.json and purchasing.json (L5a).
 
-Acceptance (09-CRITIQUE lane table, L5a): each file validates against the C0 format; 0
+Acceptance (L5a): each file validates against the C0 format; 0
 orphan links; every link binding has evidence; an authority rule on every property with
 two or more sources. On top of that this module checks the cross-references the C0
 format leaves to the loader: property sources, event times, link bindings and event
@@ -10,7 +10,7 @@ is open; upstream citations use the pinned commit. The C0 format, the live Porta
 relation keys and the named link contracts are checked for every domain file in
 test_curated_domains.
 
-Customer, Supplier and Product belong to the catalog_parties domain (lane L5b). Until
+Customer, Supplier and Product belong to the catalog_parties domain (L5b). Until
 that file exists, links into it are recorded as pending against the exact type and
 binding ids listed in CROSS_DOMAIN; once it exists they must resolve like any other link.
 """
@@ -31,7 +31,7 @@ IDENTIFIERS = ROOT / "ontology/schema/identifiers.json"
 OWN = ("orders", "purchasing")
 
 # Types these files link to that another domain declares: type -> (owning domain,
-# binding ids this lane relies on). Recorded in devloop/OPEN-DECISIONS.md.
+# binding ids this module relies on).
 CROSS_DOMAIN = {
     "Customer": ("catalog_parties", {"portal.app_customer", "portal.fm_customer",
                                      "portal.sage_ar_customer", "bc.customers"}),
@@ -504,7 +504,7 @@ def row_passes(where: list[dict], row: dict) -> bool:
 
 
 class IdentityRepairs(unittest.TestCase):
-    """Identity-tier repairs from the review of 413a0bb (orders/purchasing side)."""
+    """Identity-tier repairs (orders/purchasing side)."""
 
     @staticmethod
     def binding(name, binding_id):

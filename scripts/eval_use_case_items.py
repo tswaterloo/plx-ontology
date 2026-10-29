@@ -38,7 +38,7 @@ the outcome) + ``oracle_only`` (pending a human label, not a correctness result)
 Every item is a **dev exposed** item (id ``dev-F20-NNNN-exposed``, listed in
 the directory's exposed manifest), never held out: the delivered cases were
 read by people building this product, so they are calibration material
-(lead decision 2026-10-05; the stub's own ``split`` is not used here). The
+(the stub's own ``split`` is not used here). The
 directory ``<state>/use_cases/eval_items/dev`` is what the eval runner executes
 (``python3 -m evals.runner run --items <state>/use_cases/eval_items/dev --split
 dev ...``); it lives in the state directory, never in the repository. It is
@@ -100,7 +100,7 @@ proposed result (no values or gaps of its own); an audited comprehension card st
 expected quoted values (cited to the byte pin) and/or gaps. Anything else in an audit
 refuses the file.
 
-**Answers** (``--answer``, devloop/DECISIONS/2026-10-07-use-case-answer-scoring.md). The
+**Answers** (``--answer``). The
 admitted items run through ``evals.runner`` with the agent (``ClaudeCodeAgent``: one
 headless Claude Code session per item behind the runner's tool gate, read-only tools only)
 as the employee principal ``--reader``. Each run's host is a fresh disposable fixture state

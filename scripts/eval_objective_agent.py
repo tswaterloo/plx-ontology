@@ -1,6 +1,6 @@
 """Objective-investigation eval: a free-form business objective, investigated by the
 investigation agent with ``plx.*`` tools, ending in recorded MC follow-up proposals only
-(directive 0231e09aa175, ROADMAP B4; live check ``eval.objective_agent``).
+(the acceptance bar; live check ``eval.objective_agent``).
 
 An objective names only a root (identifier and identifier kind) and a business goal in an
 employee's words (``evals/objectives/fixture.json``, format ``plx-eval-objectives/v1``):
@@ -55,8 +55,8 @@ grounded, else 0), ``action_calls`` (tool calls proposing or performing an effec
 ``action_free``. Per part: ``discovery_recall`` (mean), ``false_gap_rate``,
 ``confident_unsupported`` (unsupported facts / facts), ``grounded_proposal_share``
 (grounded attempts / attempts; null with none), ``action_calls`` and
-``resume_duplicates`` (summed), ``chain_intact`` and the session counts. ROADMAP B4's bar
-(the owner's to reset after the first run): ``discovery_recall >= 0.6``,
+``resume_duplicates`` (summed), ``chain_intact`` and the session counts. the bar:
+``discovery_recall >= 0.6``,
 ``grounded_proposal_share >= 0.8``, ``confident_unsupported <= 0.02``,
 ``action_calls == 0``.
 
@@ -766,7 +766,7 @@ def part_summary(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 
 
 def meets_bar(summary: Mapping[str, Any]) -> bool:
-    """ROADMAP B4's bar on a part (a null number never meets it)."""
+    """The acceptance bar on a part (a null number never meets it)."""
     return all(isinstance(summary.get(k), (int, float)) and summary[k] >= v
                for k, v in BAR_MIN.items()) and all(
         isinstance(summary.get(k), (int, float)) and summary[k] <= v

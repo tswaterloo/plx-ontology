@@ -55,7 +55,7 @@ from operating.tests.firewall_view import client_result
 from operating.tests.test_case_originals import FIXTURE, local_ocr_available
 
 # AO-26005B's expectations: the 2026-09-30 live trace
-# (EVIDENCE/live/2026-09-30-ao-26005b-live-trace.json; devloop/CONTEXT/02 section 3.4). They
+# (EVIDENCE/live/2026-09-30-ao-26005b-live-trace.json). They
 # belong to this test and to the evaluation data (evals/), never to product
 # code; every computed value is read from a cited row and only compared with these.
 AO_CODE, ORDER_CODE = "AO-26005B", "OR1000151885"

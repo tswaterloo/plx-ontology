@@ -43,37 +43,34 @@ theirs (``ApproverRoster.approves``; a decider must also be an admin/owner,
 carries the person's Entra object id (``oid``): MC knows the decider's oid (``actorId``,
 ``actors.ts:67`` @ 073f192) but stores only the email label, and a subject's Portal
 email may differ from the Entra alias MC shows, so separation of duties matches the
-decider to the intent's subjects by oid as well as by email
-(devloop/DECISIONS/2026-10-04-goal2-identity.md). A member without an oid cannot
+decider to the intent's subjects by oid as well as by email.
+A member without an oid cannot
 authorize (``decider_oid_unknown``).
 
-``load_approver_roster``: the committed default roster (``operating/approver_roster.json``,
-owner policy e251073ef3c5 item 3): who approves each action type of the catalog
+``load_approver_roster``: the committed default roster (``operating/approver_roster.json``): who approves each action type of the catalog
 (``operating/action_catalog.json``; ``"all"`` is every type it declares) and their MC role
 (null while no source states it: a per-call approver who decides no gate) and Entra oid,
 each with where it was read. An oid is recorded only with its source and is
 never invented: until one is read, the approver stays refused (``call_approver_oid_unknown``,
 ``decider_oid_unknown``). A host may instead resolve a null oid from Graph ``/users`` by the
-approver's UPN at its start (``integrations.graph_directory.resolve_roster``; decided item 1
-of directive 46bd612e8000): such an oid keeps its provenance (``graph_users`` and its read
+approver's UPN at its start (``integrations.graph_directory.resolve_roster``): such an oid keeps its provenance (``graph_users`` and its read
 time, ``oid_provenance``) and counts only while it is at most ``APPROVER_OID_MAX_AGE`` old at
 the moment of each check (``oid_of(email, now)``), else that approver is refused as
 unverified (``call_approver_oid_unverified``, ``decider_oid_unverified``). The roster loads
 the host's resolution once; a host whose copy aged out re-reads it through
 ``ActionApprovers.reload`` (the same load, the same one reader of the host state) at the
-check, and nothing re-reads Graph before the next host start (load-only, decision record
-devloop/DECISIONS/2026-10-04-goal2-identity.md).
+check, and nothing re-reads Graph before the next host start (load-only).
 
-``cited_sources``: the cited sources an MC call carries so its approvers see them (owner
-policy e251073ef3c5 item 1). That item gives approvers context; it authorizes no
-disclosure beyond a source's read rights (owner decision 44adf4de553a): a source's text is
+``cited_sources``: the cited sources an MC call carries so its approvers see them.
+That item gives approvers context; it authorizes no
+disclosure beyond a source's read rights: a source's text is
 quoted only when every member of the target bucket's audience (``McBucketAudience``) reads
 exactly the cited content through the Workbench's own read check, else it goes as its
 citation alone with the reason (``audience_withholding``).
 
 ``load_bucket_audiences``: who reads each MC follow-up bucket, from the committed file
 ``operating/mc_bucket_audiences.json`` that the owner states, because MC exposes no read of
-project members (devloop/DECISIONS/2026-10-08-mc-follow-up-audience.md). A host passes it as
+project members. A host passes it as
 ``mc_follow_up_audience``; each member reads as ``employee:<oid>`` through the host's own
 employee gate. Only a restricted bucket whose every MC member token is an Entra oid has an
 audience: a shared or unparented bucket, one listing an email, ``sp_*`` or directory-id
@@ -1050,7 +1047,7 @@ def _instant(value: Any) -> datetime | None:
 def _cancel_cycle(events: Sequence[Any], decided_at: Any) -> str | None:
     """Whether the (open) task was cancelled or reopened at or after the decision.
 
-    Decided (architect plan d2eca493ebe3 item 2): an approval recorded while its task was
+    Decided: an approval recorded while its task was
     cancelled does not stand once the task is reopened, and neither does one whose task was
     cancelled and reopened after it: a cancel then a reopen changes the conditions it was
     granted on, so a new approval is needed. The task is open when this runs (a closed one

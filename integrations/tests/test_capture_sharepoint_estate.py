@@ -332,7 +332,7 @@ class EstateDiscoveryTests(EstateCase):
         self.assertEqual(last["source_acl"]["status"], "read")   # served by its own grant
 
     def test_a_site_is_captured_only_when_every_library_of_it_is_walked(self):
-        # Directive a8acd47fe58c: a site was credited captured when one library was
+        # A site was credited captured when one library was
         # walked although another was cut by the time budget.
         self.drive = estate_drive(sites=(Q_SITE, ts.SITE_ID, PERSONAL_SITE), libraries={
             Q_SITE: [(ts.DRIVE, "Documents"), (ts.SITE_DRIVE, "Records")], ts.SITE_ID: [],
@@ -558,7 +558,7 @@ class EstateDiscoveryTests(EstateCase):
             self.assertIsNotNone(self.store.current(ts.DRIVE, iid), iid)
 
     def test_a_slice_shares_the_budget_over_the_walks_after_it_not_the_followed_roots(self):
-        # Review of 5df207a2d: dividing by every root left, complete ones included, gave
+        # Dividing by every root left, complete ones included, gave
         # each walk of a 224-root estate the 20 s floor though most roots only follow
         # their change feed. A complete root's follow is no walk and takes no share.
         self.capture().run(estate_scope())
@@ -960,7 +960,7 @@ REGISTRY_SITES = [{"id": f"sharepoint.site:{name}", "system": "sharepoint", "kin
 
 
 # The estate the shipped scope's CLI tests read: one walkable library per site (the
-# shipped scope excludes no library, owner rule everything, 2026-10-27).
+# shipped scope excludes no library, business rule everything, 2026-10-27).
 SHIPPED_LIBRARIES = {**LIBRARIES, Q_SITE: [(ts.DRIVE, "Documents")],
                      ts.SITE_ID: [(ts.SITE_DRIVE, "Documents")]}
 
@@ -1006,7 +1006,7 @@ class EstateCliTests(unittest.TestCase):
         self.assertTrue(report["ok"], json.dumps(report)[:1500])
         self.assertEqual(report["evidence_label"], "injected-transport")
         estate = report["estate"]
-        # The shipped scope leaves no library out (owner rule everything, 2026-10-27).
+        # The shipped scope leaves no library out (business rule everything, 2026-10-27).
         self.assertEqual((estate["libraries_planned"], estate["libraries_excluded"],
                           estate["sites_other_host"], estate["sites_personal"],
                           estate["libraries_personal_planned"],

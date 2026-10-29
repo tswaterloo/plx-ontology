@@ -153,7 +153,7 @@ STALL_RECOVERY_ITEMS = 2500  # 50 pages x 50 messages, the reader's widest mail 
 MAIL_WINDOW_ANCHORS = ("now", "newest_message")
 FOLDER_FAILURE_LIMIT = 3  # consecutive failed runs before a queued subfolder is dropped
 _REASON = re.compile(r"^[a-z_]+(?::[A-Za-z0-9_.]+){0,2}$")
-REASON_MAX = 64  # devloop.live_verify.ENUM_STRING: longer reasons are hidden there
+REASON_MAX = 64  # the live verifier.ENUM_STRING: longer reasons are hidden there
 PEOPLE_BLOCK = "blocked:people_exclusion:"  # + people_exclusion.CODES entry
 _DETAIL = re.compile(r"^[a-z0-9_]+(?:\.[a-z0-9_]+)?$")
 

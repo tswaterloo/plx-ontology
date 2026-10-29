@@ -123,7 +123,7 @@ class PackagingOracleRootTest(unittest.TestCase):
         self.assertNotIn(FM_PO, reads)
 
     def test_a_spelling_plx_find_normalises_is_the_same_row_never_a_gap(self):
-        """Direction review of d5d78266: the fixture's own spelling PO#5447 is the row
+        """The fixture's own spelling PO#5447 is the row
         ``plx.find`` resolves PO5447 to (``ontology.identifiers.normalize``), so the oracle
         reaches a verdict on it: agree on that row, disagree on any other, never a gap."""
         from ontology import identifiers

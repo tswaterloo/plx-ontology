@@ -1,4 +1,4 @@
-"""Projector + store (lane L7): a fixture mirror projected through a fixture schema.
+"""Projector + store (L7): a fixture mirror projected through a fixture schema.
 
 The L1 input is a real ``integrations.source_mirror.SourceMirror`` filled over an
 injected Workbench transport (no network) in two captures; the schema is a small
@@ -1114,7 +1114,7 @@ class FixtureGrammar:
 
 
 def ontology_tools_module():
-    """Lane L8's tools (operating/ontology_tools.py), or None until L8 lands."""
+    """L8's tools (operating/ontology_tools.py), or None until L8 lands."""
     try:
         from operating import ontology_tools
     except ImportError:

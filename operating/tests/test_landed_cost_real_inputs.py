@@ -4,7 +4,7 @@ The FileMaker replica supplier row of the order's own supplier (``tariff_c``, ``
 ``countryoforigin``) feeds the estimate's duty as a labelled assumption naming its source.
 A Sage receipt stating its own currency is the receipt. The Portal rate-settings
 ``tariff_rate`` is the default when cited. FileMaker's own ``dlt_costlanded_c`` is compared
-as counts only (agree, differ, missing). Directive 27d982d7c334: a zero receipt actual, an
+as counts only (agree, differ, missing). A zero receipt actual, an
 unreadable currency and a purchase order past the 50-line read each name their typed gap,
 and the live check's counts are disjoint, with the overlap reported. Evidence label:
 isolated-fixture (synthetic rows, never live PLX data).
@@ -396,7 +396,7 @@ class FileMakerAgreementTest(unittest.TestCase):
 
 
 class TypedGapsTest(unittest.TestCase):
-    """Directive 27d982d7c334: each of these names its typed gap, with who can give it."""
+    """Each of these names its typed gap, with who can give it."""
 
     RECEIVED = [("1.00", "100", "100"), ("3.00", "100", "100")]
 

@@ -17,7 +17,7 @@ Which knowledge service this reuses (evidence, 2026-10-05):
   counter). No embedding store, no write, no Neo4j.
 * Brain items carry ``namespaceKey`` (agentic-swarm ``apps/vmc-web/src/lib/vmc/knowledge/
   items-core.ts:70-91``); the brain has no per-employee ACL and every key reads the whole
-  non-personal corpus (``devloop/CONTEXT/05-VMC-BRAIN-TOOLS.md`` 2.10), so the Workbench
+  non-personal corpus, so the Workbench
   owns the authority.
 
 Authority (caller/namespace, decided before retrieval). A :class:`NamespaceAuthority`
@@ -44,7 +44,7 @@ and, for a multi-page read, the first page re-read at the end is unchanged (ids 
 ``updatedAt``); otherwise it is ``partial`` and nothing is marked missing.
 
 This module is the only brain-item capture path: ``integrations.mc_sources`` keeps
-``mc_search_knowledge`` hits only (``devloop/DECISIONS/2026-10-08-gov13-one-brain-capture.md``).
+``mc_search_knowledge`` hits only.
 
 Trust: every item is derived engineering/agent knowledge, an untrusted T3 lead
 (``integrations.vmc.UNTRUSTED_LEAD``), never a business fact; the ontology projects it as

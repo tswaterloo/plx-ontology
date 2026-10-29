@@ -1,4 +1,4 @@
-"""A later mail exclusion (decision 2026-10-21-mail-exclusion-retroactive).
+"""A later mail exclusion.
 
 A person excluded, or a mailbox denied, after their mail was captured: every store read
 hides it at once (``MailCaptureStore._visible``, every reader, grant holders included),

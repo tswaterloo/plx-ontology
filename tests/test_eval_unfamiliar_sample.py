@@ -5,7 +5,7 @@ Evidence label: ``injected-transport``. The oracle side reads the synthetic worl
 fetch) and the fixture BC/document ports; the product side is either an injected tool call
 or the real ``plx.find``/``plx.object`` over a projection built from the same fixture world
 through the real source mirror and projector. Nothing here is live;
-``devloop/live-checks/eval.unfamiliar_sample.json`` stays live-unverified until the live
+live check ``eval.unfamiliar_sample`` stays live-unverified until the live
 verifier records a pass.
 """
 
@@ -560,7 +560,7 @@ def one_bucket_each(test: unittest.TestCase, block: dict) -> dict:
 
 
 class AnswerCorrectnessTest(unittest.TestCase):
-    """Directive e56de121288d T2: answer correctness (three-way) beside root lookup, every
+    """Answer correctness (three-way) beside root lookup, every
     item accounted for, unscored items with their cause, and a wrong-answer bound."""
 
     def setUp(self):
@@ -1290,7 +1290,7 @@ class BuildShareAndCoverageTest(unittest.TestCase):
 
 
 class EveryKindRuleTest(unittest.TestCase):
-    """Owner rule 9ef52816ab90: the check passes only when each kind (eight, with the
+    """The check passes only when each kind (eight, with the
     three-way kind) has a scored passing item; a kind without one fails, named, never
     silently."""
 
@@ -1464,7 +1464,7 @@ def fixture_bc_sender(world):
 
 
 class PortalOutageTest(unittest.TestCase):
-    """Directive cfac66676d88 T6: with the Portal down (HTTP 500 on every route) the
+    """With the Portal down (HTTP 500 on every route) the
     product captures BC itself, projects it by generation and answers BC-rooted items
     through the case host's tools; the Portal strata are blocked upstream with their
     counts. Green means every kind passed (rule every_kind): a run that meets the outage
@@ -1721,7 +1721,6 @@ class UpstreamBlockTest(unittest.TestCase):
         check = {"id": spec["id"], "result": "fail", "detail": detail}
         lifted = live_verify.build_report([], [check], root=ROOT, main_sha="abc",
                                           previous_main_sha=None)["eval"][spec["id"]]
-        # names, not {"count": n}: the Dot sees which sources a failing kind tried
         self.assertEqual(lifted["sources_tried"], tried)
         self.assertNotIn("example.invalid", json.dumps(report["eval"]))
 
@@ -1811,7 +1810,7 @@ class ProductPathTest(unittest.TestCase):
 
 
 class SessionProjectionTest(unittest.TestCase):
-    """Owner order 42ad51823f9c (ii): the daily build took 736 s of the 1500 s run (live
+    """The daily build took 736 s of the 1500 s run (live
     2026-10-14 13:22Z) and cut sales_order and sharepoint by the budget. With the verifier
     session's projection committed in this session, the spec's own argv neither syncs,
     captures nor projects and sampling gets the build's share; without one the run builds
@@ -2585,8 +2584,8 @@ class KindSliceTest(unittest.TestCase):
             recorded = live_verify._recorded(spec, dict(report, evidence_label="live-read"))
             self.assertEqual(recorded["eval"]["missing_reference"]["sales_order"], cause)
             causes[probes] = cause
-        # every probe made until the kind stopped on BC_MISS_STOP consecutive misses
-        # (decision 89aed11571b0): the mismatch it measured, with the probes it no longer made
+        # every probe made until the kind stopped on BC_MISS_STOP consecutive misses:
+        # the mismatch it measured, with the probes it no longer made
         # counted bc_miss_stop, the same with the 150 shared probes as with any budget
         from evals.oracle.cross_sample import BC_MISS_STOP
         for probes in (10_000, 150):
@@ -2878,7 +2877,7 @@ class BcNativeSalesOrderRootTest(unittest.TestCase):
 
 
 class TypedBlockedKindTest(unittest.TestCase):
-    """ROADMAP A3 (gap-ca4afaf72198): a kind left without items for a declared cause is
+    """gap-ca4afaf72198: a kind left without items for a declared cause is
     typed blocked, per kind with its block code (mail: search refused while the directory
     consent is a later_ask; receipt: no reference while the served app_receipt reads 0
     rows). It never counts as resolved. Only receipt may stay typed blocked and pass (7 of 8

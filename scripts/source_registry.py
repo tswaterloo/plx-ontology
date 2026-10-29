@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""PLX source registry (lane PT6): every PLX system and connection, and how far the
+"""PLX source registry: every PLX system and connection, and how far the
 ontology covers each of them.
 
 The registry, ``ontology/source_registry.json`` (format ``plx-source-registry/v1``), is
 extracted from the upstream repositories at the repo-level pins of
-``devloop/upstream-pins.json`` (``repo_pins``) with local git reads only. Nothing in it is
+the upstream pin file (``repo_pins``) with local git reads only. Nothing in it is
 typed by hand: regenerating at the same pins reproduces it byte for byte. Entry kinds:
 
 * ``portal`` ``api_route``: every Next.js route handler of the Portal repo (id = its
@@ -85,7 +85,7 @@ recorded as ``bound_data_read`` and credits nothing). A route's
 stages are those of its data: each holds only when it holds for every model and relation.
 An entry's ``status`` is the highest stage whose predecessors all hold, or a terminal
 status (``TERMINAL``): ``out_of_scope`` (``ontology/source_scope.json`` names its entry id,
-or its ``<system>.<kind>``, with the decided ``devloop/DECISIONS`` record behind it; the
+or its ``<system>.<kind>``, the
 entry id wins), ``not_a_data_source`` (a route that names no data and reaches neither data
 nor a data client, not even through the shared layer) or ``auth_layer_only`` (a route whose
 only data is the shared auth layer's, which stays tracked as its ``prisma_model`` entries:
@@ -94,8 +94,8 @@ route with data and an unresolved table stops at declared with reason
 ``unresolved_relation``; one with a ``search_path_relations`` table stops there with reason ``search_path_unresolved``,
 or ``not_resolvable`` when no pinned catalog describes the client's database (ahead of ``reaches_data_client``; behind ``unresolved_relation`` when it has data keys). An entry whose only data keys are action types, each on a served
 target, is terminal ``bound_action``: an action is verified by read-back on each call
-(its action type's ``verification``), never captured or evaluated as data
-(``devloop/DECISIONS/2026-10-08-gen-mc-registry-mcp-coverage.md``); an entry with data
+(its action type's ``verification``), never captured or evaluated as data;
+an entry with data
 keys too goes through the data stages on those keys alone. A terminal entry is not a gap
 and not in the coverage denominator: the entries of the kinds with an ontology schema (``SCHEMA_KINDS``: data a
 source family binds); MCP tools, hosts, environment groups, SDKs and web-service actions
@@ -132,9 +132,9 @@ shallow checkout needs the pinned commit fetched (``git fetch --depth 1 origin <
 entries were edited by hand, or, where every checkout holds its pinned commit, when a
 regeneration differs; a missing checkout skips only that last comparison. Live results
 default to ``results/latest.json`` and ``results/daily/latest.json`` of
-``origin/claude/devloop-live`` (the newer run of a check wins); ``--live`` reads files.
+``origin/the live-results branch (the newer run of a check wins); ``--live`` reads files.
 
-Gaps for ``devloop/gaps.py`` (the gap ledger's one coverage path): ``gaps(registry, live,
+``Gaps(registry, live,
 RepoFacts(root))`` in process, where ``root`` holds the ``FACT_INPUTS`` files read from Git at
 the ledger's ref, or ``gaps --out FILE``; format ``plx-source-gaps/v1``:
 
@@ -361,7 +361,7 @@ _DATA_CLIENT = re.compile(r"""@prisma/client|\bnew\s+PrismaClient\b|\bfrom\s+["'
                           r"""\brequire\(\s*["']pg["']\s*\)|graph\.microsoft\.com|""" + _BC_FILE.pattern)
 _SDK = re.compile(r"(?:^|[@/-])(?:sdk|client|api)(?:$|[/-])")
 
-# Live-check ``source`` tokens (``devloop/live-checks/*.json``) -> the registry systems and
+# Live-check ``source`` tokens (the live-check specs*.json``) -> the registry systems and
 # binding source families whose names their results can carry; ``LiveIndex`` adds the
 # families the bindings declaring those systems' entries read (``RepoFacts.system_families``).
 LIVE_SOURCES = {
@@ -1591,7 +1591,7 @@ def _strings(value: Any, out: set[str]) -> set[str]:
 
 
 def registry_names(specs_dir: Path = SPECS_DIR) -> dict[str, Mapping[str, Sequence[str]]]:
-    """Check id -> its spec's ``registry_names`` (``devloop/live_verify.py`` validates it)."""
+    """Check id -> its spec's ``registry_names`` (the live verifier validates it)."""
     out = {}
     for path in sorted(specs_dir.glob("*.json")):
         spec = json.loads(path.read_text(encoding="utf-8"))

@@ -1,6 +1,6 @@
 """The case host's 22-tool listing after the host-budget merges (operating/case_tools_host.py).
 
-devloop/DECISIONS/2026-10-03-host-tool-budget.md phase 1: each retired case tool's
+Each retired case tool's
 capability is reached through its successor, for the same reader and no wider:
 
 * plx.source_citation -> plx.read: intra-page paging by text_offset with the whole

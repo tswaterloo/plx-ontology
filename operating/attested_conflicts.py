@@ -31,7 +31,7 @@ a ``currency_*`` / ``tax_basis_*`` gap, never a conflict and never a match; noth
 converted. Every conflict is ``tier`` ``lead``, never authoritative. A record value cited by a ``bc://`` handle
 names its Business Central company (``bc_companies``: the company GUID and the book its
 lineage names); when every compared record value comes from Business Central (no Portal
-row reached, lead decision D2) the note says so.
+row reached) the note says so.
 
 A value the document states that the attested records hold empty is no conflict but a
 ``missing_in_record`` lead (REC-01): the document's value first (with the page and span

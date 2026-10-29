@@ -2,8 +2,8 @@
 
 A BC order's lines carry their price as ``directUnitCost`` (``PurchaseOrderLine.
 bc_direct_unit_cost``, finance), never the Portal's ``unit_price``: the plan reads either,
-so a BC-rooted line is priced, not UNPRICED_LINE. The price carries ``purchasing_prices``
-(owner decision 2026-10-27): a purchasing reader without the finance marking reads it, but
+so a BC-rooted line is priced, not UNPRICED_LINE. The price carries ``purchasing_prices``:
+a purchasing reader without the finance marking reads it, but
 not the header's shipping estimate (finance); a reader holding neither gets the price named
 withheld (``marking_withheld``, UNIT_PRICE_WITHHELD), never ``not_carried`` or UNPRICED_LINE,
 and no amount anywhere in its answer. The order's Portal record names the

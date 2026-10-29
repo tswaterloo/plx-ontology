@@ -1,6 +1,6 @@
 """Real-agent eval: Claude Code at k=1 on the product's MCP case host (tier ``real_agent``).
 
-Directive dd40ff1bf83f P10 and amendment bb664f58910f section 2 (metric tiers): measure the
+Measure the
 real agent against the deterministic baseline, small and at most daily (it spends the
 operator's Claude Code plan; no paid API).
 
@@ -40,8 +40,7 @@ and stop rules (``evals.runner.build_prompt``: cite or give a gap, never act). I
   them as any other setting, and ``eval.live.host_provisioned`` names the ones it was
   given (``PLX_WORKBENCH_HOST_PROVISIONED``; names only, never a value; ``[]`` when none).
   An identity that is set but invalid is ``blocked:
-  reader_identity_invalid``, never the eval principal (the ticket source is decided in
-  ``devloop/DECISIONS/2026-10-07-live-agent-metric-reader-ticket.md``).
+  reader_identity_invalid``, never the eval principal.
   Before any source is read the host must accept the reader: one harness session lists
   the tools; a reader the host's resolver refuses as an employee (``READER_REFUSALS``:
   inactive, unverified, not in the Portal snapshot, refused by Entra) is ``blocked:
@@ -69,7 +68,7 @@ with its reader count. The harness never picks
 or adds a reader: a second reader (a cross-reader trim comparison) runs only when the
 operator names one, and this harness has no setting for it yet.
 
-**Tiers kept apart** (amendment bb664f58910f section 2): ``eval.tiers`` states each tier on
+**Tiers kept apart**: ``eval.tiers`` states each tier on
 its own, so one tier's gap never reads as another's failure: ``access`` (the reader identity
 and reader count, the oracle strata an outage blocked and the citation read gaps),
 ``capture`` (per source, the persistent host's own ledger: generation, completeness, how
@@ -104,7 +103,7 @@ accuracy (``evals.score.outcome_summary``: abstaining everywhere is coverage 0, 
 score), ``confident_unsupported`` (stated answers the claim gate refused), ``wrong_cited``
 (stated answers every claim check passed whose value still does not match the oracle: cited
 and wrong, never counted as unsupported) and the unsupported share of
-the answered runs (``confident_unsupported_rate``, the number ROADMAP B1 bounds; the three
+the answered runs (``confident_unsupported_rate``, the number the acceptance bar bounds; the three
 rates are ``evals.score.answer_rates``, the dev baseline's too), refused tool
 calls, action calls and the citations the harness could not re-read as the reader, by scheme
 (``unreadable_citations``; a run failing only on unreadable ``bc://`` citations is a
@@ -116,7 +115,7 @@ Claude Code binary, or no session that produced an answer, is a ``blocked_upstre
 answered is blocked whole and every other run is judged on the parts that ran). Output:
 counts, rates, enums only.
 
-**Ask** (``ask``, its own daily check ``devloop/live-checks/eval.ask_agent.json``): the same
+**Ask** (``ask``, its own daily check live check ``eval.ask_agent``): the same
 admitted items, the same named reader and the same scorer, answered by the object
 workspace's Ask instead of a Claude Code MCP client, through the workspace's own path
 (``operator_ui.object_workspace.ObjectWorkspace.ask_run``, the one ``ask`` shows: its question
@@ -169,7 +168,7 @@ Evidence: the fixture parts' data is ``isolated-fixture``, the live part's ``liv
 (the product side; the oracle reads live); ``agent_evidence`` says whether a real
 Claude Code session answered (``real-claude-session``) or an injected transport
 (``injected-transport``, tests; for the Ask a scripted planner). Live-unverified until the
-live verifier records ``devloop/live-checks/eval.real_agent.json`` (the Ask:
+live verifier records live check ``eval.real_agent`` (the Ask:
 ``eval.ask_agent.json``); no Ask answer from a model is recorded here.
 
 Usage::
@@ -226,7 +225,7 @@ TICKET_ENV = "PLX_EVAL_SESSION_TICKET"  # the variable a live session's ticket t
 # them the guard does not load and the host withholds every mailbox.
 EXCLUSION_ENV = ("PLX_EXCLUDED_PEOPLE_OIDS", "PLX_EXCLUDED_PEOPLE_FILE")
 # The live verifier's list of the host settings it provisioned for this run (names,
-# comma-separated, never a value: devloop/live_verify.py AGENT_PROVISIONED_ENV).
+# comma-separated, never a value: the live verifier AGENT_PROVISIONED_ENV).
 PROVISIONED_ENV = "PLX_WORKBENCH_HOST_PROVISIONED"
 HOST_SETTINGS = ("PLX_WORKBENCH_SESSION_SECRET", STATE_ENV, HOST_CONFIG_ENV)
 READER_CLAIMS = ("uid", "email", "entraTenantId", "entraObjectId")
@@ -453,7 +452,7 @@ def verdict(report: Mapping[str, Any], *, min_scored: int,
     """0 when the run completed with at least ``min_scored`` scored (non-blocked) runs and,
     when the live oracle sampled, at least ``min_live_items`` live items; or when the agent
     session itself is blocked (no binary, no session answered). Rates are printed, not
-    asserted here (the live-check spec asserts ROADMAP B1's bar on them), but read-gap runs above the tripwire, in the whole run or in any one part (its
+    asserted here (the live-check spec asserts the bar on them), but read-gap runs above the tripwire, in the whole run or in any one part (its
     ``blocked_tripwire``), fail the run (``evals.score.fail_reasons``, the dev baseline's
     rule: a part's capture lag is never diluted by another part). Blocked parts
     (``blocked_upstream``, e.g. too few roots the reader resolves) did not run and are not
@@ -1278,7 +1277,7 @@ def ask_question(item: Mapping[str, Any], run_pin: Mapping[str, Any] | None = No
     and how to state roles and unknowns; the item's question is cut so the whole fits the
     workspace's ``MAX_QUESTION`` (the workspace names the object in view). The time is the
     one ``runner.build_prompt`` states: with a run pin, the time by which the pinned
-    captures had completed (decision 2026-10-02-oracle-pinning), as the item's own time
+    captures had completed, as the item's own time
     precedes them and a read as known then finds none of their records."""
     from operator_ui.object_workspace import MAX_QUESTION
     roles, gaps = _vocabulary()

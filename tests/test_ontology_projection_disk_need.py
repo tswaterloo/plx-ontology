@@ -1,4 +1,4 @@
-"""Projection disk need (lane projection-disk-need, owner order 38b49958892d).
+"""Projection disk need.
 
 The 2026-10-16 daily stopped four projection checks with SQLITE_FULL at 21-23.6 GB free:
 one full build took about twice its store. These tests pin, over synthetic captures and

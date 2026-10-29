@@ -6,7 +6,7 @@ SYNTHETIC fixtures only: projection stores built with ``StoreBuilder`` from the 
 operating/tests/test_proactive_engine.py, the engine run over them into the inbox, read
 through a ``CaseHostTools`` whose policy and ``plx.find`` are stubbed per reader, over a
 real ``CaseRuntime`` (no upstream). Evidence label: isolated-fixture (no network, no
-business system). ``LiveCheckTest`` runs ``devloop/live-checks/connector.home.json``'s own
+business system). ``LiveCheckTest`` runs live check ``connector.home``'s own
 command over the injected-transport world of ``case.proactive_engine`` (fake Workbench and
 fake drive): injected-transport, never live.
 """
@@ -412,7 +412,7 @@ class PrimerTest(Base):
 
 
 class LiveCheckTest(unittest.TestCase):
-    """``devloop/live-checks/connector.home.json`` over injected sources: its own command
+    """live check ``connector.home`` over injected sources: its own command
     over the ``case.proactive_engine`` host config and world (fake Workbench, fake drive),
     the network refused. Evidence label: injected-transport."""
 

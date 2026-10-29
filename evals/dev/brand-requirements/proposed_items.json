@@ -47,7 +47,7 @@
      "role": "map: relations"
     }
    ],
-   "note": "The ZIP of Laura Abate's Teams message (15:43Z 19 Oct 2026), pinned from the advisory record: source_id, source_revision hash, size and the four member hashes. Name and hash only, no contents. The ZIP is registered as row co-eb9a6a206832 (origin card, examples/case_originals_card_sources.json: a Teams chat attachment pinned by that advisory record), read by scripts.case_originals read through its content URL and served behind the chat message's gate; named by BR-01 to BR-08 (the map's comprehension cards) and BR-15, so their abstention scores originals_not_held when the host does not hold these bytes."
+   "note": "The ZIP of Laura Abate's Teams message (15:43Z 19 Oct 2026), pinned from the source record: source_id, source_revision hash, size and the four member hashes. Name and hash only, no contents. The ZIP is registered as row co-eb9a6a206832 (origin card, examples/case_originals_card_sources.json: a Teams chat attachment pinned by that source record), read by scripts.case_originals read through its content URL and served behind the chat message's gate; named by BR-01 to BR-08 (the map's comprehension cards) and BR-15, so their abstention scores originals_not_held when the host does not hold these bytes."
   }
  },
  "map_counts": {
@@ -87,7 +87,7 @@
    "gap": "BR-GAP-09"
   }
  ],
- "missing_originals_note": "Typed here because the registry generator makes rows only from the Dot's baseline and delta source-pin records. not_provided: the example names it but no copy was supplied; link_pending: a link exists and was not opened; to_come: a read not yet done. None was read; a card never quotes from them.",
+ "missing_originals_note": "Typed here because the registry generator makes rows only from the baseline and delta source-pin records. not_provided: the example names it but no copy was supplied; link_pending: a link exists and was not opened; to_come: a read not yet done. None was read; a card never quotes from them.",
  "live_sources": [
   {
    "id": "portal.app_customer_requirement",

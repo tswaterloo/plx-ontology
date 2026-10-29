@@ -1,7 +1,6 @@
 """Vince's Screening Process Map case: PROPOSED dev-exposed cards and the ontology gaps they need.
 
-The contract is the Asset Tracker cards' checker, scoped to this case. The map is not a
-row of ``examples/case_originals.json``, so cards cite its advisory and the offered-gap row.
+The contract is the Asset Tracker cards' checker, scoped to this case.
 """
 
 from __future__ import annotations

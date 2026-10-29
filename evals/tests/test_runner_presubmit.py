@@ -450,7 +450,7 @@ class AnswerGateTests(unittest.TestCase):
                          ("partial", ["planned_qty"]))
 
     def test_a_unit_or_currency_the_gate_did_not_verify_is_dropped_never_the_value(self):
-        """Review of c6ce3d44b6 (A02, v7): 68160 "units" on a page that prints no unit
+        """68160 "units" on a page that prints no unit
         beside the figure came back null. The gate passes the figure with the unit
         ``unverified``: the reply keeps the value, with its checked quote, and drops only
         the unit (a currency the same)."""

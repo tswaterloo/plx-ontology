@@ -1,6 +1,6 @@
 """Case runtime: the source mirror and the case record joined for MCP clients.
 
-Implements devloop/CASE-RUNTIME.md section 3. The investigating agent is the MCP
+The investigating agent is the MCP
 client (Claude); this module only binds the two deterministic parts together:
 
 * ``integrations.source_mirror.SourceMirror`` answers catalog/rows/resolve for
@@ -12,7 +12,7 @@ The runtime resolves these citation schemes, all for the calling actor and
 after an audience check: ``api://`` rows through the mirror,
 ``original://`` originals through ``operating.case_originals.OriginalStore``
 (bytes re-hashed on every resolve), and the live sources through the read-only
-readers the host configured (``LiveReaders``, devloop/CASE-RUNTIME.md section 7):
+readers the host configured (``LiveReaders``):
 ``graph-mail://`` (``GraphMailReader``), ``sharepoint://`` (one
 ``SharePointReader`` per configured drive) and ``bc://``
 (``BusinessCentralReader``). A live scheme whose reader is not configured
@@ -292,7 +292,7 @@ def build_live_readers(audience: LiveSourceAudience | str | Path,
                        sharepoint_drives: Sequence[str] = (),
                        graph_sender: Any = None, bc_sender: Any = None,
                        sources: Collection[str] | None = None) -> LiveReaders:
-    """Readers from the environment (credential names as in WORKING-BRIEF).
+    """Readers from the environment.
 
     Graph mail + SharePoint need ``MICROSOFT_GRAPH_{TENANT,CLIENT}_ID`` and
     ``MICROSOFT_GRAPH_CLIENT_SECRET``; drives are ``SHAREPOINT_DRIVE_ID`` plus
@@ -505,8 +505,8 @@ class CaseRuntime:
         mailbox-owner ACL. A mailbox the employee does not own is denied as
         ``MAILBOX_ACCESS_UNDETERMINED``: shared and delegated (FullAccess /
         ReadPermission) mailbox access is an Exchange permission that Graph v1.0
-        does not expose, so it can be neither proven nor ruled out
-        (devloop/PERMISSIONS.md). BC exposes no record ACL. A SharePoint record
+        does not expose, so it can be neither proven nor ruled out.
+        BC exposes no record ACL. A SharePoint record
         must also pass the employee's file clearance (its security class:
         Finance, Business Central, Staff Scratch), refused like an ACL denial so
         the class is not revealed. A non-employee actor is unaffected (``None``).
@@ -976,7 +976,7 @@ class CaseRuntime:
                     "superseded_at": captured["superseded_at"]}
         return {key: captured[key] for key in ("citation", "relation", "recorded_at", "row")}
 
-    # ---- live sources (devloop/CASE-RUNTIME.md section 7) ------------------
+    # ---- live sources ------------------
 
     def _reader(self, handle: str) -> tuple[str, Any]:
         """(scheme, reader) for a live handle, or ``LiveSourceNotConfigured``."""
@@ -1332,7 +1332,7 @@ class CaseRuntime:
         return True
 
     def _captured_original_gate(self, unit: Mapping[str, Any], actor: Actor) -> bool | str:
-        """May ``actor`` read a captured case original now (owner decision 2026-10-27)?
+        """May ``actor`` read a captured case original now?
 
         The people exclusion first: a guard that cannot decide withholds every captured
         original, and a file in an excluded person's OneDrive (or one whose owner the
@@ -1347,7 +1347,7 @@ class CaseRuntime:
         (an exception, an undecided guard, no capture configured, an unreadable store):
         ``CapturedOriginals.refusal_kind`` tells the scorer which; readers see neither.
 
-        A repository file (supervisor decision 2026-10-29): the live audience's exact grant
+        A repository file: the live audience's exact grant
         of ``repo:<owner>/<name>`` to this reader, decided first (no grant, or no live
         audience: ``REFUSED``, as before the grant existed), then the people exclusion of
         the file's OneDrive owner when its source names one."""

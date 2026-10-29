@@ -1,7 +1,6 @@
 """Unfamiliar-transaction find eval: seeded cross-system roots, answered by the product.
 
-Directive 4190c1c690ce item 5 / 7f61c793591f (2d) / 4e839fb7cabf (3), live check
-``devloop/live-checks/eval.unfamiliar_sample.json``. Per run, inside one total time budget
+Per run, inside one total time budget
 (``--total-budget-seconds``, default 600; every source read and the mirror sync check it,
 and a run that hits it stops cleanly and is labelled incomplete). The build takes its
 ``--build-share`` including the projection (``--projection-reserve-seconds`` is kept back
@@ -58,7 +57,7 @@ a second one of what is left), so one slow kind never starves the others:
    and never dropped; ``eval.blocked`` counts them apart from wrong answers and exclusions,
    with blocked items, blocked kinds and blocked three-way aspects tallied separately.
 
-**Three-way kind** (``po_three_way``, directive 541a4f06b2dd). The sampler draws Portal
+**Three-way kind** (``po_three_way``). The sampler draws Portal
 purchase orders that have a Portal receipt or a sampled BC purchase invoice
 (``cross_sample.three_way_candidates``), takes the identifier from another system's record
 as above, and attaches the oracle's own reading (``evals/oracle/three_way.py``: stages
@@ -94,11 +93,11 @@ that answered: ``untemplated`` (the generic ``plx.find``, the only path today),
 ``plan-family`` (a plan executed by ``plx.investigate``) and ``scripted`` (a kind case
 script); the latter two stay ``0/0`` until such a path answers. The top-level ``eval``
 block (rates, product state, exclusions) is the shape the live verifier lifts into
-``results/latest.json`` (``devloop/live_verify.py`` ``eval_blocks``); its ``ranking`` counts
+``results/latest.json`` (the live verifier ``eval_blocks``); its ``ranking`` counts
 found_exact, found_lead and success@1 (rates over the block's ``items``, sampled, and
 ``scored``) and gives MRR over the scored items, from the root's plx.find rank.
 
-Per kind (``eval.by_kind``, owner rule 9ef52816ab90): candidates tried, references, items,
+Per kind (``eval.by_kind``): candidates tried, references, items,
 scored, each outcome (a zero count left out), and one ``status``: ``passed`` (at least one
 scored item found_exact, for the three-way kind three_way_correct), ``no_found_exact``
 (``no_correct_answer``),
@@ -120,8 +119,8 @@ entity sets, ``mail``, SharePoint paths; names only, a shape the verifier keeps;
 identifiers up in and found no record in, with a typed ``cause`` and counts
 (``missing_reference_cause``): ``budget_exhausted`` when the shared BC probe budget refused
 any BC probe of it (what was not asked measures no mismatch), else ``bc_source_mismatch`` when
-its BC probes completed, or it stopped on ``cross_sample.BC_MISS_STOP`` consecutive misses
-(decision 89aed11571b0), and BC held no copy of the roots' numbers (gap-b01a86b2f438: the live
+its BC probes completed, or it stopped on ``cross_sample.BC_MISS_STOP`` consecutive misses,
+and BC held no copy of the roots' numbers (gap-b01a86b2f438: the live
 Portal sales orders), else ``no_reference``. A Portal
 outage never crashes the run: the mirror sync's ``source_unavailable`` leaves the product
 unavailable with that status, and every item is then ``blocked: upstream``; with a state
@@ -131,7 +130,7 @@ SharePoint captures held there and only the Portal items are ``blocked: upstream
 The run fails (exit 3; ``eval.fail_reasons`` names why) unless every kind in ``KINDS`` is
 ``passed`` or typed blocked, with at least 7 passed
 (``eval.kinds_missing`` names the kinds not passed; ``blocked`` never counts as a pass). A
-typed block (``TYPED_BLOCKS``, ROADMAP A3) is a declared cause, reported per kind as
+typed block (``TYPED_BLOCKS``, the acceptance bar) is a declared cause, reported per kind as
 ``eval.by_kind.<kind>.typed_block`` and in ``eval.kinds_typed_blocked`` with its code:
 ``mail`` blocked ``search_refused`` (``later_ask:graph-mail-directory-consent``),
 ``receipt`` empty ``no_reference`` while the served ``app_receipt`` read 0 rows
@@ -152,7 +151,7 @@ when the product is unavailable or its projection holds no object, when fewer th
 items were sampled or fewer than ``--min-scored`` (20) were scored, when the budget cut the
 run, when wrong answers exceed 1/10 of the scored items (``eval.wrong_within_bound``), or
 when row data leaked (``eval.pass_rule`` ``every_kind``). When the Portal failed the
-product's whole mirror sync (``portal_outage``, directive cfac66676d88 T6) the run is still
+product's whole mirror sync (``portal_outage``) the run is still
 measured on what the product captured itself: each stratum blocked before any item counts
 its even share of ``--count`` (summed in ``eval.blocked.kinds_quota``) as sampled and
 blocked upstream in ``eval.find_root`` / ``eval.answer``, and names no
@@ -163,7 +162,7 @@ BC-rooted item (``eval.bc_rooted``) must be scored; such a run never passes: it 
 with ``eval.blocked_cause`` ``upstream_outage`` and the live check reads it ``blocked``
 (gap-51ebb6c78e90: green means rule ``every_kind``, which the spec pins).
 
-Answer correctness (directive e56de121288d T2): ``eval.answer`` (the three-way answers) and
+Answer correctness: ``eval.answer`` (the three-way answers) and
 ``eval.find_root`` (root lookup, reported apart: it is not three-way success) put every
 sampled item in one bucket: ``blocked_upstream``, ``not_held``, ``unscored_other``,
 ``product_error`` (``plx.find`` or ``plx.process`` returned a tool error: never an abstention,
@@ -226,13 +225,13 @@ PASSING = frozenset({"found_exact", "three_way_correct"})
 # Outcomes outside the rate: excluded (product or oracle could not ask) and blocked (a
 # failed upstream read touched the item); both are counted apart from wrong answers.
 UNSCORED = frozenset({"excluded", "blocked"})
-# Answer correctness (directive e56de121288d T2): a scored outcome is correct, wrong (a
+# Answer correctness: a scored outcome is correct, wrong (a
 # confident answer that disagrees with the oracle), abstain_ok (the product states the gap or
 # the ambiguity instead of choosing) or missed (no usable answer where one exists). Accuracy is
 # correct over scored, so abstaining never raises it.
 ANSWER_CLASS = {"found_exact": "correct", "three_way_correct": "correct",
                 "wrong": "wrong", "three_way_wrong": "wrong",
-                # devloop/DECISIONS/2026-10-04-t2-metric-answer-classes.md: a typed gap is an
+                # A typed gap is an
                 # honest abstention; the oracle confirms each identifier names one root, so
                 # an ambiguous find is a miss.
                 "three_way_undecided": "abstain_ok", "ambiguous": "missed",
@@ -269,14 +268,14 @@ MAX_UNDECIDED_REASONS = 6  # aspect/reason counts per kind in eval.by_kind; the 
 UNDECIDED_PREFIX = "undecided."
 MAX_SOURCES_TRIED = 4  # names per kind in eval.sources_tried; a longer list's count is apart
 MIN_SCORED = 20
-KIND_PASSED = "passed"  # the one per-kind status that passes (owner rule 9ef52816ab90)
+KIND_PASSED = "passed"  # the one per-kind status that passes
 # A kind left without items for a declared, owner-known cause is typed blocked: its line in
 # eval.by_kind carries the block code, it never counts as resolved, and under every_kind the
-# run passes with every other kind passed or a TYPED_PASSES one typed blocked (ROADMAP A3,
+# run passes with every other kind passed or a TYPED_PASSES one typed blocked (the acceptance bar,
 # gap-ca4afaf72198). kind -> (by_kind status, reasons, block code).
 # Any other unresolved kind, or a typed one whose condition no longer holds, still fails.
 # A typed block is a diagnosis; only the kinds in TYPED_PASSES may stay typed blocked and
-# still pass (ROADMAP A3: receipt). Another typed kind (mail) makes the run read blocked.
+# still pass. Another typed kind (mail) makes the run read blocked.
 TYPED_BLOCKS = {
     # Graph mail search refused for most roots while the directory consent is a later_ask
     # (only when the generator read the kind blocked upstream, ``TYPED_BLOCK_UPSTREAM``: the
@@ -1127,7 +1126,7 @@ def peak_rss_mib() -> float | None:
 
 def unscored_cause(row: Mapping[str, Any], product: Product, relation: str,
                    company: str | None = None) -> str | None:
-    """Why an item was not scored, kept apart (amendment bb664f58910f section 2):
+    """Why an item was not scored, kept apart:
     ``upstream_outage`` (a source failed the read), ``projection_timeout`` (the build ran out
     of budget or never ran, or its mirror sync was cut), ``missing_bindings`` (the product never
     captures the root's or aspects' source), ``host_misconfiguration`` (no product configured,
@@ -1502,7 +1501,7 @@ def blocked_causes(block: Mapping[str, Any]) -> list[str]:
 
 def kinds_failing(block: Mapping[str, Any]) -> list[str]:
     """The kinds of ``eval.kinds_missing`` that fail the run. Under rule ``every_kind``
-    (owner rule 9ef52816ab90, ROADMAP A3): every kind not a typed ``TYPED_PASSES`` one
+    (the acceptance bar): every kind not a typed ``TYPED_PASSES`` one
     (``eval.kinds_typed_blocked``). Under ``portal_outage`` a kind blocked upstream,
     typed blocked or without any item is excused (its stratum could not be asked), but a
     kind whose items were asked and none passed still fails."""
@@ -1638,7 +1637,7 @@ def missing_reference_cause(entry: Mapping[str, Any]) -> dict[str, Any] | None:
     ``budget_exhausted``: the shared BC probe budget refused a BC probe of the kind (checked
     first: a probe not made measures no mismatch, gap-b01a86b2f438); ``bc_source_mismatch``:
     a BC source was probed, every probe made or the kind stopped on consecutive misses
-    (``bc_finds`` probes made, all missed: a measurement, decision 89aed11571b0), and held
+    (``bc_finds`` probes made, all missed: a measurement), and held
     none of them (a source whose lookups found records that named no root is
     ``no_naming_record``, one that found no record at all ``no_record``); ``no_reference``: only
     other systems' sources were looked up."""

@@ -1151,7 +1151,7 @@ class RuntimeCitationsTests(unittest.TestCase):
         self.assertNotIn("text_not_extracted", [g["reason"] for g in whole["gaps"]])
 
     def test_a_bc_capture_read_leaves_the_output_boundary_in_contract_and_citable(self):
-        # Directive 24e7aa78f585: the boundary turned plx.read's bc:// ``fields`` into a
+        # The boundary turned plx.read's bc:// ``fields`` into a
         # row envelope ({origin, cells}), failing the tool's own contract, so the Ask loop
         # found no evidence handle in the read and could not cite the record.
         from integrations.live_source_guard import LiveSourceAudience

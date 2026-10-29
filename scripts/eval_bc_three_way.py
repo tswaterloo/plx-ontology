@@ -1,7 +1,7 @@
 """BC-only unfamiliar three-way eval: seeded BC purchase documents, answered by the product.
 
-Live check ``devloop/live-checks/eval.bc_three_way.json`` (directive e56de121288d T1,
-amendment bb664f58910f 2). It reads Business Central only (Production, GET only, through
+live check ``eval.bc_three_way``.
+It reads Business Central only (Production, GET only, through
 ``integrations.bc_read``), so it runs while the Portal reporting API is down.
 
 Per run, seeded by the run id (``live-<UTC hour>`` by default):
@@ -20,8 +20,7 @@ Per run, seeded by the run id (``live-<UTC hour>`` by default):
    (undecided when only another vendor's is); either stage ``absent`` (reason
    ``absent_in_bc``, with the read time) when its document read finds none and every Item
    line of the PO records ``receivedQuantity`` / ``invoicedQuantity`` 0, every read
-   complete (decision 2026-10-14-three-way-absence-proven: BC raises the figure when a
-   receipt / an invoice of the line posts, whether or not it names the ``orderNumber``),
+   complete (whether or not it names the ``orderNumber``),
    else undecided (an incomplete read, no Item line, an unreadable or a nonzero figure);
    and both sides per item with ``three_way``'s side rule (one-sided EPS for ordered vs
    received, exact for received vs invoiced; a one-sided item, a mixed unit or an empty
@@ -136,13 +135,13 @@ ROOT_LOOKUP = ("found_exact", "ambiguous", "wrong", "not_found", "error")
 DEFAULT_COUNT = 15
 DEFAULT_MIN_SCORED = 5
 DEFAULT_MAX_WRONG_RATE = 0.10
-# Measured on claude/devloop-live (eval.bc_three_way, 17 runs 2026-10-07/08): about 0.4 s
+# Measured on the live-results branch (eval.bc_three_way, 17 runs 2026-10-07/08): about 0.4 s
 # per GET plus about 16 s per failed attempt (requests_sent - reads.sent - 1 retries; least
 # squares), the failures rising from 0 to 24 per run with every BC check slowing alike. The
 # slowest hour (10:33Z: 128 GETs, 24 failed attempts, exhausted 480 s at 14 of 15 items)
 # replayed on an injected clock (tests/test_eval_bc_three_way.py) took 468 s for all 15
 # when excluded items read no lines; since every PO's lines are read for the absent stages
-# (decision 2026-10-14-three-way-absence-proven) it takes 549 s, so 540 s became 600 s:
+# it takes 549 s, so 540 s became 600 s:
 # about one more failed GET of margin.
 DEFAULT_BUDGET = 600.0
 DEFAULT_POOL = 200

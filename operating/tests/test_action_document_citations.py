@@ -1,6 +1,6 @@
 """A customer-PO proposal whose evidence is a byte-pinned document field, on the action path.
 
-Directive 10c0a3786831: the missing-in-record draft (operating/attested_conflicts.py) cites
+The missing-in-record draft (operating/attested_conflicts.py) cites
 the PO number a captured customer PO states (``fields.po_number.value``) in a SharePoint
 file version (``sharepoint://...#sha256=``) or a mail attachment
 (``graph-mail://...#attachment=..&sha256=``) next to the Portal order that holds no PO.
@@ -11,7 +11,7 @@ bytes through the case runtime's capture gate, re-extracted by
 ``ontology.document_fields.pinned_document_row``): the proposal registers and scores clean
 for a reader of the document and for nobody else, and bytes other than the pinned ones, or
 a read of them the capture gate now refuses, refuse it. The approver's gate reason names the
-file. Decision ``devloop/DECISIONS/2026-10-10-act-document-field-provenance.md``.
+file.
 
 Evidence label: injected-transport (Workbench API: ``FakeWorkbench``; Graph mail and
 SharePoint captures over the capture tests' in-process fakes) / isolated-fixture. No

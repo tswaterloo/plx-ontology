@@ -1,7 +1,7 @@
 {
  "schema": "plx-source-mirror-audience/v1",
  "tenant": "plx",
- "note": "EXAMPLE ONLY, not a PLX-confirmed grant: every Portal relation (the public, silver and sage schemas) the host.all_sources live check mirrors (devloop/live-checks/host.all_sources.json), for the host capture principal. Default deny: nobody else is granted anything.",
+ "note": "EXAMPLE ONLY, not a PLX-confirmed grant: every Portal relation (the public, silver and sage schemas) the host.all_sources live check mirrors (live check ``host.all_sources``), for the host capture principal. Default deny: nobody else is granted anything.",
  "default_classification": "internal",
  "audiences": {
   "public.*": [

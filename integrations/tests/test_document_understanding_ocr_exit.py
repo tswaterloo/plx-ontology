@@ -1,6 +1,5 @@
 """An OCR tool exit is a typed per-file result, never a run failure, and a re-extraction
-is a new immutable version that keeps the old citation (owner directive 4b2734959760,
-core gap C: 11 of 37 customer-PO SharePoint files read ``ocr_failed:tool_exit``).
+is a new immutable version that keeps the old citation (core gap C: 11 of 37 customer-PO SharePoint files read ``ocr_failed:tool_exit``).
 
 Injected-transport: the poppler/tesseract processes are faked at ``child_process.run``
 (evidence label ``injected-transport``; no network, no credentials, no real document).

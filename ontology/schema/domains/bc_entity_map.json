@@ -3,7 +3,7 @@
   "format": "plx-ontology-domain/v1",
   "domain": "bc_entity_map",
   "origin": "curated",
-  "description": "Portal <-> BC identity through app_bc_entity_map, the only verified link for records BC renumbered, served by the reporting API since plx-customer-portal TASK-3525 (promoted from pending/ 2026-10-27, devloop/DECISIONS/2026-10-27-flagship-margin-entity-map.md). Each link joins on the BC systemId the drain stored, so it names one record of one BC company: the company the BC end's capture is (its lineage bc_<book>).",
+  "description": "Portal <-> BC identity through app_bc_entity_map, the only verified link for records BC renumbered, served by the reporting API since plx-customer-portal TASK-3525 (promoted from pending/ 2026-10-27). Each link joins on the BC systemId the drain stored, so it names one record of one BC company: the company the BC end's capture is (its lineage bc_<book>).",
   "upstream_pins": {
     "plx-customer-portal": "c3ffda3"
   },
@@ -71,7 +71,7 @@
               "id": "portal.bc_entity_map_linked_joins"
             }
           ],
-          "note": "Only the rows the Portal's own entity-map joins read: source_system 'portal', status 'LINKED' and an entity type a link below joins through (document-finance-queries.ts, po-queries.ts, ensure-line-prices.ts; plx-customer-portal@c3ffda3), in the BC environment the Workbench captures (Production). ARCHIVED/BLOCKED rows, other entity types and other environments are not projected. C0 `via` has no row predicate, so the entity type of each link is not tested per link: every link joins on bc_system_id against one BC entity set (salesOrders, salesInvoices, purchaseOrders, items), and a BC systemId names one record of one entity set, so a row of another entity type cannot reach that set (devloop/OPEN-DECISIONS.md entity-map-via-predicates). Live 2026-10-27 (counts only): every served row is Production; 9,673 of 9,677 item rows of the captured company and 352 of 352 purchaseOrder rows match a captured BC record, so the served replica points at the captured Production records, not UAT (operating/link_contracts.json portal-entity-map-to-bc-item)."
+          "note": "Only the rows the Portal's own entity-map joins read: source_system 'portal', status 'LINKED' and an entity type a link below joins through (document-finance-queries.ts, po-queries.ts, ensure-line-prices.ts; plx-customer-portal@c3ffda3), in the BC environment the Workbench captures (Production). ARCHIVED/BLOCKED rows, other entity types and other environments are not projected. C0 `via` has no row predicate, so the entity type of each link is not tested per link: every link joins on bc_system_id against one BC entity set (salesOrders, salesInvoices, purchaseOrders, items), and a BC systemId names one record of one entity set, so a row of another entity type cannot reach that set. Live 2026-10-27 (counts only): every served row is Production; 9,673 of 9,677 item rows of the captured company and 352 of 352 purchaseOrder rows match a captured BC record, so the served replica points at the captured Production records, not UAT (operating/link_contracts.json portal-entity-map-to-bc-item)."
         }
       ],
       "properties": [
@@ -486,7 +486,7 @@
       "commit": "c3ffda3",
       "symbol": "masterBookSliceId",
       "lines": "96-110",
-      "note": "Distribution clones are keyed '{id}::distribution' (parseMasterBookSlice: no suffix = manufacturing). The book is encoded in source_id only; C0 cannot derive a company from it, so clones do not join a Portal id (devloop/OPEN-DECISIONS.md bc-entity-map-book-slice)."
+      "note": "Distribution clones are keyed '{id}::distribution' (parseMasterBookSlice: no suffix = manufacturing). The book is encoded in source_id only; C0 cannot derive a company from it, so clones do not join a Portal id."
     },
     "portal.bc_item_number": {
       "kind": "upstream_code",

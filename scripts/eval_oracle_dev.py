@@ -17,7 +17,7 @@ injected ports from the reviewed GET-only clients and hands them to ``evals.orac
 * ``fixture`` (keyless): the synthetic world in ``evals/oracle/fixture_world.py`` served
   through the same Portal client with an injected fetch (evidence ``injected-transport``);
   ``--write evals/dev`` freezes the items and a manifest there.
-* ``heldout`` (credentialed, 10-DECISION 8): the hidden held-out set, 120 items over
+* ``heldout`` (credentialed): the hidden held-out set, 120 items over
   F1-F6 (F5/F6 have no plan), roots from the held-out half of the root partition, and no
   item whose answer chain touches a record of the frozen dev set (its root or any chain
   record). The first run of a run id freezes the items and their digest list in the
@@ -93,7 +93,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = "plx-eval-oracle-dev-run/v1"
 MANIFEST_FORMAT = "plx-eval-dev-manifest/v1"
 HELDOUT_FORMAT = "plx-eval-heldout-manifest/v1"
-# The run id the live spec draws (devloop/live-checks/eval.heldout.json; v1 was frozen
+# The run id the live spec draws (live check ``eval.heldout``; v1 was frozen
 # before the metamorphic variants).
 HELDOUT_RUN_ID = "heldout-v2"
 HELDOUT_RUN_ID_SHAPE = re.compile(r"heldout-v[0-9]{1,4}")
@@ -158,7 +158,7 @@ MAX_MAIL_ATTACHMENTS = 3
 MAIL_SCAN_PAGES = 8
 MAIL_SCAN_TRIES = 2
 # A whole mailbox (no --folder) is read without the well-known folders of mail never sent
-# or received as it stands, or discarded (directive f6427307e9b0): a message there names
+# or received as it stands, or discarded: a message there names
 # nothing (``LiveDocuments._list_mail``; counted ``excluded``, never withheld). A subfolder
 # of one of them is not known as such and is read.
 EXCLUDED_MAIL_FOLDERS = ("drafts", "outbox", "deleteditems", "recoverableitemsdeletions",
@@ -1742,7 +1742,7 @@ def label_view(result: Mapping[str, Any], frozen: Mapping[str, Any] | None = Non
     return _PORTAL_GENERATION.sub(r"\1", json.dumps(result, sort_keys=True))
 
 
-MAX_LABEL_DRIFT = 0.10  # controller decision: more than 10% drifted labels fails the run
+MAX_LABEL_DRIFT = 0.10  # More than 10% drifted labels fails the run
 
 
 def heldout_ok(manifest: Mapping[str, Any]) -> bool:
@@ -2084,7 +2084,7 @@ def budget_by_stratum(documents: Any) -> dict[str, dict[str, bool]]:
 def stamp_budget(report: dict[str, Any], documents: Any, *, seconds: float,
                  hit: bool) -> None:
     """A live report's budget: exhausted when the run's deadline hit or any document
-    kind's share ran out (decision 2026-10-21-oracle-freeze-budget)."""
+    kind's share ran out."""
     report["budget_by_stratum"] = budget_by_stratum(documents)
     report["budget"] = {"seconds": seconds, "exhausted": hit or any(
         s["exhausted"] for s in report["budget_by_stratum"].values())}

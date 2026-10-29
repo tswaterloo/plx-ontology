@@ -16,7 +16,7 @@ reporting-API rows): a captured column the catalog does not serve, or an app rec
 a required Prisma field, is refused.
 
 A request follows the Portal route it mirrors, each rule pinned in
-``devloop/upstream-pins.json`` (drift-checked) at plx-customer-portal@728a995, re-read at 5cb95e1
+the upstream pin file (drift-checked) at plx-customer-portal@728a995, re-read at 5cb95e1
 and 38cd3f3 (unchanged rules; lines moved: route GET 89-111 and PATCH 114, editability.ts 45-70 and
 116-160, updateSalesOrderHeader service.ts 663-725; the PATCH also accepts ``releaseRequired``,
 which no cataloged action writes):

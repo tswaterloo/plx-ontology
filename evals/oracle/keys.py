@@ -1,11 +1,11 @@
 """Join keys, root lookups and row rules the oracle uses, as data, each with its citation.
 
-Written for the oracle lane from the Portal context pack and the Portal code it cites,
-not from any Workbench ontology or case module (09-CRITIQUE R7 c: the oracle derives
-joins only from pack 03 keys). Every rule names where it comes from; ``derived_from``
+Written for the oracle from the Portal context pack and the Portal code it cites,
+not from any Workbench ontology or case module.
+Every rule names where it comes from; ``derived_from``
 in an item lists the citations of the rules an answer actually used.
 
-Citations: ``03 §n`` = ``devloop/CONTEXT/03-PORTAL.md`` section n; ``P:path:line`` =
+``P:path:line`` =
 ``petralabx/plx-customer-portal`` staging at ``PORTAL_COMMIT`` (``portal/`` prefix
 omitted). Nothing here is a transaction or a case: edges are cross-record keys,
 root lookups are identifier kinds.
@@ -581,8 +581,7 @@ def bc_unit_code(portal_uom: object) -> str | None:
     return UOM_BC_CODE.get(token, token.upper())
 
 
-# BC identity. A BC number match is a lead (devloop/SOURCE-NOTES.md: identity is Portal's
-# app_bc_entity_map, which is not served). The oracle accepts it as identity only when all
+# BC identity. A BC number match is a lead (which is not served). The oracle accepts it as identity only when all
 # matches sit in one BC company and, for purchase invoices, the invoice vendorNumber equals
 # the PO supplier's BC Vendor No. Anything else keeps a gap, so the answer is partial.
 BC_IDENTITY_CITE = ("devloop/SOURCE-NOTES.md BC number lookups are leads; identity needs one "

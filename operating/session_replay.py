@@ -43,7 +43,7 @@ The console lists and replays them through the object workspace's case path
 
 Evidence: isolated-fixture (``tests/test_session_replay.py``: the synthetic fixture world,
 fixture employees, a scripted planner standing in for the model); the live check
-``devloop/live-checks/session.replay.json`` (``scripts.object_workspace_probe
+live check ``session.replay`` (``scripts.object_workspace_probe
 --session-replay``, a deterministic planner) is injected-transport only and
 live-unverified until the verifier records a result.
 """

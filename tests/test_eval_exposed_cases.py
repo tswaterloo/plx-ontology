@@ -181,7 +181,7 @@ class ExposedItemsTest(unittest.TestCase):
             self.assertTrue(card["id"] in converted or excluded.get(card["id"]), card["id"])
 
     def test_imported_p2p8_items_cite_the_original_their_gold_was_read_from(self):
-        # Imported from the Dot's bundle as untrusted data: the page/span gold names the
+        # Imported from the bundle as untrusted data: the page/span gold names the
         # original by byte SHA-256; the item's byte pin and every citation are that one.
         gold = _read(EXPOSED / "p2p8-field-evidence.json")
         imported = [row for row in self.manifest["items"] if "p2p8-field-evidence.json" in

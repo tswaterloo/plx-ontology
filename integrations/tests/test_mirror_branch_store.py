@@ -1,11 +1,11 @@
-"""The last complete Portal mirror on a private git ref (owner policy e251073ef3c5
-item 6, directive 013e99e52e50), over a local bare repository standing in for the
+"""The last complete Portal mirror on a private git ref,
+over a local bare repository standing in for the
 private remote.
 
 Evidence label: ``injected-transport``. Copies come from the real ``SourceMirror``
 behind the real ``WorkbenchReadApiClient`` over the source-mirror tests' SYNTHETIC
 ``FakeWorkbench``; git is real, against a temporary bare repository (never the
-repository's own remote). The verifier's attestation on claude/devloop-live is a commit
+repository's own remote). The verifier's attestation on the live-results branch is a commit
 made here (``attest``). The live check reading the ref is tested with the spec's other
 tests (``test_source_mirror_persisted.LiveCheckSpecTests``).
 """
@@ -61,7 +61,7 @@ def commit_tree(cwd, entries):
 
 
 def attest(repo, record, remote="origin"):
-    """The verifier's results commit on claude/devloop-live holding ``record`` at
+    """The verifier's results commit on the live-results branch holding ``record`` at
     ``results/mirror-attestation.json``, as the reader fetched it."""
     inner, _ = commit_tree(repo, [("100644", "blob", "mirror-attestation.json",
                                    json.dumps(record).encode())])

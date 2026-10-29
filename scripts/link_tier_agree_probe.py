@@ -4,7 +4,7 @@
         [--budget-seconds N] [--sample N] [--checks-budget-seconds N] [--live-audience FILE] \\
         [--bc-capture] [--previous-report DAILY.json] [--session-projection SESSION_DIR]
 
-GET only (09-CRITIQUE R1; ``operating.ontology_tools._effective_tier`` is the one
+GET only (``operating.ontology_tools._effective_tier`` is the one
 link-tier rule). The L7 probe (``scripts.ontology_projection_probe --build-only``) builds a
 throwaway projection (a GET-only Portal sync; with ``--bc-capture`` one GET-only BC capture)
 and lays it out as the served host state, as ``scripts.process_dependencies_probe`` does;

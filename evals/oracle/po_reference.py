@@ -1,8 +1,7 @@
 """The rule for a BC purchase order's ``Your_Reference`` naming a FileMaker/Portal PO
-number: a firm link or a lead (decision
-``devloop/DECISIONS/2026-10-27-your-reference-evidence.md``).
+number: a firm link or a lead.
 
-The link stands on data evidence, not on an owner rule. It is firm only when the match is
+The link stands on data evidence, not on an business rule. It is firm only when the match is
 unique and at least one independent field corroborates it; everything else is a lead:
 
 * unique: exactly one Portal purchase order holds the number (in the one company scope

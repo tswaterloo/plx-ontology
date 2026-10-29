@@ -832,7 +832,7 @@ class PoLatenessTest(Engine):
             "evaluated": 3, "late": 1, "at_risk": 1, "unconfirmed": 0})
 
     def test_complete_closes_with_its_remainder_cancelled_and_sage_only_is_not_open(self):
-        # Ross (advisory 15bb4af8): a Complete header is closed whatever was received, the
+        # Ross: a Complete header is closed whatever was received, the
         # outstanding quantity cancelled; only a still-issued word over it is open
         w = World()
         complete = po(w, "Complete", "2026-10-02", lines=(("10", "4"), ("5", "5")))
@@ -1197,7 +1197,7 @@ class HomeLateRecallTest(Engine):
         self.assertIn("2026-10-09", gaps[portal]["summary"])
         line_handle = handle(int(bc.rsplit(":", 1)[1]) + 1)   # the twin's own line
         self.assertIn(line_handle, gaps[portal]["citations"])   # cited as the twin's
-        # one item per order (review of 410445eb08): the twin's lateness is this order's,
+        # one item per order: the twin's lateness is this order's,
         # listed once, never a second item for the same order
         self.assertNotIn(bc, gaps)
         # the link lends dates only: a Portal order stays closed whatever the twin says
@@ -1515,7 +1515,7 @@ class HomeTest(Engine):
 
 
 class LiveCheckTest(unittest.TestCase):
-    """``devloop/live-checks/case.proactive_engine.json`` over injected sources: its own
+    """live check ``case.proactive_engine`` over injected sources: its own
     command over the host config of ``case.customer_po_missing`` (FakeWorkbench plus a fake
     drive), the network refused. Evidence label: injected-transport."""
 

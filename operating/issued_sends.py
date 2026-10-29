@@ -4,7 +4,7 @@ The Portal keeps the exact bytes of every PO PDF it issues, and the Workbench mu
 *which* render left PLX, *when*, whether the supplier answered and whether the served
 record moved on, and say so only from what this reader may see now. Mirrored upstream
 rules (plx-customer-portal@4af6957 unless a line names a later commit, each pinned in
-devloop/upstream-pins.json):
+the upstream pin file):
 
 * ``portal/src/lib/mrp/purchase-order-document.ts@4af6957:94-96`` names a PO PDF
   ``{poNumber}.pdf`` or ``{poNumber} - Customs.pdf``; ``buildPurchaseOrderPdf`` returns
@@ -686,8 +686,7 @@ def counts_only(report: Mapping[str, Any], *, evidence_label: str) -> dict[str, 
 
 def evidence_label(report: Mapping[str, Any], injected: bool) -> str:
     """``no-source-read`` unless mail or SharePoint was read for the reader; else
-    ``injected-transport`` or ``live-read`` (never ``live-verified``: that label comes
-    only from a devloop/live_verify result)."""
+    ``injected-transport`` or ``live-read``."""
     counts = report["counts"]
     if counts["messages_scanned"] <= 0 and counts["renders"] <= 0:
         return "no-source-read"

@@ -1,4 +1,4 @@
-"""Goal-2 action path on fixtures (devloop/GOAL2-ACTIONS.md).
+"""Goal-2 action path on fixtures.
 
 Evidence label: ``isolated-fixture`` for dispatch and read-back,
 ``injected-transport`` for MC: the real ``MissionControlMcpClient`` reads and
@@ -849,7 +849,7 @@ class RealSystemsAreClosedTests(ActionPathTestCase):
         self.assertIn("never re-send", unknown["next_step"])
 
         # Answered "unknown" (a timeout): MC may still be writing, so right away an
-        # absent gate is no evidence and nothing is recorded (review of ef97a62).
+        # absent gate is no evidence and nothing is recorded.
         result = self.path.reconcile_gate(OPS, iid, self.mc.client, session=SESSION)
         self.assertEqual((result["state"], result["matching_gates"], result["reason"],
                           result["send_in_flight"]),
@@ -1456,7 +1456,7 @@ class McGroundingTests(ActionPathTestCase):
 
 
 class GateDuplicateTests(ActionPathTestCase):
-    """Review of ef97a62: no path creates a duplicate gate silently."""
+    """No path creates a duplicate gate silently."""
 
     def started(self):
         intent = self.path.register(OPS, self.case_id, self.propose(), session=SESSION)
@@ -2360,7 +2360,7 @@ class DeciderSubjectTests(SubjectTestCase):
 
 
 class IdentityModelTests(SubjectTestCase):
-    """Decision goal2-identity (devloop/DECISIONS/2026-10-04-goal2-identity.md): ``act``
+    """Decision goal2-identity: ``act``
     on every step from the host's session, one separation-of-duties check on each
     committing write, matched by Entra oid as well as email, and ``act`` never a
     principal."""
@@ -2705,8 +2705,7 @@ class IdentityModelTests(SubjectTestCase):
 
     def host_start(self, age, oids=None):
         """The ``ActionPath`` options of a host that resolved the roster's null oids from
-        Graph /users by UPN ``age`` before now (decided item 1 of directive 46bd612e8000;
-        injected transport, never the network). ``oids``: what Graph answers per UPN. A
+        Graph /users by UPN ``age`` before now (injected transport, never the network). ``oids``: what Graph answers per UPN. A
         later call is a later host start: it rewrites the one host state every host reads."""
         from integrations.graph_directory import GraphDirectoryReader, resolve_roster
         from integrations.graph_read import build_graph
@@ -2764,7 +2763,7 @@ class IdentityModelTests(SubjectTestCase):
         self.assert_parked(self.drive(SESSION), "decider_oid_unverified")
 
     def test_a_recorded_graph_oid_stands_at_request_and_dispatch_only_while_fresh(self):
-        # One age rule (architect-20261011T0821Z): the Graph oid an approval or decision
+        # One age rule: the Graph oid an approval or decision
         # recorded at age 23 h is re-checked when acted on at 25 h, through the roster's
         # current copy (the long-running host re-reads it: still the same stale read).
         self.path = self.new_path(**self.host_start(timedelta(hours=23)))
@@ -2830,7 +2829,7 @@ class IdentityModelTests(SubjectTestCase):
         self.assertEqual(self.fx.calls, 1)   # only the same-oid re-read dispatched
 
     def test_a_provenance_less_oid_not_the_committed_one_stands_24_h_from_its_decision(self):
-        # architect-20261011T1621Z: a decision recorded with an oid but no provenance (a
+        # A decision recorded with an oid but no provenance (a
         # build between the Graph resolution and its provenance) whose oid is not the
         # roster's committed one was read from Graph: 24 h from its decided_at, like any
         # Graph oid. The decision itself may stand longer (72 h here), so only the oid's
@@ -2874,7 +2873,7 @@ class IdentityModelTests(SubjectTestCase):
         self.legacy_event(iid, "call.approved", approval, path)
 
     def test_a_provenance_less_call_approver_oid_stands_24_h_from_its_approval(self):
-        # Overseer ad235a569e34 item 2: the age rule of a decider's provenance-less oid
+        # The age rule of a decider's provenance-less oid
         # (above) holds for the call approver's where a call is sent, request_gate and
         # send_call: an oid that is not the committed one stands 24 h from approved_at.
         graph_read = "0000b000-0000-4000-8000-0000000000f1"   # not the committed VINCE_OID

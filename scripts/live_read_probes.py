@@ -1,7 +1,7 @@
 """Read-only live probes with no adapter CLI of their own (counts/shapes only).
 
 Run by the credentialed live verifier on reviewed ``main`` through the specs in
-``devloop/live-checks/`` (``python3 devloop/live_verify.py``)::
+the live-check specs (``python3 the live verifier)::
 
     python3 -m scripts.live_read_probes portal-health
     python3 -m scripts.live_read_probes vmc-search
@@ -51,7 +51,7 @@ Environment (names only): ``PLX_WORKBENCH_API_URL`` + ``PLX_WORKBENCH_API_KEY``;
 ``mc-tools --operator-email-default <address>``: the ``x-mc-operator-email``
 admission value used only when ``MC_OPERATOR_EMAIL`` is unset (the variable
 always wins). The address lives in the reviewed spec
-(``devloop/live-checks/mc.initialize_tools_list.json``), never in this code;
+(live check ``mc.initialize_tools_list``), never in this code;
 the report says which one was used (``operator_email_source``), never the value.
 It also compares every listed tool's ``inputSchema`` (property and required names) and
 ``outputSchema`` with the source-derived pin ``ontology/schema/generated/meta/mcp_tools.json``
@@ -297,7 +297,7 @@ def schema_drift(environ: Mapping[str, str], *, client: Any = None) -> dict[str,
 QUERYABLE_PRINCIPAL = "service:schema-queryable-probe"
 QUERYABLE_WITHHELD = "service:schema-queryable-withheld"
 QUERYABLE_ROWS = 100   # x bindings per type stays inside probe_binding's 20 x 50 find pages
-GROUP_SIZE = 50   # devloop/live_verify.py MAX_ITEMS: a longer recorded list is only a count
+GROUP_SIZE = 50   # the live verifier MAX_ITEMS: a longer recorded list is only a count
 # The reads' deadline: the catalog read plus 104 relations x a 40 s read (the client's
 # timeout) was 4200 s worst case (Portal 52c9116). The catalog pinned from the 2026-10-26
 # live read binds 248: 9,920 s if every read times out, past this deadline, so such a run
@@ -309,8 +309,7 @@ GROUP_SIZE = 50   # devloop/live_verify.py MAX_ITEMS: a longer recorded list is 
 QUERYABLE_BUDGET_SECONDS = 4800.0
 QUERYABLE_GRACE_SECONDS = 300.0
 # The spec declares the floor (expect.json_min.queryable_share: the share of bound relations
-# that must come back) and what a complete run is (complete_when); the probe reads both, so
-# neither is declared twice: devloop/DECISIONS/2026-10-07-portal-queryable-floor.md.
+# that must come back) and what a complete run is (complete_when).
 QUERYABLE_SPEC = Path(__file__).resolve().parents[1] / "devloop" / "live-checks" / \
     "schema.portal_queryable.json"
 
@@ -609,9 +608,9 @@ def mirror_fallback(environ: Mapping[str, str], *, client: Any = None,
     persisted capture when live; ``permission_trim_ok``: the withheld
     principal got no candidate. Counts, booleans and enums only.
 
-    ``mirror_ref`` (owner policy e251073ef3c5 item 6): when the store holds no copy
+    ``mirror_ref``: when the store holds no copy
     of these relations and the source is out, the copy the verifier published on that
-    ref of this repository and attested on claude/devloop-live
+    ref of this repository and attested on the live-results branch
     (``integrations/mirror_branch_store.py``) is installed into the store and served the
     same way; ``branch_status`` says what the ref gave, ``branch_reason`` why it was
     refused (``unattested``, a digest, ...). Only with the live client: an injected

@@ -1,8 +1,8 @@
 """The ``case.customer_po_coverage`` live-check spec run over injected sources.
 
 Evidence label: ``injected-transport``. Kept apart from ``test_customer_po_coverage``
-(whose fixtures other tests import): this module reads ``devloop/live-checks``, so the
-spec's test selection (``devloop/affected_tests.py``) runs it without pulling in every
+(whose fixtures other tests import): this module reads the live-check specs, so the
+spec's test selection runs it without pulling in every
 importer of those fixtures.
 """
 
@@ -31,7 +31,7 @@ def _refuse_network(*args, **kwargs):
 
 @unittest.skipUnless(_PDF, "the customer PO is a PDF: needs pypdf and reportlab")
 class DocumentCarrierLiveCheckTests(unittest.TestCase):
-    """``devloop/live-checks/case.customer_po_coverage.json`` over injected sources: its
+    """live check ``case.customer_po_coverage`` over injected sources: its
     own command, its host config copied with the in-process FakeWorkbench (the order
     fixture plus order OR1000888001 holding no PO) and a FakeDrive for the PLXCUSTOMERS
     site whose customer PO names it; the network refused. Evidence: injected-transport."""

@@ -8,8 +8,7 @@ and product, its FM twin), then ``operating.case_workspace_live.CaseOpener`` ope
 ``petra_po=`` offline through ``plx.find``, ``plx.object``, ``plx.around`` and
 ``plx.investigate``, and ``scripts/eval_packaging_oracle_check.py`` checks that case against the
 evaluation oracle's own reading. Behaviour that lived only in the script (its draft
-playbook, landed-cost arithmetic, original-document roles) is covered where it lives now;
-``devloop/DECISIONS/2026-10-07-allowlist-3-coverage-map.md`` maps every old test.
+playbook, landed-cost arithmetic, original-document roles) is covered where it lives now.
 
 Evidence label: injected-transport (no network, no real PLX data).
 """
@@ -170,7 +169,7 @@ class PackagingCaseGenericTest(unittest.TestCase):
         self.assertEqual(lv.validate_spec(spec, stem="case.packaging_oracle"), [])
         # The fixture's own spelling (PO#5447): the oracle compares the number in the
         # normal form plx.find searches by, so it finds the row plx.find rooted the case on
-        # and reaches a verdict (direction review of d5d78266: never a gap forever).
+        # and reaches a verdict.
         world = PackagingWorld(self)
         command = list(spec["command"])
         self.assertEqual(command[:3], ["python3", "-m", "scripts.eval_packaging_oracle_check"])

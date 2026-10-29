@@ -1,5 +1,5 @@
 """Site-by-path resolution operations of the closed request grammar are GET-only
-and accept only a SharePoint host plus one plain site name (directive e2d2f62b791d)."""
+and accept only a SharePoint host plus one plain site name."""
 
 import unittest
 

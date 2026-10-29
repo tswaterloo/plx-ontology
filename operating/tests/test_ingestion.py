@@ -679,7 +679,7 @@ class CompletenessTests(IngestionTestCase):
         self.assertEqual((unit["counts"]["pages"], unit["counts"]["items_read"]), (1, 2))
 
     def test_source_errors_carry_a_fixed_vocabulary_diagnosis(self):
-        """Directive e402518f64be: throttling, outage and retry exhaustion are told
+        """Throttling, outage and retry exhaustion are told
         apart; nothing from the source text reaches the reason."""
         self.fake.fail_on = (re.compile(rf"/{INBOX}/messages$"), 429)
         unit = self.units(self.ingestor().run(only=["mail.purchase-order"]))[
@@ -989,7 +989,7 @@ class WithheldAndMailCaveatTests(IngestionTestCase):
 
 
 class MailWindowAnchorTests(IngestionTestCase):
-    """case.mail_evidence failed live (directive 9f804f59e9b4): the inbox's newest
+    """case.mail_evidence failed live: the inbox's newest
     message was ~29 days old, so a 14-day window anchored on the clock read
     nothing. The live-check sources file anchors the first window on the
     folder's newest message instead."""
@@ -1079,7 +1079,7 @@ class MailWindowAnchorTests(IngestionTestCase):
 
 
 class SiteSourceConfigTests(unittest.TestCase):
-    """A sharepoint_folder may name a site instead of a drive (directive e2d2f62b791d)."""
+    """A sharepoint_folder may name a site instead of a drive."""
 
     @staticmethod
     def spec(environ=ENV, **fields):

@@ -28,7 +28,7 @@ console's access decision) drops citations the reader may not open, and any clai
 uncited, with one unknown saying so.
 
 ``python3 -m operating.status_card`` is the live check's command
-(``devloop/live-checks/case.po_status.json``): one host capture cycle into a state
+(live check ``case.po_status``): one host capture cycle into a state
 directory, then cards for up to ``--limit`` records of ``--object-type`` offline as
 ``operating.proactive_gaps`` does; counts only, never an identifier or a value. Evidence
 label: that of the captures it reads (live-unverified until the verifier runs it).

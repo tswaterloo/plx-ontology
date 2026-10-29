@@ -1,4 +1,4 @@
-"""One final-answer gate (ROADMAP B1, measure what ships): the real-agent path (the Claude
+"""One final-answer gate (the acceptance bar, measure what ships): the real-agent path (the Claude
 Code agent of ``evals.runner``, an MCP client of the stdio case host behind the tool gate)
 and the console's Ask loop (``operating.agent_loop``) gate a final answer by the same
 product function, ``operating.answer_gate.gate_answer``; the scored reply holds only what

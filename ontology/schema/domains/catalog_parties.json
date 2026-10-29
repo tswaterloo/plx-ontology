@@ -3,7 +3,7 @@
   "format": "plx-ontology-domain/v1",
   "domain": "catalog_parties",
   "origin": "curated",
-  "description": "Items/products (code = BC Item No., erp_code = Sage IC No.), customers, customer locations, suppliers/vendors, manufacturers, supplier offers and contacts across Portal gold, FM bronze, Sage and BC. Records are never merged: same_record_as links carry the evidence. Lane L5b.",
+  "description": "Items/products (code = BC Item No., erp_code = Sage IC No.), customers, customer locations, suppliers/vendors, manufacturers, supplier offers and contacts across Portal gold, FM bronze, Sage and BC. Records are never merged: same_record_as links carry the evidence. L5b.",
   "upstream_pins": {
     "plx-customer-portal": "b46934a"
   },
@@ -3855,7 +3855,7 @@
       "name": "same_record_as",
       "reverse_name": "same_record_as",
       "cardinality": "N:M",
-      "description": "Records of one item in different systems. Codes are stored copies (FM->gold ETL, gold->BC serializer), so a code match is verified but non-unique codes yield candidates, never a merge. The gold external_id -> FM id link (fm-<family>-{id}) needs a prefixed-id compare the format lacks (devloop/OPEN-DECISIONS.md).",
+      "description": "Records of one item in different systems. Codes are stored copies (FM->gold ETL, gold->BC serializer), so a code match is verified but non-unique codes yield candidates, never a merge. The gold external_id -> FM id link (fm-<family>-{id}) needs a prefixed-id compare the format lacks.",
       "bindings": [
         {
           "kind": "same_record",
@@ -5037,12 +5037,12 @@
       "commit": "b46934a",
       "symbol": "isSageStyleVendorCode",
       "lines": "150-214",
-      "note": "The Portal sends app_supplier.code as the BC Vendor No. only when it is Sage-style (has a letter, not pure digits); pure-digit FM codes are omitted and BC auto-numbers the vendor. A pure-digit code equal to a BC vendor No. is a coincidence. The C0 pair/predicate grammar cannot express 'Sage-style', so the pair is capped at lead until an identifier kind does (devloop/OPEN-DECISIONS.md supplier-code-bc-vendor)."
+      "note": "The Portal sends app_supplier.code as the BC Vendor No. only when it is Sage-style (has a letter, not pure digits); pure-digit FM codes are omitted and BC auto-numbers the vendor. A pure-digit code equal to a BC vendor No. is a coincidence. The C0 pair/predicate grammar cannot express 'Sage-style', so the pair is capped at lead until an identifier kind does."
     },
     "workbench.bc_same_company_scope": {
       "kind": "workbench_code",
       "path": "ontology/schema.py",
-      "note": "Both ends are BC captures: compare only within one BC company (bc_<book> equal on both ends). BC numbers are unique per company only; masters synced to several books and consolidation copies reuse them (SO vs DSO series: outbox-drain.ts:880-890 @b46934a). Machine-readable today as ontology.schema.link_company_scope / CompiledSchema.company_scope; a C0 field is asked in devloop/OPEN-DECISIONS.md bc-link-company-scope."
+      "note": "Both ends are BC captures: compare only within one BC company (bc_<book> equal on both ends). BC numbers are unique per company only; masters synced to several books and consolidation copies reuse them (SO vs DSO series: outbox-drain.ts:880-890 @b46934a). Machine-readable today as ontology.schema.link_company_scope / CompiledSchema.company_scope."
     },
     "upstream-code.silvercustomers.code": {
       "kind": "upstream_code",

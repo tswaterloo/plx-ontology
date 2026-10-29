@@ -3,7 +3,7 @@
   "format": "plx-ontology-domain/v1",
   "domain": "bc_finance",
   "origin": "curated",
-  "description": "Business Central finance ledgers per company (book): companies, item ledger and G/L entries, G/L accounts; the Portal app_bc_entity_map is domains/bc_entity_map.json. Business documents (orders, invoices, receipts, shipments and their lines, incl. their BC and Sage bindings) are declared once, in lane L5a's orders.json / purchasing.json; links here target those types and binding ids. BC is Production and read GET-only; the company is the lineage bc_<book> (manufacturing, distribution, consol). Renumbering: Portal SO/PO numbers are rewritten to the BC No. after drain (custom_fields.renumberedTo), and BC externalDocumentNumber echoes the customer PO (orders) or the Portal order number (invoices). Lane L5b. Also the aged receivable/payable balances per party and the payment journal lines (Payment).",
+  "description": "Business Central finance ledgers per company (book): companies, item ledger and G/L entries, G/L accounts; the Portal app_bc_entity_map is domains/bc_entity_map.json. Business documents (orders, invoices, receipts, shipments and their lines, incl. their BC and Sage bindings) are declared once, in L5a's orders.json / purchasing.json; links here target those types and binding ids. BC is Production and read GET-only; the company is the lineage bc_<book> (manufacturing, distribution, consol). Renumbering: Portal SO/PO numbers are rewritten to the BC No. after drain (custom_fields.renumberedTo), and BC externalDocumentNumber echoes the customer PO (orders) or the Portal order number (invoices). L5b. Also the aged receivable/payable balances per party and the payment journal lines (Payment).",
   "upstream_pins": {
     "plx-customer-portal": "b46934a"
   },
@@ -2024,12 +2024,12 @@
     "workbench.bc_same_company_scope": {
       "kind": "workbench_code",
       "path": "ontology/schema.py",
-      "note": "Both ends are BC captures: compare only within one BC company (bc_<book> equal on both ends). BC numbers are unique per company only; masters synced to several books and consolidation copies reuse them (SO vs DSO series: outbox-drain.ts:880-890 @b46934a). Machine-readable today as ontology.schema.link_company_scope / CompiledSchema.company_scope; a C0 field is asked in devloop/OPEN-DECISIONS.md bc-link-company-scope."
+      "note": "Both ends are BC captures: compare only within one BC company (bc_<book> equal on both ends). BC numbers are unique per company only; masters synced to several books and consolidation copies reuse them (SO vs DSO series: outbox-drain.ts:880-890 @b46934a). Machine-readable today as ontology.schema.link_company_scope / CompiledSchema.company_scope."
     },
     "workbench.bc_finance_specs": {
       "kind": "workbench_code",
       "path": "integrations/live_source_grammar.py",
-      "note": "BC_QUERY_SPECS itemLedgerEntries, generalLedgerEntries, agedAccountsReceivables/-Payables (keyed by customerId/vendorId, BC_RECORD_KEY_FIELD), customer/vendorPaymentJournals and customer/vendorPayments (lines of their journal by journalId, BC_LINE_PARENT_FIELD): field names from the BC API v2.0 resource reference (MicrosoftDocs dynamics365smb-devitpro-pb api-reference/v2.0). Captured by integrations.bc_read.BcCapture; a 404 listing is reason not_exposed. Field names and $select acceptance are checked by devloop/live-checks/bc.ledgers.json (probe --finance-entities); unverified live until it passes."
+      "note": "BC_QUERY_SPECS itemLedgerEntries, generalLedgerEntries, agedAccountsReceivables/-Payables (keyed by customerId/vendorId, BC_RECORD_KEY_FIELD), customer/vendorPaymentJournals and customer/vendorPayments (lines of their journal by journalId, BC_LINE_PARENT_FIELD): field names from the BC API v2.0 resource reference (MicrosoftDocs dynamics365smb-devitpro-pb api-reference/v2.0). Captured by integrations.bc_read.BcCapture; a 404 listing is reason not_exposed. Field names and $select acceptance are checked by live check ``bc.ledgers`` (probe --finance-entities); unverified live until it passes."
     }
   }
 }

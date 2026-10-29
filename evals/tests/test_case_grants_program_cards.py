@@ -3,7 +3,7 @@
 ``evals/dev/grants-program/proposed_items.json`` holds the employee questions (NGen 14091
 first, then FedDev and AMIC) with answer criteria, the originals and live sources each
 needs; ``ontology_gaps.json`` names the grant, claim, cost row, ruling and hours objects,
-links and readers the ontology lacks, each with a real source or the Dot question that
+links and readers the ontology lacks, each with a real source or the question that
 would find one. The contract is the asset-tracker cards' one (same formats); this module
 applies it to the grants files and proves it fails closed on them.
 """
@@ -20,7 +20,6 @@ from evals.case_cards import GAP_KINDS, UNKNOWN, problems
 ROOT = Path(__file__).resolve().parents[2]
 DIR = ROOT / "evals" / "dev" / "grants-program"
 ORIGINALS = ROOT / "examples" / "case_originals.json"
-# The advisory capture the cards are drawn from (codex/advisory context record).
 CAPTURE = "context/4db485a7f2e63ce6ab2d57e451f625fc3630e0ab2a7b1bcbe6d8ca448a86572d.json"
 
 
@@ -38,7 +37,6 @@ class GrantsProgramCardsTest(unittest.TestCase):
         advisory = self.cards["source"]["advisory"]
         self.assertEqual(advisory["path"], CAPTURE)
         self.assertEqual(advisory["id"], "advisory:" + Path(CAPTURE).stem[:12])
-        # Every card cites the advisory or the brief it summarises.
         brief = {r["id"] for r in self.originals["rows"] if r.get("case") == "stephen-grants"}
         for card in self.cards["real_example"]["cards"]:
             self.assertTrue({advisory["id"]} & set(card["cites"]) or brief & set(card["cites"]),

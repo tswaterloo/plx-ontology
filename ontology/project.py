@@ -1,6 +1,6 @@
-"""Project cited L1 captures into the L2 ontology store, driven by the schema (lane L7).
+"""Project cited L1 captures into the L2 ontology store, driven by the schema (L7).
 
-10-DECISION 1-3, 5 and 09-CRITIQUE R1, R3, R8, R11. The projection is disposable: it
+The projection is disposable: it
 reads only L1 captures (never a source system), copies nothing uncited and is rebuilt
 whole into a new store generation that is swapped in atomically
 (``ontology.store.StoreBuilder``).
@@ -59,7 +59,7 @@ What is built
   ``lead`` between two anchor records, which are never joined on text); an unknown
   pair, or an N:1/1:1 link whose from-record matches several records, is a ``lead``;
   typed values that differ make it ``contradicted``. ``mention`` and ``reviewed`` links
-  come from other lanes (documents, review decisions) and are not projected here.
+  come from other modules (documents, review decisions) and are not projected here.
   **BC company scope**: BC document and master numbers are unique only within one
   company (book), so a hop whose two ends are both BC captures
   (``ontology.schema.link_company_scope``) pairs records only when their capture
@@ -155,8 +155,7 @@ _STORED_KEY_TIERS = ("verified", "reviewed", "corroborated")
 _PROJECTED_LINK_KINDS = ("fk", "json_path", "same_record", "text_match")
 # Portal gold relations the silver-to-gold ETL re-inserts on every run under a fresh
 # ``cuid()`` id (``ON CONFLICT (id)`` never fires, no DELETE, no natural unique
-# constraint; devloop/CONTEXT/03-PORTAL.md, decision 2026-10-07-schema-coverage-etl-
-# duplicates): source -> relation -> the columns the ETL mints per insert. No served
+# constraint): source -> relation -> the columns the ETL mints per insert. No served
 # column holds the silver source key, so a record's natural key is every other column of
 # its row (``_natural_key``): copies of one silver row are equal on all of them. At
 # projection time each binding over one of these relations keeps ONE object per natural
@@ -1189,7 +1188,7 @@ class SharePointCaptures:
                 **record, "content_sha256": row["content_sha256"],
                 "text_status": row["text_status"], "text_sha256": row["text_sha256"]})
             # A file read on its first pages only: its name only, and why (no gap
-            # channel here; devloop/DECISIONS/pdf-cap-readers-contract.md).
+            # channel here).
             withheld = None if found is None else found.text_withheld
             if found is not None and found.text is not None and withheld is None:
                 fields.extend(file_text_fields(handle, "row.content_text", found.text,
@@ -1251,7 +1250,7 @@ CAPTURE_SOURCES: dict[str, Callable[..., Any]] = {
 # Teams lists its two message relations, so a relation a later Teams binding names is not
 # captured until its capture reads it. SharePoint list items are
 # those of the lists ``integrations/sharepoint_list_capture_scope.json`` names
-# (``integrations.capture_sharepoint_lists``; decision 2026-10-10-gen-graph-residual-list-items).
+# (``integrations.capture_sharepoint_lists``).
 LIST_ITEMS = "listItems"
 CAPTURED_RELATIONS: dict[str, frozenset[str]] = {
     "sharepoint": frozenset({"driveItems", "documentFields", MEMBER_RELATION, LIST_ITEMS}),
@@ -1647,7 +1646,7 @@ def _markings_text(markings: frozenset[str]) -> str:
 
 def _default_normalizer() -> Normalizer | None:
     try:
-        from ontology import identifiers  # lane L6; absent until it lands
+        from ontology import identifiers  # L6; absent until it lands
     except ImportError:
         return None
     normalize = getattr(identifiers, "normalize", None)

@@ -1,10 +1,10 @@
 """Versioned mail capture (L1): Graph delta paging into Workbench state.
 
-09-CRITIQUE R2 / lane L3 and owner decision 5be438765457: the Workbench may
+The Workbench may
 read every mailbox in its capture scope and keep everything it captures --
 message metadata, text bodies, attachment metadata and attachment bytes -- in
 its own capture store under the configured Workbench state directory. Nothing
-captured goes to Git, logs or advisory records. Who may *see* a captured
+captured goes to Git, logs or source records. Who may *see* a captured
 mailbox is decided again on every read, per reader (``LiveSourceAudience``
 over the mailbox identity set recorded at capture plus the derived owner ACL):
 a mailbox withheld from an actor yields no rows, no counts and no completeness
@@ -88,7 +88,7 @@ rounds (``degraded_*`` in completeness). Attachments are cited
 (``graph_evidence.mail_attachment_citation``). Captured handles resolve
 offline (``resolve``) for a reader who may see the mailbox.
 
-Which mailboxes. ``all_mailboxes`` (owner rule 5be438765457, ING-06): every
+Which mailboxes. ``all_mailboxes`` (ING-06): every
 mailbox of the tenant directory -- each member user with a mail address, listed
 through the guarded, paged ``/users`` GET at the start of every run -- except the
 scope's explicit ``exclude`` list (addresses or object ids, each with its reason;
@@ -244,8 +244,7 @@ def _mail_path(parts: Sequence[str]) -> tuple[str, ...]:
     return mailbox, message
 
 
-# The mail source kind in the capture registry (integrations/capture_store.py;
-# decision 2026-10-02-mail-and-mentions-store #1): ``graph-mail://<mailbox object
+# The mail source kind in the capture registry (integrations/capture_store.py): ``graph-mail://<mailbox object
 # id>/<message id>``, audience unit ``mail:<mailbox>`` (the C0 audience_key).
 # Mail keeps its own versioned store (``MailCaptureStore``: changeKey-tailed
 # handles, blobs, delta cursors); readers are re-gated per mailbox on the identity
@@ -2388,7 +2387,7 @@ FRONTIER, PENDING, COMPLETE, TERMINAL = range(4)
 def schedule_units(units: Sequence[Any], standing: Callable[[Any], tuple[int, str]]
                    ) -> list[Any]:
     """The order one budget-bound run captures its units in (mail folders, SharePoint
-    roots): one rule for both (decision 2026-10-12-capture-cursor-convergence).
+    roots): one rule for both.
     ``standing(unit)`` is ``(kind, since)``:
 
     * ``FRONTIER``: a unit with a stored frontier (a cut round or walk), the one started
@@ -2529,7 +2528,7 @@ def blocked_reason(part: Mapping[str, Any]) -> str:
 # (403). A mailbox is opened by its directory lookup (``graph.user``); a folder is read
 # through its mail endpoints (``graph.mail_folder``, then the message delta under the
 # same Mail.Read grant). A folder 403 with Mail.Read granted is an Exchange application
-# access policy that leaves the mailbox out (devloop/SOURCE-NOTES.md, "Graph refusals").
+# access policy that leaves the mailbox out ("Graph refusals").
 _PERMISSION = {"graph.user": "User.Read.All", "graph.mail_folder": "Mail.Read"}
 # The part and the Graph call each refused unit stands for.
 REFUSED_PARTS = {"mailbox": ("mail.mailbox_lookup", "graph.user"),
@@ -2553,8 +2552,7 @@ def refused_parts(run: Mapping[str, Any]) -> list[dict[str, Any]]:
     ``mail.folder_read`` Mail.Read): the unit's ``blocked`` part, or for a folder the
     budget deferred with its stored ``forbidden`` reason, that 403. A run where any
     bound mailbox or folder was not refused (read, throttled, not visible, budget-cut)
-    has no parts: a partial refusal stays a capture gap in ``reasons`` (why mail
-    differs from Teams and lists here: devloop/SOURCE-NOTES.md, "Graph refusals")."""
+    has no parts: a partial refusal stays a capture gap in ``reasons`` ("Graph refusals")."""
     if run.get("people_blocked"):
         return [run["people_blocked"]]
     bound = [m for m in run.get("mailboxes") or [] if m.get("status") != "outside_allowlist"]
@@ -3662,8 +3660,8 @@ class MailCapture:
                 prepare()
         except ExclusionUnavailable as exc:
             return self._people_blocked(scope, exc)
-        # A later exclusion: what the store holds of it is purged before anything is read
-        # (decision 2026-10-21-mail-exclusion-retroactive); reads hid it already.
+        # A later exclusion: what the store holds of it is purged before anything is read;
+        # reads hid it already.
         purged = dict.fromkeys(PURGE_COUNTS, 0)
         people = getattr(self.reader, "people", None)
         if _usable(people):

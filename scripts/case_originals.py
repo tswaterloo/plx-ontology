@@ -1,6 +1,6 @@
 """Stakeholder case originals: a pinned registry and a full read of every registered file.
 
-``registry`` turns the Dot's immutable source-pin records (``plx-advisory/v1`` context
+``registry`` turns the immutable source-pin records (``plx-advisory/v1`` context
 records) into the committed, nonsecret registry ``examples/case_originals.json``
 (``plx-case-originals/v1``). Inputs: the baseline record (``source_inventory``: the
 submitted originals, archive members, linked business files and mail attachments, plus
@@ -18,7 +18,7 @@ provider MIME and detected media type, exposure ``dev-exposed`` (read by builder
 never held out). A pin a record names but whose bytes it did not fetch (a historical
 revision, a historical mail pin) is its own ``unfetched`` row, never merged into the
 current one; each gap is a ``gap`` row (``superseded`` when a later record restates it).
-The header records every advisory commit, record SHA-256 and ``source_revision``. No
+The header records every record commit, record SHA-256 and ``source_revision``. No
 file body, temporary download URL, local path or secret is in it. ``watch_folders``
 (given to the generator) are the folders the reader lists so that new files there are
 discovered, not only the pinned ones. ``--capture CASE GAP COMMIT PATH FILE`` adds one
@@ -37,7 +37,7 @@ a case: a source row is routed by drive id and path (the drive derived from its 
 site, the URL not kept), a nested attachment names its ``.msg`` parent, a zip member its
 zip attachment and the rows whose bytes it repeats; a payload seen before is an alias of
 its first row (``same_bytes_as``) and counted once (``payloads``). ``--caveats FILE``
-attaches an owner directive's caveats verbatim to the advisory they qualify.
+attaches a caveats file's entries verbatim to the source record they qualify.
 ``--crosswalk REPO_PATH`` adds ``crosswalk``: one row per watched source and descriptor
 of an eval case's proposed items, naming the registry row it maps to (by item id or
 SHA-256) or why it is unmapped; no body, URL or secret. ``--card-sources REPO_PATH``
@@ -47,7 +47,11 @@ the originals an eval case card names that no source-pin record lists, as rows o
 content URL, the chat message link and attachment id) pinned only when the advisory
 record it cites, read from the local Git objects, names the same URL, SHA-256 and chat
 message; ``read`` fetches it through that URL like any shared file and the host serves it
-behind the chat message's gate. An unknown or malformed manifest, caveat, crosswalk or
+behind the chat message's gate; or a ``rendered_artifact`` (a claude.ai artifact held as
+its complete rendered text in an source record committed to a repository), a pinned
+derivative only when that record's ``source_revision``, ``source_text`` SHA-256 and size
+and its stated rendered character count all agree, read from the record at its commit
+(``repository_ref``) and served to readers granted that repository. An unknown or malformed manifest, caveat, crosswalk or
 card-sources input fails closed.
 
 ``read`` fetches every registered original through the GET-only Graph clients only: a
@@ -106,7 +110,7 @@ text or URL; the live check records ids, enums and counts only, never ``entry_pa
         [--environment NAME] [--registry examples/case_originals.json] [--state-dir DIR] \\
         [--no-watch] [--budget-seconds N] [--reread-unchanged]
 
-Evidence label: live-unverified until ``devloop/live-checks/case.originals_read.json`` has
+Evidence label: live-unverified until live check ``case.originals_read`` has
 a verifier result; tests use an injected transport (``tests/test_case_originals.py``).
 """
 
@@ -950,6 +954,13 @@ _CARD_GAP_KEYS = frozenset({"item", "owner", "source", "evidence", "status"})
 _CARD_ATTACHMENT_KEYS = frozenset({"name", "owner", "url", "teams_message_url",
                                    "attachment_id", "submitted_at", "bytes", "sha256",
                                    "advisory"})
+# A claude.ai artifact held as its complete rendered text inside an advisory record
+# committed to a repository (``source_text``; ``source_revision`` the SHA-256 of its UTF-8
+# bytes): a derivative read from that record at its commit, like the delta's rendered maps.
+CARD_RENDERED_KIND = "historical complete rendered artifact text, derived representation"
+_CARD_RENDERED_KEYS = frozenset({"name", "owner", "repository", "bytes", "sha256",
+                                 "advisory"})
+_REPOSITORY_NAME = re.compile(r"[A-Za-z0-9_\-][A-Za-z0-9_.\-]{0,99}/[A-Za-z0-9_\-][A-Za-z0-9_.\-]{0,99}")
 _TEAMS_LINK = re.compile(r"/l/message/([^/?#]+)/([0-9]{1,20})")
 _CHAT_THREAD = re.compile(r"19:[A-Za-z0-9_.\-]{1,200}@[A-Za-z0-9_.\-]{1,64}")
 
@@ -988,7 +999,9 @@ def _card_rows(raw: bytes, records: Mapping[tuple[str, str], bytes]
     advisory record it names (``records``: (commit, path) -> bytes): the record's
     ``source_id`` is the URL, its ``source_revision`` the SHA-256 and one evidence source
     the same chat message; anything else fails closed. Only the size is the input's own
-    claim, and the reader's full read checks it with the SHA-256."""
+    claim, and the reader's full read checks it with the SHA-256. A ``rendered_artifact``
+    entry is a ``pinned`` derivative held as complete rendered text in the advisory record
+    it names (``_card_rendered``)."""
     from operating.use_case_intake import MAX_CONTENT_BYTES
 
     try:
@@ -1027,6 +1040,13 @@ def _card_rows(raw: bytes, records: Mapping[tuple[str, str], bytes]
                          "exposure": EXPOSURE, "gap": dict(gap),
                          "expected": {"bytes": expected["bytes"],
                                       "sha256": expected["sha256"]}})
+            continue
+        if "rendered_artifact" in entry:
+            row, header = _card_rendered(index, case, entry["rendered_artifact"], records,
+                                         MAX_CONTENT_BYTES)
+            if all(a["record_sha256"] != header["record_sha256"] for a in advisories):
+                advisories.append(header)
+            files.append(row)
             continue
         found = entry.get("chat_attachment")
         if not isinstance(found, Mapping) or set(found) != _CARD_ATTACHMENT_KEYS:
@@ -1091,6 +1111,79 @@ def _card_rows(raw: bytes, records: Mapping[tuple[str, str], bytes]
     return advisories, files, gaps
 
 
+def _card_rendered(index: int, case: str, found: Any,
+                   records: Mapping[tuple[str, str], bytes], bound: int
+                   ) -> tuple[dict[str, Any], dict[str, Any]]:
+    """(row, advisory header) of a ``rendered_artifact`` card source: a ``pinned``
+    ``derivative`` whose bytes are the complete rendered text (``source_text``) of the
+    advisory record it names, read by ``read`` from that record at its commit
+    (``repository_ref``, the local Git object store). Proven only when the record is a
+    ``plx-advisory/v1`` record of an https source whose ``source_revision`` is
+    ``rendered-text-sha256:<the entry's SHA-256>``, whose ``source_text`` UTF-8 bytes have
+    that SHA-256 and the entry's size, and whose ``captured_source`` fact states exactly
+    that many rendered characters (the capture is complete); anything else fails
+    closed."""
+    advisory = found.get("advisory") if isinstance(found, Mapping) else None
+    if not isinstance(found, Mapping) or set(found) != _CARD_RENDERED_KEYS:
+        raise ValueError(f"card_source_invalid:{index}")
+    if (not isinstance(advisory, Mapping) or set(advisory) != {"commit", "path"}
+            or not re.fullmatch(r"[0-9a-f]{40}", str(advisory["commit"]))
+            or not isinstance(advisory["path"], str)
+            or not _REPO_PATH.fullmatch(advisory["path"])
+            or ".." in advisory["path"].split("/")
+            or not isinstance(found["repository"], str)
+            or not _REPOSITORY_NAME.fullmatch(found["repository"])
+            or not _plain_name(found["name"])
+            or not isinstance(found["owner"], str) or not found["owner"].strip()
+            or type(found["bytes"]) is not int or found["bytes"] < 0
+            or not _HEX64.fullmatch(str(found["sha256"]))):
+        raise ValueError(f"card_rendered_invalid:{index}")
+    if found["bytes"] > bound:
+        raise ValueError(f"card_rendered_oversize:{index}")
+    record_raw = records.get((advisory["commit"], advisory["path"]))
+    if record_raw is None:
+        raise ValueError(f"card_advisory_missing:{index}")
+    try:
+        record = json.loads(record_raw)
+    except ValueError:
+        raise ValueError(f"card_advisory_invalid:{index}") from None
+    if not isinstance(record, Mapping):
+        raise ValueError(f"card_advisory_invalid:{index}")
+    text = record.get("source_text")
+    data = text.encode("utf-8") if isinstance(text, str) else None
+    facts = record.get("facts") if isinstance(record.get("facts"), list) else []
+    counted = [f.get("rendered_characters") for f in facts
+               if isinstance(f, Mapping) and f.get("type") == "captured_source"]
+    if (record.get("schema") != ADVISORY_SCHEMA or data is None
+            or not isinstance(record.get("source_id"), str)
+            or not record["source_id"].startswith("https://")
+            or record.get("source_revision") != f"rendered-text-sha256:{found['sha256']}"
+            or sha256(data).hexdigest() != found["sha256"] or len(data) != found["bytes"]
+            or counted != [len(text)]):
+        raise ValueError(f"card_rendered_unproven:{index}")
+    header = _advisory(record, record_raw, advisory["commit"], advisory["path"], "card")
+    ref = (f"https://github.com/{found['repository']}/blob/{advisory['commit']}/"
+           f"{advisory['path']}")
+    return {
+        "id": _id("co", f"card:{case}:{record['source_id']}"), "status": "pinned",
+        "origin": "card", "card_index": index, "owner": found["owner"], "case": case,
+        "case_ids": [case], "kind": RECORD_KINDS[CARD_RENDERED_KIND],
+        "record_kind": CARD_RENDERED_KIND, "parent": None, "alias_of": None,
+        "linked_from": None, "name": found["name"], "member_path": None,
+        "mime_part_index": None,
+        "source": {"url": None, "teams_message_url": None, "teams_message_id": None,
+                   "teams_attachment_id": None, "drive_id": None, "item_id": None,
+                   "repository_ref": ref},
+        "revision": {"version_id": None, "etag": None, "modified_at": None,
+                     "submitted_at": None, "quick_xor_hash": None, "versions": []},
+        "expected": {"bytes": found["bytes"], "sha256": found["sha256"]},
+        "mime_type": None, "detected_media_type": None, "exposure": EXPOSURE,
+        "proven_by": [], "record_body_status": None,
+        "note": "Full rendered text verified against the named advisory record's "
+                "rendered-text SHA-256; not the native artifact bytes.",
+        "advisory": "advisory:" + PurePosixPath(advisory["path"]).stem[:12]}, header
+
+
 def _card_records(raw: bytes) -> dict[tuple[str, str], bytes]:
     """The advisory records a card-sources input cites, from the local Git object store
     only (``git cat-file``, no fetch); one missing is left out (``_card_rows`` fails)."""
@@ -1103,7 +1196,8 @@ def _card_records(raw: bytes) -> dict[tuple[str, str], bytes]:
            "GIT_TERMINAL_PROMPT": "0"}
     records: dict[tuple[str, str], bytes] = {}
     for entry in entries if isinstance(entries, list) else []:
-        found = entry.get("chat_attachment") if isinstance(entry, Mapping) else None
+        found = (entry.get("chat_attachment") or entry.get("rendered_artifact")
+                 if isinstance(entry, Mapping) else None)
         advisory = found.get("advisory") if isinstance(found, Mapping) else None
         if not isinstance(advisory, Mapping):
             continue
@@ -1118,6 +1212,23 @@ def _card_records(raw: bytes) -> dict[tuple[str, str], bytes]:
         if done.returncode == 0:
             records[(commit, path)] = done.stdout
     return records
+
+
+def _counts(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """The registry header's ``counts`` of its rows."""
+    files_rows = [r for r in rows if r["status"] in FILE_STATUSES]
+    return {"rows": len(rows),
+            "file_records": sum(r["origin"] in ("baseline", "delta")
+                                and "record_index" in r and r["status"] == "pinned"
+                                for r in rows),
+            **{status: sum(r["status"] == status for r in rows) for status in ROW_STATUSES},
+            "aliases": sum(bool(r.get("alias_of")) for r in rows),
+            "captures": sum(r["origin"] == "capture" and not r["parent"] for r in rows),
+            "manifest_rows": sum(r["origin"] == "manifest" for r in rows),
+            "payloads": len({r["expected"]["sha256"] for r in rows
+                             if r["status"] == "pinned"}),
+            "by_kind": {kind: sum(r["kind"] == kind for r in files_rows) for kind in KINDS},
+            "cases": sorted({c for r in files_rows for c in r["case_ids"]})}
 
 
 def build_registry(record_bytes: bytes, *, advisory_commit: str, advisory_path: str,
@@ -1286,11 +1397,10 @@ def build_registry(record_bytes: bytes, *, advisory_commit: str, advisory_path: 
     rows.extend(card_gaps)
     if len({row["id"] for row in rows}) != len(rows):
         raise ValueError("registry_ids_not_unique")
-    files_rows = [r for r in rows if r["status"] in FILE_STATUSES]
     watch = _watch(watch_links, watch_drives, rows)
     return {
         "schema": SCHEMA,
-        "note": "Nonsecret registry of every stakeholder original in the Dot's source-pin "
+        "note": "Nonsecret registry of every stakeholder original in the source-pin "
                 "records and of those eval cards name (origin card, from the "
                 "--card-sources input) (generated; do not edit by hand). Rows hold identity and expected "
                 "bytes/SHA-256 only: no file body, temporary download URL, local path or "
@@ -1300,20 +1410,7 @@ def build_registry(record_bytes: bytes, *, advisory_commit: str, advisory_path: 
         "generated_by": command,
         "advisories": advisories,
         "exposure": EXPOSURE,
-        "counts": {"rows": len(rows),
-                   "file_records": sum(r["origin"] in ("baseline", "delta")
-                                       and "record_index" in r and r["status"] == "pinned"
-                                       for r in rows),
-                   **{status: sum(r["status"] == status for r in rows)
-                      for status in ROW_STATUSES},
-                   "aliases": sum(bool(r.get("alias_of")) for r in rows),
-                   "captures": sum(r["origin"] == "capture" and not r["parent"] for r in rows),
-                   "manifest_rows": sum(r["origin"] == "manifest" for r in rows),
-                   "payloads": len({r["expected"]["sha256"] for r in rows
-                                    if r["status"] == "pinned"}),
-                   "by_kind": {kind: sum(r["kind"] == kind for r in files_rows)
-                               for kind in KINDS},
-                   "cases": sorted({c for r in files_rows for c in r["case_ids"]})},
+        "counts": _counts(rows),
         "watch_folders": watch,
         **({"crosswalk": _crosswalk(crosswalks, rows, watch)} if crosswalks else {}),
         "rows": rows,
@@ -2540,7 +2637,10 @@ def read(environ: Mapping[str, str] | None = None, *, registry_path: str | Path 
         "by_status": by_status,
         "sha256_match": sum(1 for _, e in registered if e["sha256_match"] is True),
         # files read, by route: the live floor asks for a Graph read, not only the Git one
-        "read_via": {via: sum(e["status"] == "read" and e["source"] == via
+        # (a rendering kept as a text field of a committed record is the repository route)
+        "read_via": {via: sum(e["status"] == "read"
+                              and {"repository_field": "repository"}.get(e["source"],
+                                                                         e["source"]) == via
                               for _, e in registered) for via in READ_ROUTES},
         "undiagnosed": sum(1 for e in failed if not (e["http_status"] or e["error_code"]
                                                     or e["detail"])),

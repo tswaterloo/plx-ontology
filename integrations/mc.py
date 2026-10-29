@@ -1,7 +1,7 @@
 """Mission Control clients: guarded REST reads and a guarded MCP tool client.
 
 The deployed MC service remains the task, checkout and approval authority
-(``devloop/CONTEXT/04-MISSION-CONTROL.md`` §0-§4, PLX_MC @ ``1fba0833``). The
+(PLX_MC @ ``1fba0833``). The
 key does not keep us read-only (every MCP principal but ``sp_mcp_portal``
 carries MC's write bundle and every MC write is mirrored to production
 SharePoint lists), so every request passes ``plx_hub_guard`` before I/O:

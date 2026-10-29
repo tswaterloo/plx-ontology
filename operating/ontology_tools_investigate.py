@@ -1,8 +1,8 @@
 """``plx.investigate``: declarative investigation plans run over the generic primitives.
 
-10-DECISION decision 4 (layered tools: generic primitives, ``plx.investigate`` running
+layered tools: generic primitives, ``plx.investigate`` running
 declarative plans per question family on the Workbench side, a bounded loop for the
-rest). A plan is data (``ontology/plans/<id>.json``, format ``_plan.schema.json`` there,
+rest. A plan is data (``ontology/plans/<id>.json``, format ``_plan.schema.json`` there,
 validated with ``ontology/json_contract.py`` and cross-checked against the compiled
 ontology schema and the tool contracts by ``load_plans``). Nothing in this module names
 a family, object type, link, property or case: every step is "call primitive P from
@@ -165,7 +165,7 @@ none, nothing sent), each citing what the answer showed its reader about the gap
 (``follow_up_recorder``), from the whole answer before paging, so its entries (each citing its
 gaps by index) fit every page. Such a host lists the tool as a writer (``readOnlyHint``
 false, as the contract's ``read_only``); a host without one lists it read-only and refuses the
-option (``tool_specs``; devloop/DECISIONS/2026-10-10-follow-ups-ask-loop-writes.md). A gap
+option (``tool_specs``). A gap
 about the host's own state (``HOST_STATE_REASONS``) is never a follow-up.
 
 **No plan.** An unknown family, or a root of a type no plan covers, is the contract's
@@ -233,8 +233,7 @@ MAX_STEP_BUDGET = 128  # fits max_each (50) line and item reads of a plan with i
 MAX_SUGGESTIONS = 8
 # Recorded duty and freight charges are money: the schema's money marking gates them.
 ACTUALS_MARKING = "finance"
-# A reader holding this marking but not ACTUALS_MARKING (purchasing staff: owner decision
-# 2026-10-27, ontology/schema/overrides/markings.json scoped_markings) gets the capture's
+# A reader holding this marking but not ACTUALS_MARKING (ontology/schema/overrides/markings.json scoped_markings) gets the capture's
 # labelled company-wide history estimates, never a recorded charge or a per-supplier rate.
 ESTIMATES_MARKING = "purchasing_prices"
 RECORD_READS = "count_records"  # the trace entry of the reads made for counted records

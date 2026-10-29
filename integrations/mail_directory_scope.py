@@ -1,5 +1,5 @@
 """Directory-wide mail capture scope: every user mailbox but the excluded people's
-and the HR / payroll deny list (owner directive c75dfaba0f8e).
+and the HR / payroll deny list.
 
 The scope (``plx-mail-directory-scope/v1``, ``integrations/mail_all_mailboxes_scope.json``)
 names the folders (inbox and sent items), the first-round window and an explicit deny
@@ -55,7 +55,7 @@ capture actor can still read (both readable counts must be 0).
 ``excluded_requested`` is measured on the transport's request log (``RequestLog``: a
 ``GuardedTransport`` observer that sees every request before it is sent, keeps only the
 identity tokens each URL names, in memory, and is read once the run ends), not on the
-result set. Live-unverified until ``devloop/live-checks/graph.mail_all_mailboxes.json``
+result set. Live-unverified until live check ``graph.mail_all_mailboxes``
 passes.
 """
 

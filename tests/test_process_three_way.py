@@ -428,7 +428,7 @@ class PurchaseThreeWayTests(_Base):
         self.assertIn("multipor", gap["detail"])
 
     def test_lead_invoice_row_leaves_the_three_way_sum_undecided(self):
-        # review of 0956c5d: a verified invoice 60 plus a text-lead invoice 40
+        # A verified invoice 60 plus a text-lead invoice 40
         s = base.Store()
         ids = bc_purchase(s, "po-lead", ordered=[("a", "100", EACH, "2.50")],
                           receipts=[[("a", "100", EACH)]],
@@ -446,7 +446,7 @@ class PurchaseThreeWayTests(_Base):
         self.assertFalse(any(c["finding"] for c in answer.roots[0]["checks"]))
 
     def test_receipt_matched_by_key_and_by_text_counts_once_and_decides(self):
-        # review of 00ae3da: a gold receipt reaches its PO by FK and by po_reference
+        # A gold receipt reaches its PO by FK and by po_reference
         # text; the lead to a record already counted blocks nothing
         s = base.Store()
         ids = gold_purchase(s, "gp-dup", ordered="100", received="60")
@@ -536,8 +536,8 @@ def po_claims(ids, *, drop=(), edit=None):
 
 
 class ScopedCompletenessTests(_Base):
-    """A side is decided over a per-PO read of BC (devloop/DECISIONS/2026-10-04-bc-
-    threeway-side-completeness.md) only where a complete claim scoped to the records it
+    """A side is decided over a per-PO read of BC
+    only where a complete claim scoped to the records it
     starts from covers every hop; otherwise the gap names the cause."""
 
     def world(self, **claims):
@@ -612,7 +612,7 @@ class ScopedCompletenessTests(_Base):
 
 
     def test_absent_in_bc_needs_a_complete_zero_read_of_every_line(self):
-        """devloop/DECISIONS/2026-10-14-three-way-absence-proven.md: a BC PO with no
+        """A BC PO with no
         posted receipt or invoice has those stages absent_in_bc, with the read time, only
         when every line was read completely and records 0; anything less stays
         undecided."""
@@ -722,7 +722,7 @@ class GoldPurchaseOriginTests(_Base):
     """find-po: which gold POs are real is the binding's upstream origin stamp
     (custom_fields.source of the silver ETL / FM mirror). A stamped row decides its
     stages; any other row (Portal-created, QA or demo, no stamp) stays a lead and every
-    stage says which upstream marker it lacks, never silently decided (10-DECISION 2)."""
+    stage says which upstream marker it lacks, never silently decided."""
 
     def gold_po(self, lineage):
         """A gold PO of ``lineage`` with one line received in full (its records FM)."""
@@ -901,7 +901,6 @@ class SalesFulfilmentTests(_Base):
         self.assertIsNone(ship["agree"])
         self.assertIn("header_without_lines", gap_reasons(answer.result))
 
-    # ---- review of 0956c5d (plx-reviewer-p3-1)
 
     def test_lead_invoice_on_the_path_leaves_the_sum_undecided(self):
         s = base.Store()
@@ -972,7 +971,7 @@ class SalesFulfilmentTests(_Base):
         _, _, checks = self.run_so(s, ids["so"])
         self.assertIs(checks[("shipped", "invoiced")]["agree"], True)
 
-    # ---- review of 00ae3da: one classification per record reached on a side
+    # One classification per record reached on a side
 
     def test_lead_to_an_invoice_already_counted_through_the_twin_blocks_nothing(self):
         # Portal writes the gold order number into a pushed BC invoice's
@@ -1028,7 +1027,7 @@ class SalesFulfilmentTests(_Base):
         self.assertIn("twin system", gap["detail"])
         self.assertFalse(any(c["finding"] for c in answer.roots[0]["checks"]))
 
-    # ---- review of 1e94c34: shipped means shipped; the stage follows the twin
+    # Shipped means shipped; the stage follows the twin
 
     def test_in_progress_shipments_are_never_summed_as_shipped(self):
         for status in ("PICKING", "DRAFT", "PACKED", "CONFIRMED"):
@@ -1226,7 +1225,7 @@ class SystemOfRecordRuleTests(_Base):
 
 
     def test_an_own_draft_beside_a_posted_twin_keeps_stage_and_side_on_the_own_system(self):
-        # review of a0c97a9: a draft is a record for the stage and the side alike
+        # A draft is a record for the stage and the side alike
         s = base.Store()
         ids = gold_sales(s, "so-od", ordered=[("a", "10", EACH, "5")],
                          shipments=[("SHIPPED", [("a", "10", EACH)])],
@@ -1257,7 +1256,7 @@ class SystemOfRecordRuleTests(_Base):
                       " ".join(op.check_graph(graph, base.SCHEMA)))
 
     def test_a_portal_po_reads_its_twin_path_for_invoices_and_proves_none(self):
-        # review of 0db1dc9: a Portal PO's own source carries no invoice path, so its
+        # A Portal PO's own source carries no invoice path, so its
         # twin path is the only one; "received, not invoiced yet" stays proven
         for twin in ("none", "bc_without_invoice", "bc_invoiced"):
             s = base.Store()
@@ -1281,7 +1280,7 @@ class SystemOfRecordRuleTests(_Base):
             self.assertEqual(answer.result["current_stage"], "vendor_invoice", twin)
 
     def test_a_path_of_leads_never_proves_absence(self):
-        # rule A (review of d419d74): an FM order's only invoice path runs FM -> gold ->
+        # rule A: an FM order's only invoice path runs FM -> gold ->
         # SalesInvoice.bills, a lead from gold: unknown with or without the gold twin
         for twin in (False, True):
             s = base.Store()
@@ -1303,7 +1302,7 @@ class SystemOfRecordRuleTests(_Base):
                                      op.DEFAULT_TIER_FLOOR, None))
 
     def test_a_twin_joined_only_by_a_lead_row_is_unproven_never_not_applicable(self):
-        # review of 51ace0d: the schema declares a counted twin path; this PO's data
+        # The schema declares a counted twin path; this PO's data
         # reaches its BC twin only through a text lead, so the absence is unproven
         for invoiced in (False, True):
             s = base.Store()
@@ -1408,13 +1407,13 @@ class RecordedMeasureTests(_Base):
         self.assertFalse(any(c["finding"] for c in rows))
 
     def test_a_figure_beside_no_receipt_at_all_is_a_conflict_citing_it(self):
-        # review of a0c97a9 (material 1): a PO line saying 100 received while no
+        # A PO line saying 100 received while no
         # receipt exists is never dropped
         s = base.Store()
         ids = bc_purchase(s, "po-r0", ordered=[("a", "100", EACH, "2")])
         record_received(s, ids, ["100"])
         answer, st, checks = self.run_po(s, ids["po"])
-        # rule C (review of d419d74): the figure unproves the absence, in the stage's
+        # rule C: the figure unproves the absence, in the stage's
         # structured state, and the order's position is no longer certain
         missing = st["receipt"]["missing"]
         self.assertEqual((st["receipt"]["state"], missing["state"], missing["reason"]),
@@ -1488,7 +1487,7 @@ class RecordedMeasureTests(_Base):
                                    "buyer": "recorded_measure_unproven"})
 
     def test_zero_against_non_zero_contradicts_in_any_unit(self):
-        # review of 51ace0d: a 0 bag figure beside 250 kg received, and its mirror
+        # A 0 bag figure beside 250 kg received, and its mirror
         for figure, kg, said in (("0", "250", "a non-zero quantity"), ("10", "0", "only zero")):
             s = base.Store()
             ids = bc_purchase(s, f"po-z{figure}", ordered=[("a", "10", "bag", "2")],
@@ -1503,7 +1502,7 @@ class RecordedMeasureTests(_Base):
             self.assertIn(f"record {said} (kg)", gap["detail"])
 
     def test_lines_in_the_figure_unit_can_contradict_it_and_then_nothing_is_decided(self):
-        # rule B (review of d419d74): 12 bag on the lines already exceed the 8 bag figure
+        # rule B: 12 bag on the lines already exceed the 8 bag figure
         s = base.Store()
         ids = bc_purchase(s, "po-mx", ordered=[("a", "10", "bag", "2")],
                           receipts=[[("a", "12", "bag"), ("a", "125", "kg")]])
@@ -1524,7 +1523,7 @@ class RecordedMeasureTests(_Base):
         self.assertIn("recorded_measure_unproven", gap_reasons(answer.result))
 
     def test_many_conflicting_items_fit_and_the_cut_gap_list_says_so(self):
-        # review of a0c97a9 (material 2 and the gap-cap minor): items whose figure
+        # Items whose figure
         # differs (3 checks each, over the count cap) answer within max_result_bytes; a
         # stale-class gap (here the store built from another schema) stays listed first.
         # The checks fill the response, so n leaves room for one item gap beside them.
@@ -1585,7 +1584,7 @@ class RecordedMeasureTests(_Base):
                          (True, "result_size"))
 
     def test_findings_outlive_agreements_under_the_count_cap_and_the_size_cut(self):
-        # review of 0db1dc9: one over-invoice on the last of 8 items (24 check items)
+        # One over-invoice on the last of 8 items (24 check items)
         s = base.Store()
         names = [f"i{k:02d}" for k in range(8)]
         ids = bc_purchase(s, "po-ord", ordered=[(x, "10", EACH, "2") for x in names],
@@ -1623,7 +1622,7 @@ class RecordedMeasureTests(_Base):
         self.assertEqual(result["completeness"]["reason"], "result_size")
 
     def test_receipts_in_another_unit_are_measured_by_the_po_line_figure(self):
-        # lead decision on review of a0c97a9 (a): the comparison names its measure and
+        # The comparison names its measure and
         # keeps the gaps saying the receipt-line sum was not comparable
         for figure, agree in (("10", True), ("8", False)):
             s = base.Store()
@@ -1837,7 +1836,7 @@ class ThreeWayMonotonicityTests(unittest.TestCase):
             return [a["so"], b["so"]]
 
         def lead_and_twins(s):
-            # review of 0956c5d: a text-lead invoice, Sage and BC twins both invoiced,
+            # A text-lead invoice, Sage and BC twins both invoiced,
             # and an invoice header without lines
             a = gold_sales(s, "m-l", ordered=[("a", "10", EACH, "5")],
                            shipments=[("SHIPPED", [("a", "10", EACH)])],
@@ -1873,7 +1872,7 @@ class ThreeWayMonotonicityTests(unittest.TestCase):
             return [a["po"]]
 
         def redundant_leads(s):
-            # review of 00ae3da: leads to records also counted (pushed BC invoice,
+            # Leads to records also counted (pushed BC invoice,
             # gold receipt by FK and text) and a lineless gold shipment with a Sage twin
             a = gold_sales(s, "m-r", ordered=[("a", "10", EACH, "5")],
                            shipments=[("SHIPPED", [("a", "10", EACH)])],
@@ -1893,7 +1892,7 @@ class ThreeWayMonotonicityTests(unittest.TestCase):
             return [a["so"], b["so"]]
 
         def shipped_means_shipped(s):
-            # review of 1e94c34: in-progress shipments, a Sage-only shipment, a
+            # In-progress shipments, a Sage-only shipment, a
             # cancelled-only and a picking-only own shipment beside a Sage twin, and a
             # cancelled invoice reached only by a lead
             a = gold_sales(s, "m-ip", ordered=[("a", "10", EACH, "5")],
@@ -1985,7 +1984,7 @@ class ThreeWayMonotonicityTests(unittest.TestCase):
                 "recorded_measure": world(recorded_measure), "twin_draft": world(twin_draft)}
 
     def test_a_marked_figure_keeps_every_answer_monotone(self):
-        # rule C (review of d419d74): with the PO-line figure marked, a reader who
+        # rule C: with the PO-line figure marked, a reader who
         # cannot read it never gets the absence a full-grant reader sees contradicted
         checker = base.PermissionMonotonicityTests(
             "test_every_answer_is_the_full_grant_answer_or_undecided")

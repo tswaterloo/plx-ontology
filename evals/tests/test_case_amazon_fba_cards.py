@@ -1,7 +1,7 @@
 """Amazon FBA case: PROPOSED dev-exposed cards and the ontology gaps they need.
 
 ``evals/dev/amazon-fba/proposed_items.json`` holds the questions of Greg's Amazon FBA
-Replenishment Map (FBA-*, advisory 45cd3b70238a): shipment identity across Amazon, the
+Replenishment Map (FBA-*): shipment identity across Amazon, the
 Sage OR, Freightcom and BC, case-to-unit reconciliation, item to Amazon SKU mapping,
 freight on final dims, the inventory move at BOL and the 45/90-day supply rule, and the
 real shipment OR1000154027. The map's original is pinned by item id and SHA-256 (from
@@ -36,7 +36,6 @@ SHIPMENT = "OR1000154027"
 # Every original kind the map names for the example; each unread one is typed.
 ORIGINAL_KINDS = {"email", "order", "customs", "bol", "label", "freight", "tracking"}
 STATES = {"link_pending", "to_come", "not_provided"}
-# The three systems the lane asks Greg or Vince about.
 ASKED = ("Seller Central", "Freightcom", "sales")
 SHA = re.compile(r"^[0-9a-f]{64}$")
 PRICE = re.compile(r"[$€£]\s?\d|\b(?:CAD|USD|EUR)\s?\d|\d\s?(?:CAD|USD|EUR)\b")
@@ -122,7 +121,7 @@ class AmazonFbaCardsTest(unittest.TestCase):
 
     def test_pin_matches_the_advisory_record(self):
         """record_sha256 is the SHA-256 of the record at its commit, and the map's pin is
-        the record's own source item, revision hash and size. Needs codex/advisory."""
+        the record's own source item, revision hash and size."""
         pin = self.cards["source"]["advisory"]
         raw = _git_show(pin["ref"], pin["path"])
         if raw is None:

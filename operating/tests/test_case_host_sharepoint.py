@@ -456,8 +456,8 @@ class RevokedHistoryTests(SharePointHostCase):
 
 
 class CaseCitationGateTests(SharePointHostCase):
-    """A case tool call resolves its captured citations through one gate (directive
-    7509edfeab71): one live re-read and GET bound per call however many citations, and
+    """A case tool call resolves its captured citations through one gate:
+    one live re-read and GET bound per call however many citations, and
     the projection plx.read reads (``capture_stale``)."""
 
     scanned = False
@@ -692,8 +692,7 @@ class HostCaseCaptureTests(HostCase):
 
 
 class SessionEvidenceItemPermissionTests(SharePointHostCase):
-    """Session evidence and the captures' item permissions (directives 05282fd4ab50,
-    4a4cb9c9c360): the claim gate of the MCPServer's case paths binds evidence item by
+    """Session evidence and the captures' item permissions (4a4cb9c9c360): the claim gate of the MCPServer's case paths binds evidence item by
     item, not per capture root."""
 
     scanned = False
@@ -1410,7 +1409,7 @@ class OverBoundTests(SharePointHostCase):
         super().setUp()
 
     def test_a_file_over_the_extractor_bound_is_an_exceeds_bound_gap_never_silence(self):
-        # Directive 515540eaf702 (3): such a file yielded no gap, so a search reported
+        # Such a file yielded no gap, so a search reported
         # nothing in it without saying it was never read.
         release = self.handle("01FILEB")
         current = self.store.current(DRIVE, "01FILEB")
@@ -1437,7 +1436,7 @@ NOTE_PO = "PO100236"
 
 
 class StoredTextLookupTests(SharePointHostCase):
-    """devloop/DECISIONS/2026-10-28-identifier-lookup.md: an identifier question reads
+    """An identifier question reads
     the text the capture stored, through an index kept beside the store, and never
     extracts or OCR-reads at query time. Each card session was a new process that
     re-extracted every captured file (263 s cold on 2,220 files, 175 s of it on 46
@@ -1660,8 +1659,7 @@ class MetadataOnlyStoreTests(SharePointHostCase):
 
 
 class PageCapTests(SharePointHostCase):
-    """Directives 754ef76ea79b and 0bfff43dc217 (devloop/DECISIONS/
-    pdf-cap-readers-contract.md): a captured PDF over the page bound is read on pages
+    """A captured PDF over the page bound is read on pages
     1-200; plx.read and plx.documents carry a typed ``skipped_by_cap`` naming the file and
     the pages not read, so a page past the bound or a search with no match on the pages
     read is never taken for absence. A PDF within the bound with no match is the control;
@@ -1774,7 +1772,7 @@ class PageCapTests(SharePointHostCase):
 
 
     def test_a_finding_citing_a_page_not_read_is_refused_page_not_read(self):
-        """Directive bf3d8e57cd44 (1): a case finding cites a page of a captured PDF only
+        """A case finding cites a page of a captured PDF only
         as its reading read it; page 230 of the capped file (past the cap) and a page past
         a file's last page are refused ``page_not_read``, a page read is recorded, and a
         reader without the file is refused without that reason. A cap recorded without
@@ -1836,7 +1834,7 @@ class PageCapTests(SharePointHostCase):
                 self.assertNotIn(TEXT_SECRET, json.dumps(answer))
 
     def test_an_old_capture_answers_a_search_and_a_read_re_reads_it(self):
-        """Directive bf3d8e57cd44 (3), under the search policy: on a capture past the
+        """3, under the search policy: on a capture past the
         age bound a search serves the matching file on its recorded permissions (no
         request, no age gap), and plx.read of it re-reads it live; a reader the
         recorded permissions refuse gets nothing."""

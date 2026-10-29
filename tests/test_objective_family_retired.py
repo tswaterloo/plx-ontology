@@ -1,7 +1,7 @@
 """The legacy objective/campaign/watch/autonomy family stays deleted.
 
 Deleted 2026-10-01. Goal 2 runs on
-operating/action_path.py (devloop/CONTEXT/10-DECISION.md item 6), and the gate's
+operating/action_path.py, and the gate's
 runtime-focused entry checks that path instead of the deleted runtime.
 """
 
@@ -25,7 +25,7 @@ RETIRED = (
     "operating.objectives", "operating.related_scope", "operating.source_goal_constraints",
     "operating.supplier_catalog", "scripts.run_business_demo", "scripts.run_transaction_demo",
 )
-# operating/unified.py still names the family; lane del-platform owns and deletes it.
+# operating/unified.py still names the family.
 PENDING_OWNER_DELETION = {"operating/unified.py"}
 SCANNED = ("ontology", "integrations", "operating", "operator_ui", "ops_plane", "reasoning",
            "engineering", "scripts", "devloop", "evals", "tests")
@@ -74,7 +74,7 @@ class ObjectiveFamilyRetiredTests(unittest.TestCase):
         gate = json.loads((ROOT / "devloop" / "gate-checks.json").read_text(encoding="utf-8"))
         targets = []
         for check in gate["checks"]:
-            # A check's command line is `command` then its `modules` (devloop/controller.py).
+            # A check's command line is `command` then its `modules`.
             command = " ".join([check["command"], *check.get("modules", [])])
             for group in re.findall(r"unittest ((?:[\w.]+ ?)+)", command):
                 targets.extend(group.split())

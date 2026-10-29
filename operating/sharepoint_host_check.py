@@ -1,6 +1,6 @@
 """Live check: the case host answers a SharePoint document question from the capture.
 
-``devloop/live-checks/case.sharepoint_documents.json``. One GET-only capture run of the
+live check ``case.sharepoint_documents``. One GET-only capture run of the
 configured scope (``integrations.capture_sharepoint``, OCR of scanned PDFs on this
 host), a projection of the capture alone (no Portal source: the Portal-down shape),
 then the real user path: ``plx.documents`` through ``CaptureCaseHostTools`` (a search,
@@ -24,8 +24,8 @@ POSTs included). ``host_gets_sent`` counts the host's Graph GETs alone (item met
 and permissions of the live re-reads its plx.read calls make), so a positive count
 proves a re-read was sent.
 
-With ``--document-class <profile>`` (``devloop/live-checks/
-ontology.document_fields_sharepoint.json``, directive P8) the same capture and projection
+With ``--document-class <profile>`` (the live-check specs
+ontology.document_fields_sharepoint.json``) the same capture and projection
 measure that class of ``ontology/schema/document_fields.json`` instead of asking
 questions: the objects projected, the fields stated, the gaps read, per field how many
 documents state it and how many hold each gap reason (``fields``), each distinct

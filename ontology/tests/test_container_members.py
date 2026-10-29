@@ -231,7 +231,7 @@ class ContainerMemberTests(unittest.TestCase):
         # PO100234 was a lead (and the confirmation a typed document) under the
         # container's handle and again under the member's. A carried mail (forwarded as
         # an attachment) is a member read for its own text too (gap-0d37a104a3db); with
-        # no file name it is shown as <Subject>.eml (directive 5a8d03900711).
+        # no file name it is shown as <Subject>.eml.
         p1 = self.po("p1")
         rows = self.conn.execute("SELECT link_type, from_object FROM links WHERE to_object = ?",
                                  (p1,)).fetchall()

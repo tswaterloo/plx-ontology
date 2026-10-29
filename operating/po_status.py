@@ -1,7 +1,7 @@
 """The one purchase-order status definition and the one purchase-order reader every
 consumer uses: the proactive engine, the ``po_delivery_window`` process graph
 (``open_when``, the PO stage predicate and lateness), the packaging eval check and the
-vocabulary live check (devloop/DECISIONS/2026-10-21-po-open-sage-fm.md).
+vocabulary live check.
 
 A PO's status word is its source's raw header text, never the Portal's derived code: the
 Portal ``app_purchase_order.status`` column holds the FileMaker words (live capture
@@ -13,7 +13,7 @@ derives its fulfillment code from the header and the summed line quantities
 * a cancelled word, and ``closed`` (open-po-lines/route.ts:46 @5afa0a20
   ``CANCELLED_STATUSES``), is **closed** ``CANCELLED``; DRAFT is **draft** (not issued);
 * ``Complete`` (the Portal header and FileMaker alike) is **closed** whatever was received
-  (Ross, advisory 15bb4af8): received in full it is ``RECEIVED``, else ``COMPLETE`` with
+  (Ross): received in full it is ``RECEIVED``, else ``COMPLETE`` with
   the outstanding quantity as its ``canceled_remainder`` (unknown when the quantities are
   not readable), never open;
 * any other mapped word (``ISSUED_WORDS``) is **open** while the summed received quantity
@@ -33,7 +33,7 @@ derives its fulfillment code from the header and the summed line quantities
   1-5 enumeration was replaced by a quantity check, @48b6cfc docs/Internal-SOP.md
   v8.598; the vocabulary check records iscomplete against linescmpl >= lines).
 
-Lateness (Vince, advisory 513f08e23991): an open PO is **late** once its requested-by
+Lateness (Vince): an open PO is **late** once its requested-by
 date has passed and **at risk** while that date has not passed but the supplier's
 confirmed date is later; a closed or draft PO is neither. The requested-by date is the
 reference or it is reported missing: the supplier's date is never put in its place. Its
@@ -52,12 +52,11 @@ Linked records of two systems that disagree are a named conflict (``PoRead.confl
 never one side silently picked: a firm (``corroborated``) twin, another system's record
 of the same order (a number-text twin the supplier and date corroborate, or a BC
 ``Your_Reference`` naming the FileMaker/Portal PO number that is unique and corroborated,
-decision 2026-10-27-your-reference-evidence; a lead is never compared), is compared on
+a lead is never compared), is compared on
 receipt state (fully received or Complete against open lines outstanding) and received
 quantity (one unit, both recorded; an FM-mirrored order's seeded 0 is not), and the
 requested-by dates on their precedence tiers. Each conflict holds both values, each
-side's own cited items and who governs: BC lines govern receipt state (owner decision:
-late = requested date passed and not fully received), so a BC side decides the status;
+side's own cited items and who governs: BC lines govern receipt state (Late = requested date passed and not fully received), so a BC side decides the status;
 with no governing side the status is ``status_disputed``. A twin this reader cannot read
 is no twin here, so it gets no conflict that reveals the other side. A settled twin link
 that joins a BC record to another system's (the Portal entity map's verified
@@ -98,7 +97,7 @@ EPS = Decimal("0.0001")
 CANCELLED_WORDS = frozenset({"CANCEL", "CANCELLED", "CANCELED"})
 # open-po-lines/route.ts:46 @5afa0a20 CANCELLED_STATUSES: "closed" is cancelled there too.
 CLOSED_WORDS = frozenset({"CLOSED"})
-# Ross (advisory 15bb4af8): Complete closes whatever was received.
+# Ross: Complete closes whatever was received.
 COMPLETE_WORDS = frozenset({COMPLETE})
 DRAFT_WORDS = frozenset({"DRAFT"})
 # Issued words: their quantities decide open or closed. The FileMaker words the Portal
@@ -393,7 +392,7 @@ CONFIRMS = "SupplierConfirmation.confirms"
 ORDERED, RECEIVED_QTY = "ordered_quantity", "received_quantity"
 NEED_PROP, PROMISE_PROP, PROMISE_ORDER = "expected_date", "delivery_date", "document_date"
 # A line's own expected receipt date (BC expectedReceiptDate): the lowest requested-by tier,
-# read only where no header tier holds a date (decision 2026-10-26-po-need-date-source).
+# read only where no header tier holds a date.
 LINE_EXPECTED = "bc_expected_receipt_date"
 PORTAL_BINDING = "portal.app_purchase_order"
 FM_BINDING = "portal.fm_generated_purchase_order"
@@ -645,7 +644,7 @@ def _read_side(source: Any, records: Sequence[str],
 # Complete counts) against open lines outstanding. Draft, cancelled and unknown compare
 # nothing: no receipt state is stated.
 FULLY_RECEIVED, OPEN_LINES = "fully_received", "open_lines_outstanding"
-# Who governs a field the systems disagree on (owner decision: BC lines govern receipt
+# Who governs a field the systems disagree on (BC lines govern receipt
 # state; late = requested date passed and not fully received). The requested-by date ranks
 # by the declared precedence (``PurchaseOrder.expected_date``'s authority).
 RECEIPT_AUTHORITY = "bc"
@@ -680,7 +679,7 @@ def _directions(link: str, member: str) -> tuple[str, ...]:
 def side_receipt(records: Sequence[str],
                  reads: Mapping[str, tuple[dict[str, list[Any]], list, bool]],
                  status: PoStatus, lines: Mapping[str, tuple[Any, list]]) -> str | None:
-    """A side's receipt state. BC lines govern receipt state (owner decision), whatever
+    """A side's receipt state. BC lines govern receipt state, whatever
     the BC header word (the BC API's ``Draft`` is a document not yet released; live
     2026-10-27 every BC order linked to a Portal one reads Draft): a BC record with
     readable lines is open while any line's received quantity is below its ordered one,

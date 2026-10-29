@@ -1,6 +1,6 @@
 {
  "schema": "plx-mail-directory-scope/v1",
- "note": "Directory-wide mail capture (owner directive c75dfaba0f8e; integrations/mail_directory_scope.py): every member user mailbox of the tenant directory, listed through the guarded, paged GET /users, except (1) every excluded person (PLX_EXCLUDED_PEOPLE_OIDS / PLX_EXCLUDED_PEOPLE_FILE through integrations/people_exclusion.py; unset or empty, the run refuses before any request) and (2) the HR / payroll deny list below. Both are dropped before any request names the mailbox. Inbox and sent items, 90-day first round, then delta; the store stays under PLX_WORKBENCH_STATE_DIR. No person, address or object id is named here.",
+ "note": "Directory-wide mail capture (integrations/mail_directory_scope.py): every member user mailbox of the tenant directory, listed through the guarded, paged GET /users, except (1) every excluded person (PLX_EXCLUDED_PEOPLE_OIDS / PLX_EXCLUDED_PEOPLE_FILE through integrations/people_exclusion.py; unset or empty, the run refuses before any request) and (2) the HR / payroll deny list below. Both are dropped before any request names the mailbox. Inbox and sent items, 90-day first round, then delta; the store stays under PLX_WORKBENCH_STATE_DIR. No person, address or object id is named here.",
  "window_days": 90,
  "folders": [
   "inbox",

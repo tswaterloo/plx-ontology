@@ -1280,7 +1280,7 @@ class ForwarderQuoteTests(unittest.TestCase):
                       pack["steps"])
 
     def test_a_stated_amount_is_total_freight_only_when_its_basis_cites_it(self):
-        """DECISIONS/2026-10-07-freight-quote-basis.md: on a per-container or per-CBM basis a
+        """On a per-container or per-CBM basis a
         stated amount (Total or All-in) is total freight only for a cited count of one or a
         cited rate x count equal to it; never multiplied. The estimate stays labelled."""
         result = self.investigate("PO100962")

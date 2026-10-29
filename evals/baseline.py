@@ -1,7 +1,7 @@
 """Dev-set baseline: L11 dev items through the L10 runner on the generic ontology tools.
 
-10-DECISION decision 8 (evaluation is the progress metric), directive f6643c209267 (track
-dev-set pass rates in ``state.status`` and the daily report). This module is the harness
+evaluation is the progress metric, track
+dev-set pass rates in ``state.status`` and the daily report. This module is the harness
 between three existing pieces; it adds no case logic:
 
 * **Items**: ``plx-eval-item/v1`` from the independent oracle (``evals/oracle``; fixture
@@ -59,8 +59,7 @@ sources disagree, a paper field left blank) is an ``unknown`` gap naming it
 (``measure.CONFLICT_REASON``), never a pick. Any other question needs a planning model: the run is
 recorded, scored, and counted as ``needs_agent`` (never a pass, never a fail).
 
-**Run pin.** Each item runs on the runner's run pin (``evals.runner.make_run_pin``,
-devloop/DECISIONS/2026-10-02-oracle-pinning.md): the mirror captures pinned at or after the
+**Run pin.** Each item runs on the runner's run pin (``evals.runner.make_run_pin``): the mirror captures pinned at or after the
 item's time, given to the agent in the prompt and read by the scorer. A pin whose cited
 fields drifted from the oracle's read makes the item ``pin_drift``: counted, excluded from
 every rate. The harness supplies the oracle's own reads for the drift check.
@@ -581,8 +580,8 @@ class DeterministicInvestigator:
                 continue
             if entry.get("kind") == "count" and value == 0 and entry.get("proof"):
                 # A proven zero cites no record, and the answer format has no citation of a
-                # complete search yet (devloop/DECISIONS/2026-10-28-plan-party-twins-proven-zero-
-                # zero-citation.md): not stated, and not an uncited figure either.
+                # complete search yet:
+                # not stated, and not an uncited figure either.
                 continue
             if entry.get("kind") != "property" or not entry.get("citation") \
                     or isinstance(value, bool):
@@ -806,8 +805,8 @@ def _verified_twin_of(want: Mapping[str, Any], result: Mapping[str, Any]) -> boo
     """Whether the item's root row is a verified twin of the plan's root: an entry of the
     plan's ``root_twins_not_roots`` gap ``twins`` (structured data, never its prose) names
     it by a handle whose row is the oracle's root row and joins it at an identity tier. One
-    rule for every record held in several systems (devloop/DECISIONS/2026-10-15-ao-root-
-    twin.md); a ``lead`` twin, an unknown tier, an unparseable handle or another row does
+    rule for every record held in several systems;
+    a ``lead`` twin, an unknown tier, an unparseable handle or another row does
     not count."""
     wanted = (want.get("relation"), scoring.canonical(
         {str(k): str(v) for k, v in (want.get("key") or {}).items()}))

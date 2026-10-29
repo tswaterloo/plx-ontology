@@ -220,7 +220,7 @@
  },
  "label": {
   "status": "oracle_only",
-  "note": "Exposed real case (advisory batch existing-packets-development-batch-01 unit DEV-008, cluster soapbox-po5447): dev/regression only, never held-out. Expected values are the source-backed claims of the Dot's advisory curation (oracle.derived_from), not a Workbench oracle run and not a human audit; every claim the records do not establish is a gap with state unknown. Pending human label (09 Q9): a person checks known_outcome against the originals in evals/exposed/sources.json, then sets human_audited (audited_by, audited_at) or disputed."
+  "note": "Exposed real case (cluster soapbox-po5447): dev/regression only, never held-out. Expected values are the source-backed claims of the curated records (oracle.derived_from), not a Workbench oracle run and not a human audit; every claim the records do not establish is a gap with state unknown. Pending human label (09 Q9): a person checks known_outcome against the originals in evals/exposed/sources.json, then sets human_audited (audited_by, audited_at) or disputed."
  },
  "scoring": {
   "exact_values": true,

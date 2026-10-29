@@ -192,7 +192,7 @@ class LatencySender:
         return self.sender(method, url, headers, body, timeout, max_bytes)
 
 
-# Measured on claude/devloop-live (eval.bc_three_way, 17 runs 2026-10-07/08): least squares
+# Measured on the live-results branch (eval.bc_three_way, 17 runs 2026-10-07/08): least squares
 # of duration over GETs and retries (requests_sent - reads.sent - 1) gives 16 s per failed
 # attempt. The slowest hour (bb601a96, 10:33Z, run_budget_exhausted at 483 s with 8 of 14
 # items scored): 128 GETs, 24 failed attempts, so 0.77 s per answered attempt; one attempt
@@ -622,7 +622,7 @@ class OutputContractTests(unittest.TestCase):
                 self.assertGreaterEqual(found["scored"], 5)
 
     def test_the_reserve_weighs_the_priors_as_three_items_beside_the_items_read(self):
-        # Directive 8b59bc9138e8: the reserve switched to the measured cost after the first
+        # The reserve switched to the measured cost after the first
         # item, and an item that reads its receipts costs ~15 times one the oracle excludes.
         # Each unread item now costs the priors weighed as 3 items read beside the seconds
         # of the items read (a throttle wait is no item's cost), less what the item in
@@ -806,7 +806,7 @@ class OutputContractTests(unittest.TestCase):
                           "cost.retries.failed_attempts_over_bound > 0"])
 
     def test_each_get_attempt_is_timed_from_its_send_and_only_a_connect_timeout_has_slack(self):
-        # Review of 10c50c9d: the token POST counted in the next attempt, a get_document
+        # The token POST counted in the next attempt, a get_document
         # attempt was timed from the GET before it, a read's slowest answer was its last
         # page's and a non-connect failure in (10.0, 10.5] s passed the bound. Each request
         # here takes the next scripted seconds (the token POST first, then GET attempts).

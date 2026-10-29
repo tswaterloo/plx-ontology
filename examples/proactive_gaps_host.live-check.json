@@ -1,6 +1,6 @@
 {
  "schema": "plx-host-config/v1",
- "note": "Host config of the case.proactive_gaps live check (devloop/live-checks/case.proactive_gaps.json): the case.customer_po_missing capture (the Portal sales orders through the source mirror and the PLXCUSTOMERS 'Customer Documents' folder, examples/sharepoint_capture_scope.customer_documents.live-check.json; its live audience is reused read only) plus the Portal quotes (public.app_quote), so an open quote past valid_until can be raised as a cited expired_quote. Configuration, never a grant: the audiences decide what the capture principal may read; the quotes are mirrored under examples/proactive_gaps_audience.live-check.json.",
+ "note": "Host config of the case.proactive_gaps live check (live check ``case.proactive_gaps``): the case.customer_po_missing capture (the Portal sales orders through the source mirror and the PLXCUSTOMERS 'Customer Documents' folder, examples/sharepoint_capture_scope.customer_documents.live-check.json; its live audience is reused read only) plus the Portal quotes (public.app_quote), so an open quote past valid_until can be raised as a cited expired_quote. Configuration, never a grant: the audiences decide what the capture principal may read; the quotes are mirrored under examples/proactive_gaps_audience.live-check.json.",
  "tenant": "plx",
  "capture_audience": "customer_po_missing_live_audience.live-check.json",
  "live_audience": "customer_po_missing_live_audience.live-check.json",

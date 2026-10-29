@@ -4,7 +4,7 @@
 answer criteria, the originals (``vince-artwork`` rows of ``examples/case_originals.json``)
 and live sources each needs; ``ontology_gaps.json`` names what the ontology lacks to
 answer them (artwork version, proof, printed-component lineage, customer approval, label
-reconciliation), each with a real source or ``source unknown`` and a Dot question. The
+reconciliation), each with a real source or ``source unknown`` and a question. The
 contract is the Asset Tracker cards' checker, scoped to this case's originals.
 """
 

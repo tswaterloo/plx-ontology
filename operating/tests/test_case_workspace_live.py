@@ -352,7 +352,7 @@ class LiveMirrorWorkspaceTest(unittest.TestCase):
         warnings. The run counts those by typed cause in ``stderr_causes``, never a
         message. case-live-cause-honest: only pypdf's records are taken off stderr, where
         pypdf is read; any other record still reaches stderr, a traceback logged with
-        ``exc_info`` whole (``devloop/live_verify.py`` reads its exception class)."""
+        ``exc_info`` whole (the live verifier reads its exception class)."""
         import logging
         import warnings
 
@@ -969,7 +969,7 @@ class LiveMirrorPurchaseOrderTest(unittest.TestCase):
                          "opened")
 
     def test_an_answer_from_rows_a_reader_cannot_read_is_withheld_never_uncited(self):
-        """Review of 18072f8f: the question families' answers (line quantities, counts,
+        """The question families' answers (line quantities, counts,
         computed values) were written uncited, so every case reader saw them.
         With the order lines sales-only, an operations reader of the sales order's case
         sees those answers withheld."""
@@ -1006,7 +1006,7 @@ class LiveMirrorPurchaseOrderTest(unittest.TestCase):
         self.assertEqual((check["row_leaks"], check["case_text_leaks"]), (0, 0))
 
     def test_revoking_the_source_grant_hides_the_case_header_on_every_surface(self):
-        """Regression (review of bb48071): the question and roots of a narrowed case
+        """Regression: the question and roots of a narrowed case
         name a PO number read from purchasing relations. Once the mirror audience
         revokes those relations from purchasing, no surface (store get/list, MCP
         case_get in every view, case_list, the console list and workspace) shows the
@@ -1098,7 +1098,7 @@ class LiveMirrorPurchaseOrderTest(unittest.TestCase):
 
 
     def test_the_leak_check_fails_a_case_whose_words_name_a_withheld_po(self):
-        """Regression (review of e041d6f): opened without the narrowed audience, a PO
+        """Regression: opened without the narrowed audience, a PO
         number reaches an operations reader through the question, roots and uncited gaps;
         the check counts it as a row leak, never as allowed case text."""
         from operating.mcp_server import MCPServer, local_client
@@ -1280,7 +1280,7 @@ class GapDateTest(unittest.TestCase):
 @unittest.skipUnless(importlib.util.find_spec("pypdf") and importlib.util.find_spec("reportlab"),
                      "the customer PO is a PDF: needs pypdf and reportlab")
 class CustomerPoMissingTest(unittest.TestCase):
-    """``devloop/live-checks/case.customer_po_missing.json`` (REC-01) over injected
+    """live check ``case.customer_po_missing`` (REC-01) over injected
     sources: its own command, its host config copied with the in-process FakeWorkbench
     (the synthetic order fixture plus order OR1000888001 holding no PO) and a FakeDrive
     for the site; the network refused. Evidence label: injected-transport."""

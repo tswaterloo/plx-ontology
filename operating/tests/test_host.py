@@ -605,7 +605,7 @@ class CycleTests(HostCase):
         self.assertEqual((code, json.loads(err)), (2, {"error": "host_check_interrupt_invalid"}))
 
     def test_a_killed_or_failed_cycle_child_leaves_no_ocr_grandchild(self):
-        """Directive 31638266ab15: the killed ``run`` child takes the OCR children it
+        """The killed ``run`` child takes the OCR children it
         started with it, and a wait that fails other than by the timeout still kills
         and reaps the child and its OCR children before the error propagates."""
         pidfile = self.root / "ocr.pid"
@@ -670,7 +670,7 @@ class CycleTests(HostCase):
 
 class OneWriterTests(HostCase):
     """The host's ingest mode and its own readers over one state directory: one cycle
-    lock, one ledger, one projection, one check (decision 2026-10-21-ingest-one-writer)."""
+    lock, one ledger, one projection, one check."""
 
     def test_ingest_and_host_cycles_exclude_each_other(self):
         import threading
@@ -1014,8 +1014,6 @@ class QcqaLibraryTests(HostCase):
                  if urlsplit(u).path.endswith("/items/01BIG/children")]
         self.assertEqual((len(pages), len(set(pages))), (60, 60))
 
-    # ------------------------------------------- the census carried across calls
-    # decision 2026-10-21-sharepoint-census-across-runs (gap-c5979fc39dec)
 
     def census_library(self, folders: int, files: int = 3) -> int:
         """``folders`` more folders under the root, ``files`` files in each; the number
@@ -1212,7 +1210,7 @@ class QcqaLibraryTests(HostCase):
                                                        ["capture_folder_bound"]))
         self.assertGreater(cov["files_not_captured"], 0)
 
-    # ------------- one rule for a budget cut (lane capture-checks-complete-across-runs)
+    # ------------- one rule for a budget cut
 
     def census_cut_check(self, census_listings: int = 3) -> dict:
         """``check`` of three cycles over this test's state, its coverage census cut by
@@ -1428,7 +1426,7 @@ class QcqaLibraryTests(HostCase):
 class TeamsConfirmationTests(HostCase):
     """The host runs the ``teams-capture`` CLI's gate (decision
     2026-10-21-teams-host-confirmation-gate): census first, then message content only of
-    the channels and chats the owner confirmed and the census cleared."""
+    the channels and chats a person confirmed and the census cleared."""
 
     def teams_paths(self, mark: int = 0) -> list[str]:
         return [unquote(urlsplit(u).path) for _m, u in self.router.since(mark)
@@ -1616,7 +1614,7 @@ def call(request_id, name, arguments):
 
 
 class FreshnessBoundTests(HostCase):
-    """Supervisor decision 2026-10-27: each captured source's freshness bound comes from
+    """Each captured source's freshness bound comes from
     the host config's capture cadence, and the MCP host is started with it."""
 
     def test_bounds_follow_the_configured_cadence_in_both_modes(self):

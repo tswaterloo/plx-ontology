@@ -1,4 +1,4 @@
-"""Microsoft Graph families generated from a pinned Graph v1.0 CSDL subset (lane gen-graph).
+"""Microsoft Graph families generated from a pinned Graph v1.0 CSDL subset.
 
 Every ``microsoft-graph`` ``endpoint`` of the source registry (``ontology/source_registry.
 json``, request templates folded to ``{}`` by ``scripts/source_registry.graph_template``) is

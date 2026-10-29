@@ -1,7 +1,6 @@
 """Permission-enforcing local mirror of the Portal Workbench reporting API.
 
-Part A of the case runtime (devloop/CASE-RUNTIME.md section 1 and the
-``plx.source_catalog`` / ``plx.source_rows`` / ``plx.source_resolve`` tools).
+Part A of the case runtime.
 
 The mirror is a disposable SQLite projection of approved Workbench API
 relations. A relation is filled on first use or by :meth:`SourceMirror.sync`,
@@ -85,7 +84,7 @@ one removal path, and the ontology projection learns the successor from it. A ke
 with no successor stays ``missing_from_source_since``; an incremental capture never
 marks a key missing, so it never infers a replacement.
 
-Lineage (09-CRITIQUE R1): every stored row carries a ``lineage`` derived from
+Lineage: every stored row carries a ``lineage`` derived from
 the declared rules in ``integrations/source_mirror_ingest.json`` (schema,
 ``external_id`` prefixes, ``custom_fields`` markers, Portal bridge ids), so a
 staging-native or unclassified gold row is labelled wherever the API exposes
@@ -982,8 +981,7 @@ def _order_value(value: Any) -> tuple[int, Any]:
 
 INGEST_SCHEMA = "plx-source-mirror-ingest/v1"
 DEFAULT_INGEST_PATH = Path(__file__).with_name("source_mirror_ingest.json")
-# The C0 lineage values (ontology/schema/_format.schema.json $defs.lineage, 09-CRITIQUE
-# R1) a Portal mirror row can carry. Like the C0 binding examples, a gold row with
+# The C0 lineage values (ontology/schema/_format.schema.json $defs.lineage) a Portal mirror row can carry. Like the C0 binding examples, a gold row with
 # no exposed origin marker defaults to gold_native_staging (never authority until a
 # human confirms it, Q1); its rule id (lineage_rule ``gold_no_origin_marker``)
 # says the origin is unproven. A row no rule matches has lineage None.

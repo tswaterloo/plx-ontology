@@ -49,7 +49,7 @@ From a packaging quote to an approved part, PO, proforma invoice and deposit.
 - **Which vendor deposit does the proposal cite, and was it recorded as a prepayment on the purchase order?**
   - A good answer: The proposal cites a vendor deposit; the deposit record is not supplied (MO-04), and the Sept 30 map says deposits are booked in BC by hand without a PO prepayment (unverified). An answer reports whether it was recorded as a prepayment as unknown and states no amount.
 - **Which originals of this case exist, and which have been read?**
-  - A good answer: Pinned: the proposal file (item id, SHA-256 and size from the advisory record), watched in /Ontology UseCases; its body was read by the intake, which exported minimised facts only, and the discovered receipt of 17 Oct 2026 lists the item with its body unavailable, so nothing here was read from it. Not supplied (missing_originals): the fuller map the proposal links (not fetched), the P-02486 item records, PI-SWC025623, the deposit record and the three sign-offs. An answer lists each unread original with its state and infers nothing about its content.
+  - A good answer: Pinned: the proposal file (item id, SHA-256 and size from the source record), watched in /Ontology UseCases; its body was read by the intake, which exported minimised facts only, and the discovered receipt of 17 Oct 2026 lists the item with its body unavailable, so nothing here was read from it. Not supplied (missing_originals): the fuller map the proposal links (not fetched), the P-02486 item records, PI-SWC025623, the deposit record and the three sign-offs. An answer lists each unread original with its state and infers nothing about its content.
 
 ## Open questions for the business
 

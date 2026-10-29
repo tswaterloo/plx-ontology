@@ -6,7 +6,7 @@
  "object_types": [
   {
    "id": "TeamsChannelMessage",
-   "description": "One captured Teams channel message or reply version (Graph chatMessage; lineage mail until the Teams lineage decision, devloop/DECISIONS/2026-10-07-ovs-teams-capture.md item 1). Readers are trimmed per channel and by the channel's captured membership. Source text is untrusted; the body is cited, not projected.",
+   "description": "One captured Teams channel message or reply version (Graph chatMessage; lineage mail until the Teams lineage decision). Readers are trimmed per channel and by the channel's captured membership. Source text is untrusted; the body is cited, not projected.",
    "availability": {
     "state": "served"
    },
@@ -379,7 +379,7 @@
   },
   {
    "id": "TeamsChatMessage",
-   "description": "One captured Teams chat message version (Graph chatMessage; lineage mail, devloop/DECISIONS/2026-10-07-ovs-teams-capture.md item 1). The chats of every account on the mail allowlist are captured (item 2); readers are trimmed per chat and by the chat's captured membership, and a chat without a captured membership is not projected (devloop/DECISIONS/2026-10-10-followup-decisions.md item 6). Source text is untrusted; the body is cited, not projected.",
+   "description": "One captured Teams chat message version (Graph chatMessage; lineage mail). The chats of every account on the mail allowlist are captured (item 2); readers are trimmed per chat and by the chat's captured membership, and a chat without a captured membership is not projected. Source text is untrusted; the body is cited, not projected.",
    "availability": {
     "state": "served"
    },

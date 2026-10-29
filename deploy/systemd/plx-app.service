@@ -1,0 +1,39 @@
+# PLX Workbench web app (Next.js production server), behind Caddy.
+# Runs as the dedicated unprivileged user plx-workbench (created per
+# deploy/README.md). Install: see deploy/README.md. Not enabled by the build.
+[Unit]
+Description=PLX Workbench web app (Next.js)
+After=network-online.target plx-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=plx-workbench
+Group=plx-workbench
+WorkingDirectory=/data/OntologyProject/app
+Environment=NODE_ENV=production
+Environment=NEXT_TELEMETRY_DISABLED=1
+Environment=PATH=/data/tools/node/bin:/usr/bin:/bin
+# Loopback only: Caddy is the only way in.
+ExecStart=/data/tools/node/bin/node node_modules/next/dist/bin/next start -p 3000 -H 127.0.0.1
+Restart=on-failure
+RestartSec=3
+
+# Hardening: read-only everywhere except Next's runtime cache.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/data/OntologyProject/app/.next/cache
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

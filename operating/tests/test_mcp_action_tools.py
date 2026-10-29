@@ -512,8 +512,7 @@ class ActionToolTests(ActionToolsTestCase):
         -> ``serving_tools``): with --enable-action-path a reader with case access records the
         follow-ups; a session the case is not shown to gets case_not_found with nothing
         written; without the action path the option is refused. The listing follows: a writer
-        (readOnlyHint false, as the contract's read_only) only where it records
-        (devloop/DECISIONS/2026-10-10-follow-ups-ask-loop-writes.md)."""
+        (readOnlyHint false, as the contract's read_only) only where it records."""
         def started(argv, session=None):
             host, server = mcp_server.session_server(argv)
             self.addCleanup(host.close)

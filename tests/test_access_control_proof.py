@@ -1,4 +1,4 @@
-"""``access.control_proof`` (ROADMAP A6): person A asking for person B's mail, a non-member
+"""``access.control_proof`` (the acceptance bar): person A asking for person B's mail, a non-member
 asking for Teams content and a non-finance reader asking for a finance-only file are each
 refused with a typed reason by every consumer; an excluded person's data reaches nobody.
 

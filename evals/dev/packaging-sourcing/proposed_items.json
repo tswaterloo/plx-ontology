@@ -24,7 +24,7 @@
   ],
   "originals_registry": "examples/case_originals.json",
   "watched_originals": {
-   "note": "The proposal file, pinned from the advisory record (source_id item, source_revision sha256, the evidence's byte count); the live verifier's discovered receipt (entry nr-1c6c5bb396ae, 17 Oct 2026) lists the same item, size and modification time but its body was unavailable, so no read receipt matches this pin yet. Name only, no contents.",
+   "note": "The proposal file, pinned from the source record (source_id item, source_revision sha256, the evidence's byte count); the live verifier's discovered receipt (entry nr-1c6c5bb396ae, 17 Oct 2026) lists the same item, size and modification time but its body was unavailable, so no read receipt matches this pin yet. Name only, no contents.",
    "folders": {
     "Ontology UseCases": "wf-a672d852ff20"
    },
@@ -123,7 +123,7 @@
    "gap": "PS-GAP-01"
   }
  ],
- "missing_originals_note": "Typed here because the registry generator makes gap rows only from the Dot's baseline and delta source-pin records. not_fetched: the proposal links it and the intake did not fetch it; not_provided: the proposal cites the record but no copy reached the Workbench; not_evidenced: the proposal requires it and evidences none. None was read; a card never infers their content.",
+ "missing_originals_note": "Typed here because the registry generator makes gap rows only from the baseline and delta source-pin records. not_fetched: the proposal links it and the intake did not fetch it; not_provided: the proposal cites the record but no copy reached the Workbench; not_evidenced: the proposal requires it and evidences none. None was read; a card never infers their content.",
  "live_sources": [
   {
    "id": "sharepoint.ontology_usecases",

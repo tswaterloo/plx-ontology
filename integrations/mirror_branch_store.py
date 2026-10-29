@@ -1,16 +1,14 @@
 """The last complete Portal source-mirror copy, kept compressed on a private git ref.
 
-Owner policy e251073ef3c5 item 6 (later_asks durable-capture-store, host-24x7-location):
-until the owner's always-on host exists, the credentialed live verifier has no state
+Until the owner's always-on host exists, the credentialed live verifier has no state
 directory that survives between runs, so ``integrations/mirror_capture.py``'s copy is
 lost with each container. This module keeps the newest complete copy on the ref
 ``refs/devloop/mirror`` of the private repository and reads it back as the outage
 fallback when the configured ``PLX_WORKBENCH_STATE_DIR`` holds none. The owner accepts
 business data in the private repo (this supersedes "captures never go to Git", owner
-rule 5be438765457, for this one ref only); secrets never. The ref is not a branch
-(directive 013e99e52e50), so a default ``git fetch`` in a clone never downloads it;
-every read names it. The earlier branch ``claude/devloop-mirror`` is left for the
-owner to delete: the loop deletes no remote ref.
+rule 5be438765457, for this one ref only); secrets never. The ref is not a branch,
+so a default ``git fetch`` in a clone never downloads it;
+every read names it. The loop deletes no remote ref.
 
 Ref layout: exactly one parentless commit per published copy (older ones are not
 ancestors, so they are squashed away), its tree flat::
@@ -32,22 +30,20 @@ SQLite overflow pages is whole here) and the raw file bytes (freed pages) are sc
 first: the value of every credential-shaped environment variable and the shapes of
 well-known tokens refuse the write (``secret_shaped_value``). The bytes compressed are
 hashed again and must be the verified copy (``copy_changed``). The push is a
-compare-and-swap like the controller's state branch (``devloop/controller.py``
-``_push_cas``: ``--force-with-lease`` against the head that was read, hooks disabled):
+compare-and-swap (``--force-with-lease`` against the head that was read, hooks disabled):
 a writer that loses the race re-reads the head and retries, and never replaces a copy
 captured later than its own. A head whose manifest does not verify is replaced, its
-reason returned (``replaced_invalid_head``). The controller's helpers are not imported
-(they drive one global remote and the loop's error types); the pattern is the same.
+reason returned (``replaced_invalid_head``). The pattern is the same.
 
 Attestation: ``publish --attest FILE`` writes ``plx-mirror-attestation/v1`` (the ref,
 the commit and the copy's sha256) for the copy now on the ref; the verifier commits it
-as ``results/mirror-attestation.json`` on ``claude/devloop-live``, its results branch.
+as ``results/mirror-attestation.json`` on the live-results branch, its results branch.
 
 Read (``MirrorBranch.restore_into``): the head from the remote (``ls-remote``, fetched
 by SHA), or, when the remote cannot be read without credentials, the local
 ``refs/devloop/remotes/<remote>/...`` the verifier fetched (``fetch`` command). A copy
 is installed only when that head is the commit, and its copy the sha256, the
-verifier's attestation on the fetched ``claude/devloop-live`` names (else ``refused``
+verifier's attestation on the fetched the live-results branch names (else ``refused``
 ``unattested``: a self-consistent commit any pusher planted is never served), and only
 for a scope the store holds no copy of, each part and the whole file checked against
 the manifest's sha256 and the output capped at the copy's size; the store then
@@ -58,7 +54,7 @@ Every return value is counts, booleans, enums and commit/digest hex; never a row
 key or citation.
 Evidence: module tests run over a local bare repository (``integrations/tests/
 test_mirror_branch_store.py``, injected Workbench transport); the live behaviour is
-``live-unverified`` until ``devloop/live-checks/mirror.persisted_fallback.json`` records
+``live-unverified`` until live check ``mirror.persisted_fallback`` records
 a result read from the ref.
 """
 
@@ -307,7 +303,7 @@ class MirrorBranch:
 
     def attestation(self) -> dict[str, Any] | None:
         """The verifier's ``plx-mirror-attestation/v1`` record for this ref on the
-        fetched ``claude/devloop-live`` (``results_commit``: the results commit it was
+        fetched the live-results branch (``results_commit``: the results commit it was
         read from); None when absent or malformed."""
         live = self._git("rev-parse", "--verify", "--quiet", f"{self.live_ref}^{{commit}}",
                          check=False)
@@ -622,7 +618,7 @@ def _file_sha(path: Path) -> str:
 def main(argv: Sequence[str] | None = None, *,
          environ: Mapping[str, str] | None = None) -> int:
     """``publish``: the verifier, after the daily checks, with its credentials and its
-    ``PLX_WORKBENCH_STATE_DIR``, ``--attest`` into its claude/devloop-live checkout;
+    ``PLX_WORKBENCH_STATE_DIR``, ``--attest`` into its the live-results branch checkout;
     ``fetch``: before them. Prints counts, enums and commit/digest hex only."""
     parser = argparse.ArgumentParser(prog="python3 -m integrations.mirror_branch_store",
                                      description=__doc__.splitlines()[0])

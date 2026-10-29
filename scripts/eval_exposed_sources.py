@@ -28,7 +28,7 @@ found and matches.
     python3 -m scripts.eval_exposed_sources mail [--sources PATH]
 
 Evidence label: live-unverified until the live verifier runs
-``devloop/live-checks/case.exposed_originals.json`` / ``case.exposed_mail.json``; tests
+live check ``case.exposed_originals`` / ``case.exposed_mail.json``; tests
 use an injected transport (``tests/test_eval_exposed_cases.py``).
 """
 

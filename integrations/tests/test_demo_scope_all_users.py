@@ -1,4 +1,4 @@
-"""Owner decision 2026-10-26: mail-to-case and Teams chats cover every directory user
+"""Mail-to-case and Teams chats cover every directory user
 except the excluded people; no human content confirmation for Teams. Fakes only."""
 
 from __future__ import annotations

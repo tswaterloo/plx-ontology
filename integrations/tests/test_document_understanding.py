@@ -341,7 +341,7 @@ class DocumentUnderstandingTest(unittest.TestCase):
         self.assertEqual([m.reading.text for m in found.members], ["Petra PO: PPO-206"])
 
     def test_a_transfer_encoded_forwarded_message_is_decoded_before_its_headers(self):
-        """Directive 5a8d03900711 (1, 5): Python's parser parses a message/rfc822 part
+        """Python's parser parses a message/rfc822 part
         without decoding it, so a forward written base64 or quoted-printable was read
         as its own encoding (no headers, unsupported ``email_headers_missing``, and its
         own attachments were not members). The stated encoding is now removed from the
@@ -773,7 +773,7 @@ class PdfDocumentUnderstandingTest(unittest.TestCase):
         self.assertEqual(result.claims, ())
 
     def test_an_unreadable_pdf_reports_method_none_and_a_typed_failure(self):
-        """Directive 440211923d3f (4): nothing read is method ``none`` with the reason in
+        """Nothing read is method ``none`` with the reason in
         ``failure``, also when pypdf opened the PDF but could not read a page."""
         from unittest.mock import patch
         from pypdf import PageObject
@@ -849,7 +849,7 @@ class PdfDocumentUnderstandingTest(unittest.TestCase):
 
     @unittest.skipUnless(POPPLER, "poppler not installed")
     def test_an_owner_password_never_blocks_a_read_and_a_user_password_does(self):
-        """DECIDED (architect-20261008T1122Z): an owner password restricts editing and
+        """DECIDED: an owner password restricts editing and
         printing, not reading. Every reader reads such a PDF, poppler's text layer
         included; only a PDF that needs its user password is ``encrypted``."""
         import sys
@@ -923,7 +923,7 @@ class BrokenPdfParserTest(unittest.TestCase):
             quote = next(c for c in read.claims if c["field"] == "quote_number")
             self.assertEqual(quote["page"], 2)
             # The method names the reader that read it, and why pypdf did not stays
-            # visible (directive 440211923d3f (4)); the same without pypdf installed.
+            # visible (4); the same without pypdf installed.
             self.assertIn("pdf_parser_broken_reinstall_pypdf", read.warnings)
             with patch.dict(sys.modules, {"pypdf": None}), \
                     patch("integrations.doc_convert.installed_backend", return_value=None):
@@ -933,7 +933,7 @@ class BrokenPdfParserTest(unittest.TestCase):
             self.assertIn("pdf_parser_unavailable_install_pypdf", uninstalled.warnings)
 
     def test_poppler_user_password_refusal_is_keyed_on_exit_status_and_word(self):
-        """Directive f6515fd2bede (3)(4): poppler's refusal to open a PDF without its
+        """3(4): poppler's refusal to open a PDF without its
         user password is known by exit status 1 and the word "password" in any case, not
         one release's message; the capture's OCR path then says ``unsupported`` (OCR
         never ran), and only an OCR run that failed ``ocr_failed``."""
@@ -1037,7 +1037,7 @@ class OnePdfReaderTest(unittest.TestCase):
     def test_read_pages_is_the_only_place_that_chooses_the_reader(self):
         from pathlib import Path
 
-        # An alias or getattr does not hide a reader (directive 440211923d3f (2)).
+        # An alias or getattr does not hide a reader (2).
         self.assertEqual(self.references(
             "import integrations.doc_convert as dc\n"
             "from pypdf import PdfReader as Reader\n"
@@ -1087,7 +1087,7 @@ class OnePdfReaderTest(unittest.TestCase):
 
     @unittest.skipUnless(_importable("pypdf"), "the page bound is pypdf's page count")
     def test_first_pages_reads_a_bounded_prefix_and_fails_closed_otherwise(self):
-        """Directive 23c4347efa25 (1): ``first_pages`` reads a PDF over the page bound on
+        """``First_pages`` reads a PDF over the page bound on
         its first pages and names the rest; without it such a PDF is still refused
         whole, and a reading it cannot bound fails closed."""
         from unittest.mock import patch
@@ -1108,9 +1108,9 @@ class OnePdfReaderTest(unittest.TestCase):
 
 
 class OcrPageCapTest(unittest.TestCase):
-    """Directive 5ba82b6040ec: the OCR path reads pages 1-``MAX_PAGES`` of a longer PDF
+    """The OCR path reads pages 1-``MAX_PAGES`` of a longer PDF
     and records the rest skipped by the page cap, the rule the use-case intake keeps;
-    directive d82b7c38fc7b: so do the path without OCR and the capture's text."""
+    So do the path without OCR and the capture's text."""
 
     @unittest.skipUnless(_importable("pypdf") or POPPLER, "no PDF text reader installed")
     def test_without_ocr_a_long_pdf_is_read_on_its_first_pages_everywhere(self):
@@ -1272,7 +1272,7 @@ def wait_for_pid(path: Path, wait: float = 20.0) -> int:
 
 
 class AbandonedOcrTest(unittest.TestCase):
-    """Directive ccc4760bc112 item 2: an OCR read its caller abandons (the oracle's
+    """An OCR read its caller abandons (the oracle's
     240 s text budget) leaves no OCR child running and no ``plx-pdf-ocr-*`` folder of
     customer page images, whether it is abandoned while this process runs or the
     process exits with the read still on a daemon thread."""

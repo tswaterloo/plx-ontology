@@ -1,0 +1,6075 @@
+{
+ "format": "plx-eval-messy-variants/v1",
+ "note": "Hand-written messy variants of every compiled graded use-case card (scripts/eval_messy.py): m1 typos+lowercase, m2 vague words/synonyms with none of the question's rare words, m3 short conversational. Each is tied to its card by (case, card_id) and the SHA-256 of the card's question; item_id is informational (the id the card compiled to when written).",
+ "written": "2026-10-29",
+ "writer": "Lane G builder (LLM), checked by python3 -m scripts.eval_messy check",
+ "kinds": {
+  "m1": "typos_lowercase",
+  "m2": "vague_synonyms",
+  "m3": "short_conversational"
+ },
+ "cards": [
+  {
+   "case": "amazon-fba",
+   "card_id": "FBA-01",
+   "item_id": "dev-F23-0001-exposed",
+   "question_sha256": "6c688b54d2550a325ed6bbd2aa2fd9fe91f21f01709401ff1c586e43defdbd61",
+   "keep": [
+    "amazon"
+   ],
+   "variants": {
+    "m1": "what does the amazon fba replenishmnet map cover and what kind of evidnce is it",
+    "m2": "the amazon restocking write-up: what's in it and how much can we lean on it?",
+    "m3": "whats the amazon fba map about, how solid is it"
+   },
+   "parts": [
+    {
+     "asked": "What does the Amazon FBA Replenishment Map cover",
+     "spans": {
+      "m1": [
+       "what does the amazon fba replenishmnet map cover"
+      ],
+      "m2": [
+       "what's in it"
+      ],
+      "m3": [
+       "whats the amazon fba map about"
+      ]
+     }
+    },
+    {
+     "asked": "what kind of evidence is it",
+     "spans": {
+      "m1": [
+       "what kind of evidnce is it"
+      ],
+      "m2": [
+       "how much can we lean on it"
+      ],
+      "m3": [
+       "how solid is it"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "amazon-fba",
+   "card_id": "FBA-02",
+   "item_id": "dev-F23-0002-exposed",
+   "question_sha256": "7f5302497342c2b297ccf5b0288eca56f7a8ae7b69fdf69150673e8e2ebb2a81",
+   "keep": [
+    "amazon"
+   ],
+   "variants": {
+    "m1": "acording to the amazon fba map when should a sku get replenshed at amazon and how much shoud we ship",
+    "m2": "per the amazon restocking doc, when do we top up an item over there and by how many?",
+    "m3": "when do we restock amazon and how much"
+   },
+   "parts": [
+    {
+     "asked": "When should a SKU be replenished at Amazon",
+     "spans": {
+      "m1": [
+       "when should a sku get replenshed at amazon"
+      ],
+      "m2": [
+       "when do we top up an item over there"
+      ],
+      "m3": [
+       "when do we restock amazon"
+      ]
+     }
+    },
+    {
+     "asked": "how much should be shipped, according to the map",
+     "spans": {
+      "m1": [
+       "how much shoud we ship"
+      ],
+      "m2": [
+       "by how many"
+      ],
+      "m3": [
+       "how much"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "amazon-fba",
+   "card_id": "FBA-03",
+   "item_id": "dev-F24-0001-exposed",
+   "question_sha256": "fd77b7e089712293221163ea67464ec94242f86040670bbf9008c6712c358efd",
+   "keep": [
+    "amazon"
+   ],
+   "variants": {
+    "m1": "which identifer ties an amazon replenishment shipmnet together across amazon, the sage or, the portal, freightcom and busines central",
+    "m2": "what single code links one amazon restock load through all our systems and the carrier site?",
+    "m3": "what id links an fba shipment across systems"
+   },
+   "parts": [
+    {
+     "asked": "Which identifier ties a replenishment shipment together across Amazon, the Sage OR, the Portal, Freightcom and Business Central",
+     "spans": {
+      "m1": [
+       "which identifer ties an amazon replenishment shipmnet together across amazon, the sage or, the portal, freightcom and busines central"
+      ],
+      "m2": [
+       "what single code links one amazon restock load through all our systems and the carrier site?"
+      ],
+      "m3": [
+       "what id links an fba shipment across systems"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "amazon-fba",
+   "card_id": "FBA-04",
+   "item_id": "dev-F24-0002-exposed",
+   "question_sha256": "7d8bf77ea7f2a8c2caf42485423489b20dfdb2f2dfa236e61c8b23accc4d18ab",
+   "keep": [
+    "amazon"
+   ],
+   "variants": {
+    "m1": "for amazon fba how are cases on a shipment order reconcled to units on the customs invoce",
+    "m2": "on an amazon restock, how do the cartons we send line up with the piece count on the border paperwork?",
+    "m3": "fba cases vs customs units - how do they match"
+   },
+   "parts": [
+    {
+     "asked": "How are cases on a shipment order reconciled to units on the customs invoice",
+     "spans": {
+      "m1": [
+       "for amazon fba how are cases on a shipment order reconcled to units on the customs invoce"
+      ],
+      "m2": [
+       "on an amazon restock, how do the cartons we send line up with the piece count on the border paperwork?"
+      ],
+      "m3": [
+       "fba cases vs customs units - how do they match"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "amazon-fba",
+   "card_id": "FBA-05",
+   "item_id": "dev-F24-0003-exposed",
+   "question_sha256": "45fc60d1ba8d1d397d88552854b7532a8d26f1abc54b0cc488f205a0190cc77d",
+   "keep": [
+    "amazon"
+   ],
+   "variants": {
+    "m1": "is a plx item the same thing as an amazon seler sku, fnsku or asin",
+    "m2": "is our own item number the same thing as the numbers amazon gives a product?",
+    "m3": "plx item = amazon sku?"
+   },
+   "parts": [
+    {
+     "asked": "Is a PLX item the same thing as an Amazon seller SKU, FNSKU or ASIN",
+     "spans": {
+      "m1": [
+       "is a plx item the same thing as an amazon seler sku, fnsku or asin"
+      ],
+      "m2": [
+       "is our own item number the same thing as the numbers amazon gives a product?"
+      ],
+      "m3": [
+       "plx item = amazon sku?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "amazon-fba",
+   "card_id": "FBA-06",
+   "item_id": "dev-F24-0004-exposed",
+   "question_sha256": "d105e395638617c24affbfe1489144d774b79ee6afa0a70037ada4e4bb90fa5a",
+   "keep": [
+    "amazon"
+   ],
+   "variants": {
+    "m1": "for amazon fba was the freight booked on the final palet dimensions and wieght",
+    "m2": "on amazon restocks, did we book the truck using the real size and heft of the loaded skids?",
+    "m3": "fba freight booked on final pallet size?"
+   },
+   "parts": [
+    {
+     "asked": "Was the freight booked on the final pallet dimensions and weight",
+     "spans": {
+      "m1": [
+       "for amazon fba was the freight booked on the final palet dimensions and wieght"
+      ],
+      "m2": [
+       "on amazon restocks, did we book the truck using the real size and heft of the loaded skids?"
+      ],
+      "m3": [
+       "fba freight booked on final pallet size?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "amazon-fba",
+   "card_id": "FBA-07",
+   "item_id": "dev-F24-0005-exposed",
+   "question_sha256": "bac02cd36ebf0b1e64d0838ab67e9dcbf7fdd89b4b71f2e57f929f721b9446bc",
+   "keep": [
+    "amazon"
+   ],
+   "variants": {
+    "m1": "amazon fba: when does stock move from the physcial warehouse to the amazon location, and do the recrods agree",
+    "m2": "at what point does inventory get shifted from our building to amazon's spot in the books, and do the systems say the same?",
+    "m3": "when does stock move to the amazon location, records agree?"
+   },
+   "parts": [
+    {
+     "asked": "When does stock move from the physical warehouse to the Amazon location",
+     "spans": {
+      "m1": [
+       "when does stock move from the physcial warehouse to the amazon location"
+      ],
+      "m2": [
+       "at what point does inventory get shifted from our building to amazon's spot in the books"
+      ],
+      "m3": [
+       "when does stock move to the amazon location"
+      ]
+     }
+    },
+    {
+     "asked": "do the records agree",
+     "spans": {
+      "m1": [
+       "do the recrods agree"
+      ],
+      "m2": [
+       "do the systems say the same"
+      ],
+      "m3": [
+       "records agree?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "amazon-fba",
+   "card_id": "FBA-08",
+   "item_id": "dev-F24-0006-exposed",
+   "question_sha256": "d622b0c1402b30bbcc6f85fef6a474bea756cbd3079b441c3612fc2f1f8d1ee7",
+   "keep": [
+    "amazon"
+   ],
+   "variants": {
+    "m1": "can the stock on record be trusted when an amazon replenishmnet shipment is planed",
+    "m2": "when we plan an amazon restock, can we believe the on-hand numbers?",
+    "m3": "is our stock count reliable for fba planning"
+   },
+   "parts": [
+    {
+     "asked": "Can the stock on record be trusted when a replenishment shipment is planned",
+     "spans": {
+      "m1": [
+       "can the stock on record be trusted when an amazon replenishmnet shipment is planed"
+      ],
+      "m2": [
+       "when we plan an amazon restock, can we believe the on-hand numbers?"
+      ],
+      "m3": [
+       "is our stock count reliable for fba planning"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "amazon-fba",
+   "card_id": "FBA-A1",
+   "item_id": "dev-F25-0001-exposed",
+   "question_sha256": "68faaa2ff6717df67c1c47fe17ef862ee00e530df7bfc9621dcdaa2c08912224",
+   "keep": [
+    "amazon"
+   ],
+   "variants": {
+    "m1": "whats the chain of records for shipment or1000154027 from the first or to the amazon shipmnet and the bol",
+    "m2": "walk me through every document for OR1000154027, from the first sales doc to amazon's load and the freight paperwork",
+    "m3": "trace OR1000154027 end to end"
+   },
+   "parts": [
+    {
+     "asked": "What is the chain of records for shipment OR1000154027, from the first OR to the Amazon shipment and the BOL",
+     "spans": {
+      "m1": [
+       "whats the chain of records for shipment or1000154027 from the first or to the amazon shipmnet and the bol"
+      ],
+      "m2": [
+       "walk me through every document for OR1000154027, from the first sales doc to amazon's load and the freight paperwork"
+      ],
+      "m3": [
+       "trace OR1000154027 end to end"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "amazon-fba",
+   "card_id": "FBA-A2",
+   "item_id": "dev-F25-0002-exposed",
+   "question_sha256": "e7a303b11d8c985a2db7cdb8813983ad575fcd47733c2d1e7c72924dd187e3ba",
+   "keep": [],
+   "variants": {
+    "m1": "do the units declared on the custms invoice of or1000154027 match the cases shiped",
+    "m2": "for OR1000154027, does the piece count on the border paperwork line up with the boxes that went out?",
+    "m3": "OR1000154027 customs units vs cases ok?"
+   },
+   "parts": [
+    {
+     "asked": "Do the units declared on the customs invoice of OR1000154027 match the cases shipped",
+     "spans": {
+      "m1": [
+       "do the units declared on the custms invoice of or1000154027 match the cases shiped"
+      ],
+      "m2": [
+       "for OR1000154027, does the piece count on the border paperwork line up with the boxes that went out?"
+      ],
+      "m3": [
+       "OR1000154027 customs units vs cases ok?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "amazon-fba",
+   "card_id": "FBA-A3",
+   "item_id": "dev-F25-0003-exposed",
+   "question_sha256": "3e380533f113f0f22e37eb6f14d514010f782fc8056ad91cd10c7d152eaf7799",
+   "keep": [
+    "amazon"
+   ],
+   "variants": {
+    "m1": "did the identity feilds on the or1000154027 paperwork (sold-to, ship-from, ship-to fc, amazon shipment id) agree with each other",
+    "m2": "on OR1000154027, do the buyer, origin, destination centre and amazon reference all line up across the papers?",
+    "m3": "OR1000154027 paperwork - do sold-to, ship-from/to, amazon id agree"
+   },
+   "parts": [
+    {
+     "asked": "Did the identity fields on the OR1000154027 paperwork agree with each other",
+     "spans": {
+      "m1": [
+       "did the identity feilds on the or1000154027 paperwork",
+       "agree with each other"
+      ],
+      "m2": [
+       "do",
+       "all line up across the papers"
+      ],
+      "m3": [
+       "OR1000154027 paperwork - do",
+       "agree"
+      ]
+     }
+    },
+    {
+     "asked": "(sold-to, ship-from, ship-to FC, Amazon shipment ID)",
+     "spans": {
+      "m1": [
+       "(sold-to, ship-from, ship-to fc, amazon shipment id)"
+      ],
+      "m2": [
+       "the buyer, origin, destination centre and amazon reference"
+      ],
+      "m3": [
+       "sold-to, ship-from/to, amazon id"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "amazon-fba",
+   "card_id": "FBA-A4",
+   "item_id": "dev-F25-0004-exposed",
+   "question_sha256": "2306d79979437b7d0a7d0f3139faedc95acc2c837017fbb7952bf2f8b826f19e",
+   "keep": [
+    "amazon"
+   ],
+   "variants": {
+    "m1": "did or1000154027 bring each sku up to 90 days of suply at amazon under the 45/90-day rule",
+    "m2": "after OR1000154027, did every item at amazon have about 90 days of cover per the 45/90 day guideline?",
+    "m3": "did OR1000154027 get us to 90 days (45/90 rule)"
+   },
+   "parts": [
+    {
+     "asked": "Did OR1000154027 bring each SKU up to 90 days of supply at Amazon under the 45/90-day rule",
+     "spans": {
+      "m1": [
+       "did or1000154027 bring each sku up to 90 days of suply at amazon under the 45/90-day rule"
+      ],
+      "m2": [
+       "after OR1000154027, did every item at amazon have about 90 days of cover per the 45/90 day guideline?"
+      ],
+      "m3": [
+       "did OR1000154027 get us to 90 days (45/90 rule)"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "amazon-fba",
+   "card_id": "FBA-A5",
+   "item_id": "dev-F25-0005-exposed",
+   "question_sha256": "8954f39c9b5197dcbf3750699c6b801b4b45c134e5b1ff4c3b877ca5a853290e",
+   "keep": [
+    "amazon"
+   ],
+   "variants": {
+    "m1": "when did the or1000154027 stock move to the amazon vmi warehose, and was that at the bol",
+    "m2": "for OR1000154027, when was inventory shifted to amazon's spot in the books, and did that happen when the freight paperwork was signed?",
+    "m3": "OR1000154027 - when did stock move to amazon, at the bol?"
+   },
+   "parts": [
+    {
+     "asked": "When did the OR1000154027 stock move to the Amazon VMI warehouse",
+     "spans": {
+      "m1": [
+       "when did the or1000154027 stock move to the amazon vmi warehose"
+      ],
+      "m2": [
+       "when was inventory shifted to amazon's spot in the books"
+      ],
+      "m3": [
+       "OR1000154027 - when did stock move to amazon"
+      ]
+     }
+    },
+    {
+     "asked": "was that at the BOL",
+     "spans": {
+      "m1": [
+       "was that at the bol"
+      ],
+      "m2": [
+       "did that happen when the freight paperwork was signed"
+      ],
+      "m3": [
+       "at the bol?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "amazon-fba",
+   "card_id": "FBA-A6",
+   "item_id": "dev-F25-0006-exposed",
+   "question_sha256": "4dd0a5bb42dadb9ceefa4e96cc21fc0f9fc84fb506c382ac4eb78cc0d952217a",
+   "keep": [],
+   "variants": {
+    "m1": "which originals of shipmnet or1000154027 exist and which have been red",
+    "m2": "for OR1000154027, what source files do we have and which ones has anyone actually opened?",
+    "m3": "OR1000154027 docs - what do we have, what's been read"
+   },
+   "parts": [
+    {
+     "asked": "Which originals of shipment OR1000154027 exist",
+     "spans": {
+      "m1": [
+       "which originals of shipmnet or1000154027 exist"
+      ],
+      "m2": [
+       "what source files do we have"
+      ],
+      "m3": [
+       "what do we have"
+      ]
+     }
+    },
+    {
+     "asked": "which have been read",
+     "spans": {
+      "m1": [
+       "which have been red"
+      ],
+      "m2": [
+       "which ones has anyone actually opened"
+      ],
+      "m3": [
+       "what's been read"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "artwork-lifecycle",
+   "card_id": "AL-01",
+   "item_id": "dev-F23-0003-exposed",
+   "question_sha256": "54b4080d348611935ff8e2a6ca2428669c3cca905ef3a97657b42b01edbd80f9",
+   "keep": [
+    "vince"
+   ],
+   "variants": {
+    "m1": "what does vince's artwork lifecycle map propose for artwork, printed componets and ao label control, and what does it call curent practice",
+    "m2": "vince's doc on designs from proof to print: what does it suggest for the decorated bits and the tags on assembly jobs, and what does it say we do now?",
+    "m3": "what is vince's artwork map proposing vs what we do now"
+   },
+   "parts": [
+    {
+     "asked": "What does Vince's Artwork Lifecycle Map propose for artwork, printed components and AO label control",
+     "spans": {
+      "m1": [
+       "what does vince's artwork lifecycle map propose for artwork, printed componets and ao label control"
+      ],
+      "m2": [
+       "what does it suggest for the decorated bits and the tags on assembly jobs"
+      ],
+      "m3": [
+       "what is vince's artwork map proposing"
+      ]
+     }
+    },
+    {
+     "asked": "what does it call current practice",
+     "spans": {
+      "m1": [
+       "what does it call curent practice"
+      ],
+      "m2": [
+       "what does it say we do now"
+      ],
+      "m3": [
+       "vs what we do now"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "artwork-lifecycle",
+   "card_id": "AL-02",
+   "item_id": "dev-F23-0004-exposed",
+   "question_sha256": "2627923d2e6e0c8f7fca59ccd49483fe611412f3c210e5222279df223d596741",
+   "keep": [],
+   "variants": {
+    "m1": "in the artwork map when a customer aproves new artwork does the printed component keep its p-number or get a new one, and what hapens to the old stock",
+    "m2": "once a client signs off a new design, does the decorated part keep its code or get a fresh one, and what becomes of the leftover old ones?",
+    "m3": "new artwork approved - new p number or same? old stock?"
+   },
+   "parts": [
+    {
+     "asked": "When a customer approves new artwork, does the printed component keep its P-number or get a new one",
+     "spans": {
+      "m1": [
+       "when a customer aproves new artwork does the printed component keep its p-number or get a new one"
+      ],
+      "m2": [
+       "once a client signs off a new design, does the decorated part keep its code or get a fresh one"
+      ],
+      "m3": [
+       "new artwork approved - new p number or same?"
+      ]
+     }
+    },
+    {
+     "asked": "what happens to the old stock",
+     "spans": {
+      "m1": [
+       "what hapens to the old stock"
+      ],
+      "m2": [
+       "what becomes of the leftover old ones"
+      ],
+      "m3": [
+       "old stock?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "artwork-lifecycle",
+   "card_id": "AL-03",
+   "item_id": "dev-F23-0005-exposed",
+   "question_sha256": "47cc3c0a1e3a1723d085572a9c42be366d6e4723e13c72adb8c9baa318a06f10",
+   "keep": [],
+   "variants": {
+    "m1": "in the artwork lifecycle map is qa aproval of artwork a blocking gate or a soft warnng",
+    "m2": "for designs, does the quality team's sign-off stop things cold or just flag them?",
+    "m3": "does qa artwork approval block or just warn"
+   },
+   "parts": [
+    {
+     "asked": "Is QA approval of artwork a blocking gate or a soft warning",
+     "spans": {
+      "m1": [
+       "in the artwork lifecycle map is qa aproval of artwork a blocking gate or a soft warnng"
+      ],
+      "m2": [
+       "for designs, does the quality team's sign-off stop things cold or just flag them?"
+      ],
+      "m3": [
+       "does qa artwork approval block or just warn"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "artwork-lifecycle",
+   "card_id": "AL-04",
+   "item_id": "dev-F23-0006-exposed",
+   "question_sha256": "34ee722116120973cc9a3495896137ae50de7697240c08d3054e52fbf71df8f5",
+   "keep": [],
+   "variants": {
+    "m1": "artwork map: does acepting artwork for a formula that is not relesed warn or block",
+    "m2": "if we take in a design for a recipe that isn't signed off yet, does it stop us or only flag it?",
+    "m3": "artwork for unreleased formula - warn or block?"
+   },
+   "parts": [
+    {
+     "asked": "Does accepting artwork for a formula that is not released warn or block",
+     "spans": {
+      "m1": [
+       "artwork map: does acepting artwork for a formula that is not relesed warn or block"
+      ],
+      "m2": [
+       "if we take in a design for a recipe that isn't signed off yet, does it stop us or only flag it?"
+      ],
+      "m3": [
+       "artwork for unreleased formula - warn or block?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "artwork-lifecycle",
+   "card_id": "AL-05",
+   "item_id": "dev-F23-0007-exposed",
+   "question_sha256": "1aaf94f710394185c6ec167cfd134f040fb2393d0aa5bfdcb4897348f98a3e15",
+   "keep": [],
+   "variants": {
+    "m1": "per the artwork lifecycle map is batch relase blocked until both label forms are signd",
+    "m2": "do we hold a lot back until both tag sign-off sheets are done?",
+    "m3": "batch held till both label forms signed?"
+   },
+   "parts": [
+    {
+     "asked": "Is batch release blocked until both label forms are signed",
+     "spans": {
+      "m1": [
+       "per the artwork lifecycle map is batch relase blocked until both label forms are signd"
+      ],
+      "m2": [
+       "do we hold a lot back until both tag sign-off sheets are done?"
+      ],
+      "m3": [
+       "batch held till both label forms signed?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "artwork-lifecycle",
+   "card_id": "AL-08",
+   "item_id": "dev-F24-0009-exposed",
+   "question_sha256": "0b17004763fd95c74d40c17d8eebe9f40f8772e8e2a7f92c4666454994ce6a62",
+   "keep": [],
+   "variants": {
+    "m1": "for po 5503 which artwork verison did the purchase order line order, and which version did the reciept and its incoming qc check aginst",
+    "m2": "on PO 5503, what design edition did we buy and what edition did the goods-in inspection compare to?",
+    "m3": "PO 5503 artwork version ordered vs checked at receipt"
+   },
+   "parts": [
+    {
+     "asked": "Which artwork version did this purchase order line order",
+     "spans": {
+      "m1": [
+       "which artwork verison did the purchase order line order"
+      ],
+      "m2": [
+       "what design edition did we buy"
+      ],
+      "m3": [
+       "ordered"
+      ]
+     }
+    },
+    {
+     "asked": "which version did the receipt and its incoming QC check against",
+     "spans": {
+      "m1": [
+       "which version did the reciept and its incoming qc check aginst"
+      ],
+      "m2": [
+       "what edition did the goods-in inspection compare to"
+      ],
+      "m3": [
+       "checked at receipt"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "artwork-lifecycle",
+   "card_id": "AL-09",
+   "item_id": "dev-F24-0010-exposed",
+   "question_sha256": "4dc24d595888fe1733e3c18218de6692fc1ba83eee1f183ff7f58a28c838d445",
+   "keep": [],
+   "variants": {
+    "m1": "for AO-26005E which label lot and artwork version were isued, and does recieved equal used plus rejected plus returned",
+    "m2": "for AO-26005E, which tag batch and design edition went out to the floor, and do the in/out counts add up?",
+    "m3": "AO-26005E label lot + version + do counts add up"
+   },
+   "parts": [
+    {
+     "asked": "For this AO, which label lot and artwork version were issued",
+     "spans": {
+      "m1": [
+       "for AO-26005E which label lot and artwork version were isued"
+      ],
+      "m2": [
+       "for AO-26005E, which tag batch and design edition went out to the floor"
+      ],
+      "m3": [
+       "AO-26005E label lot + version"
+      ]
+     }
+    },
+    {
+     "asked": "does received equal used plus rejected plus returned",
+     "spans": {
+      "m1": [
+       "does recieved equal used plus rejected plus returned"
+      ],
+      "m2": [
+       "do the in/out counts add up"
+      ],
+      "m3": [
+       "+ do counts add up"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "artwork-lifecycle",
+   "card_id": "AL-10",
+   "item_id": "dev-F24-0011-exposed",
+   "question_sha256": "a19a3be8ea1050e918aef30c94575fa5c23b180c4ac35332a56a5d06802d7822",
+   "keep": [],
+   "variants": {
+    "m1": "did qa sign off the label verfication before AO-26005E started, and who relased the batch",
+    "m2": "before AO-26005E kicked off, did quality okay the tag check, and who let the lot go?",
+    "m3": "AO-26005E label check signed? who released"
+   },
+   "parts": [
+    {
+     "asked": "Did QA sign off the label verification before this AO started",
+     "spans": {
+      "m1": [
+       "did qa sign off the label verfication before AO-26005E started"
+      ],
+      "m2": [
+       "before AO-26005E kicked off, did quality okay the tag check"
+      ],
+      "m3": [
+       "AO-26005E label check signed?"
+      ]
+     }
+    },
+    {
+     "asked": "who released the batch",
+     "spans": {
+      "m1": [
+       "who relased the batch"
+      ],
+      "m2": [
+       "who let the lot go"
+      ],
+      "m3": [
+       "who released"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "artwork-lifecycle",
+   "card_id": "AL-12",
+   "item_id": "dev-F23-0008-exposed",
+   "question_sha256": "800a2b5982389422ddb26b02b3957810f080f4071a423018ec242cea010b1a6a",
+   "keep": [],
+   "variants": {
+    "m1": "which label problms does the artwork map report from qa, and are they verifed",
+    "m2": "what tag issues does the design doc say quality raised, and has anyone confirmed them?",
+    "m3": "label issues qa raised in the artwork map - actually confirmed?"
+   },
+   "parts": [
+    {
+     "asked": "Which label problems does the map report from QA",
+     "spans": {
+      "m1": [
+       "which label problms does the artwork map report from qa"
+      ],
+      "m2": [
+       "what tag issues does the design doc say quality raised"
+      ],
+      "m3": [
+       "label issues qa raised in the artwork map"
+      ]
+     }
+    },
+    {
+     "asked": "are they verified",
+     "spans": {
+      "m1": [
+       "are they verifed"
+      ],
+      "m2": [
+       "has anyone confirmed them"
+      ],
+      "m3": [
+       "actually confirmed?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "artwork-lifecycle",
+   "card_id": "AL-13",
+   "item_id": "dev-F24-0013-exposed",
+   "question_sha256": "591476a7f95a95bf1fbeac61fb4904dc04ffa7322f28f822ecf89df56a6c7d80",
+   "keep": [],
+   "variants": {
+    "m1": "can a newly minted p-item flow thru receiving, reorder and ao today",
+    "m2": "if we create a brand-new printed part code, can it go through goods-in, restock and assembly right now?",
+    "m3": "new p item work end to end yet?"
+   },
+   "parts": [
+    {
+     "asked": "Can a newly minted P-item flow through receiving, reorder and AO today",
+     "spans": {
+      "m1": [
+       "can a newly minted p-item flow thru receiving, reorder and ao today"
+      ],
+      "m2": [
+       "if we create a brand-new printed part code, can it go through goods-in, restock and assembly right now?"
+      ],
+      "m3": [
+       "new p item work end to end yet?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "artwork-lifecycle",
+   "card_id": "AL-14",
+   "item_id": "dev-F23-0009-exposed",
+   "question_sha256": "269279d719b3e00f6f95209109b60f76a5c354ea3178a6e2a4c1785759e51f2f",
+   "keep": [],
+   "variants": {
+    "m1": "is the customer-aproved artwork version carried on po, reciept and qc (TASK-2627) done",
+    "m2": "is the job to carry the client-signed design edition onto buying, goods-in and inspection (TASK-2627) finished?",
+    "m3": "TASK-2627 done?"
+   },
+   "parts": [
+    {
+     "asked": "Is the customer-approved artwork version carried on PO, receipt and QC (TASK-2627) done",
+     "spans": {
+      "m1": [
+       "is the customer-aproved artwork version carried on po, reciept and qc (TASK-2627) done"
+      ],
+      "m2": [
+       "is the job to carry the client-signed design edition onto buying, goods-in and inspection (TASK-2627) finished?"
+      ],
+      "m3": [
+       "TASK-2627 done?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "asset-tracker",
+   "card_id": "AT-01",
+   "item_id": "dev-F23-0010-exposed",
+   "question_sha256": "9ff09b491760b99fd2ecda51c6a0a87fe89fdd035eafd64448a8336587580cf3",
+   "keep": [
+    "stephen"
+   ],
+   "variants": {
+    "m1": "what does stephen's asset-tracker breif ask for, and what does it rule out",
+    "m2": "stephen's note on keeping a list of our equipment: what does he want and what does he say no to?",
+    "m3": "what does stephen want from the asset tracker, what's out"
+   },
+   "parts": [
+    {
+     "asked": "What does Stephen's asset-tracker brief ask for",
+     "spans": {
+      "m1": [
+       "what does stephen's asset-tracker breif ask for"
+      ],
+      "m2": [
+       "what does he want"
+      ],
+      "m3": [
+       "what does stephen want from the asset tracker"
+      ]
+     }
+    },
+    {
+     "asked": "what does it rule out",
+     "spans": {
+      "m1": [
+       "what does it rule out"
+      ],
+      "m2": [
+       "what does he say no to"
+      ],
+      "m3": [
+       "what's out"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "asset-tracker",
+   "card_id": "AT-02",
+   "item_id": "dev-F23-0011-exposed",
+   "question_sha256": "0f37282b598fa329ae0bda6acf8c8c4a76aaa8a9b40263bda0845c3dd3340ccb",
+   "keep": [],
+   "variants": {
+    "m1": "how many assets are in the trackr, and which of their feilds are blank",
+    "m2": "how many machines are on the equipment list and which columns are empty?",
+    "m3": "asset tracker - how many and whats empty"
+   },
+   "parts": [
+    {
+     "asked": "How many assets are in the tracker",
+     "spans": {
+      "m1": [
+       "how many assets are in the trackr"
+      ],
+      "m2": [
+       "how many machines are on the equipment list"
+      ],
+      "m3": [
+       "how many"
+      ]
+     }
+    },
+    {
+     "asked": "which of their fields are blank",
+     "spans": {
+      "m1": [
+       "which of their feilds are blank"
+      ],
+      "m2": [
+       "which columns are empty"
+      ],
+      "m3": [
+       "whats empty"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "asset-tracker",
+   "card_id": "AT-06",
+   "item_id": "dev-F23-0012-exposed",
+   "question_sha256": "dbf257bb216d638285640d8d5e3486cf32b58b0606bf7b3930897b64866cebcf",
+   "keep": [],
+   "variants": {
+    "m1": "in the asset tracker where do the purchasers clasification and the cfo's decison disagree",
+    "m2": "on the equipment list, where did the buyer's category call and the finance chief's call not match?",
+    "m3": "where do purchaser and cfo disagree on assets"
+   },
+   "parts": [
+    {
+     "asked": "Where do the purchaser's classification and the CFO's decision disagree",
+     "spans": {
+      "m1": [
+       "in the asset tracker where do the purchasers clasification and the cfo's decison disagree"
+      ],
+      "m2": [
+       "on the equipment list, where did the buyer's category call and the finance chief's call not match?"
+      ],
+      "m3": [
+       "where do purchaser and cfo disagree on assets"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "asset-tracker",
+   "card_id": "AT-07",
+   "item_id": "dev-F24-0017-exposed",
+   "question_sha256": "39490e91e25b92ce74f7babc3227a976e4165259f6c783b66874302bb4d407bd",
+   "keep": [],
+   "variants": {
+    "m1": "which equipmnet purchases made outside maintenence are missing from the tracker",
+    "m2": "what machines did people buy without going through upkeep that aren't on our list of company gear?",
+    "m3": "equipment bought outside maint not tracked?"
+   },
+   "parts": [
+    {
+     "asked": "Which equipment purchases made outside maintenance are missing from the tracker",
+     "spans": {
+      "m1": [
+       "which equipmnet purchases made outside maintenence are missing from the tracker"
+      ],
+      "m2": [
+       "what machines did people buy without going through upkeep that aren't on our list of company gear?"
+      ],
+      "m3": [
+       "equipment bought outside maint not tracked?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "asset-tracker",
+   "card_id": "AT-08",
+   "item_id": "dev-F23-0013-exposed",
+   "question_sha256": "b97ddf6e79204b1420a6f230dc57f4310eecf2dca39921092b7f1c016161869d",
+   "keep": [],
+   "variants": {
+    "m1": "which tracker asset ids are duplicatd and is each pair the same machine",
+    "m2": "on the equipment list, which codes show up twice and are those really one device each time?",
+    "m3": "duplicate asset ids? same machine?"
+   },
+   "parts": [
+    {
+     "asked": "Which tracker asset IDs are duplicated",
+     "spans": {
+      "m1": [
+       "which tracker asset ids are duplicatd"
+      ],
+      "m2": [
+       "which codes show up twice"
+      ],
+      "m3": [
+       "duplicate asset ids?"
+      ]
+     }
+    },
+    {
+     "asked": "is each pair the same machine",
+     "spans": {
+      "m1": [
+       "is each pair the same machine"
+      ],
+      "m2": [
+       "are those really one device each time"
+      ],
+      "m3": [
+       "same machine?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "asset-tracker",
+   "card_id": "AT-10",
+   "item_id": "dev-F23-0014-exposed",
+   "question_sha256": "ffc6378b6f11658d9f5212acca68cdce6eb9f548a0af81a3e362a5b4d36bd8fb",
+   "keep": [],
+   "variants": {
+    "m1": "is a grant-funded equipmnet purchase the same record as the grants cost line",
+    "m2": "when funding money pays for a machine, is that buy the same entry as the funding claim row?",
+    "m3": "grant equipment purchase = grant cost line?"
+   },
+   "parts": [
+    {
+     "asked": "Is a grant-funded equipment purchase the same record as the grant's Cost Line",
+     "spans": {
+      "m1": [
+       "is a grant-funded equipmnet purchase the same record as the grants cost line"
+      ],
+      "m2": [
+       "when funding money pays for a machine, is that buy the same entry as the funding claim row?"
+      ],
+      "m3": [
+       "grant equipment purchase = grant cost line?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "brand-requirements",
+   "card_id": "BR-01",
+   "item_id": "dev-F23-0017-exposed",
+   "question_sha256": "7073e881ac7a5c37725a32b034ae476a4b813f1bfb8c49347d7c9466836f0395",
+   "keep": [],
+   "variants": {
+    "m1": "what does the customer brand requirments map cover and whats its status",
+    "m2": "the doc on what each client needs from our goods: what's in it and where is it at?",
+    "m3": "brand requirements map - what it covers and status"
+   },
+   "parts": [
+    {
+     "asked": "What does the Customer Brand Requirements map cover",
+     "spans": {
+      "m1": [
+       "what does the customer brand requirments map cover"
+      ],
+      "m2": [
+       "what's in it"
+      ],
+      "m3": [
+       "what it covers"
+      ]
+     }
+    },
+    {
+     "asked": "what is its status",
+     "spans": {
+      "m1": [
+       "whats its status"
+      ],
+      "m2": [
+       "where is it at"
+      ],
+      "m3": [
+       "status"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "brand-requirements",
+   "card_id": "BR-02",
+   "item_id": "dev-F23-0018-exposed",
+   "question_sha256": "98ff07aeaaf9bda33c910b5c0cdd7afbdabdbb211743a9d7032192f3e698c3b9",
+   "keep": [],
+   "variants": {
+    "m1": "in the brand requirments map who enters a customers brand requirements and who reviews them, and how is a requirment scoped",
+    "m2": "for client needs on our goods, who types them up, who checks them, and how wide does each one reach?",
+    "m3": "who enters and reviews brand reqs, scoped how"
+   },
+   "parts": [
+    {
+     "asked": "Who enters a customer's brand requirements",
+     "spans": {
+      "m1": [
+       "who enters a customers brand requirements"
+      ],
+      "m2": [
+       "who types them up"
+      ],
+      "m3": [
+       "who enters"
+      ]
+     }
+    },
+    {
+     "asked": "who reviews them",
+     "spans": {
+      "m1": [
+       "who reviews them"
+      ],
+      "m2": [
+       "who checks them"
+      ],
+      "m3": [
+       "reviews brand reqs"
+      ]
+     }
+    },
+    {
+     "asked": "how is a requirement scoped",
+     "spans": {
+      "m1": [
+       "how is a requirment scoped"
+      ],
+      "m2": [
+       "how wide does each one reach"
+      ],
+      "m3": [
+       "scoped how"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "brand-requirements",
+   "card_id": "BR-03",
+   "item_id": "dev-F23-0019-exposed",
+   "question_sha256": "52354e3b0a4724aeae0eceee90b9844172cc0413809a9f3013b28800894bf270",
+   "keep": [],
+   "variants": {
+    "m1": "what does the brand reqs map say a complience document is attached to and what must it record",
+    "m2": "for client needs, what does a regulatory paper hang off and what does it have to say?",
+    "m3": "compliance doc attached to what? what's on it?"
+   },
+   "parts": [
+    {
+     "asked": "What does the map say a compliance document is attached to",
+     "spans": {
+      "m1": [
+       "what does the brand reqs map say a complience document is attached to"
+      ],
+      "m2": [
+       "what does a regulatory paper hang off"
+      ],
+      "m3": [
+       "compliance doc attached to what?"
+      ]
+     }
+    },
+    {
+     "asked": "what must it record",
+     "spans": {
+      "m1": [
+       "what must it record"
+      ],
+      "m2": [
+       "what does it have to say"
+      ],
+      "m3": [
+       "what's on it?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "brand-requirements",
+   "card_id": "BR-04",
+   "item_id": "dev-F23-0020-exposed",
+   "question_sha256": "68535520123b549b301c25078958a72f8d96cea5175d94a5da1278b102cfd941",
+   "keep": [],
+   "variants": {
+    "m1": "what does the brand requirements map say hapens when a supplier or material is switchd on a product",
+    "m2": "per the client-needs doc, what kicks in when we swap the vendor or an ingredient on an item?",
+    "m3": "supplier switch - what happens per the map"
+   },
+   "parts": [
+    {
+     "asked": "What does the map say happens when a supplier or material is switched on a product",
+     "spans": {
+      "m1": [
+       "what does the brand requirements map say hapens when a supplier or material is switchd on a product"
+      ],
+      "m2": [
+       "per the client-needs doc, what kicks in when we swap the vendor or an ingredient on an item?"
+      ],
+      "m3": [
+       "supplier switch - what happens per the map"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "brand-requirements",
+   "card_id": "BR-05",
+   "item_id": "dev-F23-0021-exposed",
+   "question_sha256": "a0b6e55ca5cd063f6e0e31635700b78ca154da14a1eda924763bcd4c716d2b01",
+   "keep": [],
+   "variants": {
+    "m1": "which documnet conditions does the brand requirements map say gate a batch and which do not",
+    "m2": "per the client-needs doc, what paperwork holds up a lot and what paperwork doesn't?",
+    "m3": "which docs hold up a batch, which don't"
+   },
+   "parts": [
+    {
+     "asked": "Which document conditions does the map say gate a batch",
+     "spans": {
+      "m1": [
+       "which documnet conditions does the brand requirements map say gate a batch"
+      ],
+      "m2": [
+       "what paperwork holds up a lot"
+      ],
+      "m3": [
+       "which docs hold up a batch"
+      ]
+     }
+    },
+    {
+     "asked": "which do not",
+     "spans": {
+      "m1": [
+       "which do not"
+      ],
+      "m2": [
+       "what paperwork doesn't"
+      ],
+      "m3": [
+       "which don't"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "brand-requirements",
+   "card_id": "BR-06",
+   "item_id": "dev-F23-0022-exposed",
+   "question_sha256": "974749d66ac72557b8c5bcfa28302de78ee7573a26753aff06d9982edbc9086f",
+   "keep": [],
+   "variants": {
+    "m1": "what does the brand reqs map say about formula and artwork aproval versions and about claim-affecting changes",
+    "m2": "for client needs, what's said about which recipe and design editions got signed off, and edits that change what the pack promises?",
+    "m3": "brand map on formula/artwork versions"
+   },
+   "parts": [
+    {
+     "asked": "What does the map say about formula and artwork approval versions and about claim-affecting changes",
+     "spans": {
+      "m1": [
+       "what does the brand reqs map say about formula and artwork aproval versions and about claim-affecting changes"
+      ],
+      "m2": [
+       "for client needs, what's said about which recipe and design editions got signed off, and edits that change what the pack promises?"
+      ],
+      "m3": [
+       "brand map on formula/artwork versions"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "brand-requirements",
+   "card_id": "BR-07",
+   "item_id": "dev-F23-0023-exposed",
+   "question_sha256": "7027f0532a6dfad169a1c723721aadf60412c23e3fe94c78addf51b10f2d1ae7",
+   "keep": [
+    "ships"
+   ],
+   "variants": {
+    "m1": "whats the three ships exampel in the brand requirements map and how reliable is it",
+    "m2": "the three ships case in the client-needs doc: what is it and can we trust it?",
+    "m3": "three ships example - how reliable?"
+   },
+   "parts": [
+    {
+     "asked": "What is the Three Ships example in the map",
+     "spans": {
+      "m1": [
+       "whats the three ships exampel in the brand requirements map"
+      ],
+      "m2": [
+       "what is it"
+      ],
+      "m3": [
+       "three ships example"
+      ]
+     }
+    },
+    {
+     "asked": "how reliable is it",
+     "spans": {
+      "m1": [
+       "how reliable is it"
+      ],
+      "m2": [
+       "can we trust it"
+      ],
+      "m3": [
+       "how reliable?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "brand-requirements",
+   "card_id": "BR-08",
+   "item_id": "dev-F23-0024-exposed",
+   "question_sha256": "6996db399b1b25ee89916a5df6cd19d9c18e7218057538f65d551d87f2f88f67",
+   "keep": [],
+   "variants": {
+    "m1": "what do the brand requirement map's own consistancy checks show, and are they test results",
+    "m2": "the self-checks inside the client-needs doc: what do they say, and were they actually run as tests?",
+    "m3": "brand map self checks - real tests?"
+   },
+   "parts": [
+    {
+     "asked": "What do the map's own consistency checks show",
+     "spans": {
+      "m1": [
+       "what do the brand requirement map's own consistancy checks show"
+      ],
+      "m2": [
+       "what do they say"
+      ],
+      "m3": [
+       "brand map self checks"
+      ]
+     }
+    },
+    {
+     "asked": "are they test results",
+     "spans": {
+      "m1": [
+       "are they test results"
+      ],
+      "m2": [
+       "were they actually run as tests"
+      ],
+      "m3": [
+       "real tests?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "brand-requirements",
+   "card_id": "BR-15",
+   "item_id": "dev-F25-0008-exposed",
+   "question_sha256": "8fe4052f05a6b0b8fdc329c5b81f6404c3e417c6d39f25408d684fdad1c03004",
+   "keep": [
+    "ships"
+   ],
+   "variants": {
+    "m1": "was the three ships suplier switch reviewd, and was quality told, before the product shiped",
+    "m2": "when three ships changed vendor, did anyone look it over and tell QA before the goods went out?",
+    "m3": "three ships supplier change - reviewed, qa told before ship?"
+   },
+   "parts": [
+    {
+     "asked": "Was the Three Ships supplier switch reviewed",
+     "spans": {
+      "m1": [
+       "was the three ships suplier switch reviewd"
+      ],
+      "m2": [
+       "did anyone look it over"
+      ],
+      "m3": [
+       "reviewed"
+      ]
+     }
+    },
+    {
+     "asked": "was Quality told, before the product shipped",
+     "spans": {
+      "m1": [
+       "was quality told, before the product shiped"
+      ],
+      "m2": [
+       "tell QA before the goods went out"
+      ],
+      "m3": [
+       "qa told before ship?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "expired-disposition",
+   "card_id": "EMD-01",
+   "item_id": "dev-F23-0025-exposed",
+   "question_sha256": "98b2526428dee075a152fbf39e1d5e7f385df380bf405c34ec859710ca99971f",
+   "keep": [],
+   "variants": {
+    "m1": "what does the expired-material dispositon map cover and what kind of evidence is it",
+    "m2": "the doc on what we do with out-of-date stock: what's in it and how much can we rely on it?",
+    "m3": "expired material map - whats in it, how solid"
+   },
+   "parts": [
+    {
+     "asked": "What does the Expired-Material Disposition Map cover",
+     "spans": {
+      "m1": [
+       "what does the expired-material dispositon map cover"
+      ],
+      "m2": [
+       "what's in it"
+      ],
+      "m3": [
+       "whats in it"
+      ]
+     }
+    },
+    {
+     "asked": "what kind of evidence is it",
+     "spans": {
+      "m1": [
+       "what kind of evidence is it"
+      ],
+      "m2": [
+       "how much can we rely on it"
+      ],
+      "m3": [
+       "how solid"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "expired-disposition",
+   "card_id": "EMD-02",
+   "item_id": "dev-F23-0026-exposed",
+   "question_sha256": "d3763d6e7386925e8c729415d87bdfee82090b1e1da6da56aaf935a7c549895b",
+   "keep": [],
+   "variants": {
+    "m1": "acording to the expired disposition map which routes can an expired raw-material lot take and what new expiry does each give",
+    "m2": "for an out-of-date ingredient batch, what are the options and how long does each one buy us?",
+    "m3": "options for an expired lot + new dates"
+   },
+   "parts": [
+    {
+     "asked": "Which disposition routes can an expired raw-material lot take",
+     "spans": {
+      "m1": [
+       "which routes can an expired raw-material lot take"
+      ],
+      "m2": [
+       "what are the options"
+      ],
+      "m3": [
+       "options for an expired lot"
+      ]
+     }
+    },
+    {
+     "asked": "what new expiry does each give, according to the map",
+     "spans": {
+      "m1": [
+       "what new expiry does each give"
+      ],
+      "m2": [
+       "how long does each one buy us"
+      ],
+      "m3": [
+       "+ new dates"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "expired-disposition",
+   "card_id": "EMD-03",
+   "item_id": "dev-F23-0027-exposed",
+   "question_sha256": "76cbfbcc86b08c188349b1c9164d3cf6199277306ad27fc406d7a90ccf307a73",
+   "keep": [],
+   "variants": {
+    "m1": "when may a lot take the 30-day extention, and can its extension histroy be checked",
+    "m2": "when is a batch allowed the 30 day push-out, and can we see how many times it's been pushed?",
+    "m3": "30 day extension rules + history?"
+   },
+   "parts": [
+    {
+     "asked": "When may a lot take the 30-day extension",
+     "spans": {
+      "m1": [
+       "when may a lot take the 30-day extention"
+      ],
+      "m2": [
+       "when is a batch allowed the 30 day push-out"
+      ],
+      "m3": [
+       "30 day extension rules"
+      ]
+     }
+    },
+    {
+     "asked": "can its extension history be checked",
+     "spans": {
+      "m1": [
+       "can its extension histroy be checked"
+      ],
+      "m2": [
+       "can we see how many times it's been pushed"
+      ],
+      "m3": [
+       "+ history?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "expired-disposition",
+   "card_id": "EMD-04",
+   "item_id": "dev-F23-0028-exposed",
+   "question_sha256": "6cea720c1782adfc8891e8f6b8522abd34605bbaa337d0d84d50763bf626ba3d",
+   "keep": [],
+   "variants": {
+    "m1": "which customer rules decide whether an expird lot may be used for that customers product",
+    "m2": "what client conditions say if an out-of-date batch can go into their goods?",
+    "m3": "can expired lots go into a customer's product"
+   },
+   "parts": [
+    {
+     "asked": "Which customer rules decide whether an expired lot may be used for that customer's product",
+     "spans": {
+      "m1": [
+       "which customer rules decide whether an expird lot may be used for that customers product"
+      ],
+      "m2": [
+       "what client conditions say if an out-of-date batch can go into their goods?"
+      ],
+      "m3": [
+       "can expired lots go into a customer's product"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "expired-disposition",
+   "card_id": "EMD-05",
+   "item_id": "dev-F24-0024-exposed",
+   "question_sha256": "b7758749e568aa7b625b97774ccd22898d1e69d0cdde3f28e3fee5ba5e0b5ea1",
+   "keep": [],
+   "variants": {
+    "m1": "in the expired disposition case what record ties togther everything done about one expired lot",
+    "m2": "is there one place that holds every step taken on a single out-of-date batch?",
+    "m3": "one record for an expired lot?"
+   },
+   "parts": [
+    {
+     "asked": "What record ties together everything done about one expired lot",
+     "spans": {
+      "m1": [
+       "in the expired disposition case what record ties togther everything done about one expired lot"
+      ],
+      "m2": [
+       "is there one place that holds every step taken on a single out-of-date batch?"
+      ],
+      "m3": [
+       "one record for an expired lot?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "expired-disposition",
+   "card_id": "EMD-06",
+   "item_id": "dev-F24-0025-exposed",
+   "question_sha256": "d1ecf2d6da49bf985ba4b2b3872776e4385cc206eab044d4e941d2a2a1122df6",
+   "keep": [],
+   "variants": {
+    "m1": "which expired lots shoud qc test first, by batch demand",
+    "m2": "which out-of-date batches should the lab look at first based on what upcoming jobs need?",
+    "m3": "which expired lots to test first"
+   },
+   "parts": [
+    {
+     "asked": "Which expired lots should QC test first, by batch demand",
+     "spans": {
+      "m1": [
+       "which expired lots shoud qc test first, by batch demand"
+      ],
+      "m2": [
+       "which out-of-date batches should the lab look at first based on what upcoming jobs need?"
+      ],
+      "m3": [
+       "which expired lots to test first"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "expired-disposition",
+   "card_id": "EMD-07",
+   "item_id": "dev-F24-0026-exposed",
+   "question_sha256": "f000e6e1541e619e05d5eeafe06412892a21bf1ea0fe5f46a1ca27f7352291ff",
+   "keep": [],
+   "variants": {
+    "m1": "what is a lots current expiry date and do its recrods agree",
+    "m2": "for a batch, what's the use-by right now and do the systems show the same date?",
+    "m3": "lot expiry date - do records agree"
+   },
+   "parts": [
+    {
+     "asked": "What is a lot's current expiry date",
+     "spans": {
+      "m1": [
+       "what is a lots current expiry date"
+      ],
+      "m2": [
+       "what's the use-by right now"
+      ],
+      "m3": [
+       "lot expiry date"
+      ]
+     }
+    },
+    {
+     "asked": "do its records agree",
+     "spans": {
+      "m1": [
+       "do its recrods agree"
+      ],
+      "m2": [
+       "do the systems show the same date"
+      ],
+      "m3": [
+       "do records agree"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "expired-disposition",
+   "card_id": "EMD-08",
+   "item_id": "dev-F24-0027-exposed",
+   "question_sha256": "283aef09839b66404d3decfb8c86a12f64d733ccd791b79ae338aec8f6afb7e6",
+   "keep": [],
+   "variants": {
+    "m1": "what evidnce shows an expired lot disposition was aproved and by whom",
+    "m2": "how do we know the call on an out-of-date lot got okayed, and by who?",
+    "m3": "proof the expired lot decision was approved, by who"
+   },
+   "parts": [
+    {
+     "asked": "What evidence shows a disposition was approved",
+     "spans": {
+      "m1": [
+       "what evidnce shows an expired lot disposition was aproved"
+      ],
+      "m2": [
+       "how do we know the call on an out-of-date lot got okayed"
+      ],
+      "m3": [
+       "proof the expired lot decision was approved"
+      ]
+     }
+    },
+    {
+     "asked": "by whom",
+     "spans": {
+      "m1": [
+       "by whom"
+      ],
+      "m2": [
+       "by who"
+      ],
+      "m3": [
+       "by who"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "expired-disposition",
+   "card_id": "EMD-09",
+   "item_id": "dev-F24-0028-exposed",
+   "question_sha256": "ec9540aabd36742e0adb2eeab0396e4478b6497dd913691d67c5e59a469f5225",
+   "keep": [],
+   "variants": {
+    "m1": "can a lot relesed for one batch be kept out of any other batch at picking and at postng",
+    "m2": "if a lot is okayed for one job only, can we stop it going into other jobs when pulling and booking it?",
+    "m3": "lot only for one batch - stuck to?"
+   },
+   "parts": [
+    {
+     "asked": "Can a lot released for one batch be kept out of any other batch at picking and at posting",
+     "spans": {
+      "m1": [
+       "can a lot relesed for one batch be kept out of any other batch at picking and at postng"
+      ],
+      "m2": [
+       "if a lot is okayed for one job only, can we stop it going into other jobs when pulling and booking it?"
+      ],
+      "m3": [
+       "lot only for one batch - stuck to?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "expired-disposition",
+   "card_id": "EMD-10",
+   "item_id": "dev-F24-0029-exposed",
+   "question_sha256": "3fc21304cb81249abc7f3edb32b0345235d308af7de34548f5156397d4634c4d",
+   "keep": [],
+   "variants": {
+    "m1": "how is a batch-limitd waiver that sets no new expiry represented and posted",
+    "m2": "how do we show and book a one-job okay for an out-of-date lot that doesn't change its date?",
+    "m3": "waiver with no new expiry - how recorded"
+   },
+   "parts": [
+    {
+     "asked": "How is a batch-limited waiver that sets no new expiry represented and posted",
+     "spans": {
+      "m1": [
+       "how is a batch-limitd waiver that sets no new expiry represented and posted"
+      ],
+      "m2": [
+       "how do we show and book a one-job okay for an out-of-date lot that doesn't change its date?"
+      ],
+      "m3": [
+       "waiver with no new expiry - how recorded"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "expired-disposition",
+   "card_id": "EMD-11",
+   "item_id": "dev-F24-0030-exposed",
+   "question_sha256": "6380f55a899179fd54bf0e7c87da8a7ed975a12a8de147840e9af57f2394046f",
+   "keep": [],
+   "variants": {
+    "m1": "how are relabeling, disposal and replacment purchases linked to the disposition of an expired lot",
+    "m2": "how do re-tagging, throwing out and buying new stock tie back to the call on an out-of-date batch?",
+    "m3": "relabel/dispose/rebuy linked to lot decision?"
+   },
+   "parts": [
+    {
+     "asked": "How are relabelling, disposal and replacement purchases linked to the disposition of a lot",
+     "spans": {
+      "m1": [
+       "how are relabeling, disposal and replacment purchases linked to the disposition of an expired lot"
+      ],
+      "m2": [
+       "how do re-tagging, throwing out and buying new stock tie back to the call on an out-of-date batch?"
+      ],
+      "m3": [
+       "relabel/dispose/rebuy linked to lot decision?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "expired-disposition",
+   "card_id": "EMD-A1",
+   "item_id": "dev-F25-0009-exposed",
+   "question_sha256": "f7eb0bea46c794c3d960461a1e03ce93159f8178f0fadc7d20b74f2380b3cd74",
+   "keep": [],
+   "variants": {
+    "m1": "was the R-0663 camelia-oil lot extended acording to the 30-day rule",
+    "m2": "did the R-0663 oil batch get pushed out the way the 30 day guideline says?",
+    "m3": "R-0663 30 day extension ok?"
+   },
+   "parts": [
+    {
+     "asked": "Was the R-0663 camellia-oil lot extended according to the 30-day rule",
+     "spans": {
+      "m1": [
+       "was the R-0663 camelia-oil lot extended acording to the 30-day rule"
+      ],
+      "m2": [
+       "did the R-0663 oil batch get pushed out the way the 30 day guideline says?"
+      ],
+      "m3": [
+       "R-0663 30 day extension ok?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "expired-disposition",
+   "card_id": "EMD-A2",
+   "item_id": "dev-F25-0010-exposed",
+   "question_sha256": "ad5ba840673495120471ab969e440b0a1d26e5698c1f440077c4653d4bd3a6b0",
+   "keep": [],
+   "variants": {
+    "m1": "do the tests run on R-0663 cover every risk its justifcation names",
+    "m2": "for R-0663, did the lab checks cover each worry the write-up for keeping it lists?",
+    "m3": "R-0663 tests cover the risks?"
+   },
+   "parts": [
+    {
+     "asked": "Do the tests run on R-0663 cover every risk its justification names",
+     "spans": {
+      "m1": [
+       "do the tests run on R-0663 cover every risk its justifcation names"
+      ],
+      "m2": [
+       "for R-0663, did the lab checks cover each worry the write-up for keeping it lists?"
+      ],
+      "m3": [
+       "R-0663 tests cover the risks?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "expired-disposition",
+   "card_id": "EMD-A3",
+   "item_id": "dev-F25-0011-exposed",
+   "question_sha256": "1c31c5edbd27714dd8458a6403f7d97572c12ad1dca10d572aeeeccd81099569",
+   "keep": [],
+   "variants": {
+    "m1": "does the reisued R-0663 label show that the lot was extendd",
+    "m2": "does the new tag printed for R-0663 make clear its date was pushed out?",
+    "m3": "R-0663 new label shows extension?"
+   },
+   "parts": [
+    {
+     "asked": "Does the reissued R-0663 label show that the lot was extended",
+     "spans": {
+      "m1": [
+       "does the reisued R-0663 label show that the lot was extendd"
+      ],
+      "m2": [
+       "does the new tag printed for R-0663 make clear its date was pushed out?"
+      ],
+      "m3": [
+       "R-0663 new label shows extension?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "expired-disposition",
+   "card_id": "EMD-A4",
+   "item_id": "dev-F25-0012-exposed",
+   "question_sha256": "b77554891153b105c239c8e969fff448f6741fc038bedf1bbf1329a1fffadb1d",
+   "keep": [],
+   "variants": {
+    "m1": "which lot and batch does the R-0030 arginine waivr cover and is its scope enforced",
+    "m2": "the R-0030 okay-to-use note: which ingredient lot and which job is it for, and do we actually hold to that?",
+    "m3": "R-0030 waiver - which lot/batch, enforced?"
+   },
+   "parts": [
+    {
+     "asked": "Which lot and batch does the R-0030 arginine waiver cover",
+     "spans": {
+      "m1": [
+       "which lot and batch does the R-0030 arginine waivr cover"
+      ],
+      "m2": [
+       "which ingredient lot and which job is it for"
+      ],
+      "m3": [
+       "R-0030 waiver - which lot/batch"
+      ]
+     }
+    },
+    {
+     "asked": "is its scope enforced",
+     "spans": {
+      "m1": [
+       "is its scope enforced"
+      ],
+      "m2": [
+       "do we actually hold to that"
+      ],
+      "m3": [
+       "enforced?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "expired-disposition",
+   "card_id": "EMD-A5",
+   "item_id": "dev-F25-0013-exposed",
+   "question_sha256": "8c5bbf467de7a7a95b2f255a26a3579f81c23bf7b196532192577327df8c4e57",
+   "keep": [],
+   "variants": {
+    "m1": "for the expired disposition case which originals of the two exampels exist and which have been read",
+    "m2": "for the two out-of-date stock cases, what source files do we have and which has anyone opened?",
+    "m3": "expired lot examples - which files exist, which read"
+   },
+   "parts": [
+    {
+     "asked": "Which originals of the two examples exist",
+     "spans": {
+      "m1": [
+       "which originals of the two exampels exist"
+      ],
+      "m2": [
+       "what source files do we have"
+      ],
+      "m3": [
+       "which files exist"
+      ]
+     }
+    },
+    {
+     "asked": "which have been read",
+     "spans": {
+      "m1": [
+       "which have been read"
+      ],
+      "m2": [
+       "which has anyone opened"
+      ],
+      "m3": [
+       "which read"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "grants-program",
+   "card_id": "GP-01",
+   "item_id": "dev-F23-0029-exposed",
+   "question_sha256": "b2d04f55727668fc7a5a2b022806ad7feef110263b3af80113925a395d2160fa",
+   "keep": [
+    "stephen"
+   ],
+   "variants": {
+    "m1": "what does stephens grants program breif ask for frist and what does it rule out",
+    "m2": "stephen's note on government funding: what does he want done first and what's off the table?",
+    "m3": "stephen's grants brief - first ask? what's ruled out?"
+   },
+   "parts": [
+    {
+     "asked": "What does Stephen's Grants Program brief ask for first",
+     "spans": {
+      "m1": [
+       "what does stephens grants program breif ask for frist"
+      ],
+      "m2": [
+       "what does he want done first"
+      ],
+      "m3": [
+       "stephen's grants brief - first ask?"
+      ]
+     }
+    },
+    {
+     "asked": "what does it rule out",
+     "spans": {
+      "m1": [
+       "what does it rule out"
+      ],
+      "m2": [
+       "what's off the table"
+      ],
+      "m3": [
+       "what's ruled out?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "grants-program",
+   "card_id": "GP-02",
+   "item_id": "dev-F23-0030-exposed",
+   "question_sha256": "9f2bd940893a20b21cb1fe29acc589d509ffc913affe24671576d0e6b822457b",
+   "keep": [
+    "ngen"
+   ],
+   "variants": {
+    "m1": "how many cost rows are in the ngen q10 claim and how many of them need an invoce pdf over $500",
+    "m2": "on the NGen Q10 funding claim, how many spend lines are there and how many above $500 need the bill attached?",
+    "m3": "ngen q10 rows + how many need invoices over $500"
+   },
+   "parts": [
+    {
+     "asked": "How many cost rows are in the NGen Q10 claim",
+     "spans": {
+      "m1": [
+       "how many cost rows are in the ngen q10 claim"
+      ],
+      "m2": [
+       "how many spend lines are there"
+      ],
+      "m3": [
+       "ngen q10 rows"
+      ]
+     }
+    },
+    {
+     "asked": "how many of them need an invoice PDF over $500",
+     "spans": {
+      "m1": [
+       "how many of them need an invoce pdf over $500"
+      ],
+      "m2": [
+       "how many above $500 need the bill attached"
+      ],
+      "m3": [
+       "how many need invoices over $500"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "grants-program",
+   "card_id": "GP-05",
+   "item_id": "dev-F23-0031-exposed",
+   "question_sha256": "3f9eee7f8a3c800bd5eda0021e957716d9dc1bc3fa4455f4cf9f905b5ddf073b",
+   "keep": [
+    "ngen"
+   ],
+   "variants": {
+    "m1": "what did the ngen q9 reveiw reject or question, and which cost rows did it afect",
+    "m2": "on the NGen Q9 claim check, what got pushed back or queried and which spend lines did that hit?",
+    "m3": "ngen q9 review pushback? which rows?"
+   },
+   "parts": [
+    {
+     "asked": "What did the NGen Q9 review reject or question",
+     "spans": {
+      "m1": [
+       "what did the ngen q9 reveiw reject or question"
+      ],
+      "m2": [
+       "what got pushed back or queried"
+      ],
+      "m3": [
+       "ngen q9 review pushback?"
+      ]
+     }
+    },
+    {
+     "asked": "which cost rows did it affect",
+     "spans": {
+      "m1": [
+       "which cost rows did it afect"
+      ],
+      "m2": [
+       "which spend lines did that hit"
+      ],
+      "m3": [
+       "which rows?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "grants-program",
+   "card_id": "GP-06",
+   "item_id": "dev-F24-0033-exposed",
+   "question_sha256": "d9a1e0cba8d7f8f9e8cfc22ed4b67c4039a3dc04cbbc379d1a73ee1372c3c75f",
+   "keep": [
+    "ngen"
+   ],
+   "variants": {
+    "m1": "how many hours did each person charge to ngen project 14091 in a claim period and where are they recordd",
+    "m2": "for NGen 14091, how much time did each person log in each funding round, and where's it kept?",
+    "m3": "hours on ngen 14091 per person, kept where"
+   },
+   "parts": [
+    {
+     "asked": "How many hours did each person charge to NGen project 14091 in a claim period",
+     "spans": {
+      "m1": [
+       "how many hours did each person charge to ngen project 14091 in a claim period"
+      ],
+      "m2": [
+       "how much time did each person log in each funding round"
+      ],
+      "m3": [
+       "hours on ngen 14091 per person"
+      ]
+     }
+    },
+    {
+     "asked": "where are they recorded",
+     "spans": {
+      "m1": [
+       "where are they recordd"
+      ],
+      "m2": [
+       "where's it kept"
+      ],
+      "m3": [
+       "kept where"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "grants-program",
+   "card_id": "GP-08",
+   "item_id": "dev-F23-0032-exposed",
+   "question_sha256": "da6753f2a373c46319075f018d41a7426d6f0977cd237e4de3251c0f9ce9290a",
+   "keep": [],
+   "variants": {
+    "m1": "is a grant cost row a seperate record from the purchase it pays for",
+    "m2": "is a funding spend line its own entry, apart from the buy it covers?",
+    "m3": "grant cost row vs purchase - same thing?"
+   },
+   "parts": [
+    {
+     "asked": "Is a grant cost row a separate record from the purchase it pays for",
+     "spans": {
+      "m1": [
+       "is a grant cost row a seperate record from the purchase it pays for"
+      ],
+      "m2": [
+       "is a funding spend line its own entry, apart from the buy it covers?"
+      ],
+      "m3": [
+       "grant cost row vs purchase - same thing?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "grants-program",
+   "card_id": "GP-10",
+   "item_id": "dev-F23-0033-exposed",
+   "question_sha256": "a6f334a2941dfdbeb9035312242ed2bb31dbd695ee6c18fd3955f55fb4b0629f",
+   "keep": [
+    "feddev",
+    "amic",
+    "ised"
+   ],
+   "variants": {
+    "m1": "can the workbench trace feddev and amic claims yet, and where dose ised ai-caf stand",
+    "m2": "can we follow the FedDev and AMIC funding claims in the tool yet, and what's the status of ISED AI-CAF?",
+    "m3": "feddev/amic traceable? ised ai-caf status"
+   },
+   "parts": [
+    {
+     "asked": "Can the Workbench trace FedDev and AMIC claims yet",
+     "spans": {
+      "m1": [
+       "can the workbench trace feddev and amic claims yet"
+      ],
+      "m2": [
+       "can we follow the FedDev and AMIC funding claims in the tool yet"
+      ],
+      "m3": [
+       "feddev/amic traceable?"
+      ]
+     }
+    },
+    {
+     "asked": "where does ISED AI-CAF stand",
+     "spans": {
+      "m1": [
+       "where dose ised ai-caf stand"
+      ],
+      "m2": [
+       "what's the status of ISED AI-CAF"
+      ],
+      "m3": [
+       "ised ai-caf status"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "grants-program",
+   "card_id": "GP-11",
+   "item_id": "dev-F23-0034-exposed",
+   "question_sha256": "ac61ef49030c9f5b18c32312597465c147a9d63cb8171fdf76830ec5c498c89d",
+   "keep": [
+    "ngen"
+   ],
+   "variants": {
+    "m1": "which funder portal, claim cadance and contact apply to ngen, and how is grant work coded in payrol",
+    "m2": "for NGen, which website do we file on, how often, who's our person there, and how do we tag funded time in pay?",
+    "m3": "ngen portal, frequency, contact, payroll code"
+   },
+   "parts": [
+    {
+     "asked": "Which funder portal, claim cadence and contact apply to NGen",
+     "spans": {
+      "m1": [
+       "which funder portal, claim cadance and contact apply to ngen"
+      ],
+      "m2": [
+       "which website do we file on, how often, who's our person there"
+      ],
+      "m3": [
+       "ngen portal, frequency, contact"
+      ]
+     }
+    },
+    {
+     "asked": "how is grant work coded in payroll",
+     "spans": {
+      "m1": [
+       "how is grant work coded in payrol"
+      ],
+      "m2": [
+       "how do we tag funded time in pay"
+      ],
+      "m3": [
+       "payroll code"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "packaging-sourcing",
+   "card_id": "PS-01",
+   "item_id": "dev-F23-0035-exposed",
+   "question_sha256": "f4665d9b06786644f36258fc916df2635c9ed46c1a6f589de7bb0dcabad48e45",
+   "keep": [],
+   "variants": {
+    "m1": "what is the new packaging sourcing proposal and what kind of evidnce is it",
+    "m2": "the plan for how we buy new bottles and boxes: what is it and how much can we trust it?",
+    "m3": "what's the new packaging sourcing proposal, how solid"
+   },
+   "parts": [
+    {
+     "asked": "What is the New Packaging Sourcing proposal",
+     "spans": {
+      "m1": [
+       "what is the new packaging sourcing proposal"
+      ],
+      "m2": [
+       "what is it"
+      ],
+      "m3": [
+       "what's the new packaging sourcing proposal"
+      ]
+     }
+    },
+    {
+     "asked": "what kind of evidence is it",
+     "spans": {
+      "m1": [
+       "what kind of evidnce is it"
+      ],
+      "m2": [
+       "how much can we trust it"
+      ],
+      "m3": [
+       "how solid"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "packaging-sourcing",
+   "card_id": "PS-02",
+   "item_id": "dev-F23-0036-exposed",
+   "question_sha256": "e3461bc4010e07e686fdd8406d30326bb0dc2b58e6ea4633563eb2453e95d167",
+   "keep": [
+    "vince"
+   ],
+   "variants": {
+    "m1": "which busines rules does the packaging sourcing proposal put to vince and what is their status",
+    "m2": "in the bottle-and-box buying plan, what rules are put to vince for a call, and where do they stand?",
+    "m3": "rules in the packaging proposal for vince - status?"
+   },
+   "parts": [
+    {
+     "asked": "Which business rules does the proposal put to Vince",
+     "spans": {
+      "m1": [
+       "which busines rules does the packaging sourcing proposal put to vince"
+      ],
+      "m2": [
+       "what rules are put to vince for a call"
+      ],
+      "m3": [
+       "rules in the packaging proposal for vince"
+      ]
+     }
+    },
+    {
+     "asked": "what is their status",
+     "spans": {
+      "m1": [
+       "what is their status"
+      ],
+      "m2": [
+       "where do they stand"
+      ],
+      "m3": [
+       "status?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "packaging-sourcing",
+   "card_id": "PS-03",
+   "item_id": "dev-F23-0037-exposed",
+   "question_sha256": "8f646eb28ba1bab4b63049428fde0161a66912c1aec4971b3ed9149f6cafde2b",
+   "keep": [],
+   "variants": {
+    "m1": "what quote evidnce does the packaging proposal require from a packaging vendor",
+    "m2": "what does the plan want a bottle/box maker to send us with their price?",
+    "m3": "what quote proof do vendors need to give"
+   },
+   "parts": [
+    {
+     "asked": "What quote evidence does the proposal require from a packaging vendor",
+     "spans": {
+      "m1": [
+       "what quote evidnce does the packaging proposal require from a packaging vendor"
+      ],
+      "m2": [
+       "what does the plan want a bottle/box maker to send us with their price?"
+      ],
+      "m3": [
+       "what quote proof do vendors need to give"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "packaging-sourcing",
+   "card_id": "PS-04",
+   "item_id": "dev-F23-0038-exposed",
+   "question_sha256": "d5b651d65d47442401b0c8e8c7568d6f4e796944a6209728e27101142d37214a",
+   "keep": [],
+   "variants": {
+    "m1": "which sign-offs does the packaging proposal require before a packaging quote is aproved, and where are they recorded",
+    "m2": "who has to okay a bottle/box price before it's accepted, and where is that written down?",
+    "m3": "who signs off a packaging quote, recorded where"
+   },
+   "parts": [
+    {
+     "asked": "Which sign-offs does the proposal require before a packaging quote is approved",
+     "spans": {
+      "m1": [
+       "which sign-offs does the packaging proposal require before a packaging quote is aproved"
+      ],
+      "m2": [
+       "who has to okay a bottle/box price before it's accepted"
+      ],
+      "m3": [
+       "who signs off a packaging quote"
+      ]
+     }
+    },
+    {
+     "asked": "where are they recorded",
+     "spans": {
+      "m1": [
+       "where are they recorded"
+      ],
+      "m2": [
+       "where is that written down"
+      ],
+      "m3": [
+       "recorded where"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "packaging-sourcing",
+   "card_id": "PS-05",
+   "item_id": "dev-F24-0036-exposed",
+   "question_sha256": "9bc93e97c4c625df45b04a760249c7ed8e8e90816bc2ea90728d0c3e36632182",
+   "keep": [],
+   "variants": {
+    "m1": "when does the packaging proposal have the packaging part createt, and what can the portal do today",
+    "m2": "in the bottle/box plan, at what step does the item code get set up, and what does our web app handle now?",
+    "m3": "when is the part created + portal today"
+   },
+   "parts": [
+    {
+     "asked": "When does the proposal have the packaging part created",
+     "spans": {
+      "m1": [
+       "when does the packaging proposal have the packaging part createt"
+      ],
+      "m2": [
+       "at what step does the item code get set up"
+      ],
+      "m3": [
+       "when is the part created"
+      ]
+     }
+    },
+    {
+     "asked": "what can the Portal do today",
+     "spans": {
+      "m1": [
+       "what can the portal do today"
+      ],
+      "m2": [
+       "what does our web app handle now"
+      ],
+      "m3": [
+       "+ portal today"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "packaging-sourcing",
+   "card_id": "PS-06",
+   "item_id": "dev-F24-0037-exposed",
+   "question_sha256": "17af29ed7fb6b496f4eccc62f483ef2eaa4c8119d1a1db527e90c42bea637f3c",
+   "keep": [],
+   "variants": {
+    "m1": "what must exist before a packaging part may be orderd, and does the purchase order carry the hs code",
+    "m2": "what has to be in place before we can buy a bottle/box item, and does the buying doc show the tariff code?",
+    "m3": "before ordering packaging + hs code on po?"
+   },
+   "parts": [
+    {
+     "asked": "What must exist before a packaging part may be ordered",
+     "spans": {
+      "m1": [
+       "what must exist before a packaging part may be orderd"
+      ],
+      "m2": [
+       "what has to be in place before we can buy a bottle/box item"
+      ],
+      "m3": [
+       "before ordering packaging"
+      ]
+     }
+    },
+    {
+     "asked": "does the purchase order carry the HS code",
+     "spans": {
+      "m1": [
+       "does the purchase order carry the hs code"
+      ],
+      "m2": [
+       "does the buying doc show the tariff code"
+      ],
+      "m3": [
+       "+ hs code on po?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "packaging-sourcing",
+   "card_id": "PS-07",
+   "item_id": "dev-F24-0038-exposed",
+   "question_sha256": "4db2fb746fde20ac8faeab28312045327ee97ff07ca2345e4816ee4701ec3478",
+   "keep": [],
+   "variants": {
+    "m1": "how should prices be recorded when the componets of one packaging item ship separatly",
+    "m2": "when the bits of one bottle/box item arrive in different loads, how do we write down what each costs?",
+    "m3": "pricing when packaging bits ship separately"
+   },
+   "parts": [
+    {
+     "asked": "How should prices be recorded when the components of one packaging item ship separately",
+     "spans": {
+      "m1": [
+       "how should prices be recorded when the componets of one packaging item ship separatly"
+      ],
+      "m2": [
+       "when the bits of one bottle/box item arrive in different loads, how do we write down what each costs?"
+      ],
+      "m3": [
+       "pricing when packaging bits ship separately"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "packaging-sourcing",
+   "card_id": "PS-08",
+   "item_id": "dev-F24-0039-exposed",
+   "question_sha256": "0ff84f463c734e11d162d8a232ed84c2eccb450f85160e96514f487e4b1c6bdc",
+   "keep": [],
+   "variants": {
+    "m1": "what must exist before a vendor proforma invoce, and what is checked on it before payment",
+    "m2": "before a maker sends their up-front bill, what has to be in place, and what do we check on it before paying?",
+    "m3": "proforma - what must exist first and checks before paying"
+   },
+   "parts": [
+    {
+     "asked": "What must exist before a vendor proforma invoice",
+     "spans": {
+      "m1": [
+       "what must exist before a vendor proforma invoce"
+      ],
+      "m2": [
+       "before a maker sends their up-front bill, what has to be in place"
+      ],
+      "m3": [
+       "what must exist first"
+      ]
+     }
+    },
+    {
+     "asked": "what is checked on it before payment",
+     "spans": {
+      "m1": [
+       "what is checked on it before payment"
+      ],
+      "m2": [
+       "what do we check on it before paying"
+      ],
+      "m3": [
+       "checks before paying"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "packaging-sourcing",
+   "card_id": "PS-09",
+   "item_id": "dev-F24-0040-exposed",
+   "question_sha256": "2b5016d58c3a1ce1da6d6e31b620a97be830ea03556def5e397e505a48d30c46",
+   "keep": [],
+   "variants": {
+    "m1": "how does the packaging proposal want vendor deposits handled and what exists for them today",
+    "m2": "how does the plan want up-front money to makers dealt with, and what do we have for that now?",
+    "m3": "vendor deposits - how the plan handles them vs today"
+   },
+   "parts": [
+    {
+     "asked": "How does the proposal want vendor deposits handled",
+     "spans": {
+      "m1": [
+       "how does the packaging proposal want vendor deposits handled"
+      ],
+      "m2": [
+       "how does the plan want up-front money to makers dealt with"
+      ],
+      "m3": [
+       "how the plan handles them"
+      ]
+     }
+    },
+    {
+     "asked": "what exists for them today",
+     "spans": {
+      "m1": [
+       "what exists for them today"
+      ],
+      "m2": [
+       "what do we have for that now"
+      ],
+      "m3": [
+       "today"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "packaging-sourcing",
+   "card_id": "PS-10",
+   "item_id": "dev-F24-0041-exposed",
+   "question_sha256": "fbbe0b00512db77677056cb824a41d31595d39e6fef8177f1e649ffaf2478f6b",
+   "keep": [],
+   "variants": {
+    "m1": "how does an aproved packaging part reach a purchase order in the proposals workflow",
+    "m2": "once a bottle/box item is okayed, how does it end up on a buying doc in the plan's flow?",
+    "m3": "approved part to po - how"
+   },
+   "parts": [
+    {
+     "asked": "How does an approved packaging part reach a purchase order in the proposal's workflow",
+     "spans": {
+      "m1": [
+       "how does an aproved packaging part reach a purchase order in the proposals workflow"
+      ],
+      "m2": [
+       "once a bottle/box item is okayed, how does it end up on a buying doc in the plan's flow?"
+      ],
+      "m3": [
+       "approved part to po - how"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "packaging-sourcing",
+   "card_id": "PS-11",
+   "item_id": "dev-F23-0039-exposed",
+   "question_sha256": "218482310a850b558d4d9595cae43b58514861bcbf0d4ebb1630a5c085779644",
+   "keep": [],
+   "variants": {
+    "m1": "what does the packaging proposal leave open, and what must a cutover handel",
+    "m2": "what's still undecided in the bottle/box plan, and what does the switch-over need to cover?",
+    "m3": "open items + cutover for packaging proposal"
+   },
+   "parts": [
+    {
+     "asked": "What does the proposal leave open",
+     "spans": {
+      "m1": [
+       "what does the packaging proposal leave open"
+      ],
+      "m2": [
+       "what's still undecided in the bottle/box plan"
+      ],
+      "m3": [
+       "open items"
+      ]
+     }
+    },
+    {
+     "asked": "what must a cutover handle",
+     "spans": {
+      "m1": [
+       "what must a cutover handel"
+      ],
+      "m2": [
+       "what does the switch-over need to cover"
+      ],
+      "m3": [
+       "cutover"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "packaging-sourcing",
+   "card_id": "PS-12",
+   "item_id": "dev-F24-0042-exposed",
+   "question_sha256": "fc92fb568893ebf9f1c9e22a68409512154560389bd6efd718b3f361e3285aac",
+   "keep": [],
+   "variants": {
+    "m1": "can a ddp vendor quote be double counted by the landed-cost formual",
+    "m2": "if a maker's offer already covers delivery and duties, could our all-in cost math count those again?",
+    "m3": "ddp quote double counted?"
+   },
+   "parts": [
+    {
+     "asked": "Can a DDP vendor quote be double counted by the landed-cost formula",
+     "spans": {
+      "m1": [
+       "can a ddp vendor quote be double counted by the landed-cost formual"
+      ],
+      "m2": [
+       "if a maker's offer already covers delivery and duties, could our all-in cost math count those again?"
+      ],
+      "m3": [
+       "ddp quote double counted?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "packaging-sourcing",
+   "card_id": "PS-A1",
+   "item_id": "dev-F25-0014-exposed",
+   "question_sha256": "d9ba2f7ed9678fc01685566ceec69a15ef0626a1a6185d708195d2b5686e4a75",
+   "keep": [],
+   "variants": {
+    "m1": "how was the P-02486 bottle and cap cost alocated, and what does the packaging proposal correct",
+    "m2": "for P-02486, how was the spend split between the container and its lid, and what does the plan fix?",
+    "m3": "P-02486 bottle/cap cost split, what's corrected"
+   },
+   "parts": [
+    {
+     "asked": "How was the P-02486 bottle and cap cost allocated",
+     "spans": {
+      "m1": [
+       "how was the P-02486 bottle and cap cost alocated"
+      ],
+      "m2": [
+       "how was the spend split between the container and its lid"
+      ],
+      "m3": [
+       "P-02486 bottle/cap cost split"
+      ]
+     }
+    },
+    {
+     "asked": "what does the proposal correct",
+     "spans": {
+      "m1": [
+       "what does the packaging proposal correct"
+      ],
+      "m2": [
+       "what does the plan fix"
+      ],
+      "m3": [
+       "what's corrected"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "packaging-sourcing",
+   "card_id": "PS-A2",
+   "item_id": "dev-F25-0015-exposed",
+   "question_sha256": "58785e3f074b4a3e6d930cbc11209a5266e6d8a931b062db2e37ba94fc1cfdb6",
+   "keep": [],
+   "variants": {
+    "m1": "what mismatchs does the packaging proposal report on PI-SWC025623",
+    "m2": "what doesn't line up on PI-SWC025623 according to the plan?",
+    "m3": "PI-SWC025623 mismatches?"
+   },
+   "parts": [
+    {
+     "asked": "What mismatches does the proposal report on PI-SWC025623",
+     "spans": {
+      "m1": [
+       "what mismatchs does the packaging proposal report on PI-SWC025623"
+      ],
+      "m2": [
+       "what doesn't line up on PI-SWC025623 according to the plan?"
+      ],
+      "m3": [
+       "PI-SWC025623 mismatches?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "packaging-sourcing",
+   "card_id": "PS-A3",
+   "item_id": "dev-F25-0016-exposed",
+   "question_sha256": "f1d2e57106400c2648a3430c5d23942f26d37cde6e31c58b57da1886609ed359",
+   "keep": [],
+   "variants": {
+    "m1": "which vendor deposit does the packaging proposal cite and was it recorded as a prepaymnet on the purchase order",
+    "m2": "what up-front money to a maker does the plan point to, and did it go in as paid-in-advance on the buying doc?",
+    "m3": "the deposit in the proposal - prepayment on the po?"
+   },
+   "parts": [
+    {
+     "asked": "Which vendor deposit does the proposal cite",
+     "spans": {
+      "m1": [
+       "which vendor deposit does the packaging proposal cite"
+      ],
+      "m2": [
+       "what up-front money to a maker does the plan point to"
+      ],
+      "m3": [
+       "the deposit in the proposal"
+      ]
+     }
+    },
+    {
+     "asked": "was it recorded as a prepayment on the purchase order",
+     "spans": {
+      "m1": [
+       "was it recorded as a prepaymnet on the purchase order"
+      ],
+      "m2": [
+       "did it go in as paid-in-advance on the buying doc"
+      ],
+      "m3": [
+       "prepayment on the po?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "packaging-sourcing",
+   "card_id": "PS-A4",
+   "item_id": "dev-F25-0017-exposed",
+   "question_sha256": "2ea5573fa8d6f2885863132172a5dcbb0b7277d88e4de6f4249116e851c8e539",
+   "keep": [],
+   "variants": {
+    "m1": "which originals of the packaging sourcing case exist and which have been red",
+    "m2": "for the bottle/box buying case, what source files do we have and which has anyone opened?",
+    "m3": "packaging case files - what exists, which read"
+   },
+   "parts": [
+    {
+     "asked": "Which originals of this case exist",
+     "spans": {
+      "m1": [
+       "which originals of the packaging sourcing case exist"
+      ],
+      "m2": [
+       "what source files do we have"
+      ],
+      "m3": [
+       "what exists"
+      ]
+     }
+    },
+    {
+     "asked": "which have been read",
+     "spans": {
+      "m1": [
+       "which have been red"
+      ],
+      "m2": [
+       "which has anyone opened"
+      ],
+      "m3": [
+       "which read"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "procure-to-gl",
+   "card_id": "SP-01",
+   "item_id": "dev-F23-0040-exposed",
+   "question_sha256": "4bf2f7e2533e2e52f33a970b08b774fea3873e640d10512593bea3a44bc6d541",
+   "keep": [],
+   "variants": {
+    "m1": "what does the screening procss map cover and what kind of evidence is it",
+    "m2": "the doc on getting printing done on our containers outside: what's in it and how much can we rely on it?",
+    "m3": "what's the screening map about, how solid"
+   },
+   "parts": [
+    {
+     "asked": "What does the Screening Process Map cover",
+     "spans": {
+      "m1": [
+       "what does the screening procss map cover"
+      ],
+      "m2": [
+       "what's in it"
+      ],
+      "m3": [
+       "what's the screening map about"
+      ]
+     }
+    },
+    {
+     "asked": "what kind of evidence is it",
+     "spans": {
+      "m1": [
+       "what kind of evidence is it"
+      ],
+      "m2": [
+       "how much can we rely on it"
+      ],
+      "m3": [
+       "how solid"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "procure-to-gl",
+   "card_id": "SP-02",
+   "item_id": "dev-F23-0041-exposed",
+   "question_sha256": "e30cfaab144f85d94772350d2e6572061b4fcb82bc9f4e1b9e37ed3b3d6358d4",
+   "keep": [],
+   "variants": {
+    "m1": "how does the screening map propose to cost a screend unit that can be sold",
+    "m2": "per the outside-printing doc, how do we put a value on a decorated piece we can sell?",
+    "m3": "cost of a sellable screened unit?"
+   },
+   "parts": [
+    {
+     "asked": "How does the screening map propose to cost a screened unit that can be sold",
+     "spans": {
+      "m1": [
+       "how does the screening map propose to cost a screend unit that can be sold"
+      ],
+      "m2": [
+       "per the outside-printing doc, how do we put a value on a decorated piece we can sell?"
+      ],
+      "m3": [
+       "cost of a sellable screened unit?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "procure-to-gl",
+   "card_id": "SP-03",
+   "item_id": "dev-F23-0042-exposed",
+   "question_sha256": "11eed0bafc1365e1a07668758c295e63dd7cfbb3ff8bffbb784c05cfbaf9bee6",
+   "keep": [],
+   "variants": {
+    "m1": "is the conversion aproach for screened goods and the screening clearing acount approved",
+    "m2": "has the way we turn plain stock into printed stock, and the holding ledger for it, been signed off?",
+    "m3": "screening conversion + clearing account approved?"
+   },
+   "parts": [
+    {
+     "asked": "Is the conversion approach for screened goods and the screening clearing account approved",
+     "spans": {
+      "m1": [
+       "is the conversion aproach for screened goods and the screening clearing acount approved"
+      ],
+      "m2": [
+       "has the way we turn plain stock into printed stock, and the holding ledger for it, been signed off?"
+      ],
+      "m3": [
+       "screening conversion + clearing account approved?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "procure-to-gl",
+   "card_id": "SP-06",
+   "item_id": "dev-F24-0045-exposed",
+   "question_sha256": "bed8ad725d68f50073ad91f7011260168c4fde6c0678752ab9d726cd3dac703f",
+   "keep": [],
+   "variants": {
+    "m1": "do the blanks sent to the screener reconcle with the screened units returned and the screeners counts",
+    "m2": "do the plain pieces we shipped to the printer match what came back decorated and what the printer counted?",
+    "m3": "blanks out vs screened back - match?"
+   },
+   "parts": [
+    {
+     "asked": "Do the blanks sent to the screener reconcile with the screened units returned and the screener's counts",
+     "spans": {
+      "m1": [
+       "do the blanks sent to the screener reconcle with the screened units returned and the screeners counts"
+      ],
+      "m2": [
+       "do the plain pieces we shipped to the printer match what came back decorated and what the printer counted?"
+      ],
+      "m3": [
+       "blanks out vs screened back - match?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "procure-to-gl",
+   "card_id": "SP-07",
+   "item_id": "dev-F24-0046-exposed",
+   "question_sha256": "289ec62534df81e5e5bb5c145eea49410965b5d148a04dec44da3972acf0b7ed",
+   "keep": [],
+   "variants": {
+    "m1": "does the screener's invoce match the rate-card po and the good units screened",
+    "m2": "does the printer's bill line up with the price-list buying doc and the decent pieces they did?",
+    "m3": "screener invoice vs po vs good units"
+   },
+   "parts": [
+    {
+     "asked": "Does the screener's invoice match the rate-card PO and the good units screened",
+     "spans": {
+      "m1": [
+       "does the screener's invoce match the rate-card po and the good units screened"
+      ],
+      "m2": [
+       "does the printer's bill line up with the price-list buying doc and the decent pieces they did?"
+      ],
+      "m3": [
+       "screener invoice vs po vs good units"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "procure-to-gl",
+   "card_id": "SP-08",
+   "item_id": "dev-F24-0047-exposed",
+   "question_sha256": "30df2f2dfa73bafb59c9ba160334dbccd708d8aacb581706417d3eea3b459b44",
+   "keep": [],
+   "variants": {
+    "m1": "which g/l entries did the blank purchas, the screening charge and the conversion post, and to which acounts",
+    "m2": "what lines in the books did buying the plain stock, the printer's fee and the switch-over make, and where?",
+    "m3": "gl entries for blanks, screening, conversion"
+   },
+   "parts": [
+    {
+     "asked": "Which G/L entries did the blank purchase, the screening charge and the conversion post, and to which accounts",
+     "spans": {
+      "m1": [
+       "which g/l entries did the blank purchas, the screening charge and the conversion post, and to which acounts"
+      ],
+      "m2": [
+       "what lines in the books did buying the plain stock, the printer's fee and the switch-over make, and where?"
+      ],
+      "m3": [
+       "gl entries for blanks, screening, conversion"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "procure-to-gl",
+   "card_id": "PG-01",
+   "item_id": "dev-F23-0043-exposed",
+   "question_sha256": "737b50c44959f7f64618ef2ea9af267fbcdc39fc20bd0a7ce833ecbf268a8b0d",
+   "keep": [
+    "vince"
+   ],
+   "variants": {
+    "m1": "what does vince's packaging procure-to-gl map cover and what kind of evidnce is it",
+    "m2": "vince's doc on buying containers and boxes all the way to the books: what's in it and how solid is it?",
+    "m3": "vince's procure to gl map - whats in it, how solid"
+   },
+   "parts": [
+    {
+     "asked": "What does Vince's Packaging Procure-to-GL Map cover",
+     "spans": {
+      "m1": [
+       "what does vince's packaging procure-to-gl map cover"
+      ],
+      "m2": [
+       "what's in it"
+      ],
+      "m3": [
+       "whats in it"
+      ]
+     }
+    },
+    {
+     "asked": "what kind of evidence is it",
+     "spans": {
+      "m1": [
+       "what kind of evidnce is it"
+      ],
+      "m2": [
+       "how solid is it"
+      ],
+      "m3": [
+       "how solid"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "procure-to-gl",
+   "card_id": "PG-02",
+   "item_id": "dev-F23-0044-exposed",
+   "question_sha256": "5d873f2d6ce373b40025dd4c764c2ce80f75c24b956d3f65cb6eb2ac97de561b",
+   "keep": [],
+   "variants": {
+    "m1": "is the packaging maps real exampel one completed transaction from brief to g/l",
+    "m2": "in vince's containers-and-boxes buying doc, is the worked case one finished deal from start to the books?",
+    "m3": "is the procure-to-gl example one full transaction"
+   },
+   "parts": [
+    {
+     "asked": "Is the packaging map's real example one completed transaction from brief to G/L",
+     "spans": {
+      "m1": [
+       "is the packaging maps real exampel one completed transaction from brief to g/l"
+      ],
+      "m2": [
+       "in vince's containers-and-boxes buying doc, is the worked case one finished deal from start to the books?"
+      ],
+      "m3": [
+       "is the procure-to-gl example one full transaction"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "procure-to-gl",
+   "card_id": "PG-03",
+   "item_id": "dev-F24-0048-exposed",
+   "question_sha256": "cb519b5a1fed7a38c5c9395057035a5dc95bd6f51f8b48f0b85716b9c17e2073",
+   "keep": [],
+   "variants": {
+    "m1": "which portal purchase order and lines is PO5447, and which busines central purchase order is it",
+    "m2": "what is PO5447 in our web app (doc and rows) and what is it in the accounting system?",
+    "m3": "PO5447 in portal (po + lines) vs bc po"
+   },
+   "parts": [
+    {
+     "asked": "Which Portal purchase order and lines is PO5447",
+     "spans": {
+      "m1": [
+       "which portal purchase order and lines is PO5447"
+      ],
+      "m2": [
+       "what is PO5447 in our web app (doc and rows)"
+      ],
+      "m3": [
+       "in portal (po + lines)"
+      ]
+     }
+    },
+    {
+     "asked": "which Business Central purchase order is it",
+     "spans": {
+      "m1": [
+       "which busines central purchase order is it"
+      ],
+      "m2": [
+       "what is it in the accounting system"
+      ],
+      "m3": [
+       "bc po"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "procure-to-gl",
+   "card_id": "PG-04",
+   "item_id": "dev-F24-0049-exposed",
+   "question_sha256": "fbe3e17ff23ce2fd2df8a0150b5e5716a729a4575976fe55ab8c6690b751a1e6",
+   "keep": [],
+   "variants": {
+    "m1": "for the procure-to-gl packaging which proforma invoce governs the packaging price and the deposit, and how was the deposit worked out",
+    "m2": "for vince's containers-and-boxes buy, which up-front bill sets what we pay per piece and the money paid in advance, and how was that amount figured?",
+    "m3": "which proforma sets price + deposit, deposit math?"
+   },
+   "parts": [
+    {
+     "asked": "Which proforma invoice governs the packaging price and the deposit",
+     "spans": {
+      "m1": [
+       "which proforma invoce governs the packaging price and the deposit"
+      ],
+      "m2": [
+       "which up-front bill sets what we pay per piece and the money paid in advance"
+      ],
+      "m3": [
+       "which proforma sets price + deposit"
+      ]
+     }
+    },
+    {
+     "asked": "how was the deposit worked out",
+     "spans": {
+      "m1": [
+       "how was the deposit worked out"
+      ],
+      "m2": [
+       "how was that amount figured"
+      ],
+      "m3": [
+       "deposit math?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "procure-to-gl",
+   "card_id": "PG-05",
+   "item_id": "dev-F24-0050-exposed",
+   "question_sha256": "f5a2c675aae0a84ed54e73480b9a4b4ef3e2e530ee594bfb5b5cfd2a5465ee75",
+   "keep": [],
+   "variants": {
+    "m1": "what is the landed cost per unit of the packaging on PO5447, frieght and duties included",
+    "m2": "for PO5447, what's the all-in cost per piece once shipping and border fees are in?",
+    "m3": "PO5447 landed cost per unit"
+   },
+   "parts": [
+    {
+     "asked": "What is the landed cost per unit of this packaging, freight and duties included",
+     "spans": {
+      "m1": [
+       "what is the landed cost per unit of the packaging on PO5447, frieght and duties included"
+      ],
+      "m2": [
+       "for PO5447, what's the all-in cost per piece once shipping and border fees are in?"
+      ],
+      "m3": [
+       "PO5447 landed cost per unit"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "procure-to-gl",
+   "card_id": "PG-06",
+   "item_id": "dev-F24-0051-exposed",
+   "question_sha256": "8d4214016b69ff6bf38f6dc4e3c1c129880153337fd68a753f1a7fd379c2c3d7",
+   "keep": [],
+   "variants": {
+    "m1": "was the packaging on PO5447 recieved and checked by incoming qc, and against which po line",
+    "m2": "did the PO5447 goods arrive and get inspected at goods-in, and which row of the buying doc was that against?",
+    "m3": "PO5447 received + qc'd?"
+   },
+   "parts": [
+    {
+     "asked": "Was this packaging received and checked by incoming QC, and against which PO line",
+     "spans": {
+      "m1": [
+       "was the packaging on PO5447 recieved and checked by incoming qc, and against which po line"
+      ],
+      "m2": [
+       "did the PO5447 goods arrive and get inspected at goods-in, and which row of the buying doc was that against?"
+      ],
+      "m3": [
+       "PO5447 received + qc'd?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "procure-to-gl",
+   "card_id": "PG-07",
+   "item_id": "dev-F24-0052-exposed",
+   "question_sha256": "37f469a6cad32bb241dbf40f038ffcd4e1f1ec2afc06f401854aad43549d3941",
+   "keep": [],
+   "variants": {
+    "m1": "which g/l entries did the PO5447 packaging purchse post and to which accounts",
+    "m2": "for PO5447, what lines hit the books and where did they go?",
+    "m3": "PO5447 gl entries"
+   },
+   "parts": [
+    {
+     "asked": "Which G/L entries did this packaging purchase post, and to which accounts",
+     "spans": {
+      "m1": [
+       "which g/l entries did the PO5447 packaging purchse post and to which accounts"
+      ],
+      "m2": [
+       "for PO5447, what lines hit the books and where did they go?"
+      ],
+      "m3": [
+       "PO5447 gl entries"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "procure-to-gl",
+   "card_id": "PG-08",
+   "item_id": "dev-F23-0045-exposed",
+   "question_sha256": "12afc830a7b3fa0c282c81c5cd681cad61abad8149915bec1676f04c19be0f31",
+   "keep": [
+    "vince"
+   ],
+   "variants": {
+    "m1": "in the packaging to gl map what did vince ask about the maps structure and what must people clarfy before more cases",
+    "m2": "on the bottles-to-books doc, what did vince want to know about how it's laid out, and what needs sorting before we do more?",
+    "m3": "vince's questions on the map structure + what to clarify"
+   },
+   "parts": [
+    {
+     "asked": "What did Vince ask about the map's structure",
+     "spans": {
+      "m1": [
+       "what did vince ask about the maps structure"
+      ],
+      "m2": [
+       "what did vince want to know about how it's laid out"
+      ],
+      "m3": [
+       "vince's questions on the map structure"
+      ]
+     }
+    },
+    {
+     "asked": "what must people clarify before more cases",
+     "spans": {
+      "m1": [
+       "what must people clarfy before more cases"
+      ],
+      "m2": [
+       "what needs sorting before we do more"
+      ],
+      "m3": [
+       "+ what to clarify"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "quote-to-order",
+   "card_id": "QO-01",
+   "item_id": "dev-F23-0046-exposed",
+   "question_sha256": "d51aa708e7b48c246208b7c9d9c14131524cfc7d019a88a1adec6badfd491a78",
+   "keep": [],
+   "variants": {
+    "m1": "what does the quote-to-order map cover and what kind of evidnce is it",
+    "m2": "the doc on going from a price we give to a confirmed deal: what's in it and how much can we rely on it?",
+    "m3": "what's the quote to order map, how solid"
+   },
+   "parts": [
+    {
+     "asked": "What does the Quote-to-Order Map cover",
+     "spans": {
+      "m1": [
+       "what does the quote-to-order map cover"
+      ],
+      "m2": [
+       "what's in it"
+      ],
+      "m3": [
+       "what's the quote to order map"
+      ]
+     }
+    },
+    {
+     "asked": "what kind of evidence is it",
+     "spans": {
+      "m1": [
+       "what kind of evidnce is it"
+      ],
+      "m2": [
+       "how much can we rely on it"
+      ],
+      "m3": [
+       "how solid"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "quote-to-order",
+   "card_id": "QO-02",
+   "item_id": "dev-F24-0053-exposed",
+   "question_sha256": "9013d7438db992d7cfd06ff1ce8bdad0d3e08dd5e06c3db1a99b4e0094e510c0",
+   "keep": [],
+   "variants": {
+    "m1": "how is a lost quote recordd today and when does a quote expire",
+    "m2": "when we don't win a price offer, how do we write that down now, and when does an offer run out?",
+    "m3": "lost quotes + how long a quote lasts"
+   },
+   "parts": [
+    {
+     "asked": "How is a lost quote recorded today",
+     "spans": {
+      "m1": [
+       "how is a lost quote recordd today"
+      ],
+      "m2": [
+       "when we don't win a price offer, how do we write that down now"
+      ],
+      "m3": [
+       "lost quotes"
+      ]
+     }
+    },
+    {
+     "asked": "when does a quote expire",
+     "spans": {
+      "m1": [
+       "when does a quote expire"
+      ],
+      "m2": [
+       "when does an offer run out"
+      ],
+      "m3": [
+       "how long a quote lasts"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "quote-to-order",
+   "card_id": "QO-03",
+   "item_id": "dev-F24-0054-exposed",
+   "question_sha256": "008fb0c9fc50cd9f7a073f74cf90b3dc992ec15786a40b136fa03090d304a0f3",
+   "keep": [],
+   "variants": {
+    "m1": "when an acepted quote converts to an order which volume tier and which currancy does the order carry",
+    "m2": "once a client says yes to a price, which quantity bracket and which money does the resulting deal use?",
+    "m3": "won quote -> order: which tier/currency"
+   },
+   "parts": [
+    {
+     "asked": "When an accepted quote converts to an order, which volume tier",
+     "spans": {
+      "m1": [
+       "when an acepted quote converts to an order which volume tier"
+      ],
+      "m2": [
+       "once a client says yes to a price, which quantity bracket"
+      ],
+      "m3": [
+       "which tier"
+      ]
+     }
+    },
+    {
+     "asked": "which currency does the order carry",
+     "spans": {
+      "m1": [
+       "which currancy does the order carry"
+      ],
+      "m2": [
+       "which money does the resulting deal use"
+      ],
+      "m3": [
+       "currency"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "quote-to-order",
+   "card_id": "QO-A1",
+   "item_id": "dev-F25-0018-exposed",
+   "question_sha256": "c3ebb4e242d6145c1e27a177480ca01ea0689c35a74d3b53abea47da59652e79",
+   "keep": [
+    "sahajan"
+   ],
+   "variants": {
+    "m1": "for the sahajan 30 ml minis quote (example a) is there a busines central sales order or a recorded lost reason",
+    "m2": "the sahajan 30 mL small-size price offer: did it turn into a deal in the books, or did someone note why we lost it?",
+    "m3": "sahajan 30ml minis - order or lost?"
+   },
+   "parts": [
+    {
+     "asked": "For the Sahajan 30 mL minis quote (example A), is there a Business Central sales order or a recorded lost reason",
+     "spans": {
+      "m1": [
+       "for the sahajan 30 ml minis quote (example a) is there a busines central sales order or a recorded lost reason"
+      ],
+      "m2": [
+       "the sahajan 30 mL small-size price offer: did it turn into a deal in the books, or did someone note why we lost it?"
+      ],
+      "m3": [
+       "sahajan 30ml minis - order or lost?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "quote-to-order",
+   "card_id": "QO-A2",
+   "item_id": "dev-F23-0047-exposed",
+   "question_sha256": "a4ee35fff41ac44a3938d28ae87c9279a82362208e50c0034fd01185814366ae",
+   "keep": [
+    "sahajan"
+   ],
+   "variants": {
+    "m1": "which quote inputs were mising or assumed when the sahajan minis quote was priced",
+    "m2": "when we put numbers on the small sahajan items, what info didn't we have or did we just guess?",
+    "m3": "sahajan minis quote - what was missing"
+   },
+   "parts": [
+    {
+     "asked": "Which quote inputs were missing or assumed when the Sahajan minis quote was priced",
+     "spans": {
+      "m1": [
+       "which quote inputs were mising or assumed when the sahajan minis quote was priced"
+      ],
+      "m2": [
+       "when we put numbers on the small sahajan items, what info didn't we have or did we just guess?"
+      ],
+      "m3": [
+       "sahajan minis quote - what was missing"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "quote-to-order",
+   "card_id": "QO-B1",
+   "item_id": "dev-F25-0019-exposed",
+   "question_sha256": "1bd87999dc7125c734247d1fefd1ea2770d9268a7ccec35a0e5dc42ae4eec969",
+   "keep": [
+    "sahajan"
+   ],
+   "variants": {
+    "m1": "for the sahajan full-size products (example b) which busines central sales order carries the won quote",
+    "m2": "for the regular-size sahajan stuff we won, which deal in the accounting system holds it?",
+    "m3": "sahajan full size - which sales order"
+   },
+   "parts": [
+    {
+     "asked": "For the Sahajan full-size products (example B), which Business Central sales order carries the won quote",
+     "spans": {
+      "m1": [
+       "for the sahajan full-size products (example b) which busines central sales order carries the won quote"
+      ],
+      "m2": [
+       "for the regular-size sahajan stuff we won, which deal in the accounting system holds it?"
+      ],
+      "m3": [
+       "sahajan full size - which sales order"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "quote-to-order",
+   "card_id": "QO-B2",
+   "item_id": "dev-F23-0048-exposed",
+   "question_sha256": "d44582dba0ce9820086df210e2d5af6d525568c9eb519dfd98e792465f603b6f",
+   "keep": [
+    "sahajan"
+   ],
+   "variants": {
+    "m1": "which terms of the sahajan full-size quote changd between the quote, the contract and the orders",
+    "m2": "for the regular-size sahajan offer, what conditions shifted from the price we gave to the signed deal to the actual orders?",
+    "m3": "sahajan full size - what terms changed"
+   },
+   "parts": [
+    {
+     "asked": "Which terms of the Sahajan full-size quote changed between the quote, the contract and the orders",
+     "spans": {
+      "m1": [
+       "which terms of the sahajan full-size quote changd between the quote, the contract and the orders"
+      ],
+      "m2": [
+       "for the regular-size sahajan offer, what conditions shifted from the price we gave to the signed deal to the actual orders?"
+      ],
+      "m3": [
+       "sahajan full size - what terms changed"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "quote-to-order",
+   "card_id": "QO-C1",
+   "item_id": "dev-F25-0020-exposed",
+   "question_sha256": "63bda9f514afcee2456f6e52b248b5fded8aec484fda2353bdcc52cc6914ffab",
+   "keep": [
+    "beauty"
+   ],
+   "variants": {
+    "m1": "for the g2 beauty body wash display (example c) is there a busines central sales order or a recorded lost reason",
+    "m2": "the g2 beauty shower-gel stand offer: did it become a deal in the books, or did someone note why it fell through?",
+    "m3": "whats up with the g2 beauty quote"
+   },
+   "parts": [
+    {
+     "asked": "For the G2 Beauty body wash display (example C), is there a Business Central sales order or a recorded lost reason",
+     "spans": {
+      "m1": [
+       "for the g2 beauty body wash display (example c) is there a busines central sales order or a recorded lost reason"
+      ],
+      "m2": [
+       "the g2 beauty shower-gel stand offer: did it become a deal in the books, or did someone note why it fell through?"
+      ],
+      "m3": [
+       "whats up with the g2 beauty quote"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "quote-to-order",
+   "card_id": "QO-C2",
+   "item_id": "dev-F23-0049-exposed",
+   "question_sha256": "8b85fa806b7c69e628b84988571cd7bb7f2f284e87867b0bd582ce69c449379b",
+   "keep": [
+    "beauty"
+   ],
+   "variants": {
+    "m1": "which quote inputs were missng when g2 beauty was given a price",
+    "m2": "when we priced things for g2 beauty, what info did we not have?",
+    "m3": "g2 beauty quote - what was missing"
+   },
+   "parts": [
+    {
+     "asked": "Which quote inputs were missing when G2 Beauty was given a price",
+     "spans": {
+      "m1": [
+       "which quote inputs were missng when g2 beauty was given a price"
+      ],
+      "m2": [
+       "when we priced things for g2 beauty, what info did we not have?"
+      ],
+      "m3": [
+       "g2 beauty quote - what was missing"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "quote-to-order",
+   "card_id": "QO-D1",
+   "item_id": "dev-F25-0021-exposed",
+   "question_sha256": "ed3d1f5403d4731bf2484c86dc345710ad728f786f37443b5a5b1214bd8e56ac",
+   "keep": [
+    "soapbox"
+   ],
+   "variants": {
+    "m1": "for soapbox (example d) which busines central sales order fulfils the won supply agreemnet, and has it been invoiced",
+    "m2": "for soapbox, which deal in the accounting system delivers on the contract we won, and have we billed it?",
+    "m3": "soapbox - sales order + invoiced?"
+   },
+   "parts": [
+    {
+     "asked": "For Soapbox (example D), which Business Central sales order fulfils the won supply agreement",
+     "spans": {
+      "m1": [
+       "for soapbox (example d) which busines central sales order fulfils the won supply agreemnet"
+      ],
+      "m2": [
+       "for soapbox, which deal in the accounting system delivers on the contract we won"
+      ],
+      "m3": [
+       "soapbox - sales order"
+      ]
+     }
+    },
+    {
+     "asked": "has it been invoiced",
+     "spans": {
+      "m1": [
+       "has it been invoiced"
+      ],
+      "m2": [
+       "have we billed it"
+      ],
+      "m3": [
+       "invoiced?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "quote-to-order",
+   "card_id": "QO-D2",
+   "item_id": "dev-F23-0050-exposed",
+   "question_sha256": "24111336b1b12ca50dc866b0d0860fe80d75ed174e16725d92b6aa661d8291b2",
+   "keep": [
+    "soapbox"
+   ],
+   "variants": {
+    "m1": "which componet prices were missing when soapbox was quoted",
+    "m2": "when we priced soapbox, which parts didn't we have costs for?",
+    "m3": "soapbox quote missing part prices?"
+   },
+   "parts": [
+    {
+     "asked": "Which component prices were missing when Soapbox was quoted",
+     "spans": {
+      "m1": [
+       "which componet prices were missing when soapbox was quoted"
+      ],
+      "m2": [
+       "when we priced soapbox, which parts didn't we have costs for?"
+      ],
+      "m3": [
+       "soapbox quote missing part prices?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "quote-to-order",
+   "card_id": "QO-E1",
+   "item_id": "dev-F25-0022-exposed",
+   "question_sha256": "409291926ce999137a269c30530be8d376c67560fd5f63532755c90d6c7e1da0",
+   "keep": [
+    "vince"
+   ],
+   "variants": {
+    "m1": "was the g2 quote built in vince's quoting templat (example e) sent, and did it end in a busines central sales order or a recorded lost reason",
+    "m2": "the g2 offer made in vince's pricing spreadsheet: did it go out, and did it end in a deal in the books or a note on why we lost?",
+    "m3": "did vince's g2 template quote go out / order or lost?"
+   },
+   "parts": [
+    {
+     "asked": "Was the G2 quote built in Vince's quoting template (example E) sent",
+     "spans": {
+      "m1": [
+       "was the g2 quote built in vince's quoting templat (example e) sent"
+      ],
+      "m2": [
+       "did it go out"
+      ],
+      "m3": [
+       "did vince's g2 template quote go out"
+      ]
+     }
+    },
+    {
+     "asked": "did it end in a Business Central sales order or a recorded lost reason",
+     "spans": {
+      "m1": [
+       "did it end in a busines central sales order or a recorded lost reason"
+      ],
+      "m2": [
+       "did it end in a deal in the books or a note on why we lost"
+      ],
+      "m3": [
+       "order or lost?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "quote-to-order",
+   "card_id": "QO-E2",
+   "item_id": "dev-F23-0051-exposed",
+   "question_sha256": "161b978061e5c21b74293c4b6be6dd52ae8a18d0241a7e007f068413fbde6318",
+   "keep": [
+    "vince"
+   ],
+   "variants": {
+    "m1": "which inputs were missing in the g2 quoting template while it reportd ready to quote",
+    "m2": "vince's g2 pricing spreadsheet said good to go - what info was actually blank?",
+    "m3": "g2 template said ready but what was missing"
+   },
+   "parts": [
+    {
+     "asked": "Which inputs were missing in the G2 quoting template while it reported ready to quote",
+     "spans": {
+      "m1": [
+       "which inputs were missing in the g2 quoting template while it reportd ready to quote"
+      ],
+      "m2": [
+       "vince's g2 pricing spreadsheet said good to go - what info was actually blank?"
+      ],
+      "m3": [
+       "g2 template said ready but what was missing"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "quote-to-order",
+   "card_id": "QW-01",
+   "item_id": "dev-F23-0052-exposed",
+   "question_sha256": "a35219847180b8ffb7639dea474460db7b90eaac16d8fcaeab5faf21b37eba18",
+   "keep": [],
+   "variants": {
+    "m1": "which pinned workbok revisions belong to each quote example, and which one is the quote of record",
+    "m2": "for each price-offer case, which saved spreadsheet editions go with it, and which is the official one?",
+    "m3": "quote spreadsheet versions per example, which is official"
+   },
+   "parts": [
+    {
+     "asked": "Which pinned workbook revisions belong to each quote example",
+     "spans": {
+      "m1": [
+       "which pinned workbok revisions belong to each quote example"
+      ],
+      "m2": [
+       "which saved spreadsheet editions go with it"
+      ],
+      "m3": [
+       "quote spreadsheet versions per example"
+      ]
+     }
+    },
+    {
+     "asked": "which one is the quote of record",
+     "spans": {
+      "m1": [
+       "which one is the quote of record"
+      ],
+      "m2": [
+       "which is the official one"
+      ],
+      "m3": [
+       "which is official"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "quote-to-order",
+   "card_id": "QW-02",
+   "item_id": "dev-F24-0055-exposed",
+   "question_sha256": "17ceb57dc8801c51d8620cc377b2dcdb1ff946349ff8ebab7b1c3582c508c2fc",
+   "keep": [],
+   "variants": {
+    "m1": "in the quote to order examples when was each examples quote or price sent, and by whom (by role)",
+    "m2": "for each offer case, when did the number go out to the client and what job did the person have?",
+    "m3": "when were the quotes sent and by who (role)"
+   },
+   "parts": [
+    {
+     "asked": "When was each example's quote or price sent",
+     "spans": {
+      "m1": [
+       "when was each examples quote or price sent"
+      ],
+      "m2": [
+       "when did the number go out to the client"
+      ],
+      "m3": [
+       "when were the quotes sent"
+      ]
+     }
+    },
+    {
+     "asked": "by whom (by role)",
+     "spans": {
+      "m1": [
+       "by whom (by role)"
+      ],
+      "m2": [
+       "what job did the person have"
+      ],
+      "m3": [
+       "by who (role)"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "quote-to-order",
+   "card_id": "CJ-01",
+   "item_id": "dev-F23-0053-exposed",
+   "question_sha256": "1a5a839eab6a3b5fb44069fba1f556220f2820c1bbe1e722b2964e24698877a1",
+   "keep": [],
+   "variants": {
+    "m1": "what does the cost-to-assembly user journy describe, and is it a record of transactions",
+    "m2": "the walkthrough from what things cost to putting product together: what does it lay out, and is it actual dealings or not?",
+    "m3": "cost to assembly journey - what is it, real transactions?"
+   },
+   "parts": [
+    {
+     "asked": "What does the cost-to-assembly user journey describe",
+     "spans": {
+      "m1": [
+       "what does the cost-to-assembly user journy describe"
+      ],
+      "m2": [
+       "what does it lay out"
+      ],
+      "m3": [
+       "cost to assembly journey - what is it"
+      ]
+     }
+    },
+    {
+     "asked": "is it a record of transactions",
+     "spans": {
+      "m1": [
+       "is it a record of transactions"
+      ],
+      "m2": [
+       "is it actual dealings or not"
+      ],
+      "m3": [
+       "real transactions?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "quote-to-order",
+   "card_id": "CJ-02",
+   "item_id": "dev-F24-0056-exposed",
+   "question_sha256": "72137b6a52e9b267fa267703d09e5679021dc6d861e167ae4744343ec67ecdcf",
+   "keep": [],
+   "variants": {
+    "m1": "which quote cost inputs does the cost-to-assembly journey take from standard costs, and which of them were missing in examples a to e",
+    "m2": "in the what-it-takes-to-build walkthrough, which numbers for pricing come from our set price list, and which were blank in the five offer cases?",
+    "m3": "journey cost inputs + which missing in a-e"
+   },
+   "parts": [
+    {
+     "asked": "Which quote cost inputs does the journey take from standard costs",
+     "spans": {
+      "m1": [
+       "which quote cost inputs does the cost-to-assembly journey take from standard costs"
+      ],
+      "m2": [
+       "which numbers for pricing come from our set price list"
+      ],
+      "m3": [
+       "journey cost inputs"
+      ]
+     }
+    },
+    {
+     "asked": "which of them were missing in examples A to E",
+     "spans": {
+      "m1": [
+       "which of them were missing in examples a to e"
+      ],
+      "m2": [
+       "which were blank in the five offer cases"
+      ],
+      "m3": [
+       "which missing in a-e"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "ricardo-maps",
+   "card_id": "RM-01",
+   "item_id": "dev-F23-0054-exposed",
+   "question_sha256": "004f1d5f84a4f16e6b9298b9916da128d7c859efaf4d31a28acc655c17198323",
+   "keep": [
+    "ricardo"
+   ],
+   "variants": {
+    "m1": "what do ricardos three october 2 process-map packages cover and what kind of evidnce are they",
+    "m2": "ricardo's three bundles from october 2: what's in them and how much can we rely on them?",
+    "m3": "ricardo's oct 2 maps - what are they, how solid"
+   },
+   "parts": [
+    {
+     "asked": "What do Ricardo's three October 2 process-map packages cover",
+     "spans": {
+      "m1": [
+       "what do ricardos three october 2 process-map packages cover"
+      ],
+      "m2": [
+       "what's in them"
+      ],
+      "m3": [
+       "ricardo's oct 2 maps - what are they"
+      ]
+     }
+    },
+    {
+     "asked": "what kind of evidence are they",
+     "spans": {
+      "m1": [
+       "what kind of evidnce are they"
+      ],
+      "m2": [
+       "how much can we rely on them"
+      ],
+      "m3": [
+       "how solid"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "ricardo-maps",
+   "card_id": "RM-02",
+   "item_id": "dev-F25-0023-exposed",
+   "question_sha256": "85c322f59dfa5faa900f913375a8ff1502a9038065c781d5af36c0b6b24395b8",
+   "keep": [],
+   "variants": {
+    "m1": "is QRM-26037 aproved and relesed",
+    "m2": "has QRM-26037 been okayed and let go?",
+    "m3": "QRM-26037 approved?"
+   },
+   "parts": [
+    {
+     "asked": "Is QRM-26037 approved and released",
+     "spans": {
+      "m1": [
+       "is QRM-26037 aproved and relesed"
+      ],
+      "m2": [
+       "has QRM-26037 been okayed and let go?"
+      ],
+      "m3": [
+       "QRM-26037 approved?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "ricardo-maps",
+   "card_id": "RM-03",
+   "item_id": "dev-F25-0024-exposed",
+   "question_sha256": "fbfc6e94bd7d5a1adc1ae717d657c3f5b343437ac75783269f42cafb8c3997a5",
+   "keep": [
+    "dandylion"
+   ],
+   "variants": {
+    "m1": "was dandylion's october 2 mising-inventory complaint on P-02289 (customer reference PO-00269) resolvd, and was the inventory posted",
+    "m2": "dandylion's october 2 gripe about stock not showing up for P-02289 (their ref PO-00269): sorted out, and did the stock get booked?",
+    "m3": "dandylion oct 2 P-02289 / PO-00269 complaint fixed? stock posted?"
+   },
+   "parts": [
+    {
+     "asked": "Was Dandylion's October 2 missing-inventory complaint on P-02289 resolved",
+     "spans": {
+      "m1": [
+       "was dandylion's october 2 mising-inventory complaint on P-02289",
+       "resolvd"
+      ],
+      "m2": [
+       "dandylion's october 2 gripe about stock not showing up for P-02289",
+       ": sorted out"
+      ],
+      "m3": [
+       "dandylion oct 2 P-02289",
+       "complaint fixed?"
+      ]
+     }
+    },
+    {
+     "asked": "was the inventory posted",
+     "spans": {
+      "m1": [
+       "was the inventory posted"
+      ],
+      "m2": [
+       "did the stock get booked"
+      ],
+      "m3": [
+       "stock posted?"
+      ]
+     }
+    },
+    {
+     "asked": "(customer reference PO-00269)",
+     "spans": {
+      "m1": [
+       "(customer reference PO-00269)"
+      ],
+      "m2": [
+       "(their ref PO-00269)"
+      ],
+      "m3": [
+       "/ PO-00269"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "ricardo-maps",
+   "card_id": "RM-04",
+   "item_id": "dev-F25-0025-exposed",
+   "question_sha256": "5fac4fbda1f6766e0b7f431ff00c38a9582c6369cfa37a1265da4ef8aa97ac3a",
+   "keep": [],
+   "variants": {
+    "m1": "was PO5455 actualy received, and is the ingredient es-2 or thamesurf sles-30",
+    "m2": "did PO5455 really come in, and which surfactant is it - ES-2 or the SLES-30 one?",
+    "m3": "PO5455 received? es-2 or sles-30"
+   },
+   "parts": [
+    {
+     "asked": "Was PO5455 actually received",
+     "spans": {
+      "m1": [
+       "was PO5455 actualy received"
+      ],
+      "m2": [
+       "did PO5455 really come in"
+      ],
+      "m3": [
+       "PO5455 received?"
+      ]
+     }
+    },
+    {
+     "asked": "is the ingredient ES-2 or Thamesurf SLES-30",
+     "spans": {
+      "m1": [
+       "is the ingredient es-2 or thamesurf sles-30"
+      ],
+      "m2": [
+       "which surfactant is it - ES-2 or the SLES-30 one"
+      ],
+      "m3": [
+       "es-2 or sles-30"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "ricardo-maps",
+   "card_id": "RM-05",
+   "item_id": "dev-F25-0026-exposed",
+   "question_sha256": "c45c350683c90f7b4ba65bc65c0263201cb50510f064a601011b3ba0bf2ab4c9",
+   "keep": [],
+   "variants": {
+    "m1": "when did PO-00349 (midas2) arive",
+    "m2": "what day did PO-00349 (MIDAS2) get here?",
+    "m3": "when did PO-00349 midas2 come in"
+   },
+   "parts": [
+    {
+     "asked": "When did PO-00349 (MIDAS2) arrive",
+     "spans": {
+      "m1": [
+       "when did PO-00349 (midas2) arive"
+      ],
+      "m2": [
+       "what day did PO-00349 (MIDAS2) get here?"
+      ],
+      "m3": [
+       "when did PO-00349 midas2 come in"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "ricardo-maps",
+   "card_id": "RM-08",
+   "item_id": "dev-F25-0027-exposed",
+   "question_sha256": "83ec4a451d2746e867164effd2aac09291627e233b3ff001340bd3c7632bd938",
+   "keep": [
+    "ricardo"
+   ],
+   "variants": {
+    "m1": "in ricardo's maps for recieved material what was the inspection result, was it acepted, rejected or sent to rework, who signed, and what was the stock dispostion",
+    "m2": "for incoming goods in ricardo's bundles, what did the check find, was it kept, refused or redone, who put their name on it, and what happened to the goods?",
+    "m3": "incoming check result, accepted/rejected/rework, who signed, stock outcome"
+   },
+   "parts": [
+    {
+     "asked": "For received material, what was the inspection result, was it accepted, rejected or sent to rework, who signed",
+     "spans": {
+      "m1": [
+       "for recieved material what was the inspection result, was it acepted, rejected or sent to rework, who signed"
+      ],
+      "m2": [
+       "for incoming goods in ricardo's bundles, what did the check find, was it kept, refused or redone, who put their name on it"
+      ],
+      "m3": [
+       "incoming check result, accepted/rejected/rework, who signed"
+      ]
+     }
+    },
+    {
+     "asked": "what was the stock disposition",
+     "spans": {
+      "m1": [
+       "what was the stock dispostion"
+      ],
+      "m2": [
+       "what happened to the goods"
+      ],
+      "m3": [
+       "stock outcome"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "ricardo-maps",
+   "card_id": "RM-06",
+   "item_id": "dev-F24-0057-exposed",
+   "question_sha256": "b2c7a5230f9b54fc8a0f5f980c15aed84782f2b848f1df41694415da3413f3c4",
+   "keep": [],
+   "variants": {
+    "m1": "what does the F-18-0025 helpr establish about cost",
+    "m2": "what does the F-18-0025 sheet tell us about what it costs?",
+    "m3": "F-18-0025 cost?"
+   },
+   "parts": [
+    {
+     "asked": "What does the F-18-0025 helper establish about cost",
+     "spans": {
+      "m1": [
+       "what does the F-18-0025 helpr establish about cost"
+      ],
+      "m2": [
+       "what does the F-18-0025 sheet tell us about what it costs?"
+      ],
+      "m3": [
+       "F-18-0025 cost?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "ricardo-maps",
+   "card_id": "RM-07",
+   "item_id": "dev-F23-0055-exposed",
+   "question_sha256": "e20750c57121127e9eca192504221a52848b93daba1d91603f958edd87d4fa58",
+   "keep": [
+    "ricardo"
+   ],
+   "variants": {
+    "m1": "which identites must stay distinct when answering the ricardo anchors, and what is not yet observd",
+    "m2": "for ricardo's cases, which ids must not be mixed up, and what haven't we seen yet?",
+    "m3": "ricardo ids to keep separate + what's not seen yet"
+   },
+   "parts": [
+    {
+     "asked": "Which identities must stay distinct when answering the Ricardo anchors",
+     "spans": {
+      "m1": [
+       "which identites must stay distinct when answering the ricardo anchors"
+      ],
+      "m2": [
+       "which ids must not be mixed up"
+      ],
+      "m3": [
+       "ricardo ids to keep separate"
+      ]
+     }
+    },
+    {
+     "asked": "what is not yet observed",
+     "spans": {
+      "m1": [
+       "what is not yet observd"
+      ],
+      "m2": [
+       "what haven't we seen yet"
+      ],
+      "m3": [
+       "what's not seen yet"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rnd-maps",
+   "card_id": "AG-01",
+   "item_id": "dev-F23-0056-exposed",
+   "question_sha256": "5bc82be9cd868c4f63060bb0b3f786225155dd8cd1ea00270d6c6020582b6039",
+   "keep": [
+    "allison"
+   ],
+   "variants": {
+    "m1": "what does allison's r&d bi-weekly agenda map cover and what kind of evidnce is it",
+    "m2": "allison's doc on the every-two-weeks lab get-together list: what's in it and how solid is it?",
+    "m3": "allison's agenda map - what is it, how solid"
+   },
+   "parts": [
+    {
+     "asked": "What does Allison's R&D bi-weekly agenda map cover",
+     "spans": {
+      "m1": [
+       "what does allison's r&d bi-weekly agenda map cover"
+      ],
+      "m2": [
+       "what's in it"
+      ],
+      "m3": [
+       "allison's agenda map - what is it"
+      ]
+     }
+    },
+    {
+     "asked": "what kind of evidence is it",
+     "spans": {
+      "m1": [
+       "what kind of evidnce is it"
+      ],
+      "m2": [
+       "how solid is it"
+      ],
+      "m3": [
+       "how solid"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rnd-maps",
+   "card_id": "AG-02",
+   "item_id": "dev-F24-0058-exposed",
+   "question_sha256": "f4b9ecf6888e21538e1c67a1fac245bea8778e71f0daec2d2a2001ee3d5a4a5c",
+   "keep": [],
+   "variants": {
+    "m1": "since the last posted r&d agenda what chnaged in the r&d chats and mission control tasks, and what does each agenda line cite",
+    "m2": "since the last lab get-together list went up, what's new in the team messages and our task tracker, and where does each item come from?",
+    "m3": "whats changed since the last r&d agenda, sources per line"
+   },
+   "parts": [
+    {
+     "asked": "Since the last posted agenda, what changed in the R&D chats and Mission Control tasks",
+     "spans": {
+      "m1": [
+       "since the last posted r&d agenda what chnaged in the r&d chats and mission control tasks"
+      ],
+      "m2": [
+       "since the last lab get-together list went up, what's new in the team messages and our task tracker"
+      ],
+      "m3": [
+       "whats changed since the last r&d agenda"
+      ]
+     }
+    },
+    {
+     "asked": "what does each agenda line cite",
+     "spans": {
+      "m1": [
+       "what does each agenda line cite"
+      ],
+      "m2": [
+       "where does each item come from"
+      ],
+      "m3": [
+       "sources per line"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rnd-maps",
+   "card_id": "AG-03",
+   "item_id": "dev-F24-0059-exposed",
+   "question_sha256": "e0e923129c2c323848af58356cc47a90c90675cd71c5a19f49c74d5fc4037b1b",
+   "keep": [],
+   "variants": {
+    "m1": "which r&d projects are open, which are blockd, and which decisions are needed before the next meeting",
+    "m2": "for the lab team, what work is still going, what's stuck, and what calls do we need before we meet again?",
+    "m3": "open/blocked r&d projects + decisions needed"
+   },
+   "parts": [
+    {
+     "asked": "Which R&D projects are open, which are blocked",
+     "spans": {
+      "m1": [
+       "which r&d projects are open, which are blockd"
+      ],
+      "m2": [
+       "for the lab team, what work is still going, what's stuck"
+      ],
+      "m3": [
+       "open/blocked r&d projects"
+      ]
+     }
+    },
+    {
+     "asked": "which decisions are needed before the next meeting",
+     "spans": {
+      "m1": [
+       "which decisions are needed before the next meeting"
+      ],
+      "m2": [
+       "what calls do we need before we meet again"
+      ],
+      "m3": [
+       "decisions needed"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rnd-maps",
+   "card_id": "AG-04",
+   "item_id": "dev-F24-0060-exposed",
+   "question_sha256": "a09fafe4180f227ddeb5ea3b1f0e5f88749bab9dd0a1495ba9d1823b2733dd75",
+   "keep": [],
+   "variants": {
+    "m1": "what does the r&d agenda show a reader who may read the meeting chat but not the qa chat or mission control",
+    "m2": "if someone can see the lab get-together chat but not quality's chat or the task tracker, what does the get-together list show them?",
+    "m3": "r&d agenda for someone without qa chat access"
+   },
+   "parts": [
+    {
+     "asked": "What does the agenda show a reader who may read the meeting chat but not the QA chat or Mission Control",
+     "spans": {
+      "m1": [
+       "what does the r&d agenda show a reader who may read the meeting chat but not the qa chat or mission control"
+      ],
+      "m2": [
+       "if someone can see the lab get-together chat but not quality's chat or the task tracker, what does the get-together list show them?"
+      ],
+      "m3": [
+       "r&d agenda for someone without qa chat access"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rnd-maps",
+   "card_id": "AG-05",
+   "item_id": "dev-F25-0028-exposed",
+   "question_sha256": "7de29fef665939bbdb2f991a2bbfc3fb583f0000f3892691e8ef6c9d00807a35",
+   "keep": [],
+   "variants": {
+    "m1": "can each line of the 14 oct 2026 r&d agenda be traced to the record it came from",
+    "m2": "for the 14 oct 2026 lab get-together list, can we follow each item back to where it came from?",
+    "m3": "14 oct 2026 agenda - traceable?"
+   },
+   "parts": [
+    {
+     "asked": "Can each line of the 14 Oct 2026 agenda be traced to the record it came from",
+     "spans": {
+      "m1": [
+       "can each line of the 14 oct 2026 r&d agenda be traced to the record it came from"
+      ],
+      "m2": [
+       "for the 14 oct 2026 lab get-together list, can we follow each item back to where it came from?"
+      ],
+      "m3": [
+       "14 oct 2026 agenda - traceable?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rnd-maps",
+   "card_id": "AG-06",
+   "item_id": "dev-F25-0029-exposed",
+   "question_sha256": "961f4cefe32af2143e0f30277487c01fbb51161277e114be675248ead6ef1887",
+   "keep": [],
+   "variants": {
+    "m1": "did the 14 oct reveiw edits reach the word working copy that seeds the next cycle",
+    "m2": "did the changes from the 14 oct look-over make it into the doc file we start the next round from?",
+    "m3": "14 oct edits in the word copy?"
+   },
+   "parts": [
+    {
+     "asked": "Did the 14 Oct review edits reach the Word working copy that seeds the next cycle",
+     "spans": {
+      "m1": [
+       "did the 14 oct reveiw edits reach the word working copy that seeds the next cycle"
+      ],
+      "m2": [
+       "did the changes from the 14 oct look-over make it into the doc file we start the next round from?"
+      ],
+      "m3": [
+       "14 oct edits in the word copy?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rnd-maps",
+   "card_id": "RS-01",
+   "item_id": "dev-F23-0057-exposed",
+   "question_sha256": "114be1fd272f87e638b4f56d49f84eb5148c580e7d841d3292fa5b17a0292c9f",
+   "keep": [
+    "erin"
+   ],
+   "variants": {
+    "m1": "what does erin's raw material sampel map cover and what are its biggest gaps",
+    "m2": "erin's doc on getting trial ingredients from vendors: what's in it and what's it missing most?",
+    "m3": "erin's sample map - gaps?"
+   },
+   "parts": [
+    {
+     "asked": "What does Erin's raw material sample map cover",
+     "spans": {
+      "m1": [
+       "what does erin's raw material sampel map cover"
+      ],
+      "m2": [
+       "what's in it"
+      ],
+      "m3": [
+       "erin's sample map"
+      ]
+     }
+    },
+    {
+     "asked": "what are its biggest gaps",
+     "spans": {
+      "m1": [
+       "what are its biggest gaps"
+      ],
+      "m2": [
+       "what's it missing most"
+      ],
+      "m3": [
+       "gaps?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rnd-maps",
+   "card_id": "RS-02",
+   "item_id": "dev-F24-0061-exposed",
+   "question_sha256": "d9187b93179a64466de2c463d127620786a5e8a5d2840cf03d876f6e79452587",
+   "keep": [],
+   "variants": {
+    "m1": "which raw materal and supplier does an open sample request with a supplier code or r-number link to",
+    "m2": "when a trial-ingredient ask is still open and has a vendor code or R number, which ingredient and vendor does it point to?",
+    "m3": "open sample request -> which material/supplier"
+   },
+   "parts": [
+    {
+     "asked": "Which raw material and supplier does an open sample request with a supplier code or R-number link to",
+     "spans": {
+      "m1": [
+       "which raw materal and supplier does an open sample request with a supplier code or r-number link to"
+      ],
+      "m2": [
+       "when a trial-ingredient ask is still open and has a vendor code or R number, which ingredient and vendor does it point to?"
+      ],
+      "m3": [
+       "open sample request -> which material/supplier"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rnd-maps",
+   "card_id": "RS-03",
+   "item_id": "dev-F25-0030-exposed",
+   "question_sha256": "0f1ae89c5b9c7e152afca148347039fb89a3831da6c2fc5fce85204c47571908",
+   "keep": [
+    "ouai",
+    "barts",
+    "ws"
+   ],
+   "variants": {
+    "m1": "how much of R-1696 (ws ouai st barts U-18949) is lefft",
+    "m2": "how much do we still have of R-1696 (the WS Ouai St Barts one, U-18949)?",
+    "m3": "R-1696 ws ouai st barts U-18949 how much left"
+   },
+   "parts": [
+    {
+     "asked": "How much of R-1696 is left",
+     "spans": {
+      "m1": [
+       "how much of R-1696",
+       "is lefft"
+      ],
+      "m2": [
+       "how much do we still have of R-1696"
+      ],
+      "m3": [
+       "R-1696",
+       "how much left"
+      ]
+     }
+    },
+    {
+     "asked": "(WS Ouai St Barts U-18949)",
+     "spans": {
+      "m1": [
+       "(ws ouai st barts U-18949)"
+      ],
+      "m2": [
+       "(the WS Ouai St Barts one, U-18949)"
+      ],
+      "m3": [
+       "ws ouai st barts U-18949"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rnd-maps",
+   "card_id": "RS-04",
+   "item_id": "dev-F25-0031-exposed",
+   "question_sha256": "b76b21694bb575fb6f9199e87ec07feb6f555bb12402ef2f67490c5686f9c957",
+   "keep": [],
+   "variants": {
+    "m1": "which request produced the U-18949 sampel, and what was it based on",
+    "m2": "what ask led to U-18949, and what did it start from?",
+    "m3": "where did U-18949 come from, based on what"
+   },
+   "parts": [
+    {
+     "asked": "Which request produced the U-18949 sample",
+     "spans": {
+      "m1": [
+       "which request produced the U-18949 sampel"
+      ],
+      "m2": [
+       "what ask led to U-18949"
+      ],
+      "m3": [
+       "where did U-18949 come from"
+      ]
+     }
+    },
+    {
+     "asked": "what was it based on",
+     "spans": {
+      "m1": [
+       "what was it based on"
+      ],
+      "m2": [
+       "what did it start from"
+      ],
+      "m3": [
+       "based on what"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rnd-maps",
+   "card_id": "IL-01",
+   "item_id": "dev-F23-0058-exposed",
+   "question_sha256": "3059d63d3c2a0158705bbdf2e5675cd1fe62bfe20563a94f4dbc5e8192fa7676",
+   "keep": [
+    "giulia"
+   ],
+   "variants": {
+    "m1": "what does giulias ingredient-list map cover and what identity rule does it stat",
+    "m2": "giulia's doc on the component lists for our recipes: what's in it and what rule does it give for telling them apart?",
+    "m3": "giulia's ingredient list map - what rule"
+   },
+   "parts": [
+    {
+     "asked": "What does Giulia's ingredient-list map cover",
+     "spans": {
+      "m1": [
+       "what does giulias ingredient-list map cover"
+      ],
+      "m2": [
+       "what's in it"
+      ],
+      "m3": [
+       "giulia's ingredient list map"
+      ]
+     }
+    },
+    {
+     "asked": "what identity rule does it state",
+     "spans": {
+      "m1": [
+       "what identity rule does it stat"
+      ],
+      "m2": [
+       "what rule does it give for telling them apart"
+      ],
+      "m3": [
+       "what rule"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rnd-maps",
+   "card_id": "IL-02",
+   "item_id": "dev-F24-0062-exposed",
+   "question_sha256": "0e55822e2d963a5d8296f80810d4ec72f9283013acd256eacdbc1c69c9ac4275",
+   "keep": [],
+   "variants": {
+    "m1": "which formula version does each ingredient-list file resolve to and which files are a verison mix-up",
+    "m2": "for each recipe component list file, which recipe edition is it really, and which ones got the editions mixed up?",
+    "m3": "ingredient list files -> formula versions, which are mixed up?"
+   },
+   "parts": [
+    {
+     "asked": "Which formula version does each ingredient-list file resolve to",
+     "spans": {
+      "m1": [
+       "which formula version does each ingredient-list file resolve to"
+      ],
+      "m2": [
+       "for each recipe component list file, which recipe edition is it really"
+      ],
+      "m3": [
+       "ingredient list files -> formula versions"
+      ]
+     }
+    },
+    {
+     "asked": "which files are a version mix-up",
+     "spans": {
+      "m1": [
+       "which files are a verison mix-up"
+      ],
+      "m2": [
+       "which ones got the editions mixed up"
+      ],
+      "m3": [
+       "which are mixed up?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rnd-maps",
+   "card_id": "IL-03",
+   "item_id": "dev-F25-0032-exposed",
+   "question_sha256": "613ab66a40f01bd918e3dd641eb21727c094c7d60c9c844b4e431c7a4ed5497f",
+   "keep": [],
+   "variants": {
+    "m1": "was the ingredient list sent for F-26-1179 the rigth one",
+    "m2": "for F-26-1179, did we send the correct component list?",
+    "m3": "F-26-1179 right list sent?"
+   },
+   "parts": [
+    {
+     "asked": "Was the ingredient list sent for F-26-1179 the right one",
+     "spans": {
+      "m1": [
+       "was the ingredient list sent for F-26-1179 the rigth one"
+      ],
+      "m2": [
+       "for F-26-1179, did we send the correct component list?"
+      ],
+      "m3": [
+       "F-26-1179 right list sent?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rnd-maps",
+   "card_id": "IL-04",
+   "item_id": "dev-F25-0033-exposed",
+   "question_sha256": "818eb866704bcde93e227858c84a941a4802c7841776dbd5f825875066ff9874",
+   "keep": [],
+   "variants": {
+    "m1": "how many ingredient-list files exist for F-26-1057 and which one is curent",
+    "m2": "how many component list documents are there for F-26-1057 and which is the live one?",
+    "m3": "F-26-1057 how many lists, which current"
+   },
+   "parts": [
+    {
+     "asked": "How many ingredient-list files exist for F-26-1057",
+     "spans": {
+      "m1": [
+       "how many ingredient-list files exist for F-26-1057"
+      ],
+      "m2": [
+       "how many component list documents are there for F-26-1057"
+      ],
+      "m3": [
+       "how many lists"
+      ]
+     }
+    },
+    {
+     "asked": "which one is current",
+     "spans": {
+      "m1": [
+       "which one is curent"
+      ],
+      "m2": [
+       "which is the live one"
+      ],
+      "m3": [
+       "which current"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rro",
+   "card_id": "RRO-01",
+   "item_id": "dev-F21-0001-exposed",
+   "question_sha256": "3709f37720ad984295a45cf90c4d91868a80875bd1dc9426edbe9c058c52bdae",
+   "keep": [],
+   "variants": {
+    "m1": "in the related release order map (draft 8) what does this source establsh and what remains unverifed",
+    "m2": "the doc on the big order shipped in several drops: what does it prove and what's still unconfirmed?",
+    "m3": "rro map - whats proven vs still unverified"
+   },
+   "parts": [
+    {
+     "asked": "What does this source establish",
+     "spans": {
+      "m1": [
+       "what does this source establsh"
+      ],
+      "m2": [
+       "what does it prove"
+      ],
+      "m3": [
+       "whats proven"
+      ]
+     }
+    },
+    {
+     "asked": "what remains unverified",
+     "spans": {
+      "m1": [
+       "what remains unverifed"
+      ],
+      "m2": [
+       "what's still unconfirmed"
+      ],
+      "m3": [
+       "still unverified"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rro",
+   "card_id": "RRO-02",
+   "item_id": "dev-F21-0002-exposed",
+   "question_sha256": "cfb5ed5856a22add7d0aefb1b9a0577746ddbe20c47bc0e6886397cb4a5b2212",
+   "keep": [],
+   "variants": {
+    "m1": "related release order map: which identifers connect the production order and customer po",
+    "m2": "for the order shipped in several drops, what codes tie the factory job to the client's buying doc?",
+    "m3": "rro - ids linking the production order and customer po"
+   },
+   "parts": [
+    {
+     "asked": "Which identifiers connect the production order and customer PO",
+     "spans": {
+      "m1": [
+       "related release order map: which identifers connect the production order and customer po"
+      ],
+      "m2": [
+       "for the order shipped in several drops, what codes tie the factory job to the client's buying doc?"
+      ],
+      "m3": [
+       "rro - ids linking the production order and customer po"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rro",
+   "card_id": "RRO-03",
+   "item_id": "dev-F21-0003-exposed",
+   "question_sha256": "4405257b3928f072a8c2df45cda45165b30d964018a7f9e95c660bc4f58ee977",
+   "keep": [],
+   "variants": {
+    "m1": "in the related release order map how do the nine releses, shipment grouping and invoices relate",
+    "m2": "for the order shipped in several drops, how do the nine drops, how they were bundled for trucking, and the bills fit together?",
+    "m3": "rro nine releases vs shipments vs invoices"
+   },
+   "parts": [
+    {
+     "asked": "How do the nine releases, shipment grouping and invoices relate",
+     "spans": {
+      "m1": [
+       "in the related release order map how do the nine releses, shipment grouping and invoices relate"
+      ],
+      "m2": [
+       "for the order shipped in several drops, how do the nine drops, how they were bundled for trucking, and the bills fit together?"
+      ],
+      "m3": [
+       "rro nine releases vs shipments vs invoices"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rro",
+   "card_id": "RRO-04",
+   "item_id": "dev-F21-0004-exposed",
+   "question_sha256": "731a5df83b601717b3ccc9317e196579d91f65aeac51aac4ad6d41bd762aec35",
+   "keep": [],
+   "variants": {
+    "m1": "related release order map: what quantites and short yield can be reconcled",
+    "m2": "for the order shipped in several drops, which counts and the shortfall from the run can we actually square up?",
+    "m3": "rro quantities + short yield"
+   },
+   "parts": [
+    {
+     "asked": "What quantities and short yield can be reconciled",
+     "spans": {
+      "m1": [
+       "related release order map: what quantites and short yield can be reconcled"
+      ],
+      "m2": [
+       "for the order shipped in several drops, which counts and the shortfall from the run can we actually square up?"
+      ],
+      "m3": [
+       "rro quantities + short yield"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rro",
+   "card_id": "RRO-05",
+   "item_id": "dev-F21-0005-exposed",
+   "question_sha256": "7bfd65a096deaa136034f708ead3b9210b6c14e8ed1dec1056b7b6fda245e42d",
+   "keep": [],
+   "variants": {
+    "m1": "in the related release order map was the stated deposit actualy received and consistant with its terms",
+    "m2": "for the order shipped in several drops, did the up-front money really come in and does it match what was agreed?",
+    "m3": "rro deposit received?"
+   },
+   "parts": [
+    {
+     "asked": "Was the stated deposit actually received and consistent with its terms",
+     "spans": {
+      "m1": [
+       "in the related release order map was the stated deposit actualy received and consistant with its terms"
+      ],
+      "m2": [
+       "for the order shipped in several drops, did the up-front money really come in and does it match what was agreed?"
+      ],
+      "m3": [
+       "rro deposit received?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rro",
+   "card_id": "RRO-06",
+   "item_id": "dev-F21-0006-exposed",
+   "question_sha256": "8e3c02e4bff15b1a97664e57dfe0ce2c567e1d91e5e0f8d92360235f57dba7d9",
+   "keep": [],
+   "variants": {
+    "m1": "related release order map: what does the invoce evidence support about missing billing or deposit aplication",
+    "m2": "for the order shipped in several drops, what do the bills show about stuff not billed or the up-front money not applied?",
+    "m3": "rro invoices - missing billing or deposit use?"
+   },
+   "parts": [
+    {
+     "asked": "What does the invoice evidence support about missing billing or deposit application",
+     "spans": {
+      "m1": [
+       "related release order map: what does the invoce evidence support about missing billing or deposit aplication"
+      ],
+      "m2": [
+       "for the order shipped in several drops, what do the bills show about stuff not billed or the up-front money not applied?"
+      ],
+      "m3": [
+       "rro invoices - missing billing or deposit use?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rro",
+   "card_id": "RRO-07",
+   "item_id": "dev-F21-0007-exposed",
+   "question_sha256": "97007a593c8769099b51212bd46a3c0af8d624586093e93d01b585778f1e47ab",
+   "keep": [],
+   "variants": {
+    "m1": "in the related release order map what would each deposit drawdown rule imply under stated assumptons",
+    "m2": "for the order shipped in several drops, if we use up the up-front money each possible way, what comes out given what it assumes?",
+    "m3": "rro deposit drawdown options"
+   },
+   "parts": [
+    {
+     "asked": "What would each deposit drawdown rule imply under stated assumptions",
+     "spans": {
+      "m1": [
+       "in the related release order map what would each deposit drawdown rule imply under stated assumptons"
+      ],
+      "m2": [
+       "for the order shipped in several drops, if we use up the up-front money each possible way, what comes out given what it assumes?"
+      ],
+      "m3": [
+       "rro deposit drawdown options"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rro",
+   "card_id": "RRO-08",
+   "item_id": "dev-F21-0008-exposed",
+   "question_sha256": "6a38cc78b981c495e81b299e2f5cb1d51a11335e430403ea709d4106706fec90",
+   "keep": [],
+   "variants": {
+    "m1": "related release order map: do cartons, unit counts and case packs reconcle",
+    "m2": "for the order sent out in several drops, do the boxes, piece counts and per-box quantities add up?",
+    "m3": "rro cartons vs units vs case packs"
+   },
+   "parts": [
+    {
+     "asked": "Do cartons, unit counts and case packs reconcile",
+     "spans": {
+      "m1": [
+       "related release order map: do cartons, unit counts and case packs reconcle"
+      ],
+      "m2": [
+       "for the order sent out in several drops, do the boxes, piece counts and per-box quantities add up?"
+      ],
+      "m3": [
+       "rro cartons vs units vs case packs"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rro",
+   "card_id": "RRO-09",
+   "item_id": "dev-F21-0009-exposed",
+   "question_sha256": "15e8bec7ea25bc54e2e9fea6daeb8945dc39d68b37faeaa16fcb308fe585e777",
+   "keep": [],
+   "variants": {
+    "m1": "what timing discrepency is supported in the related release order map",
+    "m2": "for the order shipped in several drops, which mismatch in when things happened does it back up?",
+    "m3": "rro timing issue?"
+   },
+   "parts": [
+    {
+     "asked": "What timing discrepancy is supported",
+     "spans": {
+      "m1": [
+       "what timing discrepency is supported in the related release order map"
+      ],
+      "m2": [
+       "for the order shipped in several drops, which mismatch in when things happened does it back up?"
+      ],
+      "m3": [
+       "rro timing issue?"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rro",
+   "card_id": "RRO-10",
+   "item_id": "dev-F21-0010-exposed",
+   "question_sha256": "e705f92064c498aafb20264477174aba86288900df19a649dd5174e7a0f750c7",
+   "keep": [],
+   "variants": {
+    "m1": "related release order map: which lot-trace questons remain unanswered",
+    "m2": "for the order shipped in several drops, what batch-tracking questions are still open?",
+    "m3": "rro lot trace open questions"
+   },
+   "parts": [
+    {
+     "asked": "Which lot-trace questions remain unanswered",
+     "spans": {
+      "m1": [
+       "related release order map: which lot-trace questons remain unanswered"
+      ],
+      "m2": [
+       "for the order shipped in several drops, what batch-tracking questions are still open?"
+      ],
+      "m3": [
+       "rro lot trace open questions"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rro",
+   "card_id": "RRO-11",
+   "item_id": "dev-F21-0011-exposed",
+   "question_sha256": "c8f8aebc94c2d9f7a97b4b947b94661426349681fbd76541f48f6547b8661982",
+   "keep": [],
+   "variants": {
+    "m1": "in the related release order map which day-one releese rules are approved versus proposed",
+    "m2": "for the order shipped in several drops, which launch-day rules for sending drops are signed off and which are only on the table?",
+    "m3": "rro day one rules approved vs proposed"
+   },
+   "parts": [
+    {
+     "asked": "Which day-one release rules are approved versus proposed",
+     "spans": {
+      "m1": [
+       "in the related release order map which day-one releese rules are approved versus proposed"
+      ],
+      "m2": [
+       "for the order shipped in several drops, which launch-day rules for sending drops are signed off and which are only on the table?"
+      ],
+      "m3": [
+       "rro day one rules approved vs proposed"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rro",
+   "card_id": "RRO-12",
+   "item_id": "dev-F21-0012-exposed",
+   "question_sha256": "6b1b435a3ff6c0d5343b94d7b581fba34a5cec6584506cf1fa63971fd2fc62d8",
+   "keep": [],
+   "variants": {
+    "m1": "can the production po REM000002495 be closd",
+    "m2": "is REM000002495 ready to be wrapped up and shut?",
+    "m3": "can REM000002495 be closed"
+   },
+   "parts": [
+    {
+     "asked": "Can this production PO be closed",
+     "spans": {
+      "m1": [
+       "can the production po REM000002495 be closd"
+      ],
+      "m2": [
+       "is REM000002495 ready to be wrapped up and shut?"
+      ],
+      "m3": [
+       "can REM000002495 be closed"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rro",
+   "card_id": "RRO-13",
+   "item_id": "dev-F21-0013-exposed",
+   "question_sha256": "482f9afeeaf8aff74fb1a22ece77e1f92484163692ad5ea4e9980587d5968276",
+   "keep": [],
+   "variants": {
+    "m1": "which curent-system and cutover gaps does the related release order map claim",
+    "m2": "for the order shipped in several drops, what holes does the doc say exist in our setup now and in the switch-over?",
+    "m3": "rro system + cutover gaps"
+   },
+   "parts": [
+    {
+     "asked": "Which current-system and cutover gaps does the map claim",
+     "spans": {
+      "m1": [
+       "which curent-system and cutover gaps does the related release order map claim"
+      ],
+      "m2": [
+       "for the order shipped in several drops, what holes does the doc say exist in our setup now and in the switch-over?"
+      ],
+      "m3": [
+       "rro system + cutover gaps"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rro",
+   "card_id": "RRO-14",
+   "item_id": "dev-F21-0014-exposed",
+   "question_sha256": "6d5b9022250ec00fc8a1c2c2da8eb4a6060cf979f54bc5f09d5622f02ad60e3d",
+   "keep": [],
+   "variants": {
+    "m1": "related release order map: what evidnce should be requested next to make the case answerable",
+    "m2": "for the order shipped in several drops, what proof should we ask for next so we can settle it?",
+    "m3": "rro - what evidence to ask for next"
+   },
+   "parts": [
+    {
+     "asked": "What evidence should be requested next to make the case answerable",
+     "spans": {
+      "m1": [
+       "related release order map: what evidnce should be requested next to make the case answerable"
+      ],
+      "m2": [
+       "for the order shipped in several drops, what proof should we ask for next so we can settle it?"
+      ],
+      "m3": [
+       "rro - what evidence to ask for next"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rro",
+   "card_id": "A01",
+   "item_id": "dev-F22-0001-exposed",
+   "question_sha256": "952f7a25f5d774f9e57685aa40bce21cf1f719e0d08c4c0c3c8883f65e67a51a",
+   "keep": [],
+   "variants": {
+    "m1": "in the related release order map, under the stated asumption (visible ordered sales units), what does 10032*2 + 6000*3 + 3024*10 give from the figures at lines 1295-1304",
+    "m2": "for the order shipped in several drops, taking the order quantities on show, what's 10032*2 + 6000*3 + 3024*10 from lines 1295-1304?",
+    "m3": "rro: 10032*2 + 6000*3 + 3024*10 (lines 1295-1304), visible ordered units"
+   },
+   "parts": [
+    {
+     "asked": "Under the stated assumption, what does 10032*2 + 6000*3 + 3024*10 give from the figures at lines 1295-1304",
+     "spans": {
+      "m1": [
+       "under the stated asumption",
+       "what does 10032*2 + 6000*3 + 3024*10 give from the figures at lines 1295-1304"
+      ],
+      "m2": [
+       "what's 10032*2 + 6000*3 + 3024*10 from lines 1295-1304"
+      ],
+      "m3": [
+       "rro: 10032*2 + 6000*3 + 3024*10 (lines 1295-1304)"
+      ]
+     }
+    },
+    {
+     "asked": "(visible ordered sales units)",
+     "spans": {
+      "m1": [
+       "(visible ordered sales units)"
+      ],
+      "m2": [
+       "taking the order quantities on show"
+      ],
+      "m3": [
+       "visible ordered units"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rro",
+   "card_id": "A02",
+   "item_id": "dev-F22-0002-exposed",
+   "question_sha256": "0c95e6920977503ab93a11321218c83eb08dff918d0534fe1432f2c7f73253c0",
+   "keep": [],
+   "variants": {
+    "m1": "in the related release order map, under the stated asumption (quoted final production units), what does 10000+10011+5984+5994+5984+30187 give from the figures at lines 1744-1752",
+    "m2": "for the order shipped in several drops, taking the end-of-run counts it quotes, what's 10000+10011+5984+5994+5984+30187 from lines 1744-1752?",
+    "m3": "rro: 10000+10011+5984+5994+5984+30187 (lines 1744-1752), quoted final units"
+   },
+   "parts": [
+    {
+     "asked": "Under the stated assumption, what does 10000+10011+5984+5994+5984+30187 give from the figures at lines 1744-1752",
+     "spans": {
+      "m1": [
+       "under the stated asumption",
+       "what does 10000+10011+5984+5994+5984+30187 give from the figures at lines 1744-1752"
+      ],
+      "m2": [
+       "what's 10000+10011+5984+5994+5984+30187 from lines 1744-1752"
+      ],
+      "m3": [
+       "rro: 10000+10011+5984+5994+5984+30187 (lines 1744-1752)"
+      ]
+     }
+    },
+    {
+     "asked": "(quoted final production units)",
+     "spans": {
+      "m1": [
+       "(quoted final production units)"
+      ],
+      "m2": [
+       "taking the end-of-run counts it quotes"
+      ],
+      "m3": [
+       "quoted final units"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rro",
+   "card_id": "A03",
+   "item_id": "dev-F22-0003-exposed",
+   "question_sha256": "25e9feb62def62bc79e8b513689d74b481c95bf52089ed319e86dd245c4ce494",
+   "keep": [],
+   "variants": {
+    "m1": "in the related release order map, under the stated asumption (short yield in visible comparison; not unshipped balance), what does 68304-68160 give from the figures at lines 1744-1752",
+    "m2": "for the order shipped in several drops, treating it as the run falling below plan (not stuff left to send), what's 68304-68160 from lines 1744-1752?",
+    "m3": "rro: 68304-68160 (lines 1744-1752) as short yield, not unshipped"
+   },
+   "parts": [
+    {
+     "asked": "Under the stated assumption, what does 68304-68160 give from the figures at lines 1744-1752",
+     "spans": {
+      "m1": [
+       "under the stated asumption",
+       "what does 68304-68160 give from the figures at lines 1744-1752"
+      ],
+      "m2": [
+       "what's 68304-68160 from lines 1744-1752"
+      ],
+      "m3": [
+       "rro: 68304-68160 (lines 1744-1752)"
+      ]
+     }
+    },
+    {
+     "asked": "(short yield in visible comparison; not unshipped balance)",
+     "spans": {
+      "m1": [
+       "(short yield in visible comparison; not unshipped balance)"
+      ],
+      "m2": [
+       "treating it as the run falling below plan (not stuff left to send)"
+      ],
+      "m3": [
+       "as short yield, not unshipped"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rro",
+   "card_id": "A04",
+   "item_id": "dev-F22-0004-exposed",
+   "question_sha256": "0c3c67c6369d0142515cab7c9466982dfea15bb72403950e5ad3e7a532839688",
+   "keep": [],
+   "variants": {
+    "m1": "in the related release order map, under the stated asumption (seven ao production units), what does 5152+4848+5216+4795+5984+5994+5984 give from the figures at lines 1364-1373",
+    "m2": "for the order shipped in several drops, adding up the seven assembly jobs' output, what's 5152+4848+5216+4795+5984+5994+5984 from lines 1364-1373?",
+    "m3": "rro: 5152+4848+5216+4795+5984+5994+5984 (lines 1364-1373), seven ao runs"
+   },
+   "parts": [
+    {
+     "asked": "Under the stated assumption, what does 5152+4848+5216+4795+5984+5994+5984 give from the figures at lines 1364-1373",
+     "spans": {
+      "m1": [
+       "under the stated asumption",
+       "what does 5152+4848+5216+4795+5984+5994+5984 give from the figures at lines 1364-1373"
+      ],
+      "m2": [
+       "what's 5152+4848+5216+4795+5984+5994+5984 from lines 1364-1373"
+      ],
+      "m3": [
+       "rro: 5152+4848+5216+4795+5984+5994+5984 (lines 1364-1373)"
+      ]
+     }
+    },
+    {
+     "asked": "(seven AO production units)",
+     "spans": {
+      "m1": [
+       "(seven ao production units)"
+      ],
+      "m2": [
+       "adding up the seven assembly jobs' output"
+      ],
+      "m3": [
+       "seven ao runs"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rro",
+   "card_id": "A05",
+   "item_id": "dev-F22-0005-exposed",
+   "question_sha256": "2f7e980b5ce5e4df7cb207171af3dc7be1150fba7effbeacfe51a097064e6bd3",
+   "keep": [],
+   "variants": {
+    "m1": "in the related release order map, under the stated asumption (15% of visible original pre-tax subtotal), what does 68304*1.65*0.15 give from the figures at lines 1334-1336",
+    "m2": "for the order shipped in several drops, taking 15% of the before-tax total on show, what's 68304*1.65*0.15 from lines 1334-1336?",
+    "m3": "rro: 68304*1.65*0.15 (lines 1334-1336), 15% of visible pre-tax"
+   },
+   "parts": [
+    {
+     "asked": "Under the stated assumption, what does 68304*1.65*0.15 give from the figures at lines 1334-1336",
+     "spans": {
+      "m1": [
+       "under the stated asumption",
+       "what does 68304*1.65*0.15 give from the figures at lines 1334-1336"
+      ],
+      "m2": [
+       "what's 68304*1.65*0.15 from lines 1334-1336"
+      ],
+      "m3": [
+       "rro: 68304*1.65*0.15 (lines 1334-1336)"
+      ]
+     }
+    },
+    {
+     "asked": "(15% of visible original pre-tax subtotal)",
+     "spans": {
+      "m1": [
+       "(15% of visible original pre-tax subtotal)"
+      ],
+      "m2": [
+       "taking 15% of the before-tax total on show"
+      ],
+      "m3": [
+       "15% of visible pre-tax"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rro",
+   "card_id": "A06",
+   "item_id": "dev-F22-0006-exposed",
+   "question_sha256": "a3bdfe94e33ca3f3717001f1a773c4ec7923f5ae51dc0aeed3da877c51fdb318",
+   "keep": [],
+   "variants": {
+    "m1": "in the related release order map, under the stated asumption (15% of quoted final tax-inclusive total; not necessarily receipt basis), what does round_to_cents(123429.27*0.15) give from the figures at lines 1758-1782",
+    "m2": "for the order shipped in several drops, taking 15% of the end amount with tax it quotes (not what was received), what's 123429.27*0.15 to the cent from lines 1758-1782?",
+    "m3": "rro: 123429.27*0.15 to the cent (lines 1758-1782), 15% of final with tax"
+   },
+   "parts": [
+    {
+     "asked": "Under the stated assumption, what does round_to_cents(123429.27*0.15) give from the figures at lines 1758-1782",
+     "spans": {
+      "m1": [
+       "under the stated asumption",
+       "what does round_to_cents(123429.27*0.15) give from the figures at lines 1758-1782"
+      ],
+      "m2": [
+       "what's 123429.27*0.15 to the cent from lines 1758-1782"
+      ],
+      "m3": [
+       "rro: 123429.27*0.15 to the cent (lines 1758-1782)"
+      ]
+     }
+    },
+    {
+     "asked": "(15% of quoted final tax-inclusive total; not necessarily receipt basis)",
+     "spans": {
+      "m1": [
+       "(15% of quoted final tax-inclusive total; not necessarily receipt basis)"
+      ],
+      "m2": [
+       "taking 15% of the end amount with tax it quotes (not what was received)"
+      ],
+      "m3": [
+       "15% of final with tax"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rro",
+   "card_id": "A07",
+   "item_id": "dev-F22-0007-exposed",
+   "question_sha256": "5e81e90fe7769f736d44110b1d62799e0901c3b4b6a7f7f45e8b41e940ff5505",
+   "keep": [],
+   "variants": {
+    "m1": "in the related release order map, under the stated asumption (difference between unlike-time/basis claims, not proven overpayment), what does 18901.08-18514.39 give from the figures at lines 1776-1782",
+    "m2": "for the order shipped in several drops, just the gap between two figures taken at different times (not proof we paid too much), what's 18901.08-18514.39 from lines 1776-1782?",
+    "m3": "rro: 18901.08-18514.39 (lines 1776-1782), gap only, not overpaid"
+   },
+   "parts": [
+    {
+     "asked": "Under the stated assumption, what does 18901.08-18514.39 give from the figures at lines 1776-1782",
+     "spans": {
+      "m1": [
+       "under the stated asumption",
+       "what does 18901.08-18514.39 give from the figures at lines 1776-1782"
+      ],
+      "m2": [
+       "what's 18901.08-18514.39 from lines 1776-1782"
+      ],
+      "m3": [
+       "rro: 18901.08-18514.39 (lines 1776-1782)"
+      ]
+     }
+    },
+    {
+     "asked": "(difference between unlike-time/basis claims, not proven overpayment)",
+     "spans": {
+      "m1": [
+       "(difference between unlike-time/basis claims, not proven overpayment)"
+      ],
+      "m2": [
+       "just the gap between two figures taken at different times (not proof we paid too much)"
+      ],
+      "m3": [
+       "gap only, not overpaid"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rro",
+   "card_id": "A08",
+   "item_id": "dev-F22-0008-exposed",
+   "question_sha256": "f844be59e14a2cb0208564a6174954ce36ea20eac8df5fb45846ab1b7013147f",
+   "keep": [],
+   "variants": {
+    "m1": "in the related release order map, under the stated asumption (seven quoted statement invoices), what does 1584*5+792+1188 give from the figures at lines 1689-1698",
+    "m2": "for the order shipped in several drops, adding up the seven bills listed on the account summary, what's 1584*5+792+1188 from lines 1689-1698?",
+    "m3": "rro: 1584*5+792+1188 (lines 1689-1698), the seven invoices"
+   },
+   "parts": [
+    {
+     "asked": "Under the stated assumption, what does 1584*5+792+1188 give from the figures at lines 1689-1698",
+     "spans": {
+      "m1": [
+       "under the stated asumption",
+       "what does 1584*5+792+1188 give from the figures at lines 1689-1698"
+      ],
+      "m2": [
+       "what's 1584*5+792+1188 from lines 1689-1698"
+      ],
+      "m3": [
+       "rro: 1584*5+792+1188 (lines 1689-1698)"
+      ]
+     }
+    },
+    {
+     "asked": "(seven quoted statement invoices)",
+     "spans": {
+      "m1": [
+       "(seven quoted statement invoices)"
+      ],
+      "m2": [
+       "adding up the seven bills listed on the account summary"
+      ],
+      "m3": [
+       "the seven invoices"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rro",
+   "card_id": "A09",
+   "item_id": "dev-F22-0009-exposed",
+   "question_sha256": "ea534e849cf54752dbda03d4e842535006ca0bb0abfa134a5e11cd20d0036cbc",
+   "keep": [],
+   "variants": {
+    "m1": "in the related release order map, under the stated asumption (conditional sequential balance before unknown kit/other uses), what does 18901.08-9900 give from the figures at lines 1622-1627",
+    "m2": "for the order shipped in several drops, if the up-front money is used one after another before any unknown other uses, what's 18901.08-9900 from lines 1622-1627?",
+    "m3": "rro: 18901.08-9900 (lines 1622-1627), balance before other uses"
+   },
+   "parts": [
+    {
+     "asked": "Under the stated assumption, what does 18901.08-9900 give from the figures at lines 1622-1627",
+     "spans": {
+      "m1": [
+       "under the stated asumption",
+       "what does 18901.08-9900 give from the figures at lines 1622-1627"
+      ],
+      "m2": [
+       "what's 18901.08-9900 from lines 1622-1627"
+      ],
+      "m3": [
+       "rro: 18901.08-9900 (lines 1622-1627)"
+      ]
+     }
+    },
+    {
+     "asked": "(conditional sequential balance before unknown kit/other uses)",
+     "spans": {
+      "m1": [
+       "(conditional sequential balance before unknown kit/other uses)"
+      ],
+      "m2": [
+       "if the up-front money is used one after another before any unknown other uses"
+      ],
+      "m3": [
+       "balance before other uses"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rro",
+   "card_id": "A10",
+   "item_id": "dev-F22-0010-exposed",
+   "question_sha256": "e180ffc4118587e83685a442c892115abc172721209ea14f0c76a276d10faeba",
+   "keep": [],
+   "variants": {
+    "m1": "in the related release order map, under the stated asumption (conditional proportional application and invoice balance), what does 9900*0.15; 9900*0.85 give from the figures at lines 1622-1627",
+    "m2": "for the order shipped in several drops, if the up-front money is spread pro rata over the bill, what are 9900*0.15 and 9900*0.85 from lines 1622-1627?",
+    "m3": "rro: 9900*0.15 and 9900*0.85 (lines 1622-1627), pro rata split"
+   },
+   "parts": [
+    {
+     "asked": "Under the stated assumption, what does 9900*0.15; 9900*0.85 give from the figures at lines 1622-1627",
+     "spans": {
+      "m1": [
+       "under the stated asumption",
+       "what does 9900*0.15; 9900*0.85 give from the figures at lines 1622-1627"
+      ],
+      "m2": [
+       "what are 9900*0.15 and 9900*0.85 from lines 1622-1627"
+      ],
+      "m3": [
+       "rro: 9900*0.15 and 9900*0.85 (lines 1622-1627)"
+      ]
+     }
+    },
+    {
+     "asked": "(conditional proportional application and invoice balance)",
+     "spans": {
+      "m1": [
+       "(conditional proportional application and invoice balance)"
+      ],
+      "m2": [
+       "if the up-front money is spread pro rata over the bill"
+      ],
+      "m3": [
+       "pro rata split"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rro",
+   "card_id": "A11",
+   "item_id": "dev-F22-0011-exposed",
+   "question_sha256": "879122a0fb5427ff15556f3d65bebc51ac9a050084d626185ce02cdb221604f1",
+   "keep": [],
+   "variants": {
+    "m1": "in the related release order map, under the stated asumption (cartons at label assumptions), what does 4800/48+960/10+480/48+720/48+240/10 give from the figures at lines 1567-1576",
+    "m2": "for the order shipped in several drops, counting boxes the way the tags assume, what's 4800/48+960/10+480/48+720/48+240/10 from lines 1567-1576?",
+    "m3": "rro: 4800/48+960/10+480/48+720/48+240/10 (lines 1567-1576), label packs"
+   },
+   "parts": [
+    {
+     "asked": "Under the stated assumption, what does 4800/48+960/10+480/48+720/48+240/10 give from the figures at lines 1567-1576",
+     "spans": {
+      "m1": [
+       "under the stated asumption",
+       "what does 4800/48+960/10+480/48+720/48+240/10 give from the figures at lines 1567-1576"
+      ],
+      "m2": [
+       "what's 4800/48+960/10+480/48+720/48+240/10 from lines 1567-1576"
+      ],
+      "m3": [
+       "rro: 4800/48+960/10+480/48+720/48+240/10 (lines 1567-1576)"
+      ]
+     }
+    },
+    {
+     "asked": "(cartons at label assumptions)",
+     "spans": {
+      "m1": [
+       "(cartons at label assumptions)"
+      ],
+      "m2": [
+       "counting boxes the way the tags assume"
+      ],
+      "m3": [
+       "label packs"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "rro",
+   "card_id": "A12",
+   "item_id": "dev-F22-0012-exposed",
+   "question_sha256": "a3b6a8737736df670b307655c95445a93bc67eda9f79855ac9d03e2367216e07",
+   "keep": [],
+   "variants": {
+    "m1": "in the related release order map, under the stated asumption (cartons at sage kit-pack assumption), what does 4800/48+960/12+480/48+720/48+240/12 give from the figures at lines 1567-1576",
+    "m2": "for the order shipped in several drops, counting boxes the way our old accounting system packs kits, what's 4800/48+960/12+480/48+720/48+240/12 from lines 1567-1576?",
+    "m3": "rro: 4800/48+960/12+480/48+720/48+240/12 (lines 1567-1576), sage kit packs"
+   },
+   "parts": [
+    {
+     "asked": "Under the stated assumption, what does 4800/48+960/12+480/48+720/48+240/12 give from the figures at lines 1567-1576",
+     "spans": {
+      "m1": [
+       "under the stated asumption",
+       "what does 4800/48+960/12+480/48+720/48+240/12 give from the figures at lines 1567-1576"
+      ],
+      "m2": [
+       "what's 4800/48+960/12+480/48+720/48+240/12 from lines 1567-1576"
+      ],
+      "m3": [
+       "rro: 4800/48+960/12+480/48+720/48+240/12 (lines 1567-1576)"
+      ]
+     }
+    },
+    {
+     "asked": "(cartons at Sage kit-pack assumption)",
+     "spans": {
+      "m1": [
+       "(cartons at sage kit-pack assumption)"
+      ],
+      "m2": [
+       "counting boxes the way our old accounting system packs kits"
+      ],
+      "m3": [
+       "sage kit packs"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "screening",
+   "card_id": "SC-01",
+   "item_id": "dev-F23-0059-exposed",
+   "question_sha256": "161fb5c451ee8a6e7a2e28254c4e88e7d2c756fadd0f23abbdc1ca75b139a51b",
+   "keep": [
+    "vince"
+   ],
+   "variants": {
+    "m1": "what does vince's screening procss map (draft 6) propose for outside bottle and towel screening, from blank purchase order thru conversion and gl",
+    "m2": "vince's doc (version 6) on getting printing done on our containers and cloths elsewhere: what's the plan from buying plain stock up to the books?",
+    "m3": "vince's screening map draft 6 - the plan"
+   },
+   "parts": [
+    {
+     "asked": "What does Vince's Screening Process Map (Draft 6) propose for outside bottle and towel screening, from blank purchase order through conversion and GL",
+     "spans": {
+      "m1": [
+       "what does vince's screening procss map (draft 6) propose for outside bottle and towel screening, from blank purchase order thru conversion and gl"
+      ],
+      "m2": [
+       "vince's doc (version 6) on getting printing done on our containers and cloths elsewhere: what's the plan from buying plain stock up to the books?"
+      ],
+      "m3": [
+       "vince's screening map draft 6 - the plan"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "screening",
+   "card_id": "SC-02",
+   "item_id": "dev-F23-0060-exposed",
+   "question_sha256": "c39fe39af7f2c8988874a801d133debb56628ea704201e7ae08b7b420de55d87",
+   "keep": [],
+   "variants": {
+    "m1": "how does the screening map say the value of a sellable screend unit is set",
+    "m2": "per the outside-printing doc, how do we put a price tag on a decorated piece we can sell?",
+    "m3": "how do we price a screened unit"
+   },
+   "parts": [
+    {
+     "asked": "How does the map say the value of a sellable screened unit is set",
+     "spans": {
+      "m1": [
+       "how does the screening map say the value of a sellable screend unit is set"
+      ],
+      "m2": [
+       "per the outside-printing doc, how do we put a price tag on a decorated piece we can sell?"
+      ],
+      "m3": [
+       "how do we price a screened unit"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "screening",
+   "card_id": "SC-03",
+   "item_id": "dev-F23-0061-exposed",
+   "question_sha256": "16c72219e3c996fb35fd66f3dcbf3cee17572e4801b4db3ee08b928e5a1453bc",
+   "keep": [],
+   "variants": {
+    "m1": "which conversion option did the owner choose for turning blank items into screened items, and what does the screening map still leave open",
+    "m2": "for making plain stock into printed stock, which way did the boss pick, and what's still undecided in the doc?",
+    "m3": "which conversion option was picked + whats open"
+   },
+   "parts": [
+    {
+     "asked": "Which conversion option did the owner choose for turning blank items into screened items",
+     "spans": {
+      "m1": [
+       "which conversion option did the owner choose for turning blank items into screened items"
+      ],
+      "m2": [
+       "for making plain stock into printed stock, which way did the boss pick"
+      ],
+      "m3": [
+       "which conversion option was picked"
+      ]
+     }
+    },
+    {
+     "asked": "what does the map still leave open",
+     "spans": {
+      "m1": [
+       "what does the screening map still leave open"
+      ],
+      "m2": [
+       "what's still undecided in the doc"
+      ],
+      "m3": [
+       "whats open"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "screening",
+   "card_id": "SC-04",
+   "item_id": "dev-F23-0062-exposed",
+   "question_sha256": "863addf73bd8c2907fcecabecde3efa306c611cb0dbe54c8607c83f9adc0f7e3",
+   "keep": [],
+   "variants": {
+    "m1": "which curent gaps does the screening map report between the purchase order, the busines central sync, and the screened item",
+    "m2": "what holes does the outside-printing doc say exist now between the buying doc, the push to the accounting system, and the printed item?",
+    "m3": "screening gaps po vs bc sync vs item"
+   },
+   "parts": [
+    {
+     "asked": "Which current gaps does the map report between the purchase order, the Business Central sync, and the screened item",
+     "spans": {
+      "m1": [
+       "which curent gaps does the screening map report between the purchase order, the busines central sync, and the screened item"
+      ],
+      "m2": [
+       "what holes does the outside-printing doc say exist now between the buying doc, the push to the accounting system, and the printed item?"
+      ],
+      "m3": [
+       "screening gaps po vs bc sync vs item"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "screening",
+   "card_id": "SC-05",
+   "item_id": "dev-F24-0063-exposed",
+   "question_sha256": "e6d804f19dd6096e9ddeffdb80bb911d4d416f41ada885e8dc67162593cc6136",
+   "keep": [],
+   "variants": {
+    "m1": "for one actual screening job which blank item became which screened item, with what quantites and which screener",
+    "m2": "on a real printing job, which plain item turned into which decorated item, how many, and who did the printing?",
+    "m3": "real screening job: what became what, how many, who screened"
+   },
+   "parts": [
+    {
+     "asked": "For one actual screening job, which blank item became which screened item, with what quantities",
+     "spans": {
+      "m1": [
+       "for one actual screening job which blank item became which screened item, with what quantites"
+      ],
+      "m2": [
+       "on a real printing job, which plain item turned into which decorated item, how many"
+      ],
+      "m3": [
+       "real screening job: what became what, how many"
+      ]
+     }
+    },
+    {
+     "asked": "which screener",
+     "spans": {
+      "m1": [
+       "which screener"
+      ],
+      "m2": [
+       "who did the printing"
+      ],
+      "m3": [
+       "who screened"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "screening",
+   "card_id": "SC-06",
+   "item_id": "dev-F24-0064-exposed",
+   "question_sha256": "e43cb96c8ee76d10e8c145edd6224c1c6c5dc7b2c105bc1021aa913bb8925090",
+   "keep": [],
+   "variants": {
+    "m1": "for one actual screning job how many units were good, and whats the final unit cost",
+    "m2": "on a real printing job, how many pieces came out fine, and what does each end up costing?",
+    "m3": "screening job good units + unit cost"
+   },
+   "parts": [
+    {
+     "asked": "For one actual screening job, how many units were good",
+     "spans": {
+      "m1": [
+       "for one actual screning job how many units were good"
+      ],
+      "m2": [
+       "on a real printing job, how many pieces came out fine"
+      ],
+      "m3": [
+       "screening job good units"
+      ]
+     }
+    },
+    {
+     "asked": "what is the final unit cost",
+     "spans": {
+      "m1": [
+       "whats the final unit cost"
+      ],
+      "m2": [
+       "what does each end up costing"
+      ],
+      "m3": [
+       "unit cost"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "screening",
+   "card_id": "SC-07",
+   "item_id": "dev-F24-0065-exposed",
+   "question_sha256": "1222d4c2b0961b23bd632aebb681d1fb84a5cf42dd39239fa578b982999823bb",
+   "keep": [],
+   "variants": {
+    "m1": "does the screening invoce quantity reconcile to the proof counts and the good units for a job",
+    "m2": "on a printing job, does the count on the printer's bill match the sample tallies and the decent pieces?",
+    "m3": "screening invoice qty vs counts"
+   },
+   "parts": [
+    {
+     "asked": "Does the screening invoice quantity reconcile to the proof counts and the good units for a job",
+     "spans": {
+      "m1": [
+       "does the screening invoce quantity reconcile to the proof counts and the good units for a job"
+      ],
+      "m2": [
+       "on a printing job, does the count on the printer's bill match the sample tallies and the decent pieces?"
+      ],
+      "m3": [
+       "screening invoice qty vs counts"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "screening",
+   "card_id": "SC-08",
+   "item_id": "dev-F25-0034-exposed",
+   "question_sha256": "23ea8e5a7492439059ca0fa033aa263e823d1bdd23a33184421f14c480c36e8f",
+   "keep": [],
+   "variants": {
+    "m1": "which acounting treatment applies to the screening blanks under ERP-D-015, and where does the cost sit before conversion",
+    "m2": "under ERP-D-015, how are the plain pieces for printing handled in the books, and where is their cost parked before the switch-over?",
+    "m3": "ERP-D-015 - how are blanks booked, cost where before conversion"
+   },
+   "parts": [
+    {
+     "asked": "Which accounting treatment applies to the screening blanks under ERP-D-015",
+     "spans": {
+      "m1": [
+       "which acounting treatment applies to the screening blanks under ERP-D-015"
+      ],
+      "m2": [
+       "under ERP-D-015, how are the plain pieces for printing handled in the books"
+      ],
+      "m3": [
+       "ERP-D-015 - how are blanks booked"
+      ]
+     }
+    },
+    {
+     "asked": "where does the cost sit before conversion",
+     "spans": {
+      "m1": [
+       "where does the cost sit before conversion"
+      ],
+      "m2": [
+       "where is their cost parked before the switch-over"
+      ],
+      "m3": [
+       "cost where before conversion"
+      ]
+     }
+    }
+   ]
+  }
+ ]
+}

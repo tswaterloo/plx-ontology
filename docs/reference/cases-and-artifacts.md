@@ -764,7 +764,7 @@ Vince (§1.9 card 01). Name match only; identity needs review.
 ### 3.4 AO-26005B trace — FM records vs paper
 Live trace `[LIVE]` `EVIDENCE/live/2026-09-30-ao-26005b-live-trace.json` (captured
 2026-09-30T02:00:46Z, `investigate-workbench-api-named AssemblyOrder 10718`, digest
-`3b30f625…a513`, 34 relations/25 observations, **non-atomic, advisory, not action authority**):
+`3b30f625…a513`, 34 relations/25 observations, **non-atomic, not action authority**):
 
 | Object | Native id | Values |
 |---|---|---|

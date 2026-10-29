@@ -1315,7 +1315,7 @@ class IdentityBindingTests(AoEvalCase):
         self.assertIn(other["citation"], self.check(report, "order_cited")["detail"])
 
     def test_customer_po_order_cited_fails_for_an_unrelated_order(self):
-        """The advisory probe: a case rooted at one order, the cited row is another order."""
+        """A case rooted at one order, the cited row is another order."""
         h = CustomerPoEvalTests("test_a_proposal_with_evidence_and_gaps_passes")
         h.setUp()
         self.addCleanup(h.doCleanups)
@@ -1980,7 +1980,7 @@ class RereadPayloadPinTests(CustomerPoEvalBase, unittest.TestCase):
 
 class OriginalPageClaimEvaluationTests(unittest.TestCase):
     """A claim on an original page (field "text") is scored on the page the evaluator re-read
-    and digest-checked, not marked claim_uncited (review of 927033f, AO_V2 with an original)."""
+    and digest-checked, not marked claim_uncited (AO_V2 with an original)."""
 
     def setUp(self) -> None:
         from operating.tests import test_ao_originals as orig_tests

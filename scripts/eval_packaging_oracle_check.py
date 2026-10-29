@@ -2,7 +2,7 @@
 oracle's own reading (GET only). An evaluation harness (it imports the oracle), named
 ``eval_*`` so product code may not import it (``scripts/check_no_hardcoded_cases.py``).
 
-Directive e56de121288d T5: ``case.packaging_case_script`` used to pass on the script's own
+``Case.packaging_case_script`` used to pass on the script's own
 ``checks.*`` flags. The per-kind packaging script is retired (task allowlist-3); this
 wiring now opens the purchase order the way every case opens: ``operating.ingestion`` fills
 the state directory's source mirror (GET only), then ``operating.case_workspace_live``
@@ -52,7 +52,7 @@ citation.
     python3 -m scripts.eval_packaging_oracle_check --state-dir D --mirror-audience A \\
         --ingest-sources S --principal staff:purchasing --po <purchase order number>
 
-``landed-cost`` (lane landed-cost-end-to-end, live check ``case.packaging_landed_cost``):
+``landed-cost`` (live check ``case.packaging_landed_cost``):
 one capture cycle of a host (``operating.host``: the Portal purchase-order relations and the
 SharePoint containers its config names, GET only) into the state directory, the purchase
 order opened through the generic path offline (``CaseOpener``), then ``plx.investigate``
@@ -73,7 +73,7 @@ stdout holds pins, codes, counts and booleans only.
         --host-config H --principal staff:operations --po <number> --registry R \\
         --proforma <pin> --quote <pin> [--quote <pin>]
 
-``landed-estimate`` (lane landed-cost-estimate, live check ``landed_cost.estimate``): one
+``landed-estimate`` (live check ``landed_cost.estimate``): one
 host cycle as ``landed-cost``, then every PurchaseOrder this reader can read whose Gold
 is open by the one PO status definition (``operating.po_status``: its header word with its
 own lines' summed quantities, each read through ``plx.object``/``plx.around`` as this reader;

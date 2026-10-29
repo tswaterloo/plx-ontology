@@ -17,7 +17,7 @@ here and nowhere else:
   readers carry: ``documentFields`` (gap ``pages``), the resolve rows
   (``row.skipped_by_cap``), a container's member (a gap); the mention documents, which
   have no gap channel, index its name only and record why
-  (``CapturedText.text_withheld``; ``devloop/DECISIONS/pdf-cap-readers-contract.md``).
+  (``CapturedText.text_withheld``).
   The stored text status stays ``extracted``/``extracted_ocr``. Bytes over the extractor's bound (a
   capture scope may declare a larger content cap) are never handed to it whole:
   ``exceeds_bound``, no text; a container among them is read member by member below.
@@ -666,8 +666,8 @@ def stored_text(blobs: str | Path, row: Mapping[str, Any]) -> StoredText:
     extractor run stored: a PDF's pages joined by ``PAGE_BREAK``, any other file's whole
     text (``capture_text``); an OCR-read file's reading is this text itself. A typed PDF
     the capture read on a host with OCR went through the OCR-enabled page reader, whose
-    text layer can differ from the reading :func:`captured_text` makes without OCR
-    (devloop/DECISIONS/2026-10-28-identifier-lookup.md). Of a PDF holding ``MAX_PAGES``
+    text layer can differ from the reading :func:`captured_text` makes without OCR.
+    Of a PDF holding ``MAX_PAGES``
     pages the range past them is told from the PDF's page count (no page read) or the
     reading a dropped original kept; when neither tells it, every page past the bound is
     taken as unread (fail closed)."""

@@ -1,6 +1,6 @@
 {
  "schema": "plx-case-originals/v1",
- "note": "Nonsecret registry of every stakeholder original in the Dot's source-pin records and of those eval cards name (origin card, from the --card-sources input) (generated; do not edit by hand). Rows hold identity and expected bytes/SHA-256 only: no file body, temporary download URL, local path or secret. Bodies are read into the credentialed capture store (PLX_WORKBENCH_STATE_DIR/case-originals) by python3 -m scripts.case_originals read, never into Git.",
+ "note": "Nonsecret registry of every stakeholder original in the source-pin records and of those eval cards name (origin card, from the --card-sources input) (generated; do not edit by hand). Rows hold identity and expected bytes/SHA-256 only: no file body, temporary download URL, local path or secret. Bodies are read into the credentialed capture store (PLX_WORKBENCH_STATE_DIR/case-originals) by python3 -m scripts.case_originals read, never into Git.",
  "generated_by": "python3 -m scripts.case_originals registry --from <baseline.json> --advisory-commit c7a7ce0b3b4d6c2e0f4b195743653ba64a25052f --advisory-path context/8e511521d623cd50299757fc96aa111017e578b45c1521daeb8024618e223bb5.json --delta <delta.json> --delta-commit 024655debc485e122d3bb9948b985ae5c93e4ae3 --delta-path context/470a5d60b9823489433940b84fbce5fcbd0a1d73a0bd80db2457c87eff8c6b82.json --proven ao-originals=evals/dev/cases/ao_originals_expected.json --watch-link https://petrasoap-my.sharepoint.com/personal/vince_petrasoap_com/Documents/Microsoft%20Teams%20Chat%20Files --watch-link https://petrasoap-my.sharepoint.com/personal/stephen_petrasoap_com/Documents/Microsoft%20Teams%20Chat%20Files --watch-link https://petrasoap.sharepoint.com/sites/Operations/Shared%20Documents/Ricardo/process-maps --watch-drive 'b!6MJomwo5WUyhuIJ4Z8xuzcjwXwzSxKhEuWXaRINVFgkOxGVlt_MpRo4e-9Zh1wAI' '/Artwork Lifecycle Examples' 'https://petrasoap.sharepoint.com/sites/PLXSite/ProductDevelopment/Artwork%20Lifecycle%20Examples' --watch-drive 'b!W4ssx17NiUipzjgFW2Rt1fW8RXEL_4xBgKvtLTtDIYNO-gr9fxAMQ7PHzLrczCuH' '/Ontology UseCases' 'https://petrasoap.sharepoint.com/sites/AGENTS/Shared%20Documents/Ontology%20UseCases' --watch-drive 'b!W4ssx17NiUipzjgFW2Rt1fW8RXEL_4xBgKvtLTtDIYNO-gr9fxAMQ7PHzLrczCuH' '/Quote Examples/G2-Beauty/_Quote Workbooks' 'https://petrasoap.sharepoint.com/sites/AGENTS/Shared%20Documents/Quote%20Examples/G2-Beauty/_Quote%20Workbooks' --watch-drive 'b!W4ssx17NiUipzjgFW2Rt1fW8RXEL_4xBgKvtLTtDIYNO-gr9fxAMQ7PHzLrczCuH' '/Quote Examples/SAHAJAN/_Quote Workbooks' 'https://petrasoap.sharepoint.com/sites/AGENTS/Shared%20Documents/Quote%20Examples/SAHAJAN/_Quote%20Workbooks' --watch-drive 'b!W4ssx17NiUipzjgFW2Rt1fW8RXEL_4xBgKvtLTtDIYNO-gr9fxAMQ7PHzLrczCuH' '/Quote Examples/Soapbox/_Quote Workbooks' 'https://petrasoap.sharepoint.com/sites/AGENTS/Shared%20Documents/Quote%20Examples/Soapbox/_Quote%20Workbooks' --capture vince-artwork gap-4c7890a11a16 b45848e18ddccd664e10d124c274d165e8a7fe0c context/5ed665d02673cacc158cc9590c6922ad86c7bdb890b0df6d15470bbca0891b6b.json <capture.json> --capture vince-artwork gap-76d7fe186b32 4d5159b6cf49d0bf7a4c255c50259fedf71a30fd context/6e920cf5079d63a3aa48cd5cd6fd28f956cddf544a0dfc2d9d03b58e085f207f.json <capture.json> --capture vince-artwork gap-4dc93a84fa19 5a2c543bd0a506851edaaf8c8b856199434d94ab context/fcc0f9365b5a61cbb83ee4c904c0408736aa5cc46cf10ff322b1b57e66e5b6d6.json <capture.json> --capture vince-artwork gap-16c8ab0aa25a bfb07c405ec5227c823c24b48ae0cefe2b46f401 context/46b6c69ade81512bad7df8e8f1f575cdc85af6a1cf152224501b4559082c729e.json <capture.json> --manifest vince-artwork 78640266849886c3816e9b78adbfcc6f64042aad context/1ce04e07faab805fb8086d93864f6bad2c843649283fc1ba990f5d13b4b481ce.json <manifest.json> --caveats <caveats.json> --crosswalk evals/dev/quote-to-order/proposed_items.json --crosswalk evals/dev/screening/proposed_items.json --crosswalk evals/dev/amazon-fba/proposed_items.json --crosswalk evals/dev/expired-disposition/proposed_items.json --crosswalk evals/dev/packaging-sourcing/proposed_items.json --card-sources examples/case_originals_card_sources.json",
  "advisories": [
   {
@@ -80,25 +80,55 @@
    "source_id": "https://petrasoap-my.sharepoint.com/personal/laura_a_petrasoap_com/Documents/Microsoft%20Teams%20Chat%20Files/regulatory-process-flow-mapper.zip",
    "created_at": "2026-10-19T15:49:10Z",
    "inventory_observed_at": null
+  },
+  {
+   "role": "card",
+   "commit": "57bce1d4cd7dcf56d58800f6a20f5bdc740b5765",
+   "path": "context/d7076d8897560e9c362ad0ee6cdfc810209b31313db58cc50360bf20e8784818.json",
+   "record_sha256": "074d4f122d44c91d448c39c0524705c86cb9a37b77cef87d10322524a8988497",
+   "source_revision": "rendered-text-sha256:a2d0981962e8cecf2c1ea9a61451a711ed1cdcd6ee3b14ae3f6d36dbb79e3446",
+   "source_id": "https://claude.ai/artifact/815bD2y43atZWxQ2Lffig1",
+   "created_at": "2026-10-20T19:15:16Z",
+   "inventory_observed_at": null
+  },
+  {
+   "role": "card",
+   "commit": "81c7833e16a3586f6fceb8eb5d7bd545b478ea0f",
+   "path": "context/c034c7ea5fa6c3dcd351dbc59fa2a7a028838c29a2d93449b18eb7a47527c74e.json",
+   "record_sha256": "ab3ce351c65922fed59aec112c00375f87ad97de9dab2fac30aaef2b29623d80",
+   "source_revision": "rendered-text-sha256:60cfb8f77f4ff6577ff60c2b44810edeaca3e0a8ea56ede18f2996de384d57b7",
+   "source_id": "https://claude.ai/artifact/2XTr6GPFLv1dKmih3QXFqi",
+   "created_at": "2026-10-20T19:15:16Z",
+   "inventory_observed_at": null
+  },
+  {
+   "role": "card",
+   "commit": "d7af7e5482d5adaa51c55654c44c2c9d826e4806",
+   "path": "context/13be54ca81d248b5e1be017e58f20892cf37acf838943afbba58151528297a02.json",
+   "record_sha256": "c8b15fc76d838ec5f67b2314067628b3e1d746e9845d071e3ad54efc8bd7c9cd",
+   "source_revision": "rendered-text-sha256:28145aacc2c6f35203766e2936779676f2329348b266bec1974d12b99a988064",
+   "source_id": "https://claude.ai/artifact/7NYFcwQspq7bFaQ5tjjBPG",
+   "created_at": "2026-10-20T19:15:16Z",
+   "inventory_observed_at": null
   }
  ],
  "exposure": "dev-exposed",
  "counts": {
   "rows": 180,
   "file_records": 92,
-  "pinned": 134,
+  "pinned": 137,
   "unpinned": 1,
   "oversize": 3,
   "unfetched": 13,
-  "gap": 20,
+  "gap": 17,
   "superseded": 9,
   "aliases": 21,
   "captures": 4,
   "manifest_rows": 41,
-  "payloads": 104,
+  "payloads": 107,
   "by_kind": {
    "original": 64,
-   "derivative": 7,
+   "derivative": 10,
    "archive_member": 33,
    "attachment": 39,
    "mail_message": 8
@@ -109,6 +139,7 @@
    "ricardo-cost",
    "ricardo-delivery",
    "ricardo-file-intake",
+   "rnd-maps",
    "stephen-assets",
    "stephen-grants",
    "vince-artwork",
@@ -241,7 +272,7 @@
   "inputs": [
    {
     "path": "evals/dev/quote-to-order/proposed_items.json",
-    "sha256": "0c89715121e9d2c480ed10c61526400a0da96e3d89247d0df0ec07ce37c95fc5",
+    "sha256": "0388da719b071d0449900a52792a183f27de92ef800292f9bd3b148870179cd5",
     "case": "quote-to-order"
    },
    {
@@ -251,17 +282,17 @@
    },
    {
     "path": "evals/dev/amazon-fba/proposed_items.json",
-    "sha256": "1852b0ceb8d788248be24fa907c8766a2f634e1827513457e8eac5cdaa037acc",
+    "sha256": "ada841a09d52c1a9a4622000c577842f5e8e553a6eb36d31acdb02b02148c6e7",
     "case": "amazon-fba"
    },
    {
     "path": "evals/dev/expired-disposition/proposed_items.json",
-    "sha256": "eb31cbb7aefec04301f2fa12ef3116704294b2a56ce08e55d4975012e9d35d88",
+    "sha256": "ef4218f54b912e315ef32ce507edf15915252c9a3c6022c569abfacce67e26dd",
     "case": "expired-disposition"
    },
    {
     "path": "evals/dev/packaging-sourcing/proposed_items.json",
-    "sha256": "b342b6015345b5fad3e425ed63545f651a00ce8a89289b16b0a118b016cff7de",
+    "sha256": "9cc1078742363d02501d69426f5f06b2a4618a8a246c4fa4b7383d5c8c620114",
     "case": "packaging-sourcing"
    }
   ],
@@ -8013,8 +8044,149 @@
    "exposure": "dev-exposed",
    "proven_by": [],
    "record_body_status": null,
-   "note": "a Teams chat attachment an eval case card rests on: read through its content URL, served behind the chat message's gate; the pin is the named advisory record's",
+   "note": "a Teams chat attachment an eval case card rests on: read through its content URL, served behind the chat message's gate; the pin is the named source record's",
    "advisory": "advisory:51cf697a454b"
+  },
+  {
+   "id": "co-8302d5d6b9e4",
+   "status": "pinned",
+   "origin": "card",
+   "card_index": 1,
+   "owner": "Allison Tam",
+   "case": "rnd-maps",
+   "case_ids": [
+    "rnd-maps"
+   ],
+   "kind": "derivative",
+   "record_kind": "historical complete rendered artifact text, derived representation",
+   "parent": null,
+   "alias_of": null,
+   "linked_from": null,
+   "name": "R&D bi-weekly meeting agenda preparation map, complete rendered text.txt",
+   "member_path": null,
+   "mime_part_index": null,
+   "source": {
+    "url": null,
+    "teams_message_url": null,
+    "teams_message_id": null,
+    "teams_attachment_id": null,
+    "drive_id": null,
+    "item_id": null,
+    "repository_ref": "https://github.com/tswaterloo/OntologyProject/blob/57bce1d4cd7dcf56d58800f6a20f5bdc740b5765/context/d7076d8897560e9c362ad0ee6cdfc810209b31313db58cc50360bf20e8784818.json"
+   },
+   "revision": {
+    "version_id": null,
+    "etag": null,
+    "modified_at": null,
+    "submitted_at": null,
+    "quick_xor_hash": null,
+    "versions": []
+   },
+   "expected": {
+    "bytes": 27274,
+    "sha256": "a2d0981962e8cecf2c1ea9a61451a711ed1cdcd6ee3b14ae3f6d36dbb79e3446"
+   },
+   "mime_type": null,
+   "detected_media_type": null,
+   "exposure": "dev-exposed",
+   "proven_by": [],
+   "record_body_status": null,
+   "note": "Full rendered text verified against the named source record's rendered-text SHA-256; not the native artifact bytes.",
+   "advisory": "advisory:d7076d889756"
+  },
+  {
+   "id": "co-ef51ec46eba3",
+   "status": "pinned",
+   "origin": "card",
+   "card_index": 2,
+   "owner": "Erin",
+   "case": "rnd-maps",
+   "case_ids": [
+    "rnd-maps"
+   ],
+   "kind": "derivative",
+   "record_kind": "historical complete rendered artifact text, derived representation",
+   "parent": null,
+   "alias_of": null,
+   "linked_from": null,
+   "name": "Raw material samples map (request to used up), complete rendered text.txt",
+   "member_path": null,
+   "mime_part_index": null,
+   "source": {
+    "url": null,
+    "teams_message_url": null,
+    "teams_message_id": null,
+    "teams_attachment_id": null,
+    "drive_id": null,
+    "item_id": null,
+    "repository_ref": "https://github.com/tswaterloo/OntologyProject/blob/81c7833e16a3586f6fceb8eb5d7bd545b478ea0f/context/c034c7ea5fa6c3dcd351dbc59fa2a7a028838c29a2d93449b18eb7a47527c74e.json"
+   },
+   "revision": {
+    "version_id": null,
+    "etag": null,
+    "modified_at": null,
+    "submitted_at": null,
+    "quick_xor_hash": null,
+    "versions": []
+   },
+   "expected": {
+    "bytes": 26443,
+    "sha256": "60cfb8f77f4ff6577ff60c2b44810edeaca3e0a8ea56ede18f2996de384d57b7"
+   },
+   "mime_type": null,
+   "detected_media_type": null,
+   "exposure": "dev-exposed",
+   "proven_by": [],
+   "record_body_status": null,
+   "note": "Full rendered text verified against the named source record's rendered-text SHA-256; not the native artifact bytes.",
+   "advisory": "advisory:c034c7ea5fa6"
+  },
+  {
+   "id": "co-6783155370e7",
+   "status": "pinned",
+   "origin": "card",
+   "card_index": 3,
+   "owner": "Giulia",
+   "case": "rnd-maps",
+   "case_ids": [
+    "rnd-maps"
+   ],
+   "kind": "derivative",
+   "record_kind": "historical complete rendered artifact text, derived representation",
+   "parent": null,
+   "alias_of": null,
+   "linked_from": null,
+   "name": "Ingredient lists map (sample made to IL with the customer), complete rendered text.txt",
+   "member_path": null,
+   "mime_part_index": null,
+   "source": {
+    "url": null,
+    "teams_message_url": null,
+    "teams_message_id": null,
+    "teams_attachment_id": null,
+    "drive_id": null,
+    "item_id": null,
+    "repository_ref": "https://github.com/tswaterloo/OntologyProject/blob/d7af7e5482d5adaa51c55654c44c2c9d826e4806/context/13be54ca81d248b5e1be017e58f20892cf37acf838943afbba58151528297a02.json"
+   },
+   "revision": {
+    "version_id": null,
+    "etag": null,
+    "modified_at": null,
+    "submitted_at": null,
+    "quick_xor_hash": null,
+    "versions": []
+   },
+   "expected": {
+    "bytes": 30576,
+    "sha256": "28145aacc2c6f35203766e2936779676f2329348b266bec1974d12b99a988064"
+   },
+   "mime_type": null,
+   "detected_media_type": null,
+   "exposure": "dev-exposed",
+   "proven_by": [],
+   "record_body_status": null,
+   "note": "Full rendered text verified against the named source record's rendered-text SHA-256; not the native artifact bytes.",
+   "advisory": "advisory:13be54ca81d2"
   },
   {
    "id": "gap-93ce2c66fc20",
@@ -8167,7 +8339,7 @@
    "gap_index": 11,
    "exposure": "dev-exposed",
    "gap": {
-    "attempt": "Read of pinned dandy-packing-mail through the existing Tanush connection at 2026-10-14T17:45:23Z returned HTTP 403 ErrorAccessDenied.",
+    "attempt": "Read of pinned dandy-packing-mail through the existing operator connection at 2026-10-14T17:45:23Z returned HTTP 403 ErrorAccessDenied.",
     "detail": "This mailbox branch was stopped. No alternative-account route was used. Eight historical message hashes and four attachment hashes remain historical source pins, not current downloaded bytes.",
     "item": "Receiving mailbox case originals",
     "mailbox": "receiving@petrasoap.com",
@@ -8194,7 +8366,7 @@
    "gap_index": 13,
    "exposure": "dev-exposed",
    "gap": {
-    "detail": "Targeted Tanush mailbox case/sender searches have no further embedded business attachments. Archive says some sources still missing; original customer/vendor thread universes are not fully enumerated. Receiving branch blocked.",
+    "detail": "Targeted operator-mailbox case/sender searches have no further embedded business attachments. Archive says some sources still missing; original customer/vendor thread universes are not fully enumerated. Receiving branch blocked.",
     "item": "Other relevant business email originals beyond archived threads",
     "status": "not exhaustively recovered"
    }
@@ -8363,63 +8535,6 @@
     "status": "archive author explicitly missing"
    },
    "superseded_by": "gap-e5bd34ae1ebc"
-  },
-  {
-   "id": "gap-1aefac272d36",
-   "status": "gap",
-   "origin": "card",
-   "case": "rnd-maps",
-   "gap_index": 1,
-   "exposure": "dev-exposed",
-   "gap": {
-    "item": "Allison Tam's R&D process map: R&D bi-weekly meeting agenda preparation",
-    "owner": "Allison Tam",
-    "source": "claude.ai artifact, known only from an artifact-invitation email",
-    "evidence": "advisory:d7076d889756",
-    "status": "no bytes held or pinned: the map exists only as an artifact-invitation email, so its SHA-256 is unknown"
-   },
-   "expected": {
-    "bytes": null,
-    "sha256": null
-   }
-  },
-  {
-   "id": "gap-15999825ecff",
-   "status": "gap",
-   "origin": "card",
-   "case": "rnd-maps",
-   "gap_index": 2,
-   "exposure": "dev-exposed",
-   "gap": {
-    "item": "Erin's R&D process map: Raw material samples: from request to used up",
-    "owner": "Erin",
-    "source": "claude.ai artifact, known only from an artifact-invitation email",
-    "evidence": "advisory:c034c7ea5fa6",
-    "status": "no bytes held or pinned: the map exists only as an artifact-invitation email, so its SHA-256 is unknown"
-   },
-   "expected": {
-    "bytes": null,
-    "sha256": null
-   }
-  },
-  {
-   "id": "gap-7dc82f245571",
-   "status": "gap",
-   "origin": "card",
-   "case": "rnd-maps",
-   "gap_index": 3,
-   "exposure": "dev-exposed",
-   "gap": {
-    "item": "Giulia's R&D process map: Ingredient lists, from sample made to IL in the customer's hands",
-    "owner": "Giulia",
-    "source": "claude.ai artifact, known only from an artifact-invitation email",
-    "evidence": "advisory:13be54ca81d2",
-    "status": "no bytes held or pinned: the map exists only as an artifact-invitation email, so its SHA-256 is unknown"
-   },
-   "expected": {
-    "bytes": null,
-    "sha256": null
-   }
   }
  ]
 }

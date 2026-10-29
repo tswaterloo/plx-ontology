@@ -13,7 +13,7 @@
     "advisory:72bf7b7ae3f6",
     "advisory:b663c5f3b388"
    ],
-   "source_files_note": "The map's own files in AGENTS/Ontology UseCases/Process Maps - Quote-to-Order (2026-10-15), from the SharePoint capture store (content_sha256, the bytes' SHA-256, checked against the stored blobs on 28 Oct 2026; one version each). No advisory manifest lists them, so they are not watched_originals. The scorer counts a claim citing one as on this set's source document (evals/score.py, scorer /21). Names only, no contents.",
+   "source_files_note": "The map's own files in AGENTS/Ontology UseCases/Process Maps - Quote-to-Order (2026-10-15), from the SharePoint capture store (content_sha256, the bytes' SHA-256, checked against the stored blobs on 28 Oct 2026; one version each). The scorer counts a claim citing one as on this set's source document (evals/score.py, scorer /21). Names only, no contents.",
    "source_files": [
     {"name": "README.md", "item_id": "01RVPYB2AEU7BVTHXT7BAIZW2ZMJF6XTTC", "sha256": "75b8b0391a51f2e884883df062428b8a2a9ccfe588d1f579a0ab9a49711dce45", "bytes": 1655},
     {"name": "Quote-to-Order Map.html", "item_id": "01RVPYB2D247AISQ2DNFGI6TU2R6TXHNRH", "sha256": "459429ad106d4f82d60197abfe5cea807ae89e8b412a70d6f9255623ffef3c00", "bytes": 191212},

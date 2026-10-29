@@ -3,7 +3,7 @@
  "format": "plx-ontology-domain/v1",
  "domain": "requisitions",
  "origin": "curated",
- "description": "Portal purchase requisitions and their lines (schema-coverage lane, directive 612e1dd724f7). Portal-native rows (gold_native_staging). The line estimated cost has two contradicting writers, so it is a finance-marked decimal, not money. No PR-to-PO link: conversion stores no reference.",
+ "description": "Portal purchase requisitions and their lines. Portal-native rows (gold_native_staging). The line estimated cost has two contradicting writers, so it is a finance-marked decimal, not money. No PR-to-PO link: conversion stores no reference.",
  "upstream_pins": {
   "plx-customer-portal": "790256ca43"
  },

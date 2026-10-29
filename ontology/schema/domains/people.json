@@ -3,7 +3,7 @@
  "format": "plx-ontology-domain/v1",
  "domain": "people",
  "origin": "curated",
- "description": "Persons (Portal users), declared not_served until the reporting API serves app_user (owner directive 2db2fe9bf1f8 PT7). Every Person value is pii-marked.",
+ "description": "Persons (Portal users), declared not_served until the reporting API serves app_user. Every Person value is pii-marked.",
  "upstream_pins": {
   "plx-customer-portal": "790256ca43"
  },

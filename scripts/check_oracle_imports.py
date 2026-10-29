@@ -1,7 +1,6 @@
-"""Oracle import ban (gate check ``oracle-import-ban`` in devloop/gate-checks.json).
+"""Oracle import ban.
 
-10-DECISION decision 8 / 09-CRITIQUE R7 c: the evaluation oracle under ``evals/oracle/`` is
-an independent lane. It must never run Workbench code (``ontology``, ``operating``,
+It must never run Workbench code (``ontology``, ``operating``,
 ``integrations``, ``scripts``, ...), so its joins cannot share a bug with the projection and
 resolver it grades. Transports are injected by ``scripts/eval_oracle_dev.py``.
 

@@ -1,4 +1,4 @@
-"""Impact chain (lane impact-chain-at-risk): from a late purchase order over recorded links
+"""Impact chain: from a late purchase order over recorded links
 only to the FileMaker assembly order that consumes its item and the customer order it feeds,
 with days at risk and, for a reader shown it, value at risk; the stored ``impact_chain``
 investigate plan (F16), the set-based ``scan`` and the proactive engine's top finding.
@@ -804,7 +804,7 @@ class ScanAndProactiveTests(unittest.TestCase):
         return found, call.asked
 
     def test_the_landed_cost_engine_figure_comes_first_and_keeps_its_label(self):
-        """Cost basis (devloop/DECISIONS/2026-10-27-impact-margin-landed-cost-basis.md): the
+        """Cost basis: the
         engine's per-unit total (5.00 CAD/ea) replaces BC unitCost (6.50 CAD/PCS): 1000.00 -
         100 x 5.00 + 250.00 - 10 x 5.00 = 700.00 CAD; an estimate says "margin estimated"."""
         for estimate, label in ((False, ic.COST_BASES[ic.LANDED_ACTUAL]),

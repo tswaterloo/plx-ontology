@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "format": "plx-ontology-tool-contracts/v1",
-  "description": "I/O JSON Schemas for the generic ontology tools (C0 contract, frozen; 10-DECISION decision 4, 09-CRITIQUE R4, R6, R11-R13). Tool implementations (lanes L8, L9, L14-L18) and their MCP registration must accept exactly `input` and return `output` (validated with ontology/json_contract.py). `$ref`s resolve against this document. No SQL tool exists in any mode.",
+  "description": "I/O JSON Schemas for the generic ontology tools (C0 contract, frozen; R6, R11-R13). Tool implementations (lanes L8, L9, L14-L18) and their MCP registration must accept exactly `input` and return `output` (validated with ontology/json_contract.py). `$ref`s resolve against this document. No SQL tool exists in any mode.",
   "limits": {
     "max_result_bytes": 48000,
     "max_description_chars": 600,
@@ -13,7 +13,7 @@
   "envelope_rule": "Every field carrying text read from a source is an untrusted_text envelope ($defs/untrusted_text). Typed values (numbers as Decimal text, dates, normalized identifiers, enums) come only from deterministic parsers.",
   "$defs": {
     "lineage": {
-      "description": "Where an L1 record or L2 value came from (09-CRITIQUE R1, plus `workbench` for records the Workbench itself authors: cases, review decisions, annotations). `bc_<company>` names the BC Production company (R15: the company/book is a dimension of every BC-sourced object). `mission_control` is a record read through a Mission Control read tool, `brain` a record read from the brain's agent knowledge GET routes (integrations/knowledge_source.py): engineering/agent work records and derived knowledge, never business facts.",
+      "description": "Where an L1 record or L2 value came from (plus `workbench` for records the Workbench itself authors: cases, review decisions, annotations). `bc_<company>` names the BC Production company (R15: the company/book is a dimension of every BC-sourced object). `mission_control` is a record read through a Mission Control read tool, `brain` a record read from the brain's agent knowledge GET routes (integrations/knowledge_source.py): engineering/agent work records and derived knowledge, never business facts.",
       "anyOf": [
         {
           "type": "string",
@@ -220,7 +220,7 @@
           "enum": [
             "not_po_like"
           ],
-          "description": "The source text is withheld and untrusted_text is empty: not_po_like, a po_reference field whose value is not PO-like (operating/customer_po_coverage.po_like) is never echoed, since it can hold a person's name (devloop/CASE-RUNTIME.md section 4 PO-shape rule); plx.find keeps the matched text only when it is the text the caller asked for."
+          "description": "The source text is withheld and untrusted_text is empty: not_po_like, a po_reference field whose value is not PO-like (operating/customer_po_coverage.po_like) is never echoed, since it can hold a person's name; plx.find keeps the matched text only when it is the text the caller asked for."
         }
       },
       "required": [
@@ -1531,7 +1531,7 @@
         "completeness",
         "stale"
       ],
-      "description": "R12: per source used; a stale source is a structural abstention trigger. plx.find states it for every source family of the planned scope, including how it was served (decision 2026-10-04-scope-freshness)."
+      "description": "R12: per source used; a stale source is a structural abstention trigger. plx.find states it for every source family of the planned scope, including how it was served."
     },
     "use_case": {
       "type": "object",
@@ -6189,7 +6189,7 @@
               "answer": {
                 "type": "array",
                 "maxItems": 200,
-                "description": "The cited answer skeleton (additive, lead-approved for lane plx-investigate): one entry per plan evidence value. property: a source value with its citation, checked by operating/claim_checks.py (check). count: distinct visible objects the plan reached (basis), never zero. select: a value read from a primitive's own result (a verdict such as a three-way match is always the deciding primitive's, never recomputed by the plan), with the cited values it compared (cells); per group of elements when the plan says so. A count lists its records. computed: a value a Workbench engine computed from cited answer entries (inputs), with its arithmetic (steps) and digest; null with gaps while any input is unknown (the model never computes). lead_basis marks an entry resting on lead-tier links. A missing required value is null with a gap.",
+                "description": "The cited answer skeleton (additive): one entry per plan evidence value. property: a source value with its citation, checked by operating/claim_checks.py (check). count: distinct visible objects the plan reached (basis), never zero. select: a value read from a primitive's own result (a verdict such as a three-way match is always the deciding primitive's, never recomputed by the plan), with the cited values it compared (cells); per group of elements when the plan says so. A count lists its records. computed: a value a Workbench engine computed from cited answer entries (inputs), with its arithmetic (steps) and digest; null with gaps while any input is unknown (the model never computes). lead_basis marks an entry resting on lead-tier links. A missing required value is null with a gap.",
                 "items": {
                   "type": "object",
                   "additionalProperties": false,
@@ -6681,7 +6681,7 @@
       }
     },
     "plx.agenda": {
-      "description": "A recurring meeting's agenda from cited records since the previous meeting: open projects and status, changes, blockers, decisions needed and owners, each line cited; missing sources and values are named gaps. agenda: the spec id (ontology/agendas). scope: per lane, the exact values its spec names (a chat id, a list id, an MC bucket); a lane given none uses its spec's default_scope, if any (scope_basis). since: ISO instant with offset; absent: the previous agenda's posting. offset/limit page the lines. Read-only.",
+      "description": "A recurring meeting's agenda from cited records since the previous meeting: open projects and status, changes, blockers, decisions needed and owners, each line cited; missing sources and values are named gaps. agenda: the spec id (ontology/agendas). scope: per lane, the exact values its spec names (a chat id, a list id, an MC bucket). since: ISO instant with offset; absent: the previous agenda's posting. offset/limit page the lines. Read-only.",
       "read_only": true,
       "input": {
         "type": "object",

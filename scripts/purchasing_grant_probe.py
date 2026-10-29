@@ -1,7 +1,7 @@
 """Live check ``permissions.purchasing_prices_grant``: who may hold ``purchasing_prices``
 at PLX, counted from both sources the grant rests on (counts only, never a name).
 
-Owner decision (Tanush, 2026-10-27): purchasing staff see PO line prices. The committed live
+Purchasing staff see PO line prices. The committed live
 host config (``examples/host.live-check.json``) grants the marking to ``staff:purchasing``
 only. The employee policy (``examples/employee_permission_policy.example.json``) gives an
 employee ``staff:purchasing`` through either of two paths (``operating.employee_permissions``):
@@ -27,7 +27,7 @@ The two sets may overlap (no identity join here): ``holders_at_least`` is the la
 ``purchasing_holders_none`` (both sources read, nobody holds the grant).
 
 Evidence: isolated-fixture tests (``tests.test_purchasing_po_prices``); live-unverified until
-a passing result of ``devloop/live-checks/permissions.purchasing_prices_grant.json``.
+a passing result of live check ``permissions.purchasing_prices_grant``.
 """
 
 from __future__ import annotations

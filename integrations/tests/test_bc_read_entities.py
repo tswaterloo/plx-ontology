@@ -567,7 +567,7 @@ class CaseEntityProbeTests(unittest.TestCase):
             self.assertNotIn(leaked, out.getvalue(), leaked)
         # The live check fails on exactly the rejected allowlist, never on a coded gap, and
         # on My Company's absence (this fixture's one company is not the pinned required
-        # book, directive 8a8b59c65f56).
+        # book).
         from devloop import live_verify
         spec = json.loads((Path(__file__).resolve().parents[2] / "devloop" / "live-checks"
                            / "bc.ledgers.json").read_text())

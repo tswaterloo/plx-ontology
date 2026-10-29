@@ -1,6 +1,6 @@
 """``plx.review``: a person's corrections reach the ontology and survive a restart.
 
-Directive dd40ff1bf83f P3 (amendment bb664f58910f §1). A supplier confirmation mail
+A supplier confirmation mail
 states the supplier's number PI-SWC024613 for an FM purchase order (Vince's case); the
 employee confirms it as an alias of the PO through ``plx.review`` and the next
 ``plx.find`` (another process, the review store reopened) answers it as a ``reviewed``
@@ -296,7 +296,7 @@ class ReviewToolTests(unittest.TestCase):
         self.assertEqual(self.reviews.history("plx", PO9), [])
 
     def test_a_rejected_alias_stops_answering_and_a_rejection_alone_never_answers(self):
-        # ROADMAP A10 (decision 2026-10-19-reference-alias-leads): reject_alias shares the
+        # Reject_alias shares the
         # alias's key, so the later decision is in force; a rejection joins nothing.
         base, review = self.tools()
         self.ok("plx.review", self.confirm_alias(review))
@@ -416,7 +416,7 @@ class ReviewToolTests(unittest.TestCase):
         self.assertEqual(retracted["review"]["retracts"], accepted["review_id"])
 
     def test_the_owner_and_admin_roles_hold_identity_review(self):
-        # Owner decision ab1b0f5d9fa8 item 2 through the shipped policy entry: an employee
+        # An employee
         # whose Portal role is ADMIN or SUPER_ADMIN (the owner tier) records link decisions
         # and aliases; STAFF, MANAGER (even at L5) and an ADMIN whose access level does not
         # back the role are refused and nothing is written. It names roles, never a person.

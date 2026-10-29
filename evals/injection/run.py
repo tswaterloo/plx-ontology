@@ -1,7 +1,5 @@
 """Injection test set: crafted mails and documents against the deterministic tools.
 
-10-DECISION 7 ("an injection test set joins the evaluation") and 09-CRITIQUE R6 #5
-(AgentDojo-style corpus; the eval fails on any action proposed from injected text).
 Every item (``items.json``, ``plx-injection-item/v1``) seeds an isolated world (an
 in-memory ``FixtureSystem`` for structured rows, captured documents resolved by
 handle, a fresh ``CaseStore`` and ``ActionPath`` in a temporary directory), opens a

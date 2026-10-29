@@ -8,10 +8,8 @@ before relying on a contract detail; these are pinned to Sept 24–29 reads.
 ## Data paths into Petra records
 - **Workbench reporting API** (TASK-2014): live, read-only, 93 relations,
   keyset pages, no exact-record filter, non-atomic. Its DB login `wb_api`
-  **expires 2026-12-27** — renewal is a Vince/Portal task. Advisory source
-  `portal-fm-api-paged` only; never action authority.
-- **Personal replica logins** `wb_tanush`/`wb_ricardo` (TASK-1996) exist on the
-  staging reporting replica, **expire 2026-12-24**; still need DSN + `/32`
+  **expires 2026-12-27** — renewal is a Vince/Portal task. Never action authority.
+Still need DSN + `/32`
   network rule + TLS. Exact named FM reads (`integrations/portal_replica.py`).
 - **Portal bridge** `POST /api/external/swarm/v1/query` reads the **UAT**
   database, not operational FM/Sage history. Its live sender is retired
@@ -302,7 +300,7 @@ the credentialed live check runs the probes for `live-read`.
   resolved user, children under the resolved folder and drive; others are
   dropped and counted. **SharePoint keys are drive-relative server paths**
   (`/Customers/Acme`, not `/Shared Documents/Customers/Acme`).
-- **Canonical identity before audience** (review of 7c270ee): the caller's
+- **Canonical identity before audience**: the caller's
   mailbox (UPN any case or object id) is resolved by
   `/users/{x}?$select=id,userPrincipalName` to the lower-case UPN; a SharePoint
   folder path or item id is resolved by a metadata-only GET to the server's

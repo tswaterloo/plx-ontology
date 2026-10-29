@@ -1,4 +1,4 @@
-"""Static HTTP-egress gate (`http-egress` in devloop/gate-checks.json).
+"""Static HTTP-egress gate.
 
 Hard rule: Graph, SharePoint, BC, Portal, MC and mail HTTP is read-only. This AST
 scan is a tripwire, not a sandbox: it fails when non-test code under the scanned
@@ -34,14 +34,17 @@ re-export (``from integrations.http import Request``) cannot hide a non-GET call
 ALLOWED lists (path, qualified enclosing function) pairs verified by reading the code:
   integrations/live_source_guard.py urllib_sender  the one guarded sender: runs
       after check_request (GET, or the OAuth client-credentials token POST).
-  devloop/wake_bridge.py fire  controller tooling: one POST to the Claude routine
-      fire endpoint (FIRE_URL allowlist, redirects refused). It reaches no
-      business system; the controller owner may retire it.
-  operating/messages_planner.py post_messages  the opt-in Messages API planner
-      (decision devloop/DECISIONS/messages-api-planner-q7.md): one POST to
+      It reaches no
+      business system.
+  operating/messages_planner.py post_messages  the opt-in Messages API planner:
+      one POST to
       https://api.anthropic.com/v1/messages (API_URL; any other url raises before the
       request), redirects refused (a redirect handler that raises). It reaches no
       business system; the body carries the reader's own trimmed tool results.
+  operating/embed_sender.py post_embeddings  the embeddings provider:
+      one POST to https://api.openai.com/v1/embeddings (API_URL;
+      any other url raises before the request), redirects refused. It reaches no
+      business system; its caller runs it only with PLX_EMBED_ALLOW_REMOTE=1.
 SENDER_URLS pins a sender-only file to its URLs and its one sending function: no other
 URL string and no other network call (outside-sender, unlisted-url).
 ALLOWED_IMPORTS: ``http.client.IncompleteRead`` (an exception class) in the guard.
@@ -57,7 +60,7 @@ absent under ROOT is never clean: text mode exits 1; ``--json`` prints only
 ``blocked_reason`` ``scan_tree_missing`` and the missing names and exits 0, so the live
 check reads blocked (its ``blocked_when`` holds only at the expected exit code).
 The gate runs main's copy of this script against the candidate tree (ROOT), so a
-candidate cannot widen its own allowlist; see devloop/gate-checks.json. The gate
+candidate cannot widen its own allowlist. The gate
 command still falls back to the candidate's copy when origin/main has no such file
 (first introduction or a shallow clone without the ref); that fallback is kept on
 purpose, because dropping it would fail the gate where the ref is missing.
@@ -77,8 +80,8 @@ from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-SCANNED = ("ontology", "integrations", "operating", "operator_ui", "ops_plane",
-           "reasoning", "engineering", "scripts", "devloop", "twin")
+SCANNED = ("ontology", "integrations", "operating", "operator_ui", "operator_api",
+           "ops_plane", "reasoning", "engineering", "scripts", "devloop", "twin")
 # Trees that must exist under ROOT: they hold the reviewed clients and senders. One absent
 # means the scan read the wrong root, never a clean tree (the others may be retired).
 REQUIRED_TREES = ("integrations", "operating", "scripts", "devloop")
@@ -88,8 +91,10 @@ ALLOWED = {
     ("integrations/live_source_guard.py", "urllib_sender"),
     ("devloop/wake_bridge.py", "fire"),
     ("operating/messages_planner.py", "post_messages"),
+    ("operating/embed_sender.py", "post_embeddings"),
 }
-SENDER_URLS = {"operating/messages_planner.py": {"https://api.anthropic.com/v1/messages"}}
+SENDER_URLS = {"operating/messages_planner.py": {"https://api.anthropic.com/v1/messages"},
+               "operating/embed_sender.py": {"https://api.openai.com/v1/embeddings"}}
 # Exception classes only (no connection can be opened through them).
 ALLOWED_IMPORTS = {("integrations/live_source_guard.py", "http.client.IncompleteRead")}
 URLLIB_FILES = {
@@ -97,6 +102,7 @@ URLLIB_FILES = {
     "integrations/live_source_guard.py",
     "devloop/wake_bridge.py",
     "operating/messages_planner.py",
+    "operating/embed_sender.py",
 }
 BANNED_MODULES = {
     "http.client", "httplib", "requests", "httpx", "aiohttp", "urllib3", "socket",

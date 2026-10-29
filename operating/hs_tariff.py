@@ -1,6 +1,6 @@
 """HS category table, HS x origin tariff table and the incoterm rule for landed cost.
 
-Owner rules (Tanush, 2026-10-22): an incoterm is a vendor default, overridable per PO, and it
+Business rules (2026-10-22): an incoterm is a vendor default, overridable per PO, and it
 decides title transfer and who bears freight, duty and brokerage. The HS code is per item
 CATEGORY. Duty = HS code x origin x destination (Canada). A US origin pays duty only on hair
 conditioner and hair serum; otherwise 0. The Portal ``tariff_rate`` (6.5%) is only a labelled
@@ -28,7 +28,7 @@ PROVISIONAL = "provisional (Vince meeting 2026-10-22, to confirm)"
 
 
 def load_rules(path: Path | None = None) -> dict[str, Any]:
-    """The owner rules (one JSON file, edited without code changes). Recorded data always
+    """The business rules (one JSON file, edited without code changes). Recorded data always
     wins over them; every answer that relies on one carries its status."""
     return json.loads((path or RULES_PATH).read_text(encoding="utf-8"))
 

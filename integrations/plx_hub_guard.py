@@ -1,7 +1,7 @@
 """Closed request grammar and guarded, retrying transport for Mission Control
 (MC) and the brain (VMC knowledge today, ``brain.plxcustomer.io`` after R7).
 
-Why this exists (``devloop/CONTEXT/04-MISSION-CONTROL.md`` §0.3-0.4, §8 R1;
+Why this exists (§8 R1;
 ``05-VMC-BRAIN-TOOLS.md`` §0.3, §7.1): neither key keeps us read-only.
 
 * ``MC_MCP_API_KEY`` resolves to a principal holding MC's full write bundle,
@@ -158,8 +158,7 @@ MC_APPROVABLE_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
 # grants.ts); checkoutId blocks a code checkout, which an action gate never has, and the
 # structured proposal is not built (approval-actions.ts:24-45). A created task takes MC's
 # default kind:needs-review (TASK-2634, src/lib/tasks/kind.ts), which the steward never
-# auto-leases, so labels and kind are not sent. A checkout's optional agent (<runtime>/<lane>,
-# TASK-3336 @e857f8c create-http-server.ts:320-327) binds commit Agent trailers to a code
+# auto-leases, so labels and kind are not sent. A checkout's optional agent (TASK-3336 @e857f8c create-http-server.ts:320-327) binds commit Agent trailers to a code
 # checkout; an action gate has no commits, so it is not sent (omitted = not recorded).
 # A completion's optional outcome (completed | blocked | failed, TASK-3362 @5bf29d2
 # actions.ts:658-659) lets UAT code work hand in without a PR; the Workbench completes an
@@ -723,7 +722,7 @@ class UpstreamError(SourceUnavailable):
     (an answer over the send's byte bound, never retried); ``status`` the
     HTTP status (None when unreachable). Messages never carry secrets.
 
-    Diagnosis (directive 8f867fce7ba1), sanitized: ``layer`` is where it failed
+    Diagnosis, sanitized: ``layer`` is where it failed
     (``transport``, ``http``, ``jsonrpc``, ``tool`` or ``knowledge_status``, the
     last an MC tool answer whose in-band status is not ``ok``); ``rpc_code`` the
     integer JSON-RPC error code; ``upstream_code`` the body's ``error.code`` when

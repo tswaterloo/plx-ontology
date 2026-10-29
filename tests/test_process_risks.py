@@ -283,7 +283,7 @@ class ScheduleRiskTests(Mixin, unittest.TestCase):
         self.assertIn("schedule", pre)
 
     def test_a_sqlite_error_opening_the_served_host_is_not_the_probe_phase(self):
-        """Directive 6face43dd5f9: the probe's own phase starts once the served host is
+        """The probe's own phase starts once the served host is
         open, so a SQLite error opening it is never labelled process_dependencies."""
         from unittest import mock
         from scripts import ontology_projection_probe as projection
@@ -312,7 +312,7 @@ class ScheduleRiskTests(Mixin, unittest.TestCase):
 
 
 class NotPeggedTypingTests(Mixin, unittest.TestCase):
-    """Lane process-deps-pegging (RSN-01, gap-979bf8f96c6a): a prerequisite linked by item
+    """A prerequisite linked by item
     only is a dependency_not_pegged entry only over a live record it reads, typed by those
     records (open / met / unread); reaching none, its reach's own entry is the one cause.
     Never clear either way, and the probe counts each entry by its type."""

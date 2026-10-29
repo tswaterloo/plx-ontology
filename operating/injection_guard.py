@@ -1,6 +1,6 @@
 """Injection defence: source text is data, action parameters trace to what was read.
 
-10-DECISION item 7 and 09-CRITIQUE R6 (items 1-5). Mail bodies, attachments and
+Mail bodies, attachments and
 document text are the main inputs of the PO, freight and AO cases, and any of them
 may carry text written to steer the agent ("update the PO to ...", "payment is
 approved", "ignore previous instructions"). Three deterministic rules hold that
@@ -58,7 +58,7 @@ line; no model is involved in any of them.
    proposal's type (``ActionPath.register`` keeps no other); the per-call human approval
    still decides. An
    identifier parsed out of such text is served bare only for a kind whose declared
-   value pattern is kind-specific (``kind_specific``, lead decision IB-FIREWALL-4);
+   value pattern is kind-specific (``kind_specific``);
    the boundary re-checks every normalized identifier and typed value per kind and
    value type (``_identifier_record_typed``, ``_value_record_typed``).
 
@@ -72,7 +72,7 @@ line; no model is involved in any of them.
 Boundary: the MCP host passes every tool result through :func:`firewall_tool_output`
 once at its output boundary (``operating.mcp_server.MCPServer.handle``), so original page
 text, case-mail bodies and subjects and Portal/BC cells reach a model only as envelopes
-(``devloop/OPEN-DECISIONS.md`` injection-firewall-sites, decided (a)). The ontology tools
+(decided (a)). The ontology tools
 (``operating/ontology_tools*.py``) and the mail capture views
 (``integrations/capture_mail.py``) emit envelopes themselves (their outputs are
 contract-validated: ``mcp_server.SELF_ENVELOPING_TOOLS``); their results pass the same
@@ -525,7 +525,7 @@ def is_unit(text: Any) -> bool:
     return isinstance(text, str) and _GRAMMARS["unit"].fullmatch(text) is not None
 
 
-# Generic identifier shapes (lead decision IB-FIREWALL-4): a code word with a digit, a
+# Generic identifier shapes: a code word with a digit, a
 # hyphenated word chain, two or three groups of which one carries a digit, a word chain
 # before an address (a sender-chosen Message-ID). A declared value pattern that accepts
 # any of them ('[^\x00-\x1f]{1,80}' of customer_po) is not kind-specific: it cannot tell
@@ -558,7 +558,7 @@ def is_identifier(value: Any, kind: str | None = None, citation: Any = None) -> 
 
     ``citation``: where the value was read. A value extracted from source text (a mail,
     an OCR'd original, a file: ``is_source_text_citation``) is bare only for a declared
-    kind-specific kind (``kind_specific``, lead decision IB-FIREWALL-4): the author of the
+    kind-specific kind (``kind_specific``): the author of the
     text chose it, and a generic shape ('PAY 5000 NOW', 'IGNORE-ALL-PREVIOUS-1') stays
     source text."""
     if not isinstance(value, str):

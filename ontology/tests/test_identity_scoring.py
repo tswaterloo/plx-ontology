@@ -5,7 +5,7 @@ next score; a mail sender is offered and linked to its Supplier the same way.
 
 Evidence label: ``isolated-fixture`` (synthetic Portal, BC and mail captures through the
 real projector, the compiled repository schema, ``plx.review`` and the reviews link step;
-no source is read); the live check's own argv (``devloop/live-checks/
+no source is read); the live check's own argv (the live-check specs
 ontology.identity_scoring.json``) runs ``injected-transport`` over the live-wiring fixture
 world and is checked by the verifier's ``check_expectations``.
 """

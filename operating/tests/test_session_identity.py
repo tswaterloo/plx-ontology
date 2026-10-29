@@ -1,4 +1,4 @@
-"""Session identity: no live data without a real employee (10-DECISION #7).
+"""Session identity: no live data without a real employee.
 
 Evidence label: ``isolated-fixture``. Portal user rows are Portal-shaped fixtures
 (the Prisma ``User`` fields ``rbac-adapters.ts`` loads), tickets are minted here

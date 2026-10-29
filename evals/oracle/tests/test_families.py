@@ -512,14 +512,13 @@ if __name__ == "__main__":
     unittest.main()
 
 
-# ----------------------------------------------------------------- Dot findings (dd380a4)
 
 def _rows(world: World, relation: str) -> list:
     return world.relations[relation]
 
 
 class TruncationIsNeverSilentTest(unittest.TestCase):
-    """Dot finding oracle-f4-silent-value-truncation: 21 items x 5 values + 1 > 100."""
+    """21 items x 5 values + 1 > 100."""
 
     def world(self) -> World:
         w = small_world()
@@ -557,7 +556,7 @@ class TruncationIsNeverSilentTest(unittest.TestCase):
         self.assertIn("6 of 106", gap["subject"])
 
     def test_a_verdict_names_every_cell_beyond_max_citations(self):
-        """Directive 183ec855c89b: item 1 received over 12 lines is decided on 14 cells;
+        """Item 1 received over 12 lines is decided on 14 cells;
         all are the verdict's citations (never the first 8), and a verdict over more cells
         than one calculation states is unknown with a gap, never a cut requirement."""
         from evals.oracle import families
@@ -591,7 +590,7 @@ class TruncationIsNeverSilentTest(unittest.TestCase):
 
 
 class F4UnitMissingTest(unittest.TestCase):
-    """Dot finding oracle-f4-unknown-units-match: a leg without a unit is never matched."""
+    """A leg without a unit is never matched."""
 
     def test_null_units_leave_the_verdict_unknown(self):
         w = small_world()
@@ -639,7 +638,7 @@ class F4UnitMissingTest(unittest.TestCase):
 
 
 class F3ShipmentWithoutLinesTest(unittest.TestCase):
-    """Dot finding oracle-f3-partial-shipment-lines."""
+    """A shipment without lines: partial shipment lines are decided per line."""
 
     def world(self) -> World:
         w = small_world()
@@ -664,7 +663,7 @@ class F3ShipmentWithoutLinesTest(unittest.TestCase):
         self.assertEqual(got["ordered"]["value"], "15")
 
     def test_all_shipments_without_lines_is_the_shipped_value_s_one_gap(self):
-        """Directive c1ff4b736a47: one gap state per value, never also no_shipment_rows."""
+        """One gap state per value, never also no_shipment_rows."""
         w = small_world()
         w.relations["public.app_shipment_line"] = []
         result = run("F3", {"identifier": "TSO-1", "identifier_kind": "so_number"}, KNOWN,
@@ -841,7 +840,7 @@ class F6ShippedShortTest(unittest.TestCase):
 
 
 class ReviewRepairTest(unittest.TestCase):
-    """Review of b454df9: F6 unresolved lines; F5 trims like SQL TRIM."""
+    """F6 unresolved lines; F5 trims like SQL TRIM."""
 
     def test_f6_unresolved_ordered_line_blocks_a_negative(self):
         w = small_world()
@@ -886,7 +885,7 @@ class ReviewRepairTest(unittest.TestCase):
 
 
 class F6UnresolvedShipmentLineTest(unittest.TestCase):
-    """Re-review of 66f5212: TI-2 (ordered 5 ea) shipped in full on a line whose product
+    """TI-2 (ordered 5 ea) shipped in full on a line whose product
     does not resolve; the oracle must not call it short."""
 
     def test_unresolved_shipped_line_makes_totals_lower_bounds(self):

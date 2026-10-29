@@ -45,7 +45,7 @@ EMPLOYEE_P = "employee:" + OID
 EMPLOYEE = Actor("plx", frozenset({EMPLOYEE_P}))
 SP_IDS = {"siteId": "site-1", "listId": "list-1", "listItemId": "7"}
 
-# Synthetic text of the documents in the round 1-5 probes (devloop/CONTEXT/02 shapes).
+# Synthetic text of the documents in the round 1-5 probes.
 PROFORMA = ("PROFORMA INVOICE\nNo. PI-SWC024613\nYour Purchase Order No.: PO5447\n"
             "Total US$40,100.00\nPayment: 30% deposit")
 PI_AS_QUOTATION = ("QUOTATION\nPI-25240\nTotal US$40,100.00\n30% deposit, balance against BL "
@@ -482,7 +482,7 @@ class RecordedKindTest(LiveCitationTestCase):
         self.assertEqual(doc["workbench_confirmation"], {"status": "not_this_original"})
 
     def test_the_stored_report_shows_no_original_detail(self):
-        """Review of 8b1283b, minor 3: the report PlaybookReportStore serves to the whole case
+        """The report PlaybookReportStore serves to the whole case
         audience carries statuses, kinds, counts and gap codes only."""
         self.pages, self.columns = [FORWARDER_QUOTE], {"DocumentCategory": "QUOTE",
                                                        "ItemRef": "PO5447"}
@@ -552,11 +552,11 @@ class RecordedKindTest(LiveCitationTestCase):
         self.assertEqual(report["original_checks"]["page_reads"], po.PAGE_READ_BUDGET)
 
     def test_a_scan_over_the_ocr_page_cap_is_incomplete_and_one_within_it_reads_whole(self):
-        """Directive 84dda19af1d5: the real extractor OCRs pages 1-200 of a 300-page scan;
+        """The real extractor OCRs pages 1-200 of a 300-page scan;
         those pages are never the whole text (its page 250 is a PROFORMA title), so the
         recorded kind is not checked. A 150-page scan is read whole and fills its role. The
         page budget and call rate cover 300 pages: only the cap, never a budget, stops the read.
-        Directive a15dadbd78a4: an extraction stored before ``skipped_by_cap`` existed (its
+        An extraction stored before ``skipped_by_cap`` existed (its
         warning only) is refused as whole too; the attach finding names the pages read and
         skipped; plx.read serves the capped text with a typed ``skipped_by_cap`` gap, and a
         page past the cap (230) answers with that gap, not as a missing page."""

@@ -1,4 +1,4 @@
-"""Directory-wide mail capture (owner directive c75dfaba0f8e) over an injected Graph.
+"""Directory-wide mail capture over an injected Graph.
 
 Every mailbox in the tenant directory except the excluded people's and the HR / payroll
 deny list (``integrations.mail_directory_scope``), captured by the existing resumable
@@ -498,7 +498,7 @@ class CardinalityTests(AllMailboxesCase):
                 if members == 10:
                     self.assertEqual(lv.check_expectations(SPEC, 0, report), [])
                 if members == 1:
-                    # Fewer than the owner's seven mailboxes is not a pass of the check.
+                    # Fewer than the seven scoped mailboxes is not a pass of the check.
                     self.assertTrue(any("mailboxes_enumerated" in f for f in
                                         lv.check_expectations(SPEC, 0, report)))
 

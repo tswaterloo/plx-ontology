@@ -1,6 +1,6 @@
 """Captured case originals served per reader through their source item's gate.
 
-Owner decision 2026-10-27 (``devloop/DECISIONS/2026-10-27-case-originals-served.md``): a
+A
 file ``scripts.case_originals read`` holds in ``<state>/case-originals`` reads through
 ``plx.documents``, ``plx.read`` and the claim gate's re-read for a reader who may open the
 SharePoint item (or Teams chat message) it was read from, and for nobody else. A file
@@ -606,8 +606,7 @@ REPO_REF = ("https://github.com/acme-plx/case-maps/blob/" + "e" * 40
 
 
 def repository_audience(*, grants=("staff:quality",), repository="repo:acme-plx/case-maps"):
-    """``reader_audience`` plus one exact repository grant (supervisor decision
-    2026-10-29: ``repo:<owner>/<name>``, default deny)."""
+    """``reader_audience`` plus one exact repository grant (default deny)."""
     return LiveSourceAudience(
         {f"sharepoint:{DRIVE}:{QUALITY_FOLDER}": ["staff:quality", "staff:sales"],
          f"sharepoint:{DRIVE}:{QUALITY_FOLDER}/*": ["staff:quality", "staff:sales"],

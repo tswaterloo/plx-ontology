@@ -267,7 +267,7 @@ class MailGuardTests(unittest.TestCase):
 
 class TeamsGuardTests(unittest.TestCase):
     """capture_teams uses the same guard. Chats are read over the fake only: no Teams
-    chat is ever read live by this lane (directive cdce67ac8e8c)."""
+    chat is ever read live by this module."""
 
     SENDER = "0000aaaa-0000-0000-0000-000000000009"   # an excluded sender, no member
 

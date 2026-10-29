@@ -1,4 +1,4 @@
-"""devloop/TRY-IT.md is self-checking: every fixture command block runs keyless, every
+"""Every fixture command block runs keyless, every
 live-path block is the command of a live check it cites, and every cited check exists."""
 import json
 import os
@@ -237,7 +237,7 @@ class TryItTest(unittest.TestCase):
                         "a keyless run must never meet the live check's expectations")
 
     def test_the_live_section_cites_passing_verdicts(self):
-        # main-ci.yml (CI=true) fetches claude/devloop-live first, so there a missing
+        # main-ci.yml (CI=true) fetches the live-results branch first, so there a missing
         # commit fails; the integrate gate cannot fetch it and skips, as a local run does.
         text = live_section()
         commits = re.findall(r"verifier commit\s+`([0-9a-f]{7,40})`", text)

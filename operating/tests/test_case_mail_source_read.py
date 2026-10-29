@@ -125,7 +125,6 @@ class LiveScopeTests(unittest.TestCase):
             scope = json.loads((ROOT / scope_file).read_text(encoding="utf-8"))
             audience = json.loads((ROOT / audience_file).read_text(encoding="utf-8"))
             addresses = [m["address"] for m in scope["mailboxes"]]
-            # The six mailboxes of owner directive dedbcc76f44a, nothing else.
             self.assertEqual(sorted(addresses), sorted(
                 f"{box}@petrasoap.com" for box in ("order-confirmation", "ship", "torontowh",
                                                    "ap", "receiving", "qclabresults")))

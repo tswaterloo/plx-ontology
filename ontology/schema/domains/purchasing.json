@@ -483,7 +483,7 @@
         {
           "name": "status",
           "value_type": "text",
-          "description": "Gold header status (free string): the FileMaker words the gold ETL copies (live capture 2026-10-20: Cancel, Complete, DRAFT, Pending, B.Order, Revised, Generated) or ORDERED once a send marks it; never the derived fulfillment code. Open, closed, draft or unknown is decided by the one definition, operating/po_status.py, from this word and the summed line quantities (devloop/DECISIONS/2026-10-21-po-open-sage-fm.md). Other systems' statuses are separate properties: the vocabularies differ.",
+          "description": "Gold header status (free string): the FileMaker words the gold ETL copies (live capture 2026-10-20: Cancel, Complete, DRAFT, Pending, B.Order, Revised, Generated) or ORDERED once a send marks it; never the derived fulfillment code. Open, closed, draft or unknown is decided by the one definition, operating/po_status.py, from this word and the summed line quantities. Other systems' statuses are separate properties: the vocabularies differ.",
           "sources": [
             {
               "binding": "portal.app_purchase_order",
@@ -3798,7 +3798,7 @@
           "value_type": "quantity",
           "unit_from": "unitOfMeasureCode",
           "quantity_role": "returned",
-          "description": "The quantity credited. On an Item line posting ships it back to the vendor (role returned, as SalesCreditMemoLine.credited_quantity, devloop/DECISIONS/2026-10-07-bc-credit-memo-quantity-role.md); on Charge/Account lines it is no goods: read line_type first.",
+          "description": "The quantity credited. On an Item line posting ships it back to the vendor (role returned, as SalesCreditMemoLine.credited_quantity); on Charge/Account lines it is no goods: read line_type first.",
           "sources": [
             {
               "binding": "bc.purchase_credit_memo_lines",
@@ -6894,7 +6894,7 @@
       "commit": "b46934a",
       "symbol": "fetchPurchaseOrderFinance",
       "lines": "276-330",
-      "note": "A PO's BC purchase invoices are those whose TRIM(order_number) equals the trimmed Portal PO number (or its BC PO number), or whose vendor_invoice_number is one recorded on the PO's receipts; the snapshot query has no company filter. Unchanged at c3ffda3 (line 326, as the lane cites it at the repo pin 549f6f0e)."
+      "note": "A PO's BC purchase invoices are those whose TRIM(order_number) equals the trimmed Portal PO number (or its BC PO number), or whose vendor_invoice_number is one recorded on the PO's receipts; the snapshot query has no company filter. Unchanged at c3ffda3 (line 326)."
     },
     "portal.bc_drain_purchase_invoice": {
       "kind": "upstream_code",
@@ -7122,7 +7122,7 @@
     "workbench.bc_same_company_scope": {
       "kind": "workbench_code",
       "path": "ontology/schema.py",
-      "note": "Both ends are BC captures: compare only within one BC company (bc_<book> equal on both ends). BC numbers are unique per company only; masters synced to several books and consolidation copies reuse them (SO vs DSO series: outbox-drain.ts:880-890 @b46934a). Machine-readable today as ontology.schema.link_company_scope / CompiledSchema.company_scope; a C0 field is asked in devloop/OPEN-DECISIONS.md bc-link-company-scope."
+      "note": "Both ends are BC captures: compare only within one BC company (bc_<book> equal on both ends). BC numbers are unique per company only; masters synced to several books and consolidation copies reuse them (SO vs DSO series: outbox-drain.ts:880-890 @b46934a). Machine-readable today as ontology.schema.link_company_scope / CompiledSchema.company_scope."
     },
     "allowlist.sage.po_receipt_header.multipor": {
       "kind": "upstream_code",
@@ -7131,7 +7131,7 @@
       "commit": "b46934a",
       "symbol": "sage.po_receipt_header",
       "lines": "3347-3351",
-      "note": "Sage receipt headers serve multipor/pors: one receipt can cover several POs, while the header porhseq/ponumber name only one of them, and the served receipt detail carries no PO key (rcphseq/rcplseq only). The header pair is therefore capped at corroborated: never a fact that this is the receipt's only PO, and a multi-PO receipt's totals must not be attributed to it. C0 cannot condition a link tier on multipor (devloop/OPEN-DECISIONS.md sage-multi-po-receipts)."
+      "note": "Sage receipt headers serve multipor/pors: one receipt can cover several POs, while the header porhseq/ponumber name only one of them, and the served receipt detail carries no PO key (rcphseq/rcplseq only). The header pair is therefore capped at corroborated: never a fact that this is the receipt's only PO, and a multi-PO receipt's totals must not be attributed to it. C0 cannot condition a link tier on multipor."
     },
     "workbench.bc_line_price_uom": {
       "kind": "workbench_code",
@@ -7182,7 +7182,7 @@
     "workbench.bc_purchase_credit_memos": {
       "kind": "workbench_code",
       "path": "integrations/live_source_grammar.py",
-      "note": "BC_QUERY_SPECS purchaseCreditMemos / purchaseCreditMemoLines: field names from the BC API v2.0 purchaseCreditMemo and purchaseCreditMemoLine resources (MicrosoftDocs dynamics365smb-devitpro-pb api-reference/v2.0); invoiceId / invoiceNumber name the invoice the memo is applied to. Captured by integrations.bc_read.BcCapture (lines by nested navigation); unverified live until devloop/live-checks/bc.capture_full.json records the units complete."
+      "note": "BC_QUERY_SPECS purchaseCreditMemos / purchaseCreditMemoLines: field names from the BC API v2.0 purchaseCreditMemo and purchaseCreditMemoLine resources (MicrosoftDocs dynamics365smb-devitpro-pb api-reference/v2.0); invoiceId / invoiceNumber name the invoice the memo is applied to. Captured by integrations.bc_read.BcCapture (lines by nested navigation); unverified live until live check ``bc.capture_full`` records the units complete."
     },
     "workbench.bc_payment_state_decision": {
       "kind": "workbench_code",

@@ -2,7 +2,7 @@
  "$schema": "_process.schema.json",
  "format": "plx-process-graph/v1",
  "id": "purchase_to_invoice",
- "description": "Procure-to-pay as Portal and BC run it (BC transaction mapping brief, P2P; Vince's Packaging Procure-to-GL Map stages 11, 13, 16, 17 and 19): purchase order, supplier confirmation (document-derived, optional), warehouse receipt(s) (BC purchase receipt, receive-only), vendor invoice posted in BC, and its G/L entries. Three-way match is the quantity check below: PO line vs receipt quantity, receipt vs invoice quantity, PO vs invoice unit price. Payment is the last stage: BC marks a posted invoice Paid once payments and applied credit memos settle it (posted vendor payments and vendor ledger entries are not captured; vendor payment journal lines are captured as pending Payment objects, never proof of a payment: devloop/DECISIONS/2026-10-07-bc-finance-2-payment-ledger.md); a credit memo applied to the PO's invoices is the optional vendor_credit stage.",
+ "description": "Procure-to-pay as Portal and BC run it (BC transaction mapping brief, P2P; Vince's Packaging Procure-to-GL Map stages 11, 13, 16, 17 and 19): purchase order, supplier confirmation (document-derived, optional), warehouse receipt(s) (BC purchase receipt, receive-only), vendor invoice posted in BC, and its G/L entries. Three-way match is the quantity check below: PO line vs receipt quantity, receipt vs invoice quantity, PO vs invoice unit price. Payment is the last stage: BC marks a posted invoice Paid once payments and applied credit memos settle it (posted vendor payments and vendor ledger entries are not captured; vendor payment journal lines are captured as pending Payment objects); a credit memo applied to the PO's invoices is the optional vendor_credit stage.",
  "root_type": "PurchaseOrder",
  "tier_floor": "stored_by_text_join",
  "stages": [
@@ -44,7 +44,7 @@
      "events": [
       "PurchaseOrder.issued"
      ],
-     "note": "BC API v2.0 purchaseOrder status (captured: integrations/bc_purchase.py SELECT) read by the shared definition: Draft is a PO not yet released, so not issued, as a gold DRAFT is not (lane process-deps-decisions, directive 40cbdb929c97); an unreadable status leaves the stage unknown, never issued."
+     "note": "BC API v2.0 purchaseOrder status (captured: integrations/bc_purchase.py SELECT) read by the shared definition: Draft is a PO not yet released, so not issued, as a gold DRAFT is not; an unreadable status leaves the stage unknown, never issued."
     },
     {
      "object_type": "PurchaseOrder",

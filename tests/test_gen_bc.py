@@ -5,7 +5,7 @@ Evidence labels: the committed pin is the live ``$metadata`` the verifier publis
 registry probes (``FIXTURE``, aligned with that document where the schema binds it) and
 ``injected-transport`` for the ``$metadata`` GET and the capture, both through the real
 GET-only client served by ``FakeBc`` (``integrations/tests/test_bc_capture.py``). The live
-counterpart is ``devloop/live-checks/schema.bc_metadata_drift.json`` (live-unverified).
+counterpart is live check ``schema.bc_metadata_drift`` (live-unverified).
 """
 
 from __future__ import annotations
@@ -98,7 +98,7 @@ class GenerationTests(unittest.TestCase):
         for path, text in bc.build().items():
             self.assertEqual(path.read_text(encoding="utf-8"), text, path)
         pinned = bc.load_pin()
-        # Honest label: the document the verifier published (claude/devloop-live
+        # Honest label: the document the verifier published (the live-results branch
         # results/artifacts/schema.bc_metadata_drift/<sha256>.xml), re-pinned in review.
         self.assertEqual((pinned["evidence_mode"], pinned["document"]["path"],
                           pinned["document"]["sha256"][:16], pinned["document"]["captured_at"]),

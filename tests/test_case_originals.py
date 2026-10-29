@@ -1,5 +1,5 @@
 """Case originals registry and reader (scripts/case_originals.py): registry rows from a
-trimmed copy of the Dot's source-pin record and capture records, and one read of every
+trimmed copy of the source-pin record and capture records, and one read of every
 registered original and every watch-folder file through the GET-only Graph clients over a
 fixture tenant (injected transport)."""
 
@@ -96,7 +96,7 @@ PROCESS = f"https://{SP}/sites/Operations/Shared%20Documents/Owner/process-maps/
 
 
 def record() -> dict:
-    """A trimmed copy of the advisory record's shape (field names as the Dot writes them)."""
+    """A trimmed copy of the source record's shape."""
     teams = {"source_message_url": "https://teams.microsoft.com/l/message/19%3Aabc/1",
              "source_message_id": "1", "source_attachment_id": "d6-1",
              "submitted_at": "2026-10-12T18:20:43.979Z",
@@ -235,8 +235,7 @@ CAP_ZIP = _capture_zip()
 
 
 def capture(name: str, data: bytes, item: str, sha: str | None = None) -> dict:
-    """A capture record's shape (an advisory context record naming one original file by
-    its provider size and quickXorHash only)."""
+    """A capture record's shape."""
     return {"schema": "plx-advisory/v1", "kind": "context",
             "created_at": "2026-10-15T10:03:42+00:00",
             "source_revision": "1.0:2026-10-15T09:56:16Z",
@@ -250,7 +249,7 @@ def capture(name: str, data: bytes, item: str, sha: str | None = None) -> dict:
 
 
 
-# -- a manifest record (the Dot's read of a SharePoint library: source_manifest,
+# -- a manifest record (the read of a SharePoint library: source_manifest,
 #    nested_attachment_manifest, zip_member_manifest), trimmed to the record's field shapes
 MSITE, MWEB, MLIST = (uuid.UUID(f"{n}{n}{n}{n}0000-0000-4000-8000-00000000000{n}")
                       for n in (1, 2, 3))
@@ -261,7 +260,7 @@ ART_PATH = "/Art Examples"
 LOTION = b"# Lotion thread\nThe lotion ends pending 7K2.\n"
 INDEX = b"<html><body>index v2 body 3J8</body></html>"
 MAP_LINK = "https://claude.ai/artifact/not-a-registry-value"
-CAVEATS = {  # owner directive 642494a1e893, verbatim
+CAVEATS = {
     "a": "the issue index's lotion re-approval and the customer's concentrate cancellation "
          "are index claims only; the supplied transcripts don't support them (lotion ends "
          "pending; no cancellation in the 142-line concentrate transcript), and neither is "
@@ -626,11 +625,15 @@ class CaseOriginalsTest(unittest.TestCase):
                          ["5cfdad986c741bb61fd3cde2c21b88c2cc59a608d7522a0494f7c84e360cbe71",
                           "a20ba73959a0c2557d4f343cf1f8108dc3cdababa6a38e537689be58eb332e96",
                           "f2cd062d2ad182dbc8efc6024d89e0aa8b11702275a9b0b22b45e81693181276",
-                          # the card-sources input's one cited record (Laura's ZIP)
-                          "b1f2c4fa840b5497d3d0b6b0e61c685997e6593b62dfe0934210b6a25e05e23e"])
-        self.assertEqual([a["role"] for a in registry["advisories"]][-1], "card")
+                          # the card-sources input's cited records (Laura's ZIP and
+                          # the three R&D maps' rendered text)
+                          "b1f2c4fa840b5497d3d0b6b0e61c685997e6593b62dfe0934210b6a25e05e23e",
+                          "074d4f122d44c91d448c39c0524705c86cb9a37b77cef87d10322524a8988497",
+                          "ab3ce351c65922fed59aec112c00375f87ad97de9dab2fac30aaef2b29623d80",
+                          "c8b15fc76d838ec5f67b2314067628b3e1d746e9845d071e3ad54efc8bd7c9cd"])
+        self.assertEqual([a["role"] for a in registry["advisories"]][-4:], ["card"] * 4)
         self.assertEqual((registry["counts"]["file_records"], registry["counts"]["aliases"],
-                          len(registry["counts"]["cases"])), (92, 21, 10))
+                          len(registry["counts"]["cases"])), (92, 21, 11))
         text = co.REGISTRY_PATH.read_text(encoding="utf-8")
         for leak in ('"originals/', '"expanded/', "tempauth", "downloadUrl", "/home/",
                      "Bearer"):
@@ -639,7 +642,7 @@ class CaseOriginalsTest(unittest.TestCase):
                            if "revision" in r and r["revision"]["version_id"] in
                            ("195.0", "197.0"))
         self.assertEqual(revisions, ["195.0", "197.0"])
-        # the four advisory captures: one row each, bound to their case and gap; over the
+        # One row each, bound to their case and gap; over the
         # reader's content bound a typed oversize row, never a sha256 the record lacks
         captures = [r for r in registry["rows"] if r.get("origin") == "capture"]
         self.assertEqual([(r["capture"]["path"][8:20], r["capture"]["gap"], r["status"],
@@ -887,8 +890,8 @@ class CaseOriginalsTest(unittest.TestCase):
 
     def test_the_live_floor_over_the_committed_registry_needs_a_graph_read(self):
         # the committed registry through a tenant that serves none of its files: every one of
-        # its 151 entries (150 and the card-sourced Teams attachment) and 4 captures reports
-        # why, yet the check fails without a Graph read
+        # its 154 entries (150, the card-sourced Teams attachment and the three R&D maps)
+        # and 4 captures reports why, yet the check fails without a Graph read
         with mock.patch.object(co, "REPOSITORY_ROOT", self.root):
             report = co.read(ENV, registry_path=co.REGISTRY_PATH, state_dir=self.root / "s",
                              run_id="run-floor", role="verifier", sender=Tenant(),
@@ -896,7 +899,7 @@ class CaseOriginalsTest(unittest.TestCase):
         spec = json.loads((co.ROOT / "devloop" / "live-checks" / f"{co.REPORT_CHECK}.json")
                           .read_text(encoding="utf-8"))
         self.assertEqual((report["entries"], report["unreported"], report["undiagnosed"],
-                          report["captures_reported"], report["ok"]), (151, 0, 0, 4, True))
+                          report["captures_reported"], report["ok"]), (154, 0, 0, 4, True))
         self.assertEqual(lv.check_expectations(spec, 0, report),
                          ["by_status.read < 1", "read_via.drive_item < 1",
                           "case_findings.rendered < 1"])  # nothing read, nothing rendered
@@ -1557,7 +1560,7 @@ class CaseOriginalsTest(unittest.TestCase):
         self.assertNotIn(po["id"], baseline_po.get("same_bytes_as") or [])
         self.assertEqual({tuple(r["case_ids"]) for r in added}, {("case-art",)})
         self.assertEqual({r["case"] for r in added}, {"case-art"})
-        self.assertEqual({tuple(r["proven_by"]) for r in added}, {()})  # the Dot's read
+        self.assertEqual({tuple(r["proven_by"]) for r in added}, {()})  # the read
         # the header: the record's commit, SHA-256, sections, payloads and caveats verbatim
         head = registry["advisories"][-1]
         self.assertEqual((head["role"], head["commit"], head["path"], head["record_sha256"],
@@ -1902,7 +1905,7 @@ class CaseOriginalsTest(unittest.TestCase):
 
     def card_sources(self, data: bytes, **over) -> tuple[bytes, dict, str]:
         """A card-sources input naming one Teams chat attachment (and one gap), the
-        advisory record that pins it, and the attachment's content URL."""
+        source record that pins it, and the attachment's content URL."""
         url = personal("laura", "flow-mapper.zip")
         thread = "19%3A0c75e4d6abc%40thread.v2/1792424594223"
         record_doc = {"schema": "plx-advisory/v1", "kind": "context", "source_id": url,
@@ -2017,9 +2020,131 @@ class CaseOriginalsTest(unittest.TestCase):
                               card_sources=dup_sources,
                               card_records={record_key: json.dumps(dup_record).encode()})
 
+    def rendered_record(self, text: str, **over) -> dict:
+        """An source record holding a claude.ai artifact's complete rendered text."""
+        doc = {"schema": "plx-advisory/v1", "kind": "context",
+               "source_id": "https://claude.ai/artifact/AbC123",
+               "source_revision": "rendered-text-sha256:" + h(text.encode()),
+               "summary": "R&D map: complete captured process map.",
+               "facts": [{"type": "captured_source", "rendered_characters": len(text)},
+                         {"type": "limits", "detail": "rendered text, not artifact bytes"}],
+               "source_text": text}
+        doc.update(over)
+        return doc
+
+    def rendered_sources(self, text: str, commit: str, **over) -> bytes:
+        entry = {"name": "R&D map, complete rendered text.txt", "owner": "Erin",
+                 "repository": "org/repo", "bytes": len(text.encode()),
+                 "sha256": h(text.encode()),
+                 "advisory": {"commit": commit, "path": "context/r.json"}}
+        entry.update(over)
+        return json.dumps({"schema": co.CARD_SOURCES_SCHEMA, "note": "test", "entries": [
+            {"case": "case-rnd", "rendered_artifact": entry}]}).encode()
+
+    def test_a_card_rendered_artifact_is_a_pinned_derivative_read_from_its_record(self):
+        from operating.captured_originals import repository_resource, source_unit
+
+        text = "Raw material samples \u2014 from request to used up\nStep 1 RS7Q.\n"
+        repo = self.root / "repo"
+        (repo / "context").mkdir(parents=True)
+        (repo / "context" / "r.json").write_text(json.dumps(self.rendered_record(text)))
+        git(repo, "init", "-q")
+        git(repo, "add", ".")
+        git(repo, "commit", "-qm", "record")
+        commit = git(repo, "rev-parse", "HEAD")
+        sources = self.rendered_sources(text, commit)
+        with mock.patch.object(co, "REPOSITORY_ROOT", repo):
+            records = co._card_records(sources)   # the local Git objects, no fetch
+        registry = self.build(card_sources=sources, card_records=records)
+        [row] = [r for r in registry["rows"] if r["origin"] == "card"]
+        data = text.encode("utf-8")
+        self.assertEqual((row["status"], row["kind"], row["record_kind"], row["case_ids"],
+                          row["expected"], row["source"]["url"],
+                          row["source"]["repository_ref"]),
+                         ("pinned", "derivative", "historical complete rendered artifact "
+                          "text, derived representation", ["case-rnd"],
+                          {"bytes": len(data), "sha256": h(data)}, None,
+                          f"https://github.com/org/repo/blob/{commit}/context/r.json"))
+        self.assertEqual((registry["advisories"][-1]["role"],
+                          registry["advisories"][-1]["source_id"]),
+                         ("card", "https://claude.ai/artifact/AbC123"))
+        self.assertNotIn("RS7Q", json.dumps(registry))   # no body in the registry
+        # read from the record at its commit (the rendered-text field), no Graph request
+        self.path.write_text(json.dumps(registry), encoding="utf-8")
+        tenant = Tenant()
+        with mock.patch.object(co, "REPOSITORY_ROOT", repo):
+            report = self.run_read(tenant, watch=False)
+        receipt = self.receipt(row["id"])
+        self.assertEqual((receipt["body_status"], receipt["match"], receipt["read_via"],
+                          receipt["sha256"], receipt["bytes"]),
+                         ("read", True, "repository_field", h(data), len(data)))
+        self.assertEqual(self.entries(report)[row["id"]]["status"], "read")
+        self.assertEqual(report["read_via"]["repository"], 1)
+        self.assertIn("RS7Q", (self.root / "state" / receipt["extraction"]["text_ref"])
+                      .read_text(encoding="utf-8"))
+        # served only to a reader granted the repository
+        unit, reason = source_unit(receipt)
+        self.assertEqual((unit["kind"], repository_resource(unit), reason),
+                         ("repository", "repo:org/repo", None))
+        # the record absent from the local objects: unavailable, never read
+        moved = json.loads(json.dumps(registry))
+        next(r for r in moved["rows"] if r["id"] == row["id"])["source"]["repository_ref"] = (
+            f"https://github.com/org/repo/blob/{'0' * 40}/context/r.json")
+        self.path.write_text(json.dumps(moved), encoding="utf-8")
+        with mock.patch.object(co, "REPOSITORY_ROOT", repo):
+            entry = self.entries(self.run_read(tenant, run_id="run-2", watch=False))[row["id"]]
+        self.assertEqual((entry["status"], entry["detail"]),
+                         ("unavailable", "repository_object_absent"))
+
+    def test_a_rendered_artifact_its_record_does_not_prove_fails_closed(self):
+        text = "Ingredient lists map\nStep 1.\n"
+        commit, key = "e" * 40, ("e" * 40, "context/r.json")
+        good = self.rendered_record(text)
+
+        def attempt(sources, doc, records=None):
+            co.build_registry(
+                self.raw, advisory_commit=COMMIT, advisory_path="context/x.json",
+                card_sources=sources, card_records=records if records is not None else {
+                    key: json.dumps(doc).encode()})
+
+        sources = self.rendered_sources(text, commit)
+        attempt(sources, good)   # the proven record builds
+        short = text[:-3]
+        refused = {
+            "card_rendered_unproven": [
+                # another hash scheme, another text, a partial capture, no capture fact
+                (sources, {**good, "source_revision": "sha256:" + h(text.encode())}),
+                (sources, {**good, "source_text": short}),
+                (sources, {**good, "facts": [{"type": "captured_source",
+                                              "rendered_characters": len(text) + 40}]}),
+                (sources, {**good, "facts": []}),
+                (sources, {**good, "source_text": None}),
+                (sources, {**good, "source_id": "artifact-invitation-email"}),
+                (sources, {**good, "schema": "plx-advisory/v0"}),
+                # the entry claims other bytes or another size
+                (self.rendered_sources(text, commit, sha256=h(short.encode())), good),
+                (self.rendered_sources(text, commit, bytes=len(text) + 1), good)],
+            "card_rendered_invalid": [
+                (self.rendered_sources(text, commit, repository="org"), good),
+                (self.rendered_sources(text, commit, repository="../x/y"), good),
+                (self.rendered_sources(text, commit, name="a/b.txt"), good),
+                (self.rendered_sources(text, commit, advisory={"commit": commit,
+                                                               "path": "../r.json"}), good),
+                (self.rendered_sources(text, commit, bytes=-1), good)],
+            "card_source_invalid": [(self.rendered_sources(text, commit, extra="x"), good)]}
+        for reason, cases in refused.items():
+            for sources_bytes, doc in cases:
+                with self.subTest(reason=reason, doc=sorted(doc)), \
+                        self.assertRaisesRegex(ValueError, reason):
+                    attempt(sources_bytes, doc)
+        with self.assertRaisesRegex(ValueError, "card_advisory_missing"):
+            attempt(sources, good, records={})
+        with self.assertRaisesRegex(ValueError, "card_advisory_invalid"):
+            attempt(sources, good, records={key: b"not json"})
+
     def test_committed_card_rows_are_the_generators(self):
         # examples/case_originals_card_sources.json through the generator gives the
-        # committed rows of origin card, the attachment proven by its advisory record
+        # committed rows of origin card, the attachment proven by its source record
         # (read from the local Git objects; absent there, nothing can be checked).
         raw = (co.ROOT / "examples" / "case_originals_card_sources.json").read_bytes()
         records = co._card_records(raw)
@@ -2030,10 +2155,23 @@ class CaseOriginalsTest(unittest.TestCase):
         self.assertEqual([r for r in registry["rows"] if r.get("origin") == "card"],
                          files + gaps)
         self.assertEqual(registry["advisories"][-len(heads):], heads)
-        [zip_row] = files
+        zip_row, *maps = files
         self.assertEqual((zip_row["name"], zip_row["expected"]["sha256"][:8],
                           zip_row["source"]["teams_message_id"]),
                          ("regulatory-process-flow-mapper.zip", "1c081e63", "1792424594223"))
+        # the three R&D maps: derivatives pinned by their records' rendered-text SHA-256,
+        # read from the source record at its codex/record commit; no R&D gap row left
+        self.assertEqual(gaps, [])
+        self.assertEqual(
+            [(r["id"], r["owner"], r["kind"], r["expected"]["sha256"][:8],
+              r["source"]["repository_ref"].split("/blob/")[1][:8]) for r in maps],
+            [("co-8302d5d6b9e4", "Allison Tam", "derivative", "a2d09819", "57bce1d4"),
+             ("co-ef51ec46eba3", "Erin", "derivative", "60cfb8f7", "81c7833e"),
+             ("co-6783155370e7", "Giulia", "derivative", "28145aac", "d7af7e54")])
+        for row, head in zip(maps, heads[1:]):
+            self.assertEqual(head["source_revision"],
+                             "rendered-text-sha256:" + row["expected"]["sha256"])
+        self.assertEqual(registry["counts"], co._counts(registry["rows"]))
 
     def test_committed_registry_carries_the_artwork_manifest_and_the_crosswalk(self):
         registry, _ = co.load_registry(co.REGISTRY_PATH)

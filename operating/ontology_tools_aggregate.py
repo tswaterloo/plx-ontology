@@ -1,14 +1,14 @@
-"""Generic ontology tools ``plx.aggregate`` and ``plx.compare`` (10-DECISION 4, 07 C.8).
+"""Generic ontology tools ``plx.aggregate`` and ``plx.compare`` (07 C.8).
 
-Both tools read the L2 projection store through lane L8's ``StoreReader``/``ReadPolicy``
-(``operating/ontology_tools.py``) and lane L9's visibility rules and link walk
+Both tools read the L2 projection store through L8's ``StoreReader``/``ReadPolicy``
+(``operating/ontology_tools.py``) and L9's visibility rules and link walk
 (``operating/ontology_tools_traverse.py``), and answer exactly the frozen contracts in
 ``operating/ontology_tool_contracts.json``: every output is validated with
 ``ontology/json_contract.py`` and bounded by ``limits.max_result_bytes`` before it
 leaves. Nothing here names an object type, property, link type or case: types,
 properties, cardinalities and authority come from the compiled schema and the store.
 
-Permissions first (09-CRITIQUE R6 #7). Set members, dimension objects and values are
+Permissions first. Set members, dimension objects and values are
 trimmed to what the reader may read at ``as_known_at`` *before* anything is grouped,
 summed or compared: the L9 SQL rules (audience granted; every version and value from T
 on carries only held markings and passes the item gate) plus L8's visibility check. A
@@ -85,7 +85,7 @@ contributes: it is counted in ``withheld`` and the affected answer is incomplete
   ``partial`` is true and the answer is not complete: a partial number is never shown as
   a complete total. More than 200 groups, or more than one response holds, is
   ``truncated``;
-* time (10-DECISION 5): members, values and absence are as known at ``as_known_at`` from
+* time: members, values and absence are as known at ``as_known_at`` from
   the versioned captures. A member first captured after T is not counted (a
   ``not_ingested`` gap ``captured_after_as_known_at`` says how many: nothing was known of
   it then, which is not evidence it did not exist); one with a version live at T is;

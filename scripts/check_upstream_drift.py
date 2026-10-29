@@ -2,11 +2,11 @@
 """Report upstream drift for files whose logic the Workbench mirrors.
 
 USAGE
-    python3 scripts/check_upstream_drift.py [--pins devloop/upstream-pins.json]
+    python3 scripts/check_upstream_drift.py [--pins the upstream pin file]
         [--checkout REPO=PATH ...] [--json] [--max-files N]
     python3 scripts/check_upstream_drift.py --align-lagging [--checkout REPO=PATH ...]
 
-Each pin in ``devloop/upstream-pins.json`` names an upstream file, the commit
+Each pin in the upstream pin file names an upstream file, the commit
 the Workbench read it at, and the sha256 of the file at that commit. The check
 compares that sha256 with the file at the current HEAD of a local checkout.
 
@@ -30,7 +30,7 @@ Purely local git reads (``rev-parse``, ``show``, ``diff``, ``cat-file``).
 No network, no writes to any checkout. Run it before building on an
 upstream-mirroring module and after each upstream pull.
 
-``--align-lagging`` (``devloop/cloud_setup.sh`` runs it at session start) checks nothing:
+``--align-lagging`` checks nothing:
 it moves each checkout whose HEAD lags its ``repo_pins`` commit (HEAD a strict ancestor
 of it, so every pinned file would read as drift that is only the checkout's age) to that
 commit, detached, with a local ``git checkout``. A checkout at, ahead of or beside its pin

@@ -1,4 +1,4 @@
-"""The objective-investigation eval (scripts/eval_objective_agent.py, ROADMAP B4,
+"""The objective-investigation eval (scripts/eval_objective_agent.py, the acceptance bar,
 live check ``eval.objective_agent``): the objective gate, the harness post-check's
 metrics on scripted sessions and free-form objectives. Keyless: the fixture world and
 ``evals.runner.ScriptedAgent`` only (``injected-transport``, never the real agent)."""

@@ -1025,8 +1025,7 @@ class ClosedGrammarTests(unittest.TestCase):
 
 
 class AliasAndProvenanceTests(unittest.TestCase):
-    """Reviewer repros of round 3 (same family: caller-shaped input reaching a
-    resource the audience did not decide on)."""
+    """Caller-shaped input reaching a resource the audience did not decide on."""
 
     def setUp(self):
         self.pages = {

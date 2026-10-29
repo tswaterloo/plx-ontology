@@ -1,4 +1,4 @@
-"""Amazon Selling Partner API reader: read only (decision 2026-10-19-fba-external-sources).
+"""Amazon Selling Partner API reader: read only.
 
 Every request goes through ``integrations.live_source_guard.GuardedTransport`` (the one
 sender): the Login with Amazon refresh-token POST to ``https://api.amazon.com/auth/o2/token``

@@ -33,8 +33,7 @@ gives none, at the latest record of the ``previous_agenda`` lane whose attachmen
 previous agenda (cited); with neither, nothing is assembled (``previous_agenda_not_found``).
 
 ``register`` serves ``plx.agenda`` in the host tool table (``ontology_host.tool_table``);
-the MCP hosts list it to the agents that name it (``operating/agent_definitions.json``;
-``devloop/DECISIONS/2026-10-27-rnd-maps-agenda-tool-listing.md``).
+the MCP hosts list it to the agents that name it (``operating/agent_definitions.json``).
 """
 
 from __future__ import annotations

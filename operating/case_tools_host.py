@@ -1,6 +1,6 @@
-"""What the case host adds to the generic tools it lists (host-budget lane).
+"""What the case host adds to the generic tools it lists.
 
-devloop/DECISIONS/2026-10-03-host-tool-budget.md phase 1: the case host keeps 22 tools
+The case host keeps 22 tools
 and lists ``plx.read`` in place of the retired ``plx.source_citation`` and
 ``plx.case_cite_mail``. ``PagedRead`` is ``plx.read`` as the host serves it: the
 generic read of ``operating.ontology_tools_evidence`` (same reader, policy, statuses and
@@ -2020,8 +2020,7 @@ class _IdentifierLookup:
 
 # ---------------------------------------------------------------- the identifier index
 # What each current captured SharePoint file's stored text names, for every reader's
-# lookup (``CaptureCaseHostTools._identifier_lookup``; devloop/DECISIONS/
-# 2026-10-28-identifier-lookup.md). Reader-independent: a reader's lookup takes the
+# lookup (``CaptureCaseHostTools._identifier_lookup``). Reader-independent: a reader's lookup takes the
 # entries of the files ``store.index`` lists for it. Each entry is keyed by the file
 # version's identity (its MIME type, name, content and text status and SHA-256s: what
 # its stored text and its paging are read from) and the whole index by a digest of the

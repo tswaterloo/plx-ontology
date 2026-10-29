@@ -5,7 +5,7 @@ below, which serves three companies x the capture entity sets with server-driven
 paging (``@odata.nextLink`` + ``$skiptoken``), document lines by the nested
 navigation, scripted throttles/failures, and records every call. Evidence label:
 ``injected-transport``. Live behaviour is checked by
-``devloop/live-checks/bc.capture_full.json`` on reviewed main (live-unverified).
+live check ``bc.capture_full`` on reviewed main (live-unverified).
 """
 
 from __future__ import annotations
@@ -305,7 +305,7 @@ PRODUCTION_NAMES = {OTHERS[0]: "CRONUS Test", OTHERS[1]: "PLX Consol",
 
 
 class MyCompanyScopeTests(unittest.TestCase):
-    """Production reads only My Company (directive 7fbdeee4a6f4): a listing with CRONUS,
+    """Production reads only My Company: a listing with CRONUS,
     PLX Consol, PLX Distribution and My Company captures only the pinned GUID."""
 
     def listing(self, **kwargs) -> FakeBc:
@@ -940,7 +940,7 @@ class ResumeAndThrottleTests(unittest.TestCase):
                          ("complete", 10, 0))
 
     def test_a_document_that_always_fails_does_not_freeze_the_lines_unit(self):
-        # Review of 28562573: an unbounded retry kept the run in_progress forever, so a
+        # An unbounded retry kept the run in_progress forever, so a
         # line changed in BC under another, unchanged header was never captured again.
         fake = FakeBc({"purchaseOrders": 5})
         bad, other = gid(0, 0, 1), gid(0, 0, 3)
@@ -1234,7 +1234,7 @@ class RefusedContinuationTests(unittest.TestCase):
         self.assertFalse(fake.bc_gets(r"\$expand"))  # the refused link was never sent
 
     def test_a_nextlink_cycle_fails_the_unit_after_bounded_gets_and_is_not_resumed(self):
-        # Review of 49302608: only a nextLink equal to the current page was refused, so
+        # Only a nextLink equal to the current page was refused, so
         # a 2 -> 4 -> 2 cycle over empty pages was followed forever (>400 GETs, no budget).
         fake = CyclingBc({"vendors": 5})
         fake.cycle.add((CO[0], "vendors"))
@@ -1717,7 +1717,7 @@ def set_modified(fake: FakeBc, company: str, entity_set: str, index: int, when: 
 
 class IncrementalCaptureTests(unittest.TestCase):
     """``mode="auto"``: modified-since reads after the first full pass, a key-only full
-    pass weekly (decision 2026-10-02-bc-capture-incremental). Injected transport."""
+    pass weekly. Injected transport."""
 
     def auto(self, h: Harness, **kwargs):
         kwargs.setdefault("mode", "auto")

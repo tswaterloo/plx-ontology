@@ -1,6 +1,6 @@
 """Mission Control as a capture source (L1): read-only, into the capture store.
 
-Directive ddc3e0c36691 (L6). Mission Control was a read probe only; this module captures
+L6. Mission Control was a read probe only; this module captures
 what the MC operator scope may see into the versioned capture store
 (``integrations.capture_store``, source kind ``mission_control``, scheme ``mc``), so
 ``ontology.project_mc`` projects it as typed objects (MCTask, MCApproval, MCBucket,
@@ -20,7 +20,7 @@ read that sees a restricted project only through the operator email also appends
 ``authz.shadow_mismatch`` row (PLX_MC@0cca756 TASK-3026 ``recordReadShadowMismatch``;
 the answer is unchanged). The brain's items are not captured here:
 ``integrations.knowledge_source`` is the only brain-item path (namespace authority,
-personal namespaces refused; devloop/DECISIONS/2026-10-08-gov13-one-brain-capture.md).
+personal namespaces refused).
 
 Records. Path ``<scope>/<collection>/<id>`` (``mc://...@<generation>-<capture>``),
 collection one of ``COLLECTIONS``. ``row`` is the MC record with MC's own field
@@ -134,7 +134,7 @@ needs that project grant like every unparented record; when the bucket lists cha
 during a paged read it is dropped instead. A bucket whose project is no MC project id (and
 its tasks) is dropped, never shared. MC-shared projects need their project grant too:
 the capture holds no project visibility, so the Workbench cannot tell a shared project
-from a restricted one (devloop/DECISIONS/2026-10-07-mc-shared-project-grant.md). A unit
+from a restricted one. A unit
 summary's ``withheld_project_grant`` counts the current records that no principal granted the
 collection may read for want of the project grant (captured, readable by nobody; None
 when the audience cannot list its principals). The live audience
@@ -158,7 +158,7 @@ is refused (``scope_principal_unknown``: its principal is not known; capture a n
 scope). When the principal read fails, the cycle reads nothing else: ``tasks``,
 ``buckets`` (and ``knowledge``) fail with its error.
 
-CLI (the credentialed live verifier, ``devloop/live-checks/mc.sources_capture.json``;
+CLI (the credentialed live verifier, live check ``mc.sources_capture``;
 counts, states and booleans only, never a title, id, email or citation)::
 
     python3 -m integrations.mc_sources capture --store D/mc.sqlite --scope live \\
@@ -1161,7 +1161,7 @@ def run_cli(args: argparse.Namespace, environ: Mapping[str, str], *,
         check.update(_project_check(store, units, args.scope, reader))
     called = sorted({t for p in passes for t in p["tools_called"]})
     # The units an MC-side failure stopped, named by layer: the live verifier records the
-    # check blocked, never failed (devloop/live_verify.py).
+    # check blocked, never failed (the live verifier).
     blocked = [{"part": u["collection"], "source": "mission-control-mcp",
                 "error_code": u["error"], "cause": "upstream_outage"}
                for u in units if u["reason"] == BLOCKED]

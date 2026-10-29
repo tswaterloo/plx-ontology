@@ -1636,8 +1636,7 @@ class _Twin:
 # as the field page ``purchaseOrderReferences`` (one record per API order, stored only when
 # its ``No`` names exactly one API order of the same vendor).
 #
-# The link stands on data evidence, not on a rule anyone gave (decision
-# ``devloop/DECISIONS/2026-10-27-your-reference-evidence.md``; live 2026-10-27: 236 of the
+# The link stands on data evidence, not on a rule anyone gave (live 2026-10-27: 236 of the
 # 270 non-blank references name exactly one Portal order). Whether a match is firm or a
 # lead is decided by :func:`your_reference_verdict` (the flagship evaluation's oracle
 # holds the same rule, tied by a parity test): firm only when the match is unique and the
@@ -1647,10 +1646,10 @@ class _Twin:
 # ``_twins`` in ``operating/ontology_tools_process.py`` and ``proactive_engine`` are
 # unchanged); a lead is the same link at tier ``lead``.
 #
-# Before the rule, a BC order links nothing and is counted under one typed reason
+#Before the rule, a BC order links nothing and is counted under one typed reason
 # (``YOUR_REFERENCE_OUTCOMES``) unless all of these hold:
 #
-# * the order has exactly one current Page 50 record whose ``No`` is the order's number;
+#* the order has exactly one current Page 50 record whose ``No`` is the order's number;
 # * its ``Your_Reference`` is a non-blank ``petra_po`` identifier;
 # * a Portal order (``portal.app_purchase_order``) holds that number in
 #   ``custom_fields.fmPoNumber`` (an FM clash-series number: in ``po_number``) by equal
@@ -1658,13 +1657,13 @@ class _Twin:
 # * the BC order is not of a lineage that is never authority, and no person rejected the
 #   pair, and the pair is not already firm or corroborated.
 #
-# The rule then reads, per Portal candidate: how many Portal orders hold the number, how
+#The rule then reads, per Portal candidate: how many Portal orders hold the number, how
 # many BC orders name the candidate, whether either order already has a same-record link
 # to another order of the other system, the supplier (``_Twin`` name and sent vendor
 # number rules: a ``near`` name is unknown) and the order dates (``_Twin._date``).
 # Several candidates each get a lead.
 #
-# The link cites what it read: ``your_reference`` (the Page 50 record's handle and field,
+#The link cites what it read: ``your_reference`` (the Page 50 record's handle and field,
 # and the Portal value's), ``bc_number`` (the Page 50 ``No`` and the order's number) and,
 # on a firm link, each corroborating feature that agreed (``supplier_name`` /
 # ``supplier_number`` cite the supplier records, so a reader who may not read them is

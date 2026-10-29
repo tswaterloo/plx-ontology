@@ -1,6 +1,6 @@
 """Acceptance journey: an employee's unfamiliar purchase question through the real host.
 
-Owner directive bb664f58910f (1) and (3), 01-VISION 3.5. One persistent host state
+Owner 1 and (3), 01-VISION 3.5. One persistent host state
 directory, served the way an employee reaches it: ``python3 -m operating.host run`` capture
 cycles and ``python3 -m operating.host mcp`` sessions (the authenticated employee from a
 signed start-up ticket, the Entra directory provider actually constructed and consulted,
@@ -35,8 +35,7 @@ and builds what it needs of the earlier steps itself: (e) records the alias of (
 (f) and (g) park their own case. So the steps pass alone and in any order. The host config
 sets ``action_path``, so ``host mcp`` serves ``plx.act`` (register and read only).
 
-Gaps current ``main`` cannot pass are ``expectedFailure`` tests named for the gap (each is
-a next lane, never papered over).
+Gaps current ``main`` cannot pass are ``expectedFailure`` tests named for the gap (never papered over).
 
 Evidence label: ``injected-transport``. No network, no credentials.
 """
@@ -616,7 +615,7 @@ class AcceptanceJourney(unittest.TestCase):
                         .startswith("graph-mail://"))
 
     def test_4_the_console_opens_the_host_projection_during_a_portal_outage(self):
-        """Closed GAP console-store-status (directive 26bb17568234): while the Portal has
+        """Closed GAP console-store-status: while the Portal has
         never been captured the host projects BC, mail and SharePoint alone; the employee
         console (``host serve``) opens that projection, its BC capture generation the
         state's own, with the Portal labelled not projected, never refused as foreign."""

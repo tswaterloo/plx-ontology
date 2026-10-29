@@ -1,7 +1,7 @@
 """Dev-set item generator: sample closed transactions by seed, answer them with the oracle.
 
-Sampling is stratified by where the root identifier comes from (directive 4190c1c690ce
-item 5): ``sales_order``, ``purchase_order``, ``assembly_order``, ``receipt`` (Portal
+Sampling is stratified by where the root identifier comes from:
+``sales_order``, ``purchase_order``, ``assembly_order``, ``receipt`` (Portal
 records; receipts also FM raw receipts by lab id), ``bc_invoice`` (posted BC sales/purchase
 invoices) and ``mail`` / ``sharepoint``, root first: the documents are searched (GET
 only, ``DocumentPort.search``) for the numbers of the closed records of the split, round
@@ -13,7 +13,7 @@ generator is seeded by the run id, candidates are sorted before shuffling, so on
 and one source state give the same items. Candidates are ranked by a digest of the run id
 and the candidate (not shuffled), so a fixed run id keeps its items while the source grows.
 
-Splits (10-DECISION 8): every root record belongs to one split by a salted hash of its
+Splits: every root record belongs to one split by a salted hash of its
 relation and key (``split_of``), so dev and held-out never share a root, whatever run
 ids are used. The dev split asks F1-F4 (30 by default); the held-out split (120) adds F5
 and F6, which have no plan on the Workbench side. Held-out items are written only where a
@@ -24,11 +24,11 @@ Every stratum reports its status, a reason whenever it yields no candidate (``em
 ``unavailable``, ``not_configured``; never ``read`` with zero), candidates and items per
 family and a funnel of where rows dropped out (``unexplained_strata`` must stay empty).
 
-Every candidate must be closed, in every split (decision
-``devloop/DECISIONS/2026-10-07-oracle-strata-closed-roots-only.md``), must resolve back through the oracle's own root lookup
+Every candidate must be closed, in every split,
+must resolve back through the oracle's own root lookup
 to exactly the sampled record (so the question has one root), and must not be a
-Portal-native staging row (09-CRITIQUE R1: ``gold_native_staging`` stays out until a
-person confirms it). Items follow ``evals/item.schema.json`` (plx-eval-item/v1); the
+Portal-native staging row.
+Items follow ``evals/item.schema.json`` (plx-eval-item/v1); the
 caller validates them. ``audit`` marks the requested number of labels for human audit
 (09 Q9) without claiming an audit happened.
 """
@@ -103,7 +103,7 @@ MAX_SEARCH_HITS = 5
 MAX_LISTED_DOCUMENTS = 600
 # Each stratum's dated roots, newest first, fall into windows of RECENT_WINDOW; a run
 # searches a window's roots in a sample seeded by its run id (``search_roots``), so hourly
-# runs draw different recent roots (directive a108c9b752a2). One source's searches take about
+# runs draw different recent roots. One source's searches take about
 # MAX_ROOT_SEARCHES / 5 roots of a stratum, a fifth of its first window.
 RECENT_WINDOW = MAX_ROOT_SEARCHES
 _PREFIX = dict(K.DOCUMENT_VARIANTS)["prefix"]
@@ -129,7 +129,7 @@ FAMILY_ROOTS = {
 }
 # Families rooted at one record of one identifier kind (F1 takes any kind, F2 customer POs).
 FAMILY_KIND = {"F3": "so_number", "F4": "po_number", "F5": "po_number", "F6": "so_number"}
-# Per-split quotas (10-DECISION 8): the dev set asks F1-F4; the held-out set adds two
+# Per-split quotas: the dev set asks F1-F4; the held-out set adds two
 # families that have no plan on the Workbench side (F5, F6) and is never committed.
 QUOTAS = {
     "dev": {"F1": 12, "F2": 6, "F3": 6, "F4": 6},
@@ -520,7 +520,7 @@ def twins(sources: Sources, pool: Sequence[Candidate],
     documents of ``pool`` whose No. is in ``numbers`` (the spans the documents found wrote,
     so only a number a document names costs a BC read): one transaction the Portal
     drained to BC under its own number is one root for the documents, the Portal record
-    (decision of directive 8574b3a82d8f item 1: a span naming a Portal PO and its
+    (decision of A span naming a Portal PO and its
     same-numbered BC order named neither and lost the PO). A BC document is a twin when
     its No. is the Portal record's field on a declared identity edge (``_TWIN_EDGES``) and
     the oracle's own walk of that edge from the record (``families.walk``'s rule: the PO's
@@ -1220,8 +1220,7 @@ def document_candidates(sources: Sources, documents: DocumentPort | None, kind: 
     counts["documents"] = len(named_by)
     # A result for a query never asked credits none. A root is searched when one of its
     # searches (its numbers and their fallbacks) was answered, refused when none was and
-    # one was refused, or none failed and a refusal names no query asked (it may be the
-    # root's: directive f6427307e9b0, a root whose search failed is unavailable,
+    # one was refused, or none failed and a refusal names no query asked (a root whose search failed is unavailable,
     # ``search_failed``, never refused by a refusal it may not have had).
     answered = outcome["answered"] & sent
     refused_queries = outcome["refused_queries"] & sent
@@ -1322,7 +1321,7 @@ def search_status(read: Mapping[str, Any], funnel: Mapping[str, int]) -> tuple[s
     the roots: ``no_candidate_in_sample`` with ``no_single_root`` (a named root failed its
     single-root check) or ``no_document_names_root``, beside the funnel's
     ``roots_searched``. Searches mostly refused are no sample either, judged per root
-    (directive d0125cbdcdf6: more of the roots asked were refused, ``roots_refused``, than
+    (More of the roots asked were refused, ``roots_refused``, than
     not, so a root with several numbers weighs as one): ``search_refused``,
     ``unavailable`` when nothing was found, else ``incomplete``."""
     if read.get("not_configured"):

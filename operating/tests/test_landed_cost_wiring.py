@@ -1,4 +1,4 @@
-"""The landed-cost estimate wired to its real inputs (directive eff2eb4c2451).
+"""The landed-cost estimate wired to its real inputs.
 
 The ontology projects the FileMaker supplier row's ``tariff_c`` (``SupplierItem.tariff_rate``)
 and the Sage receipt header's ``currency`` (``Receipt.currency``); the ``landed_cost`` plan

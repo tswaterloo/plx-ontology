@@ -3,7 +3,7 @@
 Why: the ``plxwb_`` reporting key is one shared DB login with column grants
 only, and the Graph/BC app token sees every mailbox, site and company, so no
 upstream source trims per employee. The Workbench decides per employee
-**before** retrieval, ranking and caching (WORKING-BRIEF, GOV-09, pack 03 §5).
+**before** retrieval, ranking and caching (GOV-09, pack 03 §5).
 
 For one employee principal (Entra ``tid``/``oid``) the resolver derives the
 Workbench audience principals (the vocabulary ``source_mirror.AudienceMap``,
@@ -122,7 +122,7 @@ from .entitlements import _AGENT_PREFIXES, ACL_BEARING_PATTERNS, EntitlementDeni
 POLICY_SCHEMA = "plx-employee-permission-policy/v1"
 EMPLOYEE_PREFIX = "employee:"
 GROUP_MEMBERSHIP_UNAVAILABLE = "group_membership_unavailable"
-# Recorded blocker (devloop/PERMISSIONS.md): the shared Entra app has no
+# Recorded blocker: the shared Entra app has no
 # GroupMember.Read.All / Group.Read.All / Directory.Read.All consent.
 GROUP_READ_BLOCKER = "graph_permission_missing:GroupMember.Read.All"
 # A mailbox the employee does not own (shared, or another user's with delegated
@@ -231,7 +231,7 @@ class PortalAccessRead:
     (portal/prisma/schema.prisma at the commit in ``portal.PORTAL_SOURCE``).
     ``source`` cites where it was read; ``read_at`` when. The reporting API
     does not serve these tables today (pack 03 §6), so the provider is a
-    blocker input; see devloop/PERMISSIONS.md.
+    blocker input.
     """
 
     user_id: str
@@ -410,8 +410,8 @@ class PortalAccessSnapshot:
     outage: the resolver denies with ``rights_unresolved``). A row is matched by
     Entra tenant **and** object id; two rows for one identity or no row return
     ``None`` (``portal_access_unavailable``: deny, a refusal). This is the
-    Portal input until the reporting API serves the user/RBAC tables
-    (devloop/PERMISSIONS.md blocker 3); it is configuration an operator
+    Portal input until the reporting API serves the user/RBAC tables;
+    it is configuration an operator
     exports from the Portal, never a grant by itself (the policy and the
     item ACLs still intersect).
     """

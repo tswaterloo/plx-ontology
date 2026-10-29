@@ -300,7 +300,7 @@ class KindConfirmationTest(Environment):
         self.assertEqual((status["confirmed"], status["stale"]), (False, "original_changed"))
 
     def test_a_refused_read_or_store_failure_is_incomplete_never_unconfirmed(self):
-        """Review of e7e0add, F1: a person's confirmation is never silently dropped."""
+        """A person's confirmation is never silently dropped."""
         got = self.confirm_signed_po()
 
         def refusing(name, arguments):

@@ -1,8 +1,8 @@
 {
  "format": "plx-generator-overrides/v1",
  "kind": "lineage",
- "description": "Default lineage of a raw relation per source family, by relation-name prefix (first match wins; 09-CRITIQUE R1). Gold public.app_* rows mix ETL copies and staging-native rows, so their raw default is the unconfirmed gold_native_staging; curated files add row-level rules. A relation no rule matches is excluded.",
- "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules.",
+ "description": "Default lineage of a raw relation per source family, by relation-name prefix (first match wins). Gold public.app_* rows mix ETL copies and staging-native rows, so their raw default is the unconfirmed gold_native_staging; curated files add row-level rules. A relation no rule matches is excluded.",
+ "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
  "sources": {
   "portal_api": [
    {"prefix": "public.app_", "lineage": "gold_native_staging"},

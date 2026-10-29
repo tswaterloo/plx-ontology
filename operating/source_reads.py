@@ -5,8 +5,7 @@ The case host no longer lists raw source-read tools: they retired into ``plx.fin
 an MCP client reads sources through the ontology tools only. The deterministic
 drivers (the AO, packaging and order case scripts, the playbook evaluator and the
 live case workspace) still read mirror rows and live listings directly, because
-their live-check specs run without a projection store (devloop/DECISIONS/
-2026-10-03-wire-host-decisions.md).
+their live-check specs run without a projection store.
 
 These reads are the ``SourceMirror`` and ``CaseRuntime`` methods themselves, called
 for the session actor: the same audience checks, employee gate and citations, and no

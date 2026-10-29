@@ -1,6 +1,6 @@
 """The owning-system adapter contract for goal-2 dispatch, and an isolated owner.
 
-Design: ``devloop/GOAL2-ACTIONS.md`` section 5b. ``operating.action_path`` decides
+``operating.action_path`` decides
 *whether* an action may run (MC gate decided by a human admin/owner, current
 preconditions, the production hard guard); the owning system decides *what
 happened*. This module fixes the boundary between them, so that a real,

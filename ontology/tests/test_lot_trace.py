@@ -12,8 +12,7 @@
   the receipt lines whose supplier lot it is (``CertificateOfAnalysis.for_receipt_line``,
   a lead), and the trace runs on through the served links to the Supplier, the
   PurchaseOrder and the Product. A supplier lot is never a PLX lab id or batch code: a
-  lot written in a lab id's shape links no line by its lab id. Lot itself stays unserved
-  (``devloop/DECISIONS/2026-10-20-documents-lot-trace-supplier-lot.md``).
+  lot written in a lab id's shape links no line by its lab id. Lot itself stays unserved.
 * A hop the trace cannot reach is typed by its source cause, never lowered: an FM line
   whose ``idreceipt`` (or receipt whose ``idsupp``) is null reaches no Supplier for
   ``source_column_empty``, an FM line no Product for ``no_binding``; the PO's vendor reaches

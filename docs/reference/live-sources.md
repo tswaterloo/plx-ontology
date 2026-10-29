@@ -1,7 +1,6 @@
 # Live sources — initial access proof 2026-10-01; latest recorded checks 2026-10-04
 
-Evidence: `EVIDENCE/access/2026-10-01-cloud-access.md`, `-2.md` and `-3.md`, all
-sanitized. Credentials live only in the credentialed environment **`PLX development`**,
+Credentials live only in the credentialed environment **`PLX development`**,
 which the live checks (`verify/live_verify.py`) use. Development and CI run keyless and
 never read live data. Adapters are built against injected transports plus a
 `verify/live-checks/<id>.json` spec, and the live-check runner runs those specs against

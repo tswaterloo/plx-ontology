@@ -6,7 +6,7 @@ network, no credentials). The capture store is then projected alone (source ``bc
 Portal mirror) under the curated schema, and the generic tools answer over it. Two
 companies reuse the same document and item numbers (synthetic ids and numbers only).
 Evidence label: ``injected-transport``; the live counterpart is
-``devloop/live-checks/ontology.projection_bc.json`` (live-unverified).
+live check ``ontology.projection_bc`` (live-unverified).
 """
 
 from __future__ import annotations
@@ -424,7 +424,7 @@ class BcOnlyProjectionTests(unittest.TestCase):
         self.assertIn("portal.app_purchase_order was not captured", out["gaps"][0]["detail"])
         # The three-way match reads the twin and identity hops through Portal bindings.
         # Portal was not captured, so a BC-rooted side proven complete in BC is decided
-        # from BC alone and says so (devloop/DECISIONS/2026-10-05-bc-only-portal-hops.md):
+        # from BC alone and says so:
         # a typed cross_system_unchecked gap per side and a partial answer, never an
         # absence and never complete.
         answer = w.call("plx.process", {"from": po_id(1), "process": "purchase_to_invoice"})

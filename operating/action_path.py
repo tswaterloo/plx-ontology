@@ -1,6 +1,6 @@
 """Goal-2 action path: case proposal -> human approvals -> dispatch -> read-back.
 
-Design: ``devloop/GOAL2-ACTIONS.md``. This module is the state machine and its
+This module is the state machine and its
 records; it enables **no** production write. Every step is one append-only,
 hash-chained event (own SQLite table, same pattern as ``operating.cases``), and
 every call re-reads the case for the calling actor, so an actor who cannot see
@@ -50,8 +50,7 @@ Safety properties this module holds by construction:
   by a human other than the operator/requester, after the request; and the
   decider must be an ``admin``/``owner`` on the supplied MC ``ApproverRoster``.
   Agents, service principals, members and the operator can never authorize.
-* Separation of duties (decision g2-1; ``plx-intent-identity/v2``,
-  devloop/DECISIONS/2026-10-04-goal2-identity.md): every intent records ``sub`` (the
+* Separation of duties (decision g2-1; ``plx-intent-identity/v2``): every intent records ``sub`` (the
   employee it is for, with their Entra ``oid``) and ``act`` (who acted: agent or
   human, channel, client host, session digest), taken only from the registering
   session (``session_identity.intent_identity``). Every later step takes the host's
@@ -861,8 +860,8 @@ def _gate_reason(intent_id: str, capability: str, effect: Mapping[str, Any],
 class ActionPath:
     """The goal-2 action state machine over a ``CaseStore``.
 
-    ``call_approvers``: human emails configured to approve every action type per call
-    (pack 04 section 8 R1: Tanush or Vince), as a set or as ``{email: Entra oid}``; a
+    ``call_approvers``: human emails configured to approve every action type per call,
+    as a set or as ``{email: Entra oid}``; a
     host passes none and takes its approvers from ``approver_roster``, where each counts
     only for its own action types. Separation of duties matches an approver by oid too
     (the configured one, else the ``approver_roster``'s); an approver with no known oid is
@@ -1576,7 +1575,7 @@ class ActionPath:
     def _injection_hook(self, actor: Actor, case_id: str, proposal_id: str,
                         proposal: Mapping[str, Any],
                         evidence: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-        """Argument provenance (10-DECISION 7): every dispatched parameter traces to a
+        """Argument provenance: every dispatched parameter traces to a
         typed cited value or a human-written case objective, else a refusal
         (``injection_guard.REFUSAL*``). ``evidence``: ``register``'s (document rows
         read for ``actor``). Returns the per-parameter trace."""
@@ -2398,7 +2397,7 @@ class ActionPath:
             if (recheck is None and type(dispatcher) is FixtureDispatcher
                     and type(dispatcher.fixture) is IsolatedOwnerSystem):
                 # The owner contract is dispatched only after a fresh MC re-read of the
-                # approval (10-DECISION #6): a property of the path, not of the caller.
+                # approval: a property of the path, not of the caller.
                 raise ActionPathError("mc_recheck_required")
             withdrawn = self._withdrawal(db, actor, intent_id, state, decision, recheck, act)
             if withdrawn is not None:
@@ -3170,7 +3169,7 @@ _REREGISTER = ("reregister", "human",
                "sessions record and register a new proposal through the action path")
 _REREGISTER_STATES = frozenset({"gate_requested", "gate_authorized", "dispatch_refused"})
 # After this many ``effect_not_observed`` read-backs on one intent the next safe step
-# is a human escalation instead of another read (controller decision, review 4ed9adc).
+# is a human escalation instead of another read (review 4ed9adc).
 READ_BACKS_BEFORE_ESCALATION = 3
 _RECOVERY_LED = {"gate_request_unknown", "gate_request_lost", "dispatch_refused",
                  "dispatched_unknown", "failed"}

@@ -1,6 +1,6 @@
 """Which captured case originals have a source gate, and which cards ask about a
-document no captured source serves (owner decision 2026-10-27,
-``devloop/DECISIONS/2026-10-27-case-originals-served.md``). Read-only, counts and ids only:
+document no captured source serves.
+Read-only, counts and ids only:
 
     python3 -m scripts.eval_case_originals_coverage --state-dir <state> [--cards-dir evals/dev]
 
@@ -26,7 +26,7 @@ def card_dependencies(cards_dir: str | Path, states: Mapping[str, str], *,
     ``unknown_acl`` (or ``not_held``: no receipt). A card citing no captured original is
     ``in_watched_source`` when its set's documents are mapped to a watched source folder
     (``watched``: the card files of the registry's crosswalk, served by the SharePoint
-    capture), ``advisory_only`` when it cites an advisory record and nothing else holds
+    capture), ``advisory_only`` when it cites an source record and nothing else holds
     the document it asks about, else ``no_document_named``."""
     from scripts.eval_case_cards import _cards, card_sets
     watched_cases = {Path(p).parent.name for p in watched}

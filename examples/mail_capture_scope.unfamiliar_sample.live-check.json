@@ -1,6 +1,6 @@
 {
  "schema": "plx-mail-capture-scope/v1",
- "note": "Mail scope of eval.unfamiliar_sample (devloop/live-checks/eval.unfamiliar_sample.json, --mail-scope; gap-f713876847b6): the purchase-order mailbox the check read alone before (inbox and sent items) and the six operational mailboxes the owner named (owner directive dedbcc76f44a, 2026-10-21), inbox. Each is searched, then listed, under the eval audience; a mailbox outside the canonical allowlist (operating/case_mail_scope.json) is blocked (later_ask mail-scope-grant), never read; a mailbox the people-exclusion guard (integrations/people_exclusion.py, access record 64fca27acc88) cannot clear is blocked (later_ask excluded-people-oids). Reports name mailboxes by scope id (mailbox-<n>, their order here), never by address. Configuration, never a grant.",
+ "note": "Mail scope of eval.unfamiliar_sample (live check ``eval.unfamiliar_sample``, --mail-scope; gap-f713876847b6): the purchase-order mailbox the check read alone before (inbox and sent items) and the six operational mailboxes in scope (2026-10-21), inbox. Each is searched, then listed, under the eval audience; a mailbox outside the canonical allowlist (operating/case_mail_scope.json) is blocked (later_ask mail-scope-grant), never read; a mailbox the people-exclusion guard (integrations/people_exclusion.py, access record 64fca27acc88) cannot clear is blocked (later_ask excluded-people-oids). Reports name mailboxes by scope id (mailbox-<n>, their order here), never by address. Configuration, never a grant.",
  "window_days": 90,
  "mailboxes": [
   {

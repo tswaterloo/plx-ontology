@@ -8,8 +8,8 @@ Evidence label: ``isolated-fixture`` (synthetic Portal and BC captures through t
 projector, the compiled repository schema and the read tools; no source is read). The live
 count over the captured projection is the proposed spec
 ``ontology/tests/fixtures/identity.po_same_record.proposed.json``: it moves to
-``devloop/live-checks/`` once a human adds ``scripts.po_twin_probe`` to
-``devloop/live_verify.py`` ``ALLOWED_MODULES`` (a reviewed security change); until then the
+the live-check specs once a human adds ``scripts.po_twin_probe`` to
+the live verifier ``ALLOWED_MODULES`` (a reviewed security change); until then the
 count is live-unverified.
 """
 
@@ -125,7 +125,7 @@ def tools(case, path):
         "api:public.app_purchase_order": everyone,
         "api:public.app_supplier": {"staff:purchasing", "staff:buyer"},
         "bc:*": everyone},
-        # The PO total is purchasing_prices (owner decision 2026-10-27, 44e13e0177); the
+        # The PO total is purchasing_prices (44e13e0177); the
         # buyer holds neither it nor finance, so it is the reader without the totals.
         markings={m: ({"staff:purchasing", "staff:orders"}
                       if m in ("finance", "purchasing_prices") else everyone)

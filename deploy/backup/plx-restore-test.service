@@ -1,0 +1,11 @@
+# User unit: weekly restore test of the newest backup set.
+[Unit]
+Description=PLX Workbench backup restore test
+After=postgresql.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=-%h/.config/plx/backup.env
+ExecStart=/data/OntologyProject/deploy/backup/restore_test.sh
+Nice=10
+UMask=0077

@@ -182,7 +182,7 @@ function closeDetail() {
 }
 function detailSection(name, data) { const n = el("section", "detail-section"); append(n, el("h3", "", name), fields(data)); return n; }
 
-// ---- Case workspace (read-only; devloop/CASE-RUNTIME.md section 3) ----------------
+// ---- Case workspace (read-only) ----------------
 // Pure helpers first (tested by operator_ui/case_workspace.test.js), then rendering.
 const CASE_FINDING_GROUPS = [
   ["contradicted", "Contradicted", "red", "A cited source disagrees with the claim."],

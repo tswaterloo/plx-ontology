@@ -1,12 +1,12 @@
 """Live check of the connector's entry point: plx.find's home mode (operating/mcp_server.py).
 
-``python3 -m operating.connector_home_check`` is ``devloop/live-checks/connector.home.json``'s
+``python3 -m operating.connector_home_check`` is live check ``connector.home``'s
 command: one host capture cycle into a state directory and one run of the scheduled
 proactive engine over its projection into the gap inbox (as ``operating.proactive_engine``),
 then, per reader, an MCP session over the stdio transport (``serve_stdio``): initialize
 (the business primer), tools/list and tools/call ``plx.find`` with the home question,
 timed. It prints counts, kinds and priorities only, never an identifier or a value.
-With ``--portfolio`` (``devloop/live-checks/connector.portfolio.json``) each reader's
+With ``--portfolio`` (live check ``connector.portfolio``) each reader's
 session also asks plx.find the portfolio questions (``PORTFOLIO_QUESTIONS``), scoped to
 purchase orders dated in the ``PORTFOLIO_SCOPE_DAYS`` before the check's day (an unscoped
 portfolio question is never scanned on the request), and, for up to

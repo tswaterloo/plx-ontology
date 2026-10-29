@@ -3,7 +3,7 @@
 Today the brain is served by VMC (agentic-swarm ``apps/vmc-web`` @
 ``b1117811c``, routes ``app/api/vmc/knowledge/agent/*``); after retirement R7
 it moves to ``brain.plxcustomer.io`` with the same paths, envelope and header
-(``devloop/CONTEXT/05-VMC-BRAIN-TOOLS.md`` §0.1, §4.1, §6). The host and key
+(§4.1, §6). The host and key
 are configured as one pair (``plx_hub_guard.BrainConfig``): ``BRAIN_BASE_URL``
 + ``BRAIN_API_KEY`` (``brn_*``) when the brain key is set, else
 ``VMC_API_URL`` + ``VMC_API_KEY``.

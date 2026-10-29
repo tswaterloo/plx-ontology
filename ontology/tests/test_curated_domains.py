@@ -1,6 +1,6 @@
 """Curated domain files (ontology/schema/domains/*.json) are well-formed and closed.
 
-Per-domain acceptance (09-CRITIQUE lane L5): every file validates against the C0
+Per-domain acceptance: every file validates against the C0
 format; 0 orphan links (both ends and every binding resolve to declared object
 types, across all domain files present); every link binding has evidence; every
 property with >= 2 sources has an authority rule whose entries can actually apply.
@@ -49,7 +49,7 @@ SERVED = {**{row["name"]: {"key": row["key"], "since": row["since"],
 LINK_CONTRACTS = {c["id"] for c in json.loads(
     (ROOT / "operating/link_contracts.json").read_text(encoding="utf-8"))["contracts"]}
 IDENTIFIERS = ROOT / "ontology/schema/identifiers.json"
-# The files this lane (L5b) owns; the checks below run over every domain file present.
+# The files this module (L5b) owns; the checks below run over every domain file present.
 L5B = ("manufacturing", "catalog_parties", "bc_finance")
 
 
@@ -396,7 +396,7 @@ class BindingsMatchReadableSources(unittest.TestCase):
         for bid, path, availability in self._paths():
             binding = CATALOG.bindings.get(bid)
             if binding is None:
-                continue  # another lane's binding (missing ones are reported by test_zero_orphan_links)
+                continue  # another module's binding (missing ones are reported by test_zero_orphan_links)
             if binding["source"] != "bc" or CATALOG.type_domain[CATALOG.binding_type[bid]] not in L5B:
                 continue
             self.assertIn(binding["relation"], grammar.BC_ENTITY_SETS, bid)
@@ -437,7 +437,7 @@ def errors_of(documents) -> list[str]:
 
 
 class LoaderEnforcesValueInvariants(unittest.TestCase):
-    """The value invariants hold for every consumer of the loader, not only in lane tests."""
+    """The value invariants hold for every consumer of the loader, not only in their own tests."""
 
     def test_curated_files_compile(self):
         self.assertTrue(compile_curated().digest.startswith("sha256:"))
@@ -525,7 +525,7 @@ def bc_capture(binding_id: str | None) -> bool:
 
 
 class IdentityScope(unittest.TestCase):
-    """Identity-tier repairs (review of 413a0bb): company scope, batch collapse, supplier codes."""
+    """Identity-tier repairs: company scope, batch collapse, supplier codes."""
 
     def test_every_bc_to_bc_link_binding_is_company_scoped(self):
         compiled = compile_curated()

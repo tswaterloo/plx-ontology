@@ -539,7 +539,7 @@ class MirrorPinReaderTests(unittest.TestCase):
 
 
 class RunPinTests(unittest.TestCase):
-    """devloop/DECISIONS/2026-10-02-oracle-pinning.md: the runner pins mirror captures."""
+    """The runner pins mirror captures."""
 
     ORACLE_GEN = "0123456789abcdef"
 
@@ -927,7 +927,7 @@ class LiveSpecTests(unittest.TestCase):
         self.assertGreaterEqual(document["eval"]["items"], 4)
         self.assertEqual(document["eval"]["pin_drift"], 0, document["eval"])
         # The spec on this real output: the item floor this short run is under and the
-        # deterministic baseline's miss of ROADMAP B1's accuracy bar fail.
+        # deterministic baseline's miss of the accuracy bar fail.
         self.assertEqual(live_verify.check_expectations(spec, code, document),
                          ["eval.items < 20", "eval.answer.accuracy_rate < 0.8"])
         tripped = copy.deepcopy(document)
@@ -948,7 +948,7 @@ class LiveSpecTests(unittest.TestCase):
 
 
 class LiveOutageAndPartitionTests(unittest.TestCase):
-    """Directive 2db2fe9bf1f8 PT2 (injected transport, not live): with the Portal answering
+    """With the Portal answering
     500 the live baseline still measures on the product's own BC capture, its Portal parts
     blocked; a dev item related to a frozen held-out set moves out of the dev run."""
 
@@ -1021,9 +1021,9 @@ class LiveOutageAndPartitionTests(unittest.TestCase):
             "correct", "wrong", "abstain_ok", "missed")))
         live = dict(document, evidence_label="live-read")
         self.assertTrue(live_verify.check_expectations(spec, 0, live))  # never a full pass
-        # the items that ran are judged on ROADMAP B1's bar: every one abstained (missed),
+        # the items that ran are judged on the bar: every one abstained (missed),
         # so nothing is answered: coverage 0 and null accuracy and unsupported rates, each a
-        # failure (decision 2026-10-19-b1-one-answer-rate), never a pass
+        # failure, never a pass
         self.assertEqual((answer["answered"], answer["coverage_rate"], answer["accuracy_rate"]),
                          (0, 0.0, None))
         self.assertEqual(live_verify.check_expectations(spec, 0, live,

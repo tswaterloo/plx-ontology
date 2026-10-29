@@ -67,8 +67,7 @@ are relative to the named repo. `vmc/` means `agentic-swarm/apps/vmc-web/src/`.
     `ingest`, `relations` and `session-artifact`. Those are production writes, and the
     Workbench's CLAUDE.md forbids them. Their governance is weaker than ours anyway
     (§7.3).
-11. **Leave local-inference alone.** The Dell `:4000` gateway and the `local-driver` and
-    `local-coder` lanes are trading-lab lanes (fleet D23), reachable only on the tailnet.
+11.
     Its extract pipeline (Docling, OCR stub) is not production OCR. Its only shared
     asset is the fleet proxy, and that needs a virtual key nobody has issued us.
 12. **LIVE (2026-10-01):** `GET {VMC_API_URL}/api/vmc/knowledge/agent/search?q=test&limit=5`
@@ -85,8 +84,7 @@ are relative to the named repo. `vmc/` means `agentic-swarm/apps/vmc-web/src/`.
 |---|---|---|---|
 | **agentic-swarm** | Python swarm (`src/`, FastAPI `src/api/fastapi_app.py`, pipelines `src/pipelines/`) plus the VMC Next.js web app (`apps/vmc-web`, 436 route files, 52 cron routes; F1). Hosts the brain's whole core: `vmc/lib/vmc/knowledge/` (19 files), `vmc/lib/vmc/memory-graph/`, migrations, crons, search through swarm `/memory/search/v2`. Also trading lab, dispatch, todos, email, compute. | LIVE at `missioncontrol.tayloralton.com` (EC2, `vmc-web.service`, `next start --port 3100`, Caddy TLS; B13). Being retired: R1 stops merged 2026-09-28 (`84dd6f106`, #1629, TASK-2039). | Brain → plx_secondbrain/service (R4–R12). Trading lab keeps the repo, renamed at the end (D8, T3). Every other VMC area retires unless R0 shows human use (D9). |
 | **plx_secondbrain** | Operator-local stdio MCP server `plx-brain` (`index.ts`, `src/{tools,resources,http,config,schemas,budget}.ts`; 11 tools, 5 resources); retrieval eval `eval/second-brain/`; R3 contract recorder `eval/contract/`. "never touches the database directly" (README). | Client plus eval only. R3 code merged 2026-09-29 (`a5febed`, TASK-2087). Since `b7b9584` TASK-2725 (2026-10-16) `eval/contract/recordings/` holds one admin-tier recording (`vmc-api-key-r32026100621239a02.json`, 94/94 matched); the scoped-key tier has no run. `service/` absent. | Becomes the brain service: `service/` Next.js app on its own EC2 at `brain.plxcustomer.io` (D5), with its own RDS (D13). |
-| **local-inference** | LLM inference control plane. Dell LiteLLM `:4000` (`litellm/config.yaml`: `local-primary`, `local-fast` = Qwen3-32B-AWQ; `local-coder` Spark A; `local-driver` Spark B). Fleet proxy config `litellm/fleet.yaml` + `deploy/fleet-proxy/` (cloud aliases only, `:4001`). `.orchestrator/sharepoint-doc-org-harness/` (VincePersonal SharePoint/Outlook organizer). | Dell gateway live, tailnet `100.103.33.54:4000` (README; trading uses it). Fleet proxy config merged 2026-09-29 (TASK-2070); no host deploy evidence in the repo. | Unchanged. The fleet proxy becomes the one agent model gateway (fleet D5). |
-| **skills** | Catalog of Cursor/Claude/Codex skills: `skills/<id>/SKILL.md`, `manifest.json` (78 skills, pack `plx-engineering-core`), `schemas/manifest.schema.json`, sync and distribute scripts. No runtime, no data. | Live catalog. R7 edits `skills/session-brain/SKILL.md:47` (brain URL). | Unchanged. |
+| **local-inference** | LLM inference control plane. Dell LiteLLM `:4000` (`litellm/config.yaml`: `local-primary`, `local-fast` = Qwen3-32B-AWQ; `local-coder` Spark A; `local-driver` Spark B). Fleet proxy config `litellm/fleet.yaml` + `deploy/fleet-proxy/` (cloud aliases only, `:4001`). `.orchestrator/sharepoint-doc-org-harness/` (VincePersonal SharePoint/Outlook organizer). Fleet proxy config merged 2026-09-29 (TASK-2070); no host deploy evidence in the repo. | Unchanged. The fleet proxy becomes the one agent model gateway (fleet D5). `Skills/<id>/SKILL.md`, `manifest.json` (78 skills, pack `plx-engineering-core`), `schemas/manifest.schema.json`, sync and distribute scripts. No runtime, no data. | Live catalog. R7 edits `skills/session-brain/SKILL.md:47` (brain URL). | Unchanged. |
 
 Dispatch: VMC `todo-dispatch` and `dispatch-poll` crons (`config/vmc-web-crontab:58-59`),
 swarm dispatch writes to `command_center.memory` (F23), MC `dispatch_to_swarm`
@@ -320,8 +318,7 @@ given.
 | `lessons-auto-extract` | `0 8 * * *` (77) | `src/pipelines/lessons_auto_extract.py` | failed dispatches → `lessons_auto` | `LESSONS_AUTO_EXTRACT_ENABLED`, `IMMEDIATE_LESSON_ENABLED` |
 | `memory-summarize` | `0 2 * * *` (108) | `src/pipelines/memory_summarize.py` | fills `summary_l1/l2` on `dispatch_summary` | n/a |
 | `sharepoint-sync` | `0 */4 * * *` (109) | in-route Graph read of **VincePersonal** only, then swarm `/memory/put` namespace `sharepoint` | SharePoint metadata → items | n/a |
-| `second-brain-cron-watchdog` | `15,45 * * * *` (173) | read-only streak check; alerts gated | n/a | `VMC_SECOND_BRAIN_CRON_ALERT_ENABLED` |
-| Lobster lanes `kb-compile`, `kb-lint`, `institutional-distill` | Lobster scheduler (not crontab) | `src/pipelines/kb_compile.py` (writes items + embeddings), `kb_lint.py`, `institutional_distill.py` | | B8; `src/pipelines/registry.py:192-203` |
+| `second-brain-cron-watchdog` | `15,45 * * * *` (173) | read-only streak check; `src/pipelines/registry.py:192-203` |
 | `knowledge-extract` (LLM → graph) | **no crontab line** (B8); registry `30 */2 * * *` enabled; route `vmc/app/api/cron/knowledge-extract/route.ts` | `src/pipelines/knowledge_extract.py` via `strict_local_chat` (local-driver) | session_artifact/dispatch_summary/note/document_chunk ≥100 chars → `llm_claim` facts ≤0.7, 5-15 per source, quarantine on invalid | `MEMORY_GRAPH_LLM_EXTRACTION_ENABLED`, `KNOWLEDGE_EXTRACT_BATCH_SIZE` (20, max 200) |
 
 Other writers: key-authed `POST ingest`/`relations`/`session-artifact` and MCP write
@@ -446,11 +443,11 @@ code; it does not read the cloud env name `VMC_API_URL`.
 
 **local-inference** provides an OpenAI-compatible LiteLLM proxy. Agents name an alias,
 never a model id.
-- Dell `:4000`, tailnet `100.103.33.54`. Aliases `local-primary`/`local-fast`
+Aliases `local-primary`/`local-fast`
   (Qwen3-32B-AWQ, tools + JSON), `local-coder` (Spark A), `local-driver` (Spark B)
   (`litellm/config.yaml:1-24`). Master key `LOCAL_LITELLM_MASTER_KEY`, local only. This
-  is the **trading gateway**. Fleet D23 forbids fleet work from loading it or the
-  `local-driver` lane. The brain's own extraction and wiki compile still use
+  is the **trading gateway**.
+  The brain's own extraction and wiki compile still use
   `local-driver` today (`knowledge_extract.py` `strict_local_chat`; GOVERNANCE
   "Token-Cost Policy"), and R9 moves brain chat jobs to the fleet proxy's cloud aliases.
 - Fleet proxy `:4001` on its own EC2 (`litellm/fleet.yaml`, `deploy/fleet-proxy/README.md`):
@@ -466,8 +463,7 @@ never a model id.
   delegated Graph (MSAL cache on the Dell). `harness/ledger/brain.py:45-51` POSTs
   `agent/items` (405).
 
-**Verdict for the Workbench.** Don't call the Dell gateway or Spark lanes: they are a
-trading lane, tailnet-only, and the cloud cannot reach them. Don't reuse the harness:
+Don't reuse the harness:
 it writes, covers the wrong site, and its OCR is a stub. You may borrow its ideas
 (reverse journal, provenance query) for read-only work. For model calls outside the
 agent session, the sanctioned path is a fleet proxy virtual key under fleet D11/D21.
@@ -520,8 +516,7 @@ gates. Nothing stops until its logs show 14 quiet days (D1, SC-3).
 | R8 | search ported in-process (same `text-embedding-3-small` 1536) | not started | scores may shift ≤0.02 |
 | R9 | keep or retire each of the 15 jobs; build the embedding backfill; chat jobs → fleet proxy | not started | swarm-only content (dispatch summaries, swarm lessons) stops growing |
 | R10 | the brain's own database (D13); the login routes and the VMC UI retire | not started | writes pause for the window (`BRAIN_WRITES_PAUSED`) |
-| R11 | key scopes wired; `brn_` keys; VMC's Caddy forwards only `brn_*`; brain drops the legacy hashes after 14 quiet days | not started | **`VMC_API_KEY` stops working for brain routes on both hosts** |
-| R12 | remove the search fallback marked "remove after 2026-09-30" (`search-core.ts:370-375`, B15) | not started | document-lane lexical fallback disappears |
+| R11 | key scopes wired; `brn_` keys; VMC's Caddy forwards only `brn_*`
 
 Env names (§7 execution contract): `BRAIN_BASE_URL` (callers; the frontier spec's
 `BRAIN_URL` is the same value), `BRAIN_API_KEY` (one caller's key), `BRAIN_API_KEYS`

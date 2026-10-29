@@ -56,8 +56,7 @@ principals) and the frozen case ids. Without it the tools refuse
 
 Known limits: as ``kind_confirmation``, the Workbench cannot prove a person answered the form: the
 form travels over the same MCP transport as the tool call, so an agent client running under a
-steward's identity can answer it itself (self-consent). That risk is ACCEPTED under owner policy
-e251073ef3c5 (``devloop/DECISIONS/2026-10-08-playbook-adopt-overlay.md``): the records name the
+steward's identity can answer it itself (self-consent). The records name the
 steward, form id and declared client so an adoption is attributable, and a human-authenticated
 console adopt is the follow-up surface. An investigating agent's own session
 (``plx.agent.investigate``/``plx.agent.act``) cannot propose, it runs ``plx.agent.playbook``;

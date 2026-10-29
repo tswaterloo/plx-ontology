@@ -1,6 +1,6 @@
 """C0 contracts: formats validate their example payloads and stay mutually consistent.
 
-Files under test (frozen formats every lane codes against):
+Files under test:
   ontology/schema/_format.schema.json      domain schema files
   ontology/store_ddl.py                    projection store DDL
   operating/ontology_tool_contracts.json   generic tool I/O
@@ -30,11 +30,11 @@ TOOL_EXAMPLES = {
     data["tool"]: data["examples"]
     for data in (json.loads(p.read_text(encoding="utf-8")) for p in sorted((EXAMPLES / "tools").glob("*.json")))
 }
-# 10-DECISION decision 4 primitives + plx.investigate, plus plx.schema (09-CRITIQUE R4), plus
-# plx.review (directive dd40ff1bf83f P3) and the playbook adoption path's three tools
-# (directive 0020465a468c), the tools that write, to the Workbench's own stores only;
-# plx.investigate writes case follow-ups on a host with a recorder (2026-10-10-follow-ups-ask-
-# loop-writes), so its contract is not read_only.
+# The generic primitives + plx.investigate, plus plx.schema, plus
+# plx.review and the playbook adoption path's three tools,
+# the tools that write, to the Workbench's own stores only;
+# plx.investigate writes case follow-ups on a host with a recorder,
+# so its contract is not read_only.
 DECIDED_TOOLS = {f"plx.{name}" for name in (
     "schema", "find", "object", "around", "timeline", "aggregate", "process", "compare", "identity",
     "documents", "read", "investigate", "agenda", "review", "playbook_propose",
@@ -170,7 +170,7 @@ class ExamplesValidate(unittest.TestCase):
 
 
 class FormatRejects(unittest.TestCase):
-    """The binding invariants are enforced by the format, not left to lanes."""
+    """The binding invariants are enforced by the format, not left to each caller."""
 
     def _object(self, name: str) -> dict:
         return copy.deepcopy(next(t for t in DOMAIN["object_types"] if t["id"] == name))

@@ -10,8 +10,7 @@ in-process ``FakeBc``) holds synthetic posted sales invoices, and
 ``plx.object``, ``plx.around`` and ``plx.investigate``. The invoiced-order pick of the
 retired script is the join pick ``pick=SalesInvoice>SalesOrder``: the root reasons it
 recorded (``no_portal_row_for_external_document_number``, ``not_in_served_replica``,
-...) are the join's typed reasons. Old tests map to these in
-``devloop/DECISIONS/2026-10-07-allowlist-3-coverage-map.md``.
+...) are the join's typed reasons.
 
 Evidence label: injected-transport (no network, no real PLX data).
 """
@@ -733,7 +732,7 @@ class OrderCaseGenericTest(unittest.TestCase):
         self.assertEqual((opened["missing"], bc["hits"], bc["scanned"], bc["lookups"],
                           bc["requests"]), ("pick_none_found", 0, 0, 0, 0), opened)
         self.assertFalse([url for _m, url, _h in fake.calls if "$filter" in unquote(url)])
-        # Review of 708f1e4f5: the read policy withholds company 1's invoices from the
+        # The read policy withholds company 1's invoices from the
         # investigator while the live audience allows them. The reverse lookups go
         # through plx.find's one resolver path, so that unit is withheld before any
         # request: no $filter GET to company 1, its twin never found; the others asked.
@@ -765,7 +764,7 @@ class OrderCaseGenericTest(unittest.TestCase):
         self.assertEqual(opened["pick"]["directions"]["reverse"]["bc"]["reader"], False)
 
     def test_the_reverse_pick_keeps_the_join_rules_its_order_and_its_budget(self):
-        """Review of da08575a8: the reverse direction refuses what the forward one refuses
+        """The reverse direction refuses what the forward one refuses
         (a case variant of a customer PO, one number in two BC companies), proposes the
         order-number twins before the customer-PO ones (a PO many orders share, such as
         "VERBAL", never crowds them out of the PICK_SCAN slots), stops at its deadline
@@ -912,7 +911,7 @@ class OrderCaseGenericTest(unittest.TestCase):
         self.assertLess(directions["forward"]["scanned"], len(newer))
 
     def test_a_live_forward_match_is_found_again_over_bc_so_cross_scope_holds(self):
-        """Review of 03b9d86de: a forward root's plx.find the projection cannot answer asks
+        """A forward root's plx.find the projection cannot answer asks
         live only the Portal; when that live find shows the Portal order a company-scoped
         carrier would root on, the find is repeated over every family, so a BC record of
         another company holding the same number still makes the invoice cross_scope,

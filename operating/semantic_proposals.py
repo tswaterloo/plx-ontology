@@ -3,7 +3,7 @@
 A *proposal* adds one new version file to the playbooks in force: the shipped directory
 (``operating/playbooks``, code: never written here) and the host's overlay of adopted versions
 (``playbooks.overlay_dir`` of its state directory), loaded together by
-``PlaybookRegistry.load_layers`` (decision 2026-10-08-playbook-adopt-overlay). A published version
+``PlaybookRegistry.load_layers``. A published version
 file of either layer is never rewritten; the new version is later than every version of its id,
 uses no retired tool, and its id has a current version to be compared with. A kind is proposable
 only when the store has a runner registered for it, and ``playbook`` is the only kind with one:

@@ -1,7 +1,6 @@
 """Case originals of the capture store, served per reader through their source's gate.
 
-Owner decision 2026-10-27 (account A on the owner's behalf;
-``devloop/DECISIONS/2026-10-27-case-originals-served.md``): the stakeholder briefs, maps
+The stakeholder briefs, maps
 and evidence files that ``scripts.case_originals read`` holds in ``<state>/case-originals``
 (bytes by SHA-256, extracted text, one receipt per file) are served through the same
 per-reader gate as the source item each one was read from. A reader who could open the
@@ -19,7 +18,7 @@ Source unit (decided from the receipt, never declared by an operator):
   captured version (chat membership history, the people exclusion). A chat the Teams
   capture does not hold has no known ACL.
 * ``repository``: the code repository the file was committed to (``repository_ref``, a
-  GitHub blob at a commit; supervisor decision 2026-10-29). The gate is the live
+  GitHub blob at a commit). The gate is the live
   audience's grant of ``repo:<owner>/<name>`` to the reader (default deny, exact pattern
   only, never ``*``; ``CaseRuntime._captured_original_gate``). A reader it does not grant
   is refused as before, and a name match on such a file still counts as
@@ -59,8 +58,8 @@ A document search (``search``) matches the query's words in a file's name or in 
 extracted text (``extractions/<sha256>.txt``, the reading ``scripts.case_originals read``
 wrote; never the bytes, never re-extracted at query time). Matching originals the reader
 may not open are counted, never named (``withheld``), and only by a match in the file
-name: their text is never matched for a reader who cannot open them
-(``devloop/DECISIONS/2026-10-27-refused-originals-name-only.md``). By gate kind, those with no known
+name: their text is never matched for a reader who cannot open them.
+By gate kind, those with no known
 source ACL (``source_acl_unknown``) and those whose source gate refused this reader
 (``source_gate_denied``). A file the people exclusion withholds, or whose owner it cannot
 decide, is never counted, and a guard that cannot decide counts nothing. A Teams chat
@@ -891,7 +890,7 @@ class CapturedOriginals:
         withheld: dict[str, int] | None = None
         if folded and self._countable_at_all():
             # Originals with no known source ACL whose file name matches: served to
-            # nobody, counted (decision 2026-10-27-refused-originals-name-only).
+            # nobody, counted.
             withheld = {}
             for entry in entries.values():
                 if not _readable_receipt(entry.receipt) or not name_match(entry):

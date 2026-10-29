@@ -1,4 +1,4 @@
-"""Structured answer claims (ROADMAP B1 ``structured-answer-claims``): the planner states
+"""Structured answer claims (the acceptance bar ``structured-answer-claims``): the planner states
 each value as a claim (value, citation handle, field, its id) and writes short prose naming
 claims ``{id}``; ``operating.answer_gate`` checks each claim by reference against what the
 session's tools returned, never by reading the prose; code renders the answer's text from
@@ -426,7 +426,7 @@ class OneProseScreenTests(unittest.TestCase):
     def test_the_scorer_reports_unchecked_prose_as_unverified_without_splitting_b1(self):
         """A word the screen cannot tie to a checked claim (``late``) is reported on the
         eval path as ``claim_prose_unchecked``: unverified, never blocking, so the one B1
-        rate pair stays one (decision 2026-10-19-b1-one-answer-rate)."""
+        rate pair stays one."""
         from evals import score
         answer = {"text": "PO PO#5447 is late.", "values": [
             {"value": "PO#5447", "citations": [{"l1_handle": self.PO,

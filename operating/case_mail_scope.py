@@ -69,7 +69,7 @@ class MailScope:
                 raise MailScopeError("mail_scope_domain_invalid")
             domains.add(domain.strip().lower())
         self.is_unrestricted = False
-        # Owner decision 2026-10-26: every directory user but the excluded people.
+        # Every directory user but the excluded people.
         self.all_directory = bool(all_directory)
         self.people: Any = None
         self.addresses = frozenset(allowed)

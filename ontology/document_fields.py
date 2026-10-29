@@ -1,4 +1,4 @@
-"""Typed, page/span-cited fields of captured business documents (directives P2 and P8).
+"""Typed, page/span-cited fields of captured business documents.
 
 A captured document (a mail attachment, a SharePoint file) is read from its own pinned
 bytes by the deterministic extractor (``integrations.document_understanding``; no model,
@@ -54,7 +54,7 @@ What it decides
   (``ISSUED_SIGNALS``): ``issued_category``, the Portal's DocumentCategory confirmed for
   this very version is an issued purchase order, or ``own_mailbox_send``, a mail
   attachment the captured mailbox itself sent. A forwarded or replied copy keeps the
-  document's original direction (decision c5c50e8b58e6): bytes a captured mailbox
+  document's original direction: bytes a captured mailbox
   received from outside the own party (a sender whose domain is no captured mailbox's)
   before it sent them (an outside copy received after the send, a supplier returning
   the own party's PO, decides nothing; with either time unknown it counts) are a
@@ -160,9 +160,8 @@ What it decides
   header is the gap ``unaligned`` citing the row and keeps the table, except on a layout
   page, where the one row cell after the label lying under the column's header cell alone
   (by x-overlap, no other cell overlapping that column) is the read; a handwritten cell
-  OCR dropped elsewhere in the row no longer hides it (decision
-  ``devloop/DECISIONS/2026-10-18-ao-ocr-layout-columns.md``, revisiting directive
-  6fd5c7b38847). A row whose first cell lists the row label as one option of several
+  OCR dropped elsewhere in the row no longer hides it
+  A row whose first cell lists the row label as one option of several
   ('Filling/Setup/Tear down', or ruled 'Filling | Setup | Tear down' with a speck
   before an option; the task chosen by an underline the text does not hold) is
   the gap ``unreadable`` citing the row, never that task's value. A field no cell
@@ -181,8 +180,7 @@ What it decides
   least ``HANDWRITTEN_SHARE`` of whose text OCR read in words below
   ``integrations.document_understanding.HANDWRITING_CONFIDENCE`` (handwritten part codes
   OCR cannot key: a typed reader limit,
-  also citing the box text; never a key mapped out of it; decision
-  ``devloop/DECISIONS/2026-10-19-ao-handwritten-reader-limit.md``), ``single_spaced`` a value one space after the label,
+  also citing the box text; never a key mapped out of it), ``single_spaced`` a value one space after the label,
   ``value_unplaced`` a plain label, ``row_unaligned`` a row label under a header naming
   the field, ``header_unseen`` a row label with no such header above; a label seen only
   as one option of a ``/`` list is ``unreadable`` instead: the mark that picks the option
@@ -1707,8 +1705,7 @@ LABEL_SEEN_UNREAD = "label_seen_unread"
 HANDWRITTEN_UNKEYED = "handwritten_unkeyed"
 # The share of an unread box's text (its words' characters) OCR must have read below the
 # handwriting bound for the box to be handwriting: a stray glyph or mark in handwriting
-# may read high, printed text rarely reads low (decision
-# devloop/DECISIONS/2026-10-19-ao-handwritten-reader-limit.md).
+# may read high, printed text rarely reads low.
 HANDWRITTEN_SHARE = Fraction(3, 4)
 UNREAD_REASONS = ("header_unseen", "row_unaligned", "single_spaced", "no_key",
                   HANDWRITTEN_UNKEYED, "value_unplaced")

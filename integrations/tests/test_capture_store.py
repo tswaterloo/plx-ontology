@@ -152,7 +152,7 @@ class StoreTests(unittest.TestCase):
         self.assertGreater(report["payload_bytes"], 0)
 
     def test_one_restrictive_audience_discloses_the_same_through_every_reader_path(self):
-        # Dot finding capture-bc-acl-count-metadata: an item ACL the reader fails
+        # An item ACL the reader fails
         # must withhold the same way from resolve, records and completeness.
         self.capture(record(REC, 'W/"1"', "1.10"), record(REC2, 'W/"a"', "5"))
         handle = self.store.records(SVC, "bc", self.unit)["items"][0]["citation"]

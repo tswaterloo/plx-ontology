@@ -18,7 +18,7 @@ dispatches to an adapter only when every gate holds (``GATES``, reported by
   that decision was read back from MC again at dispatch (``dispatch(..., mc=...)``);
 * ``allow_switch``: the capability is listed in ``ALLOW_ENV``. The switch is off by
   default; the development loop never sets it (a person enables one capability on the
-  credentialed host, devloop/GOAL2-ACTIONS.md section 8). In test mode
+  credentialed host). In test mode
   (``twin.mode.test_mode(allow=...)``, never on a credentialed host) the capabilities it
   names read as switched on for the write twin's own transport only: at dispatch the
   action path names the adapter's transport, and any other (an injected or a later
@@ -29,7 +29,7 @@ of what answers it (``evidence``) and only ``TRANSPORT_LABELS`` are accepted, to
 ``injected-transport``, plus ``twin-transport`` in test mode only and only from the exact
 type ``twin.transport.TwinTransport`` (the in-process write twin; ``transport_admitted``,
 re-checked at every dispatch and read-back): pointing an adapter at a real system is a
-reviewed code change (a non-production instance, the ``devloop/live-checks`` spec run,
+reviewed code change (a non-production instance, the the live-check specs spec run,
 then a new label), never configuration.
 
 Before the write, ``dispatch`` reads the owner's record (the catalog's GET) and sends
@@ -58,7 +58,7 @@ lost answer) propagates: the outcome is unknown and is reconciled by read-back o
 re-sent.
 
 Evidence label: ``injected-transport`` (live-unverified;
-``devloop/live-checks/portal.sales_order_adapter.json``).
+live check ``portal.sales_order_adapter``).
 """
 
 from __future__ import annotations
@@ -250,7 +250,7 @@ class OwnerAdapter:
             raise AdapterError("adapter_capability_mismatch")
         # The label is the transport's own claim: any object can declare it. It stops a
         # transport plugged in by mistake, not a hostile one; that is a code change, and
-        # review is the control there (devloop/GOAL2-ACTIONS.md section 9).
+        # review is the control there.
         if not transport_admitted(transport):
             raise AdapterError("transport_not_reviewed")
         self.capability = capability

@@ -125,7 +125,7 @@ def card_claims(request):
     return {"action": "answer", "unknowns": [], "claims": claims}, None
 
 
-# B1 (decision 2026-10-19-b1-one-answer-rate) on the fixture parts of an agent that abstains
+# B1 on the fixture parts of an agent that abstains
 # everywhere: nothing is answered, so every rate fails.
 ABSTAINING_AGENT_RED = ["eval.total.accuracy < 0.8", "eval.total.coverage < 0.8",
                         "eval.total.confident_unsupported_rate > 0.02"]
@@ -406,7 +406,7 @@ class LivePartTests(unittest.TestCase):
 
     def test_the_verifier_provisioned_host_runs_the_live_part_and_names_what_it_was_given(
             self):
-        """The three host settings provisioned as devloop/live_verify.py ``agent_host``
+        """The three host settings provisioned as the live verifier's ``agent_host``
         provisions them (no PLX_EVAL_READER, as on the verifier; a fresh random secret, a
         state directory, a host config, and the names in ``AGENT_PROVISIONED_ENV``): the
         live part runs as the eval principal instead of ``session_secret_missing``, and
@@ -833,7 +833,7 @@ class LivePartTests(unittest.TestCase):
                          ("live_host_config_refused:host_config_invalid:mirror_audience",
                           "eval_principal"))
         # The withheld root is blocked; the misread is a confident unsupported value the
-        # gate refused (answered, never correct: decision 2026-10-19-b1-one-answer-rate) and
+        # gate refused (answered) and
         # the escalation is unanswered: the sessions that ran miss B1's bar on every rate.
         total = report["eval"]["total"]
         self.assertGreaterEqual(total["gate_refused_answers"], 1)
@@ -1151,7 +1151,7 @@ SYNTHETIC_MAIL_HARNESS = (
 
 class AskAnswerTests(unittest.TestCase):
     def test_an_ask_count_claim_is_scored_as_the_count_the_scorer_recomputes(self):
-        """Directive 24e7aa78f585: a count claim the Ask's gate passed reaches the scorer
+        """A count claim the Ask's gate passed reaches the scorer
         as a calculated value, recomputed from the harness's re-reads (isolated-fixture)."""
         from evals.tests import test_score as ts
         claim = {"text": "The invoice has 2 lines.", "citations": [ts.BC_A, ts.BC_B],
@@ -1203,7 +1203,7 @@ class AskAnswerTests(unittest.TestCase):
         self.assertEqual((summary["wrong_cited"], summary["confident_unsupported"]), (1, 1))
 
     def test_an_ask_sum_claim_carries_its_currency_to_the_scorer(self):
-        """Directive 2aafc4270e73 item 3: a sum claim the Ask's gate passed in USD is scored
+        """A sum claim the Ask's gate passed in USD is scored
         as a USD total; one stating no currency is a currency mismatch (isolated-fixture)."""
         from evals.tests import test_score as ts
         claimed = {"value": "1260.50", "kind": "number", "op": "sum", "currency": "USD",

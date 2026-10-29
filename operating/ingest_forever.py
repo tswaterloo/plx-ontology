@@ -1,7 +1,7 @@
 """The host's ingest mode: every connected source's own capture CLI, as one host cycle.
 
-Always be ingesting (owner directive 2026-10-21) is a mode of ``operating.host``, never a
-runner of its own (decision 2026-10-21-ingest-one-writer): a host config with
+Always be ingesting is a mode of ``operating.host``, never a
+runner of its own: a host config with
 ``"ingest": {"mode": "capture_clis"}`` makes each ``Host.cycle`` (``run``, ``serve``'s
 interval, ``check``) re-run the existing capture command of every source the config
 names, as a child process, into the host's state directory. One scheduler
@@ -101,13 +101,13 @@ STOPPED = "ingest_stopped"   # a child stopped by the stop file, the disk guard 
 POLL_SECONDS = 0.5
 EPHEMERAL_ROOTS = ("/tmp", "/dev/shm", "/run")
 STATUSES = ("complete", "partial", "blocked", "failed", "not_configured")
-# devloop/live_verify.py CAUSES: what a typed block may name as its cause.
+# the live verifier CAUSES: what a typed block may name as its cause.
 CAUSES = frozenset({"upstream_outage", "projection_timeout", "missing_bindings",
                     "host_misconfiguration", "capture_gap", "relation_unavailable",
                     "source_gap", "later_ask"})
 RESUME_KINDS = ("cursor", "interrupted_only", "snapshot")
 # A child never holds another source's secret: names shaped like a credential are passed
-# only to the source that declares them (the shape devloop/live_verify.py hides).
+# only to the source that declares them (the shape the live verifier hides).
 CREDENTIAL_NAME = re.compile(r"KEY|SECRET|TOKEN|PASSWORD|PASSWD|COOKIE|DSN|CREDENTIAL|"
                              r"SESSION|^GIT_CONFIG_", re.IGNORECASE)
 GRAPH_ENV = ("MICROSOFT_GRAPH_TENANT_ID", "MICROSOFT_GRAPH_CLIENT_ID",

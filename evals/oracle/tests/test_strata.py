@@ -227,8 +227,8 @@ class PurchaseOrderIdentityTest(unittest.TestCase):
                                  portal), "gold_native_staging")
         raw = portal.lookup(K.FM_RECEIPT_RAW, "id", 96991)[0]
         self.assertEqual(lineage(K.FM_RECEIPT_RAW, raw, portal), "gold_native_staging")
-        # Its closed raw receipt is never a receipt root (10-DECISION #2: staging rows stay
-        # out of the benchmark), in the dev-set strata and in the cross-system sample.
+        # Its closed raw receipt is never a receipt root,
+        # in the dev-set strata and in the cross-system sample.
         self.assertNotIn("FX99901-1", {c.identifier for c in
                                        portal_candidates(sources, "receipt")})
         self.assertNotIn("FX99901-1", {r.identifier for r in cs.portal_roots(sources,
@@ -589,7 +589,7 @@ class DocumentNumberVariantTest(unittest.TestCase):
 
 
 class RootFirstTest(unittest.TestCase):
-    """Root first (architect-20261013T1224Z, gap-04f9b49ebae9): the document strata search
+    """Root first (gap-04f9b49ebae9): the document strata search
     the documents for the numbers of the split's closed roots instead of reading documents
     and hoping one names a closed record (three live runs: 4/4/3 of ~800 spans named a
     Portal row, all open)."""

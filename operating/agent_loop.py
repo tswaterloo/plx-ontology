@@ -1,6 +1,6 @@
 """A bounded, general tool-using agent loop over the ontology tools.
 
-10-DECISION #4: generic primitives, ``plx.investigate`` plans, "plus a bounded ReAct loop
+Generic primitives, ``plx.investigate`` plans, "plus a bounded ReAct loop
 for anything left over". This is that loop: for a question no plan covers, a planner (a
 model) chooses the next read-only tool calls from what earlier calls returned, until it
 answers, abstains or escalates. There is no question family, keyword route or case
@@ -11,8 +11,8 @@ deterministic and does not trust the planner:
   ∩ ``readOnlyHint``), called through ``MCPServer.handle`` exactly as an MCP client
   calls them: the session's actor and employee gate, the output boundary (source text
   arrives as ``untrusted_text`` envelopes), the call rate limit. Case writes and
-  ``plx.act`` are refused, never executed. The loop stays read-only
-  (``devloop/DECISIONS/2026-10-10-follow-ups-ask-loop-writes.md``): a tool's write option
+  ``plx.act`` are refused, never executed. The loop stays read-only:
+  a tool's write option
   (``WRITE_OPTIONS``: ``plx.investigate``'s ``follow_ups``) is stripped from what the planner
   is shown and a call carrying one is refused (``option_not_available_to_loop``) before the
   server sees it; a server that records follow-ups lists ``plx.investigate`` as a writer, so
@@ -42,8 +42,8 @@ deterministic and does not trust the planner:
   (``step_budget_exhausted``, ``tool_budget_exhausted``, ``token_budget_exhausted``);
   so do two unusable planner replies in a row.
 * Claims: an answer is a list of claims, each citing L1 handles. A citation counts only
-  if a tool returned it to this session in this run as evidence
-  (``devloop/DECISIONS/2026-10-07-agent-evidence-contract.md``): at a field its output
+  if a tool returned it to this session in this run as evidence:
+  at a field its output
   contract (``operating/ontology_tool_contracts.json``) types as ``$defs/handle``, in
   the result branch the output matches; inside a result object with a ``status``, only
   when that status says the record was read for this employee (``RESOLVED_STATUSES``:

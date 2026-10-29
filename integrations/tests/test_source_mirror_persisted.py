@@ -1,6 +1,6 @@
 """The last complete source-mirror capture, served stale through a Portal API outage.
 
-Decision 2026-10-04-scope-freshness (directive be1776e885b5). Evidence label:
+Decision 2026-10-04-scope-freshness. Evidence label:
 ``injected-transport``. The real ``SourceMirror`` behind the real
 ``WorkbenchReadApiClient`` runs against the source-mirror tests' ``FakeWorkbench``; the
 outage is an injected HTTP 500 ``internal`` from ``GET /v1/health`` (the live symptom
@@ -329,7 +329,7 @@ class FindThroughOutageTests(PersistedTestCase):
 
 
 class HostCaptureTests(PersistedTestCase):
-    """Supervisor decision 2026-10-27 (captured-Portal staleness): a host whose own ingest
+    """A host whose own ingest
     captures the Portal and that holds no Portal client serves the mirror as that
     capture, labelled with its captured time and judged by the host's capture bound,
     never refreshed by the reader and never labelled "live source unavailable"."""
@@ -405,7 +405,7 @@ class MirrorFillTests(PersistedTestCase):
                          ["public.app_shipment"])
 
     def test_a_fill_maps_the_sighting_captures_into_the_running_mirrors_ids(self):
-        """Review of ef26b2f8dc: the import remapped the capture ids but not
+        """The import remapped the capture ids but not
         ``seen_through_capture`` / ``sighting_floor``, so the last-sighting rule compared
         another relation's capture id with this one's (``not_rechecked_...``)."""
         shipment = "public.app_shipment"
@@ -755,7 +755,7 @@ def carrier_world(schema):
 
 
 class LiveCheckSpecTests(PersistedTestCase):
-    """``devloop/live-checks/mirror.persisted_fallback.json`` and its probe over an
+    """live check ``mirror.persisted_fallback`` and its probe over an
     injected client, in the live runner's condition: a state directory that starts
     empty (each live run on b047200 met a fresh one and failed ``missing_mirror``).
     No network; ``PLX_WORKBENCH_STATE_DIR`` names a temporary directory."""
@@ -863,10 +863,10 @@ class LiveCheckSpecTests(PersistedTestCase):
                                            "persisted_scopes", "runs", "schema"])
 
     def test_a_store_holding_no_copy_serves_the_one_on_the_mirror_branch(self):
-        """Owner policy e251073ef3c5 item 6: the verifier's container keeps no store,
+        """The verifier's container keeps no store,
         so an outage is answered from the copy an earlier run published on the
         non-branch ref ``refs/devloop/mirror`` and the verifier attested on
-        claude/devloop-live (a local bare repository here; an injected client never
+        the live-results branch (a local bare repository here; an injected client never
         reads the real one)."""
         from integrations import mirror_branch_store as mbs
         from integrations.tests.test_mirror_branch_store import publish_attested

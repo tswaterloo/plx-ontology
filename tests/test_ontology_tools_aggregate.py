@@ -770,8 +770,8 @@ class MissingFromSourceTests(_Base):
 
 
 class AsKnownAtTests(_Base):
-    """Members, values and absence as known at T from the versioned captures (10-DECISION
-    5): a record first captured after T is not counted at T, one live at T is, and a
+    """Members, values and absence as known at T from the versioned captures:
+    a record first captured after T is not counted at T, one live at T is, and a
     capture history that cannot show the traversal known at T answers unknown, never
     absent_in_source (absent is not missing; unreadable is not empty)."""
 

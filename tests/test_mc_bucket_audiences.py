@@ -1,4 +1,4 @@
-"""The committed MC bucket audience file (devloop/DECISIONS/2026-10-08-mc-follow-up-audience.md).
+"""The committed MC bucket audience file.
 
 ``operating/mc_bucket_audiences.json`` names who reads each MC follow-up bucket; every host
 passes ``load_bucket_audiences`` as the action path's ``mc_follow_up_audience``. A follow-up

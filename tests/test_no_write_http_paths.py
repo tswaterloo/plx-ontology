@@ -2,13 +2,14 @@
 
 ``scripts/check_http_egress.py`` is the `http-egress` gate check. These tests prove
 it catches aliased Request, getattr/partial, opener.open(url, data), http.client
-and friends, scans scripts/ and devloop/, and that the current tree is clean.
+and friends, scans scripts/ and the development tooling, and that the current tree is clean.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -138,7 +139,6 @@ NEGATIVE = [
 ]
 
 
-# ALLOWED entries landed before their file (the gate runs main's allowlist): path -> lane.
 AWAITING_LANE: dict[str, str] = {}
 
 # The sender of operating/messages_planner.py (messages-api-planner, 3f924d62), verbatim.
@@ -240,6 +240,19 @@ class HttpEgressScanTests(unittest.TestCase):
                       gate.scan_source("import requests", "scripts/x.py"))
         self.assertIn(("devloop/x.py", "<module>", "banned-import"),
                       gate.scan_source("import requests", "devloop/x.py"))
+
+    def test_scope_covers_the_app_api(self):
+        # operator_api (the web app's API) serves people: it sends nothing to a business
+        # system, so a sender there is a finding like anywhere else.
+        self.assertIn("operator_api", gate.SCANNED)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for tree in gate.REQUIRED_TREES:
+                (root / tree).mkdir()
+            (root / "operator_api").mkdir()
+            (root / "operator_api" / "client.py").write_text("import requests\n")
+            self.assertIn(("operator_api/client.py", "<module>", "banned-import"),
+                          gate.scan_report(root)["findings"])
 
     def test_allowlisted_senders_still_exist_and_are_exercised(self):
         report = gate.scan_report()

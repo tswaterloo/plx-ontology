@@ -1,4 +1,4 @@
-"""The FBA external readers (decision 2026-10-19-fba-external-sources), on injected
+"""The FBA external readers, on injected
 transports only, never a live read.
 
 Boundary: what the one sender lets out (GET only on the Freightcom *test* host and the

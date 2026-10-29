@@ -1049,7 +1049,7 @@
   ]
  },
  "corrections_from_verified_originals": {
-  "note": "Added by the Workbench, not part of Vince's map: findings from the verified original documents (advisory record 2e7013f1 on origin/codex/advisory, summarised in devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md section 1.11; files in verified_originals) that correct or qualify the map text at the path named. The map text itself stays as Vince wrote it.",
+  "note": "Added by the Workbench, not part of Vince's map: findings from the verified original documents (files in verified_originals) that correct or qualify the map text at the path named. The map text itself stays as Vince wrote it.",
   "items": [
    {
     "id": "po5447_currency_usd",
@@ -1103,7 +1103,7 @@
   ]
  },
  "verified_originals": {
-  "note": "Added by the Workbench, not part of Vince's map: the original files behind the SoapBox x Lifetime example, located and hashed by the verified-originals advisory record. Each member is a cited original (identity = SHA-256 of its bytes). Only these members were inspected; the record grants no authority and is not a Procure-to-GL truth set (no receipt, lot, AP posting, item ledger, value entry or G/L entry is in the archive).",
+  "note": "Added by the Workbench, not part of Vince's map: the original files behind the SoapBox x Lifetime example, located and hashed by the verified-originals source record. Each member is a cited original (identity = SHA-256 of its bytes). Only these members were inspected; the record grants no authority and is not a Procure-to-GL truth set (no receipt, lot, AP posting, item ledger, value entry or G/L entry is in the archive).",
   "record_ref": "origin/codex/advisory",
   "record_path": "context/2e7013f1dca3bc5fad6f27dbf887d55a4f784e1e37bef0eb8a53ea1613b78d66.json",
   "record_created_at": "2026-09-30T22:22:12Z",

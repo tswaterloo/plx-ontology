@@ -134,6 +134,13 @@ class HardcodedCaseGateTests(unittest.TestCase):
         self.write("integrations/map.json", '{\n  "PO5447": {"x": 1}\n}\n')
         self.assert_fails("integrations/map.json:2 identifier PO5447=")
 
+    def test_the_app_api_is_scanned(self):
+        self.assertIn("operator_api", gate.SCANNED)
+        self.write("operator_api/mock.py", "LABEL = 'PO 90412'\n")
+        self.assert_passes()
+        self.write("operator_api/mock.py", "LABEL = 'demo for PO5447'\n")
+        self.assert_fails("operator_api/mock.py:1 identifier PO5447=")
+
     def test_js_string_literal_fails_and_comment_passes(self):
         self.write("operator_ui/app.js", "// demo for PO5447\n/* AO-26005B */\nconst a = 'ok';\n")
         self.assert_passes()

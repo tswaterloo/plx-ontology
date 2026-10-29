@@ -1,6 +1,6 @@
 {
  "schema": "plx-mail-capture-scope/v1",
- "note": "Live-check scope of graph.mail_capture (devloop/live-checks/graph.mail_capture.json): the six operational mailboxes the owner named (owner directive dedbcc76f44a (2026-10-21); decision 2026-10-20-mail-capture-folder-scope option 1), inbox and sent items (12 folders) over a 90-day first-round window, captured whole (no page cap). Every mailbox named here must be on the canonical allowlist, operating/case_mail_scope.json, or the scope is refused. Configuration, never a grant.",
+ "note": "Live-check scope of graph.mail_capture (live check ``graph.mail_capture``): the six operational mailboxes in scope (owner 2026-10-21), inbox and sent items (12 folders) over a 90-day first-round window, captured whole (no page cap). Every mailbox named here must be on the canonical allowlist, operating/case_mail_scope.json, or the scope is refused. Configuration, never a grant.",
  "window_days": 90,
  "mailboxes": [
   {

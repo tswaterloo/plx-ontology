@@ -37,7 +37,7 @@ def _docs():
 
 # The Portal skeleton only: curated domain files and other sources' generated files
 # (generated/graph_*, generated/bc_*: the BC files bind through curated BC types) belong
-# to other lanes and are tested there, so these tests stay valid whatever
+# to other modules and are tested there, so these tests stay valid whatever
 # ontology/schema/domains/ holds.
 _DOCS = [(name, doc) for name, doc in s.load_documents() if name.startswith("generated/portal_")]
 _CATALOG = s.load_catalog()

@@ -1,6 +1,6 @@
 """Source-backed identifier candidates behind the ``plx.find`` contract.
 
-Directives 4190c1c690ce item 3, 7f61c793591f 2a and 3feb26395fb3: ONE resolver in
+ONE resolver in
 the ontology identity layer. ``plx.find`` (``operating/ontology_tools.py``) answers
 from the L2 projection store; until that store is populated live, the same tool
 asks this module when the store has no visible match for an identifier. Nothing
@@ -16,8 +16,8 @@ of every object type (``object_type`` narrows it) whose ``identifier_kind`` is o
 of the query's typed keys names its carriers (binding source, relation, path).
 No kind, type or case is named in this file.
 
-Permissions are decided before any read (directive: permission filter before
-ranking): a carrier is read only when ``may_read(audience_key)`` grants its L1
+Permissions are decided before any read:
+a carrier is read only when ``may_read(audience_key)`` grants its L1
 audience unit (``api:<relation>``; ``bc:<company>/<entity set>`` per company),
 and the readers re-check their own audiences. The throw-away store is then read
 by ``plx.find`` under the same policy, in SQL, before any cap or rank.
@@ -39,7 +39,7 @@ A resolution with any unit not read (withheld, unreadable, not searchable, not
 served, stale, truncated) is never complete, so ``plx.find`` can never call the
 identifier absent from the source.
 
-Scope freshness (decision 2026-10-04-scope-freshness): every probe of a unit the reader
+Scope freshness: every probe of a unit the reader
 may read states how it was served (``Probe.freshness``): ``live``, ``cached_mirror``
 (the mirror holds the relation but its refresh failed: the rows of its last capture, as
 of that capture, with the HTTP status, error code and label), ``persisted_capture``
@@ -76,7 +76,7 @@ tier ``lead``. ``SameNumberIndex`` finds same-number twins among values already 
 ``PO#7100-FM9``): rows in two systems storing one number are leads naming every row;
 orders, POs, AOs and invoices never merge (identity_rules.auto_merge).
 
-Reviewed aliases (``ReviewedAliases``, directive dd40ff1bf83f P3): an identifier a person
+Reviewed aliases (``ReviewedAliases``): an identifier a person
 confirmed as naming a record (``ontology.reviews``) is one more identifier-index row of
 that record for ``plx.find``, tier ``reviewed``, while the record versions the review cites
 are current and readable by the reader; nothing else in the resolution changes.
@@ -666,8 +666,8 @@ def _compare_key(value_type: str, value: CitedValue) -> tuple:
     return ("s", value.value.strip())
 
 
-# Lineages that are never authority for a value (09-CRITIQUE R1: gold native staging
-# rows until a person confirms them): their values are never compared.
+# Lineages that are never authority for a value:
+# their values are never compared.
 NEVER_AUTHORITY = frozenset({"gold_native_staging"})
 
 
@@ -762,7 +762,7 @@ def compare_linked(check: Corroboration, counterpart: Sequence[CitedValue],
 
 
 def verdict(checks: Iterable[Check]) -> str:
-    """The identity verdict, on identifiers only (10-DECISION 3; a shared value that
+    """The identity verdict, on identifiers only (a shared value that
     differs is reported, never decides): any identifier conflict is a conflict; else
     any identifier agreement is an agreement; else nothing was proven (no counterpart,
     or no identifier could be compared): ``unverifiable``."""

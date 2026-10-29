@@ -6,7 +6,7 @@
   "F2"
  ],
  "title": "Status of a customer purchase order",
- "description": "Which sales orders carry a customer PO and what has shipped. The PO text is not unique (Portal app_sales_order.po_reference, Sage oe_order_header.ponumber; devloop/CONTEXT/03-PORTAL.md 3.3), so every verified carrier is a root and each order is reported, never merged; order status and shipment status are the cited source values of each system's own field (a shipment without a status field: its ship date). Each order's same-record twins are followed, so a carrier recorded in one system still yields the order number and shipments the other system holds; counts are per system binding.",
+ "description": "Which sales orders carry a customer PO and what has shipped. The PO text is not unique (Portal app_sales_order.po_reference, Sage oe_order_header.ponumber), so every verified carrier is a root and each order is reported, never merged; order status and shipment status are the cited source values of each system's own field (a shipment without a status field: its ship date). Each order's same-record twins are followed, so a carrier recorded in one system still yields the order number and shipments the other system holds; counts are per system binding.",
  "root": {
   "object_types": [
    "CustomerPurchaseOrder"

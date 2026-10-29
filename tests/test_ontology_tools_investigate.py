@@ -1,4 +1,4 @@
-"""Lane plx-investigate: declarative plans over the generic primitives, on the fixture world.
+"""Declarative plans over the generic primitives, on the fixture world.
 
 The world is the synthetic oracle world the frozen dev items were drawn from
 (``evals/oracle/fixture_world.py``), mirrored through the GET-only Portal client with an
@@ -597,7 +597,7 @@ class FakeHostTests(unittest.TestCase):
                       {(g["state"], g["reason"], g["subject"]) for g in read["gaps"]})
 
     def test_the_listing_follows_the_recorder_and_host_state_gaps_ask_nobody(self):
-        """devloop/DECISIONS/2026-10-10-follow-ups-ask-loop-writes.md: a host that records
+        """A host that records
         follow-ups lists plx.investigate as a writer, as its contract's read_only says; one
         that does not lists it read-only and refuses the option, writing nothing. A gap about
         the host's own state (a source it configures no reader for, a capture state its
@@ -1683,7 +1683,7 @@ class CaseHostToolsTests(Base):
 
 
 class McpHostTests(Base):
-    """plx.investigate listed on the stdio case host (lead decision 2026-10-04): an MCP
+    """plx.investigate listed on the stdio case host: an MCP
     client's call passes ``MCPServer.handle`` (the employee gate, the per-call policy of
     ``CaseHostTools``, the output boundary) and its plans run over the host's own table,
     plx.process included."""

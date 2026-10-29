@@ -77,7 +77,7 @@ shows which
 source filled a role (``kind_sources``), never the confirming principal
 (``public_original_checks``).
 Evidence label: isolated-fixture / injected-transport; no live listItem was read for a kind
-(``devloop/live-checks/graph.sharepoint_listitem.json`` covers the read itself).
+(live check ``graph.sharepoint_listitem`` covers the read itself).
 """
 
 from __future__ import annotations

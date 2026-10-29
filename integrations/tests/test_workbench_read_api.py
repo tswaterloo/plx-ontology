@@ -364,7 +364,7 @@ class WorkbenchReadApiTests(unittest.TestCase):
 
 
 class RetiredPagedImportTests(unittest.TestCase):
-    """The paged-API import into the ontology is retired (devloop/CONVERGENCE.md).
+    """The paged-API import into the ontology is retired.
 
     The source mirror is the only consumer of this client. The objective runtime
     that kept paged roots advisory went with ``UnifiedPlatform`` (deletion-8).

@@ -2,7 +2,7 @@
 plx.process read one tier for one link, and a tool that reads another fails the probe.
 
 Evidence label: isolated-fixture (the real compiled schema and stage graphs, synthetic
-records; the live run is devloop/live-checks/ontology.link_tier_agree.json)."""
+records; the live run is live check ``ontology.link_tier_agree``)."""
 
 from __future__ import annotations
 

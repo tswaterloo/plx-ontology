@@ -1,5 +1,4 @@
-"""Captured Graph mail and SharePoint files as first-class ontology sources (directive
-ddc3e0c36691 L4).
+"""Captured Graph mail and SharePoint files as first-class ontology sources.
 
 One state directory holds a versioned mail capture and a versioned SharePoint capture
 (filled over injected Graph transports); with synthetic Portal and BC purchase orders it

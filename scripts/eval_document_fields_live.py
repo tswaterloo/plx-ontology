@@ -1,5 +1,5 @@
 """Live check ``ontology.document_fields_sharepoint``: the document-class measure plus the
-exposed extraction items scored against the same capture (directive P2/P8).
+exposed extraction items scored against the same capture.
 
 Runs ``operating.sharepoint_host_check --document-class`` (one GET-only SharePoint
 capture into the check's state, its projection and the class counts) and adds, over that
@@ -55,7 +55,7 @@ capture store and report (``evaluate``; eval tooling calls the product, never th
   against the runtime reader (``evals.document_fields``). Until such an item exists it is
   ``{"status": "no_operator_items"}``: never measured against a curator's or the
   oracle's reading. ``exposed_items`` / ``exposed_fields`` are the agreement with the
-  Dot's curated (oracle-only) P2/P8 bundle (correct / wrong / abstain / blocked, recorded;
+  curated (oracle-only) P2/P8 bundle (correct / wrong / abstain / blocked, recorded;
   the live check wants wrong 0), not accuracy.
 
 * **Funnel** (``funnel``): where every current captured document stopped, from the host
@@ -1575,7 +1575,7 @@ def lot_trace_main(argv: list[str], *, environ: Mapping[str, str] | None = None,
                    sender: Any = None, portal_client: Any = None,
                    monotonic: Callable[[], float] | None = None) -> int:
     """``--lot-trace``: the supplier-lot trace (``scripts/eval_lot_trace.py``), run from this
-    module so its live check names a module ``devloop/live_verify.py`` already allows."""
+    module so its live check names a module the live verifier already allows."""
     from scripts import eval_lot_trace
 
     parser = argparse.ArgumentParser(prog="python3 -m scripts.eval_document_fields_live",

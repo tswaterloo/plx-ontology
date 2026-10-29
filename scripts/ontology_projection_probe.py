@@ -1,4 +1,4 @@
-"""Live check of the ontology projection (lane L7): counts, booleans and timings only.
+"""Live check of the ontology projection (L7): counts, booleans and timings only.
 
     python3 -m scripts.ontology_projection_probe --db DIR/mirror.sqlite \
         --store DIR/ontology.sqlite [--budget-seconds N] [--claim-sample N] [--max-rss-mb N]
@@ -14,7 +14,7 @@ GET only. Fills a throwaway Portal source mirror through
 ``scripts.mirror_measure.ordered_full_coverage`` (bound relations first; key from
 ``PLX_WORKBENCH_API_KEY``, never printed), projects it under the curated schema
 (``ontology.schema.load_schema``) twice into a throwaway store, then measures the
-09-CRITIQUE L7 acceptance on real data. Its ``completeness`` block is the one figure
+projection acceptance on real data. Its ``completeness`` block is the one figure
 (``scripts.mirror_measure.completeness``): ``complete_bound_relation_count /
 bound_total``, and ``mirror_complete`` is its ``all_bound_complete``. Relations the last daily report (``--previous-report``) names unstable are
 not staged at all, leave ``bound_total`` and put the gap ``capture_unstable_ids`` on each
@@ -154,7 +154,7 @@ budget stop a consumer passes on ``budget_partial`` of the partial report: only 
 ``PARTIAL_FIELDS`` counts, flags and codes, so a key the build adds later never reaches
 the consumer's record unreviewed.
 
-**Session projection** (``ontology.session_projection``, directive 56ca42c8a936): one
+**Session projection** (``ontology.session_projection``): one
 projection per verifier session, which every consumer opens instead of projecting the
 session's mirror cold. ``--produce-session`` (the producer) never reads the Portal and
 never copies the session mirror (``--db``, filled by ``mirror.full_coverage``; none there is
@@ -190,7 +190,7 @@ probe stays a cold build, so ``rebuild_digest_equal`` then compares the session 
 with a cold build of the same captures. Every report that compared carries
 ``rebuild_digest_mismatches`` (1 when the digests differ, else 0).
 
-**Cold mail run** (``ontology.mentions``; decision 2026-10-14-mentions-cold-path, option 3):
+**Cold mail run** (``ontology.mentions``; option 3):
 a full probe with ``--mail-capture-scope`` that did not open the session projection builds
 once and runs no rebuild (two cold builds of the live captures do not fit the host's disk).
 Its report has no ``rebuild_digest_equal`` and no ``rebuild_skipped``: it records
@@ -199,7 +199,7 @@ Its report has no ``rebuild_digest_equal`` and no ``rebuild_skipped``: it record
 (no mail, whose cold path still rebuilds) and ``ontology.session_projection``; the session
 path of the mail run still rebuilds cold and asserts ``rebuild_digest_equal``.
 
-**Session mail** (decision 2026-10-14-mentions-cold-path, option 4): the mail consumers
+**Session mail** (option 4): the mail consumers
 (``workspace.object_view``, ``session.replay``, ``ontology.mentions``) share one store and
 served state per session (the verifier's ``/ontology.sqlite``). The producer given
 ``--mail-capture-scope``, ``--live-audience`` and ``--store`` (that shared store) captures
@@ -293,7 +293,7 @@ MAIL_WITHHELD_PRINCIPAL = "probe:mail-withheld-reader"
 SHAREPOINT_FOLDER_PRINCIPAL = "probe:sharepoint-folder-only-reader"
 NOT_CHECKED = "not_checked"   # a leak count whose check did not run: never reported as 0
 PORTAL, BC, GRAPH = "portal-workbench-api", "business-central", "microsoft-graph"
-# devloop.live_verify.MAX_BLOCKED_PARTS: the verifier keeps no more parts than this.
+# the live verifier.MAX_BLOCKED_PARTS: the verifier keeps no more parts than this.
 MAX_BLOCKED_PARTS = 20
 EXIT_BUDGET = 4
 EXIT_RSS = 5   # the watchdog stopped the probe over --max-rss-mb
@@ -344,7 +344,7 @@ NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_.:\-]{0,63}")
 # The file systems an error line's ``disk`` measures (``disk_space``).
 DISK_DIRS = ("store_dir", "sqlite_temp_dir")
 # A report's ``disk.peak`` (module text, "Disk"); the verifier records these
-# (devloop/live_verify.py ENVELOPE_DISK).
+# (the live verifier ENVELOPE_DISK).
 PEAK_KEYS = ("build_bytes", "store_bytes", "mirror_bytes", "scratch_bytes", "work_bytes",
              "free_bytes", "objects", "layout")
 # A report's ``disk.stages``: per projector stage (``ontology.project.STAGES``), the most its
@@ -369,7 +369,7 @@ COLD_SINGLE_BUILD = "cold_path_single_build"
 # (``forecast_floor``), until a daily records a layout-2 peak.
 BUILD_BYTES_PER_SOURCE_BYTE = 2
 # Forecast: a layout-2 build's peak over a layout-1 build's on the same captures (offline,
-# stride-4 sample of the session mirror; devloop/DECISIONS/2026-10-18-projection-store-v6.md):
+# stride-4 sample of the session mirror):
 # 1.83 GB under layout 2 + store v6 against 3.35 GB under layout 1 + store v5 (0.55),
 # rounded up so the floor errs toward refusing.
 LAYOUT_PEAK_SCALE = 0.6
@@ -2178,7 +2178,7 @@ def _run_probe(budget: _Budget, partial: dict[str, Any], client: Any, db: str, s
         from ontology.project import _default_normalizer
         normalizer = _default_normalizer()
     if schema is None:
-        from ontology.schema import load_schema   # lane L4
+        from ontology.schema import load_schema   # L4
         schema = load_schema()
     session_bc = manifest is not None and "bc" in manifest["sources"]
     budget.at("served", "served_state", served_state_path(store))
@@ -2425,7 +2425,7 @@ def _run_probe(budget: _Budget, partial: dict[str, Any], client: Any, db: str, s
             mail_result.update(mail_text_find_checks(host, store))
     # The mail run (ontology.mentions) on the cold path builds once: determinism at full
     # size is ontology.projection's and ontology.session_projection's, so its rebuild is
-    # not asserted (decision 2026-10-14-mentions-cold-path, option 3).
+    # not asserted (option 3).
     single = not build_only and mail is not None and manifest is None
     # A second build of this size that cannot fit is not started: the checks ran on the
     # first and the report is a budget stop at rebuild_skipped (no determinism verdict).
@@ -2461,7 +2461,7 @@ def _run_probe(budget: _Budget, partial: dict[str, Any], client: Any, db: str, s
                                        ("graph_mail", mail_state is not None),
                                        ("portal_api", portal_held),
                                        ("sharepoint", sharepoint_state is not None)) if held]
-    # owner rule 1b5e555dce17: the completeness block's figure, as mirror.full_coverage
+    # The completeness block's figure, as mirror.full_coverage
     # gates it, never the 93-relation catalog count; over the bound relations available.
     # A --build-only build (the probes that build through this one) keeps the strict
     # figure and adds no part: an unavailable relation is this check's finding.

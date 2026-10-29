@@ -6,7 +6,7 @@ No network and no credentials: every request goes to the in-process ``FakeSender
 quantities, ``0001-01-01`` for an empty date) and honour ``$filter`` (one equality),
 ``$select`` (projection), ``$top`` and ``@odata.nextLink`` paging. Evidence label:
 ``injected-transport``; the adapter is live-unverified until
-``devloop/live-checks/bc.purchase_reader.json`` has a passing result.
+live check ``bc.purchase_reader`` has a passing result.
 """
 
 from __future__ import annotations
@@ -575,7 +575,7 @@ AT = "2026-10-04T09:00:00Z"
 class ScopedCompletenessTests(unittest.TestCase):
     """A per-PO read reports scoped completeness claims, and ``plx.process`` decides the
     three-way sides it covers over a BC capture of that read alone, Portal not captured
-    (injected transport; devloop/DECISIONS/2026-10-05-bc-only-portal-hops.md)."""
+    (injected transport)."""
 
     def answer(self, evidence: dict) -> tuple[dict, dict]:
         schema = ot.default_schema()

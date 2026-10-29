@@ -85,7 +85,7 @@ No live data without a real employee identity; the MCP host's `eng` fallback is 
   nobody: it needs `--dev-configured-employee` and is refused with any real source
   reader, capture, foreign ontology store and on live or fixture state.
 - Remote MCP (`python3 -m operating.host mcp-http`, `operating/mcp_http_host.py`, author kind
-  `agent`, decision record `docs/decisions/2026-10-05-employee-door.md`): every request
+  `agent`): every request
   carries an Entra access token, verified by `operating/oidc_auth.py` (JWKS signature, issuer,
   audience, expiry, tenant, delegated scope; revoked token ids refused by the durable guard)
   and resolved through the same resolver per request. Loopback only; isolated-fixture,
@@ -155,7 +155,7 @@ identities), never on the shared credential.
    (`--employee-oid` is development only and reads no real source). Needed: the Portal (or Entra sign-in,
    OIDC/MSAL delegated) issues the ticket to the signed-in user.
 2. **`GroupMember.Read.All` consent (read-only) on the shared Entra app.** The
-   live role list (`EVIDENCE/access/2026-10-01-cloud-access-2.md`) has `User.Read.All` but not
+   live role list has `User.Read.All` but not
    `GroupMember.Read.All`, `Group.Read.All` or `Directory.Read.All`. The default
    provider `groups_unavailable` records
    `group_membership_unavailable:graph_permission_missing:GroupMember.Read.All`;

@@ -1,6 +1,6 @@
 """Capability-keyed proposal guards (the owner entries of operating/action_catalog.json + operating/capability_guards.py).
 
-Review of ee55df3 (M1): retiring the customer-PO proposal tool removed its guards, and
+Retiring the customer-PO proposal tool removed its guards, and
 three wrong proposals passed the playbook and the claim gate. The guards are now data per
 capability, checked by plx.case_propose, plx.act (mode propose) and the playbook evaluator.
 Evidence label: injected-transport (FakeWorkbench mirror).
@@ -155,7 +155,7 @@ class NoOverwriteTests(unittest.TestCase):
 
 
 class NumericEvidenceTests(unittest.TestCase):
-    """WH-NUMERIC-EVIDENCE-1 (Dot review of 2643a25): the catalog declares the AO header
+    """WH-NUMERIC-EVIDENCE-1: the catalog declares the AO header
     quantities numeric, so a JSON float (1509.0, a 1.0 ratio) is the number it says and
     keeps its raw value; identifiers (the customer PO) still never parse a float."""
 
@@ -534,7 +534,7 @@ class CustomerPoGuardTests(CustomerPoEvalBase, unittest.TestCase):
                 self.assertIn(kind, kinds)
 
     def test_only_canonical_declared_capability_names_are_recorded(self):
-        # Re-review of 7e2d2ff, M1: 'name ' skipped the guards (lookup by raw text, store
+        # 'Name ' skipped the guards (lookup by raw text, store
         # by trimmed text). One canonical spelling everywhere; anything else is refused.
         for capability, code in ((CAPABILITY + " ", "capability_not_canonical"),
                                  (CAPABILITY.upper(), "capability_not_canonical"),
@@ -662,7 +662,7 @@ AO_CAPABILITY = "portal.assembly_order.set_header_quantities"
 
 
 class AoGuardTests(AoEvalCase):
-    """Re-review of 751fe8d (M2): the AO header capability tied neither its effect to its
+    """The AO header capability tied neither its effect to its
     payload nor its value to evidence; 99999, 'abc', a payload/effect mismatch, an empty
     payload and a wrong key were all recorded. One value per field, each in the payload
     (numeric), each equal to a declared cited evidence field of this AO."""
@@ -1129,7 +1129,7 @@ class GapGuardTests(CustomerPoEvalBase, unittest.TestCase):
         self.assertNotIn(cpo.RELATION, holders)
 
     def test_an_object_absence_reads_the_subject_rows_link_to_the_type(self):
-        """Review f732d09 M2 (lead decision): the cited row is the subject record, with a
+        """Review f732d09 M2: the cited row is the subject record, with a
         key, whose link column to the absent type is present and empty. A row whose
         link is set (it names some object of the type: a dangling reference needs a
         search, and a search shows nothing), a row without that column, or a row with

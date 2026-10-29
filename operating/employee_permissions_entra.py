@@ -20,7 +20,7 @@ on every case read (``EmployeeActorGate``), so the reads are cached per employee
 * The cache is bounded (oldest entry evicted) and lives in memory only.
 
 Evidence: injected-transport tests; live-unverified
-(devloop/live-checks/graph.directory_entitlements.json).
+(live check ``graph.directory_entitlements``).
 """
 
 from __future__ import annotations

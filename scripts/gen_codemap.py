@@ -5,9 +5,9 @@ USAGE
     python3 scripts/gen_codemap.py [--section PREFIX ...] [--out FILE] [--root DIR]
 
 Each line gives the module's purpose (docstring), main public names, first-party imports
-and the test modules that import it, from the AST import graph in
-``devloop/import_graph.py`` (the graph ``devloop/affected_tests.py`` uses). Modules that
-``devloop/upstream-pins.json`` lists as mirroring upstream files also name those pins.
+and the test modules that import it, from the AST import graph of the
+development tooling. Modules that
+the upstream pin file lists as mirroring upstream files also name those pins.
 The map is built on demand and never committed. It goes to stdout, or to ``--out``;
 each ``--section`` keeps only a package (``operating``) or the modules under a path
 prefix (``operating/case_``), plus the header.

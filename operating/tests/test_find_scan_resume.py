@@ -238,7 +238,7 @@ class FindScanResumeTests(ContractMixin, unittest.TestCase):
         refused(dict(PRESENT, limit=50, cursor="not-a-cursor"), READER)
 
     def test_a_listing_spanning_scan_segments_carries_no_set_and_says_why(self):
-        # The reviewer's case: cap 7, 20 matches over 40 readable orders.
+        # Cap 7, 20 matches over 40 readable orders.
         t = tools(self.store(20))
         pages = self.pages(t, PRESENT)
         self.assertGreater(len(pages), 1)

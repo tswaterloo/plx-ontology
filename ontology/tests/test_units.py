@@ -7,7 +7,7 @@ canonical value, maps an alias and returns any other token unchanged. Receiving'
 ``unitsCompatible`` is transcribed from apply-po-line-receive.ts@6e76a5b (lines 41-52).
 Evidence label: isolated-fixture; the BC local currency and tax basis cases project captures
 read through the real GET-only ``BcCapture`` from an in-process fake (``injected-transport``,
-live-unverified; ``devloop/live-checks/ontology.projection_bc.json``).
+live-unverified; live check ``ontology.projection_bc``).
 """
 
 from __future__ import annotations
@@ -284,7 +284,7 @@ def sources_of(types, tid, prop):
 
 
 class BcSalesTaxBasisTests(unittest.TestCase):
-    """Directive 8d9df04e820e (5): sales line prices and the generated quote types take
+    """Sales line prices and the generated quote types take
     their tax basis from BC's own field where the entity declares it, else stay unknown
     saying so."""
 
@@ -337,7 +337,7 @@ class BcSalesTaxBasisTests(unittest.TestCase):
 
 
 class LocalCurrencyTests(unittest.TestCase):
-    """Directive 8d9df04e820e (1)-(3): a blank BC currencyCode read as its company's local
+    """1-(3): a blank BC currencyCode read as its company's local
     currency cites the companyInformation version in force beside the document; a reader
     who may not read that record, and the claim gate re-reading for one, gets no currency;
     no version in force is unknown with a typed gap; the declaration is generic."""
@@ -507,7 +507,7 @@ class LocalCurrencyTests(unittest.TestCase):
 
 
 class StoreFormatTests(unittest.TestCase):
-    """Directive 8d9df04e820e (4): every reader checks the store format with one function."""
+    """Every reader checks the store format with one function."""
 
     def test_an_older_or_unnamed_store_format_is_refused_by_both_readers_alike(self):
         scratch = tempfile.TemporaryDirectory()

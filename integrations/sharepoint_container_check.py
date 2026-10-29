@@ -1,6 +1,6 @@
 """Live check: captured SharePoint containers are projected member by member.
 
-``devloop/live-checks/capture.sharepoint_containers.json`` (gap-e10f050d25a3, ING-17).
+live check ``capture.sharepoint_containers`` (gap-e10f050d25a3, ING-17).
 One GET-only capture run of a narrow scope (``integrations.capture_sharepoint.run_cli``:
 the AGENTS site's use-case folder, ``examples/sharepoint_capture_scope.containers
 .live-check.json``) into the check's Workbench state, then the projection of that capture
@@ -72,7 +72,7 @@ pinned bytes re-hash) and its ``ok`` are read too: a plain file that fails them 
 ``capture_failed``. Prints counts, booleans and enums only: never a name, path,
 identifier or text.
 Live-unverified until the verifier records a result; the tests run it over an injected
-transport (``devloop/tests/test_live_sharepoint_containers.py``).
+transport.
 """
 
 from __future__ import annotations

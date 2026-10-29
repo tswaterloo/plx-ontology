@@ -3,7 +3,7 @@
 Evidence label: ``injected-transport``. The use-case proposal runs over the RRO tests'
 synthetic stand-in original through the fake shared-link drive; REC-10 runs over the
 reconciliation tests' fake Workbench mirror and injected BC sender. Both outputs go
-through ``devloop.live_verify.check_expectations`` with the committed specs.
+through the live verifier.check_expectations`` with the committed specs.
 """
 
 from __future__ import annotations

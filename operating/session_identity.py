@@ -1,6 +1,6 @@
 """Session identity: every session that reads live data is one employee.
 
-10-DECISION #7: no live data without a real employee identity (the MCP host's
+No live data without a real employee identity (the MCP host's
 ``eng`` fallback is gone). A session host (``operating.mcp_server``,
 ``operator_ui.case_console``) binds each session to exactly one
 ``SessionIdentity`` and builds its case runtime with ``require_employee=True``,
@@ -55,10 +55,9 @@ stay out of it, as the Portal keeps them out of its JWT
 ticket verifies (fail closed). A ticket lives at most 2 hours (as the Portal's
 upload ticket) and carries a ``jti``; ``TicketReplayGuard`` refuses a replayed or
 revoked ``jti`` within its TTL, durably (it survives a restart). The Portal does not
-mint these tickets today (devloop/PERMISSIONS.md blocker 1; devloop/OPEN-DECISIONS.md).
+mint these tickets today.
 
-Subject and actor of an intent (``intent_identity``, ``plx-intent-identity/v2``,
-devloop/DECISIONS/2026-10-04-decider-subject.md and 2026-10-04-goal2-identity.md):
+Subject and actor of an intent (``intent_identity``, ``plx-intent-identity/v2``):
 every goal-2 intent, every later step on it and every workbench-internal action
 records RFC 8693-style ``sub`` (the employee the session is, with that employee's
 own identities: Entra object id and Portal email, and ``oid``) and ``act`` (who
@@ -555,7 +554,7 @@ def fixture_session(tenant: str, principals: Iterable[str], *, channel: str,
 def intent_identity(session: Any, actor: Actor) -> dict[str, Any]:
     """``SessionIdentity.intent_identity`` for a host's session. Every mutating step
     records who acted, so a missing session is refused (``session_required``), never
-    recorded as an unknown ``act`` (lead decision, goal2-identity; an in-process
+    recorded as an unknown ``act`` (goal2-identity; an in-process
     harness passes an explicit fixture session). Anything other than a
     ``SessionIdentity`` is refused: a mapping from tool arguments or source text can
     never stand in for the session."""

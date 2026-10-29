@@ -1,4 +1,4 @@
-"""Capture breadth (lane P7) over injected Graph transports: every allowlisted mailbox,
+"""Capture breadth over injected Graph transports: every allowlisted mailbox,
 inbox and sent items, plus SharePoint roots that follow their drive's change feed.
 
 No network, no credentials. Evidence: injected-transport. Covers the rules at their
@@ -470,7 +470,7 @@ class TenantScopeTests(BreadthCase):
             store.close()
 
     def test_mail_cannot_spend_the_sharepoint_share_of_a_cycle(self):
-        # Directive d272cbc332e2: mail ran first on the whole cycle budget, so a large
+        # Mail ran first on the whole cycle budget, so a large
         # mailbox starved SharePoint. Each mail delta page costs one second of a cycle of
         # four: the inbox stops at its half (time_budget), the SharePoint root walks to
         # the end on its own share, and a mailbox done early leaves the rest to it.
@@ -680,7 +680,7 @@ class SharePointFeedTests(BreadthCase):
                          ("full", "feed_unavailable", True))
 
     def test_a_cut_walk_resumes_and_the_feed_still_carries_what_changed_meanwhile(self):
-        # Directive d272cbc332e2. A complete root the budget reaches before its drive's
+        # A complete root the budget reaches before its drive's
         # feed is read is deferred: still complete and following the feed (its walked
         # folders and the drive's cursor kept); a walk cut midway resumes from its
         # position, and the feed after it starts where the walk did, so a file that
@@ -934,7 +934,7 @@ class SharePointFeedTests(BreadthCase):
             self.drive.file(f"01BIG{n}", f"b{n}.pdf", "01BIG", b"%%PDF-1.7 big %d" % n)
 
     def test_a_walk_whose_first_run_had_no_feed_cursor_takes_one_as_it_starts(self):
-        # Directive 5bc5d10c2c8d (3): the drive's feed read failed in the walk's first
+        # The drive's feed read failed in the walk's first
         # run, so the walk had no cursor; the run that ended it stored none and every
         # root of the drive walked again. The walk takes one as it starts.
         self.big_folder()
@@ -950,7 +950,7 @@ class SharePointFeedTests(BreadthCase):
                          [("incremental", "complete")])
 
     def test_a_walk_longer_than_full_walk_hours_is_due_again_after_it_ended(self):
-        # Directive 5bc5d10c2c8d (6): a walk whose runs spanned more than full_walk_hours
+        # A walk whose runs spanned more than full_walk_hours
         # was due another full walk as soon as it ended (timed from its first run).
         scope = capture_sharepoint.CaptureScope(
             [{"id": "quality", "drive_id": ts.DRIVE, "folders": [ts.QUALITY_FOLDER]}],
@@ -1129,7 +1129,7 @@ class CliTests(BreadthCase):
 
 
     def test_a_round_a_budget_cut_in_cycle_one_reads_resumed_in_cycle_two(self):
-        # Directive d272cbc332e2: a mail folder the budget cut in cycle 1 (mid-round, or
+        # A mail folder the budget cut in cycle 1 (mid-round, or
         # before its first round) goes on in cycle 2; that is a resumed partial unit, not
         # a rerun of its initial round (which failed the check's ok).
         for n in range(1, 4):
@@ -1157,7 +1157,7 @@ class CliTests(BreadthCase):
         self.assertTrue(report["ok"], summary)
 
     def test_a_round_the_page_budget_stopped_reads_resumed_in_cycle_two(self):
-        # Directive 5bc5d10c2c8d (4), decided: a mail round that goes on from the page
+        # 4, decided: a mail round that goes on from the page
         # cursor the page budget left (the live check's 20 pages per folder) is resumed,
         # a partial unit, never a rerun failing the check's ok.
         for n in range(1, 6):

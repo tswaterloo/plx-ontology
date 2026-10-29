@@ -1,6 +1,6 @@
 {
  "schema": "plx-host-config/v1",
- "note": "Host config of the case.unfamiliar_order live check (devloop/live-checks/case.unfamiliar_order.json): one capture cycle of the sales- and purchase-order Portal relations through the source mirror and of the BC sales invoices and customer cards of every pinned company, so a join pick (pick=SalesInvoice>SalesOrder) can root a case in one system from an identifier the other carries (a customer PO only within the invoice's customer: SalesInvoice.billed_to reaches the BC customer card; a shipment code through the Portal shipment to its order: public.app_shipment). Configuration, never a grant: the audiences decide what the capture principal may read.",
+ "note": "Host config of the case.unfamiliar_order live check (live check ``case.unfamiliar_order``): one capture cycle of the sales- and purchase-order Portal relations through the source mirror and of the BC sales invoices and customer cards of every pinned company, so a join pick (pick=SalesInvoice>SalesOrder) can root a case in one system from an identifier the other carries (a customer PO only within the invoice's customer: SalesInvoice.billed_to reaches the BC customer card; a shipment code through the Portal shipment to its order: public.app_shipment). Configuration, never a grant: the audiences decide what the capture principal may read.",
  "tenant": "plx",
  "capture_audience": "unfamiliar_case_live_audience.live-check.json",
  "live_audience": "unfamiliar_case_live_audience.live-check.json",

@@ -10,7 +10,7 @@ compiled repository schema and the identifier grammar; no source is read).
   ``coverage.json`` ``not_served``: a ``not_served`` type with an upstream ask (the pending
   file's curated placeholder where one binds it). A foreign key to one names it as its
   target and stays a plain value of the served column: no served link reaches it.
-* Each relation this lane binds projects typed, cited values: money as Decimal text with
+* Each relation this module binds projects typed, cited values: money as Decimal text with
   its currency, quantities with the unit their row states, a Sage unit conversion read
   from Sage only, and a staging test batch's schedule never as FM bronze.
 * ``plx.find`` resolves a quote by its number and an MO line (the FM AO item, the line
@@ -57,7 +57,7 @@ ROWS = {
     "public.assembly_order": [{"id": 777, "nameamo_c": "AO-26005Z"}],
     "public.assembly_order_item": [{"id": 4242, "idassem": 777, "lotno": "LOT-77-A",
                                     "qty_c": "1509"}],
-    # Bound by this lane.
+    # Bound by this module.
     "public.app_quote": [{
         "id": "q-1", "quote_number": "QUO-2026-0042", "customer_id": "c-1", "project_id": "4711",
         "status": "ACCEPTED", "issue_date": "2026-09-01T00:00:00.000Z",
@@ -344,7 +344,7 @@ class PendingPeopleAndLots(unittest.TestCase):
         # any more, so the pending Person has no derived link (it was 19 FKs, TASK-3355 added
         # app_approval_record.approved_by). Each key a generated raw type holds is now a
         # verified link to the pii-marked RelPublicAppUser; the keys of curated types wait for
-        # the Person promotion (devloop/DECISIONS/2026-10-28-portal-all-relations-person-promotion.md).
+        # the Person promotion.
         self.assertEqual(len([v for v in expected.values() if v[1] == "Person"]), 0)
         self.assertNotIn("public.app_user", {fk["to"] for fk in coverage["prisma_relations_not_bound"]})
         link = self.served.link_types["RelPublicAppApprovalRecord.approved_by"]

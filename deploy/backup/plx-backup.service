@@ -1,0 +1,12 @@
+# User unit: nightly backup set. Install: see deploy/backup/README.md.
+[Unit]
+Description=PLX Workbench nightly backup (Postgres dump + state stores)
+After=postgresql.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=-%h/.config/plx/backup.env
+ExecStart=/data/OntologyProject/deploy/backup/backup.sh
+Nice=10
+IOSchedulingClass=idle
+UMask=0077

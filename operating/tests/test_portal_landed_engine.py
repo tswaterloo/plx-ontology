@@ -763,7 +763,7 @@ class WorkbenchLayerTest(unittest.TestCase):
 
 
 class FreightQuoteTest(unittest.TestCase):
-    """LOG-10 (advisory record 2e7013f1 F05; process_stage_map.json
+    """LOG-10 (source record 2e7013f1 F05; process_stage_map.json
     corrections_from_verified_originals): the two SoapBox forwarder quotes."""
 
     DESTINATION = {"_source": "original://freight-quote/fcl-baltimore", "amount": "1710",

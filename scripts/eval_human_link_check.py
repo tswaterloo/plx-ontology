@@ -1,4 +1,4 @@
-"""Live check ``devloop/live-checks/case.human_link.json``: the landed-cost case reads
+"""live check ``case.human_link``: the landed-cost case reads
 the links people confirmed in the console (``operating.human_links``).
 
 ``python3 -m scripts.eval_human_link_check check`` copies the console's review store

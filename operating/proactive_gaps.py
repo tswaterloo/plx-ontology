@@ -35,7 +35,7 @@ the objects to read through ``plx.find`` seeds built from the compiled schema an
 document-field comparison rules (no object identifier is named here).
 
 ``python3 -m operating.proactive_gaps`` is the live check's command
-(``devloop/live-checks/case.proactive_gaps.json``): one host capture cycle into a state
+(live check ``case.proactive_gaps``): one host capture cycle into a state
 directory, then the scan offline for the investigator and any ``--reader``; counts and
 enums only, never an identifier or a value. Evidence label: that of the captures it reads
 (live-unverified until the verifier runs it).

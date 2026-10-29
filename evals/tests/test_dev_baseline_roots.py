@@ -1,4 +1,4 @@
-"""Root resolution and mirror completeness of the dev-set baseline (directive dbe4ec3aeba8).
+"""Root resolution and mirror completeness of the dev-set baseline.
 
 The live baseline answered 20 of 26 items blocked: a Portal PO number is also the BC
 purchase order's No. once the Portal drains it to BC, so plx.find lists both records and the

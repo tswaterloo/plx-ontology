@@ -1,7 +1,7 @@
-"""Generic ontology tools ``plx.around`` and ``plx.timeline`` (lane L9).
+"""Generic ontology tools ``plx.around`` and ``plx.timeline`` (L9).
 
 Both tools read the L2 projection store (``ontology/store_ddl.py``, built by the
-L7 projector) through lane L8's ``StoreReader`` and ``ReadPolicy``
+L7 projector) through L8's ``StoreReader`` and ``ReadPolicy``
 (``operating/ontology_tools.py``) and answer exactly the frozen contracts in
 ``operating/ontology_tool_contracts.json``: every output is validated with
 ``ontology/json_contract.py`` and bounded by ``limits.max_result_bytes`` before
@@ -11,9 +11,9 @@ complete. A set member first captured after ``as_known_at`` is left out with a
 ``not_ingested`` ``captured_after_as_known_at`` gap that counts only members the
 reader may read now; the answer as known at T stays complete. Nothing here names an object type, link type, event type or case:
 paths, types, display properties and event types come from the compiled schema
-and the store rows (10-DECISION 4, 09-CRITIQUE R4).
+and the store rows.
 
-Permissions come first (09-CRITIQUE R6 #7, store_ddl docstring). An object is
+Permissions come first (store_ddl docstring). An object is
 visible to a reader at ``as_known_at = T`` only when, *inside the SQL that
 selects, caps and counts rows*:
 
@@ -121,7 +121,7 @@ permission limit never reads as a business fact. A filter on a property whose va
 an object holds withheld from this reader decides that object only where its
 readable values already do (``_filter_holds``), with a ``marking_withheld`` gap.
 
-Completeness follows the same rule (owner rule: filter by permission before ranking;
+Completeness follows the same rule (Filter by permission before ranking;
 hidden evidence is never a complete count). When this reader's grants may hide part of
 what a call reads (``_slice_trimmed``: an audience unit, a marking or an item-gated
 handle of the path's link and object types, or of the root's event types, that it
@@ -132,7 +132,7 @@ set made from such an answer is marked in the registry (``SetRegistry.new(withhe
 and every later call on it (a further hop, ``plx.timeline``, ``plx.aggregate``) gets a
 ``withheld_by_permission`` root gap and is never complete either.
 
-Sharing with lane L8: one ``SetRegistry`` (``OntologyTools.sets``), L8's
+Sharing with L8: one ``SetRegistry`` (``OntologyTools.sets``), L8's
 visibility check on roots and shown objects (``_visible_versions``) on top of the
 stricter from-T SQL rule, L8's ``_trim_citations`` for edge citations, and the
 store's lock around every call on the shared connection.
@@ -166,7 +166,7 @@ from ontology.json_contract import validate
 from ontology.reviews import ALLOCATED, effective
 from ontology.store import instant
 from ontology.types import Actor
-# Lane L8's reader, policy and contract helpers (operating/ontology_tools.py): one
+# L8's reader, policy and contract helpers (operating/ontology_tools.py): one
 # store reader, one policy, one envelope/gap/completeness shape for every tool.
 from operating.ontology_tools import (  # noqa: F401 - re-exported for hosts
     _AUDIENCE_SOURCE,
@@ -731,7 +731,7 @@ class TraverseTools:
 
     def _visible_ids(self, scope: _Scope, ids: Iterable[str]) -> set[str]:
         """Ids L8's visibility check (``OntologyTools._visible_versions``) admits
-        and that also pass this lane's from-T rule (every version from T on is
+        and that also pass these from-T rule (every version from T on is
         held and passes the item gate): never wider than plx.object."""
         ids = sorted(set(ids))
         if not ids:
@@ -2381,7 +2381,7 @@ def _read_cursor(cursor: str, fingerprint: str
 # --------------------------------------------------------------------------- host wiring
 
 def tool_specs(contracts: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """MCP tool listings (name, description, inputSchema) for this lane's tools."""
+    """MCP tool listings (name, description, inputSchema) for these tools."""
     return [{"name": name, "description": contracts["tools"][name]["description"],
              "inputSchema": _inline_defs(contracts["tools"][name]["input"], contracts),
              "annotations": {"readOnlyHint": True}}

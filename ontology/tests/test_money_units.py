@@ -407,7 +407,7 @@ class PerUnitRulesSchemaTests(unittest.TestCase):
 
 
 class OneCurrencyTableTests(unittest.TestCase):
-    """Lane currency-one-table: a record cell (``currency_code``), a document field
+    """A record cell (``currency_code``), a document field
     (``ontology/document_fields.py``) and a document price
     (``integrations/document_understanding.py``) read one written currency the same way,
     from the one table in ``ontology/units.py``, and never emit a code outside ISO 4217."""

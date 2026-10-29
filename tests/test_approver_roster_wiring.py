@@ -1,5 +1,5 @@
 """One approver rule: the roster's ``action_types`` scope a per-call approver and an MC
-gate decider alike (directive 825bfa46fa76, architect decision).
+gate decider alike.
 
 ``operating/approver_roster.json`` names, per person, the catalog action types they
 approve. A gate decided by an MC admin/owner whom the roster does not list for the

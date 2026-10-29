@@ -765,7 +765,7 @@ class ReferenceAndRouteTest(unittest.TestCase):
 
 
 class LiveCheckTest(unittest.TestCase):
-    """``devloop/live-checks/case.po_status.json`` over injected sources: its own command,
+    """live check ``case.po_status`` over injected sources: its own command,
     the order fixture's FakeWorkbench with ten purchase orders, the network refused.
     Evidence label: injected-transport."""
 

@@ -1,6 +1,6 @@
 """Versioned L1 capture store for live sources (BC, Teams; mail and SharePoint via the registry).
 
-10-DECISION decision 2 and 09-CRITIQUE R2 (c): BC, mail and SharePoint had no
+BC, mail and SharePoint had no
 capture store and were re-read live on every resolve. This module keeps every
 captured version of a source record in one SQLite file, so a citation resolves
 offline to exactly what it cited, a changed source version keeps its history
@@ -11,7 +11,7 @@ citation scheme, the record path grammar (``<scheme>://p1/.../pn``), the
 audience unit a record belongs to (the C0 ``objects.audience_key``:
 ``bc:<company>/<entity set>``, ``mail:<mailbox>``) and the live-audience
 resources a reader must hold. The BC kind is defined here (``BC_KIND``); the
-mail adapter (lane L3) registers its own kind the same way. Capture code
+mail adapter (L3) registers its own kind the same way. Capture code
 (``integrations.bc_read.BcCapture``) owns the source reads; this module never
 does I/O beyond its SQLite file.
 
@@ -162,7 +162,7 @@ class SourceKind:
 
 _KINDS: dict[str, SourceKind] = {}
 # Source kinds defined by their capture adapter (imported on first registry use, so a
-# reader that only imports this module still finds them). Mail (lane L3, decision
+# reader that only imports this module still finds them). Mail (L3, decision
 # 2026-10-02-mail-and-mentions-store): ``integrations.capture_mail`` keeps its own
 # versioned store (``MailCaptureStore``) and registers ``graph_mail`` here; SharePoint
 # (``integrations.capture_sharepoint``, ``SharePointCaptureStore``) registers

@@ -1,4 +1,4 @@
-"""Employee workspace over the generic ontology tools (10-DECISION #4), read-only.
+"""Employee workspace over the generic ontology tools, read-only.
 
 An employee finds any served business object with ``plx.find`` and opens it. The
 workspace is the answer of the same tools the case host serves, called for the one
@@ -117,8 +117,7 @@ system (``business_system_writes`` stays 0):
   item citing a record they cannot resolve now withheld with no text.
 
 Ask (``ask``, with a planner configured by the host) runs the employee agent loop
-(``operating.agent_loop.run``, unchanged: the one loop and the one evidence rule,
-devloop/DECISIONS/2026-10-07-agent-evidence-contract.md) about the object in view, for
+(``operating.agent_loop.run``, unchanged: the one loop and the one evidence rule) about the object in view, for
 this reader: its session is an MCP server over this reader's case host
 (``HostAccess.agent_server``: the employee gate on every call, the grant of the request
 in progress), never a wider principal, and the question names the object, which must be
@@ -2182,6 +2181,12 @@ class HostAccess:
         gated, policy, _memo = self._state()
         return (lambda key: policy.may_read(gated, key)), frozenset(policy.held_markings(gated))
 
+    def reader_policy(self) -> tuple[Any, Any]:
+        """(the gated actor, its ``ReadPolicy``) inside ``request()``: what the search
+        tables' permission filter is built from (``operating.pg.permissions``)."""
+        gated, policy, _memo = self._state()
+        return gated, policy
+
     def tools(self) -> dict[str, dict[str, Any]]:
         """The tool table the workspace calls: each tool through the host for the reader."""
         def handler(name: str) -> Callable[[dict[str, Any], Actor], dict[str, Any]]:
@@ -2804,7 +2809,7 @@ IDENTITY_SOURCES = ("bc", "portal_api")
 
 class StoreStatus:
     """The projection store's provenance and freshness against a state directory's
-    captures, per source (decision architect-20261011T0721Z-MEuPpgWV).
+    captures, per source.
 
     The store is this state directory's only when its ``store_meta.l1_generations``
     records the generation of an identity-bearing source (``IDENTITY_SOURCES``) whose

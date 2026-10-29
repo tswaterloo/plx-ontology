@@ -1,9 +1,9 @@
-"""Capture breadth: one cycle over the whole capture scope (lane P7).
+"""Capture breadth: one cycle over the whole capture scope.
 
-Owner decisions 5be438765457 and 93047ba19524: the Workbench reads every mailbox
+The Workbench reads every mailbox
 and source in its capture scope and keeps what it captures in its own capture
 stores under the Workbench state directory; nothing captured goes to Git, logs or
-advisory records, and every reader is re-gated per mailbox and per item.
+source records, and every reader is re-gated per mailbox and per item.
 
 One cycle (``capture_cycle``) runs, in this order:
 
@@ -53,7 +53,7 @@ names, paths, ids or content)::
     python3 -m integrations.graph_read capture-breadth --state-dir D \\
         --live-audience examples/capture_breadth_audience.live-check.json --runs 2
 
-Live-unverified until ``devloop/live-checks/capture.breadth.json`` passes.
+Live-unverified until live check ``capture.breadth`` passes.
 """
 
 from __future__ import annotations

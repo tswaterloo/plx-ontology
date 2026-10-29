@@ -3,8 +3,8 @@
 Each spec's own argv runs in-process through ``operating.host`` cycles on a BC-only host
 configuration over the BC fake of ``integrations/tests/test_bc_capture.py`` (synthetic
 records), and its output is judged by ``live_verify.check_expectations``: the check passes
-on the fixed product and fails on a reproduction of the defect it guards (directives
-0e2ad8516c64 (a)-(c) and 994e0179c227). Evidence label: injected-transport.
+on the fixed product and fails on a reproduction of the defect it guards.
+Evidence label: injected-transport.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ UNAVAILABLE = (503, {}, b'{"error":{"code":"Unavailable"}}')
 TOO_MANY = (429, {"Retry-After": "1"}, b'{"error":{"code":"TooManyRequests"}}')
 CHECKS = ("tools.schema_paging", "tools.find_unknown_property", "tools.investigate_bc_claims",
           "tools.investigate_inline_plans")
-# Directive f8e4e5ed5f28 (1): the ~23 min investigate check runs in the daily set.
+# The ~23 min investigate check runs in the daily set.
 CADENCE = {"tools.schema_paging": "hourly", "tools.find_unknown_property": "hourly",
            "tools.investigate_bc_claims": "daily", "tools.investigate_inline_plans": "daily"}
 
@@ -455,7 +455,7 @@ class LiveEmployeeToolsTest(unittest.TestCase):
         self.assertEqual(entry["result"], "blocked")
         self.assertEqual(live_verify.check_expectations(
             {**spec, "expect": spec["expect_blocked"]}, code, doc), [])
-        # Directive 1cbf6c9e46b5: a budget stop in the second company's shipments left the
+        # A budget stop in the second company's shipments left the
         # third company's sales orders unread (no run), and the two read in full were
         # taken for every company. Unread, no set is empty: the stop fails the run.
         from integrations import bc_read

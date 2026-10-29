@@ -389,7 +389,6 @@ class CounterTests(CounterFixture, unittest.TestCase):
         self.assertEqual((fields["complete_count"], fields["complete_this_run_count"]), (6, 6))
         self.assertTrue(all(isinstance(at, str) and mm._STAMP.fullmatch(at)
                             for at in fields["relations[*].completed_at"]))
-        # A new data-truth defect fails the check, so it reaches a directive ...
         report["new_data_truth_defect_count"] = 1
         self.assertEqual(lv.check_expectations(spec, 0, report),
                          ["new_data_truth_defect_count != expected"])
@@ -507,7 +506,7 @@ class BoundFirstCoverageTests(unittest.TestCase):
         self.assertTrue(expect["json_equals"]["all_bound_complete"])
         self.assertEqual(expect["json_equals"]["key_only_row_data_check.leaked"], 0)
         self.assertEqual(expect["json_min"]["bound_declared_total"], 50)
-        # Owner rule 1b5e555dce17: the 93-relation figures are recorded, never gated.
+        # The 93-relation figures are recorded, never gated.
         for field in ("all_stable_served_complete", "accounted_equals_catalog",
                       "accounted_relation_count"):
             self.assertIn(field, spec["record"])
@@ -582,7 +581,7 @@ class BoundFirstCoverageTests(unittest.TestCase):
 
 
 class RunawayCoverageTests(unittest.TestCase):
-    """Directive a9cc0e0ab498 / 1b5e555dce17: the probe reads in parallel, a row-bound
+    """The probe reads in parallel, a row-bound
     or HTTP 500 relation never blocks the rest, every relation not captured is
     reported with its failure class and codes, and the next run syncs row-bound
     relations last while they stay in the completeness denominator."""
@@ -692,7 +691,7 @@ class RunawayCoverageTests(unittest.TestCase):
         self.assertEqual(done["blocked_upstream"], [])
 
     def test_the_check_passes_on_all_bound_complete_whatever_the_catalog_figures(self):
-        # Owner rule 1b5e555dce17 (decision 2026-10-02-capture-persistence): pass =
+        # Pass =
         # complete_bound_relation_count == bound_total; the 93-relation figures are fields.
         spec = json.loads((lv.ROOT / lv.SPECS_DIR_NAME / "mirror.full_coverage.json")
                           .read_text())

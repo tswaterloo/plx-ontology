@@ -1,7 +1,7 @@
 """The answer prompt names no real case: every example in its fixed text is synthetic.
 
 The prompt every eval item sends once named AO-26005B, OR1000151885 and SKU-1509, real-case
-data (devloop/hardcoded-case-denylist.json) and the subject of an exposed item, so it hinted
+data and the subject of an exposed item, so it hinted
 that item's answer. scripts/check_no_hardcoded_cases.py does not scan evals/; this test
 holds the prompt to the same denylist and to the identifiers that checker derives from
 evals/.

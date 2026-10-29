@@ -709,7 +709,7 @@ class CoverageTests(CoverageTestCase):
 
 
 class PortalLineageTests(CoverageTestCase):
-    """Portal facts mirrored from devloop/CONTEXT/03-PORTAL.md s.3.2-3.4 and s.9
+    """Portal facts mirrored from the Portal reporting contract
     (petralabx/plx-customer-portal staging@6c9415973; no Portal checkout here)."""
 
     COLUMNS = ["id", "order_number", "po_reference", "custom_fields"]
@@ -738,7 +738,7 @@ class PortalLineageTests(CoverageTestCase):
         self.assertEqual(renumbered["status"], "absent_in_this_source")
         self.assertNotIn("fm_order_entry_created_by_portal", renumbered)
         # Equality is not proof of the fallback: an explicitly typed value equal to the
-        # order number gets the same ambiguous label (advisory d158d081).
+        # order number gets the same ambiguous label.
         typed = cpo.classify_order({"order_number": "SO7", "po_reference": "SO7",
                                     "custom_fields": None}, self.COLUMNS)
         self.assertEqual(typed["fields"]["po_reference"]["status"],
@@ -1010,7 +1010,7 @@ ORDER_ENTRY_HEADER = {
 
 
 class PortalDivergenceTests(CoverageTestCase):
-    """Directive 1746a096c3 items 1, 2, 8 and c9e0ba19e1 (customer PO), rows shaped
+    """Customer PO rows shaped
     like the Portal contract (petralabx/plx-customer-portal staging@8da33e4, files
     unchanged since 6c9415973)."""
 

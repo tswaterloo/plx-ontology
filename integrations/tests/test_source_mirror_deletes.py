@@ -477,7 +477,7 @@ class MirrorReplacementTests(unittest.TestCase):
         failures = lv.check_expectations(spec, 0, report)
         self.assertFalse([f for f in failures if "replac" in f], failures)
         # A plain deletion: the same-PO, same-product row past the 2-key sample was read
-        # by the first full read, so it is no successor (reviewer repro).
+        # by the first full read, so it is no successor.
         rows = [line("a", "po1"), line("b", "po2"), line("c", "po1")]
         report = measure(rows, rows[1:], "--sample-keys", "2")
         self.assertEqual((report["replaced_rows_total"],

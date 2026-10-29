@@ -1,5 +1,5 @@
 """A completed BC capture is a starting point for the next invocation, never proof of
-freshness (Dot finding 8c94674f, directive d87fc61052ad item 1).
+freshness.
 
 The bug: a consumer (the projection probe, the order-margin eval) topped up any store file
 it found, so a second process over a store an earlier one had finished made no entity GET
@@ -61,7 +61,7 @@ def current_orders(tmp: str) -> dict[str, str]:
 
 class CrossInvocationTest(unittest.TestCase):
     def test_a_second_invocation_reads_a_completed_store_again(self) -> None:
-        """The Dot's reproduction: the source changes an amount and deletes an order
+        """Reproduction: the source changes an amount and deletes an order
         between two probe processes over the same state."""
         fake = tb.FakeBc(companies=tb.CO)
         with tempfile.TemporaryDirectory() as tmp:

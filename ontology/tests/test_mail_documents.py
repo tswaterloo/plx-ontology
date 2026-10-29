@@ -213,7 +213,7 @@ class MailDocumentsTests(unittest.TestCase):
         return {e["to"]: e for e in out["edges"]}
 
     def test_ambiguity_is_decided_per_reader_from_visible_candidates_only(self):
-        # Review of 4665b18 (material): MSG-2 names PO100236, held by Portal PO p3 and
+        # MSG-2 names PO100236, held by Portal PO p3 and
         # FM generated PO 9. A reader who sees both is told the mention is ambiguous;
         # a reader denied the FM relation sees one plain lead and no hint of the other.
         p3 = self.object_id('PurchaseOrder:portal.app_purchase_order:{"id":"p3"}')
@@ -477,7 +477,7 @@ class MentionLinkRuleTests(unittest.TestCase):
 
 
 class MentionStepScalingTests(unittest.TestCase):
-    """Review of 4665b18 (minors): the step looks handles up through an index, streams
+    """The step looks handles up through an index, streams
     documents and leaves no index behind in the generation."""
 
     def test_handle_lookup_uses_an_index_and_documents_stream(self):
@@ -632,8 +632,7 @@ class ProbeWithMailTests(unittest.TestCase):
     def test_a_cold_build_with_no_room_for_a_rebuild_reports_mentions_and_phase_seconds(self):
         """Live b593c374 (07:03Z): BC listed its companies without an etag and the second
         cold build could not fit, so the report held no mention table, check or phase
-        timing. Now the cold path builds once (decision 2026-10-14-mentions-cold-path,
-        option 3): every check runs on that build, the report carries phase_seconds and
+        timing. Now the cold path builds once (option 3): every check runs on that build, the report carries phase_seconds and
         no rebuild, and the etag gap is no unit reason: a company row without an etag
         is versioned by its content and the unit completes."""
         from urllib.parse import urlsplit

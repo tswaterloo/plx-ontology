@@ -499,7 +499,7 @@ class LibraryColumnsTest(unittest.TestCase):
                           out["columns"][name]["filled"]), (60, 20, 30, True, 20))
 
     def test_seven_digit_fractions_are_dated_on_python_3_10(self):
-        # Directive 91ca13761494 (3): Graph writes up to seven fraction digits, which
+        # Graph writes up to seven fraction digits, which
         # datetime.fromisoformat refuses before Python 3.11 (emulated here), so such a
         # document read as undated and sorted after every dated one.
         class Py310(dt.datetime):
@@ -654,7 +654,7 @@ class LibraryColumnsProbeTest(unittest.TestCase):
         self.assertEqual(live.naming("sharepoint", {a, "read", "STANDARD"}), [])
 
     def test_an_unknown_column_has_no_fill_count(self):
-        # Directive 91ca13761494 (2): a column whose state is unknown showed 0 in
+        # A column whose state is unknown showed 0 in
         # fill_counts, which a reader of fill_counts alone takes for empty.
         lib = Library([])
         filled, unread = lib.named[0], lib.named[1:] + [lib.display["name"]]

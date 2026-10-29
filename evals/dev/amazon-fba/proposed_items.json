@@ -13,7 +13,7 @@
   },
   "originals_registry": "examples/case_originals.json",
   "watched_originals": {
-   "note": "The map's own original, pinned from the advisory record (source_id item, source_revision sha256, source_bytes) and matching the lead's single read-only Graph read of 18 Oct 2026. A read receipt of the watched file matches when its source.item_id and sha256 equal this pin. Name only, no contents.",
+   "note": "The map's own original, pinned from the source record (source_id item, source_revision sha256, source_bytes) and matching the lead's single read-only Graph read of 18 Oct 2026. A read receipt of the watched file matches when its source.item_id and sha256 equal this pin. Name only, no contents.",
    "folders": {
     "Ontology UseCases": "wf-a672d852ff20"
    },
@@ -41,7 +41,7 @@
   {"id": "MO-09", "kind": "tracking", "item": "Tracking", "shipment": "OR1000154027", "state": "to_come", "gap": "FBA-GAP-06"},
   {"id": "MO-10", "kind": "chat", "item": "Teams messages of the thread", "shipment": "OR1000154027", "state": "not_provided", "gap": "FBA-GAP-11"}
  ],
- "missing_originals_note": "Typed here because the registry generator (scripts.case_originals registry) makes gap rows only from the Dot's baseline and delta source-pin records, and the map's advisory record lists these originals in prose, not as gaps. link_pending: the map names a source-file folder whose SharePoint link is 'added after upload'; to_come: the map lists it under 'Still to come for this example'; not_provided: the map says it was not provided. None was read; a card never infers their content.",
+ "missing_originals_note": "Typed here because the registry generator (scripts.case_originals registry) makes gap rows only from the baseline and delta source-pin records, and the map's source record lists these originals in prose, not as gaps. link_pending: the map names a source-file folder whose SharePoint link is 'added after upload'; to_come: the map lists it under 'Still to come for this example'; not_provided: the map says it was not provided. None was read; a card never infers their content.",
  "live_sources": [
   {
    "id": "sage.oe_order_header",

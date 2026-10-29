@@ -1,4 +1,4 @@
-"""Score one recorded eval run against its item's known outcome (10-DECISION decision 8).
+"""Score one recorded eval run against its item's known outcome.
 
 Inputs are an item (``evals/item.schema.json``, ``plx-eval-item/v1``) and a transcript
 (``plx-eval-transcript/v1``, written by ``evals.runner``). The score is a pure function of
@@ -140,8 +140,7 @@ coverage (answered runs over all runs) beside accuracy (correct over answered), 
 agent that abstains everywhere shows coverage 0 and no accuracy, never a good score; it
 counts the blocked runs apart as ``read_gap`` and ``other_blocked`` (``blocked`` is their
 sum). Read-gap runs above ``DRIFT_TRIPWIRE_SHARE`` of a run fail it on every path
-(``fail_reasons`` ``blocked_share``,
-devloop/DECISIONS/2026-10-08-dev-baseline-blocked-share-exit.md).
+(``fail_reasons`` ``blocked_share``).
 
 **Rubric items** (``rubric_item``: known outcome ``partial`` with no expected value and
 no expected gap, a proposal card): the label is not the answer (scorer /20). A run is
@@ -318,7 +317,7 @@ SCORE_FORMAT = "plx-eval-score/v1"
 #    the gate renders through): a value written negated is ``claim_value_unstated``
 #    (blocking); a word no checked claim of its sentence ties to (``late`` with no
 #    lateness claim) is ``claim_prose_unchecked``, unverified, never blocking (one B1 rate
-#    pair, decision 2026-10-19-b1-one-answer-rate); a declared gap may be said as declared;
+#    pair); a declared gap may be said as declared;
 #    a prose finding counts no claim. Dev fixture outcomes unchanged (16/30).
 # 14: a gap's "concerns": null reads as no concerns (was answer_malformed:gaps). The dev
 #    fixture's outcomes are unchanged (its answers leave concerns out or name a value); the
@@ -337,8 +336,8 @@ SCORE_FORMAT = "plx-eval-score/v1"
 #    card's topic); the ``partial`` label alone is ``label_only``: a justified abstention
 #    when the answer names a gap, else ``wrong`` (``evidence_missing``); a failed
 #    abstention is ``blocked`` (``originals_not_held``) also when the item rests on an
-#    original no one holds (``UNHELD_ORIGINAL``). Decision
-#    devloop/DECISIONS/2026-10-28-substantive-partial.md. Dev fixture outcomes unchanged
+#    original no one holds (``UNHELD_ORIGINAL``).
+#    Dev fixture outcomes unchanged
 #    (19/30: it has no rubric item).
 # 18: a topic word must be card-specific (``set_topic_terms``: not a case or set title
 #    word, on at most ``TOPIC_MAX_SHARE`` of the set's cards, not on the cards of more
@@ -350,8 +349,7 @@ SCORE_FORMAT = "plx-eval-score/v1"
 #    word (/18) in the claim's value or quote, never the title alone. People's names
 #    (``scoring.topic_names``) and e-mail addresses never count. No run scores higher
 #    than under /17. Dev fixture outcomes unchanged (19/30: no rubric item).
-# 20: three consistency rules (decision devloop/DECISIONS/2026-10-28-substantive-partial.md,
-#    "Scorer /20"). (1) On a rubric item an answer labelled ``blocked`` with no claim the
+# 20: three consistency rules ("Scorer /20"). (1) On a rubric item an answer labelled ``blocked`` with no claim the
 #    gate passed is the same abstention as a ``partial`` with no evidenced claim:
 #    ``justified_abstention`` when it names a gap, else ``wrong`` (``evidence_missing``),
 #    never ``answerability_mismatch``. (2) An item whose card set marks its layer
@@ -365,8 +363,7 @@ SCORE_FORMAT = "plx-eval-score/v1"
 #    page prints twice with two meanings (``9900.00``) is no longer ambiguous when the
 #    quote says which (``gate``). Dev fixture outcomes unchanged (19/30: no rubric item,
 #    no unscored item).
-# 21: a rubric item's own source documents (decision
-#    devloop/DECISIONS/2026-10-28-substantive-partial.md, "Scorer /21"). (1) A claim the gate
+# 21: a rubric item's own source documents ("Scorer /21"). (1) A claim the gate
 #    passed, citing a served record whose re-read is one of the item's
 #    ``scoring.source_documents`` (``source_digests``: an original read's ``sha256``, a
 #    capture read's ``row.content_sha256``, or the handle's own ``#sha256=``), is evidence.
@@ -379,8 +376,7 @@ SCORE_FORMAT = "plx-eval-score/v1"
 #    ``own_document_evidence``), and ``outcome_summary`` counts the own-document-only
 #    correct runs on unaudited cards apart (``own_document_unaudited``, review only).
 #    (5) An expression input's ``quote`` pins its figure as a cited value's quote does,
-#    and a printed percent input is checked as a percent (the gate lane's expression
-#    claims, ``claim_checks.expression_inputs``). Dev fixture outcomes unchanged (19/30: no
+#    and a printed percent input is checked as a percent (``claim_checks.expression_inputs``). Dev fixture outcomes unchanged (19/30: no
 #    rubric item, no expression).
 # 22: the one prose screen refuses a checked value written beside another currency
 #    (``claim_checks.screen_prose``: ``1,260.50 EUR`` of a value stated in USD is
@@ -479,8 +475,7 @@ TOPIC_COMMON_TERMS = frozenset({
     "citation", "should", "would", "could", "must", "today", "there", "every", "without",
     "against", "within", "through", "before", "after", "whose"})
 # A word on more than this share of a card set's cards names the set's shared subject
-# (its map, its systems), never one card's topic (``set_topic_terms``; decision
-# devloop/DECISIONS/2026-10-28-substantive-partial.md, "Card-specific terms").
+# (its map, its systems), never one card's topic (``set_topic_terms``; "Card-specific terms").
 TOPIC_MAX_SHARE = 0.25
 # A word on the cards of more than this share of all card sets is generic (``portal``,
 # ``order``, ``review``, ``still``): it names the business, never one card's topic
@@ -514,7 +509,7 @@ _CARD_CASE = re.compile(r"^In the ([a-z0-9][a-z0-9-]{0,63}) use case")
 # An identifier-like token (letters and digits, at least five characters): ``REM000002495``,
 # ``F-26-1206``, ``U-18949``. A plain number never names a topic.
 _IDENT_TOKEN = re.compile(r"[^\W_](?:[\w-]*[^\W_])?")
-# Exposed real cases (builder-visible, dev/regression only) carry this id suffix and are
+# Exposed real cases (developer-visible, dev/regression only) carry this id suffix and are
 # listed in their directory's exposed manifest (evals.runner.load_items enforces both).
 EXPOSED_SUFFIX = "-exposed"
 OUTCOMES = ("correct", "wrong", "blocked", "justified_abstention", "unscored")
@@ -1508,7 +1503,7 @@ def resolves_to_pin(read: Any, pin: str) -> bool:
 
 
 def partition_of(item: Mapping[str, Any]) -> str:
-    """``held_out``, ``exposed`` (builder-visible real case) or ``dev`` (synthetic)."""
+    """``held_out``, ``exposed`` (developer-visible real case) or ``dev`` (synthetic)."""
     if item.get("split") == "held_out":
         return "held_out"
     return "exposed" if str(item.get("id", "")).endswith(EXPOSED_SUFFIX) else "dev"
@@ -2130,7 +2125,7 @@ def _contradictory(given: Sequence[Mapping[str, Any]],
     """Two answer gaps concern the same answer value in different states. A ``concerns``
     resolves to the answer value of that name (the first, folded); one naming no answer
     value concerns nothing. One value has one gap state, whatever the item expects
-    (directive c1ff4b736a47: the oracle gives one)."""
+    (The oracle gives one)."""
     value_of: dict[str, int] = {}
     for index, answer in enumerate(answers):
         if isinstance(answer.get("name"), str):
@@ -2154,8 +2149,7 @@ def _pin(item: Mapping[str, Any], transcript: Mapping[str, Any] | None
          ) -> tuple[set[str], dict[str, int]]:
     """(generations a citation may carry, highest capture per pinned relation).
 
-    With the runner's run pin (``evals.runner.make_run_pin``,
-    devloop/DECISIONS/2026-10-02-oracle-pinning.md) the pinned generation is the mirror's
+    With the runner's run pin (``evals.runner.make_run_pin``) the pinned generation is the mirror's
     and a citation of a pinned relation must name a capture at or before the pinned one
     (the version known at the pin). Without one, the item's own ``l1_generations``."""
     pin = (transcript or {}).get("run_pin")
@@ -2809,8 +2803,8 @@ def confident_unsupported(result: Mapping[str, Any]) -> bool:
 
 def answer_rates(*, runs: int, answered: int, correct: int,
                  unsupported: int) -> dict[str, float | None]:
-    """The B1 selective-prediction rates, the one computation every eval path reports
-    (decision 2026-10-19-b1-one-answer-rate): ``coverage`` answered over runs (an
+    """The B1 selective-prediction rates, the one computation every eval path reports:
+    ``coverage`` answered over runs (an
     abstention, justified or not, is not covered), ``accuracy`` correct over answered and
     ``confident_unsupported_rate`` confident unsupported over answered; each null when its
     denominator is 0, never a pass. Counts that would put a rate above 1 (a numerator
@@ -2915,8 +2909,7 @@ def fail_reasons(read_gap: int, runs: int) -> list[str]:
     """Why a whole eval run fails on its read gaps, the same on every path (the dev
     baseline, the agent runner, the real-agent and Ask checks): ``blocked_tripwire``,
     named as the flag ``blocked_share`` sets, when its read-gap runs trip it, so a capture
-    lag never silently shrinks the measured set
-    (devloop/DECISIONS/2026-10-08-dev-baseline-blocked-share-exit.md)."""
+    lag never silently shrinks the measured set."""
     return [BLOCKED_TRIPWIRE] if blocked_share(read_gap, runs)["blocked_tripwire"] else []
 
 

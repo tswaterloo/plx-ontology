@@ -16,7 +16,7 @@ campaigns, work inbox, autonomy, business watches, transactions, streams, replic
 reads) were retired with the platform in deletion-8, and the injected-service views
 (`/api/overview`, `/api/findings`, `/api/recover`, `/api/entity/<id>`,
 `/api/workflow/<id>`) and actions (POST `/api/approve/<plan_id>`,
-`/api/execute/<plan_id>`) in deletion-18 (`devloop/BLOAT-MAP.md`): the console never
+`/api/execute/<plan_id>`) in deletion-18: the console never
 approves or executes; approval is a person's decision in Mission Control. Any other
 path answers 404 `route_not_found`. Test: `python3 -m unittest tests.test_operator_ui`.
 
@@ -49,8 +49,8 @@ session's counts and `minted_by` (from the audit file). The run book for a first
 **Known limitation.** Anyone holding `PLX_WORKBENCH_SESSION_SECRET` can mint a `human`
 ticket for any employee the resolver (employee policy and Portal access snapshot) accepts:
 the ticket proves the secret's holder named that employee, not that the employee signed
-in. This exposure is accepted and stated in
-`devloop/DECISIONS/2026-10-07-live-agent-metric-reader-ticket.md`. Host minting is
+in.
+Host minting is
 interim, until the Portal's sign-in mints the console ticket.
 
 ## The page
@@ -114,7 +114,7 @@ workspace per reader with a row-data leak check. The case audience is narrowed t
 principals that may read the relations the case's own words came from. The example sources
 cover the AO and PO chains; `sales_order=`/`customer_po=` also need the sales-order,
 customer and shipment relations ingested. Spec
-`devloop/live-checks/case.workspace_live.json` (live-unverified until the verifier runs it).
+live check ``case.workspace_live`` (live-unverified until the verifier runs it).
 
 ## Object workspace (generic ontology tools)
 
@@ -129,7 +129,7 @@ the question families per candidate type), `/api/object?id=<object id>`,
 `/api/object-source?handle=<L1 handle>&text_offset=` and
 `/api/investigate?family=<plan id>&root=<object id>` (`plx.investigate`).
 One object is one joined answer of the case host's generic tools for the request's
-reader (10-DECISION #4): the `plx.object` card (every value with its L1
+reader: the `plx.object` card (every value with its L1
 citation, authority rank, unit/currency, markings, conflicts, identity edges), the
 `plx.around` relationship map (one hop per link type the card lists, weakest tier floor,
 each edge with its tier, reason and why-not), the `plx.timeline` of the object and its
@@ -155,7 +155,7 @@ cases). Nothing is computed beyond the tool answers, so the tools' permission
 monotonicity carries over; withheld counts stay `null` when the policy does not reveal
 them. The tools, grants and per-item gates are the case host's
 (`object_workspace.host_access` over `operating.case_tools_host.CaptureCaseHostTools`, the
-host MCP clients use; option (b) of devloop/OPEN-DECISIONS.md `object-workspace-sources`):
+host MCP clients use):
 the reader's policy is decided once per request (Portal relations from the mirror
 audience, BC units from the live audience, mail and SharePoint units from
 `--mail-capture-dir`/`--sharepoint-capture-dir`), so a revocation refuses find, card and

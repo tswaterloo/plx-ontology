@@ -30,7 +30,7 @@
     "property": "sage_is_complete"
    }
   ],
-  "note": "The status values the shared definition reads (devloop/DECISIONS/2026-10-21-po-open-sage-fm.md): the Portal header holds the FileMaker words (Cancel, Complete, DRAFT, Pending, B.Order, Revised, Generated) and openness is by its lines' quantities (plx-customer-portal@d39d91b open-po-lines/route.ts:38-46,302-312); an FM header alone has no received quantity and a Sage iscomplete value is not mapped, so both stay unknown; BC reads fullyReceived and status (Draft: not issued)."
+  "note": "The status values the shared definition reads: the Portal header holds the FileMaker words (Cancel, Complete, DRAFT, Pending, B.Order, Revised, Generated) and openness is by its lines' quantities (plx-customer-portal@d39d91b open-po-lines/route.ts:38-46,302-312); an FM header alone has no received quantity and a Sage iscomplete value is not mapped, so both stay unknown; BC reads fullyReceived and status (Draft: not issued)."
  },
  "stages": [
   {

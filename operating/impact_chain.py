@@ -30,8 +30,7 @@ Per affected customer order (an order cluster: an order and its recorded twins):
 * **days at risk** = material date + recorded lead time - the order's required (promised)
   date, the worst over the POs that feed it. No source the Workbench reads records an
   assembly lead time, so it counts 0 with the gap ``assembly_lead_time_not_recorded`` and
-  days at risk is a lower bound
-  (``devloop/DECISIONS/2026-10-21-impact-chain-at-risk-lead-time.md``).
+  days at risk is a lower bound.
   Required dates that disagree across the order's twins leave the days null with a gap.
   The order is at risk when the days are above 0.
 * **value at risk**: the order's cited total (``SalesOrder.total_amount``, a finance-marked
@@ -119,8 +118,8 @@ LINE_SELLS = "SalesOrderLine.for_item"
 MARGIN_LINK_TYPES = (ORDER_LINE, LINE_SELLS, *ITEM_TWINS, ORDER_TWIN)
 REVENUE_PROP = "line_total"           # SalesOrderLine, finance, excluding tax
 QUANTITY_PROP = "ordered_quantity"    # SalesOrderLine, with its unit
-# The unit cost a margin rests on (supervisor decision, devloop/DECISIONS/
-# 2026-10-27-impact-margin-landed-cost-basis.md): the landed-cost engine's per-unit total of the sold
+# The unit cost a margin rests on:
+# the landed-cost engine's per-unit total of the sold
 # item when it has one (actual, else its labelled estimate), else BC Item.unitCost (CAD per
 # base unit), which leaves freight and duty out (ERP-D-015). Each basis keeps its label; a
 # margin over more than one basis names each one (never mixed silently).

@@ -1,10 +1,9 @@
 """Teams census before any content read (evidence label: injected-transport).
 
-Directives cdce67ac8e8c and 64fca27acc88: ``teams-capture`` first lists the tenant's
+``Teams-capture`` first lists the tenant's
 teams, channels and the allowlisted accounts' chats (names into the census file only,
 30-day message counts from the team activity report), proposes the purchasing, QA and
-R&D ones, and then reads content of everything this census cleared (owner decision
-2026-10-26: no human content confirmation; a ``content-confirmation.json`` is neither
+R&D ones, and then reads content of everything this census cleared (a ``content-confirmation.json`` is neither
 required nor consulted). A team, channel or chat with an excluded member is refused by
 the shared people guard before its name or content is requested, and is never named in
 the census file; without the guard nothing is read and the run is blocked. No
@@ -140,7 +139,7 @@ class CensusCase(unittest.TestCase):
                 {c["chat_id"] for c in listing["chats"]})
 
     def assert_no_confirmation_step(self, report) -> None:
-        """Owner decision 2026-10-26: no content confirmation is asked for or written."""
+        """No content confirmation is asked for or written."""
         self.assertNotIn(CONFIRMATION_PART, {p["part"] for p in report["blocked_upstream"]})
         self.assertEqual((report["content"]["form"], report["content"]["confirmation"],
                           report["content"]["confirmed_not_cleared"]),

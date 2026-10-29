@@ -162,7 +162,7 @@ class ProcessTest(unittest.TestCase):
         self.assertNotEqual(entry["state"], "late")
 
     def test_bc_lines_fully_received_close_the_order_from_either_record(self):
-        # review of 410445eb08: BC header Open and fullyReceived false, but every line
+        # BC header Open and fullyReceived false, but every line
         # received (10 of 10), its Portal twin Complete. The BC lines decide receipt state
         # whichever record is asked: received from both, never late from the BC record
         for posted in (True, False):
@@ -286,7 +286,7 @@ class EngineTest(Engine):
         self.assertLessEqual({handle(n(bc)), handle(n(portal))}, set(late[0]["citations"]))
 
     def test_one_late_item_per_order_on_its_governing_record_citing_the_twin(self):
-        # review of 410445eb08: the BC record and its Portal twin each raised a late or
+        # The BC record and its Portal twin each raised a late or
         # unconfirmed item, doubling the home list and its counts; one per order now, on
         # the BC record, citing the Portal number too
         for count in (1, 10, 60):

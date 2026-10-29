@@ -504,8 +504,8 @@ class SyntheticGenerationTests(unittest.TestCase):
                              [smaller.id])
 
     def test_build_time_stays_inside_a_generous_bound(self):
-        # Diagnostic, not a target (EVIDENCE/perf/2026-10-04-proj-budget.md has the
-        # live-scale figures): about 2,400 objects cold, and an unchanged rebuild that
+        # Diagnostic, not a target:
+        # about 2,400 objects cold, and an unchanged rebuild that
         # projects nothing again. A regression of an order of magnitude trips it.
         with tempfile.TemporaryDirectory() as tmp:
             started = time.monotonic()

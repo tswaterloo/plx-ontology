@@ -977,8 +977,7 @@ LAYOUT_MARK = "[ocr word-box layout]"
 # handwriting OCR could not read: on the AO shop-floor scans 95% of printed form words
 # read at or above 91, while most of the text in a handwritten box reads below it (a
 # stray glyph in handwriting may still read high: ``ontology.document_fields`` decides a
-# box by its share of such text; decision
-# devloop/DECISIONS/2026-10-19-ao-handwritten-reader-limit.md). The mark line names the
+# box by its share of such text). The mark line names the
 # spans of such words on its page: '[ocr word-box layout] below 85: 120-125 300-307'.
 HANDWRITING_CONFIDENCE = 85
 _LAYOUT_LINE = re.compile(r"\n" + re.escape(LAYOUT_MARK) +

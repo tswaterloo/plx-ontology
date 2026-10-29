@@ -17,7 +17,7 @@ Per root it reads four kinds of dates, each a cited value this reader may read:
   which follows the promised date): reported, never the due date.
 
 Whether the PO is open, received or not applicable is the shared purchase-order status
-definition (``operating.po_status``, devloop/DECISIONS/2026-10-21-po-open-sage-fm.md) over
+definition (``operating.po_status``) over
 the status values and lines' quantities of the root and its settled identity twins, combined
 by the one reader, ``po_status.read``, that the proactive engine and the packaging eval
 also call: a draft or cancelled PO is not

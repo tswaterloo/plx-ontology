@@ -5,8 +5,7 @@
     python3 -m operator_ui.tests.case_fixtures --fixture --seed-fixtures --state-dir NEW_DIR \\
         --principal staff:operations
 
-Serves the console on a loopback port. Session identity (``operating.session_identity``,
-10-DECISION #7): a live console has no host actor and no default principal; it takes the
+Serves the console on a loopback port. Session identity (``operating.session_identity``): a live console has no host actor and no default principal; it takes the
 identity from each authenticated request, whose bearer credential is a signed session
 ticket (author ``human``) naming one employee, verified with ``PLX_WORKBENCH_SESSION_SECRET``
 and resolved per request through ``--employee-policy`` and ``--portal-access`` (Portal role
@@ -57,7 +56,7 @@ employee sees a real case's timeline, originals, relationship map, gaps and acti
 together, every part resolved for them. A state directory the ingestion runner filled is
 labelled ``source-mirror captures`` (``case_workspace_live.MIRROR_EVIDENCE``), never live.
 
-Object workspace (10-DECISION #4): ``--ontology-store FILE`` serves the employee object
+Object workspace: ``--ontology-store FILE`` serves the employee object
 workspace (``operator_ui.object_workspace``) over a projection store: find any served
 object with ``plx.find`` and open its card, relationship map, timeline, process, gaps,
 conflicts and registered intents, every value cited and every citation opened through
@@ -363,10 +362,16 @@ def evidence_for(marker: dict | None, state_dir: Path | None = None) -> dict | N
 
 
 def main(argv: Sequence[str] | None = None, *, fixtures: Any = None,
-         planner: Any = None) -> int:
+         planner: Any = None,
+         serve_with: Callable[[Mapping[str, Any]], int] | None = None) -> int:
     """``fixtures``: the fixture world (``seed``, ``build_world``, ``live_readers``), passed
     only by its own entry point; product code never supplies one. ``planner``: the fixture
-    world's scripted Ask planner in place of Claude Code (with ``fixtures`` only)."""
+    world's scripted Ask planner in place of Claude Code (with ``fixtures`` only).
+    ``serve_with``: another front over the same console (``operator_api``, the web app's
+    API): called with what this console would serve (``objects_for(identity)``, the
+    ``resolver`` or the fixture ``session``, the Entra resource, the state directory,
+    evidence and planner) instead of serving it here; its return is the exit code. Every
+    check above runs first, and the runtime is closed when it returns."""
     parser = argparse.ArgumentParser(prog="python3 -m operator_ui.case_console",
                                      description=__doc__.split("\n\n")[0])
     parser.add_argument("--state-dir", required=True, type=Path)
@@ -670,6 +675,15 @@ def main(argv: Sequence[str] | None = None, *, fixtures: Any = None,
                 fixture_objects = objects_for(session) if resolver is None else None
             except (ValueError, OSError, sqlite3.Error) as error:
                 parser.error(f"ontology store is unusable: {str(error)[:200]}")
+        if serve_with is not None:
+            if ontology_path is None:
+                parser.error("serving another front needs an ontology store")
+            return serve_with({"objects_for": objects_for, "resolver": resolver,
+                               "session": session, "entra_resource": entra_resource,
+                               "state_dir": state_dir, "ontology_path": ontology_path,
+                               "evidence": evidence, "planner": planner,
+                               "replay_guard": None if resolver is None
+                               else session_identity.replay_guard_for(state_dir)})
         if resolver is None:
             serve(port=args.port, case_workspace=workspace_for(session),
                   session=session, object_workspace=fixture_objects)

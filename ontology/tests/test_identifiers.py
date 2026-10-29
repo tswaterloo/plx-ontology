@@ -1,8 +1,6 @@
 """The one identifier grammar (ontology/schema/identifiers.json + ontology/identifiers.py).
 
-Evidence label: ``isolated-fixture`` (no source is read). Golden forms come from
-devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md and 03-PORTAL.md and the Portal code
-they cite (plx-customer-portal@b46934a).
+Evidence label: ``isolated-fixture`` (no source is read).
 """
 
 from __future__ import annotations
@@ -698,8 +696,7 @@ class ProseRecordLabelTests(unittest.TestCase):
 class FixtureIdentifierFormTests(unittest.TestCase):
     """The eval fixture world writes every identifier in an upstream form: each value on a
     declared carrier parses as its kind, so the projector never records it
-    ``identifier_unparsed`` (devloop/DECISIONS/2026-10-04-po-fixture-roots.md: fix the
-    fixture, never loosen the grammar). The one exception is declared there: a PO
+    ``identifier_unparsed`` (never loosen the grammar). The one exception is declared there: a PO
     renumbered to a code no grammar reads."""
 
     # FXBC9001 is a PO renumbered to a BC No. (well-formed, declined by the PO grammar). The

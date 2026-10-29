@@ -252,7 +252,7 @@ class AskBenchTest(unittest.TestCase):
         self.assertEqual((server.calls, len(again)), (1, 1))
 
     def test_a_plans_result_over_the_bound_shows_what_it_found_before_how(self):
-        """Finding 1 (supervisor): a plan's result over the bound was shown by its
+        """Finding 1: a plan's result over the bound was shown by its
         smallest entries, so its trace came before its gaps. What it found (answerability,
         answer, gaps; the values as far as they fit) is shown first; the chain and trace
         only whole, else named as omitted and shown on a repeat. N=1/10/60 values: none
@@ -286,7 +286,7 @@ class AskBenchTest(unittest.TestCase):
                              [f"v{i}" for i in range(n)])
 
     def test_the_planner_starts_from_the_card_and_its_familys_plan(self):
-        """Finding 3 (supervisor): the Ask read the card of the object in view and never
+        """Finding 3: the Ask read the card of the object in view and never
         gave it to the planner. Its first request now holds step 0: the card and, when the
         question's family has a plan that runs from the card's type, the plan's result;
         made as the loop's own calls, so they are evidence a claim may cite."""

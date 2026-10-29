@@ -9,7 +9,7 @@ Writes ``duty_actual.json``, ``freight_actual.json``, ``hs_proposals.json`` and
 puts ``landed_actuals.json`` where that host's landed cost reads it
 (``<STATE_DIR>/landed-actuals/``, ``duty_actual.ActualsFile``). Prints counts only. GET only,
 through the Workbench read client. Evidence label: live-unverified (the verifier records a
-live result; ``devloop/live-checks/landed_cost.recorded_actuals.json``).
+live result; live check ``landed_cost.recorded_actuals``).
 """
 
 from __future__ import annotations

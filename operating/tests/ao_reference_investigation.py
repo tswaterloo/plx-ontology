@@ -3,7 +3,7 @@
 This is ``operating/ao_case_script.investigate`` as of the base of task allowlist-3,
 moved out of product code when every product caller (``operating.case_workspace_live``,
 the console's ``--open``) moved to the generic path (``plx.find``, ``plx.object``,
-``plx.investigate``) and its live checks retired (devloop/ALLOWLIST-BURNDOWN.md). It stays as
+``plx.investigate``) and its live checks retired. It stays as
 the deterministic, realistic AO case the evaluator tests score: playbook
 ``ao_quantity_reconciliation`` v2-v4 (``test_playbook_eval``), the claim gate
 (``test_claim_checks``) and the case tools' paging, originals and permission tests
@@ -34,7 +34,7 @@ from operating.capability_guards import properties_of_fields
 from operating.customer_po_coverage import parse_date_value
 from operating.ontology_tools import shared_schema
 
-# The six real packets (devloop/CONTEXT/02 section 3.1) all carry a letter suffix; a
+# The six real packets all carry a letter suffix; a
 # suffixless code is refused until a real one is confirmed. Input is case-insensitive.
 AO_CODE_SHAPE = re.compile(r"AO-\d{5}[A-Z]")
 # Bindings and identifier properties that name the record itself (ontology/schema/domains):

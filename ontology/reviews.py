@@ -1,6 +1,6 @@
 """Human review decisions over the ontology: an append-only store and their projection.
 
-Directive dd40ff1bf83f P3 (amendment bb664f58910f §1): a person's correction survives a
+A person's correction survives a
 restart and changes the next investigation. Decisions, each by one authenticated
 employee, timestamped, citing the exact record versions (L1 handle and content digest)
 the person reviewed:
@@ -14,7 +14,7 @@ the person reviewed:
   turned down an alias lead, ``alias_proposals``). It shares the alias's key, so the
   later of the two is the one in force: while a rejection holds the alias joins nothing
   (``alias_spans`` gives only ``alias`` stretches) and the build proposes it no more
-  (``BuildAliases.rejected``; decision 2026-10-19-reference-alias-leads);
+  (``BuildAliases.rejected``);
 * ``document_kind``: a document record is of a Portal document type (history only: what a
   document is is recorded by ``plx.document_fields`` alone, see below);
 * ``allocate``: of the subject's (the supply's) quantity property, a quantity in a unit
@@ -41,7 +41,7 @@ the person reviewed:
   that link's key has an acceptance in force: a later ``reject_link`` of the link, or a
   retraction leaving none, withdraws the alias over that stretch (``alias_spans``;
   ``state_at``: ``withdrawn``, ``link_not_accepted``), its history kept; a link
-  acceptance in force again holds it again. Directive 1c5c5561cd74.
+  acceptance in force again holds it again.
 * ``confirm_value`` / ``correct_value``: a person read one value of the subject (its
   ``property``) in the original and confirms the machine-read value (citing that value's
   own citation, the value recorded as read) or corrects it (the value, its unit and

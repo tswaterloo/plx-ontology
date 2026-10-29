@@ -1,11 +1,11 @@
 """Versioned SharePoint capture (L1): drive items of a bounded scope into Workbench state.
 
-Owner decisions 5be438765457 and 93047ba19524, 10-DECISION 2: the Workbench keeps
+The Workbench keeps
 what it reads from SharePoint in its own credentialed capture store, so a
 ``sharepoint://`` citation resolves offline to exactly the version it cited, a
 changed file keeps its history and the projection (``ontology.project
 .SharePointCaptures``) can serve ``SharePointFile`` objects with their mention links.
-Nothing captured goes to Git, logs or advisory records. Who may *see* a captured
+Nothing captured goes to Git, logs or source records. Who may *see* a captured
 file is decided again on every read, per reader: the reader's
 ``LiveSourceAudience`` over the item's path keys (``sharepoint:<drive>:<path>``)
 and the item permissions recorded at capture. A file withheld from a reader yields
@@ -121,7 +121,7 @@ readable (deleted, moved where the capture may not look, or the source failing) 
 name or path is served from either. Folders of a scope never nest: a nested root
 would split one item's attribution between two walks.
 
-Incremental (``full_walk_hours``; decision 2026-10-12-capture-cursor-convergence). A
+Incremental (``full_walk_hours``). A
 full walk records the folders it listed (by item id) and, before it starts, the drive's
 change-feed cursor (``SharePointReader.drive_delta``, ``token=latest``; read once per
 drive and run, and taken by the walk itself when that read failed). Each root keeps its
@@ -147,7 +147,7 @@ the oldest). The full walk every ``full_walk_hours`` also re-reads every item's
 permissions (the feed reports sharing changes only where Graph honours ``Prefer:
 deltashowsharingchanges``).
 
-Permission re-reads (``permission_reread_hours``, directive 1cd1c66dd47d). The eTag
+Permission re-reads (``permission_reread_hours``). The eTag
 shortcut skips ``get_item``, which is also the item's permission re-read, so a
 permission-only change the feed lists without the sharing annotation would stay stale.
 Each root therefore keeps a permission position too (``root_permissions``): a feed
@@ -234,7 +234,7 @@ first (the nearest its end as far as the walk knows), each at least
 position (one root result: the counts of every slice, ``walk_slices``). So one root larger
 than the budget no longer holds every root after it unvisited: a growing estate's
 ``roots_unvisited`` falls every run while the large root resumes. A refresh is never
-sliced (it resumes ahead of the roots no walk has reached, decision 28e628682928). A
+sliced (it resumes ahead of the roots no walk has reached). A
 root the time budget reaches before
 reading anything is deferred (``deferred``): nothing of it is read or written, so a
 complete root stays complete with its walked folders and feed position; a terminal
@@ -360,9 +360,9 @@ withheld and, when none was read, ``no_access``, ``empty_site``, ``not_in_scope`
 ``not_walked`` or ``source_error``; a site walked whole that holds no file is
 ``unexercised`` (:func:`credit_readback`), never ``captured``.
 
-Live-unverified until ``devloop/live-checks/capture.sharepoint.json`` passes; the estate
+Live-unverified until live check ``capture.sharepoint`` passes; the estate
 (``--scope integrations/sharepoint_estate_scope.json``) until
-``devloop/live-checks/capture.sharepoint_estate.json`` passes.
+live check ``capture.sharepoint_estate`` passes.
 """
 
 from __future__ import annotations
@@ -1528,7 +1528,7 @@ class SharePointCaptureStore:
         its bytes and text (``content_status`` and ``text_status`` ``pruned``; a
         ``content_pruned`` event). A version superseded during the walk keeps its bytes
         until the next complete walk, so what a reader cited of the previous capture still
-        reads (decided: ``devloop/DECISIONS/2026-10-15-estate-prune-window.md``). Its
+        reads. Its
         metadata, item permissions, digest and validity interval stay, so its citation still resolves
         (without bytes; a ``#sha256=`` citation of it no longer does). A version whose
         handle is current (moved, same eTag) keeps its bytes; one that comes back later
@@ -2278,8 +2278,7 @@ class SharePointCapture:
         """:meth:`_walk` within the root's fair share of the budget left: the budget left
         above ``reserve`` (all of it once only the reserve is left) over ``roots_left``,
         the roots of the pass not reached yet, at least ``least`` (never past the run's
-        deadline; module docstring, Scheduling). ``roots_left`` None (a refresh,
-        decision 28e628682928) or a run without a budget: the run's deadline alone.
+        deadline; module docstring, Scheduling). ``roots_left`` None (a refresh) or a run without a budget: the run's deadline alone.
         ``slice_cut``: the slice, not the run's budget, cut the walk and its position is
         kept, so a later pass may resume it."""
         if roots_left is not None and self._deadline is not None:
@@ -3281,8 +3280,8 @@ class SharePointCapture:
                                         else held["reread_at"] or feed["read_at"])
                     why = "structural_change"
             if walk is None:
-                # A refresh is never sliced (decision 28e628682928: it resumes ahead of
-                # the roots no walk has reached); any other walk gets its share.
+                # A refresh is never sliced;
+                # any other walk gets its share.
                 refresh = (bool(position.get("refresh")) if position is not None
                            else why == "walk_due")
                 # This root walks (a change feed can force a complete one to), and so
@@ -3491,7 +3490,7 @@ class SharePointCapture:
                     # A personal site SharePoint has locked (HTTP 423: a OneDrive held
                     # for a removed user), readable by nobody: counted and typed
                     # (``sites_locked``), not a discovery gap. A locked site on the site
-                    # host stays a gap (decision 2026-10-17-capture-persistence-site-locked).
+                    # host stays a gap.
                     counts["sites_locked"] += 1
                     sites_seen.setdefault(site["name"], "locked")
                     continue
@@ -3911,8 +3910,8 @@ def _walk_ages(store: SharePointCaptureStore, roots: Sequence[tuple[str, str]],
 
 def carried_estate(store: SharePointCaptureStore, actor: Actor, audience: LiveSourceAudience,
                    planned: Sequence[tuple[str, str]]) -> dict[str, Any]:
-    """The estate judged across runs, not by one (decision 2026-10-21-sharepoint-census-
-    across-runs): of the planned roots, ``roots_complete`` are complete for ``actor`` (a
+    """The estate judged across runs, not by one:
+    of the planned roots, ``roots_complete`` are complete for ``actor`` (a
     full walk listed everything and every current file's bytes are captured) with their
     last full walk younger than ``STALE_HOURS`` (a due refresh inside that window keeps
     serving its complete state; one older is ``roots_stale``), ``roots_unvisited`` no walk

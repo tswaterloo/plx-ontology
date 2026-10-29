@@ -1,5 +1,4 @@
-"""``ontology/source_scope.json``: the registry entries and ``<system>.<kind>`` scopes the
-Workbench decided not to capture, each with its decided ``devloop/DECISIONS`` record. Read
+"""Read
 by the source registry (``scripts/source_registry.py``) and the MCP roles
 (``ontology/generator/mcp.py``). Here, not under ``scripts/``, so the ontology never imports
 scripts."""
@@ -23,8 +22,7 @@ class RegistryError(Exception):
 
 
 def load_scope(root: Path = ROOT) -> dict[str, str]:
-    """``ontology/source_scope.json`` under ``root``: scope (``<system>.<kind>`` or an entry
-    id) -> the decided ``devloop/DECISIONS`` record that puts it out of scope. An absent file
+    """    An absent file
     is no scope; anything malformed, or a decision file that is missing under ``root`` or not
     ``status: decided``, is refused."""
     path = root / SCOPE_PATH.relative_to(ROOT)

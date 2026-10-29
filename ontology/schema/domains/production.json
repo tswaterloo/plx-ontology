@@ -3,7 +3,7 @@
  "format": "plx-ontology-domain/v1",
  "domain": "production",
  "origin": "curated",
- "description": "FM production schedule slots (batch_calibration) linked to their bulk batch (schema-coverage lane, directive 612e1dd724f7). FM bronze is authoritative; the gold copy app_batch_schedule is deliberately left to its generated raw type (devloop/DECISIONS/2026-10-07-schema-coverage-etl-duplicates.md). Slots of staging test batches are gold_native_staging.",
+ "description": "FM production schedule slots (batch_calibration) linked to their bulk batch. FM bronze is authoritative; the gold copy app_batch_schedule is deliberately left to its generated raw type. Slots of staging test batches are gold_native_staging.",
  "upstream_pins": {
   "plx-customer-portal": "790256ca43"
  },

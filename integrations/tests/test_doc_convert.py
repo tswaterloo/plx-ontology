@@ -616,7 +616,7 @@ class ConvertedClaimsTest(ConverterTestCase):
         self.assertTrue(all(c["converted"] is True and c["page"] == 1 for c in document.claims))
 
     def test_pdf_with_an_unknown_page_count_is_never_converted_whole(self):
-        """Directive 5ba82b6040ec (3): without a page count (pypdf rejects the file and
+        """Without a page count (pypdf rejects the file and
         poppler cannot count it) MarkItDown is never given the PDF: it could be over the
         page bound. Poppler's count bounds it: over the bound it is refused unconverted."""
         class Text(FakeMarkItDown):

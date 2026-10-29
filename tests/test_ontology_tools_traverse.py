@@ -1,11 +1,11 @@
-"""Lane L9: plx.around / plx.timeline over a fixture projection store.
+"""L9: plx.around / plx.timeline over a fixture projection store.
 
 The store is created with the frozen DDL (ontology/store_ddl.py) and filled by
 hand; the schema is a small synthetic domain in this file. Every output is
 validated against operating/ontology_tool_contracts.json with
 ontology/json_contract.py. All identifiers are synthetic.
 
-Needs lane L8's operating/ontology_tools.py (StoreReader, ReadPolicy,
+Needs L8's operating/ontology_tools.py (StoreReader, ReadPolicy,
 OntologyTools); run on a branch where it has landed or on a local merge.
 """
 
@@ -1341,7 +1341,7 @@ class TimelineTests(unittest.TestCase):
 # --------------------------------------------------------------------------- real projector
 
 class AsKnownAtTests(unittest.TestCase):
-    """As known at T (10-DECISION 5) at the tool boundary: a set member first captured
+    """As known at T at the tool boundary: a set member first captured
     after T is left out with a counted not_ingested gap only when this reader may read
     it now; one revoked since the handle was made is neither shown nor counted, and the
     answer cannot tell whether it was captured before or after T. meta.freshness is
@@ -1391,7 +1391,7 @@ class AsKnownAtTests(unittest.TestCase):
             self.assertEqual(gap["state"], "not_ingested")
             self.assertIn("2 object(s)", gap["detail"])
             self.assertNotIn("policy_changed_since_handle", self.gaps(out))
-        # Lead decision: nothing was known of them at T, so as known at T the answer is
+        # Nothing was known of them at T, so as known at T the answer is
         # complete; the gap states how many were left out. O1's timeline is not whole for
         # OPS for another reason: an event relating finance-marked O3 is hidden from it.
         self.assertTrue(around["completeness"]["complete"], around["completeness"])

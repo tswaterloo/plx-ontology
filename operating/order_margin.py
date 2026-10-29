@@ -63,13 +63,11 @@ Semantics (BC API v2.0, mirrored from the Portal where it has a rule):
   stays (figures net only of the credit memos read). The capture proof is the BC family's
   completeness (``meta.freshness``) or, per capture unit, a complete ``company=<id>`` claim
   of the order's company on both ``salesCreditMemos`` and ``salesCreditMemoLines``
-  (``captured``, from the host; unknown falls back to the family): decision
-  devloop/DECISIONS/2026-10-05-margin-net-credit-capture-units.md. Booked cost keeps its own
+  (``captured``, from the host; unknown falls back to the family). Booked cost keeps its own
   completeness proof.
 * **Orders BC no longer serves.** BC deletes a sales order once it is shipped and invoiced;
   the projection then roots the order at the posted documents that name it (a binding the
-  plan lists in ``posted_bindings``, ``stands_for`` in the schema; decision
-  devloop/DECISIONS/2026-10-07-p9-margin-completed-orders.md). Such an order has no lines or
+  plan lists in ``posted_bindings``, ``stands_for`` in the schema). Such an order has no lines or
   ordered quantity: its lines are its items, those of its posted invoice lines and of its
   shipped ledger entries, and a line is whole when its invoiced quantity equals its shipped
   item-ledger quantity in the item's base unit (the invoice unit; nothing converted), over
@@ -79,7 +77,7 @@ Semantics (BC API v2.0, mirrored from the Portal where it has a rule):
   ``POSTED_LINE_UNPROVEN``, ``ORDER_LINES_INCOMPLETE``). Revenue, cost and margin are then
   computed as for a served order.
 * **Never mixed.** Only BC records count: a Portal or Sage twin is never added to a BC
-  figure (10-DECISION lead decisions 2026-10-02), and an invoice or ledger entry reached only
+  figure, and an invoice or ledger entry reached only
   through lead-tier links never enters a sum. The landed-cost estimate (family F7, plan
   ``landed_cost``, rooted at a purchase order) is an analytic estimate: freight and duty are
   expensed to the G/L (ERP-D-015), so booked cost excludes them, and this engine never adds

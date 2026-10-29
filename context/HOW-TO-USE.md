@@ -3,8 +3,19 @@
 ## 1. Start it
 
 1. Open a terminal in this folder.
-2. Type `python3 -m operator_ui.case_console` and press Enter.
+2. To try it with sample cases (no PLX data, no network), type:
+
+   ```
+   python3 -m operator_ui.tests.case_fixtures --fixture --seed-fixtures \
+       --state-dir /tmp/plx-demo --principal staff:operations
+   ```
+
+   Use a new, empty folder for `--state-dir`.
 3. It prints a web address. Open that address in your browser.
+
+On the PLX machine the console runs over real data:
+`python3 -m operator_ui.case_console --state-dir <state folder>` plus the access files
+your administrator set up.
 
 The console only runs on your own computer. It cannot be opened from another machine.
 

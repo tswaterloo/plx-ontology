@@ -1,13 +1,13 @@
 """The last complete Portal source-mirror capture, kept outside Git and served stale
 while the live Portal Workbench API is unavailable.
 
-Directive be1776e885b5: a run that builds its mirror from the Portal API fails as a
+A run that builds its mirror from the Portal API fails as a
 whole (``MirrorError``) when the API answers non-2xx or cannot be reached (since
 2026-10-03 03:33Z ``GET /v1/health`` answers HTTP 500 ``internal``). This module keeps
 the last complete capture of a declared relation scope and serves it, labelled stale,
 when a refresh fails that way.
 
-Where (owner rule 5be438765457: captures never go to Git, logs or advisory records):
+Where (Captures never go to Git, logs or source records):
 the Workbench's credentialed capture store, ``<state dir>/mirror-capture`` beside the
 mail capture's ``<state dir>/mail-capture`` (``integrations/capture_mail.py``). The
 state directory is checked outside every git work tree by
@@ -71,7 +71,7 @@ manifest says so. ``captures_as_of`` is the oldest completed refresh among the s
 relations (the copy is only as fresh as its stalest relation).
 
 Evidence: module tests use the injected Workbench transport (``injected-transport``);
-the live behaviour is ``live-unverified`` until ``devloop/live-checks/
+the live behaviour is ``live-unverified`` until the live-check specs
 mirror.persisted_fallback.json`` records a result.
 """
 

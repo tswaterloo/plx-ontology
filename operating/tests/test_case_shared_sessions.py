@@ -1,4 +1,4 @@
-"""Shared case sessions (ROADMAP B5) on the real case store: sessions working one case at
+"""Shared case sessions (the acceptance bar) on the real case store: sessions working one case at
 once record a finding once, keep their distinct findings, lose no write in a real
 multi-process race, and a session opening the case reads the journal tail and what the
 others wrote since its last open. Synthetic fixtures only."""

@@ -1,4 +1,4 @@
-"""HS category table, HS x origin tariff table, provisional owner rules and the incoterm rule.
+"""HS category table, HS x origin tariff table, provisional business rules and the incoterm rule.
 
 Evidence label: isolated-fixture (synthetic rows, never live PLX data).
 """

@@ -78,7 +78,7 @@ parts the latest read was refused or not answered on (``source_blocked``,
 refused, a source that did not answer), which the case opener reads. Output is
 counts, states, reasons and times only: never a key, value, address or citation.
 
-Ingest mode (decision 2026-10-21-ingest-one-writer): with ``"ingest": {"mode":
+Ingest mode: with ``"ingest": {"mode":
 "capture_clis"}`` in the config a cycle reads its sources through every source's own
 capture CLI, as child processes (``operating.ingest_forever``: the source sections are
 that module's table, ``portal``, ``bc``, ``mail``, ``sharepoint``, ``sharepoint_lists``,
@@ -1103,7 +1103,7 @@ class Host:
         try:
             capture = capture_teams.TeamsCapture(store, api, audience, self._actor(),
                                                  workers=capture_teams.WORKERS)
-            # The CLI's gate (decision 2026-10-21-teams-host-confirmation-gate): the census
+            # The CLI's gate: the census
             # first (names and counts, no content), then content only of what the owner's
             # confirmation names and this census cleared; without one no message is read
             # and the source is blocked on that later ask, never defaulted.
@@ -2350,8 +2350,8 @@ def sharepoint_coverage(host: "Host", *,
     require) against the current versions the capture store holds under that root for the
     capture principal. The folder list is the library's own listing.
 
-    The census is resumable across calls (decision 2026-10-21-sharepoint-census-across-
-    runs): a call the time budget or the folder bound (``max_folders``, folders listed per
+    The census is resumable across calls:
+    a call the time budget or the folder bound (``max_folders``, folders listed per
     call and root) cuts keeps its folder frontier and the listing cursor of the folder it
     was in, with the files it saw, in ``host/`` of the state directory
     (:data:`CENSUS_FILE`), and the next call carries on from there, so no folder is listed
@@ -2899,7 +2899,7 @@ def console_arguments(host: Host, port: int) -> list[str]:
 
 def freshness_bounds(config: "HostConfig") -> dict[str, float]:
     """Source family -> seconds: how old this host's own capture of a source may be
-    before answers state it stale (supervisor decision 2026-10-27, captured-Portal
+    before answers state it stale (captured-Portal
     staleness). Twice one capture turn of the source: its re-run interval (ingest mode:
     the section's ``min_interval_seconds``, default 120 s; cycle mode: the host's
     ``interval_seconds``) plus the time one capture may take (its ``budget_seconds``, else

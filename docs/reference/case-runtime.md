@@ -237,7 +237,7 @@ never constructs `UnifiedPlatform` (the platform MCP host was retired); in-proce
 | `plx.case_attach_original` | Attach an inbox original (`inbox_name`), a SharePoint drive item (`drive_id` + `item_id` [+ `max_bytes`]; the retired `plx.case_attach_sharepoint_original`), or re-extract an attached one as a new version (`citation` + `reason`; bytes and earlier citations unchanged) |
 | `plx.document_fields` | `mode` propose: Portal-taxonomy metadata proposals for one readable original (below); request / status: the person's confirmation (`operating/kind_confirmation.py`) |
 
-**Case-host budget (2026-10-01; `docs/decisions/2026-10-03-host-tool-budget.md`).** The
+**Case-host budget (2026-10-01).** The
 host lists exactly `limits.max_case_host_tools` = 22 tools, `plx.around`/`plx.timeline`
 included. A new tool is a prompt to look for one it supersedes, not a quota. Retired, with successors (`ontology_tools.HOST_RETIREMENTS`):
 the raw source reads (catalog, rows, resolve, live listing) into `plx.schema`/`plx.find`/
@@ -246,8 +246,7 @@ the raw source reads (catalog, rows, resolve, live listing) into `plx.schema`/`p
 `plx.find`/`plx.object`; the ingest-status tool into the freshness `_meta`
 (`plx/freshness`) that every answer now carries; case listing and the claim check into
 `plx.case_get`; re-extraction into `plx.case_attach_original`; the intent listing into
-`plx.action_get`. Host-budget phase 1 (`docs/decisions/2026-10-03-host-tool-budget.md`,
-`mcp_server.CASE_TOOL_RETIREMENTS`) merged `plx.source_citation` and `plx.case_cite_mail`
+`plx.action_get`. Host-budget phase 1 (`mcp_server.CASE_TOOL_RETIREMENTS`) merged `plx.source_citation` and `plx.case_cite_mail`
 into `plx.read`, `plx.case_link` into `plx.case_add_finding`, the SharePoint attach into
 `plx.case_attach_original`, the metadata proposal and confirmation tools into
 `plx.document_fields`, and `plx.case_verify_proposal` into `plx.case_propose` (the slot
@@ -255,8 +254,8 @@ into `plx.read`, `plx.case_link` into `plx.case_add_finding`, the SharePoint att
 evaluators (`mcp_server.HOST_READS`), refused for every client. Without a store the host is not blind: `plx.find` resolves from the
 mirror and BC readers (above). In-process drivers (case scripts, evaluator, live
 workspace) still read rows directly through `operating/source_reads.py` (`mirror.rows`,
-`mirror.catalog`, `live.list`), routed by `local_client`; an MCP client cannot reach those
-(`docs/decisions/2026-10-03-wire-host-decisions.md`). Identity is not among them:
+`mirror.catalog`, `live.list`), routed by `local_client`; an MCP client cannot reach those.
+Identity is not among them:
 `mirror.resolve` left the driver reads; no
 case script exists and the case opener (`operating/case_workspace_live.py`) roots every case
 with `plx.find` (one candidate, or one record held in several systems joined by verified
@@ -914,7 +913,7 @@ reader may read now.
   capture index narrowed to the scope (identities recorded at capture), so an
   out-of-scope mailbox is not even looked up.
 - **Which mail**: the versioned mail capture (`integrations/capture_mail.py`, the one
-  L1 mail store; decision 2026-10-02-mail-and-mentions-store) is the index, read as
+  L1 mail store) is the index, read as
   the reader (live audience over the mailbox identities and owner ACL recorded at
   capture); its completeness (delta rounds, attachment lists) decides
   `mail_source.complete`; nothing is listed again. The ingestion mail unit

@@ -214,7 +214,7 @@ class ScoreTests(unittest.TestCase):
                 self.assertEqual(result["outcome"], "wrong" if codes else "correct")
 
     def test_one_answer_gap_states_one_expected_gap_and_contradictory_states_fail(self):
-        """Directive 183ec855c89b: gaps match one-to-one (a maximum matching, whatever the
+        """Gaps match one-to-one (a maximum matching, whatever the
         order), and two states on one value contradict each other (isolated-fixture)."""
         outcome = copy.deepcopy(fx.item()["known_outcome"])
         outcome["gaps"] = [{"state": "not_ingested", "subject": "shipped quantity",
@@ -235,7 +235,7 @@ class ScoreTests(unittest.TestCase):
                 self.assertEqual(result["gap_honesty"], not codes)
 
     def test_the_oracle_gives_one_gap_state_per_value_and_two_states_contradict(self):
-        """Directive c1ff4b736a47 (1): F3 with shipment headers but no lines, the oracle
+        """F3 with shipment headers but no lines, the oracle
         gives shipped one gap (absent_in_source, shipment_without_lines), answered word for
         word correct; an item that expects a second state on that value (what the oracle
         gave before) no longer lets an answer state both (isolated-fixture)."""
@@ -261,7 +261,7 @@ class ScoreTests(unittest.TestCase):
         self.assertEqual((result["outcome"], result["codes"]), ("wrong", ["gap_contradictory"]))
 
     def test_contradictory_gaps_are_grouped_by_the_answer_value_they_resolve_to(self):
-        """Directive c1ff4b736a47 (2): two states on the answer value ``shipped`` contradict
+        """Two states on the answer value ``shipped`` contradict
         however the concerns is written; two states on a concerns naming no answer value
         (the expected value's name after the product renamed it) concern nothing."""
         outcome = copy.deepcopy(fx.item()["known_outcome"])
@@ -1012,8 +1012,7 @@ class PinnedOriginalTests(unittest.TestCase):
 
 
 class ProposedCardMatchTests(unittest.TestCase):
-    """The 2026-10-16 RRO run's shape (devloop/DECISIONS/2026-10-16-use-case-answer-misses.md
-    finding 1, evals/dev/rro/answer_review.json): the compiler pins each arithmetic result to
+    """The 2026-10-16 RRO run's shape (evals/dev/rro/answer_review.json): the compiler pins each arithmetic result to
     the byte pin as ``result``; the agent names its value otherwise and computes it over a
     page of the same original. The committed cards' operands on a synthetic stand-in page,
     never the Draft 8 body (isolated-fixture)."""
@@ -2023,7 +2022,7 @@ class LineOrderTests(unittest.TestCase):
 
 
     def test_a_verdict_over_more_cells_than_max_citations_requires_every_cell(self):
-        """Directive 183ec855c89b: an F4 verdict names all its cells, beyond MAX_CITATIONS
+        """An F4 verdict names all its cells, beyond MAX_CITATIONS
         (the oracle no longer cuts them); an ``equal`` over only some is another verdict."""
         keys = [(relation, f"{prefix}{n}") for n in range(6) for relation, prefix in (
             ("public.app_purchase_order_line", "pol-"), ("public.app_receipt_line", "rcl-"))]
@@ -2046,7 +2045,7 @@ class LineOrderTests(unittest.TestCase):
                                  [] if outcome == "correct" else ["cited_other_row"])
 
     def test_an_f4_leg_cites_every_cell_it_sums_as_the_verdict_does(self):
-        """Directive c1ff4b736a47 (3): item 1 received over 12 lines (two of them zero): the
+        """Item 1 received over 12 lines (two of them zero): the
         oracle's received_1 names all 12 cells, as match_1 does, never the first 8, so a sum
         leaving rows out fails; a leg over more cells than one calculation states is unknown
         with a gap (isolated-fixture: the oracle's synthetic world)."""
@@ -2099,7 +2098,7 @@ class LineOrderTests(unittest.TestCase):
 
 
 class CapturedRecordAndCalculationTests(unittest.TestCase):
-    """Directive 2db2fe9bf1f8 PT2: mail, SharePoint and BC citations resolved in the capture
+    """Mail, SharePoint and BC citations resolved in the capture
     stores count, and a calculated value is recomputed (isolated-fixture)."""
 
     def score(self, answer=None, captured=None):
@@ -2169,7 +2168,7 @@ class CapturedRecordAndCalculationTests(unittest.TestCase):
                          ("correct", []), result)
 
     def test_a_total_stated_in_no_or_another_currency_is_wrong(self):
-        """Directive 2aafc4270e73 item 3: the expected total is in USD; a total that states
+        """The expected total is in USD; a total that states
         no currency (its inputs' USD aside), or whose inputs are in CAD, is wrong."""
         bare = f4_answer()
         next(v for v in bare["values"] if v["name"] == "invoiced_total").pop("currency")

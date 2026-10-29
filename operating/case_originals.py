@@ -1,6 +1,6 @@
 """Operator-supplied originals for cases: stored, fingerprinted, OCRed, citable.
 
-Implements ``plx.case_attach_original`` (devloop/CASE-RUNTIME.md section 5).
+Implements ``plx.case_attach_original``.
 An employee (the operator) places a document, for example Ricardo's AO scan,
 in the case runtime's originals inbox on the Workbench host, inside the
 directory named for the principal who may read it

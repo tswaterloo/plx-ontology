@@ -293,7 +293,7 @@ _PROSE_MOMENT = re.compile(r"(?<![\w.:-])" + _MOMENT + r"(?!\w|-\w|[:.]\d)")
 # the run that name a page the item cites (original://...#page=N) are locators; the run
 # ends at the first other number, which stays a quantity (``_page_locators``).
 # Only the words "page" / "pages": abbreviations (p., pp., pg) stay quantities needing a
-# claim (review of 9d55e3f: their period split the sentence for the wording check).
+# claim.
 _PAGE_PHRASE = re.compile(r"\b(?P<word>pages?)\s+(\d+(?:\s*(?:,|and|to|-|–)\s*\d+)*)", re.I)
 # Words whose period is an abbreviation (no sentence end for the binder) only when a digit
 # follows it directly or after one space ("p. 4", "No. 3"); "Line E. The ..." keeps its end.
@@ -2589,8 +2589,8 @@ def labels(text: str) -> list[re.Match[str]]:
 
 
 def _is_gate_label(match: re.Match[str]) -> bool:
-    """Whether a ``LABEL`` match is a label for the gate's answer-text check (supervisor
-    decision 2026-10-29): hyphenated after a prefix that is no quantity, unit, term or
+    """Whether a ``LABEL`` match is a label for the gate's answer-text check:
+    hyphenated after a prefix that is no quantity, unit, term or
     currency word (``P-02458``, ``SKU-1509``, ``F-26-0001``, ``QRM-26037``; never
     ``QTY-12``, ``KG-25``, ``NET-30``), or a whole token of an identifier kind the
     identifier grammar finds by its shape (``ontology/schema/identifiers.json``:
@@ -2717,7 +2717,7 @@ def asked_tokens_blanked(text: str, question: Any, keep: Iterable[Any] = ()) -> 
     """``text`` with each whole token (``_WHOLE_TOKEN``) that holds a letter and a digit
     and that the ``question`` holds as a whole token, equal but for case, blanked (same
     length): the question restated (``Q9``, ``MIDAS2``, ``PO-00349``), never a figure the
-    answer asserts (supervisor decision 2026-10-29). A word without a digit is no figure
+    answer asserts. A word without a digit is no figure
     anyway and stays, so a label word keeps its number (``PO 4521``). A bare number, a
     number and a unit apart (``12 kg``) and a token the question writes otherwise
     (``Q9-10`` for ``Q9``) stay, and so does a token inside a text of ``keep`` (a text
@@ -3283,7 +3283,7 @@ def wording_check(text: str, claims: Sequence[Mapping[str, Any]],
       (``produced 1509`` over a claim that 1509 is planned);
     * ``claim_wording_role_unverified`` (blocking): its claims carry no quantity role
       (``produced 1`` over an untyped sample count);
-    * a lead (advisory): its claims are identifiers (``order line 1140 was produced``).
+    * a lead: its claims are identifiers (``order line 1140 was produced``).
 
     Sentence backstop: a type word bound to no number (``Produced, 1509``, ``produced the
     full batch of 1509``, ``Inspected and released 1509``) is checked against the claimed
@@ -3295,7 +3295,7 @@ def wording_check(text: str, claims: Sequence[Mapping[str, Any]],
     A number with no claim is ``claim_unstructured`` elsewhere. ``pages`` are the pages the
     text's item cites: their locators (``_page_locators``) are blanked before binding."""
     # Page locators of cited pages are blanked first, exactly as for the number check, so a
-    # type word never binds (and is never used up) on "page 3" (review of 8257aee).
+    # type word never binds (and is never used up) on "page 3".
     claimed = [claim["value"] for claim in claims if claim["kind"] == "number"]
     clean = _QC_PASSED.sub(" qcpassed ", _strip(_page_locators(text, pages, claimed),
                                                 lambda match: " " * len(match.group(0))))

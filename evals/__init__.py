@@ -1,1 +1,1 @@
-"""Evaluation of the Workbench (10-DECISION decision 8): items, runner, scorer, oracles."""
+"""Evaluation of the Workbench: items, runner, scorer, oracles."""

@@ -1,7 +1,6 @@
 """Dev-set baseline: the oracle's dev items run end to end on the product's generic tools.
 
-Directive f6643c209267 (dev-set pass rates in ``state.status`` and the daily report);
-10-DECISION decision 8. Harness: ``evals/baseline.py`` (agent surface, the deterministic
+dev-set pass rates in ``state.status`` and the daily report. Harness: ``evals/baseline.py`` (agent surface, the deterministic
 investigation path, the ``eval`` block); run pin: ``evals/runner.py`` ``make_run_pin``; scoring: ``evals/score.py`` (the
 claim gate). No model is called: questions the deterministic path has no plan for are
 counted ``needs_agent``, never as passes.
@@ -17,7 +16,7 @@ Per run:
    state directory; one projection (``ontology.project.build_store``) of the schema's
    relations in that mirror (the link neighbourhood and, live, the plans'), never of a
    relation mirrored only because the answer key cites it: the key never chooses what the
-   product can search (architect-20261011T0821Z-kGaZpgjp), so an item whose evidence lies
+   product can search, so an item whose evidence lies
    past the link depth is a product gap, measured as one. ``eval.mirror.cited_only`` names
    those relations. A live run mirrors the relations the items' families' plans read first
    (``plan_relations``), then the cited ones; only the plans' decide ``eval.complete``,
@@ -50,7 +49,7 @@ row value, identifier or citation), with ``measure`` and ``vs_manual`` as diagno
 pass rule (``evals.measure``), and ``item_rows``: one ``family-number:root:outcome:reason`` code per
 item the oracle drew (``item_row``), unmeasured and blocked ones included, so each
 ``not_found`` root and ``wrong`` answer can be followed up. ``fixture --write-baseline`` writes
-``evals/baseline/dev-fixture.json`` (without wall times) and ``--write-report`` ``devloop/EVAL-BASELINE.md``.
+``evals/baseline/dev-fixture.json`` (without wall times) and ``--write-report`` a Markdown baseline report.
 ``--transcripts DIR`` (outside the repository) keeps the sealed transcripts and scores.
 
 **A Portal outage blocks parts, not the run** (the landed portal-indep pattern, as in
@@ -83,8 +82,7 @@ set's key digests (``eval.partition.moved_to_heldout``) and leaves its own diges
 in the host state directory (``--state-dir``, default the held-out state directory), which
 the held-out check reads to keep its set disjoint from every live dev run.
 
-**Held-out split** (``heldout``; 10-DECISION 8, decision 2026-10-01-tools-shape item 7,
-ENG-12): the same scorer on the frozen held-out set ``scripts.eval_oracle_dev heldout``
+**Held-out split** (``heldout``; ENG-12): the same scorer on the frozen held-out set ``scripts.eval_oracle_dev heldout``
 froze (``--run-id``, default ``heldout-v2``; ``--source live`` or ``fixture``). Its items load
 only through the runner's held-out load (``evals.runner.load_items`` split ``held_out``:
 the credentialed environment, ``PLX_EVAL_HELD_OUT_DIR`` outside Git holding the state
@@ -110,8 +108,8 @@ variant group the budget does not reach is counted (``variant_products``), never
 
 Evidence: ``fixture`` is ``isolated-fixture``; ``live`` is ``live-read`` and stays
 ``live-unverified`` until the live verifier records a pass of
-``devloop/live-checks/eval.dev_baseline.json`` (daily cadence); ``heldout --source live``
-likewise of ``devloop/live-checks/eval.heldout_product.json``.
+live check ``eval.dev_baseline`` (daily cadence); ``heldout --source live``
+likewise of live check ``eval.heldout_product``.
 
 Usage::
 
@@ -803,11 +801,11 @@ ANSWER_COUNTS = ("sampled", "blocked_upstream", "not_held", "unscored_other",
 
 
 def answer_block(rows: Sequence[Mapping[str, Any]], blocked: int) -> dict[str, Any]:
-    """The verifier's answer counts (``devloop/live_verify.py`` ``ANSWER_COUNTS``): blocked
+    """The verifier's answer counts (the live verifier ``ANSWER_COUNTS``): blocked
     upstream, unscored (no plan, pin drift), wrong, abstained and correct kept apart
     (``scored`` is every labelled outcome, ``abstain_ok`` the justified abstentions), with
-    the numbers ROADMAP B1 judges from ``evals.score.answer_rates``, the one computation
-    the agent tiers report (decision 2026-10-19-b1-one-answer-rate): ``answered`` is correct
+    the numbers the acceptance bar judges from ``evals.score.answer_rates``, the one computation
+    the agent tiers report: ``answered`` is correct
     plus wrong (an abstention, justified or not, is not covered), ``coverage_rate`` answered
     over the items that ran (sampled less blocked upstream, so a blocked run judges the part
     that ran), ``accuracy_rate`` correct/answered and ``confident_unsupported_rate``

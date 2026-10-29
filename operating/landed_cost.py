@@ -35,7 +35,7 @@ Rules this module enforces:
 * The record lists inputs, each arithmetic step as text, and a sha256 over the
   canonical inputs + steps + outcome, so equal inputs give an equal digest.
 
-Cost treatment (Portal staging ``5724575``; devloop/CONTEXT/03-PORTAL.md sections 4.1-4.3, 9):
+Cost treatment (Portal staging ``5724575``; 9):
 PLX's current Portal decision is to expense freight and duty to Sage G/L (ERP-D-015, Approved
 2026-09-10, ``docs/projects/business-central-erp-modernization/decision-log.md``;
 ``portal/src/lib/procurement/landed-gl.ts``); Vince's step 18 asks to reopen it. So every
@@ -3580,12 +3580,12 @@ _COUNT_ROLES = ("quote_basis_count", "quote_volume", "quote_weight", "quote_pall
 # (a share of that amount, same currency) is taken to be that quote's figure.
 ESTIMATE_QUOTE_TOLERANCE = Decimal("0.005")
 CONFIRMATION_ROLES = ("confirmation_amount", "confirmation_unit_price", "confirmation_quantity")
-# The real inputs (lane landed-cost-real-inputs): the FileMaker replica supplier row of the
+# The real inputs: the FileMaker replica supplier row of the
 # order's own supplier for the line's item (``tariff_c``, ``hscode``, ``countryoforigin``),
 # FileMaker's own landed cost ``dlt_costlanded_c`` on that row's price tiers (``tierpricing``:
 # each tier's minimum quantity and figure, compared as counts only), the Portal rate settings
 # ``tariff_rate`` and the Sage receipt's own currency. Each is optional: a plan naming none of
-# them runs as before (devloop/DECISIONS/2026-10-21-landed-cost-real-inputs-wiring.md).
+# them runs as before.
 SUPPLIER_ROW_ROLES = ("supplier_tariff", "supplier_hs_code", "supplier_origin")
 TIER_ROLES = ("fm_landed_cost", "fm_tier_quantity")
 REAL_INPUT_ROLES = SUPPLIER_ROW_ROLES + TIER_ROLES + ("rate_setting_tariff",
@@ -4586,7 +4586,7 @@ def _quote_record(quote: Mapping[str, Mapping[str, Any] | None], *, as_of: str,
     cited count equals it at its precision, or the cited count is one whole container or pallet
     (one unit-shipment, never 1 CBM or 1 kg) and no cited rate disagrees. A cited rate times
     the count that differs from it is a conflict; otherwise it is ``BASIS_NOT_TOTAL``, whatever
-    the label (DECISIONS/2026-10-07-freight-quote-basis.md). A rate (``quote_rate``) is a price
+    the label. A rate (``quote_rate``) is a price
     per basis unit: it becomes a total only times a cited count of that unit."""
     def money(entry: Mapping[str, Any] | None) -> tuple[Decimal, str] | None:
         value, currency = _entry_decimal(entry), (entry or {}).get("currency")
@@ -4851,7 +4851,7 @@ def _chosen_tier(tiers: Sequence[str], ordered: Mapping[str, Any] | None,
                  reader: "_Reader") -> tuple[Mapping[str, Any] | None, str | None]:
     """The FileMaker figure of the tier the line's ordered quantity reaches, else why not.
 
-    The rule (devloop/DECISIONS/2026-10-21-landed-cost-real-inputs-wiring.md, the Portal's
+    The rule (the Portal's
     ``pickSupplierCardTierPrice``): the tier with the highest minimum quantity at or below
     the ordered quantity, in Decimal, with no fallback. Every tier's minimum quantity must be
     a number cited in the line's ordered unit and re-read for the reader (a tier it cannot

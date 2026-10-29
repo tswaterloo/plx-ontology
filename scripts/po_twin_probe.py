@@ -168,8 +168,7 @@ def probe(store: Path, *, samples: int = 3) -> dict[str, Any]:
 #   missing or several-valued status is ``none`` / ``ambiguous``: none of them is open.
 # * Exact: the mention's normalised number equals the order's canonical number (its
 #   ``primary`` ``petra_po`` identifiers, its own ``po_number``) or the FM PO number the
-#   order itself stores (``fm_po_number``, decision 2026-10-20-po-fm-number-own-identifier:
-#   the row's own identifier), and its link answered it exactly (``mentions``
+#   order itself stores (``fm_po_number``), and its link answered it exactly (``mentions``
 #   ``exact_candidate``: the mention's own kind and value, never a number-shape reading).
 #   Anything else is ``alias_only``. The grammar keeps a bare number apart from a
 #   ``PO``-prefixed one, so ``1234`` never equals ``PO1234``.

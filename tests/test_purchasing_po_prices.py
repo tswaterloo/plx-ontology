@@ -1,4 +1,4 @@
-"""Purchase-order prices for purchasing staff (owner decision, Tanush, 2026-10-27).
+"""Purchase-order prices for purchasing staff (2026-10-27).
 
 Purchasing staff may see PO line prices: the unit price, the line amount, the discount, the
 PO total and the supplier's quoted price on purchase orders and their lines (BC, Portal,
@@ -87,7 +87,6 @@ class MarkingDeclarationTest(unittest.TestCase):
                     carrying.add((tid, prop["name"]))
         self.assertEqual(carrying, declared)
         self.assertIn("2026-10-27", scoped["description"])
-        self.assertIn("Tanush", scoped["description"])
 
     def test_every_declared_column_is_generated_with_purchasing_prices(self):
         report = json.loads(COVERAGE.read_text("utf-8"))
@@ -296,7 +295,7 @@ class PurchasingGrantTest(unittest.TestCase):
                 return {"rows": [{"department_id": "d1", "user_id": f"u{i}"}
                                  for i in range(self.members)]}
         guard = PeopleExclusion([self.OIDS[0]])
-        # The supervisor's 2026-10-27 reading: PROC empty, two titled people.
+        # PROC empty, two titled people.
         passing = self.probe.run({}, Client(0), self._graph(["Buyer", "x", "Sourcing Lead",
                                                              "Procurement"]), guard)
         self.assertEqual(lv.check_expectations(spec, 0, passing), [])

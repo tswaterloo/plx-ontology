@@ -256,7 +256,7 @@ def scope(allowlist: tuple[str, ...] = (COS, VINCE), **caps) -> TeamsScope:
 
 
 def confirm(state_home: str | dict, channels: list[str], chats: list[str] = (CHAT,)) -> Path:
-    """Write the owner's content confirmation (as Tanush would, beside the census) into
+    """Write the human content confirmation (as a person would, beside the census) into
     the injected check state of ``state_home`` ($XDG_STATE_HOME, or the whole environment):
     ``channels`` of TEAM and ``chats``. The directories it makes are 0700, as the CLI's."""
     env = state_home if isinstance(state_home, dict) else {**ENV, "XDG_STATE_HOME": state_home}
@@ -970,7 +970,7 @@ class ProbeTests(unittest.TestCase):
                  **flags: str) -> tuple[int, dict]:
         """The spec's argv (``flags`` replace its values) over ``graph``, its host state
         directory under ``state`` ($XDG_STATE_HOME; a fresh one when None). ``confirmed``:
-        the owner confirmed every channel and chat of ``graph`` (the content read)."""
+        a person confirmed every channel and chat of ``graph`` (the content read)."""
         with tempfile.TemporaryDirectory() as tmp:
             if confirmed:
                 confirm(state or tmp, list(graph.channel_types))
@@ -1082,7 +1082,7 @@ class ProbeTests(unittest.TestCase):
 
     def test_a_conversation_created_mid_pass_is_not_read_before_a_census_clears_it(self):
         # Content is read only of what this invocation's census cleared: 20 channels
-        # created after it (even ones the owner named ahead) wait for the next census.
+        # created after it (even ones in scope ahead) wait for the next census.
         graph = self.fixture()
         self.many(graph, [f"19:many{n:03d}@thread.tacv2" for n in range(40)])
         new = [f"19:new{n:03d}@thread.tacv2" for n in range(20)]

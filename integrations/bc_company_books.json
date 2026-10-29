@@ -1,6 +1,6 @@
 {
  "schema": "plx-bc-company-books/v1",
- "note": "BC company id -> book (lineage bc_<book>), per environment, matched by GUID only. A company is read only when its GUID is pinned here; in an only_pinned environment every other listed company is out of scope (counted, never read). A pinned GUID is also read only while BC lists it under its pinned name (names), so a wrong pin fails closed. Production is pinned to My Company alone (directive 7fbdeee4a6f4: CRONUS is a demo company, PLX Consol and PLX Distribution hold no purchase orders).",
+ "note": "BC company id -> book (lineage bc_<book>), per environment, matched by GUID only. A company is read only when its GUID is pinned here; in an only_pinned environment every other listed company is out of scope (counted, never read). A pinned GUID is also read only while BC lists it under its pinned name (names), so a wrong pin fails closed. Production is pinned to My Company alone (CRONUS is a demo company, PLX Consol and PLX Distribution hold no purchase orders).",
  "source": "Production: plx-customer-portal portal/src/lib/business-central/company-pins.ts@b46934a COMPANY_PINS manufacturing (CONTEXT/03-PORTAL.md: My Company = manufacturing), narrowed to that book by directive 7fbdeee4a6f4; Sandbox/UAT pin only manufacturing. GUID to be confirmed live by the name check (names).",
  "environments": {
   "production": {
@@ -58,5 +58,5 @@
    ]
   }
  },
- "ledgers_note": "bc.ledgers (directive 8a8b59c65f56): Production / My Company is the required book; the consol and distribution companies (GUIDs of the earlier three-book pin, still matched by GUID only) refuse their payment journal listings with 400 internal_data_not_found_filter / journal_template_missing (live daily d298b51 and the 2026-10-21 probe); owner Ricardo, cause: the payment-journal templates are missing in those companies. They are read by the ledger probe only to name the gap; they are not pinned for capture."
+ "ledgers_note": "bc.ledgers: Production / My Company is the required book; the consol and distribution companies (GUIDs of the earlier three-book pin, still matched by GUID only) refuse their payment journal listings with 400 internal_data_not_found_filter / journal_template_missing (live daily d298b51 and the 2026-10-21 probe); owner Ricardo, cause: the payment-journal templates are missing in those companies. They are read by the ledger probe only to name the gap; they are not pinned for capture."
 }

@@ -1,10 +1,9 @@
 """MC write opt-in, per-call authorization, checkout, local audit and Retry-After.
 
 Evidence label: injected-transport. No network I/O: every test injects the
-sender and the clock. Contracts: devloop/CONTEXT/04-MISSION-CONTROL.md
+sender and the clock. Contracts: Mission Control
 (PLX_MC @ 1fba0833: create-http-server.ts:267-332, actions.ts:431-458,
-checkout-repo.ts:27-52, approval-actions.ts:14-56, frontier spec :606) and
-05-VMC-BRAIN-TOOLS.md §0.6, §7.1.
+checkout-repo.ts:27-52, approval-actions.ts:14-56, frontier spec :606).
 """
 
 from __future__ import annotations
@@ -276,7 +275,7 @@ class WriteOptInTests(unittest.TestCase):
             mc1.call_write_tool("mc_report_progress", args,
                                 authorization=McWriteAuthorization.from_mapping(record))
             self.assertEqual(len(first.calls), 1)
-            # Reviewer repro: a second client on the same ledger, a reload of the
+            # A second client on the same ledger, a reload of the
             # persisted record, a reworded-evidence copy, a plus-alias approver,
             # a different expiry: all the same approval, none may send.
             variants = [record, {**record, "evidence_ref": " advisory#7 (copy) "},

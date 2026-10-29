@@ -3,7 +3,7 @@ the served path (what the host's plx tools serve its reader, not a probe-only pa
 
 Evidence label: ``injected-transport``. The mirror sync is a fake that advances a fake
 clock, or the fixture Workbench and BC fakes; nothing here is live
-(``devloop/live-checks/ontology.projection.json`` stays live-unverified).
+(live check ``ontology.projection`` stays live-unverified).
 """
 
 from __future__ import annotations
@@ -659,7 +659,7 @@ class ClaimSampleTest(unittest.TestCase):
 
 
 class MirrorCompleteRuleTest(unittest.TestCase):
-    """``mirror_complete`` is owner rule 1b5e555dce17 (complete bound relations over
+    """``mirror_complete`` is the rule (complete bound relations over
     ``bound_total``, ``scripts.mirror_measure.completeness``), as mirror.full_coverage
     gates it: never the 93-relation served-catalog figure."""
 
@@ -1180,8 +1180,8 @@ class DiskTest(unittest.TestCase):
 
 
 class SessionBuildSplitTest(unittest.TestCase):
-    """Where the session build's seconds go (decision 2026-10-19-projection-shared-cost:
-    the producer's build is 97% of its live run and no daily said which part): the
+    """Where the session build's seconds go:
+    the
     producer's report splits it by build step and the verifier records that split and
     the phase timings under the spec. Fixture Workbench mirror; nothing live."""
 
@@ -1214,7 +1214,7 @@ class SessionBuildSplitTest(unittest.TestCase):
 
 
 class ColdPathSingleBuildTest(unittest.TestCase):
-    """ontology.mentions (decision 2026-10-14-mentions-cold-path, option 3): the mail run
+    """ontology.mentions (option 3): the mail run
     builds once on the cold path and records ``rebuild_digest_equal`` as not asserted
     (``cold_path_single_build``); on the session path it still rebuilds cold and asserts it.
     A mail consumer that builds on its own earlier generation checks the disk before it

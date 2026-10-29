@@ -1,0 +1,23 @@
+{
+  "schema": "plx-record-text/v1",
+  "about": "Free-text fields of business records chunked for search (descriptions, notes, comments, reasons). Numbers in them are never truth: the record answers. Object type -> properties; a value is chunked when it holds at least min_chars characters and min_letter_share of its non-space characters are letters.",
+  "min_chars": 20,
+  "min_letter_share": 0.4,
+  "fields": {
+    "Quote": ["notes", "rejection_reason"],
+    "QuoteLine": ["notes"],
+    "FgItem": ["pack_summary", "qty_basis_note"],
+    "MCApproval": ["reason", "note"],
+    "KnowledgeEntry": ["title", "snippet"],
+    "Team": ["description"],
+    "TeamsChannel": ["description"],
+    "PurchaseInvoiceLine": ["description"],
+    "RelSageArCmm": ["textcmnt1", "textcmnt2", "textcmnt3", "textcmnt4", "textcmnt5", "textcmnt6", "textcmnt7", "textcmnt8", "textcmnt9", "textcmnt10"],
+    "RelSageApVcm": ["textcmnt1", "textcmnt2", "textcmnt3", "textcmnt4", "textcmnt5", "textcmnt6", "textcmnt7", "textcmnt8", "textcmnt9", "textcmnt10"],
+    "RelSageArIbt": ["textline"],
+    "RelSageApIbt": ["textline"],
+    "RelSageGlJec": ["jecomment"],
+    "RelSageGlPjc": ["comment"],
+    "RelSageApRpd": ["comment"]
+  }
+}

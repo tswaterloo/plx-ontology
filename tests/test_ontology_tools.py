@@ -1,4 +1,4 @@
-"""Lane L8: plx.schema / plx.find / plx.object over a fixture projection store.
+"""L8: plx.schema / plx.find / plx.object over a fixture projection store.
 
 The store is created with the frozen DDL (ontology/store_ddl.py) and filled by
 hand; the identifier grammar and the domain schema are small fixtures in this
@@ -544,7 +544,7 @@ class FindTests(ContractMixin, unittest.TestCase):
         (gap,) = [g for g in result["gaps"] if g["reason"] == "no_match"]
         self.assertEqual((gap["state"], gap["searched"]["sources"]),
                          ("absent_in_source", ["portal_api"]))
-        # Reviewer l8-1: one unit of the family taken out -> a permission limit,
+        # One unit of the family taken out -> a permission limit,
         # never "absent in source", although the reader cannot see what is missing.
         partial = ot.ReadPolicy(tenant="plx", audiences={
             "api:*": {"sales"}, "api:public.app_purchase_order": set()})
@@ -615,7 +615,7 @@ class FindTests(ContractMixin, unittest.TestCase):
         self.assertIn("PurchaseOrder.po_number", gap["detail"])
 
     def test_a_carrier_out_of_the_readers_sources_or_degraded_was_not_searched(self):
-        """Re-review of 5742e89 (material): SalesInvoice is bound only to BC. A reader
+        """SalesInvoice is bound only to BC. A reader
         granted the Portal API alone never searched it, so a BC document number no-match
         is unknown, typed or not; a degraded carrier was not searched either."""
         api_only = ot.ReadPolicy(tenant="plx", audiences={"api:*": {"sales"}})
@@ -811,7 +811,7 @@ class ObjectTests(ContractMixin, unittest.TestCase):
         self.assertEqual(values["ordered_quantity"]["quantity_role"], "ordered")
         text = values["customer_po"]
         # REC-07: a po_reference value that is not PO-like (a person's name) is withheld,
-        # its citation kept (devloop/CASE-RUNTIME.md section 4 PO-shape rule).
+        # its citation kept.
         self.assertEqual(text["value"], {"untrusted_text": "",
                                          "origin": {"citation": SO_V2,
                                                     "field_path": "row.po_reference"},
@@ -908,7 +908,7 @@ class ObjectTests(ContractMixin, unittest.TestCase):
                       {(g["state"], g["reason"]) for g in result["gaps"]})
 
     def test_a_capture_older_than_the_hosts_bound_is_stale_once_with_its_age(self):
-        # Supervisor decision 2026-10-27: a projected source is judged by the host's
+        # A projected source is judged by the host's
         # capture bound (its ingest cadence); past it, one stale_source with its age.
         store = build()
 
@@ -1294,7 +1294,7 @@ class HostWiringTests(unittest.TestCase):
         self.assertLessEqual(set(ot.TOOL_NAMES), host)
         self.assertFalse(ot.DIRECTIVE_RETIRED & host)
         self.assertFalse(set(ot.HOST_RETIREMENTS) & host)
-        self.assertLessEqual({"plx.around", "plx.timeline"}, host)  # lane L9
+        self.assertLessEqual({"plx.around", "plx.timeline"}, host)  # L9
         self.assertEqual(FRESHNESS_META_KEY.split("/")[0], "plx")
         for name, plan in ot.HOST_RETIREMENTS.items():
             self.assertIn(plan["basis"], {"directive", "lead", "merge"}, name)

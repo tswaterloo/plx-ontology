@@ -1,4 +1,4 @@
-"""nextLink paging across OData key syntax (directive 4f484b130e05).
+"""nextLink paging across OData key syntax.
 
 Graph answers a folder listing requested as
 ``/v1.0/users/<guid>/mailFolders/<id>/messages`` with a nextLink on
@@ -156,7 +156,7 @@ class CanonicalCollectionTests(unittest.TestCase):
         self.ok(keyed("/messages?$filter=receivedDateTime%20ge%20x&$skip=1"), spaced)
 
     def test_graph_echo_of_a_filtered_request_is_accepted(self):
-        """Live shape (directive 4458d0e6d280): the request is urlencode-built
+        """Live shape: the request is urlencode-built
         ('+' for spaces, ':' as %3A, ',' as %2C); Graph echoes $orderby
         byte-identically and $filter with ':' unescaped but '+' kept, adds
         $skip. Raw '+' positions coincide and the rest decodes to the same
@@ -330,7 +330,7 @@ class MailFolderPagingTests(unittest.TestCase):
         self.assertEqual(listing["completeness"]["truncation_reason"], "page_cap")
 
     def test_page_cap_is_checked_before_the_continuation_is_inspected(self):
-        """Directive e01868f5b9cd (b): a max_pages=1 read never validates or
+        """A max_pages=1 read never validates or
         follows the nextLink; it reports honest page_cap truncation."""
         for link in (keyed("/messages?$skip=1", user=CEO_ID),          # would escape
                      keyed("/messages?$expand=attachments&$skip=1"),  # would refuse
@@ -464,7 +464,7 @@ class BusinessCentralPagingTests(unittest.TestCase):
 
 
 class MailPagingLiveCheckShapeTests(unittest.TestCase):
-    """devloop/live-checks/graph.mail_paging.json against an injected Graph
+    """The graph.mail_paging live check against an injected Graph
     (shape of the check only; the live run is the verifier's, never this)."""
 
     MAILBOX_ID = "12345678-aaaa-bbbb-cccc-0000000000aa"
@@ -529,7 +529,7 @@ class MailPagingLiveCheckShapeTests(unittest.TestCase):
 
     def test_graph_echo_nextlink_satisfies_the_check(self):
         """Graph re-escapes the echoed $filter (':' raw) but keeps '+' for
-        spaces (live directive 4458d0e6d280): followed to the page cap."""
+        spaces: followed to the page cap."""
         def echo(query):
             parsed = {k: v[0] for k, v in parse_qs(query).items()}
             return keyed("/messages?" + urlencode(

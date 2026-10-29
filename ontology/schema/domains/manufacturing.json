@@ -3,7 +3,7 @@
   "format": "plx-ontology-domain/v1",
   "domain": "manufacturing",
   "origin": "curated",
-  "description": "Assembly orders (AOs) with components, damage, stage updates and labour tasks; bulk batches with QC results; manufacturing jobs; FG component lists; AO/batch allocations to order lines. FM bronze is authoritative for AOs and batches; gold copies are linked by code, never merged. Planned, produced, manufactured, accepted, retained and damaged quantities keep distinct roles. Formulas, BOMs and quality/eQMS records are declared not_served (Q3). Lane L5b.",
+  "description": "Assembly orders (AOs) with components, damage, stage updates and labour tasks; bulk batches with QC results; manufacturing jobs; FG component lists; AO/batch allocations to order lines. FM bronze is authoritative for AOs and batches; gold copies are linked by code, never merged. Planned, produced, manufactured, accepted, retained and damaged quantities keep distinct roles. Formulas, BOMs and quality/eQMS records are declared not_served (Q3). L5b.",
   "upstream_pins": {
     "plx-customer-portal": "b46934a"
   },
@@ -4121,7 +4121,7 @@
             {
               "kind": "workbench_code",
               "path": "devloop/upstream-pins.json",
-              "note": "One live MO per sales order line, read at plx-customer-portal@549f6f0 (newer than this domain's b46934a pin; pinned and drift-watched in devloop/upstream-pins.json): portal/src/lib/mrp/mo-so-line-link.ts:13-16 liveLinkedMo (the one not-CANCELLED MO on a line, TASK-2397 568f69c8); portal/src/lib/mrp/api-handlers/manufacturing-orders.ts:154-168 resolveLinkedSalesOrderLine (create: 409) and :815-834 tagExistingSalesOrderLine (tag: 409 SOL_ALREADY_HAS_MO), each while another MO on the line is not CANCELLED and deletedAt is null."
+              "note": "One live MO per sales order line, read at plx-customer-portal@549f6f0 (newer than this domain's b46934a pin; pinned and drift-watched in the upstream pin file): portal/src/lib/mrp/mo-so-line-link.ts:13-16 liveLinkedMo (the one not-CANCELLED MO on a line, TASK-2397 568f69c8); portal/src/lib/mrp/api-handlers/manufacturing-orders.ts:154-168 resolveLinkedSalesOrderLine (create: 409) and :815-834 tagExistingSalesOrderLine (tag: 409 SOL_ALREADY_HAS_MO), each while another MO on the line is not CANCELLED and deletedAt is null."
             }
           ]
         }
@@ -4923,7 +4923,7 @@
     "context-pack.03-portal-md-4-6.test-batch": {
       "kind": "context_pack",
       "ref": "devloop/CONTEXT/03-PORTAL.md#4.6",
-      "note": "Portal acc0c53 (TASK-2351, portal/src/lib/mrp/test-receiving/batch-ids.ts:29-31, pinned in devloop/upstream-pins.json): off the live customer site a batch that uses a staging test lot takes public.batch/batch_item ids >= 9000000 and a TEST-BC- number; FileMaker never issues either. silver.batches selects every public.batch row, so etlBatches copies them to app_batch_record."
+      "note": "Portal acc0c53 (TASK-2351, portal/src/lib/mrp/test-receiving/batch-ids.ts:29-31, pinned in the upstream pin file): off the live customer site a batch that uses a staging test lot takes public.batch/batch_item ids >= 9000000 and a TEST-BC- number; FileMaker never issues either. silver.batches selects every public.batch row, so etlBatches copies them to app_batch_record."
     }
   }
 }

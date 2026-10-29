@@ -169,7 +169,7 @@ Money/quantities in gold are `Float` (not Decimal) unless noted; they arrive as 
   totals/commercial/tax/sales-split/FX snapshots (`lib/sales-order/{totals,commercial,tax-profile,sales-split,fx-rates,optional-fields}.ts`),
   `convertedFromQuote…`. `custPoCode` exists ONLY from legacy `scripts/migrate-fm-to-portal.sql:365`; no runtime code reads or writes it.
 - **Number series**: MAKE create `SO-YYYY-####` (`service.ts:generateSalesOrderNumber:100`); FM-ensure `SO100000+`
-  (`lib/mrp/sales-order-number-series.ts:allocateNextSalesOrderNumber:106`, advisory lock); DISTRIBUTE `DSO100000+`
+  (`lib/mrp/sales-order-number-series.ts:allocateNextSalesOrderNumber:106`); DISTRIBUTE `DSO100000+`
   (`:118`); legacy `SO-FM-{id}`. `order_number` is NOT immutable: `business-central/align-portal-so-number.ts:alignPortalSoNumberToBc:21`
   rewrites it to the BC document No. after drain.
 - **Line** `SalesOrderLine` → `app_sales_order_line` (S:3718): `productId` FK (required), `quantity`, `unitPrice`,
@@ -255,7 +255,7 @@ No unique index and no normalization at write beyond trim. **Since `40f7802` (#1
   unused); live values are the FileMaker words (Cancel, Complete, DRAFT, Pending, B.Order, Revised, Generated, capture 2026-10-20), from which and the line quantities `lib/mrp/po-fulfillment-status.ts:derivePoFulfillmentCode:12` derives DRAFT/SUBMITTED/PARTIAL/RECEIVED/CANCELLED (one reader: `operating/po_status.py`);
   `orderDate` is column `date_generated`; `shippingCost`, `dutiesCost` (estimates), `incoterms`, `shippedAt`,
   `fulfillmentMode`; `customFields.fmPoNumber/fmGeneratedPoId/renumberedTo`. Lines `PurchaseOrderLine` (S:3447; purchase UoM, `quantityReceived`).
-  Numbers: `lib/mrp/po-number-series.ts` `PO100000+` / `DPO100000+` (advisory locks; MAX over gold, FM `generated_purchase_order.ponumber`,
+  Numbers: `lib/mrp/po-number-series.ts` `PO100000+` / `DPO100000+` (MAX over gold, FM `generated_purchase_order.ponumber`,
   BC map); legacy `PO-{base36}`, `{poNumber}-FM{id}`; since `97ce9d6` TASK-3252 (re-read at `731dfb3`) `BC_PO_NUMBER_KEPT_PREFIXES` (empty by default) names old prefixes that stay canonical after a prefix switch (`isCanonicalPoNumber:82-86@731dfb3`), and `BC_ERA_PO_NUMBER_PATTERN:69` / `PO_REFERENCE_SQL_PATTERN:72` follow the current, kept and DPO prefixes; `business-central/align-portal-po-number.ts:alignPortalPoNumberToBc:10` renumbers to BC.
   **Generate PO (re-read at `38cd3f3`, `359e2f0` TASK-2651):** create-po and requisition convert call `lib/mrp/create-portal-purchase-order.ts:createPortalPurchaseOrder:207`:
   one `app_purchase_order` (status SUBMITTED) + lines in one transaction, numbered PO100000+ under the series lock, idempotent on an explicit key, the
@@ -332,8 +332,7 @@ No unique index and no normalization at write beyond trim. **Since `40f7802` (#1
   Sage `sage.ic_item`, `sage.ic_item_uom`.
 
 ### 3.7 Formulation / BOM version
-- **Authoritative formula = FM bronze** `public.formula` + `public.formula_item` (R&D lane edits it via `lib/formulas/write.ts`:
-  `createFormula:352`, `nextFormulaCode:114` `F-YY-####` under advisory lock, `assignFinalLetterSuffixOnEdit:193` (first edit of a
+- **Authoritative formula = FM bronze** `public.formula` + `public.formula_item` (`assignFinalLetterSuffixOnEdit:193` (first edit of a
   Final appends `-A…-Z`), MAX+1 ids). Line % columns: `percfinalwpercent_c` (0–100, Portal formula page) and `perctentry` (FM 0–1, stale/NULL).
 - **Gold copy** `Formulation` → `app_formulation` (S:2071; unique `code`, `externalId` `fm-form-{id}`, `[productId, version]`;
   `status` DRAFT/IN_REVIEW/APPROVED/OBSOLETE mapped from FM Final/R&D/revised by `portal/scripts/etl-formula-status.ts`;
@@ -376,9 +375,7 @@ No unique index and no normalization at write beyond trim. **Since `40f7802` (#1
   also takes `link_sales_order_line_id` / `unlink_sales_order_line_id` (`lib/mrp/ao-portal-order-link.ts:linkAoToPortalLine:178`): it sets
   `ManufacturingOrder.salesOrderLineId` on the gold MO whose `mo_code` equals the AO's `nameamo_c` (409 without one), only for an open MAKE line of
   a MAKE order of the same product and customer, and only when no other live MO holds the line. An FM-born AO linked this way therefore reaches its
-  portal order through the gold MO (`AssemblyOrder.for_order_line`), not the FM junction, which stays for legacy links; `oelist_c` lists both.
-- **AO number and product (re-read at `38cd3f3`):** `POST /api/mrp/assembly/create` issues `AO-YYDDD{letters}` for the plant's local today
-  (America/Toronto, not the scheduled date) under a series + day advisory lock, letters bijective base 26 up to ZZ, never refilling gaps
+  portal order through the gold MO (`AssemblyOrder.for_order_line`), not the FM junction, which stays for legacy links; letters bijective base 26 up to ZZ, never refilling gaps
   (`lib/numbering/day-code-series.ts`, `a5b835d` TASK-2642; batches the same `BC-` series); the `ao_code` grammar `AO-\d{3,5}[A-Z]{1,2}` still fits.
   New AOs stamp `assembly_order.portal_product_id` (`1b02309` TASK-2650, no backfill; not in the reporting manifest), and readers resolve the FM fp
   through it first (`lib/inventory/ao-product-link.ts:aoFmFpIdSql`). **Portal-born AOs** (that column set) realize into a portal `app_inventory_lot`
@@ -601,13 +598,10 @@ See §4.1–4.3. Stores: `app_theoretical_fg` (engine snapshot), `Product.standa
   since a rename defeats it. The
   `access.ts` re-pin itself (bytes at `52c9116`) is pending; the pin stays at `0323e19c` until then (§7.14).
 - **Gold SO lifecycle (pinned `lib/sales-order/order-lifecycle.ts@c3ffda3`, introduced `9d9ce19` #1770 TASK-2244).** `buildOrderLifecycle(facts)`
-  is Prisma-free and header-`fulfillmentMode` only (MAKE or DISTRIBUTE; mixed is forbidden, one lane). Head: Quote (done, "Converted") then Sales order
+  is Prisma-free and header-`fulfillmentMode` only (MAKE or DISTRIBUTE; mixed is forbidden). Head: Quote (done, "Converted") then Sales order
   (done once status is in CONFIRMED, IN_PRODUCTION, READY, READY_TO_SHIP, PARTIALLY_SHIPPED, SHIPPED). MAKE lane: Manufacturing order (done when all
-  non-CANCELLED MOs are COMPLETED/REALIZED/CLOSED), Release order (done when all are FULFILLED), Pick list (done when all COMPLETED). DISTRIBUTE lane:
-  Pick list only (MRP-M-154: Dist skips Release). Pick gate: DISTRIBUTE clears once the SO is confirmed; MAKE clears when any non-cancelled ship release
-  is RELEASED or FULFILLED. The earliest not-done step is marked current. Backs the future plx.process tool. **Re-read at `38cd3f3` (`999dac8`
-  TASK-2396):** both lanes end with two more steps, Shipment (done once the SO status is SHIPPED or COMPLETE, "Partially shipped" at PARTIALLY_SHIPPED)
-  and Complete (SO COMPLETE), and SO_CONFIRMED now holds COMPLETE; those statuses come only from the close-out evaluator (§3.2), so the rail's
+  non-CANCELLED MOs are COMPLETED/REALIZED/CLOSED), Release order (done when all are FULFILLED), Pick list (done when all COMPLETED). Pick list only (MRP-M-154: Dist skips Release). Pick gate: DISTRIBUTE clears once the SO is confirmed; MAKE clears when any non-cancelled ship release
+  is RELEASED or FULFILLED. The earliest not-done step is marked current. Backs the future plx.process tool. Those statuses come only from the close-out evaluator (§3.2), so the rail's
   Shipment step means "every line shipped or short-closed", not "a shipment went out". **Stale against the confirm route:** the rail still treats DISTRIBUTE as skipping Release, but `shipments/[id]/confirm/route.ts@59b0548` gates per shipment line (`shipmentSkipsShipRelease`): a DISTRIBUTE order with any MAKE line needs a release to ship. The Workbench models the confirm gate (`sales_order_lifecycle.json`) and cites both. **List path (`load-order-lifecycle.ts@59b0548`):** `attachListLifecycles` batches the Orders list: it resolves FM rows to gold by `NULLIF(TRIM(custom_fields->>'fmId'), '')`, and unions releases found by `orderRef` (the trimmed FM id) with the order's own `shipReleases`, deduplicated by release id. `loadOrderLifecycle` (single order) is unchanged. `order-lifecycle.ts` gained UI helpers only (`LIFECYCLE_STEP_FILTERS`, `toOrderListLifecycle`). **FileMaker order page (re-read 2026-10-05 at `790256c`, `f4437e8` #1847 MRP-M-154):** `/mrp/orders/[id]` (`order-detail.tsx@790256c`, the rail docks right; the attachment ref token moved to `:833`) now shows the rail from `loadFmOrderLifecycle`: the gold rail when a SalesOrder's `fmId` bridges the FM order, otherwise `synthesizeFmOrderLifecycle`, a MAKE lane built from the OE header status (blank = DRAFT) with ship releases found by `orderRef` = the FM id; a read error omits the rail. The rail tests that status against SO_CONFIRMED, which holds no FM status text, so it shows every unbridged FM order unconfirmed. The Workbench graph mirrors the FM root in its own `sales_order` evidence on `fm_status` (Open and Closed done, Cancelled no order, like the gold OPEN/COMPLETE choice) and keeps the variant unknown, since FM carries no fulfillment mode. **Re-read at `12db891`:** `651d07a` #1851 TASK-2354 only points the synthesized rail's Sales order and Release links at `/mrp/orders/<fm id>` (`links` override); `75c7d6d` #1850 changed the Commercial tab text (ref token now `order-detail.tsx:832@12db891`). No lifecycle rule changed. **Sage Order tab (re-read at `549f6f0`, `8b08c9e` #1936 TASK-2503):** the page header now shows the order number, status, path and BC finance badges, moves Create shipment there, and renders `buildSageOrderTabRows` (`lib/sales-order/fm-order-header.ts`): the Sage 300 O/E Order-tab labels filled from FM `order_entry` (number, customer id and name, PO, status, order and required dates, ship-to, comments as Description, reference) and the gold twin (lifecycle path as Order Type, release-step doc numbers as No. of Shipments / Last Shipment No., first numbered BC invoice, and On Hold, Ship Via, Calculate Tax parsed from the gold order's `customFields` commercial snapshot in `load-gold-order-panels.ts`); every other Sage field is an em dash. Display only, never read from `sage.*`; no write, gate or lifecycle rule changed. The sidebar relabels (ERP OE Code → Sales order, the gold link → Gold SO) and the ref token moved to `order-detail.tsx:892@549f6f0`, rule unchanged.
 - **SharePoint site design (built; re-pointing started at `f3e3a53`; no batch run recorded at `b4118a3`).** `docs/projects/plx-sharepoint-site/README.md@bbf8afc` (#1772, TASK-2246 readiness review): decisions 1-18
   (15 waits on the licence answer); twelve libraries incl. restricted Finance and Business Central; at that pin the site was a design only ("Nothing here is built").
@@ -1013,8 +1007,7 @@ price-list code. BC producer `lib/sage/ensure-line-prices.ts:fillZeroSalesOrderL
   reading.
   At `f3e3a53`: `status: approved` (D8, Vince 2026-10-16 4:13 PM ET, TASK-3145/3146; `:3,17`), 93 relations /
   3,752 columns, the same 93 relations the Workbench bound then. Approval grants nothing (`WORKBENCH-READONLY-DB-ACCESS.md@f3e3a53:6`): grants stay
-  an operator step, and D6 (TASK-3119) removes six wage columns only when an operator applies it (`:274`); until then `wb_tanush`/`wb_ricardo`
-  hold the 3,396 columns approved on 2026-09-25 (`:6`). The ten `pendingDiscovery` relations are in no entry and the Workbench binds none of
+  an operator step, and D6 (TASK-3119) removes six wage columns only when an operator applies it (`:274`). The ten `pendingDiscovery` relations are in no entry and the Workbench binds none of
   them: `public.app_approval_record`, `public.app_supplier_product_tier`, `sage.ap_open_document`, `sage.ap_term`, `sage.ap_vendor`,
   `sage.ap_vendor_remit`, `sage.gl_account`, `sage.gl_batch`, `sage.gl_je_detail`, `sage.gl_je_header`; `--apply`, `--regrant` and `--rollback`
   refuse until discovery covers them (`:6`). **Re-read at `b4118a3` (TASK-3355):** CoS dropped

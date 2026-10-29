@@ -78,7 +78,7 @@ budget (``REFRESH_BUDGET_SECONDS``): a detector the budget stops is ``truncated`
 reason ``time_budget``, never ``complete``, and leaves its gaps as they were.
 
 ``python3 -m operating.proactive_engine`` is the live check's command
-(``devloop/live-checks/case.proactive_engine.json``): one host capture cycle, the engine
+(live check ``case.proactive_engine``): one host capture cycle, the engine
 over its projection, then the inbox read per reader; counts and enums only. Evidence
 label: that of the captures it reads (live-unverified until the verifier runs it).
 """

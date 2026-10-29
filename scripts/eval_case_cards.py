@@ -10,7 +10,7 @@ Draft 8 set (``plx-eval-case-cards/v1``, compiled by ``scripts.eval_use_case_ite
 (``plx-eval-case-card-proposals/v1``: amazon-fba, artwork-lifecycle, asset-tracker,
 brand-requirements, expired-disposition, grants-program, packaging-sourcing, procure-to-gl, quote-to-order,
 ricardo-maps, rnd-maps, screening). Every card becomes one dev
-exposed ``plx-eval-item/v1`` item (``-exposed``: builder-visible calibration material,
+exposed ``plx-eval-item/v1`` item (``-exposed``: developer-visible calibration material,
 never held out). A proposal card carries a question, a rubric criterion and the
 advisories, case originals and live sources it cites, never an expected value: its item
 is family ``F23`` (comprehension: what the case's documents say), ``F24`` (tracing: a
@@ -38,7 +38,7 @@ an artifact invitation) carries ``original://unpinned/<row id>`` instead: no one
 those bytes, so the scorer blocks its abstention the same way
 (``evals.score.UNHELD_ORIGINAL``). A stated answer is still scored.
 
-**Evidence** (scorer ``plx-eval-scorer/17``, devloop/DECISIONS/2026-10-28-substantive-partial.md):
+**Evidence** (scorer ``plx-eval-scorer/17``):
 a proposal item is ``correct`` only with an evidenced claim (``evals.score.evidenced_claims``);
 its ``partial`` label alone is ``label_only``, an abstention. Each proposal item carries
 its card-specific words (``scoring.topic_terms``, ``_with_topic_terms``, scorer /18): a
@@ -49,7 +49,7 @@ names (``topic_names``, from the registry's owners) and e-mail addresses never c
 The report counts
 ``correct_with_evidence`` and ``label_only`` per case, layer and in total.
 
-**Time pin** (``devloop/DECISIONS/2026-10-27-card-time-pin.md``): a set's ``as_of`` is
+**Time pin**: a set's ``as_of`` is
 when its cards were written, never a time the question asks about, so a proposal item is
 pinned by the set's digest (``case_cards``) and the runner states no time. A card that
 carries its own ``as_of`` is time-pinned (``case_cards_as_of``) and the runner states it.
@@ -77,6 +77,13 @@ first N cards of each selected case, ``--items A,B`` (also a manual sample) only
 items of the selected cases (an id not selected is an error); the report then carries
 ``sample`` (``per_case`` or ``items``, the cards it left out) so a sample's counts are
 never read as a full run.
+
+**Messy.** ``--messy`` (a manual measure, never the verifier's command) also runs each
+selected card's three messy variants (``scripts.eval_messy``: typos, vague words, short
+conversational; ``evals/messy/variants.json``), each asked as its own item's phrasing 1
+and scored by the card's own scoring. Their rows stay out of every count above; the
+report's ``messy`` block says how many cards had the original and every variant
+``correct``. Without the flag the run and its report are unchanged.
 
 **Reader.** Every item runs through ``evals.runner`` with one headless Claude Code
 session (``evals.runner.ClaudeCodeAgent``: read-only ``plx.*`` tools behind the tool gate,
@@ -161,6 +168,8 @@ MAX_ABSTAIN_REASONS = 8  # the most frequent reason codes reported per case, lay
 # cards need (plx.agenda for the meeting-agenda cards; the default agent is at its tool
 # budget without it). The runner's gate still admits read-only tools only.
 CARD_AGENT = "plx.agent.investigate"
+# The runner phrasing a messy variant is asked as (``scripts.eval_messy.PHRASING``).
+MESSY_PHRASING = 1
 # A card set's ``layers.<layer>`` description that starts with this word marks the layer
 # not scorable yet ("UNSCORED until the originals ... are read"): its cards still run, and
 # their rows are ``unscored``, never correct or wrong (module docstring, **Unscored**).
@@ -446,7 +455,7 @@ def _proposal_item(case: str, doc: Mapping[str, Any], sha: str, card: Mapping[st
              "object_type": anchor["object_type"]} if anchor else
             {"identifier": batch[:200], "identifier_kind": "case_card_batch",
              "object_type": "UseCase"})
-    # Time pin (devloop/DECISIONS/2026-10-27-card-time-pin.md): the set's ``as_of`` is
+    # Time pin: the set's ``as_of`` is
     # when its cards were written, never a time the question asks about, so the item is
     # pinned by the card set's digest only (``case_cards``: no time pin, the runner states
     # none). A card that carries its own ``as_of`` is time-pinned
@@ -729,7 +738,8 @@ def rotation(sizes: Mapping[str, int], ages: Mapping[str, int]) -> list[str]:
 def _row(entry: Mapping[str, Any], score: Mapping[str, Any] | None,
          transcript: Mapping[str, Any] | None, reason: str | None = None) -> dict[str, Any]:
     row = {"case": entry["case"], "card_id": entry["card_id"], "layer": entry["layer"],
-           "item_id": entry["item"]["id"]}
+           "item_id": entry["item"]["id"],
+           **{key: entry[key] for key in ("messy", "parent_id") if entry.get(key)}}
     if score is None:
         return {**row, "outcome": "not_run" if reason == "budget" else "blocked",
                 "codes": [reason or "no_score"]}
@@ -828,12 +838,16 @@ def run_cards(entries: Sequence[Mapping[str, Any]], agent: Any,
         if clock() > deadline:
             return _row(entry, None, None, "budget")
         item = entry["item"]
+        # A messy variant (``scripts.eval_messy``) is asked as its item's phrasing 1, the
+        # card's own question staying the text the scorer reads.
+        phrasing = MESSY_PHRASING if entry.get("messy") else 0
         try:
             scores = runner.run_items([item], agent, lambda _item: make_host(), out=out,
-                                      evidence_label=evidence_label)
+                                      evidence_label=evidence_label,
+                                      **({"only_phrasing": phrasing} if phrasing else {}))
         except runner.RunnerError as error:
             return _row(entry, None, None, str(error)[:64])
-        path = out / item["id"] / "p0-r0.transcript.json"
+        path = out / item["id"] / f"p{phrasing}-r0.transcript.json"
         with lock:
             transcript = json.loads(path.read_text("utf-8")) if path.is_file() else None
         return _row(entry, scores[0], transcript)
@@ -1025,6 +1039,7 @@ def main(argv: Sequence[str] | None = None, *, agent: Any = None,
     """``agent`` (tests): an injected agent (its runs are ``injected-transport``);
     ``make_host`` (tests): a stand-in for the reader's ``LiveHost``;
     ``cards_dir`` (tests): another card directory."""
+    from scripts import eval_messy as messy
     from scripts import eval_real_agent as real
 
     parser = argparse.ArgumentParser(prog="python3 -m scripts.eval_case_cards",
@@ -1056,6 +1071,11 @@ def main(argv: Sequence[str] | None = None, *, agent: Any = None,
     run.add_argument("--measure-only", action="store_true",
                      help="exit 0 on a failed rule too: the verdict is in the report")
     run.add_argument("--host-config", help=f"plx-host-config/v1 (default ${real.HOST_CONFIG_ENV})")
+    run.add_argument("--messy", action="store_true",
+                     help="also run each selected card's three messy variants "
+                          "(evals/messy/variants.json, scripts.eval_messy) and report "
+                          "the cards whose original and every variant are correct")
+    run.add_argument("--messy-variants", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.per_case < 0:
         parser.error("--per-case must be 0 (every card) or a positive count")
@@ -1071,6 +1091,7 @@ def main(argv: Sequence[str] | None = None, *, agent: Any = None,
         sizes = {case: sum(r["case"] == case for r in compiled) for case in sets}
         chosen = list(sets) if args.all else rotation(sizes, ages)
         blocked: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
         identity, kind, problem = run_reader(environ, args)
         if not injected and shutil.which(args.claude_bin) is None:
             blocked = [real._blocked("agent_session", "claude-code", "binary_not_found")]
@@ -1105,13 +1126,24 @@ def main(argv: Sequence[str] | None = None, *, agent: Any = None,
                 if unknown:
                     raise ValueError("items_not_selected:" + ",".join(unknown)[:200])
                 entries = [entry for entry in entries if entry["item"]["id"] in picked]
+            if args.messy:
+                # Each selected card's variants run beside it (never on their own); a
+                # card with none, or whose question changed, is listed as skipped.
+                variants, skipped = messy.messy_items(
+                    entries, messy.load(args.messy_variants), sets)
+                entries = entries + variants
             args.work_dir.mkdir(parents=True, exist_ok=True)
             rows = run_cards(entries, agent, make_host, out=args.work_dir / "runs",
                              evidence_label=evidence_label, workers=args.workers,
                              budget_seconds=args.budget_seconds)
+        messy_rows = [r for r in rows or () if r.get("messy")]
+        if rows is not None:
+            rows = [r for r in rows if not r.get("messy")]
         doc = report(sets, compiled, refused, chosen, ages, rows, blocked=blocked,
                      evidence_label=evidence_label, agent_evidence=agent_evidence,
                      reader=eval_principal.reader_block(kind))
+        if args.messy:
+            doc["messy"] = messy.messy_report(rows or [], messy_rows, skipped)
         if picked:
             doc["sample"] = {"items": len(picked),
                              "cards_left_out": sum(r["case"] in chosen for r in compiled)

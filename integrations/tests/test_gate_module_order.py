@@ -1,10 +1,10 @@
-"""Gate checks import order-independently (directive a59bd552eb2b): a test module that put
-devloop/ ahead of the repository root on sys.path at import made `tests` resolve to
-devloop/tests for every module imported after it, so a check passed or failed by its module
+"""Gate checks import order-independently: a test module that put
+another directory ahead of the repository root on sys.path at import made `tests` resolve to
+that directory's tests for every module imported after it, so a check passed or failed by its module
 order alone (c65c2df8: integrations.tests.test_fba_external_readers before
 tests.test_source_registry failed; the registered order passed because
-tests.test_sharepoint_read_budget imported `tests` first), and the controller read the
-order-dependent failure as a host fault.
+tests.test_sharepoint_read_budget imported `tests` first), and the
+order-dependent failure read as a host fault.
 
 Each gate check's modules are imported in one interpreter, as ``python3 -m unittest``
 imports them, in the registered order, reversed and shuffled: every module imports, `tests`

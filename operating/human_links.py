@@ -27,7 +27,7 @@ Nothing here decides a link: it only records what a person confirmed, every refu
 ``plx.review``'s own (in plain words, ``PLAIN``), and a request outside the modes and
 fields below fails closed (``ValueError("link_confirm_invalid")``) before any call.
 
-The live check ``devloop/live-checks/case.human_link.json`` (``scripts/eval_human_link_check.py``)
+The live check ``case.human_link`` (``scripts/eval_human_link_check.py``)
 reads the links confirmed here back from the console's review store, read only.
 """
 from __future__ import annotations

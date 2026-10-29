@@ -1,5 +1,5 @@
 """Guard diagnostics: Retry-After on the real sender's error path and the fixed
-vocabulary for ``SourceUnavailable`` (directive e402518f64be, bc-retry minor).
+vocabulary for ``SourceUnavailable`` (bc-retry minor).
 
 Keyless: ``urllib_sender`` runs against a stub opener (``build_opener``
 patched), every other request goes to the in-process BC fixture. Evidence
@@ -116,7 +116,7 @@ class UnavailableDetailTests(unittest.TestCase):
         return value
 
     def test_every_reachable_reason_fits_the_live_verifier_enum_bound(self):
-        """Review of 3d3a72f: a reason longer than live_verify's 64-character enum
+        """A reason longer than live_verify's 64-character enum
         bound is hidden as ``<str len=N>`` in the live report. Every
         SourceUnavailable class in the codebase x every token x retried/not, as
         ``operating.ingestion._error_reason`` composes it, must fit and stay an
@@ -233,7 +233,7 @@ class UnavailableDetailTests(unittest.TestCase):
 
 
 class UpstreamErrorCodeTests(unittest.TestCase):
-    """Error-code class of an HTTP failure (directive 8f867fce7ba1): fixed vocabulary."""
+    """Error-code class of an HTTP failure: fixed vocabulary."""
 
     def test_codes_map_to_snake_case_tokens_of_the_fixed_vocabulary(self):
         from devloop.data_profile import http_error_code_ok

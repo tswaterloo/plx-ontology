@@ -1,9 +1,9 @@
-"""session.replay over the warm store (architect plan 17423da4aa70, roadmap A7/B2/B5).
+"""session.replay over the warm store (roadmap A7/B2/B5).
 
 Every new verifier session used to run both session producers (``mirror.full_coverage``,
 ``ontology.session_projection``: some 3,700 s live) before a consumer, even when the warm
 store (``operating.warm_store``) held the mirror and projection the last session filled.
-Now a consumer adopts them (``devloop.live_verify.SessionState.plan``'s ``warm``, the one
+Now a consumer adopts them (the live verifier.SessionState.plan``'s ``warm``, the one
 rule for every session consumer): its producers are not run, and it opens the earlier
 session's generation, which is the store a cold build of the same captures makes.
 

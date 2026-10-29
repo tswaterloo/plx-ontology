@@ -7,8 +7,7 @@ GET-only Graph client) and a GET-only Portal mirror of the relations the trace r
 and the FM PO lines and the gold products) into the check's temporary host state; one
 projection of both with the host's post-project steps, so each certificate's ``lot`` links
 the receipt lines whose ``supplier_lot_number`` it states
-(``CertificateOfAnalysis.for_receipt_line``, a lead;
-``devloop/DECISIONS/2026-10-20-documents-lot-trace-supplier-lot.md``).
+(``CertificateOfAnalysis.for_receipt_line``, a lead).
 
 Measured through the served host (``plx.around``), as ``--principal`` reads it:
 

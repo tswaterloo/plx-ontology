@@ -34,7 +34,7 @@ Records in `docs/decisions/`; each refines this file where it speaks.
 - 2026-10-02 `capture-persistence`: L1 completeness is measured over the relations the
   domains bind (bound-first sync); relations whose ids change between reads (ETL
   re-inserts) leave the denominator with a `capture_unstable_ids` gap. Durable L1 is
-  the capture stores' state dir on a persistent credentialed host, never Git (owner rule).
+  the capture stores' state dir on a persistent credentialed host, never Git (business rule).
 - 2026-10-02 `bc-capture-incremental`: BC captures read `lastModifiedDateTime ge` per set
   (headers, parties, items, item and G/L ledger entries), re-read lines unless the header
   is an unchanged posted invoice/credit memo, and run a weekly key-only full pass for
@@ -626,7 +626,7 @@ tools.** The AO, packaging and order scripts become *verified procedures*: short
 stamp, like Cortex `verified_queries` and Genie trusted assets. An answer that followed one is
 labelled `procedure: <id>@<version>`; anything else is labelled free investigation.
 
-**Decided 2026-10-01 (docs/decisions/2026-10-01-tools-shape.md).** These names are the only
+**Decided 2026-10-01.** These names are the only
 ones: `plx.discover` = `plx.find`, `plx.expand` = `plx.around`. One identifier grammar
 (`ontology/schema/identifiers.json`) and one resolver in the ontology identity layer back
 `plx.find`; before the projection exists the resolver may read SourceMirror, `bc_read` and

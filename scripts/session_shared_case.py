@@ -1,4 +1,4 @@
-"""Live check ``session.shared_case`` (ROADMAP B5): concurrent sessions on one case, on a
+"""Live check ``session.shared_case`` (the acceptance bar): concurrent sessions on one case, on a
 fixture case store in a temporary directory, through the case store's own ``finding`` write,
 ``get`` read and ``read_tail`` open (the functions the MCP case tools call). Offline, no
 client; prints counts and booleans only (no finding text, case id or session reference).

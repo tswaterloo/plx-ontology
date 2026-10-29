@@ -4,13 +4,13 @@ one record holds in two systems) answers through the real investigation path.
 
 The live check timed out at 2,400 s on 2026-10-10 and left no record; on 2026-10-07 every
 answerability_mismatch (20 of 26) was an abstention on an item the oracle answers, each on a
-root plx.find could not settle (claude/devloop-live results/daily/4ea6073508fc...: abstained
+root plx.find could not settle (the live-results branch results/daily/4ea6073508fc...: abstained
 20, abstain_ok 0, root_resolution 10 found of 30). A Sage-loaded sales order is one record
 held in Portal gold and in its Sage order header under the same number. On 2026-10-11 an F3
 item cited a relation three links from its root while the spec mirrors two, so its run pin
 found no capture (pin_drift no_capture_at_or_after_time): the sync now captures every
 relation the drawn items cite, for the run pins only: the run projects the schema's
-relations, never one the answer key alone cites (architect-20261011T0821Z-kGaZpgjp). The
+relations, never one the answer key alone cites. The
 spec's ``--run-id auto`` reads the run's wall clock, which the tests pin.
 Evidence: isolated-fixture / injected-transport, never live.
 """
@@ -186,7 +186,7 @@ class BudgetStopTests(unittest.TestCase):
 
 
 class SessionProjectionTests(unittest.TestCase):
-    """Directive 56ca42c8a936: with the verifier session's projection committed in this
+    """With the verifier session's projection committed in this
     session, the spec's own argv neither syncs the whole plan, captures BC nor projects: it
     opens that generation read-only and every drawn item runs on it (isolated-fixture).
     Its one capture is a top-up of its own mirror copy for the relations the run pins read
@@ -277,7 +277,7 @@ class SessionProjectionTests(unittest.TestCase):
         self.assertGreater(block["items_total"], 0)
         self.assertEqual(len(document["item_rows"]), block["items_total"])
         failures = live_verify.check_expectations(SPEC, code, document)
-        # The deterministic baseline misses ROADMAP B1's accuracy bar on the fixture: red.
+        # The deterministic baseline misses the accuracy bar on the fixture: red.
         self.assertEqual(set(failures) - {"eval.items < 20"},
                          {"eval.answer.accuracy_rate < 0.8"}, failures)
 

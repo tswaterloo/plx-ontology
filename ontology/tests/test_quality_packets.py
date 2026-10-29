@@ -1,4 +1,4 @@
-"""Quality AO packets at the tool and evaluation boundaries (directive P8).
+"""Quality AO packets at the tool and evaluation boundaries.
 
 A scanned assembly-order packet (an image-only PDF, so its text is the capture's OCR text)
 is captured from SharePoint over the injected Graph transport of the capture tests, next
@@ -7,7 +7,7 @@ to FileMaker rows mirrored from a fixture reporting API shaped like the live AO 
 as a typed ``AssemblyOrderPacket`` lead linked to its ``AssemblyOrder``; ``plx.object``
 reports where paper and FileMaker disagree as typed conflicts; and the exposed eval item
 ``dev-F3-1001-exposed`` scores through the general path (the deterministic investigator
-over the case host and the generic tools, ``evals.score``), and the Dot's P2/P8 bundle is
+over the case host and the generic tools, ``evals.score``), and the P2/P8 bundle is
 scored field by field against the same reader (``evals.document_fields``). A person's
 confirmed document kind and Portal metadata (``operating.kind_confirmation``) project onto
 the packet's SharePointFile, where ``plx.find`` answers them, and so does a document type a
@@ -54,7 +54,7 @@ READER = Actor("plx", frozenset(PRINCIPALS))
 NO_FILES = Actor("plx", frozenset({"eval:dev-baseline"}))
 AO = 'AssemblyOrder:portal.fm_assembly_order:{"id":10718}'
 
-# The packet as its scan's OCR text reads (devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md 3.3).
+# The packet as its scan's OCR text reads.
 PAGES = [
     ["ASSEMBLY ORDER MO", "AO LOT#: AO-26005B   BULK LOT#: BC-26007E", "OE: OR1000151885",
      "PO:", "REQUIRED DATE:", "SIZE: 1509 EA"],
@@ -1174,7 +1174,7 @@ class QualityPacketTests(unittest.TestCase):
         packet_reads = [r for h, r in read.items() if h.startswith("sharepoint://")]
         self.assertTrue(packet_reads and all(r["sha256"] == sha256(self.bytes).hexdigest()
                                              for r in packet_reads))
-        # Dot finding P8-AO-original-page-unit-route: the same answer citing the original's
+        # The same answer citing the original's
         # shop-floor page instead of the projected fields. The gate checks a unit against the
         # one the page prints after the figure ("Filled qty: 1502 EA") and leaves it
         # unverified where none is printed ("QC retain: 1"), for the item's unit to judge.
@@ -1211,7 +1211,7 @@ class QualityPacketTests(unittest.TestCase):
                          [["value_mismatch", "claim_check_failed"]])
 
     def test_the_dots_p8_item_credits_packet_citations_to_its_pinned_original(self):
-        # dev-F7-1002-exposed (the Dot's P8 bundle) expects the paper fields by the
+        # dev-F7-1002-exposed (the P8 bundle) expects the paper fields by the
         # original's byte pin: an answer citing the projected packet scores against it.
         item = self.item(ROOT / "evals/exposed/dev-F7-1002-exposed.json")
         names = {"ao_lot": "ao_lot", "bulk_lot": "bulk_lot",

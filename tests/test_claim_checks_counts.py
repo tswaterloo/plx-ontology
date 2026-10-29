@@ -1,4 +1,4 @@
-"""Count and money claims at the claim gate (directive 03e9304b8807, gap-82b852bc58c9).
+"""Count and money claims at the claim gate (gap-82b852bc58c9).
 
 Each test is one defect the claim-count-sum-binding review found: a past-moment count
 binding a present claim, one passing claim masking another exact restatement, a money sum

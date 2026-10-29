@@ -1,4 +1,4 @@
-"""The Business Central twin in test mode (lane twin-bc; owner directive 746d96497341).
+"""The Business Central twin in test mode.
 
 A BC-targeted fixture action (``twin.bc.lifecycle``) runs the lifecycle the Portal and MC
 twins pass, its write a PATCH with the cited etag as If-Match, with a socket guard counting

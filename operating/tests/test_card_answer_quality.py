@@ -754,7 +754,7 @@ class GateScorerAgreementTests(SharePointHostCase):
                                  ("answered", state), json.dumps(decided)[:2000])
 
     def test_a_respaced_table_quote_is_kept_as_the_text_writes_it(self):
-        """Review of 1cbae4da8d: a quote matching a row across an empty cell passes, and
+        """A quote matching a row across an empty cell passes, and
         the reply keeps the row as the text writes it, never the agent's respacing."""
         from operating import answer_gate
         handle = self.handle(STATEMENT)

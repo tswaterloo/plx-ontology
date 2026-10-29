@@ -321,8 +321,7 @@ class PortablePdfOcrTest(unittest.TestCase):
         import io
         from pypdf import PdfReader, PdfWriter
         # A user password keeps poppler from opening the file at all; an owner password
-        # alone restricts editing and printing, not reading (DECIDED,
-        # architect-20261008T1122Z), so that scan is OCR-read like any other.
+        # alone restricts editing and printing, not reading (DECIDED), so that scan is OCR-read like any other.
         for user_password in ("", "user"):
             writer = PdfWriter()
             writer.add_page(PdfReader(PDF).pages[0])

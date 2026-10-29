@@ -13,7 +13,7 @@ without the purchase orders' scope gets no verdict about them. ``InboxRouteTest`
 the attention route to the inbox (under a second, no scan, a missing or stale inbox a
 named gap). ``ScanTest`` probes the per-record scan at N=1/10/60/61 over a fake tool
 caller. Evidence label: isolated-fixture (no network, no
-business system). ``LiveCheckTest`` runs ``devloop/live-checks/connector.portfolio.json``'s
+business system). ``LiveCheckTest`` runs live check ``connector.portfolio``'s
 own command over the injected-transport world of ``case.proactive_engine`` (fake Workbench
 and fake drive): injected-transport, never live.
 """
@@ -852,7 +852,7 @@ class ScanTest(unittest.TestCase):
 
 
 class LiveCheckTest(unittest.TestCase):
-    """``devloop/live-checks/connector.portfolio.json`` over injected sources: its own
+    """live check ``connector.portfolio`` over injected sources: its own
     command over case.po_status's host config and order fixture (FakeWorkbench with ten
     purchase orders), the network refused, expectations checked on the real summary.
     Evidence label: injected-transport."""

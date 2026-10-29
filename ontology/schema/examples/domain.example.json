@@ -3,7 +3,7 @@
   "format": "plx-ontology-domain/v1",
   "domain": "example_orders",
   "origin": "curated",
-  "description": "Illustrative domain file for the C0 contract test. Shapes are binding; content is a minimal sample, not the curated orders domain (lane L5a owns ontology/schema/domains/orders.json).",
+  "description": "Illustrative domain file for the C0 contract test. Shapes are binding; content is a minimal sample, not the curated orders domain (L5a owns ontology/schema/domains/orders.json).",
   "upstream_pins": {
     "plx-customer-portal": "b46934a"
   },

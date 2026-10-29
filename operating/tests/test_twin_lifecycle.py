@@ -1,4 +1,4 @@
-"""The write twin in test mode (owner directive 746d96497341; EXE-02/03/04/05/09/10/11, G-01).
+"""The write twin in test mode (EXE-02/03/04/05/09/10/11, G-01).
 
 Every action type of the catalog runs its lifecycle on the twin (``twin.world``): the
 Portal type through the reviewed Portal adapter over ``TwinTransport`` to the Portal twin,

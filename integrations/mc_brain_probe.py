@@ -14,7 +14,7 @@ Calls, all through the guards in ``plx_hub_guard`` (read tools / GET only):
 ``mc_search_knowledge{q:<fixed harmless query>, limit:3}`` and brain
 ``GET agent/status``. Each MC call appends an ``mcp.tool.invoked`` audit row
 in MC (reads are free but audited; the owner accepted those rows for the live
-verifier, directive cabf9f51df67). The probe's own allowlist ``PROBE_TOOLS``
+verifier). The probe's own allowlist ``PROBE_TOOLS``
 holds only those three read tools: ``_ProbeMcClient`` refuses any other tool
 name and every write before I/O, on top of the ``plx_hub_guard`` grammar, and
 an import-time check fails if the allowlist ever names a non-read tool. Output holds only status codes, error
@@ -42,7 +42,7 @@ outage (``UpstreamError.blocks``: HTTP 5xx, 408, 429, transport, timeout),
 status and code: the brain itself is out. Either way the verifier records the
 check ``blocked``, never a pass, red after 24 h. A brain step refused with 401/403
 (``auth_refused``: the key is refused) is not an outage: it is never listed as
-blocked, so the check fails (decision 2026-10-07-brain-fallback-refused-key), while
+blocked, so the check fails, while
 the MC step stays blocked as ``upstream_outage``. ``causes`` is the headline: each
 blocked step with its cause and each refused step as ``credential_refused``, in step
 order, so both show side by side. Every other failure (a guard refusal, a malformed

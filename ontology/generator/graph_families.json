@@ -12,17 +12,17 @@
   {"resources": ["workbook", "workbookWorksheet", "workbookRange", "workbookTable"], "via": "driveItem", "source": "sharepoint", "relation": "driveItems",
    "note": "Workbook cells are the content of the captured file."},
   {"resources": ["listItem", "fieldValueSet", "listItemVersion"], "via": "list", "source": "sharepoint", "relation": "listItems",
-   "note": "Items of a SharePoint list that is not a document library: integrations/capture_sharepoint_lists.py captures the lists its scope names (integrations/sharepoint_list_capture_scope.json; devloop/DECISIONS/2026-10-10-gen-graph-residual-list-items.md option b), item permissions as their audience."},
+   "note": "Items of a SharePoint list that is not a document library: integrations/capture_sharepoint_lists.py captures the lists its scope names (integrations/sharepoint_list_capture_scope.json), item permissions as their audience."},
   {"resources": ["chatMessage"], "via": "channel", "source": "teams", "relation": "channelMessages",
    "note": "integrations/capture_teams.py: channel messages and replies."},
   {"resources": ["chatMessage"], "via": "chat", "source": "teams", "relation": "chatMessages",
-   "note": "integrations/capture_teams.py: the chats of every account on the mail allowlist (operating/case_mail_scope.json; devloop/DECISIONS/2026-10-07-ovs-teams-capture.md item 2), projected gated by chat membership (devloop/DECISIONS/2026-10-10-followup-decisions.md item 6)."},
+   "note": "integrations/capture_teams.py: the chats of every account on the mail allowlist (operating/case_mail_scope.json), projected gated by chat membership."},
   {"resources": ["chat"], "source": "teams", "relation": "chats",
-   "note": "integrations/capture_teams.py: a chat's own record (topic, type, times, participants), gated by its membership like its messages (devloop/DECISIONS/2026-10-27-teams-conversation-objects.md)."},
+   "note": "integrations/capture_teams.py: a chat's own record (topic, type, times, participants), gated by its membership like its messages."},
   {"resources": ["channel"], "source": "teams", "relation": "channels",
-   "note": "integrations/capture_teams.py: a channel's own record (name, membership type, times, participants), gated by its membership like its messages (devloop/DECISIONS/2026-10-27-teams-conversation-objects.md)."},
+   "note": "integrations/capture_teams.py: a channel's own record (name, membership type, times, participants), gated by its membership like its messages."},
   {"resources": ["team"], "source": "teams", "relation": "teams",
-   "note": "integrations/capture_teams.py: a team (name, creation), read with its standard channels' records (devloop/DECISIONS/2026-10-27-teams-conversation-objects.md)."},
+   "note": "integrations/capture_teams.py: a team (name, creation), read with its standard channels' records."},
   {"resources": ["site", "drive", "list", "columnDefinition", "mailFolder", "teamsTab", "sharedDriveItem"],
    "not_business_data": "container", "decision": "devloop/DECISIONS/2026-10-08-gen-graph-not-business-data.md",
    "note": "A container, its configuration or its schema: the captures traverse it to reach the items; it holds no business record of its own."},
@@ -86,7 +86,7 @@
      "links": [{"name": "in_channel", "to": "TeamsChannel", "to_binding": "teams.channels",
                 "reverse_name": "messages", "pairs": {"team_id": "team_id", "channel_id": "channel_id"},
                 "description": "The channel a captured channel message or reply was posted in (Graph structure: the message's team and channel ids; ontology/schema/domains/teams_conversations.json)."}],
-     "description": "One captured Teams channel message or reply version (Graph chatMessage; lineage mail until the Teams lineage decision, devloop/DECISIONS/2026-10-07-ovs-teams-capture.md item 1). Readers are trimmed per channel and by the channel's captured membership. Source text is untrusted; the body is cited, not projected."
+     "description": "One captured Teams channel message or reply version (Graph chatMessage; lineage mail until the Teams lineage decision). Readers are trimmed per channel and by the channel's captured membership. Source text is untrusted; the body is cited, not projected."
     },
     "TeamsChatMessage": {
      "relation": "chatMessages", "binding": "gen.teams.chat_messages",
@@ -95,7 +95,7 @@
      "links": [{"name": "in_chat", "to": "TeamsChat", "to_binding": "teams.chats",
                 "reverse_name": "messages", "pairs": {"chat_id": "chat_id"},
                 "description": "The chat a captured chat message was posted in (Graph structure: the message's chat id; ontology/schema/domains/teams_conversations.json)."}],
-     "description": "One captured Teams chat message version (Graph chatMessage; lineage mail, devloop/DECISIONS/2026-10-07-ovs-teams-capture.md item 1). The chats of every account on the mail allowlist are captured (item 2); readers are trimmed per chat and by the chat's captured membership, and a chat without a captured membership is not projected (devloop/DECISIONS/2026-10-10-followup-decisions.md item 6). Source text is untrusted; the body is cited, not projected."
+     "description": "One captured Teams chat message version (Graph chatMessage; lineage mail). The chats of every account on the mail allowlist are captured (item 2); readers are trimmed per chat and by the chat's captured membership, and a chat without a captured membership is not projected. Source text is untrusted; the body is cited, not projected."
     }
    }
   },

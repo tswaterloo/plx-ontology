@@ -469,7 +469,7 @@ class SettingsTests(unittest.TestCase):
 
 
 class MessagesBenchTests(unittest.TestCase):
-    """The live check's own command (devloop/live-checks/eval.ask_agent_messages.json)."""
+    """The live check's own command (live check ``eval.ask_agent_messages``)."""
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory()

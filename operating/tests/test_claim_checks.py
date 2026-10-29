@@ -5,8 +5,7 @@ the AO-26005B live trace: AO item 58383 planned 1509 / actual 1503, link 1245 qt
 1503, Filling task 14355 qty 1502, Line clearance task 14354 qty 1, order line 1140 qty
 1920, Portal manufacturing order quantity / size_pieces 1509) and ``injected-transport``
 for the AO-26005B case driven through the MCP case tools over
-``FakeWorkbench``. Nothing here is live data. The prose phrasings are the reviewer's probes
-(review of 7604d54: separators, bullets, tables, newlines, number words, extra rows).
+``FakeWorkbench``. Nothing here is live data.
 """
 
 from __future__ import annotations
@@ -308,7 +307,7 @@ class StructuredClaimTests(unittest.TestCase):
                                     calculations=[tampered])), ["claim_uncited"])
 
     def test_a_calculation_role_is_recomputed_from_contracts_never_taken_as_declared(self):
-        # Review of fb5ac6b: "planned - damaged as produced" laundered a planned figure.
+        # "Planned - damaged as produced" laundered a planned figure.
         result = gate("1509 finished units.", [MO],
                       [vc("1509", role="produced", unit="pc", calculation="C4")])
         self.assertEqual(codes(result), ["claim_role_mismatch"])
@@ -328,7 +327,7 @@ class StructuredClaimTests(unittest.TestCase):
                                                      calculation="C1")])["passed"])
 
     def test_a_derived_name_never_chooses_its_quantity_type(self):
-        # Review of 8855f22: "planned - damaged as produced_net" let "produced 1509" pass,
+        # "Planned - damaged as produced_net" let "produced 1509" pass,
         # because the wording took the type from the caller's name. The type now comes
         # from the expression tree (planned - damaged is a planned-family figure by the
         # documented SUBTRACTIONS rule) and the name is a label that must fit it.
@@ -350,7 +349,7 @@ class StructuredClaimTests(unittest.TestCase):
                 [failure] = [item for item in result["failures"]
                              if item["code"] == "claim_role_mismatch"]
                 self.assertIn(why, failure["detail"])
-        # planned - damaged has no documented sub-quantity rule (review of d889cba): it is
+        # planned - damaged has no documented sub-quantity rule: it is
         # untyped, so no type word may describe it under any label.
         for name in ("good_units", "planned_net"):
             with self.subTest(label=name):
@@ -487,7 +486,7 @@ D_MO = _input(MO, "row.qty_damaged", "pc")
 
 
 class ReviewProbeRegressions(unittest.TestCase):
-    """Review of 69467b8 (probes p1.py, p4.py) and of 8855f22 on the pure gate: a sum, a
+    """A sum, a
     commuted operand or an identity never relabels a figure; the type is the form's."""
 
     def probe(self, expression, relations, inputs, result, role, text, handles=(ITEM, MO, LINK),
@@ -550,7 +549,7 @@ class ReviewProbeRegressions(unittest.TestCase):
             "planned")
 
     def test_one_row_read_in_two_captures_is_one_cell(self):
-        # Review of d889cba (rvct_p.py): a handle's '@generation-capture' tail named a new
+        # A handle's '@generation-capture' tail named a new
         # variable, so p + q over one planned cell read twice passed as 3018 planned.
         from operating import quantity_types as qt
         again = ITEM.replace("@g-8", "@g-9")
@@ -568,7 +567,7 @@ class ReviewProbeRegressions(unittest.TestCase):
         self.assertEqual(codes(out), ["claim_wording_role_unverified"])
 
     def test_one_row_read_at_two_values_never_cancels(self):
-        # Review of 6948548 (rvct2/cancel.py): with the capture tail dropped, m + p - q over
+        # With the capture tail dropped, m + p - q over
         # one planned cell read at 1509 (capture 9) and 1600 (capture 12) cancelled to m
         # and 1412 passed as manufactured. Two reads of one cell merge only at one value.
         from operating import quantity_types as qt
@@ -601,7 +600,7 @@ class ReviewProbeRegressions(unittest.TestCase):
         self.assertEqual(qt.type_calculation("m + p - q", same)["type"], "manufactured")
 
     def test_two_reads_compare_the_re_read_values_not_the_recorded_ones(self):
-        # Review of 5548698 (rvct2/cancel.py): inputs without a recorded value merged.
+        # Inputs without a recorded value merged.
         again = ITEM.replace("@g-8", "@g-12")
         changed = {"relation": "silver.assembly_order_items",
                    "row": {**ROWS[ITEM]["row"], "quantity": 1600.0}}
@@ -617,7 +616,7 @@ class ReviewProbeRegressions(unittest.TestCase):
         self.assertIn("one_cell_two_values", out["failures"][0]["detail"])
 
     def test_nested_division_by_a_sum_types_fast_and_fails_closed(self):
-        # Review of d889cba (rvct_dos.py): opaque keys built from repr strings doubled per
+        # Opaque keys built from repr strings doubled per
         # nesting level; 'x/(y+x/(y+...))' at 24 levels took 12.6 s. Opaque factors are
         # structural now and nest at most MAX_OPAQUE_DEPTH deep (deeper: untyped).
         import time
@@ -879,7 +878,7 @@ class TypeAlgebraProperties(unittest.TestCase):
         self.assertGreater(passed, 50)
 
 
-# The reviewer's probe phrasings (scratchpad probe.py on 7604d54): every one carries a
+# Every one carries a
 # number, and with no structured claim every one must fail closed.
 PROBES = (
     "produced 1,509", "Produced: 1,509.", "Produced (1,509).", "Produced - 1509",
@@ -933,8 +932,7 @@ class ProseTests(unittest.TestCase):
 
     def test_a_number_keeps_its_written_scale(self):
         # Review p0-b: "%", "k" and "M" were dropped, so "0.25%" passed over a cell holding
-        # the fraction 0.25 (25 %). Percent contract (Dot and plx-reviewer-p0b-1: "2500%"
-        # passed over a claim of 25 percent, 25 USD, 25 kg or a bare 25): a number written
+        # the fraction 0.25 (25 %). Percent contract (25 USD, 25 kg or a bare 25): a number written
         # as a percent is covered only by a claim with a percent unit, at percent scale.
         formula = "api://silver.formula_items/%7B%22id%22%3A7%7D@g-3"
         rows = {formula: {"relation": "silver.formula_items",
@@ -987,7 +985,7 @@ class ProseTests(unittest.TestCase):
                 self.assertEqual(result["leads"], 0)
 
     def test_prose_that_types_a_number_against_its_claim_blocks(self):
-        # Review of fb5ac6b: an honest claim (planned) under dishonest prose (produced)
+        # An honest claim (planned) under dishonest prose (produced)
         # passed. A quantity-type word bound to a number now has to agree with its claim.
         honest = [vc("1509", ITEM, "row.quantity", "planned"),
                   vc("1502", FILLING, "row.qty", "filled")]
@@ -1013,8 +1011,7 @@ class ProseTests(unittest.TestCase):
         self.assertTrue(gate("1509 units, not produced yet.", [ITEM], honest[:1])["passed"])
 
     def test_correct_prose_binds_each_word_to_its_own_number(self):
-        # The reviewer measured two false fails among seven correct phrasings when a
-        # trailing word bound forward; clause separators keep each word with its number.
+        # Clause separators keep each word with its number.
         claims = [vc("1509", ITEM, "row.quantity", "planned"),
                   vc("1503", ITEM, "row.actual_amount", "actual"),
                   vc("1502", FILLING, "row.qty", "filled")]
@@ -1050,7 +1047,7 @@ class ProseTests(unittest.TestCase):
         self.assertEqual([item["code"] for item in failures], ["claim_wording_role_mismatch"])
 
     def test_an_unbound_type_word_is_checked_against_its_sentence(self):
-        # Review of 8855f22 (minor): comma and window phrasings escaped the binder.
+        # Comma and window phrasings escaped the binder.
         honest = [vc("1509", ITEM, "row.quantity", "planned")]
         for text in ("Produced, 1509 finished goods.",
                      "AO-26005B was produced in full, 1509 finished goods.",
@@ -1113,7 +1110,7 @@ class ProseTests(unittest.TestCase):
                 self.assertTrue(gate(text, [ITEM])["passed"])
 
     def test_the_answer_text_reads_a_hyphenated_or_grammar_label_as_no_figure(self):
-        """GP-05 and review of af134706d2 (supervisor decision 2026-10-29). In the answer
+        """In the answer
         text (the close outcome) a hyphenated label after a prefix that is no quantity,
         unit, term or currency word, or a whole token of an identifier kind's shape,
         states no figure. A bare letters+digits token and a hyphenated quantity, unit,
@@ -1145,7 +1142,7 @@ class ProseTests(unittest.TestCase):
         self.assertEqual(codes(gate("Line P-02458.", [ITEM], claims)), ["claim_unstructured"])
 
     def test_a_token_the_question_holds_is_restated_never_a_figure_of_the_answer(self):
-        """Supervisor decision 2026-10-29 (GP-05, RM-05): a whole token of the answer text
+        """A whole token of the answer text
         holding a letter and a digit that the question holds as a whole token, equal but
         for case, is the question restated. A bare number, a number and a unit apart, a
         token written otherwise, and the same token with no question stay figures."""
@@ -1207,7 +1204,7 @@ class ProseTests(unittest.TestCase):
                          [("outcome", "claim_unstructured")])
 
     def test_the_close_outcome_is_worded_by_the_grounded_types_of_the_case(self):
-        # Review of 8855f22: the outcome, the case's answer, was never wording-checked.
+        # The outcome, the case's answer, was never wording-checked.
         claims = [vc("1509", ITEM, "row.quantity", "planned")]
         for outcome in ("Closed: AO-26005B produced 1509 finished goods.",
                         "AO-26005B produced 1509 finished goods; closed.",
@@ -1245,7 +1242,7 @@ PO_ROWS = {PO: {"relation": "public.app_purchase_order", "row": {
 
 
 class TextValueClaimTests(unittest.TestCase):
-    """Directive 912374bc973a: text, status and date values are checked as values, and a
+    """Text, status and date values are checked as values, and a
     claim's text must state the values its claims back, as its numbers must be claimed."""
 
     def check(self, text, *claims, outcome=None, contracts=CONTRACTS):
@@ -1331,7 +1328,7 @@ class TextValueClaimTests(unittest.TestCase):
                 self.assertIs(same(claimed, cell), expected)
 
     def test_a_timestamp_is_covered_whole_only_at_an_instant_a_claim_establishes(self):
-        """da836e2f3f55 item 1 and Dot 94539984: a date claim read from a cell covers the
+        """A date claim read from a cell covers the
         cell's timestamp written whole (no time or offset left as numbers), never another
         instant of the day; shipped_at is 2026-01-07T23:30:00-05:00."""
         day = ("shipped_at", "2026-01-07")
@@ -1359,7 +1356,7 @@ class TextValueClaimTests(unittest.TestCase):
                                  [("claim_value_mismatch", claimed)])
 
     def test_a_claimed_timestamp_states_its_day_in_the_zone_its_source_declares(self):
-        """The architect's rule (da836e2f3f55): expected_date is 2026-01-07T00:00:00.000Z, its
+        """Expected_date is 2026-01-07T00:00:00.000Z, its
         UTC day, unless its source declares a zone (here a unit contract's time_zone)."""
         stamp = ("expected_date", "2026-01-07T00:00:00.000Z")
         zoned = SourceUnitContracts({"schema": "plx-source-unit-contracts/v1", "contracts": [{
@@ -1541,7 +1538,7 @@ class AoCaseClaimTests(unittest.TestCase):
     def test_a_calculation_relabelled_as_produced_is_refused_on_the_real_case(self):
         # planned - damaged "as produced" / "as produced_net" / filled_* / inspected_*: the
         # label names another type than the form (planned - damaged, a planned figure),
-        # so compute refuses it and records nothing (review of fb5ac6b, of 8855f22).
+        # so compute refuses it and records nothing (of 8855f22).
         inputs = self.inputs(p=("mo", "row.quantity"), d=("mo", "row.qty_damaged"))
         for name in ("produced", "produced_net", "produced_good", "filled_capacity",
                      "inspected_ok", "manufactured_net"):
@@ -1552,7 +1549,7 @@ class AoCaseClaimTests(unittest.TestCase):
                 self.assertIn("planned - damaged", text)
 
     def test_round_five_sum_relabels_are_refused_on_the_real_case(self):
-        # Review of 69467b8 (probes p2/p3): the reviewer's relations, verbatim. Each label
+        # The reviewer's relations, verbatim. Each label
         # names a type the simplified form is not, so compute refuses and records nothing.
         made = self.inputs(m=("link", "row.qtymfg_c"), p=("mo", "row.quantity"))
         item = self.inputs(a=("item", "row.actual_amount"), p=("item", "row.quantity"))
@@ -1628,7 +1625,7 @@ class AoCaseClaimTests(unittest.TestCase):
         self.assertTrue(report["summary"]["passed_all"])
 
     def test_nested_division_stays_fast_through_mcp(self):
-        # Review of d889cba (rvct_dos_mcp.py): the claim check hung once a finding
+        # The claim check hung once a finding
         # cited a deeply nested division; with a declared role plx.case_compute hung.
         import time
         line = self.out["cite"]["line"]
@@ -1670,7 +1667,7 @@ class AoCaseClaimTests(unittest.TestCase):
         self.assertEqual((scaled["result_role"], scaled["result_type"]), ("planned", None))
 
     def test_a_recaptured_changed_row_never_cancels_through_mcp(self):
-        # Review of 6948548 (rvct2/cancel_mcp.py): the AO item row read at capture 9
+        # The AO item row read at capture 9
         # (quantity 1509) and, after it changed, at capture 12 (1600).
         def read():
             return self.call("mirror.rows", {
@@ -1719,7 +1716,6 @@ class AoCaseClaimTests(unittest.TestCase):
         self.assertTrue(self.verdicts()[0]["passed"])
 
     def test_a_produced_close_outcome_over_a_planned_claim_fails_on_the_real_case(self):
-        # Review of 8855f22 probe_outcome.
         mo = self.out["cite"]["mo"]
         self.add("AO-26005B was planned at 1509 units.", ["mo"],
                  [{"value": "1509", "citation": mo, "field": "row.quantity",
@@ -1828,7 +1824,7 @@ class AoCaseClaimTests(unittest.TestCase):
 
 
 class OriginalPageClaimTests(unittest.TestCase):
-    """Review of 6948548 (rvct2/orig.py): the paper/FM conflict gaps of the AO case with an
+    """The paper/FM conflict gaps of the AO case with an
     attached original wrote 20, 3, 11, 11 without claims. FM figures are claimed on their
     rows, the paper figure on the page's machine-read text, and 'page N' is a locator."""
 
@@ -1862,7 +1858,7 @@ class OriginalPageClaimTests(unittest.TestCase):
                          ["claim_value_mismatch"])
 
     def test_page_numbers_are_locators_only_for_pages_the_item_cites(self):
-        # Review of 5548698 (rvct3/loc.py): "pages N, M ..." blanked any number after a
+        # "Pages N, M ..." blanked any number after a
         # comma, 'and', 'to' or a dash. Now a number is a locator only when the item cites
         # that page (original://...#page=N); the run ends at the first other number.
         page3, page4 = self.PAGE, self.PAGE.replace("page=3", "page=4")
@@ -1895,7 +1891,7 @@ class OriginalPageClaimTests(unittest.TestCase):
                          frozenset({3, 11}))
 
     def test_a_type_word_never_binds_to_a_cited_page_number(self):
-        # Review of 8257aee (rvct4/word.py, outc.py): the wording check kept "page 3", so
+        # The wording check kept "page 3", so
         # "produced" bound to the unclaimed 3 and was used up; 1509 (planned) then passed.
         rows = dict(ROWS, **{self.PAGE: self.VIEW})
         planned = vc("1509", ITEM, "row.quantity", "planned")
@@ -1923,7 +1919,7 @@ class OriginalPageClaimTests(unittest.TestCase):
                 self.assertEqual([item["value"] for item in out["failures"]], [quantity])
 
     def test_a_claimed_value_is_never_a_page_locator(self):
-        # Review of 5dea961 (rvct5/coin.py): a claimed number that coincided with a cited
+        # A claimed number that coincided with a cited
         # page was blanked, so its type word was never checked. It now stays a quantity.
         page = lambda n: self.PAGE.replace("page=3", f"page={n}")  # noqa: E731
         rows = dict(ROWS, **{page(n): dict(self.VIEW, page=n) for n in (1, 3, 4, 11)})
@@ -1950,7 +1946,7 @@ class OriginalPageClaimTests(unittest.TestCase):
                              [damaged3], rows=rows)["passed"])
 
     def test_page_abbreviations_stay_quantities_and_split_no_sentence(self):
-        # Review of 9d55e3f (rvct6/split.py, oc.py, abbr2.py): "p. 4" ended the sentence
+        # "P. 4" ended the sentence
         # for the wording check, so "Produced (p. 4): 1509." passed with 1509 planned, and
         # digits right after a letter and a period ("p.3") were no number at all. Only
         # "page"/"pages" are locators; abbreviations stay quantities needing claims.
@@ -1988,7 +1984,7 @@ class OriginalPageClaimTests(unittest.TestCase):
         self.assertTrue(gate("page 3 units were produced.", [self.PAGE], rows=rows)["passed"])
 
     def test_an_abbreviation_joins_a_sentence_only_before_a_number(self):
-        # Review of e7a1db3 (rvct7/join*.py, gate.py): the abbreviation list ignored every
+        # The abbreviation list ignored every
         # such period, so "...produced on Line E. The FM row counts 1503." joined two
         # sentences and "produced" found the produced 1503. Only "p. 4" / "No. 3" (a digit
         # right after, or after one space) are joined now; e and i are no abbreviations.
@@ -2031,7 +2027,7 @@ class OriginalPageClaimTests(unittest.TestCase):
                                                              "unit": unit}],
                         rows=dict(ROWS, **page))
 
-        # Dot P8-AO-original-page-unit-route: a unit the page prints after the figure must
+        # A unit the page prints after the figure must
         # agree (count words are EA, % is percent); with none printed the unit is left
         # unverified for the reader (the scorer's expected unit) to judge.
         for text, value, unit, basis in (
@@ -2141,7 +2137,7 @@ class OriginalPageClaimTests(unittest.TestCase):
 
 
 class OriginalTextQuoteTests(unittest.TestCase):
-    """devloop/DECISIONS/2026-10-06-use-case-evals-text-claims.md option 1: a text value
+    """A text value
     cited on the re-read text of an original (a captured file's or attachment's text, a
     message body, an original page) is a quote, verified verbatim on token boundaries."""
 
@@ -2269,7 +2265,7 @@ class OriginalTextQuoteTests(unittest.TestCase):
                     claim_checks.parse_value_claims([claim], [MO, PO_LINE], ["C7"])
 
     def test_a_short_or_negated_quote_is_refused(self):
-        """Directive af63ee29e91d: any token-bounded substring verified, however short
+        """Any token-bounded substring verified, however short
         (``approved`` out of ``not approved``, ``.``, ``PO``)."""
         for value, handle, field in (
                 ("approved", self.REFUSAL, "row.body_text"),
@@ -2299,7 +2295,7 @@ class OriginalTextQuoteTests(unittest.TestCase):
         self.assertEqual(claim_checks.supported_quotes(
             "approved", "Not approved Monday; approved Tuesday."), 1)
         # "No" after a label before an identifier is the abbreviation of number; a negating
-        # answer after the passage reverses it (direction review of a5b32e19).
+        # answer after the passage reverses it.
         for value, text, supported in (
                 ("LOT-FXA", "Lot No LOT-FXA", 1), ("PO5447", "PO No PO5447", 1),
                 ("PO5447", "There is no PO5447", 0), ("QC passed", "QC passed? No", 0),
@@ -2435,7 +2431,7 @@ class TextFigureTests(unittest.TestCase):
             rows=dict(ROWS, **self.ROWS))
         self.assertFalse(summed["passed"])
 
-    # Review of 74849da938: each form a number of prose takes that is not the claimed
+    # Each form a number of prose takes that is not the claimed
     # value (all refused on main, where the whole cell was compared).
     NOT_THE_VALUE = (
         # Dates, phone numbers, identifiers and labelled numbers.
@@ -2614,7 +2610,7 @@ class TextFigureTests(unittest.TestCase):
 
 
 class CustomerPoClaimTests(CustomerPoEvalBase, unittest.TestCase):
-    """Review of fb5ac6b, on the generic tools: customer-PO texts on Portal SO-YYYY-####
+    """Customer-PO texts on Portal SO-YYYY-####
     orders and numeric POs pass the claim gate when their numbers carry value claims
     citing the source fields, and fail it when they do not."""
 
@@ -2671,7 +2667,7 @@ class CustomerPoClaimTests(CustomerPoEvalBase, unittest.TestCase):
                 self.doCleanups()
 
     def test_a_portal_so_year_label_in_caller_text_is_an_identifier_not_numbers(self):
-        # Review of ee55df3: the "-0003" tail of a Portal SO-YYYY-#### label before a
+        # The "-0003" tail of a Portal SO-YYYY-#### label before a
         # full stop was read as the number -3; the label is one identifier.
         case_id = self.case_for("SO-2026-0003", "PO-7788")
         report = pe.evaluate(CPO, self.call, case_id, transcript=self.actual.names)
@@ -2692,7 +2688,7 @@ class CustomerPoClaimTests(CustomerPoEvalBase, unittest.TestCase):
         self.assertFalse(report["summary"]["passed_all"])
 
 
-# Directive 24e7aa78f585: BC capture rows (a capture view: the store's own citation, its
+# BC capture rows (a capture view: the store's own citation, its
 # row) and Portal receipt rows, synthetic, for the Ask's BC roles and its counts and sums.
 CO = "0c5a1b2c-3d4e-4f50-8a6b-7c8d9e0f1a2b"
 
@@ -2783,7 +2779,7 @@ class AskClaimFormTests(unittest.TestCase):
                          ["claim_wording_role_unverified"])
 
     def test_a_count_is_exact_only_when_a_complete_count_entry_binds_it(self):
-        """Directive 2aafc4270e73 item 2: an Ask that saw 12 receipts and cited 8 must not
+        """An Ask that saw 12 receipts and cited 8 must not
         pass "8 receipts"; a count is exact only over a complete count a tool returned."""
         for size in (1, 10, 60):
             with self.subTest(size=size):
@@ -2892,7 +2888,7 @@ class AskClaimFormTests(unittest.TestCase):
                              rows=rows, calculations=())["passed"])
 
     def test_a_money_sum_carries_the_currency_of_its_cited_values(self):
-        """Directive 2aafc4270e73 item 3: a sum of money states the currency the tools
+        """A sum of money states the currency the tools
         returned for its values, or it is refused."""
         rows = dict(sales_order(index, f"{index}00.50") for index in (1, 2))
         handles = list(rows)
@@ -3154,7 +3150,7 @@ class GateCorrectValueTests(unittest.TestCase):
                                     rows=rows, calculations=())), ["claim_value_mismatch"])
 
     def test_a_printed_day_without_its_year_holds_only_under_one_year_of_the_text(self):
-        """Review of 1cbae4da8d (rv-gate attack2/attack3): "31 Aug" took its year from the
+        """"31 Aug" took its year from the
         agent's quote or from a text printing another year in a form the gate did not
         read (25, '25, FY2025). A printed day without its year holds only when no year in
         any form follows it and the whole cited text prints exactly one year, the claim's."""
@@ -3212,7 +3208,7 @@ class GateCorrectValueTests(unittest.TestCase):
         self.assertIn("the quote holds no printed form of the day", out["failures"][0]["detail"])
 
     def test_an_expression_states_a_figure_of_every_input_in_one_currency_and_unit(self):
-        # Review of 1cbae4da8d and 1bdaaf699d (rv-gate attack5 c1, c2, c7): CAD 100 + USD 50
+        # CAD 100 + USD 50
         # is an untyped 150; a bare $ beside a named currency, and 10 kg - 500 g., too.
         page = "original://mix#page=1"
         text = ("Freight CAD 100 paid. Duty USD 50 paid. Deposit $40 held. Fee 30 kg box. "
@@ -3272,7 +3268,7 @@ class GateCorrectValueTests(unittest.TestCase):
                                  {"value": "5.00"})["passed"])
 
     def test_a_refusing_word_reaches_across_one_line_break_a_meaning_word_never(self):
-        """Review of 1bdaaf699d (rv-gate attack5 b3, b4, b10, b11): line scope dropped the
+        """Line scope dropped the
         negator, bound or range on the line before the figure. Line scope only narrows
         ambiguity: a word that refuses or bounds a figure still reaches one line back."""
         page = "original://wrap#page=1"

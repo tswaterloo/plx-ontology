@@ -612,7 +612,7 @@ class IssuedByOwnPartyTests(unittest.TestCase):
 
 
 class CustomerPoLiveCheckTests(_NeedsPdf):
-    """``devloop/live-checks/ontology.document_fields_customer_po.json`` over the in-process
+    """live check ``ontology.document_fields_customer_po`` over the in-process
     FakeDrive: the spec's expectations hold on the check's own output."""
 
     def test_the_customer_po_check_meets_its_spec_leaking_nothing(self):
@@ -689,7 +689,7 @@ class TitleCueTests(_NeedsPdf):
 
 class NotPoLikeRecordTests(_NeedsPdf):
     """REC-07 at the attested comparison: a Portal ``po_reference`` that is not PO-like
-    (a person's name, a spaced PO) is withheld (devloop/CASE-RUNTIME.md section 4). It
+    (a person's name, a spaced PO) is withheld. It
     still compares on its source text, so a customer PO document that disagrees with it
     is reported as a conflict, but the conflict shows the record side withheld and the
     record's text reaches no reader through ``plx.object``."""

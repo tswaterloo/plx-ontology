@@ -3,7 +3,7 @@
 Shared by ``integrations.graph_read`` (Graph mail, SharePoint drive items and
 content), ``integrations.capture_teams`` (Teams channel and chat messages) and
 ``integrations.bc_read`` (Business Central API v2.0, GET only), and by the two external
-read-only sources of decision 2026-10-19-fba-external-sources: ``integrations.freightcom_read``
+read-only sources for FBA: ``integrations.freightcom_read``
 (Freightcom Customer API, test host ``customer-external-api.ssd-test.freightcom.com`` only, GET
 only; the production host stays refused) and ``integrations.amazon_sp_read`` (Amazon SP-API
 region hosts, GET only, plus the one Login with Amazon refresh-token POST to
@@ -184,7 +184,7 @@ from .http import SourceUnavailable
 GRAPH_HOST = "graph.microsoft.com"
 LOGIN_HOST = "login.microsoftonline.com"
 BC_HOST = "api.businesscentral.dynamics.com"
-# External read-only sources (decision 2026-10-19-fba-external-sources): the Freightcom
+# External read-only sources: the Freightcom
 # test host, the Amazon SP-API region hosts and the Login with Amazon token host. The
 # Freightcom production host is named only so tests can assert it stays refused.
 FREIGHTCOM_TEST_HOST = grammar.FREIGHTCOM_TEST
@@ -407,7 +407,7 @@ def is_nextlink_refusal(error: BaseException) -> bool:
             and getattr(error, "nextlink_refused", False) is True)
 
 
-# Sanitised diagnosis of a ``SourceUnavailable`` (directive e402518f64be): a
+# Sanitised diagnosis of a ``SourceUnavailable``: a
 # token from a FIXED vocabulary, derived from the messages this module and the
 # readers raise. Never free text, URLs, ids, names or numbers from the source;
 # an unknown message reads ``unclassified``. Callers (``operating.ingestion``)
@@ -492,7 +492,7 @@ def unavailable_detail(exc: BaseException) -> str | None:
     return detail
 
 
-# Upstream error-code class (directive 8f867fce7ba1): the ``error.code`` of a
+# Upstream error-code class: the ``error.code`` of a
 # Graph/BC JSON error body, or the OAuth token endpoint's ``error`` string, as
 # one token of a FIXED vocabulary (camelCase -> snake_case). A code outside the
 # list reads ``other``: a code is source text and could carry a value. Never the
@@ -575,8 +575,8 @@ def upstream_error_code(raw: Any) -> str | None:
 # the message is source text and carries names, numbers and filter values. First match
 # wins; ``unclassified`` is a message no pattern names. The class is diagnosis only, never
 # a verdict: the patterns are English guesses no live message has confirmed, so whether a
-# refusal is expected is spec data (``bc_read.expected_refusal``), never this class
-# (architect-20261013T0921Z). ``_MESSAGE_CLASSES`` name the journal setup a payment journal
+# refusal is expected is spec data (``bc_read.expected_refusal``), never this class.
+# ``_MESSAGE_CLASSES`` name the journal setup a payment journal
 # listing needs: its template, batch, number series or journal/payment setup (a setup
 # table of another subject, e.g. a currency's, is no such class). The subject is the thing
 # missing, not one named beside it ("The Gen. Journal Batch does not exist. ... Journal
@@ -914,7 +914,7 @@ class _RefuseRedirect(HTTPRedirectHandler):
 # A connection that is not up (TCP connect, proxy CONNECT, TLS handshake) within this
 # fails at once; the request's own timeout still bounds each read of the answer. Live BC
 # GETs that failed before any status took about 16 s per attempt under the one 30 s
-# timeout (devloop/DECISIONS/2026-10-08-bc-three-way-connect-timeout.md).
+# timeout.
 CONNECT_TIMEOUT_SECONDS = 10.0
 
 # Keep-alive pool for GETs (gap-e7f87c40ec57: a SharePoint capture spent about a third of
@@ -1747,7 +1747,7 @@ class SourceApi:
 # OData addresses one entity by key either as a path segment (``/x/<id>``) or
 # in key syntax (``/x('<id>')``, BC ``/companies(<guid>)``); Graph answers a
 # listing requested as ``mailFolders/<id>/messages`` with a nextLink on
-# ``mailFolders('<id>')/messages`` (live repro, directive 4f484b130e05).
+# ``mailFolders('<id>')/messages`` (live repro).
 _KEY_SEGMENT = re.compile(r"^([A-Za-z][A-Za-z0-9._-]{0,63})\((?:'([^'()]+)'|([^'()]+))\)$")
 _GUID_SEGMENT = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
                            r"[0-9a-fA-F]{12}$")
@@ -1910,7 +1910,7 @@ def _same_plus_aligned(request_raw: str, link_raw: str) -> bool:
     either value refuses. So the raw ``+`` positions coincide and only the
     escaping of the other bytes may differ: Graph echoes a ``$filter`` sent as
     ``receivedDateTime+ge+2026-09-01T00%3A00%3A00Z`` as
-    ``receivedDateTime+ge+2026-09-01T00:00:00Z`` (live directive 4458d0e6d280).
+    ``receivedDateTime+ge+2026-09-01T00:00:00Z``.
 
     Why this cannot admit a different filter: a server decodes a value either
     as a form (``+`` -> space, then percent-decode) or percent-only (``+``

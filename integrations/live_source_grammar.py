@@ -54,7 +54,7 @@ from ontology import identifiers as _ids
 
 GRAPH = "graph.microsoft.com"
 BC = "api.businesscentral.dynamics.com"
-# External read-only sources (decision 2026-10-19-fba-external-sources): the Freightcom
+# External read-only sources: the Freightcom
 # Customer API *test* host only (the production host external-api.freightcom.com is named
 # by no decision and stays outside the allowlist) and the Amazon SP-API regional hosts.
 FREIGHTCOM_TEST = "customer-external-api.ssd-test.freightcom.com"
@@ -364,8 +364,7 @@ TEMPLATES: dict[str, tuple[str, str]] = {
     "bc.metadata": (BC, _BC + "/$metadata"),
     "bc.entities": (BC, _BC + "/companies({company:guid})/{entity:entity_set}"),
     "bc.entity": (BC, _BC + "/companies({company:guid})/{entity:entity_set}({record:guid})"),
-    # The one ODataV4 web-service read (devloop/live-checks/bc.purchase_reader.json, lane
-    # bc-portal-po-link-your-reference): Page 50 ``PurchaseOrder`` serves ``Your_Reference``
+    # The one ODataV4 web-service read (live check ``bc.purchase_reader``): Page 50 ``PurchaseOrder`` serves ``Your_Reference``
     # (the FileMaker PO number), which API v2.0 ``purchaseOrders`` does not expose. Only
     # this entity set, only by a pinned company name, only the query
     # ``bc_odata_purchase_order_query`` builds; no key, navigation or action ever.
@@ -526,8 +525,8 @@ def segments_clean(path: str) -> bool:
 # ``lastModifiedDateTime ge <instant>`` form on ``BC_MODIFIED_SINCE_SETS``;
 # ``$top`` is bounded; ``$select`` names come from the entity set's allowlist
 # (or are exactly ``id,lastModifiedDateTime`` on those sets). Entity sets without
-# a spec accept only ``$top`` and, if listed there, the modified-since forms. Field names marked unverified in
-# devloop/SOURCE-NOTES.md are confirmed by the probe's ``field_names``. ``$expand`` is exactly
+# a spec accept only ``$top`` and, if listed there, the modified-since forms.
+# ``$expand`` is exactly
 # the line set of a document header set (``BC_DOCUMENT_LINES``: ``purchaseOrders`` expands
 # ``purchaseOrderLines`` and nothing else), never on a line set, never with ``$select``.
 
@@ -636,7 +635,7 @@ BC_QUERY_SPECS: dict[str, BcQuerySpec] = {
     # customer/vendorPayment): the fields the ontology bindings read
     # (ontology/schema/domains/bc_finance.json). The capture reads every field; the
     # allowlist is what ``probe --finance-entities`` checks BC accepts as ``$select``
-    # (devloop/live-checks/bc.ledgers.json). UNVERIFIED live until that check passes.
+    # (live check ``bc.ledgers``). UNVERIFIED live until that check passes.
     "itemLedgerEntries": _spec({"documentNumber": "number", "itemNumber": "number"},
         "entryNumber itemNumber postingDate entryType sourceNumber sourceType documentNumber "
         "documentType description quantity salesAmountActual costAmountActual"),
@@ -672,7 +671,7 @@ BC_QUERY_SPECS: dict[str, BcQuerySpec] = {
 }
 
 
-# Modified-since reads (devloop/DECISIONS/2026-10-02-bc-capture-incremental.md). The one
+# Modified-since reads. The one
 # non-equality filter BC reads may carry is ``lastModifiedDateTime ge <instant>``, and
 # only on the entity sets below: BC API v2.0 documents a read-only
 # ``lastModifiedDateTime`` on document headers, parties, items and the item/general
@@ -691,7 +690,7 @@ BC_MODIFIED_SINCE_SETS = frozenset({
     "customers", "vendors", "contacts", "items", "itemLedgerEntries",
     "generalLedgerEntries"})
 BC_KEY_SELECT = "id," + BC_MODIFIED_FIELD
-# Posted-only reads (directive 7fbdeee4a6f4): the capture asks BC for ``status ne 'Draft'`` on
+# Posted-only reads: the capture asks BC for ``status ne 'Draft'`` on
 # these sets, so an unposted document is never read, stored or costed as posted. BC API v2.0
 # salesInvoice ``status`` is Draft / In Review / Open / Paid / Canceled / Corrective.
 # UNVERIFIED live: BC's acceptance of the filter on salesInvoices (bc.capture_full checks).

@@ -175,7 +175,7 @@
  },
  "label": {
   "status": "oracle_only",
-  "note": "Pending human label. Exposed real-source extraction (cluster soapbox-po5447), dev/regression only, never held-out. Imported as untrusted data from the Dot's bundle EVIDENCE/evals/dot-p2p8-20261004 on branch claude/devloop-task-dot-p2p8-eval-data-01 @858f5fc8 (item dev-F9-1002-exposed, source item DEV-P2-FREIGHT-AIR-01): expected values are a curator's page/span reading of the original PDF, whose byte SHA-256 is pinned in evals/exposed/sources.json; page/span gold is p2p8-field-evidence.json. At import every value (a null one too: the blank field is on that original) was bound to that pinned original; the curator paraphrase fields exclusions_5/scope were dropped (no printed literal to cite or match). The draft question named no document and is rewritten to name it; the root is the purchase order (the draft named the file). No model run, runtime extraction or business-owner audit is claimed."
+  "note": "Pending human label. Exposed real-source extraction (cluster soapbox-po5447), dev/regression only, never held-out. Page/span gold is p2p8-field-evidence.json. At import every value (a null one too: the blank field is on that original) was bound to that pinned original; the curator paraphrase fields exclusions_5/scope were dropped (no printed literal to cite or match). The draft question named no document and is rewritten to name it; the root is the purchase order (the draft named the file). No model run, runtime extraction or business-owner audit is claimed."
  },
  "scoring": {
   "exact_values": true,

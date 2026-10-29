@@ -1,15 +1,13 @@
-"""Generic ontology tools ``plx.schema``, ``plx.find`` and ``plx.object`` (lane L8).
+"""Generic ontology tools ``plx.schema``, ``plx.find`` and ``plx.object`` (L8).
 
-The tools read the L2 projection store (``ontology/store_ddl.py``, built by lane
-L7) through ``StoreReader``, a thin read interface over the frozen tables, and
+The tools read the L2 projection store (``ontology/store_ddl.py``) through ``StoreReader``, a thin read interface over the frozen tables, and
 answer exactly the I/O contracts in ``operating/ontology_tool_contracts.json``
 (every output is validated with ``ontology/json_contract.py`` before it leaves).
 Nothing here knows an object type, an identifier kind or a case: types, kinds,
 bindings, display properties and link types all come from the store rows, the
-compiled schema and the identifier grammar (10-DECISION 3-4, directive
-4190c1c690ce item 3: one resolver, no per-kind branch).
+compiled schema and the identifier grammar (no per-kind branch).
 
-Permissions (09-CRITIQUE R6 #7, store_ddl docstring): the session actor is
+Permissions (store_ddl docstring): the session actor is
 checked against ``objects.audience_key`` (``ReadPolicy``, default deny), the
 markings of the object's version at T *and* of its latest version (a marking
 added later also hides history), the markings and times of every identifier,
@@ -78,7 +76,7 @@ handle and field path. Typed values come only from the projector's deterministic
 parsers and are re-checked against the value type here; a value that does not
 fit is withheld with a typed gap instead of being guessed.
 
-Live fallback (directives 4190c1c690ce item 3, 7f61c793591f 2a): with ``sources``
+Live fallback (7f61c793591f 2a): with ``sources``
 (an ``ontology.resolve.SourceResolver``), a query the projection store has no
 visible match for is resolved again over the records the live readers carry for
 its typed keys, read only where the policy grants the actor and projected into a
@@ -95,8 +93,8 @@ record's identifier, the tier is the weaker of the match's and the link's, and t
 the reader at T (audience, markings, item ACL of its evidence, both ends). A value
 naming one record directly and another through a link is ambiguous, as ever.
 
-Corroboration (10-DECISION 3; directive: every link explains why it was made and why
-not): every candidate of a binding the schema compares with a binding of another
+Corroboration:
+every candidate of a binding the schema compares with a binding of another
 source family carries the identity verdict ``corroboration`` (``agrees`` true =
 agree, false = conflict, null = unverifiable), decided on identifiers only, with one
 ``corroboration_<property>`` feature per identifier comparison; the values both
@@ -221,8 +219,7 @@ SCOPE_FEATURES = frozenset({SCOPE_FEATURE, "no_scope_field", "no_scope_value",
                              "scope_value_withheld", SCOPE_EXCLUDED,
                              "identity_scope_ambiguous"})
 _IDENTITY_TIERS = frozenset({"verified", "reviewed"})
-# Lineages that are never authority (09-CRITIQUE R1: gold native staging rows until a
-# person confirms them, Q1). The one set plx.find, plx.around, plx.aggregate and
+# Lineages that are never authority (Q1). The one set plx.find, plx.around, plx.aggregate and
 # plx.process read; the link tier they serve is ``_effective_tier``.
 NEVER_AUTHORITY = frozenset({"gold_native_staging"})
 _SCHEME_SOURCE = {"api": "portal_api", "bc": "bc", "graph-mail": "graph_mail",
@@ -889,7 +886,7 @@ def identity_link_type(declared: Mapping[str, Any]) -> bool:
 
 
 def default_schema() -> SchemaView | None:
-    """The compiled schema from ``ontology/schema.py`` (lane L4) when it is
+    """The compiled schema from ``ontology/schema.py`` (L4) when it is
     installed and loads; None otherwise (tools then fall back to store facts)."""
     try:
         from ontology import schema as schema_loader  # type: ignore[attr-defined]
@@ -1315,8 +1312,7 @@ def _one_source_key(row: Mapping[str, Any]) -> bool:
     return len(sources) == 1 and None not in sources
 
 
-# A source field that can hold a person's name instead of a PO (devloop/CASE-RUNTIME.md
-# section 4 PO-shape rule, REC-07): its value is served only when PO-like.
+# A source field that can hold a person's name instead of a PO (REC-07): its value is served only when PO-like.
 PO_TEXT_FIELD = "po_reference"
 PO_WITHHELD = "not_po_like"
 
@@ -3334,7 +3330,7 @@ class OntologyTools:
             # Another type's record only: a record of the asked type is a candidate
             # itself, and its twin in another binding is an identity question
             # (plx.identity), not what the identifier names. A linked_identifier hop is
-            # suppressed only (devloop/DECISIONS/2026-10-05-p0c-hop-scope.md) for
+            # suppressed only for
             # (1) a kind ambiguous across tables: two or more types key it within a
             # binding (an FM id names a record in each FM table, so its holder's owner
             # is no record the value names), and (2) a kind the asked type keys within
@@ -4376,8 +4372,7 @@ def identifier_out(kind: str | None, normalized: Any, subject: str, citation: st
     ``citation`` too: read from a document it is bare only when its kind is kind-specific
     (a digest), so a sender-written Message-ID is quoted source text at the tool, not only
     at the MCP boundary. Other kinds keep the boundary's source-text rule (IB-FIREWALL-4):
-    a value a document-field profile typed is compared in process (attested conflicts)
-    (devloop/DECISIONS/2026-10-13-roster-copy-identifier-out.md)."""
+    a value a document-field profile typed is compared in process (attested conflicts)."""
     from ontology import identifiers
     copies = kind in identifiers.kinds() and bool(identifiers.kind_spec(kind).get("copies"))
     if withheld_po_text(field_path, normalized):
@@ -4551,13 +4546,12 @@ def _conflicts(object_type: str, values: list[dict], peer_values: list[tuple[str
 # --------------------------------------------------------------------------- host wiring
 
 # Retirement plan for the case host's tool budget (contract limits.max_case_host_tools).
-# Each retired tool names a successor that exists now (one of this lane's tools or a
-# kept host tool), never a contract name still unbuilt. basis "directive": directive
-# 4190c1c690ce item 4; "lead": the lead's decision in review l8-1. The plan leaves
-# the host above the budget; the overage and the routes to it are recorded in
-# devloop/OPEN-DECISIONS.md (case-host-budget) for the wiring commit.
+# Each retired tool names a successor that exists now (one of these tools or a
+# kept host tool), never a contract name still unbuilt. A recorded decision;
+# "lead": a reviewed decision. The plan leaves
+# the host above the budget.
 HOST_RETIREMENTS: dict[str, dict[str, str]] = {
-    # Lead decision case-host-budget (a): source reads and kind tools retire into the
+    # Source reads and kind tools retire into the
     # generic tools; their successors are on the case host now.
     "plx.source_resolve": {"successor": "plx.find", "basis": "directive"},
     "plx.source_catalog": {"successor": "plx.schema", "basis": "lead"},
@@ -4575,7 +4569,7 @@ HOST_RETIREMENTS: dict[str, dict[str, str]] = {
     "plx.case_reextract_original": {"successor": "plx.case_attach_original", "basis": "merge"},
     "plx.action_list": {"successor": "plx.act", "basis": "merge"},
 }
-# Named by directive 4190c1c690ce item 4; all but plx.source_resolve left with the
+# All but plx.source_resolve left with the
 # platform host (deletion-6) and must never return to the case host.
 DIRECTIVE_RETIRED = frozenset({
     "plx.search", "plx.transaction_search", "plx.ask_transaction", "plx.transaction_inquiry",
@@ -4623,7 +4617,7 @@ def _inline_defs(schema: Any, contracts: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def tool_specs(contracts: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
-    """MCP tool listings (name, description, inputSchema) for this lane's tools."""
+    """MCP tool listings (name, description, inputSchema) for these tools."""
     contracts = contracts or load_contracts()
     return [{"name": name, "description": contracts["tools"][name]["description"],
              "inputSchema": _inline_defs(contracts["tools"][name]["input"], contracts),

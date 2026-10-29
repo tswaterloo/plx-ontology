@@ -1,4 +1,4 @@
-"""Generate the ontology schema skeleton (09-CRITIQUE R9, lane L4). No network.
+"""Generate the ontology schema skeleton (L4). No network.
 
 Inputs:
 
@@ -26,7 +26,7 @@ facts (``portal_facts``); ``ontology/generator`` turns facts into types, identit
 links and markings for any source.
 
 ``refresh [--portal-repo PATH]`` reads the Portal at its one repo-level pin
-(``devloop/upstream-pins.json`` ``repo_pins``, the commit the source registry is
+(the upstream pin file ``repo_pins``, the commit the source registry is
 generated at; local git reads of the checkout, never its HEAD) and optionally a live
 catalog dump, and writes the pinned inputs ``ontology/schema/generated/meta/
 portal_catalog.json`` and ``portal_prisma.json``; ``generate`` (the default)
@@ -36,7 +36,7 @@ turns the pinned inputs into ``ontology/schema/generated/portal_<domain>.json``
 catalog digest, and which contracts were or were not bound, with reasons);
 ``generate --check`` exits 1 when the committed files differ from a regeneration.
 ``drift_live`` (run as ``python3 -m scripts.live_read_probes schema-drift`` by the
-credentialed live verifier, spec ``devloop/live-checks/schema.catalog_drift.json``)
+credentialed live verifier, live check ``schema.catalog_drift``)
 compares the committed schema with the live catalog.
 
 Raw types are named ``Rel<Schema><Relation>`` and stay out of the way of curated
@@ -91,7 +91,7 @@ CATALOG_CODE_PATH = "services/workbench-api/src/core/catalog.mjs"
 CATALOG_HELPERS_PATH = "services/workbench-api/test/core/helpers.mjs"
 PRISMA_PATH = "portal/prisma/schema.prisma"
 PRISMA_FORMAT = "plx-prisma-facts/v1"
-# The upstream ask to serve more Portal tables (devloop/CONTEXT/09-CRITIQUE.md, open
+# The upstream ask to serve more Portal tables (open
 # question Q3: approve a manifest expansion), as the curated not_served placeholders cite it.
 UPSTREAM_ASK = "Q3"
 # Generated not_served files by the first letter of the table (``app_`` dropped): a C0
@@ -101,7 +101,7 @@ NOT_SERVED_FILES = (("a", "e"), ("f", "o"), ("p", "r"), ("s", "z"))
 
 # The ranked ask lists this many relations. A Prisma column whose name ends so stores a
 # credential (a password hash, a 2FA secret, a reset, OAuth or session token, a key hash):
-# serving its table needs an owner decision on those columns first.
+# serving its table needs a decision on those columns first.
 ASK_TOP = 25
 CREDENTIAL_COLUMN = re.compile(r"(?:^|_)(?:password|passwd|secret|token|api_key|private_key|"
                                r"key_hash|token_hash)$")
@@ -270,7 +270,7 @@ def merge_live_catalog(catalog: Mapping[str, Any], dump: Mapping[str, Any], ref:
     ``column_types``) and takes the live ``columns``, ``key``, ``since`` and ``domain``; a
     type fact of a column the API no longer serves is dropped. A relation only the live
     body lists (``live_added``) has no facts: its columns are text and its key is the
-    API's own. A ``skip`` relation is left to its own lane. Never a row value."""
+    API's own. Never a row value."""
     live = catalog_from_live_dump(dump, ref, "live")["relations"]
     skipped = set(skip)
     entries = {e["name"]: dict(e) for e in catalog["relations"]}
@@ -813,8 +813,6 @@ def q3_ask(registry: Mapping[str, Any] | None, served: Iterable[str],
         "routes": {"with_data": with_data, "fully_served": with_data - len(open_routes),
                    "need_unserved": len(open_routes)},
         "prisma_models_not_served": unserved_models,
-        # The gap ledger's coverage gaps this ask records: devloop/gaps.py gap_id of its
-        # registry keys (not imported: the loop's modules stay out of the product's graph).
         "gaps": {"gap-" + hashlib.sha256(f"coverage\0{key}".encode()).hexdigest()[:12]: key
                  for key in (
             "registry:portal.api_route:not_served", "registry:portal.prisma_model:not_served")},

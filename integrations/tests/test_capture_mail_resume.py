@@ -1,5 +1,5 @@
 """Mail capture resumes folders across runs and one bad folder never stalls the stream
-(owner directive 4b2734959760, core gap C; gap-8d2fdf5ec18b).
+(core gap C; gap-8d2fdf5ec18b).
 
 Injected-transport tests over the in-process fake Graph of ``test_capture_mail``
 (evidence label ``injected-transport``; no network, no credentials). Live: the

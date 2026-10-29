@@ -1,6 +1,6 @@
 """The final-answer gate: the one function every answer path of the Workbench runs.
 
-ROADMAP B1 (measure what ships): the console's Ask (``operating.agent_loop``) and an
+measure what ships: the console's Ask (``operating.agent_loop``) and an
 employee's MCP session (``plx.case_get`` answer mode on ``operating.mcp_server``, where
 Claude Code or any MCP client submits its final claims; the real-agent eval's agent is
 one such client) both call ``gate_answer``. Nothing else decides which claims of a final answer
@@ -23,8 +23,7 @@ session's own tool results, and its final reply holds only what this gate passed
   (``claim_checks.parse_value_claims``; malformed: ``value_claims_invalid``, also a value
   claim citing one page (``PAGE_CITATION``) in another field than the page's ``text``;
   none: ``claim_states_no_value``); its text is never shown. A citation counts only if a tool
-  returned it to this session as evidence (``evidence_handles``,
-  ``devloop/DECISIONS/2026-10-07-agent-evidence-contract.md``); one handle the session was
+  returned it to this session as evidence (``evidence_handles``); one handle the session was
   not returned makes the whole claim unsupported (``cites_what_this_run_did_not_return``;
   no citation at all: ``cites_no_evidence``).
 * Claim checks: every claim's value goes through ``claim_checks.check_items`` by

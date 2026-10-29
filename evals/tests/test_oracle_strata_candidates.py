@@ -1,5 +1,5 @@
 """Root-first mail and SharePoint strata over live-shaped readers find their candidates
-(gap-04f9b49ebae9, gap-f713876847b6; directives f6427307e9b0, a108c9b752a2). Fixture world
+(gap-04f9b49ebae9, gap-f713876847b6; a108c9b752a2). Fixture world
 and fake Graph readers behind the real ``LiveDocuments``; injected, not live.
 
 Live 2bf15f5 and 2d141d7 searched 23-24 closed roots per source and found 0-1 mail and
@@ -315,7 +315,7 @@ class StrataCandidatesTest(unittest.TestCase):
         self.assertFalse(sampled["purchaseOrders"]["complete"])   # 20 older ones left
 
     def test_a_portal_po_and_its_bc_twin_are_one_root_another_vendors_order_names_neither(self):
-        # Directive 8574b3a82d8f item 1: the Portal's BC drain numbers the BC order by the
+        # The Portal's BC drain numbers the BC order by the
         # Portal PO number, so a mail naming that number named "two records" and lost the PO.
         # The BC order the walk from the PO finds (its own vendor, one company) is the PO's
         # twin: the mail names the PO. A same-numbered BC order of another vendor is a record

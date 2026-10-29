@@ -1,6 +1,6 @@
 {
  "schema": "plx-case-originals-card-sources/v1",
- "note": "Generator input of scripts.case_originals registry --card-sources: the originals an eval case card names that no source-pin record lists. A chat_attachment is pinned by the advisory record it names (source_id, source_revision, the chat message among its evidence) and read through its content URL; a gap is a named gap row. Ids, names and pins only: no file body or secret.",
+ "note": "Generator input of scripts.case_originals registry --card-sources: the originals an eval case card names that no source-pin record lists. A chat_attachment is pinned by the source record it names (source_id, source_revision, the chat message among its evidence) and read through its content URL; a rendered_artifact is a claude.ai artifact held as its complete rendered text in the source record it names (source_text; source_revision rendered-text-sha256), pinned only when that record proves the SHA-256, size and rendered character count, and read from the record at its commit; a gap is a named gap row. Ids, names and pins only: no file body or secret.",
  "entries": [
   {
    "case": "brand-requirements",
@@ -21,32 +21,44 @@
   },
   {
    "case": "rnd-maps",
-   "gap": {
-    "item": "Allison Tam's R&D process map: R&D bi-weekly meeting agenda preparation",
+   "rendered_artifact": {
+    "name": "R&D bi-weekly meeting agenda preparation map, complete rendered text.txt",
     "owner": "Allison Tam",
-    "source": "claude.ai artifact, known only from an artifact-invitation email",
-    "evidence": "advisory:d7076d889756",
-    "status": "no bytes held or pinned: the map exists only as an artifact-invitation email, so its SHA-256 is unknown"
+    "repository": "tswaterloo/OntologyProject",
+    "bytes": 27274,
+    "sha256": "a2d0981962e8cecf2c1ea9a61451a711ed1cdcd6ee3b14ae3f6d36dbb79e3446",
+    "advisory": {
+     "commit": "57bce1d4cd7dcf56d58800f6a20f5bdc740b5765",
+     "path": "context/d7076d8897560e9c362ad0ee6cdfc810209b31313db58cc50360bf20e8784818.json"
+    }
    }
   },
   {
    "case": "rnd-maps",
-   "gap": {
-    "item": "Erin's R&D process map: Raw material samples: from request to used up",
+   "rendered_artifact": {
+    "name": "Raw material samples map (request to used up), complete rendered text.txt",
     "owner": "Erin",
-    "source": "claude.ai artifact, known only from an artifact-invitation email",
-    "evidence": "advisory:c034c7ea5fa6",
-    "status": "no bytes held or pinned: the map exists only as an artifact-invitation email, so its SHA-256 is unknown"
+    "repository": "tswaterloo/OntologyProject",
+    "bytes": 26443,
+    "sha256": "60cfb8f77f4ff6577ff60c2b44810edeaca3e0a8ea56ede18f2996de384d57b7",
+    "advisory": {
+     "commit": "81c7833e16a3586f6fceb8eb5d7bd545b478ea0f",
+     "path": "context/c034c7ea5fa6c3dcd351dbc59fa2a7a028838c29a2d93449b18eb7a47527c74e.json"
+    }
    }
   },
   {
    "case": "rnd-maps",
-   "gap": {
-    "item": "Giulia's R&D process map: Ingredient lists, from sample made to IL in the customer's hands",
+   "rendered_artifact": {
+    "name": "Ingredient lists map (sample made to IL with the customer), complete rendered text.txt",
     "owner": "Giulia",
-    "source": "claude.ai artifact, known only from an artifact-invitation email",
-    "evidence": "advisory:13be54ca81d2",
-    "status": "no bytes held or pinned: the map exists only as an artifact-invitation email, so its SHA-256 is unknown"
+    "repository": "tswaterloo/OntologyProject",
+    "bytes": 30576,
+    "sha256": "28145aacc2c6f35203766e2936779676f2329348b266bec1974d12b99a988064",
+    "advisory": {
+     "commit": "d7af7e5482d5adaa51c55654c44c2c9d826e4806",
+     "path": "context/13be54ca81d248b5e1be017e58f20892cf37acf838943afbba58151528297a02.json"
+    }
    }
   }
  ]

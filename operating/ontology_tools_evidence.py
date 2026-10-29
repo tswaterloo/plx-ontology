@@ -1,10 +1,10 @@
 """Generic evidence tools ``plx.identity``, ``plx.documents`` and ``plx.read``.
 
-10-DECISION decisions 3, 4 and 7; 07-ONTOLOGY-DESIGN C.8; the frozen I/O contracts in
+07-ONTOLOGY-DESIGN C.8; the frozen I/O contracts in
 ``operating/ontology_tool_contracts.json`` (every output is validated with
 ``ontology/json_contract.py`` and bounded by ``limits.max_result_bytes`` before it
-leaves). The three tools reuse lane L8's reader and policy (``ontology_tools``) and
-lane L9's from-T visibility SQL (``ontology_tools_traverse``): one permission rule for
+leaves). The three tools reuse L8's reader and policy (``ontology_tools``) and
+L9's from-T visibility SQL (``ontology_tools_traverse``): one permission rule for
 every generic tool. Nothing here names an object type, identifier kind, link type or
 case: anchors, identity keys, display properties and document types come from the
 compiled schema and the store rows.
@@ -122,7 +122,7 @@ capture holds of it for this reader (``mailbox_not_captured``,
 ``mailbox_capture_incomplete`` with its reasons such as ``forbidden``, or
 ``not_in_captured_folders``; ING-06).
 
-Source text is data (10-DECISION 7, ``operating/injection_guard.py`` rule 2): every
+Source text is data (``operating/injection_guard.py`` rule 2): every
 string read from a source leaves inside an ``untrusted_text`` envelope with its origin
 citation and field path; every field of a document citation (mail, SharePoint,
 original) is enveloped, because an author wrote all of it. Typed row values of
@@ -1037,7 +1037,7 @@ class EvidenceTools:
 
     ``base``: the host's L8 ``OntologyTools`` (store, policy, item gate, schema,
     grammar, contracts, clock); ``traverse``: its L9 ``TraverseTools`` (built when not
-    given), whose from-T visibility rules this lane applies; ``reader``: a
+    given), whose from-T visibility rules this module applies; ``reader``: a
     ``CitationReader`` for ``plx.read`` and operator originals (without one,
     ``plx.read`` answers ``unresolvable`` with a ``source_not_configured`` gap)."""
 
@@ -1847,7 +1847,7 @@ class EvidenceTools:
         whether a range was cut by its cap. The lookup is plx.find's (``_lead_matches``):
         ``same_number_prefixes`` bound the index range ``StoreReader.identifiers_by_prefix``
         reads, ``ontology.resolve.SameNumberIndex`` decides which rows are twins; the rows
-        then pass this lane's from-T visibility and the item gate, as every row here does.
+        then pass these from-T visibility and the item gate, as every row here does.
         A range holding more than ``LEAD_SCAN_CAP`` rows is cut: the rows past the cap
         are never read, so whether one is a twin is unknown and the cut is reported."""
         from ontology.resolve import SameNumberIndex
@@ -2367,7 +2367,7 @@ def text_not_extracted(read: Mapping[str, Any], handle: str, wanted: str | None
 
 def skipped_gap(subject: str, skipped: Mapping[str, Any]) -> dict[str, Any]:
     """The typed partial-text gap of a reading capped by pages (``skipped_by_cap``:
-    ``first_page``, ``last_page``, ``limit``; devloop/DECISIONS/pdf-cap-readers-contract.md)."""
+    ``first_page``, ``last_page``, ``limit``)."""
     first, last = skipped.get("first_page"), skipped.get("last_page")
     pages = f"pages {first}-{last}" if first is not None else "pages past the page cap"
     read = f"pages 1-{first - 1}" if isinstance(first, int) else "its first pages"
@@ -2675,7 +2675,7 @@ def _document_order(doc: Mapping[str, Any]) -> tuple:
 # --------------------------------------------------------------------------- host wiring
 
 def tool_specs(contracts: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
-    """MCP tool listings (name, description, inputSchema) for this lane's tools."""
+    """MCP tool listings (name, description, inputSchema) for these tools."""
     contracts = contracts or ot.load_contracts()
     return [{"name": name, "description": contracts["tools"][name]["description"],
              "inputSchema": ot._inline_defs(contracts["tools"][name]["input"], contracts),

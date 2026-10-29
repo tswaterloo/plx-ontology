@@ -1,4 +1,4 @@
-"""PO lateness (lane po-lateness-model): due, promised, revised and received dates of a
+"""PO lateness: due, promised, revised and received dates of a
 purchase order and its lines, the verdict against the governing date with its reason
 chain, ``po_delivery_window`` for an unnamed ``plx.process`` call on an open PO, the
 ``processes`` section of ``plx.schema`` and the stored ``late_po`` investigate plan.
@@ -153,7 +153,7 @@ class DueDateTests(Base):
     def test_a_po_whose_only_due_date_is_sage_exparrival_is_late_after_it(self):
         s = tp.Store()
         sage = sage_po(s, due="2099-01-15")
-        # a Sage-only PO is unknown, not open: no verdict (decision 2026-10-21-po-open-sage-fm)
+        # a Sage-only PO is unknown, not open: no verdict
         entry = self.late(s, sage)
         self.assertEqual((entry["state"], entry["late"], entry["gap"]["reason"]),
                          ("undetermined", None, "status_unknown"))

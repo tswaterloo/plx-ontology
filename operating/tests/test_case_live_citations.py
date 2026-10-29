@@ -35,7 +35,7 @@ VINCE = frozenset({"staff:vince", "staff:shared"})
 SHARED = frozenset({"staff:shared"})
 QDRIVE = quote(DRIVE, safe="")  # citations percent-encode the drive id  # in every case audience, granted no live source
 AO_PDF = b"%PDF-1.4\n% synthetic AO-26005B scan\n" + b"x" * 200
-BODY = "Hello Vince,\nConfirmed PO5447: 50,000 pcs, ship 25 Oct.\n"
+BODY = "Hello team,\nConfirmed PO5447: 50,000 pcs, ship 25 Oct.\n"
 BC_BASE = f"/v2.0/{TENANT_ID}/Production/api/v2.0"
 SP_BASE = f"/v1.0/drives/{DRIVE}"
 DOWNLOAD = f"https://{SP_HOST}/sites/QCQA/_layouts/15/download.aspx?tempauth=DL-do-not-leak"

@@ -160,11 +160,11 @@ class FinanceErrorCountTests(unittest.TestCase):
 
     def test_an_expected_refusal_is_reported_and_an_unexpected_one_fails_at_once(self):
         """The 2026-10-07..10 dailies' four errors: payment journals of companies 1 and 2
-        refused (capture: source_refused) while company 0 served them. Decided
-        (architect-20261011T0021Z): such a refusal is named by entity set, company and BC
+        refused (capture: source_refused) while company 0 served them. Decided:
+        such a refusal is named by entity set, company and BC
         code; the spec lists the ones it expects (as data), which are reported and not
         counted; any other fails the check at once, never a blocked window. Scoped by
-        company (architect-20261011T1421Z): one company's listed refusal never excuses
+        company: one company's listed refusal never excuses
         another company's refusal of the same set with the same code."""
         refusals = [(CO[1], JOURNALS[0]), (CO[2], JOURNALS[0]), (CO[2], JOURNALS[1])]
 
@@ -239,7 +239,7 @@ class FinanceErrorCountTests(unittest.TestCase):
         """gap-1b49174b629f: the dailies of 2026-10-11 recorded the payment journals of
         companies 1 and 2 as HTTP 400, code ``other``, nothing more. The probe records the
         BC code and the class of the BC message (never its text, which carries names and
-        filter values) on every refusal row, as diagnosis only (architect-20261013T0921Z):
+        filter values) on every refusal row, as diagnosis only:
         the classes are English patterns no live message confirmed, so a 400 naming a
         missing journal template or batch is expected only for the company a spec
         ``--expected-refusal`` entry lists (book, set, BC code), never for its message."""
@@ -331,7 +331,7 @@ class FinanceErrorCountTests(unittest.TestCase):
 
     def test_a_journal_400_names_bc_code_and_request_and_an_unsupported_read_is_never_sent(
             self):
-        """gap-1b49174b629f, directive 45164d782902: every bc.ledgers record named the payment
+        """gap-1b49174b629f, Every bc.ledgers record named the payment
         journals of consol and distribution refused 400 with code ``other`` (BC's code was
         outside the vocabulary), so no ``--expected-refusal`` entry could cite one. The probe
         records BC's own platform code ``<Category>_<Name>`` as its token, never a code that
@@ -422,7 +422,7 @@ class FinanceErrorCountTests(unittest.TestCase):
                                           retry=bc_read.ProbeBackoff(sleep=clock.unit_sleep,
                                                                      timer=clock)), 0)
         self.assertEqual(json.loads(out.getvalue())["finance_errors"], 0)
-        # The company-less form scoped nothing (architect-20261011T1421Z): refused too.
+        # The company-less form scoped nothing: refused too.
         for bad in (f"{JOURNALS[0]}:bad_request", f"unpinned:{JOURNALS[0]}:bad_request",
                     "consol:purchaseOrders:bad_request", f"consol:{JOURNALS[0]}:other",
                     f"consol:{JOURNALS[0]}:NotACode", f"consol:{JOURNALS[0]}:bad_request:x",
@@ -883,7 +883,7 @@ class PassResumeTests(unittest.TestCase):
 
 class UnservedEntityTests(unittest.TestCase):
     def test_a_company_that_does_not_serve_a_set_is_a_blocked_part_not_a_finance_error(self):
-        """Directive 4b59246fac05, daily d298b51: the payment journals of companies 1 and 2
+        """The payment journals of companies 1 and 2
         answered 400 with BC code internal_data_not_found_filter to a plain $top=1 read that
         company 0 serves. The request is not at fault, so the company does not serve the
         set: a blocked part (relation_unavailable) named by book and set, classified by the

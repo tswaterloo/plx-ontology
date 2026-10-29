@@ -9,7 +9,7 @@ undo retracts it. Nothing here creates a link on its own.
 
 Evidence label: isolated-fixture (SYNTHETIC PDFs on an injected SharePoint drive, Portal
 rows from a static source), and injected-transport for the live-check command
-(``devloop/live-checks/case.human_link.json`` over a FakeWorkbench and an injected Graph
+(live check ``case.human_link`` over a FakeWorkbench and an injected Graph
 drive, replayed through the live verifier). Nothing here is live.
 """
 from __future__ import annotations

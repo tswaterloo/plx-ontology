@@ -3,7 +3,7 @@
 ``evals/dev/ricardo-maps/proposed_items.json`` holds the questions on the three October 2
 process-map packages and five original-backed anchors, each naming its missing outcome;
 ``ontology_gaps.json`` names what the ontology lacks. The contract is the Asset Tracker
-cards' checker; the related advisories are cited as the first, as in the procure-to-GL set.
+cards' checker.
 """
 
 from __future__ import annotations

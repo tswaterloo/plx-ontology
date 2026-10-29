@@ -5,7 +5,7 @@ Evidence label: ``injected-transport`` for SharePoint (the real GET-only
 the adapter tests) and the Portal rows (``FakeWorkbench``), ``isolated-fixture``
 for the packet bytes and their page text: six synthetic PDFs marked
 "SYNTHETIC TEST FIXTURE" and a stub extractor standing in for OCR. Nothing here
-is live data; ``devloop/live-checks/ao-originals.json`` is what the live verifier
+is live data; live check ``ao-originals`` is what the live verifier
 runs.
 """
 

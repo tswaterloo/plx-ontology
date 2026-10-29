@@ -1,7 +1,7 @@
 """Entra access tokens for the remote MCP host and the console: the Workbench as an OAuth
 resource server.
 
-Lead decision devloop/DECISIONS/2026-10-05-employee-door.md (D1): an employee signs in
+An employee signs in
 with Entra and the MCP client presents the Entra-issued access token on every request
 (MCP authorization, spec revision 2025-06-18; RFC 6750 bearer use, RFC 9728 protected
 resource metadata, RFC 8707 audience binding). The Workbench mints no token of its
@@ -32,7 +32,7 @@ PLX-confirmed policy file); the token's own name claims (``upn``,
 The JWKS is configuration: a file the operator keeps current (``JwksFile``, re-read
 when it changes) or keys injected by a test (``StaticJwks``). Fetching Entra's
 discovery keys is not done here: no HTTP client outside the GET-only module
-(devloop/CONTEXT/06-LIVE-SOURCES.md, hard guards), and an unknown key fails closed.
+(hard guards), and an unknown key fails closed.
 
 The console (``operator_ui.case_console --entra-resource``) accepts the same token from an
 employee signed in with their PLX Microsoft account: ``entra_session`` with
@@ -44,8 +44,7 @@ unset fields, and ``EntraResource.from_file`` refuses a file with any
 (``EntraResourceUnset``), so a half-configured resource verifies nothing. Sign-in uses the
 existing app registration (tenant, client id, Application ID URI and the delegated scope
 are committed); the host's resource URI and the tenant's JWKS file wait for the hosting VM,
-and the console's redirect URI with them: later ask ``console-entra-app-registration``
-(devloop/DECISIONS/2026-10-20-a9-console-signin-proof.md).
+and the console's redirect URI with them: later ask ``console-entra-app-registration``.
 
 Evidence: isolated-fixture (tokens signed in the tests with a generated key);
 live-unverified (no Entra app registration for the Workbench yet).

@@ -1,0 +1,42 @@
+# PLX Workbench API (operator_api), behind Caddy. Not enabled by the build.
+# Runs as the dedicated unprivileged user plx-workbench (deploy/README.md).
+# The serve flags (mode, state directory, Entra resource file) live in
+# /etc/plx/workbench-api.env as PLX_API_ARGS, so this file holds no secrets.
+#   demo over fixtures:  PLX_API_ARGS=--mock
+#   production:          PLX_API_ARGS=--entra-resource /etc/plx/entra-resource.json --state-dir /var/lib/plx-workbench/state
+# If the state directory lives elsewhere, add it with a drop-in:
+#   sudo systemctl edit plx-api   ->   [Service]  ReadWritePaths=/that/dir
+[Unit]
+Description=PLX Workbench API (operator_api)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=plx-workbench
+Group=plx-workbench
+WorkingDirectory=/data/OntologyProject
+EnvironmentFile=/etc/plx/workbench-api.env
+ExecStart=/usr/bin/env python3 -m operator_api serve --bind 127.0.0.1 --port 8780 $PLX_API_ARGS
+Restart=on-failure
+RestartSec=3
+
+# Hardening: read-only everywhere except the API's own state directory.
+StateDirectory=plx-workbench
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/plx-workbench
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

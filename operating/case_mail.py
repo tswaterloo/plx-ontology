@@ -7,7 +7,7 @@ mail belongs to this case, what did it carry, and who was on it", using only
 what the actor may read now:
 
 * **Which mail.** The versioned mail capture (``integrations.capture_mail``,
-  the one L1 mail store; decision 2026-10-02-mail-and-mentions-store) is the
+  the one L1 mail store) is the
   index, read *as the case reader* (its live audience over the mailbox
   identities and owner ACL recorded at capture) and narrowed to the case mail
   scope: nothing is listed again from a mailbox, and the capture's own

@@ -1,4 +1,4 @@
-"""Versioned mail capture (lane L3) over an injected Graph transport.
+"""Versioned mail capture (L3) over an injected Graph transport.
 
 No network and no credentials: every request goes to an in-process fake Graph
 (directory, folder lookup, message delta with skip/delta tokens, message and
@@ -666,7 +666,7 @@ class VersionIntegrityTests(CaptureCase):
         self.assertEqual(box["truncated_attachment_lists"], 0)
 
     def test_truncated_attachment_list_is_durable_retried_and_never_complete(self):
-        # Dot finding capture-mail-attachment-pagination: 51 attachments over a
+        # 51 attachments over a
         # listing cap of 50, then a re-observed unchanged changeKey.
         atts = [file_attachment(f"ATT-{i:02d}", content=f"c{i}".encode()) for i in range(51)]
         self.graph.put(BOX_A, "MSG-1", "CK-1-1", attachments=atts)
@@ -703,7 +703,7 @@ class VersionIntegrityTests(CaptureCase):
         self.assertEqual(len(view["attachments"]), 51)
 
     def test_listing_cut_at_the_hard_cap_is_capped_after_two_relists(self):
-        # Review of 4665b18: a message with more attachments than the hard cap must
+        # A message with more attachments than the hard cap must
         # not be re-listed forever, yet its folder stays incomplete.
         atts = [file_attachment(f"ATT-{i:02d}", content=f"c{i}".encode()) for i in range(51)]
         self.graph.put(BOX_A, "MSG-1", "CK-1-1", attachments=atts)

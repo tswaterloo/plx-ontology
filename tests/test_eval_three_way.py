@@ -4,7 +4,7 @@ Evidence label: ``isolated-fixture`` (injected transport). The oracle side reads
 synthetic world of ``evals/oracle/fixture_world.py``; the product side is an injected tool
 call (plx.find + plx.process answers shaped like the contract) or the real case host tool
 table over a projection built from the same world. Nothing here is live;
-``devloop/live-checks/eval.unfamiliar_sample.json`` stays live-unverified.
+live check ``eval.unfamiliar_sample`` stays live-unverified.
 """
 
 from __future__ import annotations

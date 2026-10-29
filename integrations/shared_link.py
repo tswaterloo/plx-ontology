@@ -23,7 +23,7 @@ Probe (``python3 -m integrations.shared_link probe``; counts and booleans only):
 resolves the ``webUrl`` of one root file (<= 1 MB) of ``SHAREPOINT_DRIVE_ID``
 through ``/shares/`` and compares item and sha256 with the drive's own
 download-URL read. Live-unverified until
-``devloop/live-checks/graph.shared_link_read.json`` passes.
+live check ``graph.shared_link_read`` passes.
 """
 
 from __future__ import annotations

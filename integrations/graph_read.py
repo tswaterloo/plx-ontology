@@ -29,8 +29,8 @@ the drive eTag (consumed by ``operating.doc_metadata``).
 ``SharePointReader.library_columns`` reads a whole library's column definitions
 and a newest-first list-item sample (which Portal-taxonomy columns exist, which are
 empty, how often each is filled; counts only), for an actor covering the whole drive.
-They are live-unverified until ``devloop/live-checks/graph.sharepoint_listitem.json``
-and ``devloop/live-checks/graph.sharepoint_library_columns.json`` pass.
+They are live-unverified until live check ``graph.sharepoint_listitem``
+and live check ``graph.sharepoint_library_columns`` pass.
 
 Mail delta paging: ``GraphMailReader.message_delta`` reads one folder's
 ``messages/delta`` stream page by page with no page cap (``$select``
@@ -39,21 +39,21 @@ every server link and every resumed cursor against the folder's own delta
 collection, and yields ``next_url`` / ``delta_url`` for the caller to store.
 ``integrations.capture_mail`` builds the versioned L1 mail capture on it
 (``python3 -m integrations.graph_read mail-capture ...``; counts only).
-Live-unverified until ``devloop/live-checks/graph.mail_capture.json`` passes.
+Live-unverified until live check ``graph.mail_capture`` passes.
 ``integrations.capture_sharepoint`` builds the versioned SharePoint capture on
 ``SharePointReader`` (``... sharepoint-capture ...``; counts only), live-unverified
-until ``devloop/live-checks/capture.sharepoint.json`` passes; after a full walk it
+until live check ``capture.sharepoint`` passes; after a full walk it
 follows the drive's change feed (``SharePointReader.drive_delta``). ``SharePointSites``
 enumerates the sites and document libraries the app may read for its estate discovery.
 ``integrations.capture_breadth`` runs both over the whole capture scope
 (``... capture-breadth ...``), live-unverified until
-``devloop/live-checks/capture.breadth.json`` passes.
+live check ``capture.breadth`` passes.
 ``integrations.capture_teams`` captures Teams channel and chat messages on the
 same ``SourceApi`` (``... teams-capture ...``; counts and blocked parts only),
-live-unverified until ``devloop/live-checks/graph.teams_capture.json`` passes.
+live-unverified until live check ``graph.teams_capture`` passes.
 ``integrations.capture_sharepoint_lists`` captures the items of the SharePoint lists its
 scope names (``... sharepoint-list-capture ...``; counts and blocked parts only),
-live-unverified until ``devloop/live-checks/capture.sharepoint_list_items.json`` passes.
+live-unverified until live check ``capture.sharepoint_list_items`` passes.
 
 Probe (operator shape check for the credentialed auditor; prints counts, key
 names and booleans only — no subjects, bodies, names or ids):

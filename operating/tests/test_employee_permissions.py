@@ -320,7 +320,7 @@ KEYWORDS = ["purchas", "procure", "buyer", "sourcing"]
 
 class JobTitleTests(unittest.TestCase):
     """staff:purchasing = Portal PROC members OR an Entra job title naming a keyword, never
-    an excluded person (supervisor decision 2026-10-27; entra_job_title_keywords)."""
+    an excluded person (entra_job_title_keywords)."""
 
     POLICY = {**POLICY, "principals": {**POLICY["principals"], "staff:purchasing": rule(
         "VIEW_OPERATIONS", "operations.procurement", [DEPT_PROC],

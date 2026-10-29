@@ -1,7 +1,6 @@
-"""Identifier mentions projected from cited document captures (lane L16).
+"""Identifier mentions projected from cited document captures (L16).
 
-10-DECISION 3 and 7, 09-CRITIQUE R3 and R6, 07-ONTOLOGY-DESIGN C principle 5 and
-C.2 (``Document mentions any object``). A *mention* is a span of captured
+A *mention* is a span of captured
 document text that names an identifier. It is machine-extracted, never a fact,
 and it reaches an object only as a candidate of the identity layer.
 
@@ -69,8 +68,7 @@ What it decides
   when it may read every record the corroborating features cite
   (:func:`corroboration_handles`, :func:`reader_view`), whatever else the link cites.
 
-Stored links (:func:`store_mention_links`, decision 2026-10-02-mail-and-mentions-store
-#2): a ``build_store`` ``post_project`` step writes every mention as ``lead`` links of
+Stored links (:func:`store_mention_links`): a ``build_store`` ``post_project`` step writes every mention as ``lead`` links of
 the declared ``Email.mentions_<type>`` link types into the same store generation (then
 raises those the features corroborate, :func:`corroborate_links`), so
 ``plx.object`` and ``plx.around`` reach them; candidates come from the generation's
@@ -112,7 +110,7 @@ DOCUMENT_KINDS = ("email", "attachment", "sharepoint_file", "container_member", 
 # Why a producer withheld a document's text (``Document.text_withheld``): one known form,
 # ``pdf_pages_skipped_by_cap:<first>-<last>``.
 WITHHELD_PAGES_SKIPPED = "pdf_pages_skipped_by_cap"
-# Facts an external assertion can never confirm by itself (09-CRITIQUE R6 #4).
+# Facts an external assertion can never confirm by itself.
 EXTERNAL_UNCONFIRMABLE = ("payment", "receipt", "quantity")
 # Tiers at which internal evidence may confirm a payment/receipt/quantity fact.
 CONFIRMING_TIERS = ("verified", "reviewed", "corroborated")
@@ -321,7 +319,7 @@ class Document:
     copy_key: tuple[str, ...] | None = None
     # Why the file's text is not among ``fields`` although it was read (a producer with
     # no gap channel withholds a partial reading: ``pdf_pages_skipped_by_cap:<first>-
-    # <last>``, devloop/DECISIONS/pdf-cap-readers-contract.md); None otherwise.
+    # <last>``); None otherwise.
     text_withheld: str | None = None
 
     def __post_init__(self) -> None:
@@ -1734,7 +1732,7 @@ def _reference_mention(mention: Mapping[str, Any], cited: Any) -> dict[str, Any]
 
 def propose_reference_aliases(conn: Any, unanswered: Mapping[str, Sequence[Mapping[str, Any]]],
                               aliases: Any = None) -> dict[str, Any]:
-    """Alias leads (ROADMAP A10; decision 2026-10-19-reference-alias-leads): a document
+    """Alias leads (the acceptance bar): a document
     version (``unanswered``: version handle -> its mentions of a ``reference_alias``
     kind no index row or reviewed alias answers now) whose current mention links reach
     exactly one object of a type the kind's ``reference_alias`` names, at tier

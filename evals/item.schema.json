@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "plx-eval-item/v1",
   "title": "PLX evaluation item (C0 contract, frozen)",
-  "description": "One evaluation question (09-CRITIQUE R7, 10-DECISION decision 8). Dev items (60, visible) live in the repo; held-out items (120) are generated and stored only in the credentialed live environment and must never be committed. Validated with ontology/json_contract.py (stdlib, imports nothing else from the repo; the oracle lane loads it by file path from scripts/, so evals/oracle/ itself never imports ontology/).",
+  "description": "One evaluation question. Dev items (60, visible) live in the repo; held-out items (120) are generated and stored only in the credentialed live environment and must never be committed. Validated with ontology/json_contract.py (stdlib, imports nothing else from the repo; the oracle loads it by file path from scripts/, so evals/oracle/ itself never imports ontology/).",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -30,7 +30,7 @@
     },
     "id": {
       "type": "string",
-      "pattern": "^(?:dev|ho)-F[1-9][0-9]?-[0-9]{4}(?:-[a-z0-9]{1,16})?$"
+      "pattern": "^(?:dev|ho)-F[1-9][0-9]?-[0-9]{4}(?:-m[1-9])?(?:-[a-z0-9]{1,16})?$"
     },
     "family": {
       "$ref": "#/$defs/family"
@@ -60,7 +60,7 @@
     },
     "parent_id": {
       "type": "string",
-      "pattern": "^(?:dev|ho)-F[1-9][0-9]?-[0-9]{4}(?:-[a-z0-9]{1,16})?$"
+      "pattern": "^(?:dev|ho)-F[1-9][0-9]?-[0-9]{4}(?:-m[1-9])?(?:-[a-z0-9]{1,16})?$"
     },
     "perturbation": {
       "type": "object",
@@ -548,7 +548,7 @@
   ],
   "$defs": {
     "lineage": {
-      "description": "Where an L1 record or L2 value came from (09-CRITIQUE R1, plus `workbench` for records the Workbench itself authors: cases, review decisions, annotations). `bc_<company>` names the BC Production company (R15: the company/book is a dimension of every BC-sourced object). `mission_control` is a record read through a Mission Control read tool, `brain` a record read from the brain's agent knowledge GET routes (integrations/knowledge_source.py): engineering/agent work records and derived knowledge, never business facts.",
+      "description": "Where an L1 record or L2 value came from (plus `workbench` for records the Workbench itself authors: cases, review decisions, annotations). `bc_<company>` names the BC Production company (R15: the company/book is a dimension of every BC-sourced object). `mission_control` is a record read through a Mission Control read tool, `brain` a record read from the brain's agent knowledge GET routes (integrations/knowledge_source.py): engineering/agent work records and derived knowledge, never business facts.",
       "anyOf": [
         {
           "type": "string",
@@ -820,7 +820,7 @@
         "values",
         "gaps"
       ],
-      "description": "What an oracle returns for one item. The oracle interface: oracle(item.root, item.as_known_at) -> oracle_result. Oracles (evals/oracle/) never import ontology/ and derive joins only from Portal FKs (devloop/CONTEXT/03-PORTAL.md)."
+      "description": "What an oracle returns for one item. The oracle interface: oracle(item.root, item.as_known_at) -> oracle_result. Oracles (evals/oracle/) never import ontology/ and derive joins only from Portal FKs."
     },
     "oracle_ref": {
       "type": "object",

@@ -1,6 +1,6 @@
 """Captured Microsoft Graph sources beside mail and SharePoint: attachments as cited
-mention documents (directive ddc3e0c36691 L4) and Teams channel and chat messages as a
-projection source (lanes gen-graph, teams-chat-projection).
+mention documents and Teams channel and chat messages as a
+projection source (teams-chat-projection).
 
 ``ontology.project.MailCaptures`` and ``SharePointCaptures`` project captured mail and
 SharePoint files as ``Email``, ``Attachment`` and ``SharePointFile`` objects (schema
@@ -47,20 +47,20 @@ Relation ``channelMessages``: one record per retained version of every channel m
 ``teams-channel://<team>/<channel>/<message>@<generation>-<capture-id>``, ``row`` the
 captured row (``capture_teams.message_row``) and ``audience_key`` the channel's unit
 ``teams:channel:<team>/<channel>``. Relation ``chatMessages`` (the chats of every account
-on the mail allowlist, ``devloop/DECISIONS/2026-10-07-ovs-teams-capture.md`` item 2) the
+on the mail allowlist) the
 same way per chat: path (chat, message), handle ``teams-chat://<chat>/<message>@...``, unit
 ``teams:chat:<chat>``. A reader needs that unit granted *and* passes the item gate per
 handle (``operating.case_runtime.CaseRuntime.resolve_citation`` over the Teams capture: the
 message's and the conversation's latest captured membership), as for mail and SharePoint.
 A channel or chat without a captured membership is never visible, so none of its messages
-is projected (``devloop/DECISIONS/2026-10-10-followup-decisions.md`` item 6).
+is projected.
 
 Relations ``chats`` and ``channels``: the conversation's own record (``capture_teams
 .CONVERSATION``: its topic or name, type, creation, latest message time and participants),
 one record per retained version, cited ``teams-chat://<chat>/conversation@...`` /
 ``teams-channel://<team>/<channel>/conversation@...`` in the conversation's own unit, so the
-same unit grant, latest membership and people exclusion gate it as gate its messages
-(decision ``devloop/DECISIONS/2026-10-27-teams-conversation-objects.md``). Relation
+same unit grant, latest membership and people exclusion gate it as gate its messages.
+Relation
 ``teams``: a team, read from the record of its first standard channel (by unit) with a
 captured membership: a standard channel's audience is the team's members; a team none of
 whose standard channels is captured is not projected. Completeness

@@ -1,4 +1,4 @@
-"""Typed document fields at the tool boundary (directive P2, ``ontology/document_fields.py``).
+"""Typed document fields at the tool boundary (``ontology/document_fields.py``).
 
 Crafted PDFs (reportlab) are captured as a mail attachment (``integrations.capture_mail``)
 and as SharePoint files (``integrations.capture_sharepoint``), both over injected Graph
@@ -479,7 +479,7 @@ class DocumentFieldsTests(unittest.TestCase):
 @unittest.skipUnless(importlib.util.find_spec("pypdf") and importlib.util.find_spec("reportlab"),
                      "document fields are read from PDFs: needs pypdf and reportlab")
 class BcOnlyComparisonTests(unittest.TestCase):
-    """Lead decision D2: no Portal row, so a confirmation's amount is compared with the
+    """No Portal row, so a confirmation's amount is compared with the
     purchase order Business Central holds (two companies reuse its number)."""
 
     def test_a_bc_only_purchase_order_is_compared_only_on_one_tax_basis(self):
@@ -850,7 +850,7 @@ class ClassStageTests(unittest.TestCase):
                       ["Northwind Retail Ltd", "To: PLX Manufacturing", "PURCHASE ORDER",
                        "PO Number: 4500000005", "Bill to: Northwind Retail Ltd"]):
             self.assertEqual(self.read(lines)["profile"], "customer_po")
-        # Dot 3c18207b: a recipient line names the addressee, never the issuer, and an
+        # A recipient line names the addressee, never the issuer, and an
         # explicit buyer that is no own party is the issuer, whatever block names PLX
         # above the title. Only the file's provenance makes such a PO the own party's.
         for number, lines in (
@@ -1065,7 +1065,7 @@ class MailDirectionTests(unittest.TestCase):
     def test_an_attachment_the_mailbox_sent_itself_projects_no_customer_po(self):
         issued = pdf([["PURCHASE ORDER", "PO Number: PO100771", "Date: 2026-09-02"]])
         received = pdf([["PURCHASE ORDER", "PO Number: 4500000002", "Date: 2026-09-02"]])
-        # Dot 3c18207b: a customer's PO addressed to PLX above its title, with its buyer.
+        # A customer's PO addressed to PLX above its title, with its buyer.
         addressed = pdf([["To", "PLX Manufacturing", "PURCHASE ORDER",
                           "PO Number: 4500000009", "Buyer: Northwind Retail Ltd"]])
         graph = tm.FakeGraph()
@@ -1135,8 +1135,7 @@ class MailDirectionTests(unittest.TestCase):
 @unittest.skipUnless(importlib.util.find_spec("pypdf") and importlib.util.find_spec("reportlab"),
                      "document fields are read from PDFs: needs pypdf and reportlab")
 class PageCapReadersTests(unittest.TestCase):
-    """Directive d82b7c38fc7b, readers contract (devloop/DECISIONS/
-    pdf-cap-readers-contract.md): a captured PDF over the page bound is read on pages
+    """A captured PDF over the page bound is read on pages
     1-200 and no reader is silent about the rest. A reader with gaps keeps the pages and
     a typed ``skipped_by_cap`` (documentFields: the ``pages`` gap and never
     ``not_stated`` for a field on an unread page; resolve rows: ``row.skipped_by_cap``);
@@ -1278,7 +1277,7 @@ class PageCapReadersTests(unittest.TestCase):
 @unittest.skipUnless(importlib.util.find_spec("pypdf") and importlib.util.find_spec("reportlab"),
                      "certificates are PDFs: needs pypdf and reportlab")
 class CoaLiveCheckTests(unittest.TestCase):
-    """``devloop/live-checks/ontology.document_fields_coa.json`` over the in-process
+    """live check ``ontology.document_fields_coa`` over the in-process
     FakeDrive: its expectations hold on the check's own output when a certificate is
     captured, and fail when none is (never a pass over no document)."""
 

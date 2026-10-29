@@ -123,7 +123,7 @@
     "question": "What does Allison's R&D bi-weekly agenda map cover, and what kind of evidence is it?",
     "criterion": "Attribute to Allison Tam's process map (step 8 of 8, updated 20 Oct 2026; reviewers Giulia Sellitto and Erin Rose): the cycle from the end of one Wednesday meeting to the agenda PDF posted in the R&D Bi-weekly Meeting chat, its three sections (R&D Updates, Ongoing Project Updates, Sourcing Updates) and up to 2 hours per cycle spent confirming lines by hand. Its portal lanes come from the PLX system reference, marked to confirm; it is a stakeholder process capture, not owner approval or verified portal behaviour.",
     "originals": [
-     "gap-1aefac272d36"
+     "co-8302d5d6b9e4"
     ],
     "live_sources": [],
     "cites": [
@@ -150,7 +150,7 @@
     "question": "Which R&D projects are open, which are blocked, and which decisions are needed before the next meeting?",
     "criterion": "Open projects are the open Mission Control tasks of the R&D bucket with their cited stage (closed: merged, verified, cancelled); a blocker is a task with no change this cycle or waiting on a pending approval gate, which is listed as a decision needed with its requester. Name the Portal R&D project and task, the R&D KB Board (Planner) and 'waiting on (since when)' as sources the ontology does not hold; do not read blockers out of message text.",
     "originals": [
-     "gap-1aefac272d36"
+     "co-8302d5d6b9e4"
     ],
     "live_sources": [
      "mc.rnd_tasks",
@@ -180,7 +180,7 @@
     "question": "Can each line of the 14 Oct 2026 agenda be traced to the record it came from?",
     "criterion": "Missing outcome: the map traces only some lines (Soapbox lotion stability samples to the 13 Oct chain-of-custody email to Labofine; Guck Off intake to three Forms notifications of 2 Oct and the PDFs filed 5 Oct; No Pong and Three Ships sourcing to Sourcing's Teams message of 14 Oct, 9:19, edited 9:24). Lines written from memory or the KB Board link to nothing. Name the untraced lines as missing; do not infer a source.",
     "originals": [
-     "gap-1aefac272d36"
+     "co-8302d5d6b9e4"
     ],
     "live_sources": [
      "teams.rnd_chats",
@@ -196,7 +196,7 @@
     "question": "Did the 14 Oct review edits reach the Word working copy that seeds the next cycle?",
     "criterion": "Missing outcome in the ontology: per the map, three review edits (Guck Off benchmarks for scent matching, Merida Wellness kg pricing, the No Pong MOQ 400 kg note) are in the posted PDF and not in the Word copy, and Allison forgot the copy-back that time. Neither the Word copy nor the Canva design is a record the ontology holds; report the map's statement attributed, and the agenda record as absent.",
     "originals": [
-     "gap-1aefac272d36"
+     "co-8302d5d6b9e4"
     ],
     "live_sources": [],
     "cites": [
@@ -209,7 +209,7 @@
     "question": "What does Erin's raw material sample map cover, and what are its biggest gaps?",
     "criterion": "Attribute to Erin's Draft 5 (20 Oct 2026): request (FileMaker Request Sourcing email, direct ask or unprompted), receipt into the SharePoint Raw Materials Inventory log, use in lab batches, what is left. Biggest gaps: usage is never recorded, received quantity is a count, nothing shares a key across request, log row and sample card, requests have no status. The target is a stated choice, not built.",
     "originals": [
-     "gap-15999825ecff"
+     "co-ef51ec46eba3"
     ],
     "live_sources": [],
     "cites": [
@@ -236,7 +236,7 @@
     "question": "How much of R-1696 (WS Ouai St Barts U-18949) is left?",
     "criterion": "Missing outcome: received is logged as \"1\" with no unit on 17 Sep 2026, usage is only in lab notes (1.90 g in F-26-1206, 4.00 g in F-26-1208, other use unknown), so remaining is unknown. Name usage_not_recorded and received_is_a_count; never compute a remainder or treat 5.90 g as the total used.",
     "originals": [
-     "gap-15999825ecff"
+     "co-ef51ec46eba3"
     ],
     "live_sources": [
      "portal.sourcing_requests"
@@ -251,7 +251,7 @@
     "question": "Which request produced the U-18949 sample, and what was it based on?",
     "criterion": "Missing outcome: no Sourcing request exists; Giulia's email of 1 Sep 2026 to Parento names the oil-soluble original U-18165, and only the email thread connects it to the new water-soluble U-18949. Report the based-on link as the thread states it, the request record as absent.",
     "originals": [
-     "gap-15999825ecff"
+     "co-ef51ec46eba3"
     ],
     "live_sources": [
      "portal.sourcing_requests"
@@ -266,7 +266,7 @@
     "question": "What does Giulia's ingredient-list map cover, and what identity rule does it state?",
     "criterion": "Attribute to the R&D-reviewed draft of 16 Oct 2026: from sample made to IL in the customer's hands (Claude IL generator, SharePoint upload, QA allergens for fragrance or essential oil formulas, AM hand-off). Each formula number is one fixed version, one IL per formula number; old six-digit numbers in parentheses are legacy labels. Portal findings are unverified (repo not read).",
     "originals": [
-     "gap-7dc82f245571"
+     "co-6783155370e7"
     ],
     "live_sources": [],
     "cites": [
@@ -279,7 +279,7 @@
     "question": "Which formula version does each ingredient-list file resolve to, and which files are a version mix-up?",
     "criterion": "Each IL file (SharePointFile named 'IL -') resolves to the one formula number its name states; none or several is named, never guessed. Without FileMaker formula access the version stays named_unverified (formula_source_not_served) and the ingredient check cannot run (formula_lines_not_readable). Flag files of different content resolving to one number, and, when formula records are read, one number on two versions or one product name on several numbers.",
     "originals": [
-     "gap-7dc82f245571"
+     "co-6783155370e7"
     ],
     "live_sources": [
      "sharepoint.il_files",

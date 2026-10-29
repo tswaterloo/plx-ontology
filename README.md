@@ -6,7 +6,7 @@ documents) and get an answer with its source. It only reads; it never changes an
 ## How to use
 
 1. Open a terminal in this folder.
-2. Type `python3 -m operator_ui.case_console` and press Enter.
+2. Type `python3 -m operator_ui.tests.case_fixtures --fixture --seed-fixtures --state-dir /tmp/plx-demo --principal staff:operations` and press Enter (sample cases; the full guide shows how to run it on real data).
 3. Open the web address it prints.
 4. Pick a case or a customer, order or lot, and read the answer. Click a source to check it.
 5. If it says **missing** or **blocked**, the data isn't there yet. It never guesses.
@@ -16,6 +16,9 @@ Full guide: [`context/HOW-TO-USE.md`](context/HOW-TO-USE.md).
 
 ## What's new
 
+- **v0.11:** new web app (preview) with a chat-style ask box and sourced answers; typos and vague questions understood; disagreeing sources shown side by side; R&D maps readable.
+- **v0.10:** brand map readable; orders without a customer PO on the home list; approving proposed actions with a second approver.
+- **v0.9:** fresh data; shared briefs and zip maps readable again.
 - **v0.8:** process maps saved as web pages can be read; asking about a use case brings up its own documents first; much faster search; totals worked out from documents, with each figure quoted.
 - **v0.7:** faster answers; late-order answers cite the emails, files and Teams messages about the order; partial answers with sources instead of giving up.
 - **v0.6:** all mail and Teams read; "who is working on this order?" answered with the messages cited; answers state only what they could check.

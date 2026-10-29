@@ -11,8 +11,8 @@ Counts only, never a value, number, name or object id (``summarize``):
   a free-text PO, a document ``mention``). Each class is counted by tier, and
   ``company_capped`` counts the stored-key links held at lead because the record's BC
   company is not known (``bc_company_not_known``: a Portal row never states its BC
-  book). A stored key is a lead to a verified identity, never one by itself
-  (``devloop/DECISIONS/2026-10-19-reference-alias-leads.md``). ``competing`` counts the
+  book). A stored key is a lead to a verified identity, never one by itself.
+  ``competing`` counts the
   records with candidate links to two or more records of one link type. A candidate on
   a pair a stored-key link of the same type already joins (the projector stores links per
   binding) is not a candidate: ``candidates_on_stored_key`` counts those.

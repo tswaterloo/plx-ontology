@@ -6,7 +6,7 @@ splits its produced quantity by inference (``allocation_review_required``); a pe
 and sum, checked against the packet's own value and unit; a later rejection of the link
 takes a share back, and a lead naming another order (seen or hidden from the reader)
 never lets the whole value fall to one order. On one pair the latest of an allocation and
-a rejection is the only one in force (decision 2026-10-08-allocation-latest-decision). A
+a rejection is the only one in force. A
 mail its source deleted withdraws the reviews that cite it and ends the reviewed and
 mention links built on it, for plx.review, plx.find and plx.object alike, and a document's
 removal ends its document-field links. A v1 review store, written by the v1 code itself,
@@ -249,7 +249,7 @@ class AllocationTests(unittest.TestCase):
         self.assertIn("allocation_conflict", reasons)
 
     def test_a_lead_naming_another_order_is_never_auto_allocated(self):
-        # Review of aa7c5fcd: real packet -> order links are lead mentions. A lead naming
+        # Real packet -> order links are lead mentions. A lead naming
         # a second order makes the packet need allocations even when the other order is
         # reached at the floor (a person's accept_link, or a corroborated link).
         def link(packet, order, tier, kind="mention", n=[0], handles=()):

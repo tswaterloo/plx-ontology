@@ -3,7 +3,7 @@
 Evidence label: ``injected-transport``. The Portal path runs through the real
 ``WorkbenchReadApiClient`` with the fixture world's fetch; the BC path through the real
 ``BusinessCentralReader`` with the recorded-shape ``FakeSender``. Nothing here is live;
-``devloop/live-checks/eval.oracle_dev.json`` is live-unverified until the verifier
+live check ``eval.oracle_dev`` is live-unverified until the verifier
 records a pass.
 """
 
@@ -194,7 +194,7 @@ class EntryPointTest(unittest.TestCase):
         self.assertEqual(set(json.loads(err.getvalue())), {"error"})
 
     def test_a_dev_deadline_stops_reads_and_the_funnel_is_still_written(self):
-        """Live 8e61f78 (directive d5c79ab4644f): eval.oracle_dev timed out at 1500 s and left
+        """Live 8e61f78: eval.oracle_dev timed out at 1500 s and left
         no record of the stage that stopped it (7ced1fe7ab64 item 2). The spec's argv runs
         under a read deadline inside its timeout; reads cut by it stop (no transport call
         after it) and their strata say ``blocked: budget`` with their funnels, so the
@@ -354,7 +354,7 @@ class EntryPointTest(unittest.TestCase):
     def test_a_plain_guard_firing_mid_read_never_makes_a_portal_outage(self):
         """Only a ``Deadline`` guards each Portal page: a plain guard (a sampler's per-kind
         clock) that fires after a read's first page leaves that read whole, never
-        ``blocked: upstream`` (review of 713f4bf)."""
+        ``blocked: upstream``."""
         import argparse
         world, pages = dev.eval_world(), [0]
 
@@ -376,10 +376,10 @@ class EntryPointTest(unittest.TestCase):
         self.assertIsInstance(read["rows"], list)
 
     def test_a_deadline_stops_a_portal_read_at_its_next_page_through_the_public_hook(self):
-        """``build_live`` hands a ``Deadline`` to the client's public ``before_page`` hook
-        (directive 35cbb3e77fab): once the deadline passes inside a relation read, the
+        """``build_live`` hands a ``Deadline`` to the client's public ``before_page`` hook:
+        once the deadline passes inside a relation read, the
         read sends no further GET and is recorded ``blocked: budget``. The client is built
-        with that hook (directive 6face43dd5f9: the read alone also stopped through the
+        with that hook (The read alone also stopped through the
         private wrapper it replaced)."""
         import argparse
         from integrations import workbench_read_api
@@ -464,7 +464,7 @@ class LiveShapedStrataTest(unittest.TestCase):
                           .read_text(encoding="utf-8"))
 
     def test_a_named_empty_stratum_is_reported_with_its_source_and_still_fails(self):
-        # Owner rule 9ef52816ab90: an empty stratum names the source it tried, and the live
+        # An empty stratum names the source it tried, and the live
         # spec fails until all seven kinds have candidates.
         world = build_live_shaped_world()
         world.relations["public.receipt_raw_material"] = []
@@ -1285,10 +1285,10 @@ class DocumentOverlapTest(unittest.TestCase):
         self.assertEqual(sorted(reads), ["memo", "memo", "slip", "slip"])
 
     def test_a_part_scanned_pdf_without_ocr_is_partial_and_csv_and_long_texts_are_read(self):
-        """Review of c94224e: on a host without OCR a PDF with scanned pages counted as
+        """On a host without OCR a PDF with scanned pages counted as
         read; a .csv was no longer read and a text over the extractor's 100k characters
         failed (the old reader read 200k); a long OCR overran the text time.
-        Directive 0bfff43dc217 (5): a PDF read on its first pages only (the page bound) is
+        A PDF read on its first pages only (the page bound) is
         partial like a part-scanned one, its unread pages counted (all of them unknown when
         its page count cannot be told), never a whole read whose no-match is absence."""
         from integrations import captured_text as ct
@@ -1366,7 +1366,7 @@ class DocumentOverlapTest(unittest.TestCase):
                          (0, {"time_budget": 4}))
 
     def test_a_mail_body_of_another_change_key_is_not_attached_and_one_lookup_serves(self):
-        """Review of c94224e over the real GraphMailReader: a message edited between list
+        """A message edited between list
         and body read lent its new body to the listed record, and every body read looked
         the mailbox up again."""
         from integrations import graph_read
@@ -1870,7 +1870,7 @@ def run_heldout(state: Path, *extra: str, environ: dict | None = None) -> tuple[
 
 class HeldOutTest(unittest.TestCase):
     """The held-out path, keyless over the fixture world (``--source fixture``); live it
-    runs only in the credentialed verifier (devloop/live-checks/eval.heldout.json)."""
+    runs only in the credentialed verifier (live check ``eval.heldout``)."""
 
     @classmethod
     def setUpClass(cls):
@@ -2346,7 +2346,7 @@ class HeldOutTest(unittest.TestCase):
 
 class FreezeBudgetTest(unittest.TestCase):
     """A document kind whose share of the read time runs out is exhausted for the held-out
-    freeze (decision 2026-10-21-oracle-freeze-budget). Injected readers; not live."""
+    freeze. Injected readers; not live."""
 
     ENV = {"PLX_WORKBENCH_API_URL": "u", "PLX_WORKBENCH_API_KEY": "k"}
 

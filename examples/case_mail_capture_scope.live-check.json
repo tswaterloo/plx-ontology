@@ -1,6 +1,6 @@
 {
  "schema": "plx-mail-capture-scope/v1",
- "note": "Live-check scope for operating.case_mail (devloop/live-checks/case.mail_evidence.json): the allowlisted shared purchase-order@ mailbox, inbox and sent items, captured into the check's own temporary state directory by the versioned mail capture (integrations/capture_mail.py, Graph delta) over a 90-day first-round window (directive 9f804f59e9b4 found the inbox's newest message ~29 days old, so a short clock-anchored window can read nothing). The check bounds delta pages per folder with --capture-page-budget, so a large folder stops incomplete (reason page_budget), never silently complete. Configuration, never a grant: the capture principal still needs the live-source audience. Read-only.",
+ "note": "Live-check scope for operating.case_mail (live check ``case.mail_evidence``): the allowlisted shared purchase-order@ mailbox, inbox and sent items, captured into the check's own temporary state directory by the versioned mail capture (integrations/capture_mail.py, Graph delta) over a 90-day first-round window (so a short clock-anchored window can read nothing). The check bounds delta pages per folder with --capture-page-budget, so a large folder stops incomplete (reason page_budget), never silently complete. Configuration, never a grant: the capture principal still needs the live-source audience. Read-only.",
  "window_days": 90,
  "internal_domains": [
   "petrasoap.com",

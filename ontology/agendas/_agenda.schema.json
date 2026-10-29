@@ -14,7 +14,7 @@
   "description": {"type": "string", "minLength": 1, "maxLength": 2000},
   "source": {
    "type": "object", "additionalProperties": false, "required": ["advisory", "ref", "path"],
-   "description": "The process map this agenda follows (a pinned advisory context file).",
+   "description": "The process map this agenda follows.",
    "properties": {
     "advisory": {"type": "string", "pattern": "^advisory:[0-9a-f]{12}$"},
     "ref": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+@[0-9a-f]{7,40}$"},

@@ -27,7 +27,7 @@ another non-2xx, a nextLink that leaves the collection, a page or item cap, a
 malformed item, a disabled account) is ``unavailable`` with one reason from
 ``REASONS`` and no facts at all, so a caller can never mistake a partial list
 for the whole one. One exception: 403 on the membership read is the consent
-blocker (``GroupMember.Read.All``, devloop/PERMISSIONS.md), not an unknown
+blocker (``GroupMember.Read.All``), not an unknown
 user, so the user facts are kept and the groups are derived from the user's
 joined Teams (``group_basis`` ``joined_teams``: a team's id is its Microsoft
 365 group's id, and an M365 group has no nested groups). Those are positive
@@ -67,7 +67,7 @@ stays refused. The summary is counts, reasons and a status
 only, never an id or address.
 
 Evidence: injected-transport tests only; **live-unverified**
-(devloop/live-checks/graph.directory_entitlements.json).
+(live check ``graph.directory_entitlements``).
 """
 
 from __future__ import annotations
@@ -326,7 +326,7 @@ def approver_oid_fresh(read_at: Any, now: datetime) -> bool:
 def _transient(reason: str) -> bool:
     """A failure that says nothing about the user (5xx, throttling, transport). Every
     ``unreadable:*`` but ``record_invalid`` counts, a 401 from a broken credential too
-    (owner policy e251073ef3c5: not tightened): the earlier id it keeps still expires
+    (Not tightened): the earlier id it keeps still expires
     ``APPROVER_OID_MAX_AGE`` after its original read."""
     return reason.partition(":")[0] == "unreadable" and reason != "unreadable:record_invalid"
 

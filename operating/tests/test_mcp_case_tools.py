@@ -450,7 +450,7 @@ class PermissionTests(CaseToolsTestCase):
         self.assertEqual([item["id"] for item in view["findings"]["supported"]], ["F1"])
 
     def test_header_relations_gate_the_whole_case_on_the_current_source_audience(self):
-        """Regression (review of bb48071): a case whose question names an identifier
+        """Regression: a case whose question names an identifier
         held by a source relation records that relation; revoking the grant hides the
         case header from every read (get in each view, list), restoring shows it."""
         runtime = self.runtime()
@@ -1364,7 +1364,7 @@ class FreshnessMetaTests(ingest_fixture.IngestionTestCase):
                           unit["lag"]), ("sp.qcqa.aos", False, None, {}))
         self.assertEqual(report["summary"]["items_current"], 0)
         self.assert_no_identifiers(report)
-        # An item-ACL pattern under the folder hides counts too (review of a150368).
+        # An item-ACL pattern under the folder hides counts too.
         below = self.live(source_acl_required=[
             f"sharepoint:{ingest_fixture.DRIVE}:/AOs/2026 - AOs/Rejected*"])
         [sub] = self.status(self.session(QUALITY, live=below))["units"]
@@ -1375,7 +1375,7 @@ class FreshnessMetaTests(ingest_fixture.IngestionTestCase):
     def test_mailbox_restricted_by_another_identity_is_withheld(self):
         # The reader requires every directory identity (most restrictive wins):
         # a grant on the configured address does not open a mailbox whose object
-        # id is restricted to someone else (review of 79653a8, material 1).
+        # id is restricted to someone else (material 1).
         audiences = {**HOST_LIVE, f"mail:{ingest_fixture.USER_ID}": ["staff:exec"]}
         live = self.live(audiences)
         purchasing = self.status(self.session(PURCHASING, live=live))
@@ -1392,7 +1392,7 @@ class FreshnessMetaTests(ingest_fixture.IngestionTestCase):
         self.assertEqual(report["units"], [])  # never run: identity set unknown
 
     def test_restricted_subfolder_hides_counts_of_a_recursive_folder(self):
-        # Review of 79653a8, material 2: a narrower pattern below the folder wins.
+        # A narrower pattern below the folder wins.
         restricted = {**HOST_LIVE, f"sharepoint:{ingest_fixture.DRIVE}:/AOs/2026 - AOs/"
                                    "Rejected*": ["staff:exec"]}
         report = self.status(self.session(QUALITY, live=self.live(restricted)))
@@ -2004,10 +2004,10 @@ class CaseClaimModeTests(CaseToolsTestCase):
 
 
 class ReturnedEvidenceTests(door_tests.EmployeeDoorTestCase):
-    """Directive 2525f95213a0 item 1: a claim checked from an MCP session binds to the tool
+    """A claim checked from an MCP session binds to the tool
     evidence that session was returned, as the console's agent loop binds its answer, kept
-    only under the projection generation and grant it was read under (directive
-    ee652178ea40). Evidence label: ``isolated-fixture`` (the console's synthetic world, a
+    only under the projection generation and grant it was read under.
+    Evidence label: ``isolated-fixture`` (the console's synthetic world, a
     fixture employee's session server; one injected money value)."""
 
     server = loop_tests.AgentLoopTests.server

@@ -3,7 +3,7 @@
  "format": "plx-ontology-domain/v1",
  "domain": "fulfillment",
  "origin": "curated",
- "description": "Warehouse fulfilment documents of a gold sales order that the order lifecycle rail reads (portal/src/lib/sales-order/load-order-lifecycle.ts): ship releases (served) and pick lists (not served by the reporting API). Declared so the process stage graphs (ontology/schema/process/*.json) can name them; lane plx-process.",
+ "description": "Warehouse fulfilment documents of a gold sales order that the order lifecycle rail reads (portal/src/lib/sales-order/load-order-lifecycle.ts): ship releases (served) and pick lists (not served by the reporting API). Declared so the process stage graphs (ontology/schema/process/*.json) can name them.",
  "upstream_pins": {
   "plx-customer-portal": "38cd3f3"
  },

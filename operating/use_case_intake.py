@@ -49,8 +49,7 @@ text span, the questions found (lines ending in ``?``) and the case's
 evaluation split (``dev`` or ``held_out``, ``split_for``: from the case id only).
 A stub is labelled ``draft`` ``outcome_stated`` or ``no_stated_outcome`` (never an
 invented outcome) and carries ``artifact_complete``; stubs are placeholders for
-a person to confirm and never evaluation truth by themselves. Their file format is the documented hand-off to the evaluation
-lane (``operating/use_case_eval_stub.schema.json``); held-out stubs stay in the
+a person to confirm and never evaluation truth by themselves. Held-out stubs stay in the
 live state directory and are never committed. The eval tooling's entry point
 (``scripts.eval_use_case_items``, the live check's command) runs this scan and
 then rebuilds the evaluation items of the delivered cases (one
@@ -99,11 +98,11 @@ every scan up to ``FAILURE_RETRY_CAP`` attempts per eTag, and it stays counted
 is the commit point of a record/stub pair; sequence numbers are spent before
 any write, so a half-written pair never shares its ``intake_seq``. The
 intake runs when this CLI is invoked (cron or operator); the ingest worker
-only lists the unit. ``--dot-note`` prints a counts-only note text the controller may
-post; this module posts nothing. ``--peek`` does not advance the scan marker.
+only lists the unit. ``--dot-note`` prints a counts-only note text;
+this module posts nothing. ``--peek`` does not advance the scan marker.
 
 Evidence: tests use an injected transport; the live path is live-unverified
-until ``devloop/live-checks/ingest.use_cases.json`` has a verifier result.
+until live check ``ingest.use_cases`` has a verifier result.
 """
 
 from __future__ import annotations
@@ -145,7 +144,7 @@ MAX_QUESTIONS = 50
 MAX_STATEMENT_CHARS = 500
 TYPES = ("docx", "xlsx", "pptx", "pdf", "vsdx", "png", "jpg", "md", "txt", "eml", "html",
          "msg", "zip", "other")
-# Held-out share of delivered use cases (10-DECISION #8: 60 dev / 120 held-out).
+# Held-out share of delivered use cases.
 SPLIT_RULE = "plx-use-case-split/v1"
 HELD_OUT_PER_DEV = 2
 _UTC = timezone.utc
@@ -844,7 +843,7 @@ def scan_report(state_dir: str | Path, *, advance: bool = True,
 
 
 def dot_note(report: Mapping[str, Any], *, evidence: str) -> str:
-    """Counts-only note text the controller may post to the Dot (nothing is posted here)."""
+    """Counts-only note text for a status report (nothing is posted here)."""
     s = report.get("summary") or {}
     parts = s.get("parts") or {}
     types = ", ".join(f"{k} {v}" for k, v in sorted((s.get("by_type") or {}).items())) or "none"

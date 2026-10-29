@@ -112,12 +112,12 @@
    "id": "rnd-maps",
    "title": "R&D process maps: meeting agenda, raw material samples, ingredient lists",
    "phrases": ["r d process maps", "r d process map", "r d bi weekly", "raw material samples"],
-   "documents": [],
-   "gaps": [
-    {"document": "the R&D bi-weekly meeting agenda preparation map", "registry_row": "gap-1aefac272d36", "detail": "known from the use case's record only: no source the Workbench reads holds the map"},
-    {"document": "the raw material samples map (from request to used up)", "registry_row": "gap-15999825ecff", "detail": "known from the use case's record only: no source the Workbench reads holds the map"},
-    {"document": "the ingredient lists map (from sample made to the customer)", "registry_row": "gap-7dc82f245571", "detail": "known from the use case's record only: no source the Workbench reads holds the map"}
-   ]
+   "documents": [
+    {"role": "map", "original": "co-8302d5d6b9e4"},
+    {"role": "map", "original": "co-ef51ec46eba3"},
+    {"role": "map", "original": "co-6783155370e7"}
+   ],
+   "gaps": []
   },
   {
    "id": "rro",

@@ -1,5 +1,5 @@
 """A person confirms or corrects one value (``plx.review`` ``confirm_value`` /
-``correct_value``, gap WS-13 5aa4d9b5b066; decision 2026-10-07-doc-fields-close-value-review).
+``correct_value``, gap WS-13 5aa4d9b5b066).
 
 A supplier's proforma invoice arrives as a mail attachment in the orders mailbox; the
 parser reads its quantity as 400,000. A second supplier mail, in the finance mailbox only
@@ -548,7 +548,7 @@ class ValueReviewTests(unittest.TestCase):
 
     @unittest.skipUnless(HAS_PDF, "a paged original is a PDF: needs pypdf and reportlab")
     def test_a_cited_page_is_taken_exactly_when_plx_read_resolves_it(self):
-        """Direction review of 1843d3d14c: the page check is ``plx.read``'s own read
+        """The page check is ``plx.read``'s own read
         (``CitationReader.read`` with ``page``), for the same reader, of a mail attachment,
         a zip member, a PDF of which no text was read and a message, for a reader the host
         admits and one it no longer admits (withheld before anything of the page is read,

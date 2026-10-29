@@ -1,7 +1,7 @@
 {
  "schema": "plx-live-source-audience/v1",
  "tenant": "plx",
- "note": "EXAMPLE ONLY, not a PLX-confirmed grant: the live check of operating.case_mail. The mail capture principal (svc:mail-capture) and the purchasing principal may read the six operational mailboxes of examples/case_mail_purchasing_capture_scope.live-check.json (owner decision 5be438765457); staff:operations (the second reader of the check) has no mail grant, so it must see withheld markers only. Default deny; GET only.",
+ "note": "EXAMPLE ONLY, not a PLX-confirmed grant: the live check of operating.case_mail. The mail capture principal (svc:mail-capture) and the purchasing principal may read the six operational mailboxes of examples/case_mail_purchasing_capture_scope.live-check.json; staff:operations (the second reader of the check) has no mail grant, so it must see withheld markers only. Default deny; GET only.",
  "default_classification": "confidential",
  "audiences": {
   "mail:order-confirmation@petrasoap.com": [

@@ -1,7 +1,7 @@
 """Quote-to-order case: PROPOSED dev-exposed cards and the ontology gaps they need.
 
 ``evals/dev/quote-to-order/proposed_items.json`` holds the employee questions of Vince's
-Quote-to-Order Map (QO-*, advisory 72bf7b7ae3f6, gap-ba79665b1e75; its invitation
+Quote-to-Order Map (QO-*, gap-ba79665b1e75; its invitation
 b663c5f3b388 is pinned as related only), of the quote workbook and email originals of
 the three AGENTS ``/Quote Examples/{G2-Beauty,SAHAJAN,Soapbox}/_Quote Workbooks``
 folders (QW-*, manifests bb494ac6ba9d and 0dc11f49acee) and of the cost-to-assembly user
@@ -10,8 +10,8 @@ order or the lost reason) in an outcome card and records the quote inputs missin
 quote time, the slot for the announced incomplete-information case (c70b2464d73c).
 ``ontology_gaps.json`` maps each of the map's 16 ranked gaps to an ontology gap.
 
-The contract is ``evals.case_cards`` (related advisories and per-map citations are native
-to it). The workbook
+The contract is ``evals.case_cards``.
+The workbook
 pins are names, item ids and SHA-256 only; ``examples/case_originals.json`` watches the
 three folders, so a ``case.originals_read`` run reads them as discovered files whose
 receipts compare against these pins.
@@ -141,7 +141,7 @@ class QuoteToOrderCardsTest(unittest.TestCase):
 
     def test_pins_match_the_advisory_records(self):
         """Each record_sha256 is the SHA-256 of the record at its commit, and each watched
-        file pin equals the manifest's own entry. Needs the codex/advisory commits."""
+        file pin equals the manifest's own entry. Needs the codex/record commits."""
         source = self.cards["source"]
         pins = [source["advisory"], *source["related_advisories"]]
         records = {}

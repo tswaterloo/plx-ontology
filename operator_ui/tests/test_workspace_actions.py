@@ -327,7 +327,7 @@ class OwnerActionTest(tap.ActionPathTestCase):
         self.assertEqual(self.path.get(tap.OPS, other)["state"], "gate_prepared")
 
     def test_the_offered_step_is_the_action_paths_next_safe_step(self):
-        """Reproduction (direction review of 5eecea1e): the control follows
+        """Reproduction: the control follows
         ``next_safe_step`` in every state and override (escalate, reregister, a closed
         case, a pending gate to reject), never a table of its own: a console step is an
         ``ActionPath`` method, any other step is unavailable with the path's detail."""
@@ -369,7 +369,7 @@ class OwnerActionTest(tap.ActionPathTestCase):
         self.assertEqual(status, 400, refused)
 
     def test_the_person_who_requests_an_approval_can_never_approve_it(self):
-        """Reproduction (review of fe2e9984): an employee who is not a subject requests the
+        """Reproduction: an employee who is not a subject requests the
         approval at the console, then decides that same request in MC as an MC owner; the
         decision never authorizes and nothing is dispatched."""
         from operating.goal2_mc_approval import ApproverRoster

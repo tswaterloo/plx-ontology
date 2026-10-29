@@ -1,6 +1,6 @@
 """The eval principal: the declared reader the answer evals run as when no employee is named.
 
-Owner directive (2026-10-19): when ``PLX_EVAL_READER`` is absent, the answer evals
+When ``PLX_EVAL_READER`` is absent, the answer evals
 (``eval.case_cards_answers`` and the live parts of ``eval.ask_agent`` and
 ``eval.real_agent``) run as this principal instead of being blocked
 ``no_employee_identity``. It is never a person and never mistaken for one:

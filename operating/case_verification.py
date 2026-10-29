@@ -1,8 +1,8 @@
 """Read-back verification of a case proposal's expected effect (never dispatch).
 
 The case runtime records proposals; approval and execution belong to Portal and
-Mission Control (devloop/UPSTREAM-MAP.md: the Workbench keeps only read-back
-verification observations). This module is that read-back: for a proposal that
+Mission Control.
+This module is that read-back: for a proposal that
 declared an ``expected_effect`` on one cited source row, re-read that row for
 the calling actor through the audience-checked source mirror (refreshed when it
 is older than ``max_staleness``) and record on the case what the source shows:
@@ -124,7 +124,7 @@ def _staleness(value: Any) -> float | None:
 def _copied(facts: dict[str, Any], result: Mapping[str, Any]) -> dict[str, Any]:
     """``facts`` with how the relation was served: a row filled from a persisted capture
     while the live source was unavailable is a past capture, never a read-back of the
-    effect (decision 2026-10-04-scope-freshness rule 4), however recent the copy."""
+    effect, however recent the copy."""
     copied = result["source_freshness"]
     facts["source_freshness"] = {name: copied.get(name) for name in (
         "served_from", "captures_as_of", "http_status", "error_code", "label")}

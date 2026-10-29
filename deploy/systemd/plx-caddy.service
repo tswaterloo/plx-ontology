@@ -1,0 +1,41 @@
+# Caddy for the PLX Workbench (TLS + reverse proxy). Not enabled by the build.
+# Runs as the unprivileged caddy user (from the Caddy package, or created per
+# deploy/README.md); binding :80/:443 uses CAP_NET_BIND_SERVICE only.
+# Use this unit, or point the distro's caddy.service at deploy/Caddyfile instead.
+[Unit]
+Description=Caddy reverse proxy for the PLX Workbench
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=caddy
+Group=caddy
+EnvironmentFile=/etc/plx/workbench-caddy.env
+# Caddy's certificates and autosaved config stay under /var/lib/caddy.
+Environment=XDG_DATA_HOME=/var/lib/caddy
+Environment=XDG_CONFIG_HOME=/var/lib/caddy/config
+ExecStart=/usr/bin/caddy run --config /data/OntologyProject/deploy/Caddyfile --adapter caddyfile
+ExecReload=/usr/bin/caddy reload --config /data/OntologyProject/deploy/Caddyfile --adapter caddyfile --force
+TimeoutStopSec=5s
+LimitNOFILE=1048576
+Restart=on-failure
+
+# Hardening.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/caddy
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

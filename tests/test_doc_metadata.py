@@ -2,9 +2,6 @@
 
 Fixtures are Portal-shaped (column names, choice values, AO/SO/PO/lot record
 attributes) and isolated: no Graph, SharePoint, Portal or BC connection.
-Ricardo's AO packet values are the paper transcripts in
-devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md §3.3 (OCR-flagged here, as the
-scans have no text layer).
 """
 
 from __future__ import annotations

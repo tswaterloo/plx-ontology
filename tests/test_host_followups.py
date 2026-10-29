@@ -137,7 +137,7 @@ class HostTeamsAndReviewsTests(HostCase):
         self.assertEqual(found, [[], [subject]], replies)
 
     def test_an_unreadable_review_store_is_a_typed_gap_and_fails_the_cycle_by_path(self):
-        """Directive 1c0959b3d22e (1, 2): a review store that is there but cannot be read
+        """A review store that is there but cannot be read
         is never answered as "no reviews": plx.find (MCP) and plx.review status (served
         tools) say why they hold none, and the host's cycle record names the store."""
         from ontology.core import Actor

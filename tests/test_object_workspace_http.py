@@ -637,8 +637,7 @@ class ObjectWorkspaceHttpTest(unittest.TestCase):
 
     def test_an_unparsed_identifier_carrier_needs_the_propertys_markings(self):
         # A reader granted the type but not the property's markings learns nothing of what
-        # failed to parse there; the same reader holding them is told (minor b of
-        # directive 26bb17568234).
+        # failed to parse there; the same reader holding them is told.
         from operating import ontology_host
         with sqlite3.connect(self.store) as conn:
             report = json.loads(conn.execute("SELECT value FROM store_meta WHERE key = "
@@ -1082,8 +1081,7 @@ class ObjectWorkspaceHttpTest(unittest.TestCase):
         self.assertEqual([u["reason"] for u in narrow["unsupported"]],
                          ["cites_what_this_run_did_not_return"])
         # Its unsupported claim cites a record withheld from this reader: its text, which
-        # holds what the planner remembers of the line, is not shown (directive
-        # 912374bc973a item 4).
+        # holds what the planner remembers of the line, is not shown.
         self.assertEqual((narrow["unsupported"][0]["text"],
                           narrow["unsupported"][0]["text_withheld"]),
                          (None, "cites_a_record_withheld_from_the_reader"))
@@ -1560,9 +1558,9 @@ class PersonControlsTest(unittest.TestCase):
         self.assertEqual(request, {"tool": "mc_create_task", "sent": False, "arguments": {
             "title": body["missing"], "bucket": FOLLOW_UP_BUCKET, "priority": "medium",
             "reporter": MC_OPERATOR, "idempotencyKey": key, "description": description}})
-        # Why, then each citation (owner policy e251073ef3c5 item 1), then the reference
+        # Why, then each citation, then the reference
         # that carries the key. This console knows no audience for its bucket, so no
-        # source text goes (owner decision 44adf4de553a).
+        # source text goes.
         self.assertTrue(description.startswith(f"{body['why']}\n\nCited sources ("))
         self.assertTrue(description.endswith(
             f"\n\nPLX Workbench case {proposal['case_id']}, action {proposal['intent_id']}, "
@@ -2042,11 +2040,10 @@ class GrantSnapshotTest(unittest.TestCase):
 
 
 class StoreProvenanceTest(unittest.TestCase):
-    """Directive 26bb17568234 (plan d2eca493ebe3): a store is a state directory's only when
+    """A store is a state directory's only when
     it records a Portal mirror or BC capture generation that is that source's capture
     there now; a source the store did not project is labelled not_projected, never
-    refused (a store built during a Portal outage). Directive 42fbdafa2dca (decision
-    architect-20261011T0721Z-MEuPpgWV): the status is per source, so only a projected
+    refused (a store built during a Portal outage). The status is per source, so only a projected
     source of another generation refuses, naming that source and no other."""
 
     @classmethod
@@ -2913,9 +2910,9 @@ def sharepoint_request(url: str) -> bool:
 
 
 class ObjectViewLiveCheckTest(unittest.TestCase):
-    """``devloop/live-checks/workspace.object_view.json``: the spec's own argv over the
-    fixture world with the Portal, BC and Graph transports injected (the wiring of
-    ``devloop/tests/test_live_wiring.py``), its output checked by the verifier's own
+    """live check ``workspace.object_view``: the spec's own argv over the
+    fixture world with the Portal, BC and Graph transports injected,
+    its output checked by the verifier's own
     ``check_expectations``. Evidence: injected-transport."""
 
     # the second names a customer PO the spec's sample opens, so its related-mail panel
@@ -3500,7 +3497,7 @@ class ObjectViewLiveCheckTest(unittest.TestCase):
                          ["find_denied_probed_unblocked < 1"])
 
     def test_a_portal_outage_is_blocked_and_a_fixture_host_refuses_the_bc_only_store(self):
-        """Directive 26bb17568234: with the Portal not configured, or answering 503, the
+        """With the Portal not configured, or answering 503, the
         store is projected from BC and mail beside a fresh empty mirror, served with
         portal_api not projected, and the run is blocked by the outage (expect_blocked
         passes), never a fail. A fixture host still refuses that live store."""
@@ -3637,7 +3634,7 @@ class ObjectViewLiveCheckTest(unittest.TestCase):
 
 
 class SessionReplayLiveCheckTest(unittest.TestCase):
-    """``devloop/live-checks/session.replay.json``: the spec's own argv over the fixture
+    """live check ``session.replay``: the spec's own argv over the fixture
     world with the Portal, BC and Graph transports injected (``ObjectViewLiveCheckTest``'s
     wiring), its printed summary checked by the verifier's own ``check_expectations``; then,
     over the same built state, a cited row changed between record and replay, and a
@@ -3911,7 +3908,7 @@ class SessionBcReuseTest(unittest.TestCase):
     projection. Now the consumer starts from the producer's capture and reads
     only what the session did not complete.
 
-    Evidence label: ``injected-transport``. The verifier session (``devloop.live_verify``
+    Evidence label: ``injected-transport``. The verifier session (the live verifier
     ``SessionState``) runs the specs' own argv over the fixture Portal, the BC fake and the
     Graph fake; nothing live (both specs stay live-unverified)."""
 

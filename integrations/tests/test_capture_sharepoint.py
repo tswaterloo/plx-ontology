@@ -445,7 +445,7 @@ class CaptureTests(CaptureCase):
         self.assertIsNotNone(self.store.current(DRIVE, "01FILED"))
 
     def test_permission_reads_that_outrun_the_budget_stop_inside_the_listing(self):
-        # Directive a8acd47fe58c: a listing reads up to 5000 items' permissions while the
+        # A listing reads up to 5000 items' permissions while the
         # budget was asked only per folder, so one large folder overran the check's
         # timeout. Each permission read costs one second of this clock; the budget runs
         # out halfway through a folder of N items (N=10/60): exactly that many reads,
@@ -492,7 +492,7 @@ class CaptureTests(CaptureCase):
                 self.assertEqual(sorted(current), [f"01BIG{n:03d}" for n in range(size)])
 
     def test_a_root_larger_than_one_budget_resumes_its_walk_and_completes_on_run_three(self):
-        # Directive d272cbc332e2: a root the time budget cut was walked from the top again
+        # A root the time budget cut was walked from the top again
         # by every run, so a root larger than one budget never completed. Each download
         # costs one second of this clock and a run has four: the walk resumes from its
         # stored position (the cut folder with the children it holds, then the folders
@@ -612,7 +612,7 @@ class CaptureTests(CaptureCase):
                                            "items_held": 2}))
 
     def test_a_folder_renamed_while_queued_is_resumed_where_it_is_now(self):
-        # Directive 5bc5d10c2c8d (2): the resume queue kept folders by path, so a folder
+        # The resume queue kept folders by path, so a folder
         # renamed between runs was a not_visible gap and the walk started over. It is
         # kept by item id: the renamed folder is listed where it is now and its file
         # re-keyed there; the walk completes.
@@ -644,7 +644,7 @@ class CaptureTests(CaptureCase):
                 reader.list_folder(CAPTURE, "/", folder_id=bad)
 
     def test_a_file_moved_into_a_walked_folder_mid_walk_stays_current(self):
-        # Directive 5bc5d10c2c8d (1): a file moved from a folder the walk had not reached
+        # A file moved from a folder the walk had not reached
         # into one it had listed was called moved_out_of_scope when the walk ended (gone
         # from every reader's index for a run). It is captured where it is now.
         self.cut_walk()
@@ -660,7 +660,7 @@ class CaptureTests(CaptureCase):
             EMPLOYEE, reader_audience())["items"]})
 
     def test_a_file_moved_within_the_root_is_regated_when_the_budget_ends_first(self):
-        # Directive 515540eaf702 (1): the budget ran out between the reconcile and the
+        # The budget ran out between the reconcile and the
         # capture at the new path, so the file kept its old permissions for a run while the
         # root read complete. The move dropped sales from its permissions: hidden from it
         # at once, and the root stays incomplete until a run captures it where it is.
@@ -694,7 +694,7 @@ class CaptureTests(CaptureCase):
         self.assertIsNone(self.store.resolve(handle, EMPLOYEE, reader_audience()))
 
     def test_the_reconcile_matches_a_root_spelled_in_another_case(self):
-        # Directive 515540eaf702 (2): the walk matched the scope root ignoring case, the
+        # The walk matched the scope root ignoring case, the
         # reconcile did not, so a file deleted under a root spelled in another case stayed
         # current (and served) forever.
         lower = scope(folders=[QUALITY_FOLDER.lower()])
@@ -750,7 +750,7 @@ class CaptureTests(CaptureCase):
         self.assertEqual(self.store.counts(EMPLOYEE, reader_audience())["versions"], 0)
 
     def test_a_grant_revoked_without_the_sharing_annotation_is_dropped_after_the_bound(self):
-        # Directive 1cd1c66dd47d: the feed lists a permission-only change (same eTag)
+        # The feed lists a permission-only change (same eTag)
         # without the sharing annotation. Within permission_reread_hours the eTag shortcut
         # still skips get_item (the permission re-read); the first run after it reads the
         # feed from the root's permission position and re-reads the entry, although the
@@ -797,7 +797,7 @@ class CaptureTests(CaptureCase):
                          ("full", "permissions_unknown", True))
 
     def test_a_permission_reread_the_budget_cuts_resumes_and_converges(self):
-        # Review of 2b30b6f4: with the shortcut off, a re-read the budget cut read the same
+        # With the shortcut off, a re-read the budget cut read the same
         # leading entries every run and never ended. Five entries due, two permission reads
         # per run (3 budgets): the changed file first, then each entry once, done in run 3
         # (within k + 1 runs).
@@ -1135,7 +1135,7 @@ class ScopeStoreAndCliTests(unittest.TestCase):
             with self.assertRaises(CaptureError) as raised:
                 CaptureScope(target, max_content_bytes=bad)
             self.assertEqual(raised.exception.code, "scope_max_content_bytes_invalid")
-        # The permission re-read bound (directive 1cd1c66dd47d) defaults to 24 h, is
+        # The permission re-read bound defaults to 24 h, is
         # declared in the shipped scope, and an unknown value fails closed.
         self.assertEqual((CaptureScope(target).permission_reread_hours,
                           shipped.permission_reread_hours), (24, 24))
@@ -1195,7 +1195,7 @@ class ScopeStoreAndCliTests(unittest.TestCase):
             "graph.drive_permissions"])
 
     def test_the_cli_is_never_ok_over_a_truncated_index_or_a_failed_byte_read(self):
-        # Directive 594fa8d905ae: the index stops at INDEX_LIMIT files and any failure of
+        # The index stops at INDEX_LIMIT files and any failure of
         # a pinned-bytes read is a typed count, never a crash or an ok over a partial read.
         # The CLI checks each pinned original with ``original_verified`` (held bytes, or
         # a dropped original's whole ``.dropped`` record).
@@ -1237,8 +1237,7 @@ class ScopeStoreAndCliTests(unittest.TestCase):
             self.assertEqual(first["storage"]["state_base"], "workbench_state_dir")
             self.assertTrue(first["storage"]["host_state"])
             # A first run in the host state: the store was not carried into it, so its
-            # persistence is unproven (decision 2026-10-21-sharepoint-census-across-runs:
-            # carried, observed, never inferred from where the store lies).
+            # persistence is unproven (observed, never inferred from where the store lies).
             self.assertFalse(first["storage"]["carried"])
             self.assertEqual(first["incomplete_scope"], [{
                 "target": "quality", "root": 0, "reasons": [cs.TIME_BUDGET],
@@ -1651,7 +1650,7 @@ class PortalColumnsTests(CaptureCase):
 
 
 class SiteReadbackTests(unittest.TestCase):
-    """Directive ac56163cf825 U5 (gap-e70bce853a2f) and ING-16 (gap-d5365c514b2a): the
+    """The
     estate check reads each registry site back by counts and a typed reason. The
     estate fixtures live in the estate test module (imported here to avoid a cycle)."""
 

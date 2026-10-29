@@ -52,6 +52,15 @@ def served(objects: Any) -> dict[str, Any]:
 def answer(objects: Any, request: Any, *, as_of: date | None = None) -> dict[str, Any]:
     """The objective's cited answer, roots, gaps and proposed follow-ups for the reader
     (``LookupError`` when the console runs no agent; ``ValueError`` for a bad request)."""
+    return answer_run(objects, request, as_of=as_of)[0]
+
+
+def answer_run(objects: Any, request: Any, *, as_of: date | None = None
+               ) -> tuple[dict[str, Any], dict[str, Any]]:
+    """``answer`` and the run it showed (``objective_runner.run``: the shown claims with
+    their gate-checked value claims, the loop's tool calls), for a front that shapes the
+    same answer differently (``operator_api``); nothing in the run is shown that
+    ``answer`` does not show."""
     from operating import agent_loop
 
     if objects is None or not objects._ask_served():
@@ -84,7 +93,7 @@ def answer(objects: Any, request: Any, *, as_of: date | None = None) -> dict[str
                 **scenario,
                 "inputs": [{**item, "openable": objects._can_open(item["citation"])}
                            for item in scenario["inputs"]]}
-        return out
+        return out, ran
 
 
 def _not_run(why: str, subject: Any = None) -> dict[str, Any]:

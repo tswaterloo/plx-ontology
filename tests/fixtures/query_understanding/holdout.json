@@ -1,0 +1,25 @@
+{
+ "note": "Written after the resolver and never tuned against: harder messy forms over the same fixture entities. Reported as measured; the test asserts only permission invariants and a precision floor (a wrong resolution is worse than none).",
+ "cases": [
+  {"q": "G2BEAUTY order??", "expect": [["cust-g2-bc", "cust-g2-portal"]], "intent": "status"},
+  {"q": "anything new from sahajan holdings", "actor": "staff", "expect": [], "hidden_min": 1, "intent": "other"},
+  {"q": "dandy lion inventory posted", "expect": [["cust-dandylion"]], "intent": "other"},
+  {"q": "soap box agreement", "expect": [["cust-soapbox"]], "intent": "other"},
+  {"q": "remko deposit", "expect": [["cust-remco"]], "intent": "other"},
+  {"q": "thamesurf", "actor": "buyer", "expect": [["sup-thamesurf"]], "intent": "other"},
+  {"q": "P.O. 5447 eta", "expect": [["po-5447"]], "intent": "status"},
+  {"q": "PO#5447 vs PO 349", "expect": [["po-5447"], ["po-349"]], "intent": "compare"},
+  {"q": "lot r 0663 tests", "expect": [["lot-r0663"]], "intent": "other"},
+  {"q": "who made the r-0030 waiver call", "expect": [["lot-r0030"]], "intent": "who"},
+  {"q": "laura's brand requirements draft", "expect": [["contact-laura"]], "intent": "find_document"},
+  {"q": "whats happening with three ships beuaty", "expect": [["cust-threeships"]], "intent": "status"},
+  {"q": "frieghtcom invoice", "expect": [["sup-freightcom"]], "intent": "other"},
+  {"q": "for & against stock move to vmi warehouse", "expect": [["cust-forandagainst"]], "intent": "other"},
+  {"q": "ouai haircare", "expect": [["cust-ouai"]], "intent": "other"},
+  {"q": "st barts lot", "expect": [["lot-r1696"]], "intent": "other"},
+  {"q": "the late soap stuff", "expect": [], "intent": "status"},
+  {"q": "giulia's ingredient list for f-26-1179", "expect": [["contact-giulia"], ["f-26-1179"]], "intent": "other"},
+  {"q": "amazon", "expect": [["cust-amazon"]], "intent": "other"},
+  {"q": "pallet weight on the amazon shipment last week", "expect": [["cust-amazon"]], "intent": "other"}
+ ]
+}

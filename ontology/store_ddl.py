@@ -1,7 +1,7 @@
 """DDL of the L2 ontology projection store (C0 contract, frozen; DDL only).
 
-The projection is disposable and rebuilt from L1 captures (10-DECISION 1, 09-CRITIQUE
-R11): a builder writes a new SQLite file and swaps it in atomically, so it never
+The projection is disposable and rebuilt from L1 captures:
+a builder writes a new SQLite file and swaps it in atomically, so it never
 contends with the ingest worker. It copies no uncited data. Every object, value,
 link, identifier and event row carries the L1 handle it was read from
 (``api://…@<generation>-<capture>``, ``bc://…``, ``graph-mail://…``,
@@ -53,12 +53,12 @@ writes the physical tables directly. ``object_values_numbered`` exposes the cell
 counts no change an INSTEAD OF trigger makes (a write through a view reports
 ``rowcount`` 0): a writer verifies its outcome by reading the rows back.
 
-Layout v7 (lane traverse-around-slow-calls; decision 2026-10-18-projection-store-v6 left
-unchanged): the v6 tables, with ``object_versions``' unique key reordered to
+Layout v7:
+the v6 tables, with ``object_versions``' unique key reordered to
 ``(l1_handle, object_id)`` so a lookup by handle is a search, not a scan. Same rows, same
 disk; a v6 store names another format and is rebuilt cold (``format_problem``).
 
-Layout v8 (lane text-search-index; same decision): the v7 tables plus a word index of
+Layout v8 (same decision): the v7 tables plus a word index of
 captured text for ``plx.find`` (``ontology/text_index.py``). ``value_text`` holds the words
 of every text, identifier and enum value under its cell's rowid (the value's ``row_no``),
 kept by triggers on ``value_cells``; ``text_fields`` / ``text_chunks`` / ``chunk_text`` hold
@@ -67,11 +67,11 @@ page), written by the ``text_index`` build step. Both FTS5 tables are contentles
 keep no positions (``detail=none``): a search is an AND of word prefixes, and the text
 it quotes is the value's or the chunk's own. A v7 store is rebuilt cold.
 
-Layout v9 (lane purchasing-po-prices, owner decision 2026-10-27): the v8 tables with the
+Layout v9: the v8 tables with the
 marking ``purchasing_prices`` added to ``MARKINGS``, so every ``markings`` CHECK admits its
 sets. A v8 store's CHECK refuses them, so it is rebuilt cold.
 
-Layout v10 (lane projection-compact; measured on the live store, generation 00000015: 74.6M
+Layout v10 (measured on the live store, generation 00000015: 74.6M
 value cells took 4.9 GB of its 9.5 GB, 68M of them from 14 generated Sage AP relations). A
 value row is a cell or a packed record: a binding declared ``value_storage: packed`` (in
 ``ontology/schema/overrides/storage.json``, with its evidence) stores the currency-free values
@@ -81,7 +81,7 @@ search). ``value_sources`` names its version by rowid instead of repeating its o
 digest and lineage. ``object_values`` reads the same rows as v9. A v9 store is rebuilt cold.
 
 Enumerations here must equal those in ``ontology/schema/_format.schema.json``
-(test: ``ontology/tests/test_contracts.py``). The projector (lane L7) owns
+(test: ``ontology/tests/test_contracts.py``). The projector (L7) owns
 ``ontology/store.py``; it executes this DDL and changes it only through a new
 ``FORMAT`` version.
 """
@@ -114,7 +114,7 @@ REPLACEMENT_BASES = ("source_replacement", "ambiguous_replacement")
 MARKINGS = ("finance", "l5", "pii", "purchasing_prices", "quality_controlled")
 # A marking every holder of another marking holds too (``held_markings`` of every read
 # policy): purchasing_prices marks the purchase-order prices purchasing staff may read
-# (owner decision 2026-10-27, ``ontology/schema/overrides/markings.json``
+# (``ontology/schema/overrides/markings.json``
 # ``scoped_markings``); a finance reader reads them as before.
 MARKING_HELD_WITH = {"purchasing_prices": ("finance",)}
 

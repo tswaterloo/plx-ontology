@@ -15,6 +15,31 @@ Must keep working:
 Known gaps:
 ```
 
+## v0.11 (2026-10-29)
+
+Added:
+- A new web app (preview): a chat-style ask box that streams the answer with its sources, a home page of what needs attention, a page for each customer, order, lot or document, light and dark themes, and phone layouts. It runs on the PLX server and opens only on the company's private network.
+- Messy questions are understood: typos in names and order numbers, vague words such as "last month", short chat-style questions, and follow-ups that keep the earlier context. When more than one record could fit, it asks "did you mean …?" instead of guessing.
+- When two sources disagree, the answer shows both, side by side, with their sources.
+- When part of an answer sits in a place you can't open, it says so in plain words instead of leaving a silent gap.
+- The three R&D process maps (agenda preparation, raw material samples, ingredient lists) can be read and quoted in full.
+- A search index that finds text by meaning, not only exact words. It is still filling, so search by meaning switches on in a later release.
+- Nightly backups of the search index, with an automatic restore test.
+
+Changed:
+- Search text is split the way people read it: one email, one Teams message with its replies, one document section, one sheet row, one stage of a process map.
+
+Fixed:
+- Messages from people outside the allowed list are removed from search on every refresh.
+
+Must keep working:
+- Everything in v0.10: quotes are the sentence that answers, partial answers stay marked as partial, and approvals still need a second person.
+
+Known gaps:
+- Sign-in with a Microsoft account is not switched on yet. The preview uses a demo sign-in on the private network.
+- Search by meaning switches on once the index has filled.
+- Actions in Mission Control are not switched on yet.
+
 ## v0.10 (2026-10-29)
 
 Added:

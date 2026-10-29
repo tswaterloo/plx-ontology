@@ -1,6 +1,6 @@
 """Run eval items through an agent on the case host, record replayable transcripts, score.
 
-10-DECISION decision 8 (evaluation is the progress metric) and Q7 (no paid model API:
+evaluation is the progress metric and Q7 (no paid model API:
 batch eval runs use Claude Code sessions). Items are ``plx-eval-item/v1``
 (``evals/item.schema.json``, validated with ``ontology/json_contract.py``).
 
@@ -44,7 +44,7 @@ is what the Workbench's answer gate passed (``gate_final_reply``, applied by ``r
 for an agent that ``gates_final_reply``): a value the gate refused or never checked is
 withheld and named, a reply stating more is replaced by the passed values and the
 withheld list; the agent's own message stays in ``agent.final_reply`` (measure what
-ships, ROADMAP B1). The Claude Code agent reaches the
+ships, the acceptance bar). The Claude Code agent reaches the
 Workbench's own final-answer gate the way an employee's MCP session does
 (``ANSWER_GATE_RULE``: ``plx.case_get`` answer mode, ``operating.answer_gate.gate_answer``,
 the function the console's Ask runs: a refused claim is dropped, repaired once).
@@ -104,7 +104,7 @@ run pin::
         --principal <employee principal> --out <dir outside the repo> \\
         --evidence-label live-captures
 
-**Run pin** (devloop/DECISIONS/2026-10-02-oracle-pinning.md). Oracle items pin the
+**Run pin**. Oracle items pin the
 oracle's own read digests, which no tool returns. Before the agent runs, ``make_run_pin``
 pins, for each relation the item's expected citations name, the first completed mirror
 capture at or after ``as_known_at.time``; the prompt states the mirror generation and the
@@ -378,7 +378,7 @@ def refused_summary(refused: Sequence[Mapping[str, Any]], split: str) -> Any:
 
 def visible_cards() -> list[dict[str, Any]]:
     """Every case card of a committed eval directory (``plx-eval-case-cards/v1``), as an
-    item-shaped question for ``evals.partition``: an exposed card is builder-visible whether
+    item-shaped question for ``evals.partition``: an exposed card is developer-visible whether
     or not it was converted to an item (DEV-005 was excluded, not unseen)."""
     cards = []
     for root in VISIBLE_ITEM_DIRS:
@@ -395,8 +395,8 @@ def visible_cards() -> list[dict[str, Any]]:
 
 # --------------------------------------------------------------------------- prompt
 
-# ``as_known_at.l1_generations`` keys that pin no capture time (decision
-# devloop/DECISIONS/2026-10-27-card-time-pin.md): a case card set's digest
+# ``as_known_at.l1_generations`` keys that pin no capture time:
+# a case card set's digest
 # (``case_cards``) and one original's bytes (``pinned_original``). Any other key is a
 # capture generation, and the item's time is stated as its pin.
 UNTIMED_GENERATIONS = frozenset({"case_cards", "pinned_original"})
@@ -813,7 +813,7 @@ def gate_final_reply(final_text: str, events: Sequence[Mapping[str, Any]],
     # makes an agent's partial or blocked answerable (its own gaps, kept above, say what
     # it could not establish), and makes an answerable one partial. An agent's blocked
     # beside a claim the gate passed is partial: a passed claim is a cited answer, never
-    # blocked (supervisor decision 2026-10-29). A withheld value still makes it partial
+    # blocked. A withheld value still makes it partial
     # (the gate never saw a value never submitted).
     own = answer.get("answerability")
     answerability = max((label for label in (stated, own) if label in CERTAINTY),
@@ -1209,7 +1209,7 @@ OracleField = Callable[[str, Mapping[str, Any], str], "tuple[bool, Any]"]
 
 def make_run_pin(item: Mapping[str, Any], reader: MirrorPinReader, *,
                  oracle_field: OracleField | None = None) -> dict[str, Any]:
-    """The run pin of one item (devloop/DECISIONS/2026-10-02-oracle-pinning.md).
+    """The run pin of one item.
 
     For each relation the item's expected ``api://`` citations name: the first completed
     mirror capture at or after ``as_known_at.time``. Drift check: each expected citation's
@@ -2071,7 +2071,7 @@ def originals_held(item: Mapping[str, Any], state_dir: Any, reader: Any = None
                    ) -> dict[str, Any] | None:
     """How many pinned originals the item rests on (``pinned``: ``item_pins``) and how
     many of them the host does not hold for the scoring reader (``missing``). Held means
-    bytes the host serves to this reader (devloop/DECISIONS/2026-10-27-card-time-pin.md):
+    bytes the host serves to this reader:
     bytes with that SHA-256 or that SharePoint drive item version (``_held_reads`` and
     ``scoring.resolves_to_pin``) and, when they are held only as captured case originals,
     one of them the reader opens (``_reader_opens`` on ``reader``, the item's host). A pin
@@ -2198,11 +2198,14 @@ def run_items(items: Sequence[Mapping[str, Any]], agent: Agent,
               host_for: Callable[[Mapping[str, Any]], Host], *, out: Path,
               runs: int = 1, paraphrases: bool = False,
               evidence_label: str = "isolated-fixture",
-              pin_for: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None
-              ) -> list[dict[str, Any]]:
+              pin_for: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
+              only_phrasing: int | None = None) -> list[dict[str, Any]]:
     """Record and score every item × phrasing × run; write each transcript and score
     under ``out`` (held-out scores redacted). Returns the full scores (in memory).
-    ``pin_for(item)``: the item's run pin, written once before its runs."""
+    ``pin_for(item)``: the item's run pin, written once before its runs.
+    ``only_phrasing``: run that phrasing of each item only (``scripts.eval_messy``: a
+    messy variant is ``question.paraphrases[0]``, phrasing 1); an item without it is
+    ``no_such_phrasing``."""
     if runs < 1:
         raise RunnerError("runs_must_be_positive")
     splits = {item["split"] for item in items}
@@ -2216,7 +2219,7 @@ def run_items(items: Sequence[Mapping[str, Any]], agent: Agent,
     for item in items:
         pin = pin_for(item) if pin_for is not None else None
         phrasings = 1 + (len(item["question"].get("paraphrases") or []) if paraphrases else 0)
-        for phrasing in range(phrasings):
+        for phrasing in (range(phrasings) if only_phrasing is None else [only_phrasing]):
             for run in range(runs):
                 host = host_for(item)  # a fresh host (and case store) for every run
                 try:

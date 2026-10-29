@@ -1,7 +1,7 @@
 """Compatibility re-export of the shared value types (``ontology.types``).
 
-The legacy SQLite operational store and its identity resolver are deleted (lane
-identity-ledger-retire): human identity
+The legacy SQLite operational store and its identity resolver are deleted:
+human identity
 decisions live in the one append-only review store (``ontology.reviews``) and the
 projection's mention links and case mail read it (``operating.case_mail``). Existing
 importers keep ``from ontology.core import Actor``; new code imports ``ontology.types``.

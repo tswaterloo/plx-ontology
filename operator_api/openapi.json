@@ -1,0 +1,2583 @@
+{
+  "components": {
+    "schemas": {
+      "AnswerPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "answer_id": {
+            "title": "Answer Id",
+            "type": "string"
+          },
+          "conflicts": {
+            "items": {
+              "$ref": "#/components/schemas/Conflict"
+            },
+            "title": "Conflicts",
+            "type": "array"
+          },
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "did_you_mean": {
+            "description": "Choices when a name or number matched several records; never merged.",
+            "items": {
+              "$ref": "#/components/schemas/ObjectRef"
+            },
+            "title": "Did You Mean",
+            "type": "array"
+          },
+          "direct_answer": {
+            "title": "Direct Answer",
+            "type": "string"
+          },
+          "facts": {
+            "items": {
+              "$ref": "#/components/schemas/Fact"
+            },
+            "title": "Facts",
+            "type": "array"
+          },
+          "freshness": {
+            "$ref": "#/components/schemas/Freshness"
+          },
+          "hidden": {
+            "$ref": "#/components/schemas/Hidden"
+          },
+          "latency_ms": {
+            "title": "Latency Ms",
+            "type": "integer"
+          },
+          "not_found": {
+            "items": {
+              "$ref": "#/components/schemas/NotFound"
+            },
+            "title": "Not Found",
+            "type": "array"
+          },
+          "outcome": {
+            "enum": [
+              "answered",
+              "partial",
+              "not_found",
+              "abstained",
+              "refused"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "question": {
+            "title": "Question",
+            "type": "string"
+          },
+          "subjects": {
+            "description": "Records the answer is about.",
+            "items": {
+              "$ref": "#/components/schemas/ObjectRef"
+            },
+            "title": "Subjects",
+            "type": "array"
+          }
+        },
+        "required": [
+          "answer_id",
+          "question",
+          "outcome",
+          "direct_answer",
+          "hidden",
+          "freshness",
+          "conversation_id",
+          "latency_ms"
+        ],
+        "title": "AnswerPayload",
+        "type": "object"
+      },
+      "AskRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "conversation_id": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "pattern": "^[A-Za-z0-9_-]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "history": {
+            "items": {
+              "$ref": "#/components/schemas/HistoryTurn"
+            },
+            "maxItems": 12,
+            "title": "History",
+            "type": "array"
+          },
+          "object_id": {
+            "anyOf": [
+              {
+                "maxLength": 700,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Ask about this record (object page).",
+            "title": "Object Id"
+          },
+          "question": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Question",
+            "type": "string"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "title": "AskRequest",
+        "type": "object"
+      },
+      "AtRisk": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "object_id": {
+            "title": "Object Id",
+            "type": "string"
+          },
+          "open_url": {
+            "title": "Open Url",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/Source"
+            },
+            "title": "Sources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "object_id",
+          "label",
+          "kind",
+          "reason",
+          "open_url"
+        ],
+        "title": "AtRisk",
+        "type": "object"
+      },
+      "AuthConfig": {
+        "additionalProperties": false,
+        "description": "Public: what the front end needs to start sign-in. Identifiers only, no secret.",
+        "properties": {
+          "dev_login": {
+            "description": "POST /api/auth/dev-login is served (dev/mock only).",
+            "title": "Dev Login",
+            "type": "boolean"
+          },
+          "entra": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EntraConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why sign-in is unavailable, in words.",
+            "title": "Message"
+          },
+          "mode": {
+            "enum": [
+              "entra",
+              "dev",
+              "mock"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "sign_in_available": {
+            "title": "Sign In Available",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "mode",
+          "dev_login",
+          "sign_in_available"
+        ],
+        "title": "AuthConfig",
+        "type": "object"
+      },
+      "Candidate": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "object_id": {
+            "title": "Object Id",
+            "type": "string"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Score"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "object_id",
+          "type",
+          "label"
+        ],
+        "title": "Candidate",
+        "type": "object"
+      },
+      "Conflict": {
+        "additionalProperties": false,
+        "properties": {
+          "field": {
+            "title": "Field",
+            "type": "string"
+          },
+          "subject": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject"
+          },
+          "values": {
+            "items": {
+              "$ref": "#/components/schemas/ConflictValue"
+            },
+            "minItems": 2,
+            "title": "Values",
+            "type": "array"
+          }
+        },
+        "required": [
+          "field",
+          "values"
+        ],
+        "title": "Conflict",
+        "type": "object"
+      },
+      "ConflictValue": {
+        "additionalProperties": false,
+        "properties": {
+          "source": {
+            "$ref": "#/components/schemas/Source"
+          },
+          "trusted": {
+            "title": "Trusted",
+            "type": "boolean"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          },
+          "why": {
+            "title": "Why",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "source",
+          "trusted",
+          "why"
+        ],
+        "title": "ConflictValue",
+        "type": "object"
+      },
+      "DevLoginRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "ticket": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A console session ticket minted by the host owner (live state only); omitted for a dev or fixture identity.",
+            "title": "Ticket"
+          }
+        },
+        "title": "DevLoginRequest",
+        "type": "object"
+      },
+      "DevLoginResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "me": {
+            "$ref": "#/components/schemas/Me"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok",
+          "me"
+        ],
+        "title": "DevLoginResponse",
+        "type": "object"
+      },
+      "EntraConfig": {
+        "additionalProperties": false,
+        "properties": {
+          "authority": {
+            "description": "https://login.microsoftonline.com/<tenant>/v2.0",
+            "title": "Authority",
+            "type": "string"
+          },
+          "client_id": {
+            "title": "Client Id",
+            "type": "string"
+          },
+          "redirect_uri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Registered SPA redirect URI; null until the app registration has one (sign-in is then unavailable).",
+            "title": "Redirect Uri"
+          },
+          "scopes": {
+            "description": "Delegated scopes to request for this API.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Scopes",
+            "type": "array"
+          },
+          "tenant_id": {
+            "title": "Tenant Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant_id",
+          "client_id",
+          "authority",
+          "scopes"
+        ],
+        "title": "EntraConfig",
+        "type": "object"
+      },
+      "ErrorBody": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "description": "Stable machine code, e.g. sign_in_required.",
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "description": "Plain-language sentence safe to show the person.",
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ErrorBody",
+        "type": "object"
+      },
+      "ErrorResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorBody"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "ErrorResponse",
+        "type": "object"
+      },
+      "Fact": {
+        "additionalProperties": false,
+        "properties": {
+          "check": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The answer gate's check of this fact.",
+            "title": "Check"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/Source"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "sources"
+        ],
+        "title": "Fact",
+        "type": "object"
+      },
+      "FeedbackRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "answer_id": {
+            "maxLength": 80,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "title": "Answer Id",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "'What was wrong', in the person's words.",
+            "title": "Note"
+          },
+          "rating": {
+            "enum": [
+              1,
+              -1
+            ],
+            "title": "Rating",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "answer_id",
+          "rating"
+        ],
+        "title": "FeedbackRequest",
+        "type": "object"
+      },
+      "FeedbackResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "feedback_id": {
+            "title": "Feedback Id",
+            "type": "string"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "stored_in": {
+            "items": {
+              "enum": [
+                "search.feedback",
+                "feedback_log"
+              ],
+              "type": "string"
+            },
+            "title": "Stored In",
+            "type": "array"
+          }
+        },
+        "required": [
+          "ok",
+          "feedback_id",
+          "stored_in"
+        ],
+        "title": "FeedbackResponse",
+        "type": "object"
+      },
+      "Freshness": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Oldest capture an answer relies on (ISO).",
+            "title": "As Of"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "e.g. 'Data as of 10:42 today'.",
+            "title": "Label"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/FreshnessSource"
+            },
+            "title": "Sources",
+            "type": "array"
+          }
+        },
+        "title": "Freshness",
+        "type": "object"
+      },
+      "FreshnessSource": {
+        "additionalProperties": false,
+        "properties": {
+          "age_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Age Seconds"
+          },
+          "as_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "stale": {
+            "default": false,
+            "title": "Stale",
+            "type": "boolean"
+          },
+          "system": {
+            "enum": [
+              "BC",
+              "Portal",
+              "Sage",
+              "FileMaker",
+              "Email",
+              "Teams",
+              "File",
+              "MC"
+            ],
+            "title": "System",
+            "type": "string"
+          }
+        },
+        "required": [
+          "system"
+        ],
+        "title": "FreshnessSource",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "Hidden": {
+        "additionalProperties": false,
+        "properties": {
+          "by_owner": {
+            "items": {
+              "$ref": "#/components/schemas/HiddenOwner"
+            },
+            "title": "By Owner",
+            "type": "array"
+          },
+          "count": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null when no count may be given (the people exclusion list is not loaded).",
+            "title": "Count"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "e.g. '4 more items match, but you don't have access. Ask Purchasing.'",
+            "title": "Message"
+          }
+        },
+        "required": [
+          "count"
+        ],
+        "title": "Hidden",
+        "type": "object"
+      },
+      "HiddenOwner": {
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "minimum": 1.0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "named": {
+            "default": true,
+            "description": "False for the unnamed private bucket.",
+            "title": "Named",
+            "type": "boolean"
+          },
+          "owner_or_team": {
+            "description": "A shared unit's human label, or the one unnamed bucket for other people's mail, chats and files.",
+            "title": "Owner Or Team",
+            "type": "string"
+          }
+        },
+        "required": [
+          "owner_or_team",
+          "count"
+        ],
+        "title": "HiddenOwner",
+        "type": "object"
+      },
+      "HistoryTurn": {
+        "additionalProperties": false,
+        "properties": {
+          "role": {
+            "enum": [
+              "user",
+              "assistant"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 4000,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "text"
+        ],
+        "title": "HistoryTurn",
+        "type": "object"
+      },
+      "Home": {
+        "additionalProperties": false,
+        "properties": {
+          "examples": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Examples",
+            "type": "array"
+          },
+          "freshness": {
+            "$ref": "#/components/schemas/Freshness"
+          },
+          "greeting_name": {
+            "title": "Greeting Name",
+            "type": "string"
+          },
+          "needs_attention": {
+            "$ref": "#/components/schemas/NeedsAttention"
+          },
+          "recent_questions": {
+            "items": {
+              "$ref": "#/components/schemas/RecentQuestion"
+            },
+            "title": "Recent Questions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "greeting_name",
+          "examples",
+          "needs_attention",
+          "recent_questions",
+          "freshness"
+        ],
+        "title": "Home",
+        "type": "object"
+      },
+      "LandedCost": {
+        "additionalProperties": false,
+        "properties": {
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/LandedCostLine"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "per_unit": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "enum": [
+              "computed",
+              "partial",
+              "not_established"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "LandedCost",
+        "type": "object"
+      },
+      "LandedCostLine": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/Source"
+            },
+            "title": "Sources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "label",
+          "amount"
+        ],
+        "title": "LandedCostLine",
+        "type": "object"
+      },
+      "LateLine": {
+        "additionalProperties": false,
+        "properties": {
+          "days_late": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Days Late"
+          },
+          "due_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due Date"
+          },
+          "item": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item"
+          },
+          "line": {
+            "title": "Line",
+            "type": "string"
+          },
+          "quantity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quantity"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/Source"
+            },
+            "title": "Sources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "line"
+        ],
+        "title": "LateLine",
+        "type": "object"
+      },
+      "LatePo": {
+        "additionalProperties": false,
+        "properties": {
+          "days_late": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Days Late"
+          },
+          "due_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due Date"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "object_id": {
+            "title": "Object Id",
+            "type": "string"
+          },
+          "open_lines": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Open Lines"
+          },
+          "open_url": {
+            "title": "Open Url",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/Source"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "supplier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supplier"
+          }
+        },
+        "required": [
+          "object_id",
+          "label",
+          "reason",
+          "open_url"
+        ],
+        "title": "LatePo",
+        "type": "object"
+      },
+      "LinkedItem": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "At"
+          },
+          "kind": {
+            "enum": [
+              "email",
+              "teams",
+              "document",
+              "record",
+              "task"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/Source"
+          }
+        },
+        "required": [
+          "kind",
+          "label",
+          "source"
+        ],
+        "title": "LinkedItem",
+        "type": "object"
+      },
+      "LogoutResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "LogoutResponse",
+        "type": "object"
+      },
+      "Me": {
+        "additionalProperties": false,
+        "properties": {
+          "auth": {
+            "enum": [
+              "entra",
+              "dev",
+              "mock"
+            ],
+            "title": "Auth",
+            "type": "string"
+          },
+          "data_label": {
+            "description": "Evidence label of the data served, e.g. 'source-mirror captures' or 'FIXTURE'.",
+            "title": "Data Label",
+            "type": "string"
+          },
+          "dev_mode": {
+            "title": "Dev Mode",
+            "type": "boolean"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "principal": {
+            "description": "employee:<oid>, or the fixture principals joined.",
+            "title": "Principal",
+            "type": "string"
+          },
+          "proof": {
+            "description": "How the identity was proven (entra_access_token, configured_employee, fixture).",
+            "title": "Proof",
+            "type": "string"
+          },
+          "tenant": {
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "display_name",
+          "principal",
+          "auth",
+          "proof",
+          "tenant",
+          "dev_mode",
+          "data_label"
+        ],
+        "title": "Me",
+        "type": "object"
+      },
+      "Money": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "description": "Decimal string.",
+            "pattern": "^-?\\d+(\\.\\d+)?$",
+            "title": "Amount",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          }
+        },
+        "required": [
+          "amount",
+          "currency"
+        ],
+        "title": "Money",
+        "type": "object"
+      },
+      "NeedsAttention": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "at_risk": {
+            "items": {
+              "$ref": "#/components/schemas/AtRisk"
+            },
+            "title": "At Risk",
+            "type": "array"
+          },
+          "hidden": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Hidden"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Omitted when the source of the list does not count what it hides."
+          },
+          "late_pos": {
+            "items": {
+              "$ref": "#/components/schemas/LatePo"
+            },
+            "title": "Late Pos",
+            "type": "array"
+          },
+          "status": {
+            "enum": [
+              "read",
+              "not_configured",
+              "unavailable"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "NeedsAttention",
+        "type": "object"
+      },
+      "NotFound": {
+        "additionalProperties": false,
+        "properties": {
+          "what": {
+            "title": "What",
+            "type": "string"
+          },
+          "where_it_would_live": {
+            "title": "Where It Would Live",
+            "type": "string"
+          }
+        },
+        "required": [
+          "what",
+          "where_it_would_live"
+        ],
+        "title": "NotFound",
+        "type": "object"
+      },
+      "ObjectPage": {
+        "additionalProperties": false,
+        "properties": {
+          "conflicts": {
+            "items": {
+              "$ref": "#/components/schemas/Conflict"
+            },
+            "title": "Conflicts",
+            "type": "array"
+          },
+          "facts": {
+            "items": {
+              "$ref": "#/components/schemas/Fact"
+            },
+            "title": "Facts",
+            "type": "array"
+          },
+          "freshness": {
+            "$ref": "#/components/schemas/Freshness"
+          },
+          "hidden": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Hidden"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Omitted when nothing counts what is hidden about this record."
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "landed_cost": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LandedCost"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "late_lines": {
+            "items": {
+              "$ref": "#/components/schemas/LateLine"
+            },
+            "title": "Late Lines",
+            "type": "array"
+          },
+          "linked": {
+            "items": {
+              "$ref": "#/components/schemas/LinkedItem"
+            },
+            "title": "Linked",
+            "type": "array"
+          },
+          "not_found": {
+            "items": {
+              "$ref": "#/components/schemas/NotFound"
+            },
+            "title": "Not Found",
+            "type": "array"
+          },
+          "object_id": {
+            "title": "Object Id",
+            "type": "string"
+          },
+          "people": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/Person"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Omitted when no people plan answered for this record.",
+            "title": "People"
+          },
+          "related": {
+            "items": {
+              "$ref": "#/components/schemas/ObjectRef"
+            },
+            "title": "Related",
+            "type": "array"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ObjectStatus"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          },
+          "timeline": {
+            "items": {
+              "$ref": "#/components/schemas/TimelineEvent"
+            },
+            "title": "Timeline",
+            "type": "array"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "object_id",
+          "type",
+          "label",
+          "summary",
+          "status",
+          "freshness"
+        ],
+        "title": "ObjectPage",
+        "type": "object"
+      },
+      "ObjectRef": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "object_id": {
+            "title": "Object Id",
+            "type": "string"
+          },
+          "open_url": {
+            "title": "Open Url",
+            "type": "string"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "object_id",
+          "type",
+          "label",
+          "open_url"
+        ],
+        "title": "ObjectRef",
+        "type": "object"
+      },
+      "ObjectStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/Source"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "text"
+        ],
+        "title": "ObjectStatus",
+        "type": "object"
+      },
+      "Person": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "organisation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Organisation"
+          },
+          "role": {
+            "description": "What they did on the records: owner, approver, sender...",
+            "title": "Role",
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/Source"
+            },
+            "title": "Sources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "role"
+        ],
+        "title": "Person",
+        "type": "object"
+      },
+      "RecentQuestion": {
+        "additionalProperties": false,
+        "properties": {
+          "answer_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Answer Id"
+          },
+          "asked_at": {
+            "title": "Asked At",
+            "type": "string"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "question": {
+            "title": "Question",
+            "type": "string"
+          }
+        },
+        "required": [
+          "question",
+          "asked_at"
+        ],
+        "title": "RecentQuestion",
+        "type": "object"
+      },
+      "Source": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the source was captured (ISO).",
+            "title": "As Of"
+          },
+          "fields": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Record fields, when a row.",
+            "title": "Fields"
+          },
+          "handle": {
+            "description": "The L1 citation handle (graph-mail://, api://, bc://, ...).",
+            "title": "Handle",
+            "type": "string"
+          },
+          "label": {
+            "description": "Short human label, e.g. 'BC purchase order 90412'.",
+            "title": "Label",
+            "type": "string"
+          },
+          "open_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Opens the source for this reader; null when it cannot be opened.",
+            "title": "Open Url"
+          },
+          "quote": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The exact quoted passage, when text.",
+            "title": "Quote"
+          },
+          "system": {
+            "enum": [
+              "BC",
+              "Portal",
+              "Sage",
+              "FileMaker",
+              "Email",
+              "Teams",
+              "File",
+              "MC"
+            ],
+            "title": "System",
+            "type": "string"
+          }
+        },
+        "required": [
+          "system",
+          "handle",
+          "label"
+        ],
+        "title": "Source",
+        "type": "object"
+      },
+      "SourceView": {
+        "additionalProperties": false,
+        "description": "One cited source opened for this reader (``open_url`` of a Source is the app page\n``/source?handle=<handle>``, which reads this). Not found reads the same as no access.",
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "changed_since": {
+            "default": false,
+            "title": "Changed Since",
+            "type": "boolean"
+          },
+          "fields": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fields"
+          },
+          "handle": {
+            "title": "Handle",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "record",
+              "text"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "next_offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Offset"
+          },
+          "system": {
+            "enum": [
+              "BC",
+              "Portal",
+              "Sage",
+              "FileMaker",
+              "Email",
+              "Teams",
+              "File",
+              "MC"
+            ],
+            "title": "System",
+            "type": "string"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "text_offset": {
+            "default": 0,
+            "title": "Text Offset",
+            "type": "integer"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "required": [
+          "handle",
+          "system",
+          "label",
+          "kind"
+        ],
+        "title": "SourceView",
+        "type": "object"
+      },
+      "SourcesEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/Source"
+            },
+            "title": "Sources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "sources"
+        ],
+        "title": "SourcesEvent",
+        "type": "object"
+      },
+      "StatusEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "elapsed_ms": {
+            "title": "Elapsed Ms",
+            "type": "integer"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "step": {
+            "enum": [
+              "understanding",
+              "searching",
+              "reading",
+              "checking",
+              "answering"
+            ],
+            "title": "Step",
+            "type": "string"
+          }
+        },
+        "required": [
+          "step",
+          "message",
+          "elapsed_ms"
+        ],
+        "title": "StatusEvent",
+        "type": "object"
+      },
+      "SuggestResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "query": {
+            "title": "Query",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "search_entities",
+              "projection",
+              "fixture"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "suggestions": {
+            "items": {
+              "$ref": "#/components/schemas/Suggestion"
+            },
+            "title": "Suggestions",
+            "type": "array"
+          },
+          "took_ms": {
+            "title": "Took Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "query",
+          "suggestions",
+          "took_ms",
+          "source"
+        ],
+        "title": "SuggestResponse",
+        "type": "object"
+      },
+      "Suggestion": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "match": {
+            "enum": [
+              "exact",
+              "prefix",
+              "fuzzy"
+            ],
+            "title": "Match",
+            "type": "string"
+          },
+          "object_id": {
+            "title": "Object Id",
+            "type": "string"
+          },
+          "open_url": {
+            "title": "Open Url",
+            "type": "string"
+          },
+          "score": {
+            "title": "Score",
+            "type": "number"
+          },
+          "sublabel": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sublabel"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "object_id",
+          "type",
+          "label",
+          "match",
+          "score",
+          "open_url"
+        ],
+        "title": "Suggestion",
+        "type": "object"
+      },
+      "TimelineEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "At"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Source"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "system": {
+            "enum": [
+              "BC",
+              "Portal",
+              "Sage",
+              "FileMaker",
+              "Email",
+              "Teams",
+              "File",
+              "MC"
+            ],
+            "title": "System",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "system",
+          "title"
+        ],
+        "title": "TimelineEvent",
+        "type": "object"
+      },
+      "TokenEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "TokenEvent",
+        "type": "object"
+      },
+      "UnderstandingEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "entities": {
+            "items": {
+              "$ref": "#/components/schemas/UnderstoodEntity"
+            },
+            "title": "Entities",
+            "type": "array"
+          },
+          "intent": {
+            "enum": [
+              "status",
+              "why",
+              "who",
+              "how_much",
+              "compare",
+              "find_document",
+              "policy",
+              "timeline",
+              "other"
+            ],
+            "title": "Intent",
+            "type": "string"
+          },
+          "rewrites": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Rewrites",
+            "type": "array"
+          },
+          "time_frame": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Time Frame"
+          }
+        },
+        "required": [
+          "intent"
+        ],
+        "title": "UnderstandingEvent",
+        "type": "object"
+      },
+      "UnderstoodEntity": {
+        "additionalProperties": false,
+        "properties": {
+          "ambiguous": {
+            "default": false,
+            "title": "Ambiguous",
+            "type": "boolean"
+          },
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/Candidate"
+            },
+            "title": "Candidates",
+            "type": "array"
+          },
+          "resolved": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ObjectRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "UnderstoodEntity",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Read-only Workbench API for the web app. Every route but auth/config, auth/dev-login and health needs a signed-in reader. Errors are {error:{code,message}}.",
+    "title": "PLX Workbench app API",
+    "version": "1.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/ask": {
+      "post": {
+        "description": "Ask a question; the answer streams as server-sent events.",
+        "operationId": "ask_api_ask_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "x-sse-events": {
+                    "answer": {
+                      "$ref": "#/components/schemas/AnswerPayload"
+                    },
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    "sources": {
+                      "$ref": "#/components/schemas/SourcesEvent"
+                    },
+                    "status": {
+                      "$ref": "#/components/schemas/StatusEvent"
+                    },
+                    "token": {
+                      "$ref": "#/components/schemas/TokenEvent"
+                    },
+                    "understanding": {
+                      "$ref": "#/components/schemas/UnderstandingEvent"
+                    }
+                  }
+                }
+              }
+            },
+            "description": "Server-sent events. Each event's `event:` is its name and `data:` one JSON object: understanding (UnderstandingEvent), status (StatusEvent), sources (SourcesEvent), token (TokenEvent), answer (AnswerPayload, last), error (ErrorBody, last)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Ask",
+        "tags": [
+          "ask"
+        ]
+      }
+    },
+    "/api/auth/config": {
+      "get": {
+        "description": "Public: how to sign in (identifiers only).",
+        "operationId": "auth_config_route_api_auth_config_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthConfig"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Auth Config Route",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/auth/dev-login": {
+      "post": {
+        "description": "Dev and mock modes only: open a demo session (HttpOnly cookie).",
+        "operationId": "dev_login_api_auth_dev_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DevLoginRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DevLoginResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Dev Login",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/auth/logout": {
+      "post": {
+        "description": "Ends a dev session (Entra sign-out is the front end's MSAL logout).",
+        "operationId": "logout_api_auth_logout_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogoutResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Logout",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/feedback": {
+      "post": {
+        "operationId": "feedback_api_feedback_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FeedbackRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedbackResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Feedback",
+        "tags": [
+          "feedback"
+        ]
+      }
+    },
+    "/api/home": {
+      "get": {
+        "operationId": "home_api_home_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Home"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Home",
+        "tags": [
+          "home"
+        ]
+      }
+    },
+    "/api/me": {
+      "get": {
+        "operationId": "me_api_me_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Me"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          }
+        },
+        "summary": "Me",
+        "tags": [
+          "identity"
+        ]
+      }
+    },
+    "/api/object/{object_type}/{object_id}": {
+      "get": {
+        "description": "One record's page. ``object_id``: the URL-encoded object id, or a business\nreference (e.g. a PO number) resolved within ``object_type``.",
+        "operationId": "object_page_api_object__object_type___object_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "object_type",
+            "required": true,
+            "schema": {
+              "title": "Object Type",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "object_id",
+            "required": true,
+            "schema": {
+              "title": "Object Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ObjectPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Object Page",
+        "tags": [
+          "object"
+        ]
+      }
+    },
+    "/api/source": {
+      "get": {
+        "description": "A cited source as this reader may open it (a Source's open_url page reads it).",
+        "operationId": "source_api_source_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "handle",
+            "required": true,
+            "schema": {
+              "maxLength": 2000,
+              "minLength": 3,
+              "title": "Handle",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "text_offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 10000000,
+              "minimum": 0,
+              "title": "Text Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Source",
+        "tags": [
+          "object"
+        ]
+      }
+    },
+    "/api/suggest": {
+      "get": {
+        "description": "Typo-tolerant autocomplete over the records this reader may see.",
+        "operationId": "suggest_api_suggest_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "maxLength": 100,
+              "minLength": 1,
+              "title": "Q",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 8,
+              "maximum": 20,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuggestResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Suggest",
+        "tags": [
+          "search"
+        ]
+      }
+    }
+  }
+}

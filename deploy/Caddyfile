@@ -1,0 +1,84 @@
+# PLX Workbench: one HTTPS origin for the web app and its API.
+#
+#   https://<host>/api/*  -> operator_api (Python, 127.0.0.1:8780)
+#   https://<host>/*      -> the Next.js app (127.0.0.1:3000)
+#
+# Same origin on purpose: the API's session cookie is Path=/api, SameSite=Strict,
+# and its POST routes refuse a foreign Origin.
+#
+# Host: the machine's Tailscale name first (PLX_APP_HOST, e.g. <machine>.<tailnet>.ts.net).
+# Caddy gets the certificate for a *.ts.net name from the local tailscaled
+# automatically (tailscaled needs TS_PERMIT_CERT_UID=caddy, see deploy/README.md).
+# A staff domain later is a second site block below; Caddy then gets a public
+# certificate for it (ACME) once DNS points here.
+#
+# Validate: caddy validate --config deploy/Caddyfile --adapter caddyfile
+{
+	# Listen ONLY on loopback and this machine's Tailscale addresses: never on a
+	# public interface. PLX_BIND_ADDRS (set in /etc/plx/workbench-caddy.env from
+	# `tailscale ip -4` and `tailscale ip -6`) adds the Tailscale addresses;
+	# unset, Caddy binds loopback alone. Applies to every listener, including
+	# the HTTP->HTTPS redirect.
+	default_bind 127.0.0.1 {$PLX_BIND_ADDRS}
+
+	# The HTTP->HTTPS redirect is declared below (not implicit), so `caddy adapt`
+	# shows every listener there is.
+	auto_https disable_redirects
+
+	# No access log by default: request lines carry questions and record ids.
+	admin 127.0.0.1:2019
+	servers {
+		protocols h1 h2
+	}
+}
+
+(plx_workbench) {
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "same-origin"
+		X-Frame-Options "DENY"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+
+	# The API, including the /api/ask answer stream (text/event-stream).
+	# The API returns JSON or an event stream only: nothing on it may run script.
+	# flush_interval -1 sends every event as it is written; no compression on
+	# this path so nothing buffers the stream.
+	handle /api/* {
+		header Content-Security-Policy "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+		reverse_proxy {$PLX_API_UPSTREAM:127.0.0.1:8780} {
+			flush_interval -1
+			transport http {
+				dial_timeout 5s
+				response_header_timeout 120s
+			}
+		}
+	}
+
+	# Everything else is the web app.
+	handle {
+		encode zstd gzip
+		reverse_proxy {$PLX_APP_UPSTREAM:127.0.0.1:3000}
+	}
+
+	handle_errors {
+		respond "The Workbench is restarting or unreachable. Try again in a minute." {err.status_code}
+	}
+}
+
+{$PLX_APP_HOST:localhost} {
+	import plx_workbench
+}
+
+http://{$PLX_APP_HOST:localhost} {
+	redir https://{host}{uri} permanent
+}
+
+# Staff domain (with Vince), when ready: see deploy/README.md ("Adding the staff
+# domain"). It needs its own bind decision: a staff domain is reached from the
+# office network, which is NOT this file's default (loopback + Tailscale only).
+# workbench.example.com {
+# 	import plx_workbench
+# }

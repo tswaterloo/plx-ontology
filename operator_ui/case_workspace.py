@@ -1,4 +1,4 @@
-"""Read-only case workspace for the operator console (devloop/CASE-RUNTIME.md section 3).
+"""Read-only case workspace for the operator console.
 
 One host-configured actor reads durable cases through the same public functions the
 MCP case tools use (``CaseStore.get``/``list``, ``CaseRuntime.resolve_citation``,

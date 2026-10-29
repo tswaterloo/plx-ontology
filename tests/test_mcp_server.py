@@ -161,7 +161,7 @@ class MCPServerStdioTests(unittest.TestCase):
         budget = CONTRACTS["limits"]["max_case_host_tools"]
         self.assertLessEqual(len(tools), budget)
         # plx.act holds the slot of the two action tools it retired; plx.investigate the
-        # freed one (lead decision 2026-10-04).
+        # freed one.
         self.assertIn("plx.act", tools)
         self.assertFalse({"plx.action_get", "plx.action_propose"} & set(tools))
         encoded = json.dumps(listing["result"]["tools"], separators=(",", ":"))
@@ -334,7 +334,7 @@ class OntologyToolsOnTheCaseHostTests(unittest.TestCase):
                              self.runtime, ops, schema).audiences.items() if principals})
 
     def test_a_revoked_grant_applies_to_the_next_call_of_the_same_session(self):
-        # Review of ee55df3, M2: the policy was decided once per session.
+        # The policy was decided once per session.
         import sqlite3
 
         from operating.mcp_server import META_RESERVE_BYTES

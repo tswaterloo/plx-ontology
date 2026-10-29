@@ -1,4 +1,4 @@
-"""The oracle cannot run Workbench code (09 R7 c, 10-DECISION 8): gate ``oracle-import-ban``.
+"""The oracle cannot run Workbench code (09 R7 c): gate ``oracle-import-ban``.
 
 Two layers. The static allowlist scan (``scripts/check_oracle_imports.py``) is clean on
 this tree and flags every planted bypass, including the ones a deny list missed (path

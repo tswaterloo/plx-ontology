@@ -81,7 +81,7 @@ versions in conflict (``portal_conflicts``). Neither side overrides the other. A
 eTag no projected version holds project nothing (counted).
 
 **Earlier ``plx.review`` document types are history here** (QA-07: one store of kinds, one
-write path, decision 2026-10-08-doc-fields-confirmations). This module's form is the only path
+write path). This module's form is the only path
 that records what a document is; ``plx.review`` refuses a new document type.
 ``import_reviews`` copies the document-kind decisions ``ontology.reviews`` held in force into
 this store under their review ids, append-only and once (``review_record``: ``channel``

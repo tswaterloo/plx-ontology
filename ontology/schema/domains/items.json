@@ -3,7 +3,7 @@
  "format": "plx-ontology-domain/v1",
  "domain": "items",
  "origin": "curated",
- "description": "Development FG items and Sage item units of measure (schema-coverage lane, directive 612e1dd724f7). The FG item links to the product it was minted as, its analog reference product and the FM finished product it adopted; a unit of measure links to its Sage item. Conversions are Decimal text read from Sage, never inferred.",
+ "description": "Development FG items and Sage item units of measure. The FG item links to the product it was minted as, its analog reference product and the FM finished product it adopted; a unit of measure links to its Sage item. Conversions are Decimal text read from Sage, never inferred.",
  "upstream_pins": {
   "plx-customer-portal": "790256ca43"
  },

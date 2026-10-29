@@ -1,4 +1,4 @@
-"""Lot impact (lane lot-hold-impact): from a supplier lot over recorded firm-tier links only
+"""Lot impact: from a supplier lot over recorded firm-tier links only
 to the purchase order and supplier it was received on, and to the customer orders the
 assembly orders that consumed it are made or allocated for, with the ordered quantity
 touched, a typed gap at each unrecorded hop and name-only (lead) matches kept as
@@ -7,7 +7,7 @@ candidates; the stored ``lot_impact`` investigate plan (F17), reached through
 
 Synthetic records over the real compiled schema (``tests.test_ontology_tools_process``
 fixture); every investigate output is validated against the tool contracts. The live
-check's report is checked against ``devloop/live-checks/process.lot_impact.json`` from a
+check's report is checked against live check ``process.lot_impact`` from a
 scan of this fixture. Evidence label: isolated-fixture.
 """
 

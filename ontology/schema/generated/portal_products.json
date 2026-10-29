@@ -50,7 +50,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -250,7 +250,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -472,7 +472,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -832,7 +832,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -1675,7 +1675,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -2033,7 +2033,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -2214,7 +2214,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -2482,7 +2482,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -3062,7 +3062,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -3458,7 +3458,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -3861,7 +3861,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -4258,7 +4258,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -4829,7 +4829,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -5467,7 +5467,7 @@
        "note": "Pagination key ['itemno'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -6274,7 +6274,7 @@
        "note": "Pagination key ['_sage_pk'] (key source: nullable-unique)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -6421,7 +6421,7 @@
        "note": "Pagination key ['id'] (key source: id)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -6612,7 +6612,7 @@
        "note": "Pagination key ['id'] (key source: id)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -6936,7 +6936,7 @@
        "note": "Pagination key ['id'] (key source: id)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -7199,7 +7199,7 @@
        "note": "Pagination key ['id'] (key source: id)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -7503,7 +7503,7 @@
        "note": "Pagination key ['id'] (key source: id)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -7722,7 +7722,7 @@
        "note": "Pagination key ['id'] (key source: id)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -7996,7 +7996,7 @@
        "note": "Pagination key ['id'] (key source: id)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [

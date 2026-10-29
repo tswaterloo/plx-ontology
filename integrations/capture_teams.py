@@ -1,14 +1,13 @@
 """Versioned Teams capture (L1): channel and chat messages into Workbench state.
 
-Directive 8f6976e58be5 item 10 (capture breadth): Microsoft Teams as a captured
+Microsoft Teams as a captured
 source. Everything is read through the one GET-only Graph client
 (``integrations.graph_read.build_graph`` -> ``live_source_guard``; the closed
 grammar's ``graph.user_joined_teams``, ``graph.user_chats``, ``graph.team_*``,
 ``graph.channel_*`` and ``graph.chat_*`` templates). There is no other HTTP path and
 no write: nothing is posted, replied to or marked read.
 
-The CLI runs a census first (``TeamsCapture.census``; directives cdce67ac8e8c and
-64fca27acc88): every team of the tenant, each team's channels and the chats of the
+The CLI runs a census first (``TeamsCapture.census``): every team of the tenant, each team's channels and the chats of the
 scope's chat accounts, names and 30-day message counts only. Listings select ids and
 types; a team's, channel's or chat's name is requested only once its members cleared
 the people guard (``integrations.people_exclusion``), and one with an excluded member
@@ -22,7 +21,7 @@ keywords: a proposal, never a grant) go to ``<state-dir>/teams-capture/census.js
 (0600, outside Git) and never to the report.
 
 Content is read of every channel and chat this run's census lists and the people guard
-cleared (owner decision 2026-10-26: no human content confirmation; the census runs the
+cleared (No human content confirmation; the census runs the
 guard first, a blocked guard clears nothing). ``content-confirmation.json`` is neither
 required nor consulted; ``read_confirmation`` stays only for old files.
 
@@ -39,8 +38,7 @@ CLI passes only the confirmed scope):
 * Discovery: explicit teams (all channels, or named ones), explicit chats,
   ``members`` (the teams a member has joined) and, with ``member_chats``
   ``mail_allowlist``, the chats of every account on the canonical mail allowlist
-  (``operating/case_mail_scope.json``, the reported Graph allowlist; owner policy
-  e251073ef3c5/746d96497341, decision ``2026-10-07-ovs-teams-capture`` item 2). Those
+  (``operating/case_mail_scope.json``, the reported Graph allowlist; decision ``2026-10-07-ovs-teams-capture`` item 2). Those
   accounts are derived from the allowlist itself, so the scope keeps no second list of
   whose chats are read: an account added to or removed from the allowlist is added to
   or removed from the chat reads. A member must be on that allowlist, checked on the
@@ -102,8 +100,7 @@ mail capture's shape: ``source``, ``kind``, ids, ``reply_to_id``, times, ``from`
 ``attachments`` (references only: id, content type, name, ``content_url``; no bytes
 are read), ``mentions`` (who or what was mentioned) and ``original_url``; ``meta``
 holds ``source_acl`` (the membership: member object ids and addresses) and
-``source_api``. Lineage ``mail`` (person-to-person messages; the C0 lineage enum
-has no ``teams``: ``devloop/DECISIONS/2026-10-07-ovs-teams-capture.md`` item 1).
+``source_api``. Lineage ``mail`` (person-to-person messages).
 
 Permission trimming: a reader sees a captured message only when the live audience
 grants ``teams:channel:<team-id>:<channel-id>`` / ``teams:chat:<chat-id>`` *and* one
@@ -130,14 +127,14 @@ standard channel's refused team read falls back to its group) loses its recorded
 succeeds (decision ``2026-10-10-followup-decisions`` item 6). A transient failure (429 once
 the bounded ``Retry-After`` retries are spent, 5xx, 408, a timeout or connection failure, a
 request budget or deadline: ``_transient_members_failure``) keeps the membership recorded
-before and its ``recorded_at`` instead (supervisor decision 2026-10-29, lane
-``teams-acl-transient``): the store serves a unit's membership only while it is younger than
+before and its ``recorded_at`` instead:
+the store serves a unit's membership only while it is younger than
 ``capture_store.UNIT_ACL_MAX_AGE`` (the capture-age bound, 48 hours), so a kept one stops
 deciding at that bound. Either way it is ``members_unread``
 beside the failure's reason and its run stays open (paused: the next read resumes its
 cursor, or reads a full round when it had none), so neither the
 pass, the store's completeness nor the projection's (``TeamsCaptures.capture_gap``) is
-complete while it is excluded (architect decision of lane ``teams-members-read-gap``).
+complete while it is excluded.
 
 Completeness per conversation: ``complete`` only when the latest round reached its
 end (a full round's end, or a delta/incremental round's end after a full one) with
@@ -323,15 +320,15 @@ CENSUS_OPERATIONS = frozenset({
     "graph.team_channels", "graph.team_channel", "graph.channel_members",
     "graph.user_chats", "graph.chat_members", "graph.chat", "graph.teams_activity_report",
     "graph.user_joined_teams"})
-# Tanush's confirmation of the channels and chats whose content may be read (a human
-# approval: written by him beside the census, never by code, never defaulted).
+# The confirmation of the channels and chats whose content may be read (a human
+# approval: written by a person beside the census, never by code, never defaulted).
 CONFIRMATION_FILE = "content-confirmation.json"
 CONFIRMATION_SCHEMA = "plx-teams-content-confirmation/v1"
 CONFIRMATION_PART = "teams.content_confirmation"
 CONFIRMATION_LATER_ASK = "teams-content-confirmation"
 MAX_CONFIRMATION_BYTES = 262_144
 # The confirmation's forms: the channels and chats it lists, or every conversation the
-# run's census cleared (owner directive "Teams everything", 2026-10-21); a scope's
+# run's census cleared (2026-10-21); a scope's
 # ``teams`` may name the same set.
 LISTED = "listed"
 ALL_CENSUS_CLEARED = "all_census_cleared"
@@ -339,7 +336,7 @@ _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _DIRECTIVE = re.compile(r"[0-9a-f]{10,32}")
 # The signer of an all_census_cleared confirmation is a person named by name: never a
 # principal, an address, or the name of code (an agent, a service, a script).
-# A full name: at least two words of letters (``Tanush Shah``), never a role.
+# A full name: at least two words of letters, never a role.
 _PERSON = re.compile(r"[^\W\d_]+(?:['-][^\W\d_]+)*\.?(?: [^\W\d_]+(?:['-][^\W\d_]+)*\.?)+")
 _CODE_SIGNERS = frozenset({"admin", "agent", "assistant", "automation", "bot", "claude",
                            "codex", "controller", "gpt", "owner", "script", "service", "svc",
@@ -489,7 +486,7 @@ class TeamsScope:
     or ``mail_allowlist``: the chats of every in-scope account of ``allowlist``),
     ``teams`` (``{team_id, channels: "all" | [channel ids]}``, or ``"all_census_cleared"``:
     every channel of every team the CLI's census enumerates and clears, which only the
-    owner's confirmation lets it read, its members' joined teams then being the baseline
+    human confirmation lets it read, its members' joined teams then being the baseline
     it is compared with; ``TeamsCapture.run`` has no census and reads no team from it),
     ``chats`` (chat ids) and the caps of ``_LIMITS``. ``allowlist`` (default: the built-in ``MailScope``): a
     member outside it is set aside and never read; an unrestricted allowlist names no
@@ -956,7 +953,7 @@ class TeamsCapture:
     def _members(self, scope: TeamsScope, reasons: set[str]
                  ) -> list[tuple[str, bool, bool]]:
         """``scope.members`` plus, for an ``all_directory`` allowlist, the chats of every
-        directory member user the people guard leaves in (owner decision 2026-10-26).
+        directory member user the people guard leaves in.
         The exclusion filter runs on the listing before any member is looked up; a guard
         that is unusable or a listing that fails adds none (fail closed)."""
         members = list(scope.members)
@@ -1336,7 +1333,7 @@ class TeamsCapture:
                                "identities": [f"group:{conversation.team}"]}, None
             participants = None   # the group names nobody here
         if self.people.excluded(acl["identities"]):
-            # A chat or channel an excluded person belongs to (directive 64fca27acc88: the
+            # A chat or channel an excluded person belongs to (The
             # census refuses it too): no message is read, and what an earlier capture
             # holds of it loses its membership (neither projected nor resolved). Settled,
             # not a gap: it is withheld by policy, every run. A group_fallback audience
@@ -2028,7 +2025,7 @@ class TeamsCapture:
         reasons.update(r for r in uncounted if r.startswith("blocked:"))
 
 
-# ------------------------------------------------------------------ census file and owner confirmation
+# ------------------------------------------------------------------ census file and human confirmation
 
 def _named(record: Any, expected: str, key: str) -> str | None:
     """The name ``key`` of a record Graph returned for ``expected`` (None when it is
@@ -2088,20 +2085,20 @@ def write_census(state_dir: str | Path, private: Mapping[str, Any] | None) -> bo
 
 
 def confirmation_block(code: str) -> dict[str, Any]:
-    """The typed block of content waiting on the owner's confirmation (``code``: why
+    """The typed block of content waiting on the human confirmation (``code``: why
     none is usable). A later ask, never cleared by code."""
     return {"part": CONFIRMATION_PART, "source": "owner-confirmation", "http_status": None,
             "error_code": code, "cause": "later_ask", "later_ask": CONFIRMATION_LATER_ASK}
 
 
 def read_confirmation(state_dir: str | Path) -> tuple[dict[str, Any] | None, str]:
-    """(the confirmation, ``valid``) or (None, why not): the owner's
+    """(the confirmation, ``valid``) or (None, why not): the human
     ``plx-teams-content-confirmation/v1`` at ``confirmation_path``, in one of two forms.
 
     The listed form: ``confirmed_by``, ``confirmed_at`` (a date), ``channels``
     (``{team_id, channel_id}``) and ``chats`` (chat ids), at most 200 each, naming at
-    least one. The all form (owner directive "Teams everything", 2026-10-21): ``scope``
-    ``"all_census_cleared"``, ``confirmed_by`` (the owner's full name, never a role,
+    least one. The all form (2026-10-21): ``scope``
+    ``"all_census_cleared"``, ``confirmed_by`` (the confirming person's full name, never a role,
     address, principal or the name of code: ``content_confirmation_not_owner``),
     ``confirmed_at`` (a calendar date) and ``directive`` (the directive id); no
     ``channels`` or ``chats``. It confirms exactly what the run's census clears.
@@ -2326,7 +2323,7 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
             sender: Any = None, sleep: Callable[[float], None] | None = None,
             clock: Callable[[], float] = time.monotonic) -> dict[str, Any]:
     """Take the census (``TeamsCapture.census``; its listing to ``census_path``), then,
-    only for what the owner's confirmation names and the census cleared, capture
+    only for what the human confirmation names and the census cleared, capture
     ``--runs`` times, then until ``--max-runs`` ran or ``--budget-seconds`` is
     spent, stopping at the first run that completes a pass (never a new pass after it:
     ``pass`` is about one pass), then read the store back as a member, an outsider
@@ -2386,7 +2383,7 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
         census, private = capture.census(scope, blocked, expired)
         census["file"] = {"written": write_census(state_dir, private),
                           "outside_git_tree": True, "name": f"{STORE_DIR}/{CENSUS_FILE}"}
-        # Owner decision 2026-10-26: no human content confirmation. Content is read of
+        # No human content confirmation. Content is read of
         # everything this census lists that the people guard cleared (the census ran the
         # guard first; a blocked guard clears nothing). A content-confirmation.json is
         # neither required nor consulted.
@@ -2471,7 +2468,7 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
             # conversation (0 is the guard's proof), and every GET it saw.
             "excluded_requested": log.excluded, "requests_logged": log.gets,
             # Blocked parts that name neither the Graph permission they need nor the
-            # owner's confirmation (the one later ask a run may wait on): 0, or the
+            # human confirmation (the one later ask a run may wait on): 0, or the
             # block is not one the all-channels check accepts.
             "blocked_unnamed": sum(1 for p in blocked if not p.get("permission")
                                    and p.get("part") != CONFIRMATION_PART)}
@@ -2492,7 +2489,7 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
             "blocked_upstream": blocked,
             # Names and 30-day counts of every team, channel and chat the people guard
             # cleared (counts here; names only in the census file), and what content the
-            # owner's confirmation lets the runs read.
+            # human confirmation lets the runs read.
             "census": census,
             "content": content,
             "coverage": coverage,

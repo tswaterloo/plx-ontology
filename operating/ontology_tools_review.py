@@ -1,4 +1,4 @@
-"""``plx.review``: a person's review decisions on the ontology (directive dd40ff1bf83f P3).
+"""``plx.review``: a person's review decisions on the ontology.
 
 The confirm / reject controls of the employee workspace call this one tool. Mode
 ``record`` appends one decision to the Workbench's own review store
@@ -66,7 +66,7 @@ so one share alone never gives out more than the supply holds (``plx.aggregate``
 checks the shares together). A refusal never tells a record the reader may
 not read from one that does not exist. ``document_kind`` is refused
 (``document_kind_via_document_fields``): ``plx.document_fields`` is the one path that
-records what a document is (decision 2026-10-08-doc-fields-confirmations).
+records what a document is.
 
 Effect (``projection`` in the answer): an alias applies to the next ``plx.find`` (read
 from the review store per call, ``ontology.resolve.ReviewedAliases``); a link decision
@@ -133,8 +133,7 @@ _STORED = dict(_CORRECTABLE, decimal=r"-?[0-9]+(?:\.[0-9]+)?", money=r"-?[0-9]+(
                quantity=r"-?[0-9]+(?:\.[0-9]+)?")
 _MACHINE_READ = frozenset({"parser", "ocr"})
 # Who may record an identity decision: the employee-policy principal the host maps to
-# the Portal's owner and admin roles (SUPER_ADMIN, ADMIN; owner decision ab1b0f5d9fa8,
-# the policy's ``review:identity`` entry with ``portal_roles``).
+# the Portal's owner and admin roles (SUPER_ADMIN, ADMIN; the policy's ``review:identity`` entry with ``portal_roles``).
 IDENTITY_REVIEW = "review:identity"
 IDENTITY_DECISIONS = frozenset({"accept_link", "reject_link", "alias", "reject_alias"})
 

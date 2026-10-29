@@ -1,7 +1,7 @@
 """Expired-material disposition case: PROPOSED dev-exposed cards and the gaps they need.
 
 ``evals/dev/expired-disposition/proposed_items.json`` holds the questions of QC's
-Expired-Material Disposition Map (EMD-*, advisory 28a8482d8ba0): one disposition case per
+Expired-Material Disposition Map (EMD-*): one disposition case per
 lot, the retest, extension, recertification, waiver, relabel and disposal routes,
 batch-demand priority, customer policy, extension history, approval evidence and the
 waiver that sets no new expiry, plus the R-0663 extension and the R-0030 waiver. The
@@ -142,7 +142,7 @@ class ExpiredDispositionCardsTest(unittest.TestCase):
     def test_pin_matches_the_advisory_record(self):
         """record_sha256 is the SHA-256 of the record at its commit; the archive pin is the
         record's own source item, revision hash and size, and the members it hashes carry
-        the same hashes in the descriptor. Needs codex/advisory."""
+        the same hashes in the descriptor."""
         pin = self.cards["source"]["advisory"]
         raw = _git_show(pin["ref"], pin["path"])
         if raw is None:

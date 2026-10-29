@@ -76,7 +76,7 @@ page. Captured records cite
 and resolve offline; a changed etag adds a version and keeps the old one.
 Completeness is reported per company and entity set; a partial read (budget,
 record cap, refused or throttled GET) is never reported complete. Incremental
-capture (``mode="auto"``, devloop/DECISIONS/2026-10-02-bc-capture-incremental.md):
+capture (``mode="auto"``):
 modified-since reads per company x entity set after the first full pass, posted
 invoice/credit-memo lines kept while their header version is unchanged, and a
 key-only full pass weekly that marks keys BC no longer lists
@@ -676,7 +676,7 @@ def build_bc(environ: Mapping[str, str] | None = None, *, sender=None,
 
 # ------------------------------------------------------------------ versioned capture
 
-# Entity sets the L1 capture keeps per company (10-DECISION 2; 09 lane L2): every BC
+# Entity sets the L1 capture keeps per company (09 L2): every BC
 # entity set an ontology binding reads (ontology/schema/domains/*.json), so a BC
 # projection can be complete on its own, and sales quotes (with their lines) for the
 # quotes domain. Document headers with a line navigation also capture their lines, per
@@ -691,8 +691,7 @@ def build_bc(environ: Mapping[str, str] | None = None, *, sender=None,
 # customerPayments / vendorPayments are unposted journal lines (lines of their journal)
 # that leave the API once posted, and the Portal skips customer/vendor ledger entries as
 # not published on api/v2.0 for these companies (plx-customer-portal@790256c
-# inbound.ts:248-268, shouldSkipMissingPostedCollection;
-# devloop/DECISIONS/2026-10-07-bc-finance-2-payment-ledger.md). A set a company does not expose
+# inbound.ts:248-268, shouldSkipMissingPostedCollection). A set a company does not expose
 # (404 on its listing) fails its unit with reason ``not_exposed``: a gap, never empty.
 CAPTURE_ENTITY_SETS = ("purchaseOrders", "purchaseReceipts", "purchaseInvoices", "salesOrders",
                        "salesInvoices", "salesShipments", "salesCreditMemos",
@@ -788,7 +787,7 @@ def select_pinned(items: Sequence[Mapping[str, Any]], environment: str,
 # BC codes of a 400 that says the page found nothing it needs in the company (the payment
 # journal pages fail on a missing journal template): the company does not serve the set.
 # The request is not at fault when another company served the same read (gap-1b49174b629f,
-# directive 4b59246fac05: the daily d298b51 read internal_data_not_found_filter).
+# The daily d298b51 read internal_data_not_found_filter).
 UNSERVED_CODES = frozenset({"internal_data_not_found_filter"})
 _REFUSED_STATUSES = frozenset({401, 403})
 # Reasons a header unit fails with when its company refuses or does not serve the set.
@@ -833,8 +832,8 @@ def load_ledger_scope(source: str | Path | Mapping[str, Any] | None = None
     """``{environment (lower): scope}`` of ``bc.ledgers`` from the pinned map's ``ledgers``
     section: the ``required_book`` (the Workbench's BC book, Production / My Company), the
     ``required_sets`` it must serve with lines, and the ``expected_gaps``: companies (by
-    GUID) whose named refusal of named sets is a reason-coded gap with an owner and a cause
-    (directive 8a8b59c65f56). Anything malformed fails the load."""
+    GUID) whose named refusal of named sets is a reason-coded gap with an owner and a cause.
+    Anything malformed fails the load."""
     document = source if isinstance(source, Mapping) else json.loads(
         Path(source or BOOKS_FILE).read_text(encoding="utf-8"))
     section = document.get("ledgers", {})
@@ -868,7 +867,7 @@ def load_ledger_scope(source: str | Path | Mapping[str, Any] | None = None
     return out
 
 
-# The start of the verifier session a check runs in (devloop/live_verify.py sets it): a
+# The start of the verifier session a check runs in (the live verifier sets it): a
 # consumer of the session's capture store reuses only what that session completed
 # (``BcCapture.capture(fresh_since=)``). Unset outside a session: nothing is reused.
 FRESH_SINCE_ENV = "PLX_CAPTURE_FRESH_SINCE"
@@ -879,7 +878,7 @@ def session_fresh_since(environ: Mapping[str, str] | None = None) -> str | None:
     return (os.environ if environ is None else environ).get(FRESH_SINCE_ENV) or None
 
 
-# Incremental capture (devloop/DECISIONS/2026-10-02-bc-capture-incremental.md).
+# Incremental capture.
 # ``mode="full"`` reads every unit in full each call (and marks records a complete
 # traversal did not see as missing). ``mode="auto"`` schedules per unit (company x
 # entity set): a set with ``lastModifiedDateTime`` (``grammar.BC_MODIFIED_SINCE_SETS``)
@@ -2199,7 +2198,7 @@ class BcCapture:
 # Entity sets the case tools read (no employees; no Microsoft.NAV actions).
 CASE_ENTITY_SETS = ("purchaseOrders", "purchaseReceipts", "purchaseInvoices", "salesOrders",
                     "salesInvoices", "items", "vendors", "customers")
-# Finance sets ``probe --finance-entities`` checks (devloop/live-checks/bc.ledgers.json):
+# Finance sets ``probe --finance-entities`` checks (live check ``bc.ledgers``):
 # field names, the ``$select`` allowlist BC accepts, lines of the first header.
 FINANCE_ENTITY_SETS = ("itemLedgerEntries", "generalLedgerEntries", "agedAccountsReceivables",
                        "agedAccountsPayables", "purchaseCreditMemos",
@@ -2436,7 +2435,7 @@ def probe(environ: Mapping[str, str] | None = None, *, sender=None,
     ``books``, default ``bc_company_books.json``; null when unpinned), entity set, status
     and BC code, each naming its ``message_class`` as diagnosis. Only one the caller
     expects for that company (``expected_refusals``, ``<company book>:<entity set>:<BC
-    error code>``, data from the live-check spec, architect-20261013T0921Z) is ``expected``
+    error code>``, data from the live-check spec) is ``expected``
     and reported only, whatever its message says; any
     other, the same set refused by another company or a configuration-class message
     included, is also a ``finance_entity_errors`` row, so the check fails at once, except a 400 whose BC
@@ -2537,7 +2536,7 @@ def probe(environ: Mapping[str, str] | None = None, *, sender=None,
 
         def excused(book: str | None, entity: Mapping[str, Any]) -> bool:
             # Only the listed company's refusal: an unpinned company (no book) never is.
-            # The message class is diagnosis, never a reason (architect-20261013T0921Z).
+            # The message class is diagnosis, never a reason.
             return refused(entity) and (
                 book, entity["entity_set"], entity["failure"]["error_code"]) in expected
 

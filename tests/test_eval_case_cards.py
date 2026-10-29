@@ -207,8 +207,8 @@ class AccountingTest(unittest.TestCase):
     its originals' bytes and never by the time its set was written, and in every case a
     wrong answer to a scored card stays wrong."""
 
-    def rows(self, ids, final, *, spawn=None, agent=None):
-        compiled, _ = tool.compile_cards(tool.card_sets(anchored_cards()), now=NOW)
+    def rows(self, ids, final, *, spawn=None, agent=None, cards=None):
+        compiled, _ = tool.compile_cards(tool.card_sets(cards or anchored_cards()), now=NOW)
         entries = [r for r in compiled if (r["case"], r["card_id"]) in ids]
         self.assertEqual(len(entries), len(ids))
         agent = agent or runner.ClaudeCodeAgent(spawn=spawn or spawned(final, []))
@@ -329,10 +329,12 @@ class AccountingTest(unittest.TestCase):
                       item["question"]["text"])
 
     def test_a_card_on_a_map_no_one_holds_is_blocked_and_the_label_alone_never_correct(self):
-        # decision 2026-10-28-substantive-partial: the maps behind these cards are
+        # The maps behind these cards are
         # registered card rows (examples/case_originals_card_sources.json). Laura's ZIP is
-        # a pinned Teams chat attachment (the runner checks the host holds it); the R&D
-        # maps exist only as artifact invitations (gap rows, no bytes: no host holds them).
+        # a pinned Teams chat attachment; the R&D maps are pinned by the rendered-text
+        # SHA-256 of the source records that hold their complete text. The runner checks
+        # the host holds those bytes; a gap row with no SHA-256 stays unpinned (no one
+        # holds it).
         registry = tool.registry_pins()
         compiled, refused = tool.compile_cards(tool.card_sets(), now=NOW)
         by = {r["card_id"]: r["item"] for r in compiled}
@@ -343,29 +345,44 @@ class AccountingTest(unittest.TestCase):
                      "BR-15"):
             self.assertEqual(runner.item_pins(by[card]), [zip_pin], card)
             self.assertEqual(score.unheld_originals(by[card]), [], card)
-        maps = {"AG-01": "gap-1aefac272d36", "RS-01": "gap-15999825ecff",
-                "IL-01": "gap-7dc82f245571", "AG-03": "gap-1aefac272d36",
-                "AG-05": "gap-1aefac272d36",
-                "AG-06": "gap-1aefac272d36", "RS-03": "gap-15999825ecff",
-                "RS-04": "gap-15999825ecff", "IL-02": "gap-7dc82f245571"}
-        for card, row in maps.items():
-            self.assertEqual(registry[row], f"original://unpinned/{row}")
+        agenda, samples, lists = ("a2d0981962e8cecf2c1ea9a61451a711ed1cdcd6ee3b14ae3f6d36dbb79e3446",
+                                  "60cfb8f77f4ff6577ff60c2b44810edeaca3e0a8ea56ede18f2996de384d57b7",
+                                  "28145aacc2c6f35203766e2936779676f2329348b266bec1974d12b99a988064")
+        maps = {"AG-01": agenda, "RS-01": samples, "IL-01": lists, "AG-03": agenda,
+                "AG-05": agenda, "AG-06": agenda, "RS-03": samples, "RS-04": samples,
+                "IL-02": lists}
+        for card, digest in maps.items():
             self.assertEqual((runner.item_pins(by[card]), score.unheld_originals(by[card])),
-                             ([], [row]), card)
+                             ([f"original://sha256/{digest}"], []), card)
             self.assertEqual(runner.validate_item(by[card]), [], card)
+        unpinned = [row for row, pin in registry.items()
+                    if (pin or "").startswith("original://unpinned/")]
+        self.assertTrue(unpinned)
+        for row in unpinned:
+            self.assertEqual(registry[row], f"original://unpinned/{row}")
         self.assertFalse([r for r in refused if r["case"] in ("brand-requirements",
                                                                "rnd-maps")
                           and r["reasons"] != ["card_anchor_missing"]])
-        # a failed abstention on AG-05 is the state's gap; on IL-03 (no registered map)
-        # wrong
-        rows = self.rows({("rnd-maps", "AG-05"), ("rnd-maps", "IL-03")}, nameless())
-        self.assertEqual((rows["AG-05"]["outcome"], rows["IL-03"]["outcome"]),
-                         ("blocked", "wrong"))
-        self.assertIn("originals_not_held", rows["AG-05"]["codes"])
-        # an abstention naming its gap is justified on both, labelled blocked (/20) or
-        # partial
-        for label in ("blocked", "partial"):
-            rows = self.rows({("rnd-maps", "AG-05"), ("rnd-maps", "IL-03")}, answer(label))
+        # a card on a map no one holds (AG-05 here naming an unpinned gap row instead of
+        # its pinned map): a failed abstention is the state's gap; on IL-03 (no
+        # registered map) wrong
+        with tempfile.TemporaryDirectory() as tmp:
+            doc = json.loads((anchored_cards() / "rnd-maps" / tool.CARDS_FILE)
+                             .read_text("utf-8"))
+            next(c for c in doc["real_example"]["cards"]
+                 if c["id"] == "AG-05")["originals"] = unpinned[:1]
+            (Path(tmp) / "rnd-maps").mkdir()
+            (Path(tmp) / "rnd-maps" / tool.CARDS_FILE).write_text(json.dumps(doc), "utf-8")
+            pair = {("rnd-maps", "AG-05"), ("rnd-maps", "IL-03")}
+            rows = self.rows(pair, nameless(), cards=Path(tmp))
+            self.assertEqual((rows["AG-05"]["outcome"], rows["IL-03"]["outcome"]),
+                             ("blocked", "wrong"))
+            self.assertIn("originals_not_held", rows["AG-05"]["codes"])
+            # an abstention naming its gap is justified on both, labelled blocked (/20)
+            # or partial
+            labelled = {label: self.rows(pair, answer(label), cards=Path(tmp))
+                        for label in ("blocked", "partial")}
+        for label, rows in labelled.items():
             self.assertEqual({r["outcome"] for r in rows.values()}, {"justified_abstention"})
         # the partial label with gaps and no evidenced claim: an abstention, never correct
         rows = self.rows({("amazon-fba", "FBA-01"), ("rnd-maps", "IL-03")}, answer())
@@ -399,8 +416,7 @@ class AccountingTest(unittest.TestCase):
 
     def test_each_rubric_item_carries_its_own_and_the_other_sets_source_documents(self):
         """Scorer /21: a card's source documents come from its set's data (watched files,
-        archive or original, the registry's case original, its maps' own files, and the
-        sets its map's advisories head); every other set's are foreign, except an original
+        archive or original, the registry's case original, its maps' own files); every other set's are foreign, except an original
         the card itself names."""
         sets = tool.card_sets()
         compiled, _ = tool.compile_cards(sets, now=NOW)

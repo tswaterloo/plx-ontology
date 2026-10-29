@@ -1,6 +1,6 @@
 {
   "schema": "plx-source-mirror-audience/v1",
-  "note": "EXAMPLE configuration, not authority (devloop/live-checks/case.mail_evidence.json). Operations (held by both readers of the check) reads Portal purchase orders and suppliers; only purchasing also reads the mailbox. Default deny.",
+  "note": "EXAMPLE configuration, not authority (live check ``case.mail_evidence``). Operations (held by both readers of the check) reads Portal purchase orders and suppliers; only purchasing also reads the mailbox. Default deny.",
   "tenant": "plx",
   "default_classification": "internal",
   "audiences": {

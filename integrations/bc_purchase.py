@@ -436,7 +436,7 @@ def _cost(line: Mapping[str, Any]) -> Decimal | None:
 
 def _price_pairs(company: Mapping[str, Any]) -> dict[str, int]:
     """Counts only: whether a PO line's ``directUnitCost`` and its invoice line's
-    ``unitCost`` differ (devloop/DECISIONS/2026-10-08-bc-three-way-price-basis.md, what
+    ``unitCost`` differ (what
     would reverse it). An invoice Item line pairs with the one PO Item line of the same
     item No. and unit of measure code (none or several: unpaired); a pair whose costs are
     not both read is ``cost_absent``; the rest are ``equal`` or ``differ`` as Decimals."""

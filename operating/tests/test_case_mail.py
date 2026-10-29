@@ -8,9 +8,7 @@ capture (Graph delta); socket connections are refused for the whole module. Two
 mailboxes are captured: the allowlisted shared ``order-confirmation@`` inbox (its UPN differs
 from the allowlisted SMTP address) and a mailbox outside the case mail scope
 whose mail cites the same PO number; the reader is even granted that mailbox
-by the live audience, so only the scope keeps it out. Since the owner decision of
-2026-10-26 the scope covers every directory user except excluded people, so the
-outside mailbox belongs to a person excluded after the capture ran (``CASE_ENV``).
+by the live audience, so only the scope keeps it out.
 """
 
 from __future__ import annotations
@@ -67,7 +65,7 @@ LIVE_AUDIENCE = {**{key: ["staff:purchasing", "svc:mail-capture", "agent:case-bo
                     for key in MAIL_KEYS},
                  **{key: ["staff:purchasing", "svc:mail-capture"] for key in OUT_KEYS}}
 # The host environ of the case runtime: the outside mailbox's owner is an excluded
-# person (owner decision 2026-10-26: every directory user but the excluded people is in
+# person (Every directory user but the excluded people is in
 # the case mail scope). The capture ran before the exclusion (retroactive).
 CASE_ENV = {**ENV, "PLX_EXCLUDED_PEOPLE_OIDS":
             f"{ENV['PLX_EXCLUDED_PEOPLE_OIDS']},{CEO_ID}"}
@@ -517,7 +515,7 @@ class PermissionTests(CaseMailTestCase):
         self.assertNotIn("graph-mail://", json.dumps(view))
 
     def test_cited_mail_only_case_follows_the_capture_completeness(self):
-        # Review of 4665b18: with no PO root, the thread index alone decides whether
+        # With no PO root, the thread index alone decides whether
         # the related mail can be complete.
         runtime = self.runtime()
         citation = runtime.mail_message(PURCHASING, PO_BOX, "m-confirm")["citation"]

@@ -27,7 +27,7 @@ record of the posting joins them: a raw ``app_bc_entity_map`` row of ``entity_ty
 ``Production`` names the Portal order (``source_id``) and the BC order it was posted as
 (``bc_system_id`` = the BC ``id`` in ``bc_company_id``); it joins only when no other row
 maps either end and neither order is joined to another one (else
-``entity_map_conflict``, no join; decision 2026-10-28-oracle-entity-map-po-groups). Then a
+``entity_map_conflict``, no join). Then a
 BC order not yet
 joined joins the Portal order its ``Your_Reference`` (the captured ODataV4 Page 50 field
 page ``purchaseOrderReferences``, ``No`` equal to the order's number) names, only when the

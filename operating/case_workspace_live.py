@@ -118,7 +118,7 @@ link such as ``SupplierConfirmation.confirms``), beside the readable objects
 Evidence: what the workspace shows is ``MIRROR_EVIDENCE`` (captures the ingestion runner
 wrote; paged, non-atomic, possibly older than the source). Whether that runner read live
 sources is recorded by its own run, never asserted here; ``live-verified`` comes only
-from a ``devloop/live_verify.py`` result (spec ``devloop/live-checks/case.workspace_live.json``).
+from a the live verifier result (live check ``case.workspace_live``).
 
 CLI (prints counts, booleans and enums only: no identifier, value, name or citation)::
 
@@ -623,7 +623,7 @@ def host_capture_gaps(state_dir: str | Path) -> dict[str, dict[str, Any]]:
 
 def upstream_parts(reasons: Sequence[str] | None) -> list[dict[str, str]]:
     """``portal_upstream`` reasons as the live verifier's ``blocked_upstream`` parts
-    (``devloop/live_verify.py``: the check is then blocked, never a pass)."""
+    (the live verifier: the check is then blocked, never a pass)."""
     parts = {("host:portal" if reason.startswith("host_error:") else
               "ingestion:portal_relation", reason.split(":", 1)[1][:79])
              for reason in reasons or ()}
@@ -3687,7 +3687,7 @@ def _host_cycle(args: argparse.Namespace, environ: Mapping[str, str],
 
 
 def _reference_alias(projection: Mapping[str, Any] | None) -> dict[str, Any]:
-    """The supplier-number alias join of the build (ROADMAP A10): its typed outcome
+    """The supplier-number alias join of the build (the acceptance bar): its typed outcome
     (``ontology.mentions.reference_alias_outcome``: ``alias_joined``, a pending lead, or
     why no candidate was found) and counts only, from the mention step's counts."""
     from ontology.mentions import reference_alias_outcome
@@ -3732,7 +3732,7 @@ class _StderrCauses(contextlib.AbstractContextManager):
     {"log:<logger, two name parts>:<LEVEL>" | "warning:<Category>": n}}``), never a
     message, which may carry a document's text. At most ``STDERR_CAUSES_MAX`` causes are
     named; the rest count as ``other``. Any other logging record, a traceback logged with
-    ``exc_info`` included, reaches stderr unchanged (``devloop/live_verify.py`` reads its
+    ``exc_info`` included, reaches stderr unchanged (the live verifier reads its
     exception class), as does an exception escaping the run. Warnings are caught
     process-wide (``warnings.catch_warnings``: not thread-safe), so it wraps the CLI only."""
 

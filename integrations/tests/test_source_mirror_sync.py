@@ -1,4 +1,4 @@
-"""Mirror completeness (09 lane L1): full sync of every served relation, resumable
+"""Mirror completeness (09 L1): full sync of every served relation, resumable
 paging, Retry-After, key-only absence scans, batch citation resolve, SQL-side
 filters, lineage and per-relation completeness counts.
 
@@ -413,7 +413,7 @@ class FullSyncTests(SyncTestCase):
         self.assertEqual(result["row_count"], 7)  # stored rows are still served, stale
 
     def test_http_500_halves_the_page_until_it_fits(self):
-        """Lane mirror-coverage: an HTTP 500 on a page is split like a statement
+        """An HTTP 500 on a page is split like a statement
         timeout (same cursor, half the page, down to the floor)."""
         generated_relation(self.fake, "public.big", 7)
         server_error = SourceHttpError("read-only source GET failed: HTTPError", status=500,

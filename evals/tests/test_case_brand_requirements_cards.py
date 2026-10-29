@@ -1,16 +1,14 @@
 """Brand requirements case: PROPOSED dev-exposed cards and the ontology gaps they need.
 
 ``evals/dev/brand-requirements/proposed_items.json`` holds the questions of Laura Abate's
-Customer Brand Requirements map (Draft 6, advisory 51cf697a454b): which requirements apply
+Customer Brand Requirements map (Draft 6): which requirements apply
 to a customer, brand and product, the compliance documents on supplier-specific R numbers,
 the supplier switch review, the batching gate, approved versions and claim-affecting
 changes. The map's 12 stages and 15 rules are stakeholder proposals; the Three Ships
 example is an attributed account; the map's failing checks are source assertions. The four
-originals of the ZIP are pinned by SHA-256 from the advisory record.
+originals of the ZIP are pinned by SHA-256 from the source record.
 
-The contract is ``evals.case_cards``; this check adds the four pins, the honest status of
-the draft, the typed missing originals, the Dot questions and no prices, bodies or
-e-mail addresses.
+The contract is ``evals.case_cards``.
 """
 
 from __future__ import annotations
@@ -107,7 +105,7 @@ class BrandRequirementsCardsTest(unittest.TestCase):
 
     def test_pin_matches_the_advisory_record(self):
         """record_sha256 is the SHA-256 of the record at its commit; the four members and
-        the ZIP are the record's own. Needs the advisory commit (git fetch it)."""
+        the ZIP are the record's own. Needs the record commit (git fetch it)."""
         pin = self.cards["source"]["advisory"]
         commit = pin["ref"].rsplit("@", 1)[1]
         run = subprocess.run(["git", "-C", str(ROOT), "show", f"{commit}:{pin['path']}"],

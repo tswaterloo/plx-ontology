@@ -34,8 +34,7 @@ open, so every request runs wholly on one generation and the next one on the new
 ``plx.identity``, ``plx.documents`` and ``plx.read`` (``operating.ontology_tools_evidence``)
 are reachable through ``CaseHostTools.call`` and ``CaseHostTools.register`` under the same
 per-call policy; ``plx.read`` and the operator originals of ``plx.documents`` read through
-the runtime's own audience-checked readers (``RuntimeCitations``). The MCP listing of these
-three tools is the host-budget lane's (lead decision, case-host 22-tool budget).
+the runtime's own audience-checked readers (``RuntimeCitations``).
 
 ``plx.object`` and ``plx.around``/``plx.timeline`` read the projection store only. An
 object id that ``plx.find`` found live is not in it (its throw-away store is discarded

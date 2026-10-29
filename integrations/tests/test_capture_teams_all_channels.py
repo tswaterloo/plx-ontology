@@ -1,6 +1,6 @@
 """Teams everything: every channel the census clears (evidence label: injected-transport).
 
-Owner directive "Teams everything" (2026-10-21): the capture widens from the teams a
+The capture widens from the teams a
 member joined to every team the census enumerates and the people guard clears. Owner
 decision 2026-10-26: that set is read with no human content confirmation; a
 ``content-confirmation.json`` beside the census is neither required nor consulted.
@@ -105,11 +105,11 @@ class AllChannelsCase(unittest.TestCase):
         return graph
 
     def confirm_all(self, **fields) -> Path:
-        """An old all-form confirmation as Tanush once wrote it beside the census (a
+        """An old all-form confirmation as a person would beside the census (a
         fixture shaped as human-authored; ``fields`` replace or, set to None, drop its
         keys). Since 2026-10-26 the run neither needs nor reads it."""
         document = {"schema": CONFIRMATION_SCHEMA, "scope": "all_census_cleared",
-                    "confirmed_by": "Tanush Shah", "confirmed_at": "2026-10-21",
+                    "confirmed_by": "Pat Morgan", "confirmed_at": "2026-10-21",
                     "directive": DIRECTIVE, "note": "Teams everything"}
         document.update(fields)
         path = confirmation_path(self.state)

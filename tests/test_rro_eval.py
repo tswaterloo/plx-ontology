@@ -1,4 +1,4 @@
-"""Related Release Orders Draft 8: the Dot's 26 PROPOSED items over a pinned original.
+"""Related Release Orders Draft 8: the 26 PROPOSED items over a pinned original.
 
 The committed card file (``evals/dev/rro/proposed_items.json``) becomes 26
 ``plx-eval-item/v1`` items (14 comprehension F21, 12 arithmetic F22) through the

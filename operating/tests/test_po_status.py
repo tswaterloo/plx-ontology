@@ -55,7 +55,7 @@ class VocabularyTest(unittest.TestCase):
                              ps.PoStatus(ps.UNKNOWN, reason="status_missing"), raw)
 
     def test_complete_with_an_outstanding_quantity_is_closed_and_counted_canceled_remainder(self):
-        # Ross (advisory 15bb4af8): a Portal/FM Complete header is closed whatever was
+        # Ross: a Portal/FM Complete header is closed whatever was
         # received; what is still outstanding is a cancelled remainder, never open.
         self.assertEqual(ps.classify("Complete", D(10), D(4)),
                          ps.PoStatus(ps.CLOSED, ps.COMPLETE, canceled_remainder=D(6)))
@@ -191,7 +191,7 @@ class OracleCrossCheckTest(unittest.TestCase):
 
         self.assertEqual(ps.CANCELLED_WORDS, keys.PO_HEADER_CANCELLED)
         self.assertEqual(ps.EPS, keys.PO_FULFILLMENT_EPS)
-        # Complete is the one deliberate deviation (Ross, advisory 15bb4af8): closed
+        # Complete is the one deliberate deviation (Ross): closed
         # whatever was received, asserted below
         words = sorted((ps.CANCELLED_WORDS | ps.DRAFT_WORDS | ps.ISSUED_WORDS)
                        - ps.COMPLETE_WORDS)
@@ -353,7 +353,7 @@ class BusinessDayAgreementTest(unittest.TestCase):
 
 
 class NeedDateSourceTest(unittest.TestCase):
-    """Which date is the requested-by date (decision 2026-10-26-po-need-date-source):
+    """Which date is the requested-by date:
     FM datearrive / Sage exparrival govern, then Portal expected_date, then the BC header
     requestedReceiptDate; a supplier promise or a lower tier never replaces a higher one;
     a blank date is no date. Synthetic ranks and days; the live fill counts are in the
@@ -665,7 +665,7 @@ class VocabularySummaryTest(unittest.TestCase):
 
 
 class LiveCheckTest(unittest.TestCase):
-    """``devloop/live-checks/po_status.vocabulary.json`` over injected sources: its own
+    """live check ``po_status.vocabulary`` over injected sources: its own
     command over a FakeWorkbench holding the real words on synthetic POs, the network
     refused. Evidence label: injected-transport, never live."""
 

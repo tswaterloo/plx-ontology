@@ -3,7 +3,7 @@
  "format": "plx-ontology-domain/v1",
  "domain": "quotes",
  "origin": "curated",
- "description": "Portal quotes and their offer lines (schema-coverage lane, directive 612e1dd724f7). Quotes are Portal-native (gold_native_staging); money is Decimal text with the tax basis of lib/quote/totals.ts; the soft stdCost declares unknown currency and denominator. Links: customer, the sales order an accepted quote converted to, lines and the picked product. BC salesQuotes are not bound: the GET-only BC grammar does not read that entity set.",
+ "description": "Portal quotes and their offer lines. Quotes are Portal-native (gold_native_staging); money is Decimal text with the tax basis of lib/quote/totals.ts; the soft stdCost declares unknown currency and denominator. Links: customer, the sales order an accepted quote converted to, lines and the picked product. BC salesQuotes are not bound: the GET-only BC grammar does not read that entity set.",
  "upstream_pins": {
   "plx-customer-portal": "790256ca43"
  },

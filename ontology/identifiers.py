@@ -14,7 +14,7 @@ What it decides, and what it never decides:
   ``PO5447``). A normalised value finds candidates; it is never an identity.
   An exact match stays the literal comparison the owning system makes (Portal
   ``TRIM(x) ILIKE TRIM($1)``), and orders, POs, AOs and invoices never
-  auto-merge (``identity_rules`` in the schema; 10-DECISION decision 3).
+  auto-merge (``identity_rules`` in the schema).
 * ``identity_key`` is the identity one value names. A kind whose grammar declares
   ``identity_scope`` is unique only within that scope (``customer_po``: per customer,
   as the Portal matches a PO only with its customer), so its key carries the scope

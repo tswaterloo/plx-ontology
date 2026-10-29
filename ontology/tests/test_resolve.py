@@ -606,7 +606,7 @@ class CrossSystemKeyTests(ResolveTestCase):
 
 class CorroborationTests(ResolveTestCase):
     """plx.find corroborates each candidate against the records of other systems that
-    carry the asked key (10-DECISION 3): agree / conflict / unverifiable with the cited
+    carry the asked key: agree / conflict / unverifiable with the cited
     values of both sides; a counterpart the reader cannot see is absent, never a
     conflict, and nothing is merged."""
 

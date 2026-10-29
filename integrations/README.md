@@ -17,7 +17,7 @@ repos are read as checked-out source, never as business evidence.
 | Documents | `document_understanding.py` (see `DOCUMENT_UNDERSTANDING.md`), `doc_convert.py`, `xlsx_extract.py`, `macos_pdf_ocr.swift` |
 | Mission Control and brain | `mc.py`, `plx_hub_guard.py`, `vmc.py`, `mc_brain_probe.py` |
 
-All clients are labelled live-unverified until a `devloop/live-checks/<id>.json` spec has run
+All clients are labelled live-unverified until a the live-check specs<id>.json` spec has run
 on reviewed main; the tests inject transports.
 
 ## Live read clients
@@ -73,7 +73,6 @@ MCP client; hosts are pinned to the pack-named MC and brain hosts.
   `BRAIN_API_KEY` (`brn_`), else `VMC_API_URL` + `VMC_API_KEY`. Hits are
   untrusted leads (upstream `deterministic_link` 0.9 labels dropped), trimmed
   per actor before the per-actor cache. No write-back path exists.
-See `devloop/SOURCE-NOTES.md` "Mission Control and brain".
 
 The MC contracts are grounded in MC `src/app/api/cursor/{tasks,context,self-check}/route.ts`,
 `src/app/api/cursor/tasks/[id]/route.ts`, `src/lib/mcp/read-actions.ts`,

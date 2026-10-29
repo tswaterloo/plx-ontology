@@ -50,7 +50,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -417,7 +417,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -753,7 +753,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -1122,7 +1122,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -1363,7 +1363,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -1655,7 +1655,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -2010,7 +2010,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -2232,7 +2232,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -2478,7 +2478,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -2698,7 +2698,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -2818,7 +2818,7 @@
        {
         "kind": "workbench_code",
         "path": "operating/source_unit_contracts.json",
-        "note": "public-order-entry-item-assembly-qtymfg-c-manufactured: Quantity manufactured on the AO link to a sales order line. An FM link-table calculation that no Portal code reads (devloop/CONTEXT/03-PORTAL.md section 4.8); finished-good quantities come from the AO, not from this column."
+        "note": "public-order-entry-item-assembly-qtymfg-c-manufactured: Quantity manufactured on the AO link to a sales order line. An FM link-table calculation that no Portal code reads; finished-good quantities come from the AO, not from this column."
        }
       ]
      },
@@ -2826,7 +2826,7 @@
       {
        "kind": "workbench_code",
        "path": "operating/source_unit_contracts.json",
-       "note": "public-order-entry-item-assembly-qtymfg-c-manufactured: Quantity manufactured on the AO link to a sales order line. An FM link-table calculation that no Portal code reads (devloop/CONTEXT/03-PORTAL.md section 4.8); finished-good quantities come from the AO, not from this column."
+       "note": "public-order-entry-item-assembly-qtymfg-c-manufactured: Quantity manufactured on the AO link to a sales order line. An FM link-table calculation that no Portal code reads; finished-good quantities come from the AO, not from this column."
       }
      ]
     },
@@ -2869,7 +2869,7 @@
        {
         "kind": "workbench_code",
         "path": "operating/source_unit_contracts.json",
-        "note": "public-order-entry-item-assembly-qtyplan-c-planned: Planned quantity on the AO link to a sales order line (it can be 0.0 on a link, in which case the planned figure is on the AO item). An FM link-table calculation that no Portal code reads (devloop/CONTEXT/03-PORTAL.md section 4.8); finished-good quantities come from the AO, not from this column."
+        "note": "public-order-entry-item-assembly-qtyplan-c-planned: Planned quantity on the AO link to a sales order line (it can be 0.0 on a link, in which case the planned figure is on the AO item). An FM link-table calculation that no Portal code reads; finished-good quantities come from the AO, not from this column."
        }
       ]
      },
@@ -2877,7 +2877,7 @@
       {
        "kind": "workbench_code",
        "path": "operating/source_unit_contracts.json",
-       "note": "public-order-entry-item-assembly-qtyplan-c-planned: Planned quantity on the AO link to a sales order line (it can be 0.0 on a link, in which case the planned figure is on the AO item). An FM link-table calculation that no Portal code reads (devloop/CONTEXT/03-PORTAL.md section 4.8); finished-good quantities come from the AO, not from this column."
+       "note": "public-order-entry-item-assembly-qtyplan-c-planned: Planned quantity on the AO link to a sales order line (it can be 0.0 on a link, in which case the planned figure is on the AO item). An FM link-table calculation that no Portal code reads; finished-good quantities come from the AO, not from this column."
       }
      ]
     }
@@ -2947,7 +2947,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -3171,7 +3171,7 @@
        "note": "Pagination key ['_sage_pk'] (key source: nullable-unique)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -5021,7 +5021,7 @@
        "note": "Pagination key ['invuniq'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -7147,7 +7147,7 @@
        "note": "Pagination key ['_sage_pk'] (key source: nullable-unique)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -8822,7 +8822,7 @@
        "note": "Pagination key ['orduniq'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -10556,7 +10556,7 @@
        "note": "Pagination key ['_sage_pk'] (key source: nullable-unique)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -12436,7 +12436,7 @@
        "note": "Pagination key ['shiuniq'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -14551,7 +14551,7 @@
        "note": "Pagination key ['id'] (key source: id)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -14753,7 +14753,7 @@
        "note": "Pagination key ['id'] (key source: id)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -14900,7 +14900,7 @@
        "note": "Pagination key ['id'] (key source: id)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
     }
    ],
    "properties": [

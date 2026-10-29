@@ -1,4 +1,4 @@
-"""Incremental projection by generation (directive cfac66676d88 P0 T6, lane L7).
+"""Incremental projection by generation (L7).
 
 ``ontology.project.build_store`` projects every capture into a fresh generation each
 time. :func:`build_generation` keeps generations in a state directory the caller

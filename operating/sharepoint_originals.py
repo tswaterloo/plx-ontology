@@ -23,7 +23,7 @@ A packet is matched by its file name, never by a hardcoded item id; a listed ite
 id or digest differs from the expectation is reported, not hidden.
 
 Evidence label: everything here is live-unverified until the live verifier runs the
-``devloop/live-checks/ao-originals.json`` spec; tests use an injected transport.
+live check ``ao-originals`` spec; tests use an injected transport.
 """
 
 from __future__ import annotations

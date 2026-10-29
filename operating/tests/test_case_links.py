@@ -200,7 +200,7 @@ class ContractFileTests(unittest.TestCase):
                 self.assertEqual(contract["pairs"][0]["from"],
                                  FM_SOURCE_FK[contract["fm_source_fk"]][0])
             # Every Portal behaviour is cited at a commit (the context pack's, or the
-            # file's devloop/upstream-pins.json pin: tests/test_customer_po_scope.py).
+            # file's the upstream pin file pin: tests/test_customer_po_scope.py).
             for item in contract["evidence"]:
                 if item.startswith("Portal"):
                     self.assertRegex(item, r"^Portal [0-9a-f]{12}\b", contract_id)

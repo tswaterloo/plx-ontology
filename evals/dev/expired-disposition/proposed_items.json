@@ -13,7 +13,7 @@
   },
   "originals_registry": "examples/case_originals.json",
   "watched_originals": {
-   "note": "The map's archive, pinned from the advisory record (source_id item, source_revision sha256, source_bytes) and equal to the discovered read receipt of the live verifier (entry nr-07cff10e7f17, 17 Oct 2026). A read receipt of the watched file matches when its source.item_id and sha256 equal this pin. Name only, no contents.",
+   "note": "The map's archive, pinned from the source record (source_id item, source_revision sha256, source_bytes) and equal to the discovered read receipt of the live verifier (entry nr-07cff10e7f17, 17 Oct 2026). A read receipt of the watched file matches when its source.item_id and sha256 equal this pin. Name only, no contents.",
    "folders": {
     "Ontology UseCases": "wf-a672d852ff20"
    },
@@ -106,7 +106,7 @@
      "role": "map: rendered map"
     }
    ],
-   "note": "The archive's member manifest: every file member (directories omitted), hashed from the archive bytes whose SHA-256 equals the pin; three of them also appear in the advisory record's source_member_hashes. The registry's generator makes archive_member rows only from a baseline or manifest record or a full-read receipt of a registered row, none of which exists for this archive, so the members are registered here and reach examples/case_originals.json through this file's crosswalk input hash. Member paths are file names as uploaded, not verified identifiers."
+   "note": "The archive's member manifest: every file member (directories omitted), hashed from the archive bytes whose SHA-256 equals the pin; three of them also appear in the source record's source_member_hashes. The registry's generator makes archive_member rows only from a baseline or manifest record or a full-read receipt of a registered row, none of which exists for this archive, so the members are registered here and reach examples/case_originals.json through this file's crosswalk input hash. Member paths are file names as uploaded, not verified identifiers."
   }
  },
  "waiver_identifiers": {
@@ -176,7 +176,7 @@
    "gap": "EMD-GAP-01"
   }
  ],
- "missing_originals_note": "Typed here because the registry generator makes gap rows only from the Dot's baseline and delta source-pin records. not_provided: the map describes the record as today's practice but the archive does not include it; pending_example: the map lists it as a pending example. None was read; a card never infers their content.",
+ "missing_originals_note": "Typed here because the registry generator makes gap rows only from the baseline and delta source-pin records. not_provided: the map describes the record as today's practice but the archive does not include it; pending_example: the map lists it as a pending example. None was read; a card never infers their content.",
  "live_sources": [
   {
    "id": "fm.receipt_raw_material",

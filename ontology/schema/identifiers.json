@@ -189,7 +189,7 @@
     }
    ],
    "same_number": {
-    "description": "Two stored values hold the same number when these parts are equal: separators, leading zeros and an -FM<id> clash suffix aside, the UAT stamp and the series kept, and a series-less (bare) number matching any series. Same-number rows in two systems are twins: leads naming every row, never a merge (identity_rules.auto_merge; 10-DECISION item 3).",
+    "description": "Two stored values hold the same number when these parts are equal: separators, leading zeros and an -FM<id> clash suffix aside, the UAT stamp and the series kept, and a series-less (bare) number matching any series. Same-number rows in two systems are twins: leads naming every row, never a merge (identity_rules.auto_merge).",
     "parts": [
      "uat",
      "number"
@@ -231,7 +231,7 @@
      "example": "PO# 4500 12",
      "upstream": "EVIDENCE/live/2026-10-01-customer-po-sage-64-vs-42.md",
      "marker": "(?:P\\.?\\s?O\\.?|PURCHASE\\s+ORDER)\\s*#\\s*",
-     "marker_note": "A PO word and # before the value (PO#PO-6000, PO #PO-6000, PO# 7000), matched case-insensitively at the start (ontology/identifiers.marked_value). plx.find reads such a query as a lead to the customer POs whose blocking key the marked value shares (reason marked_form), never as that PO: the Portal compares the whole text (normalizePoReference keeps the marker), so a marked text roots nothing (devloop/DECISIONS/2026-10-10-customer-po-scope-entry-points.md)."
+     "marker_note": "A PO word and # before the value (PO#PO-6000, PO #PO-6000, PO# 7000), matched case-insensitively at the start (ontology/identifiers.marked_value). plx.find reads such a query as a lead to the customer POs whose blocking key the marked value shares (reason marked_form), never as that PO: the Portal compares the whole text (normalizePoReference keeps the marker), so a marked text roots nothing."
     }
    ],
    "carriers": [
@@ -2052,7 +2052,7 @@
   },
   "amazon_shipment_id": {
    "pattern": "FBA[0-9A-Z]{6,12}",
-   "description": "Amazon FBA inbound shipment id as Amazon issues it (Fulfillment Inbound ShipmentId, e.g. FBA15ABC1234): upper-case FBA then 6-12 upper-case letters or digits, compared exactly after trim and upper-casing. The key joining an Amazon inbound shipment to a freight booking (decision 2026-10-19-fba-external-sources).",
+   "description": "Amazon FBA inbound shipment id as Amazon issues it (Fulfillment Inbound ShipmentId, e.g. FBA15ABC1234): upper-case FBA then 6-12 upper-case letters or digits, compared exactly after trim and upper-casing. The key joining an Amazon inbound shipment to a freight booking.",
    "used_by": [
     "integrations/live_source_grammar.py",
     "integrations/amazon_sp_read.py",
@@ -2633,7 +2633,7 @@
     "to": true
    },
    "upstream": "devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md (codeunit 50115) / plx-customer-portal@b46934a:portal/src/lib/business-central/align-portal-po-number.ts:yourReferenceForBcPo",
-   "note": "Your Reference is not in BC API v2.0 purchaseOrders; it is read from ODataV4 Page 50 PurchaseOrder (Your_Reference) into the BC capture field page purchaseOrderReferences and linked by the your_reference build step on data evidence, not a rule (decision 2026-10-27-your-reference-evidence; rule ontology.identity_scoring.your_reference_verdict, the flagship oracle holds a parity-tested copy): corroborated, never above, only when exactly one Portal order holds the number and the supplier or the order date corroborates it with nothing conflicting; otherwise a lead. The codeunit 50115 upstream is the Procure-to-GL map's reading of Portal code, not an observed BC rule."
+   "note": "Your Reference is not in BC API v2.0 purchaseOrders; it is read from ODataV4 Page 50 PurchaseOrder (Your_Reference) into the BC capture field page purchaseOrderReferences and linked by the your_reference build step on data evidence, not a rule (rule ontology.identity_scoring.your_reference_verdict, the flagship oracle holds a parity-tested copy): corroborated, never above, only when exactly one Portal order holds the number and the supplier or the order date corroborates it with nothing conflicting; otherwise a lead. The codeunit 50115 upstream is the Procure-to-GL map's reading of Portal code, not an observed BC rule."
   },
   {
    "name": "sales_order_renumbered_to_bc",

@@ -1,4 +1,4 @@
-"""Load, validate and digest the ontology schema (09-CRITIQUE R9, lane L4).
+"""Load, validate and digest the ontology schema (L4).
 
 The schema is a set of ``plx-ontology-domain/v1`` files (C0 format,
 ``ontology/schema/_format.schema.json``):
@@ -47,7 +47,7 @@ order, of the order of id-keyed lists, and of JSON formatting; ordered semantics
 Link bindings whose two ends are BC captures compare within one BC company:
 document and master numbers are unique only per company (book), so
 ``CompiledSchema.company_scope`` lists them (``link_company_scope``) until the C0
-format can say it (devloop/OPEN-DECISIONS.md ``bc-link-company-scope``). A binding
+format can say it. A binding
 joining a BC capture to another source on a BC number, not on the BC record's key, does
 not know the company (``bc_company_not_known``): its links are at most leads.
 
@@ -406,8 +406,7 @@ def _field_authority_note(profile: Mapping[str, Any], field: str, noun: str,
 
 def _money_markings() -> set[str]:
     """The markings money may carry: finance, and a marking every finance holder holds
-    (``store_ddl.MARKING_HELD_WITH``; purchasing_prices, owner decision 2026-10-27,
-    ``schema/overrides/markings.json`` scoped_markings)."""
+    (``store_ddl.MARKING_HELD_WITH``; purchasing_prices, ``schema/overrides/markings.json`` scoped_markings)."""
     from ontology.store_ddl import MARKING_HELD_WITH
     return {"finance"} | {m for m, by in MARKING_HELD_WITH.items() if "finance" in by}
 
@@ -940,8 +939,8 @@ def bc_company_not_known(link_binding: Mapping[str, Any],
     binding's whole key.
 
     BC numbers (document No., customer/vendor/item No.) recur across companies, and a
-    Portal row does not serve the book it was posted to (devloop/OPEN-DECISIONS.md
-    ``bc-link-company-scope``), so such a pair names that number in every company
+    Portal row does not serve the book it was posted to,
+    so such a pair names that number in every company
     that holds it: a link is at most a ``lead`` until the book is served. A pair on
     the BC binding's key (its system id; a key answering in two companies is dropped
     as ``binding_key_not_unique``) names one record of one company. ``bindings`` as

@@ -1,7 +1,7 @@
 """The host's ingest mode (``operating.host`` with ``ingest``; ``operating.ingest_forever``
 its capture-CLI reads) at the host's own boundary, with fake capture CLIs and no network.
 
-One writer per state directory (decision 2026-10-21-ingest-one-writer): an ingest cycle is
+One writer per state directory: an ingest cycle is
 a host ledger cycle under the host's one cycle lock, rebuilds the host's projection and is
 checked by the host's ``check``. An unset people exclusion blocks every source; one
 failing source does not stop the cycle; each source's cursor carries from one cycle to
@@ -1121,7 +1121,7 @@ class LiveCycleRepairTest(unittest.TestCase):
                          sorted(r["name"] for r in catalog["relations"]))
         scope = json.loads(Path(config.sources["mail"]["scope"]).read_text())
         self.assertTrue(scope["all_mailboxes"]["enabled"])
-        # SharePoint (owner rule everything, 2026-10-27): every document library of every
+        # SharePoint (business rule everything, 2026-10-27): every document library of every
         # site is discovered and none is left out, no named folder narrows a library, and
         # a cut root stays a gap rather than a smaller scope.
         from integrations.capture_sharepoint import CaptureScope

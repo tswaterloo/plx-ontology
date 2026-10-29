@@ -1,6 +1,6 @@
 {
  "schema": "plx-host-config/v1",
- "note": "Host config of the case.customer_po_coverage live check (devloop/live-checks/case.customer_po_coverage.json, REC-01): one capture cycle of the Portal sales orders through the source mirror and of the PLXCUSTOMERS 'Customer Documents' folder (examples/sharepoint_capture_scope.customer_documents.live-check.json), so operating.customer_po_coverage.document_carriers can count, over every order the reader may see, a value a captured document states that Portal holds empty (missing_in_portal) or holds differently (conflict). Configuration, never a grant: the audiences decide what the capture principal and the reader may read.",
+ "note": "Host config of the case.customer_po_coverage live check (live check ``case.customer_po_coverage``, REC-01): one capture cycle of the Portal sales orders through the source mirror and of the PLXCUSTOMERS 'Customer Documents' folder (examples/sharepoint_capture_scope.customer_documents.live-check.json), so operating.customer_po_coverage.document_carriers can count, over every order the reader may see, a value a captured document states that Portal holds empty (missing_in_portal) or holds differently (conflict). Configuration, never a grant: the audiences decide what the capture principal and the reader may read.",
  "tenant": "plx",
  "capture_audience": "customer_po_coverage_live_audience.live-check.json",
  "live_audience": "customer_po_coverage_live_audience.live-check.json",

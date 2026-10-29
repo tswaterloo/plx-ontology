@@ -6,7 +6,7 @@ between its own rows. The three tools are asked about the same stored links in o
 store (the real compiled schema and stage graphs, synthetic records) and must agree:
 either each counts the link at the default floor, or each holds it as a lead.
 
-plx.process is stricter about the record on purpose (09-CRITIQUE R1): it serves the same
+plx.process is stricter about the record on purpose: it serves the same
 link tier, but a staging record reached from an authority record is never evidence
 (``never_authority_record``), and every answer from a staging root is a lead
 (``staging_root``). The last tests pin that split. Evidence label: isolated-fixture.

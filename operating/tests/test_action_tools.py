@@ -3,7 +3,7 @@ propose (register an owner-system proposal; run a workbench-internal catalog act
 status (one intent, or a case's intents) and verify (MC journal read, decision record,
 gate reconcile, owner read-back), served through ``ontology_host.CaseHostTools.call``
 (``action_tools.register``) and listed on the stdio case host in place of the retired
-``plx.action_get`` / ``plx.action_propose`` (lead decision 2026-10-04; ``ActOverMcpTests``
+``plx.action_get`` / ``plx.action_propose`` (``ActOverMcpTests``
 and ``test_mcp_action_tools`` call it through ``MCPServer.handle``).
 
 Evidence label: ``injected-transport`` (Workbench API: ``FakeWorkbench``; Mission

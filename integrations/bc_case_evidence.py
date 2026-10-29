@@ -10,13 +10,13 @@ from Portal's ``app_bc_entity_map`` (schema binding
 ``ontology/schema/domains/bc_entity_map.json``),
 not from here.
 
-Why numbers are weak (devloop/CONTEXT/02 §1.3 stage 11, §1.7 #2/#6, §2.3;
+Why numbers are weak (§1.7 #2/#6, §2.3;
 03 §3.2-3.4):
 
 * Portal ``app_purchase_order.po_number`` is rewritten to the BC No. once
   linked (and may carry an ``-FM<id>`` suffix on clashes); the FM PO number
   is often in BC "Your Reference" (a map reading of codeunit 50115; the link
-  is judged on data evidence, decision 2026-10-27-your-reference-evidence),
+  is judged on data evidence),
   which the standard API v2.0
   ``purchaseOrders`` set does not expose to this reader (ODataV4 Page 50
   ``PurchaseOrder`` does; only the BC capture reads it, field page

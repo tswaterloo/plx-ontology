@@ -4,8 +4,8 @@ Implements the 2025-11-25 MCP handshake and tools protocol over newline-delimite
 JSON-RPC 2.0. The host serves only the case/source tools (``CASE_RUNTIME_TOOLS``),
 which delegate to ``CaseRuntime``, and the playbook proposal tools (``PLAYBOOK_TOOLS``,
 ``operating.playbook_tools``) to a session whose agent lists them; it never constructs
-``UnifiedPlatform``
-(devloop/CONVERGENCE.md). The platform MCP host and its objective, campaign,
+``UnifiedPlatform``.
+The platform MCP host and its objective, campaign,
 watch, collaboration and scenario tools are retired.
 Human approval is not a tool. Each session runs one agent definition
 (``operating.agent_definitions``, AGT-06): its tools are the only ones listed and
@@ -462,7 +462,7 @@ _ANSWER = {"type": "object", "additionalProperties": False, "required": ["claims
                         "maxLength": answer_gate.MAX_TEXT_CHARS}}}
 
 TOOLS: tuple[dict[str, Any], ...] = (
-    # Case runtime (devloop/CASE-RUNTIME.md section 3); every call acts as the session
+    # Case runtime; every call acts as the session
     # actor, under the host-configured source-mirror audience. Specs stay near the
     # contract's 600-character description budget (2026-10-03-host-tool-budget).
     {"name": "plx.case_open", "description": "Open a durable, hash-chained case for a business question. Audience: the session actor's principals, optionally narrowed; never '*'. header_relations (optional): per identifier in the question or roots, the mirror relations holding it; a revoked grant hides the case. Claim mode: case_id + lease_seconds (1-3600 claims or renews for this session; 0 releases, optional handoff note; also the holder employee restarted); another session's active claim refuses claims and writes case_claimed_until:<expires_at>. case_id + break_reason: a roster approver ends it, journalled. case_ids for case_id: an objective's cases, claimed all or none (objective_refused names the case); release/break reach each. No business write.",
@@ -568,7 +568,7 @@ TOOLS: tuple[dict[str, Any], ...] = (
     # approval, an MC write or a dispatch.
     action_tools.TOOL,
     kind_confirmation.TOOL,
-    # Generic ontology tools (devloop/CONTEXT/10-DECISION.md decision 4): their I/O is
+    # Generic ontology tools: their I/O is
     # operating/ontology_tool_contracts.json; they replace the retired source-read and
     # kind-specific tools (ontology_tools.HOST_RETIREMENTS, CASE_TOOL_RETIREMENTS).
     *ontology_tools.tool_specs(),
@@ -587,8 +587,7 @@ PLAYBOOK_TOOLS = frozenset(playbook_tools.TOOL_NAMES)
 # A meeting's agenda over the same host table (operating/meeting_agenda.py): served like the
 # generic ontology tools (employee gate, one generation per call, the output boundary) and,
 # like the playbook tools, listed only to a session whose agent definition names it, so the
-# case listing stays within the 22-tool budget
-# (devloop/DECISIONS/2026-10-27-rnd-maps-agenda-tool-listing.md).
+# case listing stays within the 22-tool budget.
 AGENDA_TOOL_SPECS: tuple[dict[str, Any], ...] = (meeting_agenda.TOOL,)
 AGENDA_TOOLS = frozenset(meeting_agenda.TOOL_NAMES)
 
@@ -655,7 +654,7 @@ _HOST_READ_ARGUMENTS = frozenset({"citation", "max_staleness", "text_offset",
 # plx.find's home mode: a business question (the phrase list below, matched whole) that
 # names no record is answered with the reader's own ranked gap inbox, read from the
 # scheduled engine (operating.proactive_engine.read_inbox) under this call's grant; no
-# per-request scan, no 23rd tool (devloop/DECISIONS/2026-10-03-host-tool-budget.md).
+# per-request scan, no 23rd tool.
 # Each phrase: (pattern, the inbox kinds it narrows to, or None for every kind).
 HOME_LIMIT = 10
 HOME_CITATIONS = 5
@@ -1161,7 +1160,7 @@ _TOOL: ContextVar[str | None] = ContextVar("plx_mcp_result_tool", default=None)
 
 
 def _firewall(value: Any, tool: str | None = None) -> Any:
-    """The output boundary (10-DECISION 7, injection firewall): every string of a tool
+    """The output boundary (injection firewall): every string of a tool
     result that is not a typed field (``injection_guard.TYPED_FIELDS`` and their
     grammars) or a schema-typed cell of a row envelope, as an ``untrusted_text``
     envelope. Idempotent, so text already wrapped stays one envelope; digests
@@ -1570,8 +1569,7 @@ class MCPServer:
     ``CASE_RUNTIME_TOOLS`` over the case runtime and never loads
     ``UnifiedPlatform``. The platform MCP host (objectives, campaigns, watches,
     collaboration, scenario reads) is retired: the investigating agent is the MCP
-    client itself driving the case tools (devloop/CONVERGENCE.md section 6.3,
-    devloop/CONTEXT/10-DECISION.md decision 4).
+    client itself driving the case tools.
     """
 
     def __init__(self, *, case_runtime: CaseRuntime, actor: Actor,
@@ -2434,7 +2432,7 @@ class MCPServer:
                      "reason": f"verdict_failed_{type(exc).__name__.lower()}"[:64]}
         self._text = mcp_portfolio.verdict_text(found)
 
-    # ---- case runtime (devloop/CASE-RUNTIME.md section 3) ------------------
+    # ---- case runtime ------------------
 
     def _case_runtime_call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         runtime = self.case_runtime
@@ -3080,7 +3078,7 @@ class MCPServer:
                                 "plx.case_add_finding"]
         return result
 
-    # ---- live sources in cases (devloop/CASE-RUNTIME.md section 7) ----------
+    # ---- live sources in cases ----------
 
     def _attach_sharepoint_original(self, runtime: CaseRuntime, actor: Any,
                                     arguments: dict[str, Any]) -> dict[str, Any]:

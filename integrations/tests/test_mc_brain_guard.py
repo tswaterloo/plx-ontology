@@ -1,8 +1,7 @@
 """MC + brain read guards, retries, approvals, leads and the live probe.
 
 Evidence label: injected-transport. No network I/O: every test injects the
-sender. Contracts follow devloop/CONTEXT/04-MISSION-CONTROL.md (PLX_MC @
-1fba0833) and 05-VMC-BRAIN-TOOLS.md (agentic-swarm @ b1117811c).
+sender.
 """
 
 from __future__ import annotations
@@ -215,12 +214,12 @@ class McGuardTests(unittest.TestCase):
             ({**good, "status": "pending", "decidedBy": None, "decidedAt": None},
              False, "not_approved"),
             ({**good, "status": "rejected"}, False, "not_approved"),
-            # Reviewer repro: someone else's gate approved by Vince.
+            # Someone else's gate approved by Vince.
             ({**good, "requestedBy": "stephen@petrasoap.com", "reason": "Approve lunch order"},
              False, "foreign_requester"),
             ({**good, "reason": "Approve lunch order"}, False, "reason_mismatch"),
             ({**good, "reason": reason + " "}, False, "reason_mismatch"),
-            # Reviewer repro: a service principal as decider.
+            # A service principal as decider.
             ({**good, "decidedBy": "sp_mcp_cursor"}, False, "decider_not_human"),
             ({**good, "decidedBy": "agent:cos"}, False, "decider_not_human"),
             ({**good, "decidedBy": ""}, False, "decider_missing"),

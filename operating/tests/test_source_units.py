@@ -84,7 +84,7 @@ class ContractFileValidation(unittest.TestCase):
         self.assertIsNotNone(contracts.lookup(FORMULA, view, "row.percentage"))
         self.assertIsNotNone(contracts.lookup(FORMULA, view, "rows.1.percentage"))
         # The api view also carries key columns under "key": a contracted key
-        # column read from there is checked too (review of 487dcb8).
+        # column read from there is checked too.
         self.assertIsNotNone(contracts.lookup(FORMULA, view, "key.percentage"))
         for field in ("row.percentage.value", "row.custom_fields.percentage", "percentage",
                       "rows.01.percentage", "row.percentage2"):  # nested or non-canonical: no contract
@@ -433,7 +433,7 @@ class QuantityRoles(unittest.TestCase):
             self.store.compute(ENG_OPS, self.case_id, inputs, "p - a", "EA", relations=[minus])
 
     def test_no_expression_launders_one_role_as_another(self):
-        # Dot review 6fecb6e F2 and two deep re-reviews: '(planned * planned) / planned -
+        # '(Planned * planned) / planned -
         # actual' recorded planned - actual as an 'actual' quantity, then the same through
         # unit-1 roles, role literals, unroled divisors and division written first
         # ('1 / o * p * b - a'). Every route is refused, in every order.
@@ -538,7 +538,7 @@ class QuantityRoles(unittest.TestCase):
                 self.assertEqual(receipt.get("result_role"), role)
 
     def test_the_result_type_comes_from_the_expression_and_labels_must_fit_it(self):
-        # Claim-types redesign (review of 69467b8): a relation's 'as' is a label. The
+        # Claim-types redesign: a relation's 'as' is a label. The
         # result's quantity type is the closed algebra of operating.quantity_types over the
         # expression tree, recorded as result_type, and a label naming another type than
         # the form it labels is refused before anything is recorded.

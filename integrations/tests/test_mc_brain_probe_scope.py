@@ -1,8 +1,8 @@
-"""mc.brain_probe live scope: MC read tools only (directive cabf9f51df67), and the
+"""mc.brain_probe live scope: MC read tools only, and the
 knowledge outcome the verifier records: served by MC, by the brain fallback (blocked)
-or by neither while the brain is out (blocked, directive 2b144eeee563); a refused brain
+or by neither while the brain is out (blocked); a refused brain
 key is a fail whose headline names it next to MC's outage, and a malformed answer is a
-failed step, never a crash (directive ead19be6a7e1).
+failed step, never a crash.
 
 Evidence label: injected-transport. No network I/O: the sender is in-process.
 """

@@ -1,5 +1,4 @@
-"""Refused document searches are no sample of what names the roots (directives 419724c6c569
-items 1 and 3, d0125cbdcdf6; gap-04f9b49ebae9). Fixture world and fake readers; injected,
+"""Refused document searches are no sample of what names the roots (d0125cbdcdf6; gap-04f9b49ebae9). Fixture world and fake readers; injected,
 not live.
 
 The live acceptance alternative to a candidate is ``no_document_names_root`` with

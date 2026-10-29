@@ -1,4 +1,4 @@
-"""The bounded agent loop over the ontology tools (10-DECISION #4, the loop for questions no
+"""The bounded agent loop over the ontology tools (the loop for questions no
 plan covers).
 
 Evidence label: ``isolated-fixture``. The planner is scripted (it stands in for a model
@@ -247,10 +247,10 @@ class AgentLoopTests(EmployeeDoorTestCase):
         right = [cell(po_id, 5447, "po"), cell("row.supplier_id", "sup-synth-1", "sup")]
         wrong = cell(po_id, 5448, "po")
         wrong_text = cell("row.supplier_id", "sup-synth-2", "sup")
-        # Directive 912374bc973a: a status word is checked case-folded; the answer shows the
+        # A status word is checked case-folded; the answer shows the
         # cell as recorded.
         status = cell("row.status", "Revised", "st")
-        # Directive 24e7aa78f585: a count over the records a claim cites is one claim; with
+        # A count over the records a claim cites is one claim; with
         # no complete count a tool returned it is a lower bound, and the Portal PO and its
         # FileMaker PO (one PO 5447 in two relations) may be twins: at least 1
         # (2aafc4270e73). Code states the bound, whatever the answerer's text says.
@@ -408,7 +408,7 @@ class AgentLoopTests(EmployeeDoorTestCase):
                 Bounds(max_repairs=bad)
 
     def test_the_ask_loop_and_an_mcp_session_answer_through_the_one_gate_alike(self):
-        """ROADMAP B1: an employee's MCP session (Claude Code's path, plx.case_get answer
+        """An employee's MCP session (Claude Code's path, plx.case_get answer
         mode) gates a final answer as the Ask loop does, by the same function: for the same
         claims over the same server a refused claim is dropped, repaired once, and the
         repaired answer is the same; a second refusal gets no second repair."""
@@ -553,8 +553,8 @@ class AgentLoopTests(EmployeeDoorTestCase):
                 Bounds(max_billed_tokens=bad)
 
     def test_the_loop_records_no_follow_up_even_over_an_action_path(self):
-        """The Ask loop stays read-only (devloop/DECISIONS/2026-10-10-follow-ups-ask-loop-
-        writes.md). Over a server that records follow-ups (an action path) plx.investigate
+        """The Ask loop stays read-only.
+        Over a server that records follow-ups (an action path) plx.investigate
         is listed as a writer and the loop is not offered it; over one that does not, it is
         offered without follow_ups and a call carrying them is refused before the server
         sees it. The planner asks to record the case's follow-ups both ways: none is."""
