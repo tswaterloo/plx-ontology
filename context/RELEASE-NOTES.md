@@ -15,6 +15,29 @@ Must keep working:
 Known gaps:
 ```
 
+## v0.10 (2026-10-29)
+
+Added:
+- The brand-requirements map can now be read and quoted.
+- The home list shows orders that have no customer PO recorded, and orders at risk, after each refresh.
+- A person can approve an action the agent proposes, after seeing exactly what it would do. Approving sends nothing; a second person must still approve it in Mission Control.
+
+Changed:
+- Answers quote the sentence in the document that answers the question. A file's name or type alone no longer counts as an answer.
+- When the agent says an answer is only partly known, it stays marked as partial.
+- Labels such as Q9 or P-02458 in an answer are no longer treated as unchecked numbers.
+
+Fixed:
+- Some maps saved as web pages had words run together, so correct quotes from them were refused.
+- Teams messages could become unavailable for a while when Microsoft slowed down requests.
+
+Must keep working:
+- Everything in v0.9.
+
+Known gaps:
+- The three R&D process maps cannot be read yet. A fix is in progress.
+- Actions in Mission Control are not switched on yet.
+
 ## v0.9 (2026-10-29)
 
 Added:
