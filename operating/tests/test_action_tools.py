@@ -267,7 +267,8 @@ class ActStatusProposeTests(ActTestCase):
                          ("read_back", "host", None, recovery["next_step"]))
         self.assertEqual((got["intent"]["gate"]["gate_id"],
                           got["intent"]["decisions"][-1]["authorizes"]), ("apg_1", True))
-        self.assertNotIn(VINCE, json.dumps(got))  # decider identity is not projected
+        self.assertNotIn(DECIDER, json.dumps(got))  # decider identity is not projected
+        self.assertNotIn(VINCE, json.dumps(got))    # nor the call approver's
         # The finance reader sees the case but neither proposal's rows: state only.
         self.assertEqual(withheld["intents"], [
             {"case_id": case_id, "proposal_id": fixture_pid, "state": "dispatched_unknown",
@@ -493,7 +494,7 @@ class JournalMc(FakeMc):
             "runtime": "plx-workbench"})
         return answer
 
-    def decide(self, gate_id, status="approved", decided_by=VINCE, decided_at=None):
+    def decide(self, gate_id, status="approved", decided_by=DECIDER, decided_at=None):
         super().decide(gate_id, status=status, decided_by=decided_by, decided_at=decided_at)
         gate = next(g for g in self.tasks["TASK-9"]["approvalGates"] if g["id"] == gate_id)
         self._event("approval.decided", decided_by, "TASK-9", {
@@ -649,7 +650,7 @@ class PlxActTests(ActTestCase):
         for hidden in (VINCE, OPERATOR, "free text from MC"):
             self.assertNotIn(hidden, json.dumps(pending))
 
-        self.mc.decide("apg_1", decided_by=VINCE)
+        self.mc.decide("apg_1", decided_by=DECIDER)
         decided = self.verify(ops, iid)
         self.assertEqual((decided["state_before"], decided["state"], decided["step"],
                           decided["step_result"]["authorizes"],
@@ -663,6 +664,7 @@ class PlxActTests(ActTestCase):
                          (["approval.decided", "approval.requested"], ["approved", None],
                           "approved", False))
         self.assertNotIn(VINCE, json.dumps(decided))
+        self.assertNotIn(DECIDER, json.dumps(decided))
         # Read again: the journal is shown, nothing more is recorded.
         again = self.verify(ops, iid)
         self.assertEqual((again["step"], again["reason"],
@@ -686,7 +688,7 @@ class PlxActTests(ActTestCase):
         case_id = self.employee_case("Set the PO on SO 3 to PO-7788?")
         iid = self.registered(ops, case_id)
         self.host_drives_to_gate_requested(iid)
-        self.mc.decide("apg_1", decided_by=VINCE)
+        self.mc.decide("apg_1", decided_by=DECIDER)
         # The same tool on a host that has no session: nothing it would record is.
         bare = action_tools.ActTool(self.rt, self.path, reads=self.reads,
                                     test_capabilities=True)
@@ -726,7 +728,7 @@ class PlxActTests(ActTestCase):
         self.host_drives_to_gate_requested(unknown, lose_answer=True)
         requested = self.registered(ops, self.employee_case("Set the PO on SO 3 to PO-7788 now?"))
         self.host_drives_to_gate_requested(requested, evidence_ref="second advisory record")
-        self.mc.decide("apg_2", decided_by=VINCE)
+        self.mc.decide("apg_2", decided_by=DECIDER)
         trails = (self.history(unknown), self.history(requested))
         self.mc.down = True
         for iid, state in ((unknown, "gate_request_unknown"), (requested, "gate_requested")):
@@ -745,7 +747,7 @@ class PlxActTests(ActTestCase):
         case_id = self.employee_case("Several actions: PO-0, PO-1?")
         first, second = self.registered_intents(ops, case_id, 2)
         self.host_drives_to_gate_requested(first, evidence_ref="advisory record 1")
-        self.mc.decide("apg_1", decided_by=VINCE)
+        self.mc.decide("apg_1", decided_by=DECIDER)
         self.assertEqual(self.verify(ops, first)["state"], "gate_authorized")
         # The same human approval presented again for the second intent: refused.
         intent = self.path.get(self.actor, second)["intent"]
@@ -780,7 +782,7 @@ class PlxActTests(ActTestCase):
         ops = self.action_server(OPS_FINANCE, reads=self.reads)
         iid = self.registered(ops, self.employee_case("Set the PO on SO 3 to PO-7788?"))
         self.host_drives_to_gate_requested(iid)
-        self.mc.decide("apg_1", decided_by=VINCE)
+        self.mc.decide("apg_1", decided_by=DECIDER)
         self.verify(ops, iid)   # records the decision
         self.assertEqual(self.path.dispatch(
             self.actor, iid, self.registry,
@@ -913,7 +915,7 @@ class ActOverMcpTests(ActTestCase):
         self.assertEqual((pending["state"], pending["reason"], pending["mc_writes"]),
                          ("gate_requested", "gate_not_decided_in_mc", 0))
         # A rejection in MC is recorded as read; verify never clears it.
-        self.mc.decide("apg_1", status="rejected", decided_by=VINCE)
+        self.mc.decide("apg_1", status="rejected", decided_by=DECIDER)
         rejected = self.ok(server, ACT, {"mode": "verify", "intent_id": iid})
         self.assertEqual((rejected["state"], rejected["step"],
                           rejected["step_result"]["authorizes"]),

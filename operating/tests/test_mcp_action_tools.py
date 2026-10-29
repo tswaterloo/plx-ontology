@@ -37,7 +37,7 @@ from operating.cases import CitationError
 from operating.session_identity import CHANNEL_CONSOLE, CHANNEL_MCP, fixture_session
 from operating.mcp_server import (ACTION_TOOLS, CASE_RUNTIME_TOOLS,
                                   CASE_TOOL_RETIREMENTS, MCPServer)
-from operating.tests.test_action_path import (EFFECT, EMPLOYEE, OPERATOR, REL, ROSTER, VINCE,
+from operating.tests.test_action_path import (DECIDER, EFFECT, EMPLOYEE, OPERATOR, REL, ROSTER, VINCE,
                                               Clock as ActionClock, FakeMc)
 from operating.tests.test_mcp_case_tools import (FINANCE, OPS, OPS_FINANCE, OUTSIDER,
                                                  CaseToolsTestCase)
@@ -146,7 +146,7 @@ class ActionToolsTestCase(CaseToolsTestCase):
                 session=fixture_host_session(actor.principals))
         self.path.request_gate(actor, iid, self.mc.client,
                                session=fixture_host_session(actor.principals))
-        self.mc.decide("apg_1", decided_by=VINCE)
+        self.mc.decide("apg_1", decided_by=DECIDER)
         self.path.record_decision(actor, iid, self.mc.client,
                                   session=fixture_host_session(actor.principals))
         self.fx.lose_next_response = True
@@ -264,7 +264,8 @@ class ActionToolTests(ActionToolsTestCase):
                          ("read_back", "host", None, recovery["next_step"]))
         self.assertEqual((got["intent"]["gate"]["gate_id"],
                           got["intent"]["decisions"][-1]["authorizes"]), ("apg_1", True))
-        self.assertNotIn(VINCE, json.dumps(got))  # decider identity is not projected
+        self.assertNotIn(DECIDER, json.dumps(got))  # decider identity is not projected
+        self.assertNotIn(VINCE, json.dumps(got))    # nor the call approver's
         # The finance reader sees the case but neither proposal's rows: state only.
         self.assertEqual(withheld["intents"], [
             {"case_id": case_id, "proposal_id": fixture_pid, "state": "dispatched_unknown",

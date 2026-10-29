@@ -1039,7 +1039,7 @@ class ActionPath:
                          "prepared": None, "gate": None, "gate_attempts": 0, "gate_ids": [],
                          "decisions": [], "dispatches": [], "late_gate": None,
                          "verifications": [], "recovery": [], "history": [],
-                         "readback_conclusion": None,
+                         "readback_conclusion": None, "call_approvers": [],
                          "subjects": [{"sub": payload.get("sub"), "act": payload.get("act")}]}
             elif kind == "intent.co_requested":
                 # Another registering session's subject: a subject of this intent too.
@@ -1053,6 +1053,10 @@ class ActionPath:
                              call_approval=None)
             elif kind == "call.approved":
                 state.update(state="call_approved", call_approval=payload)
+                # Four-eyes: everyone who approved a call for this intent, kept after the
+                # approval is used (``_four_eyes_refusal``); never in ``public_view``.
+                state["call_approvers"].append({"approved_by": payload.get("approved_by"),
+                                                "approver_oid": payload.get("approver_oid")})
             elif kind == "gate.request_started":
                 # Outcome not (yet) recorded: unknown until a result or a task read.
                 state["gate_attempts"] += 1
@@ -1990,16 +1994,16 @@ class ActionPath:
             if state.get("late_gate"):
                 # An earlier request's gate landed after this round was prepared: a second
                 # request would duplicate it. Certain refusal, nothing sent.
-                return self._append(db, intent_id, "gate.request_refused", actor, {
+                return self._refused_gate(db, actor, intent_id, act, {
                     "task_id": call["taskId"],
-                    "reason": f"earlier_request_landed:{state['late_gate']}"}, act)
+                    "reason": f"earlier_request_landed:{state['late_gate']}"})
             stale = self._precondition_refusal(actor, self._intent(state))
             if stale:
                 # The case closed or the cited evidence changed since the request was
                 # prepared: no MC gate for an action dispatch would refuse. Certain
                 # refusal, nothing sent; a new round needs a new proposal.
-                return self._append(db, intent_id, "gate.request_refused", actor, {
-                    "task_id": call["taskId"], "reason": stale}, act)
+                return self._refused_gate(db, actor, intent_id, act, {
+                    "task_id": call["taskId"], "reason": stale})
             # By email and oid: the recorded one and the one usable now (a call approval
             # recorded before the oid was required has none: refused).
             refusal = self._standing_oid_refusal(
@@ -2008,18 +2012,18 @@ class ActionPath:
             if refusal:
                 # A subject recorded since the approval (a co-request) is the approver, or
                 # is unknown: certain refusal, nothing sent.
-                return self._append(db, intent_id, "gate.request_refused", actor, {
-                    "task_id": call["taskId"], "reason": refusal}, act)
+                return self._refused_gate(db, actor, intent_id, act, {
+                    "task_id": call["taskId"], "reason": refusal})
             try:  # the approval must still hold at the moment the call is sent
                 self._check_call_approval(approval["approved_by"], approval["approved_at"],
                                           approval["expires_at"],
                                           state["intent"]["capability"])
+                _check_mc_write_approver(mc, approval["tool"], approval["approved_by"])
                 authorization = authorization_for(approval)
             except (ActionPathError, ValueError) as exc:
-                return self._append(db, intent_id, "gate.request_refused", actor, {
+                return self._refused_gate(db, actor, intent_id, act, {
                     "task_id": call["taskId"],
-                    "reason": exc.code if isinstance(exc, ActionPathError) else str(exc)[:200]},
-                    act)
+                    "reason": exc.code if isinstance(exc, ActionPathError) else str(exc)[:200]})
             # Committed before any I/O (as dispatch.started): from here on a crash,
             # kill or lost answer reads as gate_request_unknown.
             attempt = f"{intent_id}-g{state['gate_attempts'] + 1}"
@@ -2079,6 +2083,12 @@ class ActionPath:
             return {"intent_id": intent_id, "kind": kind, "state": current["state"],
                     "recorded": True, "reason": "late_answer_recorded",
                     "gate_id": payload.get("gate_id")}
+
+    def _refused_gate(self, db: sqlite3.Connection, actor: Actor, intent_id: str,
+                      act: list[Any] | None, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """A certain refusal before anything is sent, recorded; the answer names why."""
+        event = self._append(db, intent_id, "gate.request_refused", actor, payload, act)
+        return {**event, "state": "gate_request_refused", "reason": payload["reason"]}
 
     def reconcile_gate(self, actor: Actor, intent_id: str, mc: Any, *,
                        session: Any = None) -> dict[str, Any]:
@@ -2237,6 +2247,13 @@ class ActionPath:
         with no known subject ``subject_unknown``; a roster member without an oid never
         authorizes (``decider_oid_unknown``), nor does an admin/owner the roster does not
         list for the intent's action type (``decider_not_approver_of_action_type``).
+
+        Four-eyes: an authorizing decision by a person who approved a call for this
+        intent (same canonical email or Entra oid, ``_four_eyes_refusal``) is recorded as
+        non-authorizing (``decider_is_call_approver``, ``gate_not_authorizing``): MC
+        decisions are final, so the intent recovers by a new gate (``prepare_gate``),
+        decided by someone else. A gate is only requested after its call approval, so no
+        decision can precede the approval it would have to differ from.
         """
         act = _session_act(session, actor)
         with self._connect() as db:
@@ -2279,6 +2296,8 @@ class ActionPath:
             final = code
             if final == "authorized":   # fail closed: parked, never defaulted
                 final = _sod_refusal(current, "decider", decider, (oid,)) or final
+            if final == "authorized":   # four-eyes: recorded, never authorizing
+                final = _four_eyes_refusal(current, decider, (oid,)) or final
             if final == "authorized" and role is None:
                 final = "decider_not_in_mc_roster"
             elif final == "authorized" and role not in DECIDING_ROLES:
@@ -2370,6 +2389,8 @@ class ActionPath:
                                              decision.get("decider_oid"),
                                              decision.get("decider_oid_provenance"),
                                              decision.get("decided_at"))
+            sod = sod or _four_eyes_refusal(state, decider, (
+                decision.get("decider_oid"), self._roster_oid(decider) if decider else None))
             if sod:
                 return self._withdrawal(db, actor, intent_id, state, decision,
                                         (decision["gate_id"], "approval_withdrawn:" + sod), act)
@@ -2501,6 +2522,7 @@ class ActionPath:
                 try:   # the approval must still hold at the moment the call is sent
                     self._check_call_approval(approval["approved_by"], approval["approved_at"],
                                               approval["expires_at"], intent.capability)
+                    _check_mc_write_approver(mc, approval["tool"], approval["approved_by"])
                     authorization = authorization_for(approval)
                 except (ActionPathError, ValueError) as exc:
                     refusal = (exc.code if isinstance(exc, ActionPathError)
@@ -3109,9 +3131,15 @@ _DECIDED_BY_SUBJECT = ("prepare_gate", "host",
                        "decided by the employee this action is for: only a new "
                        "human-approved request, decided by a different Mission Control "
                        "admin/owner, can authorize it")
+_DECIDED_BY_CALL_APPROVER = (
+    "prepare_gate", "host",
+    "decided by the person who approved the call (four-eyes): only a new human-approved "
+    "request, decided by a different Mission Control admin/owner, can authorize it")
 _SUBJECT_STEP = {
     "decider_is_subject": _DECIDED_BY_SUBJECT,
     "approval_withdrawn:decider_is_subject": _DECIDED_BY_SUBJECT,
+    "decider_is_call_approver": _DECIDED_BY_CALL_APPROVER,
+    "approval_withdrawn:decider_is_call_approver": _DECIDED_BY_CALL_APPROVER,
     CO_REQUESTED_AFTER_DECISION: ("prepare_gate", "host",
                                   "another employee co-requested this action after the "
                                   "decision, so the decider was never checked against them: "
@@ -3479,6 +3507,42 @@ def _sod_refusal(state: Mapping[str, Any], role: str, email: Any,
                                        if isinstance(oid, str) and oid.strip()}
     if held & subjects:
         return f"{role}_is_subject"
+    return None
+
+
+# The approver is allowed here but the MC client's write door would refuse them: said
+# plainly, since the approval was consumed when it was recorded.
+NOT_MC_WRITE_APPROVER = ("call_approver_not_an_mc_write_approver: this approval is used up; "
+                         "prepare again and have a configured Mission Control write approver "
+                         "approve")
+
+
+def _check_mc_write_approver(mc: Any, tool: str, approver: str) -> None:
+    """Refuse before anything is recorded as sent when ``mc`` opted in to ``tool`` but
+    ``approver`` is not one of its ``write_approvers`` (its door refuses such a write
+    before I/O anyway; a client not opted in keeps its own refusal)."""
+    allowed = getattr(mc, "_write_approvers", None)
+    if tool in (getattr(mc, "_write_tools", None) or ()) and allowed is not None \
+            and canonical_email(approver) not in {
+            canonical_email(item) for item in allowed}:
+        raise ActionPathError(NOT_MC_WRITE_APPROVER)
+
+
+def _four_eyes_refusal(state: Mapping[str, Any], decider: Any,
+                       oids: Any = ()) -> str | None:
+    """Four-eyes (GOAL2-ACTIONS.md section 2d): ``decider_is_call_approver`` when the MC
+    decider is anyone who approved a call for this intent, by canonical email or by any
+    Entra oid (the decider's ``oids`` against each approver's recorded one)."""
+    held = {canonical_email(decider)} if isinstance(decider, str) and decider.strip() \
+        else set()
+    held |= {oid.strip().lower() for oid in oids if isinstance(oid, str) and oid.strip()}
+    for item in state.get("call_approvers") or ():
+        theirs = {oid.strip().lower() for oid in (item.get("approver_oid"),)
+                  if isinstance(oid, str) and oid.strip()}
+        if isinstance(item.get("approved_by"), str) and item["approved_by"].strip():
+            theirs.add(canonical_email(item["approved_by"]))
+        if held & theirs:
+            return "decider_is_call_approver"
     return None
 
 

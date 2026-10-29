@@ -410,6 +410,74 @@ class ConsolePathTests(TwinTestCase):
                           (None, "verified")])
         self.assertEqual((steps[-1]["done"], world.portal.writes,
                           world.mc.tool_calls.count("mc_request_approval")), (True, 1, 1))
+        # Two people: the call's approver is not the MC admin who decided its gate.
+        decision = world.path.get(ACTOR, iid)["decisions"][-1]
+        self.assertEqual(decision["decided_by"], g2.MC_ADMIN)
+        self.assertNotEqual(decision["decided_by"].lower(), g2.CALL_APPROVER.lower())
+        self.assertNotEqual(decision["decider_oid"], g2.CALL_APPROVER_OID)
+
+
+    def test_a_gate_decided_by_the_call_approver_recovers_by_a_new_gate(self):
+        """Four-eyes on the twin: the call's approver (an MC admin here) decides its gate;
+        recorded as non-authorizing, MC refuses a second decision, and a new gate decided
+        by another admin is dispatched once and verified."""
+        from operating.session_identity import CHANNEL_CONSOLE, fixture_session
+        from operator_ui.object_workspace import WorkspaceActions
+
+        world = self.world()
+        _case, iid = world.portal_intent(1, "PO7002")
+        world.mc.add_task("TASK-TWIN-4EYES", "Twin gate")
+        world.mc.users[g2.CALL_APPROVER.lower()] = "admin"   # MC lets them decide
+        dispatcher = world.registry.for_capability(PORTAL_CAPABILITY)
+
+        def at_console(session):
+            return WorkspaceActions(world.path, session, actors=ACTOR.principals,
+                                    mc=world.mc_client, registry=world.registry,
+                                    read_back=dispatcher.read_back)
+        employee = at_console(SESSION)
+        approver = at_console(fixture_session("plx", ACTOR.principals, channel=CHANNEL_CONSOLE,
+                                              subject_email=g2.CALL_APPROVER,
+                                              subject_oid=g2.CALL_APPROVER_OID))
+
+        def approved_round():
+            prepared = employee.take(ACTOR, {"intent_id": iid, "step": "prepare_gate",
+                                             "task_id": "TASK-TWIN-4EYES"})
+            self.assertEqual(prepared["state"], "gate_prepared")
+            shown = approver.control(ACTOR, world.path.view(ACTOR, iid))
+            approved = approver.take(ACTOR, {"intent_id": iid, "step": "approve_call",
+                                             "approves_sha256": shown["approves_sha256"]})
+            self.assertEqual((approved["refusal"], approved["state"]), (None, "call_approved"))
+            requested = employee.take(ACTOR, {"intent_id": iid, "step": "request_gate"})
+            self.assertEqual(requested["state"], "gate_requested")
+            return world.path.get(ACTOR, iid)["gate"]["gate_id"]
+
+        with NetworkGuard() as guard:
+            first = approved_round()
+            world.mc.decide("TASK-TWIN-4EYES", first, "approved",
+                            session_label=g2.CALL_APPROVER, session_kind="human")
+            parked = employee.take(ACTOR, {"intent_id": iid, "step": "record_decision"})
+            self.assertEqual((parked["refusal"], parked["state"], parked["control"]["step"]),
+                             (None, "gate_not_authorizing", "prepare_gate"))
+            self.assertEqual(world.path.get(ACTOR, iid)["decisions"][-1]["reason_code"],
+                             "decider_is_call_approver")
+            refused = employee.take(ACTOR, {"intent_id": iid, "step": "dispatch"})
+            self.assertEqual(refused["refusal"], "gate_not_authorized")
+            with self.assertRaises(g2.IsolatedMcRefused):   # MC decisions are final
+                world.mc.decide("TASK-TWIN-4EYES", first, "approved",
+                                session_label=g2.MC_ADMIN, session_kind="human")
+            self.assertIn("gate_already_decided", world.mc.refusals)
+            second = approved_round()
+            self.assertNotEqual(second, first)
+            world.mc.decide("TASK-TWIN-4EYES", second, "approved",
+                            session_label=g2.MC_ADMIN, session_kind="human")
+            steps = [employee.take(ACTOR, {"intent_id": iid, "step": name})
+                     for name in ("record_decision", "dispatch", "read_back")]
+        self.assertEqual(guard.attempts, [])
+        self.assertEqual([(item["refusal"], item["state"]) for item in steps],
+                         [(None, "gate_authorized"), (None, "dispatched"),
+                          (None, "verified")])
+        self.assertEqual((world.portal.writes, world.mc.tool_calls.count("mc_request_approval")),
+                         (1, 2))
 
 
 class PortalRouteTests(TwinTestCase):

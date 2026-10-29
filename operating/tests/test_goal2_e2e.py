@@ -63,9 +63,9 @@ from operating.action_catalog import ActionCatalog
 from operating.cases import CaseNotFound
 from operating.session_identity import CHANNEL_CONSOLE, fixture_session
 from operating.tests import test_employee_permissions as permissions_fixture
-from operating.tests.test_action_path import (ALL_TYPES, API_ORDER, DECIDER_OID, EFFECT, OPS,
-                                              OUTSIDER, REL, ROSTER, SESSION, STEPHEN, VINCE, VINCE_OID,
-                                              ActionPathTestCase)
+from operating.tests.test_action_path import (ALL_TYPES, API_ORDER, DECIDER, DECIDER_OID, EFFECT,
+                                              OPS, OUTSIDER, REL, RITA, RITA_OID, ROSTER, SESSION,
+                                              STEPHEN, VINCE, VINCE_OID, ActionPathTestCase)
 from operating.tests.test_mcp_action_tools import ActionToolsTestCase, fixture_host_session
 from operating.tests.test_mcp_case_tools import FINANCE, OPS_FINANCE
 from operator_ui import case_console
@@ -607,7 +607,7 @@ class OutcomeTests(Goal2World):
 
         # A valid decision: a human MC owner, not the operator, after the request.
         gate_id = self.request(iid, "advisory record valid (test)")
-        self.mc.decide(gate_id, decided_by=VINCE)
+        self.mc.decide(gate_id, decided_by=DECIDER)
         self.path.record_decision(OPS, iid, self.mc.client, session=SESSION)
         decision = self.path.get(OPS, iid)["decisions"][-1]
         self.assertEqual((decision["authorizes"], decision["decider_role"],
@@ -670,16 +670,25 @@ class OutcomeTests(Goal2World):
                                                   "action_types": ALL_TYPES},
                                           "Cos+WB@petrasoap.com": {"role": "owner",
                                                                    "oid": DECIDER_OID,
-                                                                   "action_types": ALL_TYPES}},
+                                                                   "action_types": ALL_TYPES},
+                                          RITA: {"role": "owner", "oid": RITA_OID,
+                                                 "action_types": ALL_TYPES}},
                                          source_ref="test")
         for decider, code in (("cos+wb@petrasoap.com", "self_decided"),
                               ("COS+x@PetraSoap.com", "self_decided"),
-                              ("vince+mc@petrasoap.com", "authorized")):
+                              ("Rita+mc@PetraSoap.com", "authorized")):
             with self.subTest("plus aliases and case are one person", decider=decider):
                 self.setUp()
                 self.path = self.new_path(approver_roster=alias_roster)
                 iid = self.authorized(decided_by=decider)
                 self.assertEqual(self.path.get(OPS, iid)["decisions"][-1]["reason_code"], code)
+        with self.subTest("the call approver's alias is the call approver (four-eyes)"):
+            self.setUp()
+            self.path = self.new_path(approver_roster=alias_roster)
+            iid = self.authorized(decided_by="vince+mc@petrasoap.com")
+            self.assertEqual((self.path.get(OPS, iid)["state"],
+                              self.path.get(OPS, iid)["decisions"][-1]["reason_code"]),
+                             ("gate_not_authorizing", "decider_is_call_approver"))
         with self.subTest("the operator's alias never approves its own call"):
             self.assertEqual(g2.canonical_email(" Cos+A@PetraSoap.com "), OPERATOR)
             path = self.new_path(call_approvers=frozenset({VINCE, "cos+x@petrasoap.com"}))
@@ -1466,10 +1475,16 @@ class McWriteDoorTests(Goal2World):
             with self.subTest(client=client):
                 self.setUp()
                 iid = self.ready()
-                self.path.request_gate(OPS, iid, client, session=SESSION)
+                result = self.path.request_gate(OPS, iid, client, session=SESSION)
                 view = self.path.get(OPS, iid)
                 self.assertEqual(view["state"], "gate_request_refused")
-                self.assertEqual(view["history"][-2]["kind"], "gate.request_started")
+                if client._write_tools:
+                    # The door names other approvers: said plainly, before anything
+                    # is recorded as started (the approval is used up).
+                    self.assertEqual(result["reason"], ap.NOT_MC_WRITE_APPROVER)
+                    self.assertEqual(view["history"][-2]["kind"], "call.approved")
+                else:
+                    self.assertEqual(view["history"][-2]["kind"], "gate.request_started")
         self.assertEqual(sender.calls, [])
         # Another operator's client is refused before anything is recorded or sent.
         iid = self.ready()
@@ -2123,7 +2138,7 @@ class ActionToolVisibilityTests(ActionToolsTestCase):
             "expires_at": "2026-10-02T11:00:00Z", "evidence_ref": "advisory record (test)"},
             session=session)
         self.path.request_gate(actor, iid, self.mc.client, session=session)
-        self.mc.decide("apg_1", decided_by=VINCE)
+        self.mc.decide("apg_1", decided_by=DECIDER)
         self.path.record_decision(actor, iid, self.mc.client, session=session)
         self.fx.faults.append("timeout_after_apply")
         self.path.dispatch(actor, iid, self.registry, self.mc.client, session=session)

@@ -51,6 +51,7 @@ DECIDER = "mc.owner@petrasoap.com"
 # Entra object ids (fixture GUIDs): the roster names each MC member's, a session its subject's.
 VINCE_OID = "0000b000-0000-4000-8000-00000000000a"
 DECIDER_OID = "0000b000-0000-4000-8000-00000000000d"
+RITA, RITA_OID = "rita@petrasoap.com", "0000b000-0000-4000-8000-0000000000aa"
 EMPLOYEE_OID = "0000b000-0000-4000-8000-00000000000e"
 SESSION = fixture_session("plx", OPS.principals, channel=CHANNEL_MCP, subject_email=EMPLOYEE,
                           subject_oid=EMPLOYEE_OID)
@@ -59,7 +60,11 @@ EMPLOYEE_IDS = sorted([EMPLOYEE_OID, EMPLOYEE])   # the subject's identities, as
 ANONYMOUS = fixture_session("plx", OPS.principals, channel=CHANNEL_MCP)
 # Every catalog action type: what an owner of the hand-built rosters below approves.
 ALL_TYPES = tuple(ActionCatalog.builtin().ids())
+# VINCE approves the calls; DECIDER, another owner, decides the gates (four-eyes: the
+# call's approver never decides its gate).
 ROSTER = ApproverRoster({VINCE: {"role": "owner", "action_types": ALL_TYPES, "oid": VINCE_OID},
+                         DECIDER: {"role": "owner", "action_types": ALL_TYPES,
+                                   "oid": DECIDER_OID},
                          STEPHEN: {"role": "member", "action_types": (), "oid": None}},
                         source_ref="MC mc_users as listed by a person (test)")
 REL = "fixture.sales_order"
@@ -141,10 +146,15 @@ class FakeMc:
     def _stamp(self):
         return self.clock().isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
-    def decide(self, gate_id, status="approved", decided_by=VINCE, decided_at=None):
+    # True: a decided gate is never decided again, as real MC (``gate_already_decided``).
+    final_decisions = False
+
+    def decide(self, gate_id, status="approved", decided_by=DECIDER, decided_at=None):
         decided_at = decided_at or self._stamp()  # MC stamps the decision time too
         for gate in self.tasks["TASK-9"]["approvalGates"]:
             if gate["id"] == gate_id:
+                if self.final_decisions and gate["status"] != "pending":
+                    raise ValueError("gate_already_decided")
                 gate.update(status=status, decidedBy=decided_by, decidedAt=decided_at)
 
     def tools_called(self):
@@ -231,7 +241,7 @@ class ActionPathTestCase(unittest.TestCase):
         return record
 
     def authorized(self, capability=ap.FIXTURE_CAPABILITY, citation=None, effect=None,
-                   decided_by=VINCE, past_prepare_guard=False):
+                   decided_by=DECIDER, past_prepare_guard=False):
         """``past_prepare_guard``: simulate a production intent that got registered and
         an MC gate anyway (e.g. recorded before the registration capability guards and
         the prepare-time guard) to prove dispatch refuses it on its own."""
@@ -317,7 +327,7 @@ class LifecycleTests(ActionPathTestCase):
         view = self.path.get(OPS, iid)
         self.assertEqual(view["state"], "gate_authorized")
         self.assertEqual((view["decisions"][-1]["decided_by"],
-                          view["decisions"][-1]["reason_code"]), (VINCE, "authorized"))
+                          view["decisions"][-1]["reason_code"]), (DECIDER, "authorized"))
 
         result = self.path.dispatch(OPS, iid, self.registry, session=SESSION)
         self.assertEqual(result["state"], "dispatched")
@@ -1158,7 +1168,7 @@ class RealSystemAdapterTests(ActionPathTestCase):
         self.addCleanup(host_env.stop)
         os.environ.pop(adapters.ALLOW_ENV, None)
 
-    def authorize(self, decided_by=VINCE, preconditions=None):
+    def authorize(self, decided_by=DECIDER, preconditions=None):
         intent = self.path.register(OPS, self.case_id, self.propose(
             PORTAL_CAPABILITY, API_ORDER, PORTAL_EFFECT, preconditions=preconditions),
             session=SESSION)
@@ -2927,6 +2937,145 @@ class IdentityModelTests(SubjectTestCase):
                 result = self.path.dispatch(OPS, iid, self.registry, session=SESSION)
                 self.assertEqual((result["state"], result["reason"]), expected)
         self.assertEqual(self.fx.calls, 1)
+
+
+
+class FourEyesTests(SubjectTestCase):
+    """Four-eyes (GOAL2-ACTIONS.md section 2d): whoever approved a call for an intent
+    never decides its MC gate, by email or by Entra oid. The refusal records nothing:
+    the intent stays in ``gate_requested`` and nothing is dispatched."""
+
+    forge_decision = IdentityModelTests.forge_decision
+    legacy_event = IdentityModelTests.legacy_event
+
+    def requested(self):
+        """One intent whose gate Vince's call approval requested; returns its id."""
+        intent = self.fresh(SESSION)
+        iid = intent["intent_id"]
+        self.approve(iid, self.call_record(intent))
+        self.assertEqual(self.path.get(OPS, iid)["call_approvers"][-1]["approved_by"], VINCE)
+        self.path.request_gate(OPS, iid, self.mc.client, session=SESSION)
+        return iid
+
+    def assert_refused_in_place(self, iid, decided_by):
+        """``decided_by`` decides in MC: recorded as non-authorizing, parked, nothing
+        dispatched; the next step is a new gate."""
+        self.mc.decide(self.path.get(OPS, iid)["gate"]["gate_id"], decided_by=decided_by)
+        self.path.record_decision(OPS, iid, self.mc.client, session=SESSION)
+        view = self.assert_parked(iid, "decider_is_call_approver")
+        self.assertEqual(view["next_safe_step"]["step"], "prepare_gate")
+        self.assertIn("four-eyes", view["next_safe_step"]["detail"])
+        self.assertNotIn(VINCE, json.dumps(view))   # no identity projected
+        return view
+
+    def test_the_intent_recovers_by_a_new_gate_decided_by_someone_else(self):
+        # MC decisions are final: the refused gate is never re-decided. A new request
+        # (prepared, approved, sent) decided by a different owner dispatches once.
+        self.mc.final_decisions = True
+        iid = self.requested()
+        self.assert_refused_in_place(iid, VINCE)
+        old_gate = self.path.get(OPS, iid)["gate"]["gate_id"]
+        with self.assertRaises(ValueError):   # as real MC: gate_already_decided
+            self.mc.decide(old_gate, decided_by=DECIDER)
+        intent = self.path.get(OPS, iid)["intent"]
+        self.approve(iid, self.call_record(intent))
+        self.path.request_gate(OPS, iid, self.mc.client, session=SESSION)
+        new_gate = self.path.get(OPS, iid)["gate"]["gate_id"]
+        self.assertNotEqual(new_gate, old_gate)
+        self.mc.decide(new_gate, decided_by=DECIDER)
+        self.path.record_decision(OPS, iid, self.mc.client, session=SESSION)
+        self.assertEqual(self.path.get(OPS, iid)["state"], "gate_authorized")
+        self.assertEqual(self.path.dispatch(OPS, iid, self.registry,
+                                            session=SESSION)["state"], "dispatched")
+        self.assertEqual(self.fx.calls, 1)
+
+    def test_the_call_approver_never_decides_the_gate_by_email(self):
+        for decided_by in (VINCE, "Vince+mc@PetraSoap.com"):
+            with self.subTest(decided_by=decided_by):
+                self.assert_refused_in_place(self.requested(), decided_by)
+
+    def test_the_call_approver_never_decides_the_gate_by_oid(self):
+        # The MC label is another mailbox, but the roster names Vince's Entra oid.
+        self.path = self.new_path(approver_roster=ApproverRoster(
+            {VINCE: {"role": "owner", "action_types": ALL_TYPES, "oid": VINCE_OID},
+             DECIDER: {"role": "owner", "action_types": ALL_TYPES, "oid": VINCE_OID}},
+            source_ref="MC mc_users as listed by a person (test)"))
+        self.assert_refused_in_place(self.requested(), DECIDER)
+
+    def test_any_earlier_rounds_approver_is_refused_too(self):
+        # Vince approved round 1 (rejected in MC); Rita approves round 2, yet Vince
+        # approved a call for this intent: his decision on round 2's gate is refused.
+        self.path = self.new_path(approver_roster=self.roster,
+                                  call_approvers={VINCE: VINCE_OID, RITA: RITA_OID})
+        iid = self.requested()
+        self.mc.decide(self.path.get(OPS, iid)["gate"]["gate_id"], status="rejected",
+                       decided_by=DECIDER)
+        self.path.record_decision(OPS, iid, self.mc.client, session=SESSION)
+        self.assertEqual(self.path.get(OPS, iid)["state"], "gate_rejected")
+        intent = self.path.get(OPS, iid)["intent"]
+        self.path.prepare_gate(OPS, iid, "TASK-9", self.mc.client, session=SESSION)
+        self.path.approve_call(OPS, iid, "TASK-9", self.call_record(intent, approved_by=RITA),
+                               session=SESSION)
+        transport, _ = hub(self.mc.sender, clock=self.clock)
+        both = MissionControlMcpClient(mc_config(), hub=transport,
+                                       write_tools={"mc_request_approval"},
+                                       write_approvers={VINCE, RITA}, write_ledger=self.mc.ledger)
+        self.path.request_gate(OPS, iid, both, session=SESSION)
+        self.assertEqual([a["approved_by"] for a in self.path.get(OPS, iid)["call_approvers"]],
+                         [VINCE, RITA])
+        self.assert_refused_in_place(iid, VINCE)
+
+    def test_a_send_by_an_approver_the_mc_client_does_not_accept_says_so(self):
+        # Rita may approve calls here, but the MC client's write door names only Vince:
+        # refused before anything is sent, saying the approval is used up.
+        self.path = self.new_path(approver_roster=self.roster,
+                                  call_approvers={VINCE: VINCE_OID, RITA: RITA_OID})
+        intent = self.fresh(SESSION)
+        iid = intent["intent_id"]
+        self.approve(iid, self.call_record(intent, approved_by=RITA))
+        sent = len(self.mc.requests)
+        result = self.path.request_gate(OPS, iid, self.mc.client, session=SESSION)
+        self.assertEqual((result["state"], result["reason"]),
+                         ("gate_request_refused", ap.NOT_MC_WRITE_APPROVER))
+        view = self.path.view(OPS, iid)
+        self.assertEqual(view["state"], "gate_request_refused")
+        self.assertEqual(self.path.get(OPS, iid)["history"][-1]["kind"], "gate.request_refused")
+        self.assertNotIn("gate.request_started",
+                         [h["kind"] for h in self.path.get(OPS, iid)["history"]])
+        self.assertEqual(len(self.mc.requests), sent)
+        self.assertEqual(ap.NOT_MC_WRITE_APPROVER.split(":")[0],
+                         "call_approver_not_an_mc_write_approver")
+        self.assertIn("used up", ap.NOT_MC_WRITE_APPROVER)
+
+    def test_a_rejection_by_the_approver_is_recorded_and_a_different_decider_proceeds(self):
+        iid = self.requested()
+        self.mc.decide(self.path.get(OPS, iid)["gate"]["gate_id"], status="rejected",
+                       decided_by=VINCE)
+        self.path.record_decision(OPS, iid, self.mc.client, session=SESSION)
+        self.assertEqual(self.path.get(OPS, iid)["state"], "gate_rejected")   # never authorizes
+        iid = self.requested()
+        self.mc.decide(self.path.get(OPS, iid)["gate"]["gate_id"], decided_by=DECIDER)
+        self.path.record_decision(OPS, iid, self.mc.client, session=SESSION)
+        self.assertEqual(self.path.get(OPS, iid)["decisions"][-1]["reason_code"], "authorized")
+        self.assertEqual(self.path.dispatch(OPS, iid, self.registry,
+                                            session=SESSION)["state"], "dispatched")
+        self.assertNotIn(VINCE, json.dumps(self.path.view(OPS, iid)))  # never projected
+
+    def test_dispatch_withdraws_a_recorded_decision_by_the_call_approver(self):
+        # As an older build or a hand-edited store would have recorded it.
+        for oid in (None, VINCE_OID):
+            with self.subTest(oid=oid):
+                intent = self.fresh(SESSION)
+                iid = intent["intent_id"]
+                self.approve(iid, self.call_record(intent))
+                self.forge_decision(iid, DECIDER if oid else VINCE, oid)
+                result = self.path.dispatch(OPS, iid, self.registry, session=SESSION)
+                self.assertEqual((result["state"], result["reason"]),
+                                 ("gate_not_authorizing",
+                                  "approval_withdrawn:decider_is_call_approver"))
+                self.assertIn("four-eyes",
+                              self.path.view(OPS, iid)["next_safe_step"]["detail"])
+        self.assertEqual(self.fx.calls, 0)
 
 
 if __name__ == "__main__":

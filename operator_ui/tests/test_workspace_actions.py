@@ -166,7 +166,30 @@ class OwnerActionTest(tap.ActionPathTestCase):
         self.assertEqual((status, requested["state"]), (200, "gate_requested"))
         self.assertEqual(self.mc.tools_called().count("mc_request_approval"), 1)
         self.assertEqual(step(owned, "record_decision")[1]["state"], "gate_requested")  # pending
-        self.mc.decide(self.path.get(tap.OPS, owned)["gate"]["gate_id"])
+        # Four-eyes: the person who approved the call decides its gate in MC. Recorded as
+        # non-authorizing; MC decisions are final, so the intent recovers by a new gate.
+        self.mc.final_decisions = True
+        old_gate = self.path.get(tap.OPS, owned)["gate"]["gate_id"]
+        self.mc.decide(old_gate, decided_by=tap.VINCE)
+        status, parked = step(owned, "record_decision")
+        self.assertEqual((status, parked["state"], parked["control"]["step"]),
+                         (200, "gate_not_authorizing", "prepare_gate"))
+        self.assertEqual(self.path.get(tap.OPS, owned)["decisions"][-1]["reason_code"],
+                         "decider_is_call_approver")
+        self.assertEqual(step(owned, "dispatch")[1]["error"], "gate_not_authorized")
+        with self.assertRaises(ValueError):   # as real MC: gate_already_decided
+            self.mc.decide(old_gate)
+        status, prepared = step(owned, "prepare_gate", task_id="TASK-9")
+        self.assertEqual((status, prepared["state"]), (200, "gate_prepared"))
+        status, approved = self.serve(self.approver())("POST", "/api/object-action", {
+            "intent_id": owned, "step": "approve_call",
+            "approves_sha256": prepared["control"]["approves_sha256"]})
+        self.assertEqual((status, approved["state"]), (200, "call_approved"))
+        status, requested = step(owned, "request_gate")
+        self.assertEqual((status, requested["state"]), (200, "gate_requested"))
+        new_gate = self.path.get(tap.OPS, owned)["gate"]["gate_id"]
+        self.assertNotEqual(new_gate, old_gate)
+        self.mc.decide(new_gate)   # another MC owner decides the new gate
         status, decided = step(owned, "record_decision")
         self.assertEqual((decided["state"], decided["control"]["step"]),
                          ("gate_authorized", "dispatch"))
