@@ -15,6 +15,29 @@ Must keep working:
 Known gaps:
 ```
 
+## v0.9 (2026-10-29)
+
+Added:
+- The Workbench now runs on its own larger machine. Its data was read fresh from every system on the evening of 28 October.
+- Briefs and process maps that were shared as Teams attachments or as zip files can be opened and quoted again, by the people who may open the original file.
+- A long document can be searched for a phrase, so an answer can point to the exact place, and to both places when the document contradicts itself.
+
+Changed:
+- An answer shows a currency only when it was checked against the source. A figure shown next to a different currency is left out.
+- A very long document is read up to a set length. The answer says which part it read and that the rest was not read.
+- More ways of writing packs, boxes and pallets are understood, such as pks, pkgs, bxs and plts.
+
+Fixed:
+- Some maps and briefs stored as zip files, images or spreadsheets could not be read.
+
+Must keep working:
+- Everything in v0.8.
+
+Known gaps:
+- Some SharePoint libraries, Teams chats and older mail are still being read for the first time. Until then an answer can say that a document is not available yet.
+- Mission Control was read again on 29 October. The answers use it after the next refresh.
+- The brand-requirements map is not in any folder the Workbench reads.
+
 ## v0.8 (2026-10-28)
 
 Added:
