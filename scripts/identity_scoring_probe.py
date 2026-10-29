@@ -5,7 +5,7 @@
         [--workers N] [--bc-capture] [--live-audience FILE] \\
         [--previous-report DAILY.json] [--session-projection SESSION_DIR]
 
-GET only. The projection probe (``scripts.ontology_projection_probe --build-only``, as
+GET only. The L7 probe (``scripts.ontology_projection_probe --build-only``, as
 ``scripts.process_dependencies_probe`` runs it: one build, a failed build's
 ``build_failure``, a refused one's ``need_bytes`` and ``free_bytes``) builds or reuses the
 throwaway mirror and projection store and lays them out as the served host state. Then,
@@ -66,6 +66,27 @@ def _payload_failures(kind: Mapping[str, Any], contract: Mapping[str, Any],
                                   limit=1)) or any(
             review[k] != candidate[k] for k in ("subject", "target", "link_type"))
     return failures
+
+
+def your_reference_counts(conn: sqlite3.Connection) -> dict[str, Any]:
+    """The build's ``your_reference`` step outcome (BC Your Reference -> Portal FM PO
+    number links, ``ontology.identity_scoring.link_po_your_references``) as the projection
+    recorded it in ``store_meta.build_report``: ``po_your_reference`` (typed counts only),
+    ``po_your_reference_linked`` and ``po_your_reference_capture`` (the field page's
+    capture state). Null when the build ran no such step."""
+    row = conn.execute("SELECT value FROM store_meta WHERE key = 'build_report'").fetchone()
+    try:
+        step = (json.loads(row[0]) if row else {}).get("post_project", {}).get(
+            "your_reference")
+    except (TypeError, ValueError, AttributeError):
+        step = None
+    if not isinstance(step, dict):
+        return {"po_your_reference": None, "po_your_reference_linked": None,
+                "po_your_reference_capture": None}
+    counts = {k: int(v) for k, v in (step.get("counts") or {}).items()}
+    return {"po_your_reference": counts,
+            "po_your_reference_linked": counts.get("linked", 0),
+            "po_your_reference_capture": step.get("reference_capture")}
 
 
 def check_identity(host: Any, *, budget_seconds: float | None) -> dict[str, Any]:
@@ -142,6 +163,7 @@ def check_identity(host: Any, *, budget_seconds: float | None) -> dict[str, Any]
                     report["portal_bc_pairs"] += split["pairs_compared"]
                     report["portal_bc_review"] += split["bands"].get("review", 0)
                     report["portal_bc_identity_pairs"] += split["identity_pairs"]
+        report.update(your_reference_counts(conn))
     finally:
         conn.close()
     report["kinds_unscored"] = len(ids.KINDS) - len(report["kinds_scored"])
@@ -155,15 +177,15 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     parser.add_argument("--db", required=True, help="throwaway mirror file")
     parser.add_argument("--store", required=True, help="throwaway ontology store file")
     parser.add_argument("--budget-seconds", type=float, default=None,
-                        help="the projection build's budget")
+                        help="the L7 build's budget")
     parser.add_argument("--score-budget-seconds", type=float, default=None)
     parser.add_argument("--previous-report", default=None,
-                        help="last daily verifier report, passed to the projection build")
+                        help="last daily verifier report, passed to the L7 build")
     parser.add_argument("--workers", type=int, default=None)
     parser.add_argument("--bc-capture", action="store_true")
     parser.add_argument("--live-audience", default=None)
     parser.add_argument("--session-projection", default=None,
-                        help="the verifier session's projection (the projection probe's)")
+                        help="the verifier session's projection (the L7 probe's)")
     args = parser.parse_args(argv)
     phase = None   # the consumer's own phase, once the build succeeded
     try:

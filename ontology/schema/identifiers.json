@@ -3,7 +3,7 @@
  "description": "The one identifier grammar of the Workbench: every identifier kind (pattern, normaliser, alias kinds, carrying fields per system with the upstream code that writes them), the mention patterns used to find identifiers in text, technical identifier grammars of live sources, and the cross-system keys declared as link bindings. ontology/identifiers.py loads and compiles this file.",
  "upstream": {
   "portal": "plx-customer-portal@b46934a",
-  "portal_context_pack": "docs/reference/portal-code-map.md (pin 6c94159; re-read at b46934a)"
+  "portal_context_pack": "devloop/CONTEXT/03-PORTAL.md (pin 6c94159; re-read at b46934a)"
  },
  "tiers": {
   "verified": "A key the owning system writes and resolves on; may still be non-unique (then a candidate, never a merge).",
@@ -28,7 +28,7 @@
   "petra_po": {
    "object_type": "PurchaseOrder",
    "description": "A Petra purchase-order number in any written form. Normalised to the series prefix plus the number without separators or leading zeros (PO#4821, PO 4821, Our PO 4821, P.O. # 4821 -> PO4821). The normalised value is a blocking key for candidates; an exact match against a row is still the literal TRIM/ILIKE comparison Portal makes. A bare stored number (Sage and FM ponumber hold some numbers without a series: 4821, 4821-FM12) reads as a series-less number (4821); it is never the PO-series number PO4821, only its same-number twin.",
-   "value_pattern": "(?:our\\s+)?(?:UAT-)?(?:D?PO|P\\.\\s?O\\.?|purchase\\s+order)(?:\\s*(?:no\\.?|number|num\\.?))?\\s?[#:.\\-]?\\s*\\d{1,9}(?:-FM\\d{1,9})?|(?:UAT-)?PO-(?=[A-Za-z0-9]{0,7}\\d)[A-Za-z0-9]{3,8}|\\d{1,9}(?:-FM\\d{1,9})?",
+   "value_pattern": "(?:our\\s+)?(?:UAT-)?(?:D?PO|P\\.\\s?O\\.?|purchase\\s+order)(?:\\s*(?:no\\.?|number|num\\.?))?\\s?[#:.\\-]?\\s*\\d{1,9}(?:-FM-?\\d{1,9})?|(?:UAT-)?PO-(?=[A-Za-z0-9]{0,7}\\d)[A-Za-z0-9]{3,8}|\\d{1,9}(?:-FM-?\\d{1,9})?",
    "flags": "i",
    "normalizer": "petra_po",
    "identity": "anchor",
@@ -103,7 +103,7 @@
     {
      "form": "legacy_base36",
      "example": "PO-MUT20W00",
-     "upstream": "plx-customer-portal@82549dd:portal/src/app/api/operations/purchase-orders/route.ts:33 (prefixRef(`PO-${Date.now().toString(36).toUpperCase()}`): PO- plus a millisecond time in base 36, at most 8 characters before 2059; no DPO- form, the distribution series is numeric only: portal/src/lib/mrp/po-number-series.ts); docs/reference/portal-code-map.md s3.5"
+     "upstream": "plx-customer-portal@82549dd:portal/src/app/api/operations/purchase-orders/route.ts:33 (prefixRef(`PO-${Date.now().toString(36).toUpperCase()}`): PO- plus a millisecond time in base 36, at most 8 characters before 2059; no DPO- form, the distribution series is numeric only: portal/src/lib/mrp/po-number-series.ts); devloop/CONTEXT/03-PORTAL.md s3.5"
     },
     {
      "form": "fm_suffixed_clash",
@@ -113,7 +113,7 @@
     {
      "form": "mail_labelled",
      "example": "Our PO 4821",
-     "upstream": "docs/reference/cases-and-artifacts.md (deposit wire reference)"
+     "upstream": "devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md (deposit wire reference)"
     },
     {
      "form": "document_labelled",
@@ -176,8 +176,8 @@
      "relation": "purchaseOrders",
      "field": "Your Reference",
      "role": "alias",
-     "served": false,
-     "upstream": "docs/reference/cases-and-artifacts.md (codeunit 50115: Your Reference = fmPoNumber)"
+     "served": true,
+     "upstream": "devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md (map reading of codeunit 50115: Your Reference = fmPoNumber; the link is judged on data evidence, decision 2026-10-27-your-reference-evidence)"
     },
     {
      "system": "portal",
@@ -189,7 +189,7 @@
     }
    ],
    "same_number": {
-    "description": "Two stored values hold the same number when these parts are equal: separators, leading zeros and an -FM<id> clash suffix aside, the UAT stamp and the series kept, and a series-less (bare) number matching any series. Same-number rows in two systems are twins: leads naming every row, never a merge (identity_rules.auto_merge).",
+    "description": "Two stored values hold the same number when these parts are equal: separators, leading zeros and an -FM<id> clash suffix aside, the UAT stamp and the series kept, and a series-less (bare) number matching any series. Same-number rows in two systems are twins: leads naming every row, never a merge (identity_rules.auto_merge; 10-DECISION item 3).",
     "parts": [
      "uat",
      "number"
@@ -200,7 +200,7 @@
     "blank_matches_any": [
      "series"
     ],
-    "upstream": "ontology/resolve.py SameNumberIndex (Sage sage.po_header.ponumber and FM generated_purchase_order.ponumber store bare numbers); plx-customer-portal@b46934a:portal/src/lib/mrp/create-fm-purchase-order.ts:279-291 (-FM<id> clash suffix)"
+    "upstream": "ontology/resolve.py SameNumberIndex (mail-source-3 f22106da: Sage sage.po_header.ponumber and FM generated_purchase_order.ponumber store bare numbers); plx-customer-portal@b46934a:portal/src/lib/mrp/create-fm-purchase-order.ts:279-291 (-FM<id> clash suffix)"
    }
   },
   "customer_po": {
@@ -224,14 +224,14 @@
     {
      "form": "as_written",
      "example": "PO20260312",
-     "upstream": "(SalesOrder 351)"
+     "upstream": "devloop/WORKING-BRIEF.md (SalesOrder 351)"
     },
     {
      "form": "marked",
      "example": "PO# 4500 12",
-     "upstream": "docs/reference/case-runtime.md",
+     "upstream": "EVIDENCE/live/2026-10-01-customer-po-sage-64-vs-42.md",
      "marker": "(?:P\\.?\\s?O\\.?|PURCHASE\\s+ORDER)\\s*#\\s*",
-     "marker_note": "A PO word and # before the value (PO#PO-6000, PO #PO-6000, PO# 7000), matched case-insensitively at the start (ontology/identifiers.marked_value). plx.find reads such a query as a lead to the customer POs whose blocking key the marked value shares (reason marked_form), never as that PO: the Portal compares the whole text (normalizePoReference keeps the marker), so a marked text roots nothing (docs/decisions/2026-10-10-customer-po-scope-entry-points.md)."
+     "marker_note": "A PO word and # before the value (PO#PO-6000, PO #PO-6000, PO# 7000), matched case-insensitively at the start (ontology/identifiers.marked_value). plx.find reads such a query as a lead to the customer POs whose blocking key the marked value shares (reason marked_form), never as that PO: the Portal compares the whole text (normalizePoReference keeps the marker), so a marked text roots nothing (devloop/DECISIONS/2026-10-10-customer-po-scope-entry-points.md)."
     }
    ],
    "carriers": [
@@ -320,12 +320,12 @@
     {
      "form": "legacy_fm",
      "example": "SO-FM-351",
-     "upstream": "docs/reference/portal-code-map.md s3.2"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.2"
     },
     {
      "form": "fm_order_entry",
      "example": "OR1000123456",
-     "upstream": "(SalesOrder 351)"
+     "upstream": "devloop/WORKING-BRIEF.md (SalesOrder 351)"
     },
     {
      "form": "environment_prefixed",
@@ -422,7 +422,7 @@
     {
      "form": "purchase_order",
      "example": "PO100523",
-     "upstream": "docs/reference/portal-code-map.md s3.5"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.5"
     },
     {
      "form": "production_cost_ao_code",
@@ -483,7 +483,7 @@
      "field": "bc_number",
      "role": "primary",
      "served": false,
-     "upstream": "docs/reference/portal-code-map.md s4.10"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s4.10"
     },
     {
      "system": "bc",
@@ -556,7 +556,7 @@
     {
      "form": "guid",
      "example": "bbbbbbbb-0000-0000-0000-000000000009",
-     "upstream": "docs/reference/portal-code-map.md s4.10"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s4.10"
     }
    ],
    "carriers": [
@@ -566,7 +566,7 @@
      "field": "bc_system_id",
      "role": "primary",
      "served": false,
-     "upstream": "docs/reference/portal-code-map.md s4.10"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s4.10"
     },
     {
      "system": "bc",
@@ -595,7 +595,7 @@
     {
      "form": "fm_padded",
      "example": "AO-26012C",
-     "upstream": "(AO-26012C)"
+     "upstream": "devloop/WORKING-BRIEF.md (AO-26012C)"
     },
     {
      "form": "portal_create",
@@ -618,7 +618,7 @@
      "field": "mo_code",
      "role": "alias",
      "served": true,
-     "upstream": "docs/reference/portal-code-map.md s3.8 (etlManufacturingOrders)"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.8 (etlManufacturingOrders)"
     }
    ],
    "prefix_forms": [
@@ -670,7 +670,7 @@
     {
      "form": "etl_copy_of_fm_ao",
      "example": "AO-26119A",
-     "upstream": "docs/reference/portal-code-map.md s3.8 (etlManufacturingOrders)"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.8 (etlManufacturingOrders)"
     }
    ],
    "carriers": [
@@ -680,7 +680,7 @@
      "field": "mo_code",
      "role": "primary",
      "served": true,
-     "upstream": "docs/reference/portal-code-map.md s3.8"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.8"
     }
    ]
   },
@@ -717,7 +717,7 @@
      "field": "batch_number",
      "role": "alias",
      "served": true,
-     "upstream": "docs/reference/portal-code-map.md s3.8"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.8"
     },
     {
      "system": "portal",
@@ -725,7 +725,7 @@
      "field": "lot_number",
      "role": "alias",
      "served": true,
-     "upstream": "docs/reference/portal-code-map.md s3.8"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.8"
     },
     {
      "system": "fm",
@@ -768,7 +768,7 @@
      "field": "receipt_number",
      "role": "primary",
      "served": true,
-     "upstream": "docs/reference/portal-code-map.md s3.5"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.5"
     },
     {
      "system": "portal",
@@ -776,7 +776,7 @@
      "field": "lab_id",
      "role": "alias",
      "served": true,
-     "upstream": "docs/reference/portal-code-map.md s3.5"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.5"
     }
    ]
   },
@@ -802,12 +802,12 @@
     {
      "form": "etl",
      "example": "fm-wlp-123",
-     "upstream": "docs/reference/portal-code-map.md s3.9"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.9"
     },
     {
      "form": "sage",
      "example": "SAGE-11-A1-ABC-1001",
-     "upstream": "docs/reference/portal-code-map.md s3.9"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.9"
     },
     {
      "form": "fp_bridge_ao_row_id",
@@ -822,7 +822,7 @@
      "field": "lot_number",
      "role": "primary",
      "served": false,
-     "upstream": "docs/reference/portal-code-map.md s3.9"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.9"
     }
    ],
    "no_fixed_format": {
@@ -849,7 +849,7 @@
     {
      "form": "vendor",
      "example": "QT.150126.07",
-     "upstream": "docs/reference/cases-and-artifacts.md"
+     "upstream": "devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md"
     }
    ],
    "carriers": [
@@ -859,7 +859,7 @@
      "field": "quote_number",
      "role": "primary",
      "served": true,
-     "upstream": "docs/reference/portal-code-map.md s3.12"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.12"
     }
    ],
    "no_fixed_format": {
@@ -884,28 +884,28 @@
      "PurchaseOrder"
     ],
     "why": "A supplier's proforma invoice number names the order it bills; a document whose link to one PO two independent features corroborate proposes it as the PO's alias, a lead a person accepts or rejects (ontology/mentions.py propose_reference_aliases).",
-    "upstream": "ER-02 and ER-05; docs/decisions/2026-10-19-reference-alias-leads.md"
+    "upstream": "devloop/CONTEXT/01-VISION-AND-REQUIREMENTS.md ER-02 and ER-05; devloop/DECISIONS/2026-10-19-reference-alias-leads.md"
    },
    "forms": [
     {
      "form": "printed",
      "example": "PI-ABC001234",
-     "upstream": "docs/reference/cases-and-artifacts.md F02"
+     "upstream": "devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md F02"
     },
     {
      "form": "file_name",
      "example": "PI-ABC005678",
-     "upstream": "docs/reference/cases-and-artifacts.md F02"
+     "upstream": "devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md F02"
     },
     {
      "form": "mail",
      "example": "PI-5678",
-     "upstream": "docs/reference/cases-and-artifacts.md F02"
+     "upstream": "devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md F02"
     },
     {
      "form": "attached",
      "example": "PI40404",
-     "upstream": "docs/reference/cases-and-artifacts.md (samples stage)"
+     "upstream": "devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md (samples stage)"
     }
    ],
    "carriers": [
@@ -936,7 +936,7 @@
      "PurchaseOrder"
     ],
     "why": "The supplier writes its own order or confirmation number beside the PO it confirms; a document whose link to one PO two independent features corroborate proposes that number as the PO's alias, a lead a person accepts or rejects (ontology/mentions.py propose_reference_aliases).",
-    "upstream": "ER-02 and ER-05; docs/decisions/2026-10-19-reference-alias-leads.md"
+    "upstream": "devloop/CONTEXT/01-VISION-AND-REQUIREMENTS.md ER-02 and ER-05; devloop/DECISIONS/2026-10-19-reference-alias-leads.md"
    },
    "forms": [
     {
@@ -966,7 +966,7 @@
    ],
    "no_fixed_format": {
     "why": "A supplier's own order or confirmation number: a buyer records one per PO in the Portal (PrinterOrderConfirmation, not yet served) and the supplier states it in mail, which is read here.",
-    "upstream": "plx-customer-portal@55e78ca:portal/prisma/schema.prisma:3677-3690 PrinterOrderConfirmation.confirmationNumber (the commit was not reachable from the build checkout to verify); the earlier plx-customer-portal@82549dd search found no writer"
+    "upstream": "plx-customer-portal@55e78ca:portal/prisma/schema.prisma:3677-3690 PrinterOrderConfirmation.confirmationNumber (cited as the lane objective states; the commit was not reachable from the build checkout to verify); the earlier plx-customer-portal@82549dd search found no writer"
    }
   },
   "invoice_number": {
@@ -993,7 +993,7 @@
      "field": "vendor_invoice_number",
      "role": "primary",
      "served": true,
-     "upstream": "docs/reference/portal-code-map.md s3.5"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.5"
     },
     {
      "system": "bc",
@@ -1039,7 +1039,7 @@
      "field": "shipment_code",
      "role": "primary",
      "served": true,
-     "upstream": "docs/reference/portal-code-map.md s3.10"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.10"
     }
    ]
   },
@@ -1093,7 +1093,7 @@
     {
      "form": "carrier",
      "example": "1Z 999 AA1 0123 4567 84",
-     "upstream": "docs/reference/portal-code-map.md s3.10"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.10"
     }
    ],
    "carriers": [
@@ -1103,7 +1103,7 @@
      "field": "tracking_number",
      "role": "primary",
      "served": true,
-     "upstream": "docs/reference/portal-code-map.md s3.10"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.10"
     },
     {
      "system": "portal",
@@ -1111,7 +1111,7 @@
      "field": "tracking_number",
      "role": "alias",
      "served": true,
-     "upstream": "results/5f234e3 purchase_catalog (claude/verify-live)"
+     "upstream": "results/5f234e3 purchase_catalog (claude/devloop-live)"
     }
    ],
    "no_fixed_format": {
@@ -1143,7 +1143,7 @@
      "field": "release_number",
      "role": "primary",
      "served": true,
-     "upstream": "docs/reference/portal-code-map.md s3.10"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.10"
     }
    ]
   },
@@ -1177,7 +1177,7 @@
      "field": "pr_number",
      "role": "primary",
      "served": true,
-     "upstream": "docs/reference/portal-code-map.md s3.5"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.5"
     }
    ]
   },
@@ -1205,7 +1205,7 @@
      "field": "number",
      "role": "primary",
      "served": false,
-     "upstream": "docs/reference/portal-code-map.md s3.15"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.15"
     }
    ]
   },
@@ -1233,7 +1233,7 @@
      "field": "code",
      "role": "primary",
      "served": false,
-     "upstream": "docs/reference/portal-code-map.md s3.7"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.7"
     }
    ]
   },
@@ -1251,7 +1251,7 @@
     {
      "form": "portal",
      "example": "MJ-2026-K3J9",
-     "upstream": "docs/reference/portal-code-map.md s3.8"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.8"
     }
    ],
    "carriers": [
@@ -1261,7 +1261,7 @@
      "field": "code",
      "role": "primary",
      "served": true,
-     "upstream": "docs/reference/portal-code-map.md s3.8"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.8"
     }
    ]
   },
@@ -1289,7 +1289,7 @@
      "field": "file",
      "role": "mention",
      "served": true,
-     "upstream": "docs/reference/portal-code-map.md s3.5 (receiving documents)"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.5 (receiving documents)"
     }
    ],
    "no_fixed_format": {
@@ -1315,17 +1315,17 @@
     {
      "form": "bulk",
      "example": "ABC-1001",
-     "upstream": "(AO-26012C)"
+     "upstream": "devloop/WORKING-BRIEF.md (AO-26012C)"
     },
     {
      "form": "finished",
      "example": "ABC-1001-3.78L-A",
-     "upstream": "(AO-26012C)"
+     "upstream": "devloop/WORKING-BRIEF.md (AO-26012C)"
     },
     {
      "form": "packaging",
      "example": "P-01234",
-     "upstream": "docs/reference/cases-and-artifacts.md (packaging PO lines)"
+     "upstream": "devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md (packaging PO lines)"
     }
    ],
    "carriers": [
@@ -1375,7 +1375,7 @@
     {
      "form": "sage",
      "example": "ABC1001",
-     "upstream": "docs/reference/portal-code-map.md s3.6"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.6"
     }
    ],
    "carriers": [
@@ -1385,7 +1385,7 @@
      "field": "erp_code",
      "role": "primary",
      "served": true,
-     "upstream": "docs/reference/portal-code-map.md s3.6"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.6"
     },
     {
      "system": "sage",
@@ -1393,7 +1393,7 @@
      "field": "itemno",
      "role": "alias",
      "served": true,
-     "upstream": "docs/reference/portal-code-map.md s3.6"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.6"
     },
     {
      "system": "sage",
@@ -1433,7 +1433,7 @@
      "field": "erp_code",
      "role": "primary",
      "served": true,
-     "upstream": "docs/reference/portal-code-map.md s3.1",
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.1",
      "sent_to": [
       {
        "system": "bc",
@@ -1449,7 +1449,7 @@
      "field": "idcust",
      "role": "alias",
      "served": true,
-     "upstream": "docs/reference/portal-code-map.md s3.1"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.1"
     },
     {
      "system": "bc",
@@ -1481,7 +1481,7 @@
     {
      "form": "portal",
      "example": "ACME",
-     "upstream": "docs/reference/portal-code-map.md s3.5"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.5"
     }
    ],
    "carriers": [
@@ -1491,7 +1491,7 @@
      "field": "code",
      "role": "primary",
      "served": true,
-     "upstream": "docs/reference/portal-code-map.md s3.5",
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.5",
      "sent_to": [
       {
        "system": "bc",
@@ -1508,7 +1508,7 @@
      "field": "number",
      "role": "alias",
      "served": true,
-     "upstream": "docs/reference/ontology-design.md (Supplier)"
+     "upstream": "devloop/CONTEXT/07-ONTOLOGY-DESIGN.md (Supplier)"
     }
    ],
    "no_fixed_format": {
@@ -1532,12 +1532,12 @@
     {
      "form": "integer",
      "example": "10422",
-     "upstream": "(AssemblyOrder 10422)"
+     "upstream": "devloop/WORKING-BRIEF.md (AssemblyOrder 10422)"
     },
     {
      "form": "float_text",
      "example": "351.0",
-     "upstream": "(money/number float strings)"
+     "upstream": "devloop/WORKING-BRIEF.md (money/number float strings)"
     }
    ],
    "carriers": [
@@ -1625,7 +1625,7 @@
     {
      "form": "raw",
      "example": "fm-raw-123",
-     "upstream": "docs/reference/portal-code-map.md s3.6"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.6"
     },
     {
      "form": "pack",
@@ -1635,12 +1635,12 @@
     {
      "form": "formula",
      "example": "fm-form-12",
-     "upstream": "docs/reference/portal-code-map.md s3.7"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.7"
     },
     {
      "form": "sage_customer",
      "example": "sage-cust-TAKE5",
-     "upstream": "docs/reference/portal-code-map.md s3.1"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.1"
     }
    ],
    "carriers": [
@@ -1650,7 +1650,7 @@
      "field": "external_id",
      "role": "primary",
      "served": true,
-     "upstream": "docs/reference/portal-code-map.md s3.1"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.1"
     },
     {
      "system": "portal",
@@ -1658,7 +1658,7 @@
      "field": "external_id",
      "role": "primary",
      "served": true,
-     "upstream": "docs/reference/portal-code-map.md s3.5"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.5"
     },
     {
      "system": "portal",
@@ -1666,7 +1666,7 @@
      "field": "external_id",
      "role": "alias",
      "served": true,
-     "upstream": "docs/reference/portal-code-map.md s3.6"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.6"
     }
    ]
   },
@@ -1754,7 +1754,7 @@
      "field": "orduniq",
      "role": "primary",
      "served": true,
-     "upstream": "docs/reference/portal-code-map.md s3.2"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.2"
     }
    ]
   },
@@ -1787,7 +1787,7 @@
      "field": "project_key",
      "role": "primary",
      "served": false,
-     "upstream": "docs/reference/portal-code-map.md s3.12"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.12"
     },
     {
      "system": "portal",
@@ -1795,7 +1795,7 @@
      "field": "project_id",
      "role": "alias",
      "served": true,
-     "upstream": "docs/reference/portal-code-map.md s3.12",
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.12",
      "note": "Mutable in place (TASK-2182)."
     },
     {
@@ -1804,7 +1804,7 @@
      "field": "project_key",
      "role": "alias",
      "served": false,
-     "upstream": "docs/reference/portal-code-map.md s3.7"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.7"
     },
     {
      "system": "portal",
@@ -1812,7 +1812,7 @@
      "field": "project_key",
      "role": "alias",
      "served": false,
-     "upstream": "docs/reference/portal-code-map.md s3.7"
+     "upstream": "devloop/CONTEXT/03-PORTAL.md s3.7"
     },
     {
      "system": "portal",
@@ -2482,11 +2482,11 @@
    },
    "tier": "verified",
    "served": {
-    "from": false,
+    "from": true,
     "to": true
    },
-   "upstream": "docs/reference/portal-code-map.md s4.10",
-   "note": "app_bc_entity_map.bc_number (status LINKED) is the identity link; the map is not served by the reporting API."
+   "upstream": "devloop/CONTEXT/03-PORTAL.md s4.10",
+   "note": "app_bc_entity_map.bc_number (status LINKED) is the identity link; the reporting API serves the map since TASK-3525 (ontology/schema/domains/bc_entity_map.json)."
   },
   {
    "name": "portal_entity_to_bc_system_id",
@@ -2503,11 +2503,11 @@
    },
    "tier": "verified",
    "served": {
-    "from": false,
+    "from": true,
     "to": true
    },
-   "upstream": "docs/reference/portal-code-map.md s4.10 / plx-customer-portal@b46934a:portal/src/lib/orders/order-identity.ts:resolveOrderFromBcInvoiceId:142",
-   "note": "bc_system_id; not served."
+   "upstream": "devloop/CONTEXT/03-PORTAL.md s4.10 / plx-customer-portal@b46934a:portal/src/lib/orders/order-identity.ts:resolveOrderFromBcInvoiceId:142",
+   "note": "bc_system_id; served since TASK-3525 (ontology/schema/domains/bc_entity_map.json joins on it)."
   },
   {
    "name": "sales_order_po_reference_to_bc_sales_order",
@@ -2629,11 +2629,11 @@
    },
    "tier": "lead",
    "served": {
-    "from": false,
+    "from": true,
     "to": true
    },
-   "upstream": "docs/reference/cases-and-artifacts.md (codeunit 50115) / plx-customer-portal@b46934a:portal/src/lib/business-central/align-portal-po-number.ts:yourReferenceForBcPo",
-   "note": "Your Reference is not in BC API v2.0 purchaseOrders."
+   "upstream": "devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md (codeunit 50115) / plx-customer-portal@b46934a:portal/src/lib/business-central/align-portal-po-number.ts:yourReferenceForBcPo",
+   "note": "Your Reference is not in BC API v2.0 purchaseOrders; it is read from ODataV4 Page 50 PurchaseOrder (Your_Reference) into the BC capture field page purchaseOrderReferences and linked by the your_reference build step on data evidence, not a rule (decision 2026-10-27-your-reference-evidence; rule ontology.identity_scoring.your_reference_verdict, the flagship oracle holds a parity-tested copy): corroborated, never above, only when exactly one Portal order holds the number and the supplier or the order date corroborates it with nothing conflicting; otherwise a lead. The codeunit 50115 upstream is the Procure-to-GL map's reading of Portal code, not an observed BC rule."
   },
   {
    "name": "sales_order_renumbered_to_bc",
@@ -2695,7 +2695,7 @@
     "from": true,
     "to": true
    },
-   "upstream": "docs/reference/portal-code-map.md s3.6",
+   "upstream": "devloop/CONTEXT/03-PORTAL.md s3.6",
    "note": "Cutover match key, not the BC No."
   },
   {
@@ -2716,7 +2716,7 @@
     "from": true,
     "to": true
    },
-   "upstream": "docs/reference/portal-code-map.md s3.6",
+   "upstream": "devloop/CONTEXT/03-PORTAL.md s3.6",
    "note": "external_id is not unique on app_product."
   },
   {
@@ -2821,7 +2821,7 @@
     "from": true,
     "to": true
    },
-   "upstream": "docs/reference/portal-code-map.md s3.8",
+   "upstream": "devloop/CONTEXT/03-PORTAL.md s3.8",
    "note": "Gold MO is the AO."
   },
   {
@@ -2863,7 +2863,7 @@
     "from": true,
     "to": true
    },
-   "upstream": "(identity: leads only)",
+   "upstream": "devloop/CONTEXT/10-DECISION.md (identity: leads only)",
    "note": "Names never anchor an identity."
   },
   {
@@ -2905,7 +2905,7 @@
     "from": true,
     "to": true
    },
-   "upstream": "ontology/mentions.py",
+   "upstream": "devloop/CONTEXT/10-DECISION.md decision 3 / 7",
    "note": "A mention found by find_identifiers is a lead to any carrier of its kind; only the identity layer decides."
   }
  ]

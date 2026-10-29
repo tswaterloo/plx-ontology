@@ -1049,62 +1049,62 @@
   ]
  },
  "corrections_from_verified_originals": {
-  "note": "Added by the Workbench, not part of Vince's map: findings from the verified original documents (summarised in docs/reference/cases-and-artifacts.md section 1.11; files in verified_originals) that correct or qualify the map text at the path named. The map text itself stays as Vince wrote it.",
+  "note": "Added by the Workbench, not part of Vince's map: findings from the verified original documents (advisory record 2e7013f1 on origin/codex/advisory, summarised in devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md section 1.11; files in verified_originals) that correct or qualify the map text at the path named. The map text itself stays as Vince wrote it.",
   "items": [
    {
     "id": "po5447_currency_usd",
     "applies_to": "$.stages[10].recorded",
     "map_says": "Currency is hard-coded to CAD.",
     "finding": "The PO5447 PDF (page 1) states its total explicitly in USD; the CAD statement is the map's reading of the FM PO code path and does not hold for PO5447. A case reads currency from the cited purchase order row, never from a constant.",
-    "source": "finding F03"
+    "source": "advisory record 2e7013f1, finding F03"
    },
    {
     "id": "po5447_currency_usd_field_tracer",
     "applies_to": "$.field_tracer.rows[5].cells[3]",
     "map_says": "Hard-coded CAD in the FileMaker PO path; no exchange rate stored",
     "finding": "The PO5447 PDF (page 1) states its total in USD. The CAD statement describes the FM PO code path, not PO5447; a case reads currency from the cited purchase order row and never applies a constant.",
-    "source": "finding F03"
+    "source": "advisory record 2e7013f1, finding F03"
    },
    {
     "id": "po5447_deposit_before_pi_update",
     "applies_to": "$.real_example.cards[7].what_happened",
     "map_says": "AP wired the 30% deposit (US$11,280) the same day the PI was updated",
     "finding": "The deposit email (2026-09-23) precedes the vendor's 2026-09-24 pack-out surcharge and updated PI: the deposit was paid the day before the PI update, on the pre-surcharge base.",
-    "source": "finding F01"
+    "source": "advisory record 2e7013f1, finding F01"
    },
    {
     "id": "pi_aliases_one_document",
     "applies_to": "$.real_example.cards[7].portal_could_record",
     "map_says": "Three different PI numbers refer to one document.",
     "finding": "The updated PI prints PI-SWC024613, dated August 12, 2026, PO5447, destination Canada; the email attachment is named PI-SWC025240 updated 25.9.24.pdf and correspondence says PI-25240. The attached and standalone PI are byte-identical (same SHA-256): aliases of one document. The governing version is unresolved.",
-    "source": "finding F02"
+    "source": "advisory record 2e7013f1, finding F02"
    },
    {
     "id": "freight_quote_destination_only_and_air_not_all_in",
     "applies_to": "$.real_example.cards[8].tables[0]",
     "map_says": "~$9,800/40HQ or ~$8,100/20GP + $1,710 destination; ¥36/kg · all-in US$83,965.56",
     "finding": "US$1,710 is destination charges for one 40HQ container only, not ocean freight. The air quote total US$83,965.56 excludes taxes and listed contingencies despite the 'all-in' file name. The email gives validity '9.31' (impossible) while the PDFs say September 30: the conflict is kept. These are alternatives, not a booking or a realized charge.",
-    "source": "finding F05"
+    "source": "advisory record 2e7013f1, finding F05"
    },
    {
     "id": "shipping_claims_conflict",
     "applies_to": "$.real_example.cards[6].what_happened",
     "map_says": "Almost every term on the PI differs from the PO: price, INCO terms, payment terms and delivery point.",
     "finding": "The PO, PI, mails and freight RFQ disagree on destination (Canada, California, direct to customer, Washington DC), Incoterm (Destination, FOB, EXW), packing (50 vs 112 per carton) and declared value. Each version is kept with its time and source; a planned direct shipment is not delivery or a transfer of ownership.",
-    "source": "finding F04"
+    "source": "advisory record 2e7013f1, finding F04"
    },
    {
     "id": "originals_opened_by_the_verification_record",
     "applies_to": "$.real_example.missing_native_crosswalk[9]",
     "map_says": "The map's author and our extraction did not open the original SharePoint files",
     "finding": "That holds for the map and its extraction. The verified-originals record later opened and hashed eleven archive members (see verified_originals); the purchase order PDF, the PI and both freight-quote PDFs are cited originals by SHA-256. The remaining unknowns (native row ids, BC records) are unchanged.",
-    "source": "selected_source_manifest"
+    "source": "advisory record 2e7013f1, selected_source_manifest"
    }
   ]
  },
  "verified_originals": {
-  "note": "Added by the Workbench, not part of Vince's map: the original files behind the SoapBox x Lifetime example, located and hashed by the verified-originals source record. Each member is a cited original (identity = SHA-256 of its bytes). Only these members were inspected; the record grants no authority and is not a Procure-to-GL truth set (no receipt, lot, AP posting, item ledger, value entry or G/L entry is in the archive).",
-  "record_ref": "source-records",
+  "note": "Added by the Workbench, not part of Vince's map: the original files behind the SoapBox x Lifetime example, located and hashed by the verified-originals advisory record. Each member is a cited original (identity = SHA-256 of its bytes). Only these members were inspected; the record grants no authority and is not a Procure-to-GL truth set (no receipt, lot, AP posting, item ledger, value entry or G/L entry is in the archive).",
+  "record_ref": "origin/codex/advisory",
   "record_path": "context/2e7013f1dca3bc5fad6f27dbf887d55a4f784e1e37bef0eb8a53ea1613b78d66.json",
   "record_created_at": "2026-09-30T22:22:12Z",
   "purchase_order_number": "PO5447",

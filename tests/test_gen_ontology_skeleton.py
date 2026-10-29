@@ -12,13 +12,13 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
-import hashlib
 import json
 from pathlib import Path
 import shutil
 import tempfile
 import unittest
 
+from devloop.gaps import gap_id
 from integrations.capture_mail import MailCaptureStore
 from integrations.live_source_guard import LiveSourceAudience
 from integrations.tests import test_capture_sharepoint as sp
@@ -36,10 +36,6 @@ from scripts import source_registry
 
 AT = dt.datetime(2026, 1, 3, tzinfo=dt.timezone.utc)
 HELD = frozenset({"finance", "pii"})
-
-
-def gap_id(source: str, key: str) -> str:
-    return "gap-" + hashlib.sha256(f"{source}\0{key}".encode()).hexdigest()[:12]
 
 
 def _overrides_copy(test: unittest.TestCase) -> Path:
@@ -351,6 +347,11 @@ class SyntheticReadersTests(unittest.TestCase):
         shutil.copytree(SCHEMA_DIR / "generated", generated_root / "generated",
                         ignore=lambda _d, names: [n for n in names if n.startswith("bc_")])
         shutil.copy(SCHEMA_DIR / "identifiers.json", generated_root)
+        # The generated Teams message links (graph_teams.json) bind to the curated
+        # conversation types, a domain closed on its own: it comes along.
+        (generated_root / "domains").mkdir()
+        shutil.copy(SCHEMA_DIR / "domains" / "teams_conversations.json",
+                    generated_root / "domains")
         cls.stores = {}
         for generated, schema in ((False, load_schema()),
                                   (True, load_schema(generated_root, check_format=False))):

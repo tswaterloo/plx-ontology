@@ -1,4 +1,4 @@
-"""plx.schema / plx.find / plx.object over a fixture projection store.
+"""Lane L8: plx.schema / plx.find / plx.object over a fixture projection store.
 
 The store is created with the frozen DDL (ontology/store_ddl.py) and filled by
 hand; the identifier grammar and the domain schema are small fixtures in this
@@ -9,6 +9,7 @@ ontology/json_contract.py. All identifiers are synthetic.
 
 from __future__ import annotations
 
+from contextlib import closing
 import copy
 import datetime as dt
 import hashlib
@@ -16,6 +17,7 @@ import json
 from pathlib import Path
 import re
 import sqlite3
+import tempfile
 import unittest
 from collections import namedtuple
 
@@ -110,7 +112,7 @@ def _type(tid, bindings, properties, display, **extra):
 
 DOMAIN = {
     "format": "plx-ontology-domain/v1", "domain": "fixture", "origin": "curated",
-    "description": "Test fixture.",
+    "description": "L8 test fixture.",
     "object_types": [
         _type("SalesOrder",
               [_binding("portal.app_sales_order", "portal_api", "public.app_sales_order",
@@ -500,6 +502,22 @@ class FindTests(ContractMixin, unittest.TestCase):
         (cand,) = [c for c in both["candidates"] if c["object"]["object_id"] == PO]
         self.assertEqual((cand["tier"], cand["reason"]), ("verified", "alias_match"))
 
+    def test_a_label_whose_kind_aliases_the_shape_binds_the_typed_identifier(self):
+        """"Business Central document PO100012": the label's kind (bc_document_no) aliases
+        the Petra PO its shape reads, so the reading agrees with the label: the typed
+        identifier binds as it does bare, never a secondary-reading lead."""
+        from ontology import identifiers
+        t = tools(grammar=identifiers)
+        bare = self.ok(t, "plx.find", {"query": "PO100012"})
+        labelled = self.ok(t, "plx.find", {"query": "Business Central document PO100012"})
+        self.assertLessEqual({PO, PO2}, {c["object"]["object_id"] for c in labelled["candidates"]})
+        self.assertEqual([(c["object"]["object_id"], c["tier"], c["reason"])
+                          for c in labelled["candidates"]],
+                         [(c["object"]["object_id"], c["tier"], c["reason"])
+                          for c in bare["candidates"]])
+        self.assertTrue(all(c["reason"] in ot.ROOT_REASONS and "why_not" not in c
+                            for c in labelled["candidates"]))
+
     def test_identifier_kind_and_object_type_narrow_the_search(self):
         result = self.ok(self.t, "plx.find", {"query": "SO-2099-0042"})
         self.assertEqual(result["status"], "ambiguous")  # order + invoice alias
@@ -526,7 +544,7 @@ class FindTests(ContractMixin, unittest.TestCase):
         (gap,) = [g for g in result["gaps"] if g["reason"] == "no_match"]
         self.assertEqual((gap["state"], gap["searched"]["sources"]),
                          ("absent_in_source", ["portal_api"]))
-        # One unit of the family taken out -> a permission limit,
+        # Reviewer l8-1: one unit of the family taken out -> a permission limit,
         # never "absent in source", although the reader cannot see what is missing.
         partial = ot.ReadPolicy(tenant="plx", audiences={
             "api:*": {"sales"}, "api:public.app_purchase_order": set()})
@@ -578,7 +596,7 @@ class FindTests(ContractMixin, unittest.TestCase):
             self.assertNotIn("absent_in_source", [g["state"] for g in words["gaps"]], extra)
 
     def test_a_kind_narrowed_away_without_a_type_never_proves_absence(self):
-        """PO1000999 also reads as a Petra PO; narrowing to BC
+        """Review f732d09 M1: PO1000999 also reads as a Petra PO; narrowing to BC
         document numbers without object_type leaves PurchaseOrder.po_number unsearched,
         and a readable PO holding PO1000999 would be reported absent."""
         whole = ot.ReadPolicy(tenant="plx", audiences={"api:*": {"sales"}})
@@ -597,7 +615,7 @@ class FindTests(ContractMixin, unittest.TestCase):
         self.assertIn("PurchaseOrder.po_number", gap["detail"])
 
     def test_a_carrier_out_of_the_readers_sources_or_degraded_was_not_searched(self):
-        """SalesInvoice is bound only to BC. A reader
+        """Re-review of 5742e89 (material): SalesInvoice is bound only to BC. A reader
         granted the Portal API alone never searched it, so a BC document number no-match
         is unknown, typed or not; a degraded carrier was not searched either."""
         api_only = ot.ReadPolicy(tenant="plx", audiences={"api:*": {"sales"}})
@@ -625,7 +643,7 @@ class FindTests(ContractMixin, unittest.TestCase):
                          ("absent_in_source", "PurchaseOrder query:PO 99999"))
 
     def test_a_key_match_a_filter_excludes_is_never_absent(self):
-        """The order exists and its key matches; a filter that
+        """Review f732d09 M3: the order exists and its key matches; a filter that
         excludes it says nothing about the source holding it."""
         whole = ot.ReadPolicy(tenant="plx", audiences={"api:*": {"sales"}})
         result = self.ok(tools(policy=whole), "plx.find", {
@@ -731,6 +749,31 @@ class PermissionTests(ContractMixin, unittest.TestCase):
             {"property": "total_amount", "op": "present"}]}, FULL)
         self.assertEqual(found["status"], "found")
 
+    def test_audience_keys_are_read_once_per_store_change(self):
+        """The store's audience keys (each call's scope) are kept until the store changes:
+        a commit on another connection shows its new audience at the next call."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "store.sqlite"
+            with closing(sqlite3.connect(path)) as writer:
+                store_ddl.create(writer)
+                insert = "INSERT INTO objects VALUES (?,?,?,?,?,?,?)"
+                writer.execute(insert, ("PurchaseOrder:b:1", "PurchaseOrder", "b", "[1]",
+                                        "portal_api:x", "2099-01-01T00:00:00Z", None))
+                writer.commit()
+                reader = ot.StoreReader.open(path)
+                self.addCleanup(reader.conn.close)
+                self.assertEqual(reader.audience_keys(), ["portal_api:x"])
+                scans = []
+                reader.conn.set_trace_callback(
+                    lambda sql: scans.append(sql) if "DISTINCT audience_key" in sql else None)
+                self.assertEqual(reader.audience_keys(), ["portal_api:x"])
+                self.assertEqual(scans, [])
+                writer.execute(insert, ("PurchaseOrder:b:2", "PurchaseOrder", "b", "[2]",
+                                        "bc:y", "2099-01-01T00:00:00Z", None))
+                writer.commit()
+                self.assertEqual(reader.audience_keys(), ["bc:y", "portal_api:x"])
+                self.assertEqual(len(scans), 1)
+
     def test_object_outside_the_audience_reads_like_a_missing_object(self):
         t = tools()
         denied = t.call("plx.object", {"object_id": INV}, SALES)
@@ -767,9 +810,13 @@ class ObjectTests(ContractMixin, unittest.TestCase):
         self.assertEqual(values["total_amount"]["markings"], ["finance"])
         self.assertEqual(values["ordered_quantity"]["quantity_role"], "ordered")
         text = values["customer_po"]
-        self.assertEqual(text["value"], {"untrusted_text": "Jane at receiving",
+        # REC-07: a po_reference value that is not PO-like (a person's name) is withheld,
+        # its citation kept (devloop/CASE-RUNTIME.md section 4 PO-shape rule).
+        self.assertEqual(text["value"], {"untrusted_text": "",
                                          "origin": {"citation": SO_V2,
-                                                    "field_path": "row.po_reference"}})
+                                                    "field_path": "row.po_reference"},
+                                         "withheld": "not_po_like"})
+        self.assertNotIn("Jane", json.dumps(result))
         self.assertEqual(text["citation"]["lineage"], "gold_etl_from_fm")
         self.assertEqual(text["authority_rank"], 1)
         for value in result["values"]:
@@ -789,8 +836,11 @@ class ObjectTests(ContractMixin, unittest.TestCase):
         (conflict,) = result["conflicts"]
         self.assertEqual((conflict["kind"], conflict["subject"]),
                          ("value_disagreement", "SalesOrder.customer_po"))
-        texts = sorted(v["value"]["untrusted_text"] for v in conflict["values"])
-        self.assertEqual(texts, ["Jane at receiving", "PO 7781"])
+        texts = sorted((v["value"]["untrusted_text"], v["value"].get("withheld"))
+                       for v in conflict["values"])
+        # The po_reference side is withheld (REC-07); the disagreement is still reported.
+        self.assertEqual(texts, [("", "not_po_like"), ("PO 7781", None)])
+        self.assertNotIn("Jane", json.dumps(result))
         (edge,) = result["identity"]
         self.assertEqual((edge["from"], edge["to"], edge["tier"]), (SO, FM, "verified"))
         self.assertNotIn("citations", edge["reason"][0])  # concise
@@ -824,7 +874,12 @@ class ObjectTests(ContractMixin, unittest.TestCase):
     def test_as_known_at_reads_the_version_known_then(self):
         result = self.ok(self.t, "plx.object", {"object_id": SO, "as_known_at": "2099-01-03"})
         values = {v["property"]: v for v in result["values"]}
-        self.assertEqual(values["customer_po"]["value"]["untrusted_text"], "old reference")
+        # The old version's po_reference ("old reference", not PO-like) is withheld; its
+        # citation names the version known then.
+        self.assertEqual(values["customer_po"]["value"],
+                         {"untrusted_text": "", "withheld": "not_po_like",
+                          "origin": {"citation": SO_V1, "field_path": "row.po_reference"}})
+        self.assertNotIn("old reference", json.dumps(result))
         self.assertEqual(values["order_number"]["citation"]["l1_handle"], SO_V1)
         self.assertEqual(result["meta"]["as_known_at"], "2099-01-03T23:59:59.999Z")
         early = self.t.call("plx.object", {"object_id": DOC, "as_known_at": "2099-01-03"}, FULL)
@@ -851,6 +906,125 @@ class ObjectTests(ContractMixin, unittest.TestCase):
         self.assertEqual(result["meta"]["freshness"][0]["source"], "portal_api")
         self.assertIn(("stale", "stale_source"),
                       {(g["state"], g["reason"]) for g in result["gaps"]})
+
+    def test_a_capture_older_than_the_hosts_bound_is_stale_once_with_its_age(self):
+        # Supervisor decision 2026-10-27: a projected source is judged by the host's
+        # capture bound (its ingest cadence); past it, one stale_source with its age.
+        store = build()
+
+        def answer(captured_at, bounds, **entry):
+            store.conn.execute("UPDATE store_meta SET value = ? WHERE key = 'freshness'", (
+                json.dumps([{"source": "portal_api", "captured_at": captured_at,
+                             "completeness": "complete", "stale": False, **entry}]),))
+            result = self.ok(tools(store, freshness_bounds=bounds), "plx.object",
+                             {"object_id": SO})
+            (fresh,) = [f for f in result["meta"]["freshness"] if f["source"] == "portal_api"]
+            return fresh, [(g["reason"], g["subject"], g["detail"]) for g in result["gaps"]
+                           if g["state"] == "stale"]
+
+        old = "2099-02-01T09:30:00Z"   # 9000 s before NOW
+        fresh, stale = answer(old, {"portal_api": 3480})
+        label = ("host captures as of 2099-02-01T09:30:00Z, 9000 s old, past this host's "
+                 "capture bound of 3480 s")
+        self.assertEqual((fresh["stale"], fresh["label"]), (True, label))
+        self.assertEqual(stale, [("stale_source", "portal_api", label)])
+        # Within the bound, and with no bound configured, the capture is not stale.
+        for bounds in ({"portal_api": 9001}, {}, {"graph_mail": 60}):
+            fresh, stale = answer(old, bounds)
+            self.assertEqual((fresh["stale"], "label" in fresh, stale), (False, False, []))
+        # A copy served while the live source was out keeps its own label.
+        outage = ("source-mirror captures as of 2099-02-01T09:30:00Z, live source "
+                  "unavailable (500, internal)")
+        fresh, stale = answer(old, {"portal_api": 60}, stale=True, label=outage,
+                              served_from="persisted_capture")
+        self.assertEqual(stale, [("stale_source", "portal_api", outage)])
+
+    def test_a_find_over_many_copied_units_keeps_whole_labels_within_the_contract(self):
+        # Live defect (v6 runs): six host-capture labels joined and cut at 599 chars broke
+        # the "host captures as of" label bound, so every free-text plx.find erred with
+        # contract_violation. The joined label now holds whole labels, then "+N more".
+        from integrations.mirror_capture import capture_label, stale_label
+        from ontology.resolve import Resolution, scope_entry
+
+        pattern = CONTRACTS["$defs"]["freshness"]["properties"]["label"]["pattern"]
+        tail = int(re.search(r"\{1,(\d+)\}\$$", pattern).group(1))
+
+        def realistic(i):   # the longest each real label form gets
+            at = f"2026-10-26T23:35:{i % 60:02d}.380798Z"
+            return (capture_label(at, 10 ** 9 + i, 10 ** 9) if i % 2 else
+                    stale_label(at, None, f"{i:02d}" + "x" * 62))
+
+        def maximal(i):      # the longest label the contract's pattern accepts
+            prefix = "host captures as of " if i % 2 else "source-mirror captures as of "
+            return prefix + f"{i:02d}" + "y" * (tail - 2)
+
+        class Copies:
+            def __init__(self, labels):
+                self.labels = labels
+
+            def resolve(self, *args, **kwargs):
+                units = {f"public.rel_{i:02d}": scope_entry(
+                    f"public.rel_{i:02d}", "cached_mirror" if i % 2 else "persisted_capture",
+                    f"2026-10-26T23:35:{i % 60:02d}Z", label=label, http_status=None,
+                    error_code="source_unavailable") for i, label in enumerate(self.labels)}
+                return Resolution(None, {}, 0, [], ("portal_api",), 1,
+                                  scope_freshness={"portal_api": units})
+
+        # 60 realistic units: the cardinality probe (32 listed units of maximal labels
+        # pass the response bound and fail closed as result_too_large instead).
+        for form, counts in ((realistic, [*range(1, 13), 60]), (maximal, range(1, 13))):
+            for count in counts:
+                labels = [form(i) for i in range(count)]
+                self.assertTrue(all(re.search(pattern, label) for label in labels))
+                result = self.ok(tools(sources=Copies(labels)), "plx.find",
+                                 {"query": "PO999999"})
+                (fresh,) = [f for f in result["meta"]["freshness"]
+                            if f["source"] == "portal_api"]
+                parts = fresh["label"].split("; ")
+                more = re.fullmatch(r"\+(\d+) more", parts[-1])
+                shown = parts[:-1] if more else parts
+                left = int(more.group(1)) if more else 0
+                # Whole labels only, in order, and the count names every one left out.
+                self.assertEqual(shown, sorted(labels)[:len(shown)], (form, count))
+                if form is realistic or count == 1:
+                    self.assertEqual(len(shown) + left, count, (form, count))
+                    self.assertTrue(len(shown) == count or more, (form, count))
+                else:   # no room for a count beside one maximal label: the first, whole
+                    self.assertEqual((shown, left), (sorted(labels)[:1], 0))
+                # The full detail stays structured: every unit's whole label (up to the
+                # contract's 32 listed units).
+                listed = {u["relation"]: u.get("label") for u in fresh["relations"]}
+                self.assertEqual(len(listed), min(count, 32))
+                for relation, label in listed.items():
+                    self.assertEqual(label, labels[int(relation.rsplit("_", 1)[1])])
+                self.assertIn(("stale", "stale_source", "portal_api", fresh["label"]),
+                              {(g["state"], g["reason"], g["subject"], g.get("detail"))
+                               for g in result["gaps"]})
+
+    def test_a_relation_the_live_source_refuses_is_inaccessible_although_a_copy_is_held(self):
+        # The source no longer serves a relation the mirror still holds rows of: the copy
+        # is stale, and the relation itself is inaccessible now (a refusal, not an
+        # outage); a held copy kept for an outage is only stale.
+        store = build()
+
+        def gaps(code):
+            store.conn.execute("UPDATE store_meta SET value = ? WHERE key = 'freshness'", (
+                json.dumps([{"source": "portal_api", "captured_at": "2099-01-01T00:00:00Z",
+                             "completeness": "complete", "stale": True,
+                             "served_from": "cached_mirror",
+                             "relations": [{"relation": "public.order_entry",
+                                            "served_from": "cached_mirror",
+                                            "captured_at": "2099-01-01T00:00:00Z",
+                                            "http_status": None, "error_code": code}]}]),))
+            result = self.ok(tools(store), "plx.object", {"object_id": SO})
+            return {(g["state"], g["reason"], g["subject"]) for g in result["gaps"]
+                    if g["subject"] in ("portal_api", "public.order_entry")}
+
+        self.assertEqual(gaps("relation_unavailable"), {
+            ("stale", "stale_source", "portal_api"),
+            ("inaccessible", "relation_unavailable", "public.order_entry")})
+        self.assertEqual(gaps("source_unavailable"),
+                         {("stale", "stale_source", "portal_api")})
 
     def test_large_object_is_cut_to_48kb_and_says_so(self):
         store = build()
@@ -882,7 +1056,7 @@ class ObjectTests(ContractMixin, unittest.TestCase):
 
 
 class ReviewL81Tests(ContractMixin, unittest.TestCase):
-    """Regressions (each reproduced the defect before the fix)."""
+    """Regressions for deep review l8-1 (each reproduced the defect before the fix)."""
 
     def _mails(self, store, count, *, markings="[]", prefix="h", subject="blue widgets"):
         handles = []
@@ -1120,7 +1294,7 @@ class HostWiringTests(unittest.TestCase):
         self.assertLessEqual(set(ot.TOOL_NAMES), host)
         self.assertFalse(ot.DIRECTIVE_RETIRED & host)
         self.assertFalse(set(ot.HOST_RETIREMENTS) & host)
-        self.assertLessEqual({"plx.around", "plx.timeline"}, host)
+        self.assertLessEqual({"plx.around", "plx.timeline"}, host)  # lane L9
         self.assertEqual(FRESHNESS_META_KEY.split("/")[0], "plx")
         for name, plan in ot.HOST_RETIREMENTS.items():
             self.assertIn(plan["basis"], {"directive", "lead", "merge"}, name)

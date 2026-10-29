@@ -1,10 +1,10 @@
 {
   "schema": "plx-source-mirror-ingest/v1",
-  "note": "Ingest configuration for integrations/source_mirror.py: how a full sync pages the Portal Workbench reporting API and how each stored row's lineage is derived. Configuration, not authority. Sync limits mirror the service (petralabx/plx-customer-portal@b46934a services/workbench-api: query.mjs LIMITS maxLimit 5000 rows and 5 MB per page; wb_api 5 connections, 30 s statements, a sixth concurrent request gets 503 and should retry, docs/runbooks/WORKBENCH-API.md). Lineage rules are tried in order and the first match wins; a gold row with no exposed origin marker gets the C0 default gold_native_staging under rule gold_no_origin_marker (origin unproven; never authority until a human confirms it, Q1). Soft-delete rules declare the source's own deletion marker: a relation matching a rule's patterns whose catalog columns include its column labels a row with a value there deleted_in_source (never inferred from absence).",
+  "note": "Ingest configuration for integrations/source_mirror.py: how a full sync pages the Portal Workbench reporting API and how each stored row's lineage (09-CRITIQUE R1) is derived. Configuration, not authority. Sync limits mirror the service (petralabx/plx-customer-portal@b46934a services/workbench-api: query.mjs LIMITS maxLimit 5000 rows and 5 MB per page; wb_api 5 connections, 30 s statements, a sixth concurrent request gets 503 and should retry, docs/runbooks/WORKBENCH-API.md). max_rows_per_relation bounds one traversal (counted across the runs it resumes in) against a runaway read, never a real relation: measured 2026-10-29 the largest served relation, public.app_manufacturing_order_line, held 31,658,270 rows (the Portal ETL's per-run copies of 262,608 natural keys), read in about an hour at 8,776 rows/s; 64,000,000 is about twice that (integrations/source_mirror.py MAX_ROWS_PER_RELATION_CAP). Lineage rules are tried in order and the first match wins; a gold row with no exposed origin marker gets the C0 default gold_native_staging under rule gold_no_origin_marker (origin unproven; never authority until a human confirms it, Q1). Soft-delete rules declare the source's own deletion marker: a relation matching a rule's patterns whose catalog columns include its column labels a row with a value there deleted_in_source (never inferred from absence).",
   "sync": {
     "page_size": 5000,
     "min_page_size": 100,
-    "max_rows_per_relation": 1000000,
+    "max_rows_per_relation": 64000000,
     "throttle_attempts": 6,
     "max_retry_after_seconds": 120
   },
@@ -28,7 +28,7 @@
      "evidence": "Sage distribution ETL marker (portal/scripts/etl-sage-distribution-gold.mjs; sage-ship-queue.ts)"},
     {"id": "sales_order_portal_bridge", "relations": ["public.app_sales_order"],
      "when": [["custom_fields.source", "eq", "gold-so-bridge"]], "lineage": "gold_native_staging",
-     "evidence": "Portal-entered MAKE orders bridged to FM after confirm carry source gold-so-bridge (portal-code-map.md section 7)"},
+     "evidence": "Portal-entered MAKE orders bridged to FM after confirm carry source gold-so-bridge (pack 03 section 7)"},
     {"id": "sales_order_fm_ensure", "relations": ["public.app_sales_order"],
      "when": [["custom_fields.source", "eq", "fm-oe-ensure"]], "lineage": "gold_etl_from_fm",
      "evidence": "ensure-sales-order-from-fm-oe.ts writes source fm-oe-ensure"},
@@ -55,6 +55,8 @@
      "evidence": "app_fg_item.fm_fp_id links the FM finished product"},
     {"id": "gold_no_origin_marker", "relations": ["public.app_*"], "lineage": "gold_native_staging",
      "evidence": "C0 default for gold bindings (ontology/schema/examples/domain.example.json). Origin unproven: most gold rows get a cuid id from the ETL or the Portal alike; the API exposes no origin marker for them"},
+    {"id": "bc_snapshot_no_origin_marker", "relations": ["public.bc_*"], "lineage": "gold_native_staging",
+     "evidence": "Portal-written snapshots of Business Central documents (public.bc_invoice_snapshot, public.bc_purchase_invoice_snapshot; live GET /v1/relations 2026-10-26), not FileMaker bronze. Origin unproven, as the curated SalesInvoice/PurchaseInvoice bindings declare (ontology/schema/domains/orders.json, purchasing.json)"},
     {"id": "fm_bronze_schema", "relations": ["public.*"], "lineage": "fm_bronze",
      "evidence": "FM bronze tables public.<snake_case> (docs/modules/fm-migration/README.md)"}
   ],

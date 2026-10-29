@@ -69,35 +69,6 @@
    ]
   },
   {
-   "id": "RelPublicAppAccessPolicyGrant",
-   "description": "Generated not_served type: the Portal table public.app_access_policy_grant (Prisma model AccessPolicyGrant). No record is readable until the reporting API serves it (upstream ask Q3); a served column that references it is a plain reference value, never a link.",
-   "availability": {
-    "state": "not_served",
-    "reason": "public.app_access_policy_grant (Prisma model AccessPolicyGrant) is not an approved relation of the Portal reporting API (services/workbench-api/manifest/allowlist.json@52c9116f77ab): no record of it is readable.",
-    "upstream_ask": "Q3"
-   },
-   "bindings": [],
-   "properties": [],
-   "evidence": [
-    {
-     "kind": "upstream_code",
-     "repo": "plx-customer-portal",
-     "path": "services/workbench-api/manifest/allowlist.json",
-     "commit": "52c9116f77ab",
-     "note": "public.app_access_policy_grant is not an approved reporting-API relation."
-    },
-    {
-     "kind": "upstream_code",
-     "repo": "plx-customer-portal",
-     "path": "portal/prisma/schema.prisma",
-     "commit": "52c9116f77ab",
-     "symbol": "AccessPolicyGrant",
-     "lines": "1260-1283",
-     "note": "model AccessPolicyGrant @@map(\"app_access_policy_grant\")"
-    }
-   ]
-  },
-  {
    "id": "RelPublicAppAccount",
    "description": "Generated not_served type: the Portal table public.app_account (Prisma model Account). No record is readable until the reporting API serves it (upstream ask Q3); a served column that references it is a plain reference value, never a link.",
    "availability": {
@@ -239,35 +210,6 @@
      "symbol": "Agent",
      "lines": "7965-7990",
      "note": "model Agent @@map(\"app_agent\"); /// A registered PLX agent. `slug` is the stable public identifier used by `/api/agents/<slug>/*` and as the knowledge namespace.; active_version_id: /// Pointer to the version invocations resolve against. Set after v1 exists."
-    }
-   ]
-  },
-  {
-   "id": "RelPublicAppAgentAccess",
-   "description": "Generated not_served type: the Portal table public.app_agent_access (Prisma model AgentAccess). No record is readable until the reporting API serves it (upstream ask Q3); a served column that references it is a plain reference value, never a link.",
-   "availability": {
-    "state": "not_served",
-    "reason": "public.app_agent_access (Prisma model AgentAccess) is not an approved relation of the Portal reporting API (services/workbench-api/manifest/allowlist.json@52c9116f77ab): no record of it is readable.",
-    "upstream_ask": "Q3"
-   },
-   "bindings": [],
-   "properties": [],
-   "evidence": [
-    {
-     "kind": "upstream_code",
-     "repo": "plx-customer-portal",
-     "path": "services/workbench-api/manifest/allowlist.json",
-     "commit": "52c9116f77ab",
-     "note": "public.app_agent_access is not an approved reporting-API relation."
-    },
-    {
-     "kind": "upstream_code",
-     "repo": "plx-customer-portal",
-     "path": "portal/prisma/schema.prisma",
-     "commit": "52c9116f77ab",
-     "symbol": "AgentAccess",
-     "lines": "8055-8070",
-     "note": "model AgentAccess @@map(\"app_agent_access\"); /// An invocation grant, expressed on the portal's two orthogonal authorization axes (see lib/auth/roles.ts and lib/auth/department-roles.ts): minRole         — authority floor, hierarchical. \"STAFF\" also covers MANAGER, ADMIN and SUPER_ADMIN, matching requireRole(). departmentScope — functional scope, set-valued. Empty means every department. The axes are deliberately NOT merged into composite roles such as \"QC-MANAGER\": that is a cartesian product growing with every department, and it destroys the hierarchy the rest of the portal depends on. A grant never widens power: effective action power is always the agent's capability set intersected with the caller's own RBAC."
     }
    ]
   },
@@ -2205,35 +2147,6 @@
    ]
   },
   {
-   "id": "RelPublicAppDepartment",
-   "description": "Generated not_served type: the Portal table public.app_department (Prisma model Department). No record is readable until the reporting API serves it (upstream ask Q3); a served column that references it is a plain reference value, never a link.",
-   "availability": {
-    "state": "not_served",
-    "reason": "public.app_department (Prisma model Department) is not an approved relation of the Portal reporting API (services/workbench-api/manifest/allowlist.json@52c9116f77ab): no record of it is readable.",
-    "upstream_ask": "Q3"
-   },
-   "bindings": [],
-   "properties": [],
-   "evidence": [
-    {
-     "kind": "upstream_code",
-     "repo": "plx-customer-portal",
-     "path": "services/workbench-api/manifest/allowlist.json",
-     "commit": "52c9116f77ab",
-     "note": "public.app_department is not an approved reporting-API relation."
-    },
-    {
-     "kind": "upstream_code",
-     "repo": "plx-customer-portal",
-     "path": "portal/prisma/schema.prisma",
-     "commit": "52c9116f77ab",
-     "symbol": "Department",
-     "lines": "1057-1087",
-     "note": "model Department @@map(\"app_department\")"
-    }
-   ]
-  },
-  {
    "id": "RelPublicAppDeviation",
    "description": "Generated not_served type: the Portal table public.app_deviation (Prisma model Deviation). No record is readable until the reporting API serves it (upstream ask Q3); a served column that references it is a plain reference value, never a link.",
    "availability": {
@@ -2911,47 +2824,6 @@
    ]
   },
   {
-   "id": "RelPublicBcInvoiceSnapshot",
-   "description": "Generated not_served type: the Portal table public.bc_invoice_snapshot. No record is readable until the reporting API serves it (upstream ask Q3); a served column that references it is a plain reference value, never a link.",
-   "availability": {
-    "state": "not_served",
-    "reason": "public.bc_invoice_snapshot is read by 14 Portal API routes (source registry route scan) but is not an approved relation of the Portal reporting API (services/workbench-api/manifest/allowlist.json@52c9116f77ab): no record of it is readable.",
-    "upstream_ask": "Q3"
-   },
-   "bindings": [],
-   "properties": [],
-   "evidence": [
-    {
-     "kind": "upstream_code",
-     "repo": "plx-customer-portal",
-     "path": "services/workbench-api/manifest/allowlist.json",
-     "commit": "52c9116f77ab",
-     "note": "public.bc_invoice_snapshot is not an approved reporting-API relation."
-    },
-    {
-     "kind": "upstream_code",
-     "repo": "plx-customer-portal",
-     "path": "portal/src/app/api/cron/bc-inbound-sync/route.ts",
-     "commit": "52c9116f77ab",
-     "note": "Route /api/cron/bc-inbound-sync reads public.bc_invoice_snapshot (source registry route scan: the route file or a first-party module it imports names it in SQL)."
-    },
-    {
-     "kind": "upstream_code",
-     "repo": "plx-customer-portal",
-     "path": "portal/src/app/api/cron/bc-sync/route.ts",
-     "commit": "52c9116f77ab",
-     "note": "Route /api/cron/bc-sync reads public.bc_invoice_snapshot (source registry route scan: the route file or a first-party module it imports names it in SQL)."
-    },
-    {
-     "kind": "upstream_code",
-     "repo": "plx-customer-portal",
-     "path": "portal/src/app/api/integrations/business-central/health/route.ts",
-     "commit": "52c9116f77ab",
-     "note": "Route /api/integrations/business-central/health reads public.bc_invoice_snapshot (source registry route scan: the route file or a first-party module it imports names it in SQL)."
-    }
-   ]
-  },
-  {
    "id": "RelPublicBcItemSnapshot",
    "description": "Generated not_served type: the Portal table public.bc_item_snapshot. No record is readable until the reporting API serves it (upstream ask Q3); a served column that references it is a plain reference value, never a link.",
    "availability": {
@@ -3030,47 +2902,6 @@
      "path": "portal/src/app/api/integrations/business-central/health/route.ts",
      "commit": "52c9116f77ab",
      "note": "Route /api/integrations/business-central/health reads public.bc_payment_snapshot (source registry route scan: the route file or a first-party module it imports names it in SQL)."
-    }
-   ]
-  },
-  {
-   "id": "RelPublicBcPurchaseInvoiceSnapshot",
-   "description": "Generated not_served type: the Portal table public.bc_purchase_invoice_snapshot. No record is readable until the reporting API serves it (upstream ask Q3); a served column that references it is a plain reference value, never a link.",
-   "availability": {
-    "state": "not_served",
-    "reason": "public.bc_purchase_invoice_snapshot is read by 11 Portal API routes (source registry route scan) but is not an approved relation of the Portal reporting API (services/workbench-api/manifest/allowlist.json@52c9116f77ab): no record of it is readable.",
-    "upstream_ask": "Q3"
-   },
-   "bindings": [],
-   "properties": [],
-   "evidence": [
-    {
-     "kind": "upstream_code",
-     "repo": "plx-customer-portal",
-     "path": "services/workbench-api/manifest/allowlist.json",
-     "commit": "52c9116f77ab",
-     "note": "public.bc_purchase_invoice_snapshot is not an approved reporting-API relation."
-    },
-    {
-     "kind": "upstream_code",
-     "repo": "plx-customer-portal",
-     "path": "portal/src/app/api/cron/bc-inbound-sync/route.ts",
-     "commit": "52c9116f77ab",
-     "note": "Route /api/cron/bc-inbound-sync reads public.bc_purchase_invoice_snapshot (source registry route scan: the route file or a first-party module it imports names it in SQL)."
-    },
-    {
-     "kind": "upstream_code",
-     "repo": "plx-customer-portal",
-     "path": "portal/src/app/api/cron/bc-sync/route.ts",
-     "commit": "52c9116f77ab",
-     "note": "Route /api/cron/bc-sync reads public.bc_purchase_invoice_snapshot (source registry route scan: the route file or a first-party module it imports names it in SQL)."
-    },
-    {
-     "kind": "upstream_code",
-     "repo": "plx-customer-portal",
-     "path": "portal/src/app/api/integrations/business-central/health/route.ts",
-     "commit": "52c9116f77ab",
-     "note": "Route /api/integrations/business-central/health reads public.bc_purchase_invoice_snapshot (source registry route scan: the route file or a first-party module it imports names it in SQL)."
     }
    ]
   },

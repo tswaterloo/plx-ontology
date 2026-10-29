@@ -763,7 +763,7 @@ class WorkbenchLayerTest(unittest.TestCase):
 
 
 class FreightQuoteTest(unittest.TestCase):
-    """LOG-10 (process_stage_map.json
+    """LOG-10 (advisory record 2e7013f1 F05; process_stage_map.json
     corrections_from_verified_originals): the two SoapBox forwarder quotes."""
 
     DESTINATION = {"_source": "original://freight-quote/fcl-baltimore", "amount": "1710",
@@ -862,7 +862,7 @@ class PurchaseOrderLandedTest(unittest.TestCase):
         self.assertTrue(out["receipt_actual"]["unknown"].startswith("RECEIPT_ACTUAL_NOT_READ"))
 
     def test_unreceived_siblings_leave_freight_unknown_not_over_allocated(self):
-        """With only line a received the Portal puts the whole 1710 on a
+        """Review M1: with only line a received the Portal puts the whole 1710 on a
         (0.1368 USD/EA instead of 0.0585): kept for comparison, never derived."""
         lines = [self.LINES[0]] + [dict(x, quantityReceived="0") for x in self.LINES[1:]]
         out = lc.po_line_landed(self.PO, lines, "a")
@@ -887,7 +887,7 @@ class PurchaseOrderLandedTest(unittest.TestCase):
         self.assertTrue(out["freight"]["unknown"].startswith("PO_LINE_PARTLY_RECEIVED"))
 
     def test_duty_needs_a_cited_classification_and_has_no_per_line_allocation(self):
-        """A header duty estimate alone is not a tariff treatment."""
+        """Review M2: a header duty estimate alone is not a tariff treatment."""
         po = dict(self.PO, dutiesCost="2606.5")
         out = lc.po_line_landed(po, self.LINES[:1], "a")
         self.assertTrue(out["duty"]["unknown"].startswith("TARIFF_TREATMENT_UNVERIFIED"))

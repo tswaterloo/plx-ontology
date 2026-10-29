@@ -1,7 +1,7 @@
 """Read-only live probes with no adapter CLI of their own (counts/shapes only).
 
-Run by the credentialed live checks on reviewed ``main`` through the specs in
-``verify/live-checks/`` (``python3 verify/live_verify.py``)::
+Run by the credentialed live verifier on reviewed ``main`` through the specs in
+``devloop/live-checks/`` (``python3 devloop/live_verify.py``)::
 
     python3 -m scripts.live_read_probes portal-health
     python3 -m scripts.live_read_probes vmc-search
@@ -13,6 +13,7 @@ Run by the credentialed live checks on reviewed ``main`` through the specs in
     python3 -m scripts.live_read_probes schema-queryable [--rows 100] [--budget-seconds N]
     python3 -m scripts.live_read_probes mirror-fallback [--state-dir DIR] \
         [--budget-seconds N] [--sample 20] [--workers 1..4] [--mirror-ref REF]
+    python3 -m scripts.live_read_probes identity-spine --session-projection DIR
 
 Every request goes through the existing guarded clients, never a new HTTP path:
 ``integrations.workbench_read_api`` (Portal reporting API, GET only; the
@@ -40,6 +41,8 @@ never secrets, hosts' keys, query hits, titles, snippets or rows. ``portal-healt
 names the relations the API does not serve with the upstream reason as plain text, and a
 failed probe's stderr carries the sanitized ``reason`` of a Portal readiness or relation
 failure (``integrations.workbench_read_api.failure_reason``).
+``identity-spine`` reads no source: it opens the session's committed projection
+generation read-only and prints ``ontology.identity_spine.summarize`` (counts only).
 
 Environment (names only): ``PLX_WORKBENCH_API_URL`` + ``PLX_WORKBENCH_API_KEY``;
 ``VMC_API_URL`` + ``VMC_API_KEY`` (or ``BRAIN_BASE_URL`` + ``BRAIN_API_KEY``);
@@ -48,7 +51,7 @@ Environment (names only): ``PLX_WORKBENCH_API_URL`` + ``PLX_WORKBENCH_API_KEY``;
 ``mc-tools --operator-email-default <address>``: the ``x-mc-operator-email``
 admission value used only when ``MC_OPERATOR_EMAIL`` is unset (the variable
 always wins). The address lives in the reviewed spec
-(``verify/live-checks/mc.initialize_tools_list.json``), never in this code;
+(``devloop/live-checks/mc.initialize_tools_list.json``), never in this code;
 the report says which one was used (``operator_email_source``), never the value.
 It also compares every listed tool's ``inputSchema`` (property and required names) and
 ``outputSchema`` with the source-derived pin ``ontology/schema/generated/meta/mcp_tools.json``
@@ -105,6 +108,11 @@ def portal_health(environ: Mapping[str, str], *, client: Any = None) -> dict[str
     for name in relations:
         schema = name.split(".", 1)[0] if "." in name else "?"
         schemas[schema] = schemas.get(schema, 0) + 1
+    # A relation declared waiting on a later_ask names it, so the blocked part is not silent.
+    from ontology.schema import load_upstream_asks
+    asks = load_upstream_asks()
+    unavailable = {name: f"later_ask {asks[name]}: {reason}" if name in asks else reason
+                   for name, reason in unavailable.items()}
     lag = health.get("replayLagSeconds")
     return {"probe": "portal-health/v1", "health_ok": health.get("ok") is True,
             "recovery": health.get("recovery") is True, "degraded": bool(unavailable),
@@ -289,9 +297,12 @@ def schema_drift(environ: Mapping[str, str], *, client: Any = None) -> dict[str,
 QUERYABLE_PRINCIPAL = "service:schema-queryable-probe"
 QUERYABLE_WITHHELD = "service:schema-queryable-withheld"
 QUERYABLE_ROWS = 100   # x bindings per type stays inside probe_binding's 20 x 50 find pages
-GROUP_SIZE = 50   # verify/live_verify.py MAX_ITEMS: a longer recorded list is only a count
+GROUP_SIZE = 50   # devloop/live_verify.py MAX_ITEMS: a longer recorded list is only a count
 # The reads' deadline: the catalog read plus 104 relations x a 40 s read (the client's
-# timeout) is 4200 s worst case (Portal 52c9116). Pages already read are still projected and
+# timeout) was 4200 s worst case (Portal 52c9116). The catalog pinned from the 2026-10-26
+# live read binds 248: 9,920 s if every read times out, past this deadline, so such a run
+# counts the rest unreached and is incomplete, never a pass (no timing of 248 live reads
+# is recorded yet: measure before moving the deadline). Pages already read are still projected and
 # probed for up to the grace after it (seconds for 104 x 100 rows), so a slow read phase never
 # wastes what it read; the daily spec's 5400 s timeout covers budget + one read in flight +
 # grace.
@@ -299,8 +310,8 @@ QUERYABLE_BUDGET_SECONDS = 4800.0
 QUERYABLE_GRACE_SECONDS = 300.0
 # The spec declares the floor (expect.json_min.queryable_share: the share of bound relations
 # that must come back) and what a complete run is (complete_when); the probe reads both, so
-# neither is declared twice: docs/decisions/2026-10-07-portal-queryable-floor.md.
-QUERYABLE_SPEC = Path(__file__).resolve().parents[1] / "verify" / "live-checks" / \
+# neither is declared twice: devloop/DECISIONS/2026-10-07-portal-queryable-floor.md.
+QUERYABLE_SPEC = Path(__file__).resolve().parents[1] / "devloop" / "live-checks" / \
     "schema.portal_queryable.json"
 
 
@@ -598,9 +609,9 @@ def mirror_fallback(environ: Mapping[str, str], *, client: Any = None,
     persisted capture when live; ``permission_trim_ok``: the withheld
     principal got no candidate. Counts, booleans and enums only.
 
-    ``mirror_ref``: when the store holds no copy
-    of these relations and the source is out, the copy the live checks published on that
-    ref of this repository and attested there
+    ``mirror_ref`` (owner policy e251073ef3c5 item 6): when the store holds no copy
+    of these relations and the source is out, the copy the verifier published on that
+    ref of this repository and attested on claude/devloop-live
     (``integrations/mirror_branch_store.py``) is installed into the store and served the
     same way; ``branch_status`` says what the ref gave, ``branch_reason`` why it was
     refused (``unattested``, a digest, ...). Only with the live client: an injected
@@ -762,6 +773,45 @@ def mirror_fallback(environ: Mapping[str, str], *, client: Any = None,
     return out
 
 
+SPINE_SOURCES = ("bc", "portal_api")
+
+
+def identity_spine(environ: Mapping[str, str], *, client: Any = None,
+                   session_projection: str | None = None) -> dict[str, Any]:
+    """``ontology.identity_spine``: the identity-spine counts (``ontology.identity_spine``)
+    of the projection generation this verifier session committed, opened read-only
+    (``scripts.ontology_projection_probe.open_session``); nothing is read from a source.
+    Counts only. No generation of this session: ``error``
+    ``session_projection_unavailable``; a generation without the Portal or BC names the
+    missing ones in ``sources_blocked``."""
+    import contextlib
+    import sqlite3
+
+    from integrations.bc_read import session_fresh_since
+    from ontology import identity_spine as spine, schema
+    from scripts.ontology_projection_probe import open_session
+
+    del client
+    opened = open_session(session_projection, session_fresh_since(environ))
+    if opened is None:
+        return {"probe": "identity-spine", "error": "session_projection_unavailable",
+                "session_projection": {"opened": False}}
+    manifest, generation = opened["manifest"], opened["generation"]
+    sources = sorted(str(s) for s in manifest.get("sources", []))
+    out: dict[str, Any] = {
+        "probe": "identity-spine", "session_sources": sources,
+        "blocked_upstream": sorted(str(s) for s in manifest.get("blocked_upstream", [])),
+        "session_projection": {"opened": True, "mode": generation.mode}}
+    missing = [s for s in SPINE_SOURCES if s not in sources]
+    if missing:
+        out["sources_blocked"] = missing
+    store = Path(generation.store).resolve()
+    with contextlib.closing(sqlite3.connect(f"{store.as_uri()}?mode=ro", uri=True)) as conn:
+        summary = spine.summarize(conn, schema.load_schema(), SPINE_SOURCES)
+    out.update(summary, not_ingested_count=len(summary["not_ingested"]))
+    return out
+
+
 # ``plx_hub_guard.UpstreamError.code`` values the guard itself assigns (its docstring).
 UPSTREAM_ERROR_KINDS = frozenset({"upstream_unreachable", "upstream_error", "auth_refused",
                                   "checkout_held", "response_bound"})
@@ -769,7 +819,8 @@ UPSTREAM_ERROR_KINDS = frozenset({"upstream_unreachable", "upstream_error", "aut
 PROBES: dict[str, Callable[..., dict[str, Any]]] = {
     "portal-health": portal_health, "vmc-search": vmc_search, "mc-tools": mc_tools,
     "mirror-full-coverage": mirror_full_coverage, "schema-drift": schema_drift,
-    "mirror-fallback": mirror_fallback, "schema-queryable": schema_queryable}
+    "mirror-fallback": mirror_fallback, "schema-queryable": schema_queryable,
+    "identity-spine": identity_spine}
 
 
 def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None = None,
@@ -797,13 +848,18 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
                              "used when PLX_WORKBENCH_STATE_DIR is not set")
     parser.add_argument("--mirror-ref", default=None,
                         help="mirror-fallback only: ref of this repository holding the "
-                             "verifier's last complete copy (refs/verify/mirror), read "
+                             "verifier's last complete copy (refs/devloop/mirror), read "
                              "when the store has none")
     parser.add_argument("--sample", type=int, default=None,
                         help="mirror-fallback only: identifiers asked of plx.find")
     parser.add_argument("--rows", type=int, default=None,
                         help="schema-queryable only: rows read per relation (one page)")
+    parser.add_argument("--session-projection", default=None,
+                        help="identity-spine only: the verifier session's projection "
+                             "directory")
     args = parser.parse_args(argv)
+    if (args.session_projection is None) != (args.probe != "identity-spine"):
+        parser.error("--session-projection is required by, and applies to, identity-spine only")
     if args.operator_email_default is not None and args.probe != "mc-tools":
         parser.error("--operator-email-default applies to mc-tools only")
     if (args.db is not None or args.previous_report is not None) and \
@@ -834,6 +890,8 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
         kwargs = {"rows": QUERYABLE_ROWS if args.rows is None else args.rows,
                   "budget_seconds": (QUERYABLE_BUDGET_SECONDS if args.budget_seconds is None
                                      else args.budget_seconds)}
+    if args.probe == "identity-spine":
+        kwargs = {"session_projection": args.session_projection}
     if args.probe == "mirror-fallback":
         kwargs = {"state_dir": args.state_dir, "budget_seconds": args.budget_seconds,
                   "sample": 20 if args.sample is None else args.sample,
@@ -843,7 +901,7 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     try:
         report = PROBES[args.probe](env, client=client, **kwargs)
     except Exception as exc:  # the class and a sanitized reason only; messages may carry URLs
-        from verify.data_profile import http_diagnostics, http_status_ok
+        from devloop.data_profile import http_diagnostics, http_status_ok
         from integrations.live_source_guard import ReadOnlyGuardError
         from integrations.plx_hub_guard import UPSTREAM_CODES, UpstreamError
         from integrations.workbench_read_api import failure_reason

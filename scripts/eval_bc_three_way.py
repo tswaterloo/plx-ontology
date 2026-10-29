@@ -1,7 +1,7 @@
 """BC-only unfamiliar three-way eval: seeded BC purchase documents, answered by the product.
 
-Live check ``verify/live-checks/eval.bc_three_way.json`` (requirement T1,
-amendment 2). It reads Business Central only (Production, GET only, through
+Live check ``devloop/live-checks/eval.bc_three_way.json`` (directive e56de121288d T1,
+amendment bb664f58910f 2). It reads Business Central only (Production, GET only, through
 ``integrations.bc_read``), so it runs while the Portal reporting API is down.
 
 Per run, seeded by the run id (``live-<UTC hour>`` by default):
@@ -136,7 +136,7 @@ ROOT_LOOKUP = ("found_exact", "ambiguous", "wrong", "not_found", "error")
 DEFAULT_COUNT = 15
 DEFAULT_MIN_SCORED = 5
 DEFAULT_MAX_WRONG_RATE = 0.10
-# Measured by the live checks (eval.bc_three_way, 17 runs 2026-10-07/08): about 0.4 s
+# Measured on claude/devloop-live (eval.bc_three_way, 17 runs 2026-10-07/08): about 0.4 s
 # per GET plus about 16 s per failed attempt (requests_sent - reads.sent - 1 retries; least
 # squares), the failures rising from 0 to 24 per run with every BC check slowing alike. The
 # slowest hour (10:33Z: 128 GETs, 24 failed attempts, exhausted 480 s at 14 of 15 items)

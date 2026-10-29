@@ -314,6 +314,104 @@ class PortalRoleTests(unittest.TestCase):
         self.assertEqual(reads.count, 0)
 
 
+DEPT_PROC = "cmdeptproc001"
+KEYWORDS = ["purchas", "procure", "buyer", "sourcing"]
+
+
+class JobTitleTests(unittest.TestCase):
+    """staff:purchasing = Portal PROC members OR an Entra job title naming a keyword, never
+    an excluded person (supervisor decision 2026-10-27; entra_job_title_keywords)."""
+
+    POLICY = {**POLICY, "principals": {**POLICY["principals"], "staff:purchasing": rule(
+        "VIEW_OPERATIONS", "operations.procurement", [DEPT_PROC],
+        entra_job_title_keywords=KEYWORDS)}}
+    SCOPES = ALL_SCOPES + (portal.ScopeRule("DATA", "operations.procurement", "ALLOW"),)
+
+    def entitlement(self, title=None, *, exclusion="clear", departments=(DEPT_OPS,),
+                    directory=True):
+        from integrations.people_exclusion import PeopleExclusion
+        guard = {"clear": PeopleExclusion(["cccccccc-0000-4000-8000-000000000009"]),
+                 "excluded": PeopleExclusion([OID]), "none": None}[exclusion]
+        user = portal_user(department_ids=frozenset(departments), scopes=self.SCOPES)
+        policy = EmployeePermissionPolicy.from_json(self.POLICY)
+        if directory:
+            read = directory_read(**({} if title is None else {"job_title": title}))
+            res = EmployeePermissionResolver(policy, Calls(user), directory=Calls(read),
+                                             people_exclusion=guard)
+        else:
+            res = EmployeePermissionResolver(policy, Calls(user), Calls(member(QA_GROUP)),
+                                             people_exclusion=guard)
+        got = res.resolve(EMPLOYEE)
+        [decision] = [d for d in got.decisions if d.principal == "staff:purchasing"]
+        return got, decision
+
+    def test_a_matching_title_holds_staff_purchasing_without_the_department(self):
+        for title in ("Purchasing Manager", "Senior BUYER", "Procurement Lead",
+                      "Strategic Sourcing / Planning"):
+            with self.subTest(title):
+                got, decision = self.entitlement(title)
+                self.assertIn("staff:purchasing", held(got))
+                self.assertEqual(decision.entra_job_title, "member")
+                # Counts and enums only: the title itself is never carried.
+                self.assertNotIn(title, json.dumps(got.notes))
+
+    def test_a_title_naming_no_keyword_holds_nothing(self):
+        for title in ("Outsourcing Coordinator", "Production Supervisor", "Rebuyer?"):
+            with self.subTest(title):
+                got, decision = self.entitlement(title)
+                self.assertNotIn("staff:purchasing", held(got))
+                self.assertEqual(decision.entra_job_title, "not_member")
+
+    def test_an_excluded_person_holds_nothing_by_title_or_department(self):
+        for departments in ((DEPT_OPS,), (DEPT_OPS, DEPT_PROC)):
+            with self.subTest(departments=departments):
+                got, decision = self.entitlement("Buyer", exclusion="excluded",
+                                                 departments=departments)
+                self.assertNotIn("staff:purchasing", held(got))
+                self.assertEqual(decision.entra_job_title, "excluded")
+                self.assertIn("staff:operations", held(got))   # other principals stand
+
+    def test_no_title_attribute_or_no_directory_grants_nothing_by_title(self):
+        got, decision = self.entitlement("")            # Graph returned no jobTitle
+        self.assertNotIn("staff:purchasing", held(got))
+        self.assertEqual(decision.entra_job_title, "not_member")
+        got, decision = self.entitlement(directory=False)   # no directory read at all
+        self.assertNotIn("staff:purchasing", held(got))
+        self.assertEqual(decision.entra_job_title, "unavailable")
+
+    def test_without_a_usable_exclusion_only_the_portal_department_grants(self):
+        got, decision = self.entitlement("Buyer", exclusion="none")
+        self.assertNotIn("staff:purchasing", held(got))
+        self.assertEqual(decision.entra_job_title, "exclusion_unavailable")
+        got, _ = self.entitlement(None, exclusion="none", departments=(DEPT_PROC,))
+        self.assertIn("staff:purchasing", held(got))
+
+    def test_the_title_never_stands_in_for_the_access_level_or_the_data_scope(self):
+        from integrations.people_exclusion import PeopleExclusion
+        policy = EmployeePermissionPolicy.from_json(self.POLICY)
+        guard = PeopleExclusion(["cccccccc-0000-4000-8000-000000000009"])
+        for user in (portal_user(department_ids=frozenset({DEPT_OPS}), scopes=ALL_SCOPES),
+                     portal_user(access_level="L1", department_ids=frozenset({DEPT_OPS}),
+                                 scopes=self.SCOPES)):
+            res = EmployeePermissionResolver(
+                policy, Calls(user), directory=Calls(directory_read(job_title="Buyer")),
+                people_exclusion=guard)
+            got = res.resolve(EMPLOYEE)
+            self.assertNotIn("staff:purchasing", set(got.actor.principals) if got.actor
+                             else set())
+
+    def test_malformed_keywords_fail_closed(self):
+        for bad in (["Buyer"], ["buy*"], ["by"], "buyer", [3]):
+            with self.subTest(bad), self.assertRaises(ValueError):
+                EmployeePermissionPolicy.from_json({**self.POLICY, "principals": {
+                    "staff:purchasing": rule("VIEW_OPERATIONS", "operations.procurement",
+                                             [DEPT_PROC], entra_job_title_keywords=bad)}})
+        with self.assertRaises(ValueError):   # a title only stands in for a department
+            EmployeePermissionPolicy.from_json({**self.POLICY, "principals": {
+                "staff:purchasing": rule("VIEW_OPERATIONS", "operations.procurement", [],
+                                         entra_job_title_keywords=KEYWORDS)}})
+
+
 class EntraGroupTests(unittest.TestCase):
     def test_missing_group_data_never_widens(self):
         with_groups = resolver(portal_user("SUPER_ADMIN")).resolve(EMPLOYEE)
@@ -785,8 +883,8 @@ class FileClearanceTests(unittest.TestCase):
         self.assertEqual((report["restricted_total"], report["restricted_visible_to_uncleared"],
                           report["restricted_visible_to_unconfirmed"],
                           report["finance_visible_to_cleared"]), (1, 0, 0, 1))
-        from verify import live_verify as lv
-        spec = json.loads((ROOT / "verify/live-checks/sharepoint.restricted_class.json")
+        from devloop import live_verify as lv
+        spec = json.loads((ROOT / "devloop/live-checks/sharepoint.restricted_class.json")
                           .read_text(encoding="utf-8"))
         self.assertEqual(lv.check_expectations(spec, 0, report), [])
         leaked = {**report, "ok": False, "restricted_visible_to_unconfirmed": 1}
@@ -826,9 +924,9 @@ class FileClearanceTests(unittest.TestCase):
         self.assertEqual(column_reads(drive), {"list": 0, "pages": 0, "per_file": 2})
 
     def test_live_check_counts_each_unread_file_by_cause_and_never_clears_it(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from integrations.tests.test_capture_sharepoint import RICARDO
-        spec = json.loads((ROOT / "verify/live-checks/sharepoint.restricted_class.json")
+        spec = json.loads((ROOT / "devloop/live-checks/sharepoint.restricted_class.json")
                           .read_text(encoding="utf-8"))
 
         def drive_with(**setup):

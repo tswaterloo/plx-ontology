@@ -1,15 +1,15 @@
-"""Capture breadth: one cycle over the whole capture scope.
+"""Capture breadth: one cycle over the whole capture scope (lane P7).
 
-The Workbench reads every mailbox
+Owner decisions 5be438765457 and 93047ba19524: the Workbench reads every mailbox
 and source in its capture scope and keeps what it captures in its own capture
-stores under the Workbench state directory; nothing captured goes to Git or logs,
-and every reader is re-gated per mailbox and per item.
+stores under the Workbench state directory; nothing captured goes to Git, logs or
+advisory records, and every reader is re-gated per mailbox and per item.
 
 One cycle (``capture_cycle``) runs, in this order:
 
 * the mail capture (``integrations.capture_mail``) over the mail scope
   (``integrations/mail_capture_scope.json``: every mailbox of the tenant directory
-  except the scope's exclusion list, inbox and sent items), each folder
+  except the scope's exclusion list, inbox and sent items; ING-06), each folder
   from its stored delta link once its first round reached one, a mailbox new in the
   directory from its first round;
 * the SharePoint capture (``integrations.capture_sharepoint``) over its scope
@@ -53,7 +53,7 @@ names, paths, ids or content)::
     python3 -m integrations.graph_read capture-breadth --state-dir D \\
         --live-audience examples/capture_breadth_audience.live-check.json --runs 2
 
-Live-unverified until ``verify/live-checks/capture.breadth.json`` passes.
+Live-unverified until ``devloop/live-checks/capture.breadth.json`` passes.
 """
 
 from __future__ import annotations

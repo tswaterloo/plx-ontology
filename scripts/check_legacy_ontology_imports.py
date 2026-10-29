@@ -1,11 +1,12 @@
-"""Legacy-ontology import ratchet (`no-legacy-ontology-imports` CI check).
+"""Legacy-ontology import ratchet (`no-legacy-ontology-imports` in devloop/gate-checks.json).
 
-New features land only on the new
+10-DECISION / 09-CRITIQUE R10 and "Migration order": new features land only on the new
 ontology path. The legacy uni-temporal store ``ontology.core.OntologyStore`` and its
-identity resolver ``ontology.transactions.TransactionResolver`` are deleted (human identity decisions live in the append-only review store,
+identity resolver ``ontology.transactions.TransactionResolver`` are deleted (lane
+identity-ledger-retire: human identity decisions live in the append-only review store,
 ``ontology.reviews``), and so is the case workspace's own join ``operator_ui.case_join``
 (a case's relationships are the projection's ontology links). This AST scan keeps them
-deleted: it fails when any file names either class or either module. The allowlist is empty and only shrinks: CI runs main's
+deleted: it fails when any file names either class or either module. The allowlist is empty and only shrinks: the gate runs main's
 copy of this script (a candidate cannot add itself), and ``--strict`` (run by
 tests/test_legacy_ontology_imports.py on the candidate's own copy) also fails on stale
 entries.

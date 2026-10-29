@@ -6,7 +6,7 @@ No network and no credentials: every request goes to the in-process ``FakeSender
 quantities, ``0001-01-01`` for an empty date) and honour ``$filter`` (one equality),
 ``$select`` (projection), ``$top`` and ``@odata.nextLink`` paging. Evidence label:
 ``injected-transport``; the adapter is live-unverified until
-``verify/live-checks/bc.purchase_reader.json`` has a passing result.
+``devloop/live-checks/bc.purchase_reader.json`` has a passing result.
 """
 
 from __future__ import annotations
@@ -575,7 +575,7 @@ AT = "2026-10-04T09:00:00Z"
 class ScopedCompletenessTests(unittest.TestCase):
     """A per-PO read reports scoped completeness claims, and ``plx.process`` decides the
     three-way sides it covers over a BC capture of that read alone, Portal not captured
-    (injected transport; docs/decisions/2026-10-05-bc-only-portal-hops.md)."""
+    (injected transport; devloop/DECISIONS/2026-10-05-bc-only-portal-hops.md)."""
 
     def answer(self, evidence: dict) -> tuple[dict, dict]:
         schema = ot.default_schema()
@@ -715,7 +715,7 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(company["price_pairs"], {"invoice_lines": 1, "paired": 1, "equal": 0,
                                                   "differ": 1, "unpaired": 0,
                                                   "cost_absent": 0})
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         spec = json.loads((Path(lv.ROOT) / lv.SPECS_DIR_NAME / "bc.purchase_reader.json")
                           .read_text(encoding="utf-8"))
         self.assertEqual(lv.check_expectations(spec, 0, report), [])
@@ -758,7 +758,7 @@ class ProbeTests(unittest.TestCase):
 
     def test_live_check_spec_passes_on_injected_probe_and_fails_on_receipt_400(self):
         from pathlib import Path
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         path = Path(lv.ROOT) / lv.SPECS_DIR_NAME / "bc.purchase_reader.json"
         spec = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(lv.validate_spec(spec, stem=path.stem), [])
@@ -788,7 +788,7 @@ class ProbeTests(unittest.TestCase):
 
     def test_failed_seed_read_is_diagnosed_and_an_empty_book_is_not_an_error(self):
         from pathlib import Path
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         spec = json.loads((Path(lv.ROOT) / lv.SPECS_DIR_NAME / "bc.purchase_reader.json")
                           .read_text(encoding="utf-8"))
 
@@ -830,7 +830,7 @@ class ProbeTests(unittest.TestCase):
 
     def test_outage_on_both_seed_reads_stays_a_visible_failure(self):
         from pathlib import Path
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         spec = json.loads((Path(lv.ROOT) / lv.SPECS_DIR_NAME / "bc.purchase_reader.json")
                           .read_text(encoding="utf-8"))
         f = Fixture()

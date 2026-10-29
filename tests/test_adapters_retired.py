@@ -1,6 +1,6 @@
 """Deletion-11: dead adapters and tooling stay gone.
 
-No live-check, MCP tool, console view or CI check reached
+No live-check, MCP tool, console view, gate check or CONTEXT/01 requirement reached
 these modules: the GitHub snapshot importer, the legacy Portal/BC link projector over
 the retired Portal-gold store, the JSONL fixture loader, the snapshot rule engine
 (``reasoning``) and two pre-astra packaging/inventory scripts. The package facade
@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RETIRED_MODULES = ("integrations.github", "integrations.portal_bc_links", "ontology.fixtures",
                    "reasoning", "reasoning.engine", "reasoning.rules",
                    "scripts.package_release", "scripts.generate_audit_inventory")
-SCANNED = ("ontology", "integrations", "operating", "operator_ui", "scripts", "verify",
+SCANNED = ("ontology", "integrations", "operating", "operator_ui", "scripts", "devloop",
            "evals", "tests")
 
 

@@ -96,10 +96,13 @@ class TeamsEmployeeAclTests(unittest.TestCase):
                     items = store.records(PROBE, "teams_channel", unit, limit=200)["items"]
                 except CaptureError:   # a channel the capture is blocked on
                     items = []
+                # The messages (the channel's own record is gated alike: not counted here).
+                items = [i for i in items if "/conversation@" not in i["citation"]]
                 handles[thread] = [item["citation"] for item in items]
                 self.acls[thread] = {item["meta"]["source_acl"].get("basis") for item in items}
             handles[tct.CHAT] = [item["citation"] for item in store.records(
-                PROBE, "teams_chat", CHAT_UNIT, limit=200)["items"]]
+                PROBE, "teams_chat", CHAT_UNIT, limit=200)["items"]
+                if "/conversation@" not in item["citation"]]
         finally:
             store.close()
         return handles

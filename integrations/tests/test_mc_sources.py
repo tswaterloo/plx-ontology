@@ -27,7 +27,7 @@ import unittest
 from unittest import mock
 import warnings
 
-from verify import live_verify as lv
+from devloop import live_verify as lv
 from integrations import mc as mc_module, mc_sources, plx_hub_guard
 from integrations.capture_store import CaptureError, CaptureStore, CapturedRecord
 from integrations.live_source_guard import LiveSourceAudience, ReadOnlyGuardError, Secret
@@ -39,7 +39,7 @@ from operating.ingestion import IngestError, Ingestor, load_sources
 
 ROOT = Path(__file__).resolve().parents[2]
 POLICY = json.loads((ROOT / "integrations/mc_tool_policy.json").read_text("utf-8"))
-SPEC = json.loads((ROOT / "verify/live-checks/mc.sources_capture.json").read_text("utf-8"))
+SPEC = json.loads((ROOT / "devloop/live-checks/mc.sources_capture.json").read_text("utf-8"))
 MC = "https://mc.plxcustomer.io"
 OPERATOR = "cos@petrasoap.com"
 ENV = {"MC_MCP_API_KEY": "mc-test-key-0123456789", "MC_OPERATOR_EMAIL": OPERATOR}
@@ -462,7 +462,7 @@ class McSourcesTests(unittest.TestCase):
                              ("in_progress", "source_error", "buckets_shape_invalid"))
 
     def test_an_mc_side_error_blocks_naming_its_layer_and_our_bad_arguments_fail(self):
-        # Live: mc_get_context{depth:full} answered upstream_error, no layer.
+        # Live 53285db79efc: mc_get_context{depth:full} answered upstream_error, no layer.
         real = self.fake.tool
         cases = {("http", 503): ("blocked_upstream", "http_503"),
                  ("rpc", -32603): ("blocked_upstream", "jsonrpc_-32603"),
@@ -473,7 +473,7 @@ class McSourcesTests(unittest.TestCase):
                  ("tool", "forbidden"): ("source_error", "tool_forbidden"),
                  ("tool", "invalid_query"): ("source_error", "tool_invalid_query"),
                  ("tool", "PO100234 gone"): ("source_error", "tool_other"),
-                 # Each no-retry producer names its own cause.
+                 # Each no-retry producer names its own cause (directive a3950d4456df).
                  ("http", 400): ("source_error", "http_400"),
                  ("http", 404): ("source_error", "http_404"),
                  ("rpc", "oops"): ("source_error", "jsonrpc_code_invalid")}
@@ -531,7 +531,7 @@ class McSourcesTests(unittest.TestCase):
                 if not (name == "mc_search_tasks" and args == PRINCIPAL_READ)]
 
     def test_a_full_context_over_the_bound_is_read_as_task_search_pages(self):
-        # Live (2,397 visible tasks): the full context exceeds the bound on
+        # Live 9826f60e9039 (2,397 visible tasks): the full context exceeds the bound on
         # every run, and a read per bucket never returned a task without a bucket row.
         for tasks in (1, 10, 60):
             with self.subTest(tasks=tasks):
@@ -798,7 +798,7 @@ class McSourcesTests(unittest.TestCase):
 
     def test_each_client_guard_that_refuses_an_answer_is_recorded_by_its_code(self):
         # Every client-side guard (integrations/mc.py and this module) names itself in the
-        # unit's error, never the bare class (live: "SourceUnavailable").
+        # unit's error, never the bare class (live afddbcdf36f9: "SourceUnavailable").
         real = self.fake.tool
         cases = {"context_lacks_tasks": ("tasks", "mc_get_context", {"data": {"buckets": []}}),
                  "tool_result_not_json": ("tasks", "mc_get_context", "PO100234 <html>"),
@@ -1014,7 +1014,7 @@ class LiveCheckSpecTests(unittest.TestCase):
         self.assertEqual(lv.blocked_parts(document), [
             {"part": "tasks", "source": "mission-control-mcp", "error_code": "http_503",
              "cause": "upstream_outage"}])
-        # The live check then checks only expect_blocked: blocked, never pass or fail.
+        # The live verifier then checks only expect_blocked: blocked, never pass or fail.
         self.assertEqual(lv.check_expectations(SPEC, code, document, SPEC["expect_blocked"]),
                          ["evidence_label != expected"])
         self.assertIn("_summary.units_total != expected",
@@ -1033,7 +1033,7 @@ class LiveCheckSpecTests(unittest.TestCase):
                       lv.check_expectations(SPEC, code, document))
 
     def test_the_spec_command_run_as_main_resolves_handles_and_prints_json(self):
-        # The live check runs the command as ``__main__`` (verify/live_verify.py
+        # The live verifier runs the command as ``__main__`` (devloop/live_verify.py
         # ENV_GUARD, ``runpy``). Resolving the captured handles loads the capture
         # adapters, which import this module again: two registered ``mission_control``
         # kinds raised ``source_kind_conflict`` after a complete capture, so the run
@@ -1058,7 +1058,7 @@ class LiveCheckSpecTests(unittest.TestCase):
                     contextlib.redirect_stdout(out), \
                     warnings.catch_warnings(), \
                     self.assertRaises(SystemExit) as exit_:
-                # In-process only: the live check's own run imports nothing beforehand.
+                # In-process only: the verifier's own run imports nothing beforehand.
                 warnings.simplefilter("ignore", RuntimeWarning)
                 runpy.run_module("integrations.mc_sources", run_name="__main__",
                                  alter_sys=True)
@@ -1070,8 +1070,8 @@ class LiveCheckSpecTests(unittest.TestCase):
         self.assertGreaterEqual(summary["handles_resolved"], 1)
 
     def test_an_unusable_environment_and_a_bad_scope_print_a_json_verdict(self):
-        # The live check's own path (ENV_GUARD runs the module as ``__main__``) with its
-        # environment shape. The host is not pinned, so the run fails
+        # The verifier's own path (ENV_GUARD runs the module as ``__main__``) with its
+        # environment shape. The host is one the pack does not name, so the run fails
         # closed before any request and still prints its JSON verdict, never a traceback.
         entry = lv.run_spec(SPEC, environ={"PATH": os.environ.get("PATH", ""),
                                            "MC_MCP_API_KEY": "not-a-real-key",

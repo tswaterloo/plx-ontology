@@ -1,0 +1,28 @@
+{
+  "status": "provisional (Vince meeting 2026-10-22, to confirm)",
+  "note": "Owner rules transcribed from a verbal explanation. Edit this file, not code. Recorded data (tariff_c, tariffcode, hs_code) always wins over a rule here.",
+  "destination": "CA",
+  "default_tariff": {
+    "rate": "0.065",
+    "label": "default fallback",
+    "source": "Portal public.app_rate_settings tariff_rate (default fallback)",
+    "status": "provisional (Vince meeting 2026-10-22, to confirm)"
+  },
+  "origin_duty_rules": [
+    {
+      "id": "us_to_canada_hair_only",
+      "origin": "US",
+      "dutiable_categories": ["hair conditioner", "hair serum"],
+      "otherwise_rate": "0",
+      "source": "owner rule 2026-10-22: US to Canada duty only on hair conditioner and hair serum",
+      "status": "provisional (Vince meeting 2026-10-22, to confirm)"
+    }
+  ],
+  "incoterm_source": "owner rule 2026-10-22: incoterm decides title transfer and who bears cost",
+  "incoterm_status": "provisional (Vince meeting 2026-10-22, to confirm)",
+  "incoterms": {
+    "EXW": {"title": "factory door", "buyer_bears": ["freight", "duty", "brokerage"]},
+    "FOB": {"title": "port of loading", "buyer_bears": ["freight", "duty", "brokerage"]},
+    "DDP": {"title": "seller bears everything incl. duty", "buyer_bears": []}
+  }
+}

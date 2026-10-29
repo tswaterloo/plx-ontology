@@ -1,9 +1,9 @@
-"""Projector + store: a fixture mirror projected through a fixture schema.
+"""Projector + store (lane L7): a fixture mirror projected through a fixture schema.
 
 The L1 input is a real ``integrations.source_mirror.SourceMirror`` filled over an
 injected Workbench transport (no network) in two captures; the schema is a small
 multi-relation C0 domain file validated against ``_format.schema.json`` (and compiled
-by the loader when ``ontology.schema`` is importable). Values are checked with the
+by the L4 loader when ``ontology.schema`` is importable). Values are checked with the
 real claim gate (``operating/claim_checks.check_items``) against the mirror's own
 ``resolve_citation``.
 """
@@ -25,6 +25,7 @@ import unittest
 import unittest.mock
 from urllib.parse import parse_qs, urlsplit
 
+from integrations.mirror_capture import stale_label
 from integrations.source_mirror import AudienceMap, SourceMirror
 from integrations.workbench_read_api import WorkbenchReadApiClient
 from ontology import json_contract, store_ddl
@@ -324,7 +325,7 @@ def compiled_schema(document=DOMAIN):
     if problems:
         raise AssertionError(problems)
     try:
-        from ontology.schema import compile_documents  # the loader, once it lands
+        from ontology.schema import compile_documents  # L4 loader, once it lands
     except ImportError:
         compile_documents = None
     if compile_documents is not None:
@@ -488,6 +489,37 @@ class RebuildTests(ProjectionCase):
             "SELECT value FROM store_meta WHERE key = 'freshness'").fetchone()[0])
         self.assertEqual([(f["source"], f["completeness"], f["stale"]) for f in fresh],
                          [("portal_api", "partial", True)])
+
+    def test_a_held_relation_whose_refresh_failed_is_served_from_the_cached_mirror(self):
+        # The live source refused the last refresh of a relation the mirror holds: its
+        # rows are the older capture's, so the relation and its family are stale, served
+        # from the cached mirror as of that capture, with the refusal's error code.
+        copy_path = Path(self.tmp.name) / "refused-mirror.sqlite"
+        with sqlite3.connect(str(self.mirror_path)) as src, \
+                sqlite3.connect(str(copy_path)) as dst:
+            src.backup(dst)
+        with sqlite3.connect(str(copy_path)) as conn:
+            conn.execute("INSERT INTO refresh_failure VALUES ('public.app_receipt', ?, ?)",
+                         (T2_TEXT, "relation_unavailable: public.app_receipt is not served"))
+            held_at = conn.execute("SELECT last_refresh_at FROM relation_state WHERE "
+                                   "relation = 'public.app_receipt'").fetchone()[0]
+        path = Path(self.tmp.name) / "refused" / "store.sqlite"
+        with MirrorCaptures(copy_path) as captures:
+            build_store(path, self.schema, {"portal_api": captures},
+                        normalizer=normalizer, clock=lambda: T2)
+        raw = self.raw(path)
+        part = json.loads(raw.execute("SELECT value FROM store_meta WHERE key = "
+                                      "'relation_completeness'").fetchone()[0])["portal_api"]
+        self.assertEqual({rel for rel, item in part.items() if item["stale"]},
+                         {"public.app_receipt"})
+        fresh = json.loads(raw.execute(
+            "SELECT value FROM store_meta WHERE key = 'freshness'").fetchone()[0])
+        self.assertEqual([(f["source"], f["stale"], f["served_from"]) for f in fresh],
+                         [("portal_api", True, "cached_mirror")])
+        self.assertEqual(fresh[0]["relations"], [{
+            "relation": "public.app_receipt", "served_from": "cached_mirror",
+            "captured_at": held_at, "http_status": None, "error_code": "relation_unavailable",
+            "label": stale_label(held_at, None, "relation_unavailable")}])
 
     def test_swap_is_atomic_and_readers_keep_their_generation(self):
         path, _ = self.build("swap/store.sqlite")
@@ -1064,7 +1096,7 @@ Mention = collections.namedtuple("Mention", "kind normalized start end")
 
 
 class FixtureGrammar:
-    """The identifiers.py interface the ontology tools read (kinds/normalize/find_identifiers/kind_spec)
+    """The identifiers.py interface L8 reads (kinds/normalize/find_identifiers/kind_spec)
     over the fixture normalizer."""
 
     def kinds(self):
@@ -1082,7 +1114,7 @@ class FixtureGrammar:
 
 
 def ontology_tools_module():
-    """The ontology tools (operating/ontology_tools.py), or None until they land."""
+    """Lane L8's tools (operating/ontology_tools.py), or None until L8 lands."""
     try:
         from operating import ontology_tools
     except ImportError:
@@ -1091,9 +1123,9 @@ def ontology_tools_module():
 
 
 @unittest.skipIf(ontology_tools_module() is None,
-                 "operating/ontology_tools.py is not on this base yet")
+                 "operating/ontology_tools.py (lane L8) is not on this base yet")
 class L8EndToEndTests(ProjectionCase):
-    """Fixture mirror -> projector -> store -> plx.find / plx.object."""
+    """Fixture mirror -> projector -> store -> L8 plx.find / plx.object."""
 
     def tools(self):
         ot = ontology_tools_module()
@@ -1164,7 +1196,7 @@ class L8EndToEndTests(ProjectionCase):
         self.assertEqual([e["tier"] for e in identity], ["verified"])
         reason = identity[0]["reason"]
         self.assertEqual([f["agrees"] for f in reason], [True, True])
-        # The tools keep only citations of values the reader may read (the po_number pair).
+        # L8 keeps only citations of values the reader may read (the po_number pair).
         cited = [c["l1_handle"] for f in reason for c in f.get("citations", ())]
         self.assertTrue(cited)
         batch = self.mirror.resolve_citations(cited, FINANCE)
@@ -1252,8 +1284,15 @@ class ProbeTests(unittest.TestCase):
             text = json.dumps(result)
             for secret in ("po-a", "PO1001", "api://", "Bolt"):
                 self.assertNotIn(secret, text)   # counts only, never a value or handle
+        from scripts import ontology_projection_probe as probe_module
         for budget, within in ((1e6, True), (1.0, False)):
-            with tempfile.TemporaryDirectory() as tmp:
+            # The RSS watchdog samples every RSS_SAMPLE_SECONDS: a run slower than that
+            # over a 1 MB budget hard-exits, which in-process would end the whole test
+            # runner (a loaded suite run did). Record the exit instead of taking it.
+            exits = []
+            with tempfile.TemporaryDirectory() as tmp, \
+                    unittest.mock.patch.object(probe_module, "_hard_exit", exits.append), \
+                    unittest.mock.patch("sys.stdout", new_callable=io.StringIO):
                 client = WorkbenchReadApiClient(BASE, KEY, fetch=FakeWorkbench())
                 result = projection_probe(client, f"{tmp}/mirror.sqlite",
                                           f"{tmp}/store.sqlite", schema=compiled_schema(),
@@ -1261,6 +1300,8 @@ class ProbeTests(unittest.TestCase):
                                           max_rss_mb=budget)
             self.assertEqual(result["max_rss_budget_mb"], budget)
             self.assertIs(result["maxrss_within_budget"], within)
+            # Under budget the watchdog never fires; over it, it may only exit EXIT_RSS.
+            self.assertIn(exits, ([], [probe_module.EXIT_RSS]) if not within else ([],))
         with unittest.mock.patch("sys.stdout", new_callable=io.StringIO) as out:
             self.assertEqual(main(["--db", "x", "--store", "y"], environ={}), 1)
         self.assertEqual(json.loads(out.getvalue())["error"], "LookupError")
@@ -1411,6 +1452,28 @@ class CaptureSourceTests(unittest.TestCase):
         self.assertIsNone(store.object(OPS, oid("Supplier", "t.supplier", code="AAA")))
         self.assertIsNotNone(store.object(OPS, oid("Supplier", "t.supplier", code="BBB")))
         self.assertIn("capture_versions_overlap", {g["code"] for g in report["gaps"]})
+
+    def test_an_unreadable_link_key_is_reported_per_link_binding(self):
+        """A compared key value the projector cannot read joins nothing, so the build
+        report names it under ``<link>#<index>@<binding>.<path>`` (a blank key is no key,
+        not a problem), and the report says link keys are reported (``link_keys``): an
+        absence prover may then rule out a link hidden by an unread key."""
+        from ontology.project import CapturedRecord
+
+        def po(pid, supplier):
+            return CapturedRecord(
+                "portal_api", "public.app_purchase_order", f'{{"id":"{pid}"}}',
+                {"id": pid, "po_number": f"PO-{pid}", "supplier_id": supplier},
+                f"api://h/{pid}@{self.T0}", "row", "0" * 64, self.T0, None, self.T0,
+                "api:public.app_purchase_order")
+
+        report, _ = self.build([self.record("s1", self.T0, None), po("p1", "s1"),
+                                po("p2", ["s1"]), po("p3", None)])
+        self.assertEqual(report["link_keys"], "reported")
+        keys = [g for g in report["gaps"] if g["where"].startswith("PurchaseOrder.ordered_from")]
+        self.assertEqual(keys, [{"code": "link_key_value_not_text_id",
+                                 "where": "PurchaseOrder.ordered_from#0@t.gold_po.supplier_id",
+                                 "count": 1, "samples": [f"api://h/p2@{self.T0}"]}])
 
     def test_a_value_equal_to_the_records_own_identifier_is_a_placeholder(self):
         """Wire-host decision A (one absence prover): a carrier holding the record's own

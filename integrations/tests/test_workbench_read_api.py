@@ -115,6 +115,29 @@ class DegradedApi(FakeApi):
 
 
 class DegradedHealthTests(unittest.TestCase):
+    def test_a_catalog_beyond_200_relations_still_serves_the_rest(self):
+        # Live GET /v1/relations and /v1/health of 2026-10-21 21:05Z (counts only): 246
+        # catalog relations, 179 listed unavailable; at most 200 refused every read.
+        fake = DegradedApi()
+        gaps = {f"public.gap_{i}": gap_reason(1) for i in range(179)}
+        fake.health_body["unavailable"] = [{"name": n, "reason": r} for n, r in gaps.items()]
+        fake.health_body["missingColumns"] = []
+        listed = DegradedApi.__call__
+
+        def fetch(url, headers, *, max_bytes):
+            value = listed(fake, url, headers, max_bytes=max_bytes)
+            if urlsplit(url).path == "/v1/relations":
+                value["relations"] += [
+                    {"name": name, "schema": "public", "relation": name.split(".")[1],
+                     "columns": ["id"], "key": None, "since": None, "unavailable": reason}
+                    for name, reason in list(gaps.items())[:246 - len(value["relations"])]]
+            return value
+        client = WorkbenchReadApiClient("https://api.example.test", KEY, fetch=fetch)
+        self.assertEqual(len(client.health()["unavailable_relations"]), 179)
+        catalog = client.relations()
+        self.assertEqual(len(catalog), 246)
+        self.assertIn("public.order_entry", catalog)
+
     def test_observed_degraded_body_serves_the_rest_and_names_the_gaps(self):
         for shape in ("reason", "columns"):
             with self.subTest(missing_columns_entries=shape):
@@ -229,7 +252,7 @@ class DegradedHealthTests(unittest.TestCase):
         entry = {"name": "public.order_entry", "schema": "public", "relation": "order_entry",
                  "columns": ["id"], "key": ["id"]}
         for relations, reason in (
-                ({}, "catalog: relations is not a list of 1 to 200 entries"),
+                ({}, "catalog: relations is not a list of 1 to 1000 entries"),
                 ([{**entry, "key": ["idoe"]}],
                  "catalog: public.order_entry key is not distinct listed columns"),
                 ([entry, entry], "catalog: public.order_entry is listed twice")):
@@ -341,7 +364,7 @@ class WorkbenchReadApiTests(unittest.TestCase):
 
 
 class RetiredPagedImportTests(unittest.TestCase):
-    """The paged-API import into the ontology is retired.
+    """The paged-API import into the ontology is retired (devloop/CONVERGENCE.md).
 
     The source mirror is the only consumer of this client. The objective runtime
     that kept paged roots advisory went with ``UnifiedPlatform`` (deletion-8).

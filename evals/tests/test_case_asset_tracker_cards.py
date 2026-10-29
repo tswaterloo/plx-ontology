@@ -3,7 +3,7 @@
 ``evals/dev/asset-tracker/proposed_items.json`` holds the employee questions with answer
 criteria, the originals (rows of ``examples/case_originals.json``) and live sources each
 needs; ``ontology_gaps.json`` names what the ontology lacks to answer them, each with a
-real source (``path@commit``) or ``source unknown`` and the question that would find
+real source (``path@commit``) or ``source unknown`` and the Dot question that would find
 one. Both are checked by ``evals.case_cards`` as one contract; a mutated copy proves the check fails closed.
 """
 
@@ -53,8 +53,8 @@ class AssetTrackerCardsTest(unittest.TestCase):
             "unknown original": lambda c, g: c["real_example"]["cards"][0]["originals"]
             .append("co-000000000000"),
             "keys": lambda c, g: c["real_example"]["cards"][0].update(result="1"),
-            "open question": lambda c, g: next(x for x in g["gaps"]
-                                              if x.get("source") == UNKNOWN).pop("open_question"),
+            "Dot question": lambda c, g: next(x for x in g["gaps"]
+                                              if x.get("source") == UNKNOWN).pop("dot_question"),
             "no source": lambda c, g: g["gaps"][0].update(sources=[]),
             "path@commit": lambda c, g: c["live_sources"][0].update(evidence="the portal"),
         }
@@ -74,7 +74,7 @@ class AssetTrackerCardsTest(unittest.TestCase):
         cards["case"] = "no-such-case"
         self.assertTrue(any("no proposed_items.json" in p
                             for p in problems(cards, self.gaps, self.originals)))
-        # A related source record is citable and pinned; a bad pin or unknown id is refused.
+        # A related advisory is citable and pinned; a bad pin or unknown id is refused.
         cards = copy.deepcopy(self.cards)
         cards["source"]["related_advisories"] = [
             {"id": "advisory:aaaaaaaaaaaa", "path": "context/x.json", "ref": "r@abc1234"}]
@@ -82,7 +82,7 @@ class AssetTrackerCardsTest(unittest.TestCase):
         self.assertEqual(problems(cards, self.gaps, self.originals), [])
         cards["source"]["related_advisories"][0]["path"] = "elsewhere/x.json"
         self.assertIn("advisory pin", problems(cards, self.gaps, self.originals))
-        # With maps, a card must cite a source record of its own map.
+        # With maps, a card must cite an advisory of its own map.
         cards = copy.deepcopy(self.cards)
         card = cards["real_example"]["cards"][0]
         pfx = card["id"].split("-")[0]

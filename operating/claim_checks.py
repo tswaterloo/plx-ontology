@@ -3,7 +3,7 @@
 A citation that resolves does not prove the sentence that cites it (requirements
 RSN-06): "produced 1,509" citing an assembly-order item row is wrong when 1,509 is
 that row's *planned* ``quantity``. Planned, produced, filled, inspected, ordered and
-damaged quantities share a dimension but are different quantities (AO-26005B:
+damaged quantities share a dimension but are different quantities (pack 02, AO-26005B:
 planned 1,509 / manufactured 1,503 / filled 1,502). So a finding (or gap) carries
 **structured value claims** that the Workbench checks exactly against the rows; the
 prose is then checked fail-closed against those claims. Models propose, the checker
@@ -18,6 +18,9 @@ A value claim (``CaseStore.finding(..., value_claims=[...])``, MCP ``value_claim
     {"value": "3", "op": "count", "of": [{"citation": "..."}, ...], "role": "receipt_count"}
     {"value": "1260.50", "op": "sum", "of": [{"citation": "...", "field": "row.amount"}, ...],
      "currency": "USD"}
+    {"value": "386.69", "op": "expression", "expression": "x0 - x1",
+     "of": [{"citation": "original://...#page=11", "field": "text", "value": "18,901.08",
+             "quote": "$18,901.08 received"}, ...]}
 
 ``value`` is an integer or a string (a decimal string is a number, anything else is
 text); floats are refused, as for calculation literals. ``role`` is one of ``ROLES``
@@ -29,7 +32,11 @@ fragment; one record cited twice fails), ``sum`` the Decimal sum of one field of
 checked as a recorded calculation is (recomputed from the re-read rows, typed by the type
 algebra, every input in one unit, its own or the claim's, that no contract contradicts).
 A count has no quantity type; its ``role``, like a sum's role outside ``ROLES``, is the
-value's name only and types nothing.
+value's name only and types nothing. An ``expression`` names its inputs ``x0``, ``x1``, ...
+(each exactly once, no number of its own; ``round_to_cents(...)`` around the whole rounds half-up
+to 0.01): each input a figure as written that its cited field holds, checked as a cited
+value claim (``expression_inputs``; a percent only where printed as one), and the result
+the case evaluator's over those figures, as the eval scorer recomputes it (untyped).
 
 A count is **exact** only when it binds to one complete count entry a tool returned to
 this reader (``returned["counts"]``, ``returned_evidence``: a ``plx.aggregate`` count group
@@ -89,8 +96,21 @@ The gate (``check_items``), over the rows re-read for the reader and digest-chec
   No``, ``QC passed? No. 3``; ``Lot No. 5`` is a number), and the quote is long enough to tell
   one passage from another (two word tokens, eight characters, or an identifier-shaped
   token such as ``LOT-FXA``; never ``PO`` or ``.``; ``supported_quotes``). A quote is
-  untyped, as a page figure is, and so is every number in it for the wording check; a
-  number claim keeps the field and page-figure rules;
+  untyped, as a page figure is, and so is every number in it for the wording check. A
+  record's free-text field (``text_field``: ``row.content_text``, ``row.description``,
+  ``row.body``, ``row.notes`` and the like, of any record) is prose: a text value on it
+  that is not the whole cell is a quote as above, and a number value a figure of it
+  (``_check_text_figure``), the page-figure rule: the number at its written scale, not
+  negated (``not 12``) nor bounded (``at least 30``), outside identifiers and dates, with
+  the claim's unit and currency where it states them (printed beside it; a bare ``$``
+  names no currency), untyped; two occurrences with different meanings (the currency and
+  word printed with each: ``30 cases``, ``30 days``) are ambiguous unless a ``quote`` pins
+  one. A cell that is the value itself, and any structured column, keep the field rule.
+  A cited claim may add ``quote``, the
+  passage as written that holds its value: checked after the value passes, never instead
+  (``_quote_mismatch``): the quote must hold the value as written and the cited text the
+  quote (an original's text as a quote of it, any other cell verbatim), else
+  ``claim_value_mismatch``;
 * ``claim_value_unstated``: a passing text, enum or date claim (not a quote) whose item
   has text that does not state its value, in its form (a name verbatim on token
   boundaries and not negated, as a quote; an enum case-folded; a date as an ISO date or
@@ -132,7 +152,9 @@ The gate (``check_items``), over the rows re-read for the reader and digest-chec
   ``api://`` handles, ISO dates and timestamps, month-name dates, times, identifiers
   (``AO-26005B``, ``OR1000151885``, ``SO-2026-0003``) and names under a known id prefix
   (``SHA-256``, ``AO-77``, ``F2``); capitals or letters plus digits alone under another
-  prefix (``SKU-1509``, ``x1509``) leave the digits a number. Numbers in words count from
+  prefix (``SKU-1509``, ``x1509``) leave the digits a number, except, in the answer text
+  (``outcome``), a gate label (``_is_gate_label``: hyphenated, ``SKU-1509``, or an
+  identifier kind's shape; never ``NET30``, ``QTY-12``, ``Q3``). Numbers in words count from
   ten up. Text claims cover their exact text (``PO#5447``, ``sup-synth-1``). An ISO date or
   timestamp in the text (a whole token: ``Lot 2026-01-07-A`` is an identifier) is
   ``claim_unstructured`` too unless a date claim of the item (the close outcome: of the
@@ -178,21 +200,24 @@ a field with no role contract and no quantity type (an id, a price) passes as
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone, tzinfo
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from functools import lru_cache
+import bisect
 import json
 import math
 import re
 import unicodedata
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, NamedTuple, Sequence
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ontology.core import ValidationError
-from ontology.units import js_trim
+from ontology.units import (ISO_4217, RECEIVE_ALIASES, SIGN_CURRENCIES, UOM_ALIASES,
+                            UOM_CANONICAL, WORD_CODES, js_trim)
 
 from . import quantity_types as _qt
 from .citation_schemes import HANDLE_PREFIX
-from .cases import GAP_STATES, evaluate as _evaluate, parse_unit, quantity_role as _quantity_role
+from .cases import (GAP_STATES, UnitMismatch, evaluate as _evaluate, format_unit, parse_unit,
+                    quantity_role as _quantity_role)
 
 SCHEMA = "plx-claim-checks/v2"
 FAILURE_CODES = ("claim_uncited", "claim_changed_since", "claim_value_mismatch",
@@ -229,10 +254,19 @@ _THOUSANDS = re.compile(r"[-+]?\d{1,3}(?:,\d{3})+(?:\.\d*)?")
 # Identifiers: 2-8 capitals, optional hyphen, four or more digits, then letters/digits and
 # hyphen segments that hold a letter or only digits (AO-26005B, OR1000151885, PO12172025,
 # DVS-5003-3.78L-A, SO-2026-0003, also before a sentence's full stop).
-IDENTIFIER = re.compile(
-    r"(?<![A-Za-z0-9_])[A-Z]{2,8}-?\d{4,}[A-Z0-9]*"
-    r"(?:-(?:(?=[A-Z0-9.]*[A-Z])[A-Z0-9.]+|\d+(?!\d|\.\d)))*"
-    r"(?![A-Za-z0-9_])")
+_IDENTIFIER_TAIL = (r"[A-Z0-9]*(?:-(?:(?=[A-Z0-9.]*[A-Z])[A-Z0-9.]+|\d+(?!\d|\.\d)))*"
+                    r"(?![A-Za-z0-9_])")
+IDENTIFIER = re.compile(r"(?<![A-Za-z0-9_])[A-Z]{2,8}-?\d{4,}" + _IDENTIFIER_TAIL)
+# A label: the identifier shape with one or more capitals and any number of digits (Q3,
+# P-01234, F-26-0001, BC-12345D, OR1000000001, SKU-1509), never followed by a decimal part
+# (``V1.5`` is a version, ``_GLUED``). The final reply screen (``answer_gate.unbacked``)
+# reads each as one token a passed value, the question or its numbers must back. The
+# gate's answer-text check skips only the narrower gate labels (``_is_gate_label``:
+# hyphenated or an identifier kind's shape, never after a quantity, unit or currency
+# word); a claim's own text skips none. A lower-case prefix (``x3``, a multiplier) and a
+# currency code (``USD1200``, an amount) make no label.
+LABEL = re.compile(r"(?<![A-Za-z0-9_.])[A-Z]{1,8}-?\d+" + _IDENTIFIER_TAIL + r"(?![.,]\d)")
+_LABEL_PREFIX = re.compile(r"[A-Z]+")
 ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 HANDLE = re.compile(HANDLE_PREFIX + r"\S+")
 _MONTH = (r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?"
@@ -259,7 +293,7 @@ _PROSE_MOMENT = re.compile(r"(?<![\w.:-])" + _MOMENT + r"(?!\w|-\w|[:.]\d)")
 # the run that name a page the item cites (original://...#page=N) are locators; the run
 # ends at the first other number, which stays a quantity (``_page_locators``).
 # Only the words "page" / "pages": abbreviations (p., pp., pg) stay quantities needing a
-# claim (their period split the sentence for the wording check).
+# claim (review of 9d55e3f: their period split the sentence for the wording check).
 _PAGE_PHRASE = re.compile(r"\b(?P<word>pages?)\s+(\d+(?:\s*(?:,|and|to|-|–)\s*\d+)*)", re.I)
 # Words whose period is an abbreviation (no sentence end for the binder) only when a digit
 # follows it directly or after one space ("p. 4", "No. 3"); "Line E. The ..." keeps its end.
@@ -276,9 +310,104 @@ PAGE_TEXT = "text"
 # message's ``body_text`` is one.
 ORIGINAL_SCHEMES = ("original", "sharepoint", "graph-mail", "teams-channel", "teams-chat")
 ORIGINAL_TEXT_FIELDS = frozenset({"row.text", "row.content_text", "row.body_text"})
+# Free-text fields of any record (a SharePoint file's text, a mail body, a Mission Control
+# task's description, a note): a field whose last segment is one of these holds prose,
+# never one structured value (``text_field``). A number claimed on one is a figure of
+# that prose and a text claimed on one, when it is not the whole cell, a quote of it
+# (``_check_text_figure``, ``_check_quote``).
+TEXT_FIELD_NAMES = frozenset({"text", "content_text", "body_text", "body", "description",
+                              "notes", "note", "comment", "comments", "remarks", "memo"})
+# What makes a number of prose no figure of a value (``_text_figures``), checked around
+# it in the text. A bound or an approximation before it ("at least 30", "max. 30", "up
+# to 30", "about 30", "≥ 30") or after it, after at most one word ("30 max", "30 cases
+# or fewer", "30+"): the figure is not the value.
+_BOUND_BEFORE = re.compile(
+    r"(?:\b(?:at (?:least|most)|(?:no|not) (?:more|less|fewer|greater|higher|lower) than|"
+    r"(?:more|less|fewer|greater|higher|lower) than|over|under|above|below|up to|"
+    r"upwards of|in excess of|(?:min|max)(?:imum)?\.?(?: of)?|within|about|around|"
+    r"approx(?:imately)?\.?|roughly|nearly|almost|some|circa|ca\.)|[<>≤≥~±])[  ]*$",
+    re.I)
+_BOUND_AFTER = re.compile(
+    r"(?:\+|(?:[  ]+[A-Za-z]+)?[  ]*(?:or (?:more|less|fewer|above|over|under|"
+    r"below|so|greater|higher|lower)|at (?:most|least|the most)|(?:min|max)(?:imum)?|"
+    r"and (?:up|above|over|more)|plus)\b)", re.I)
+# A range: "20-30", "20 – 30", "20 to 30", "between 20 and 30": neither end is the value.
+_RANGE_BEFORE = re.compile(r"(?:\d[  ]*(?:-|–|—|to)[  ]*|"
+                           r"\bbetween[  ]+(?:\S+[  ]+and[  ]+)?)$", re.I)
+_RANGE_AFTER = re.compile(r"[  ]*(?:-|–|—|to)[  ]*\d", re.I)
+# A negator before a figure that `_NEGATOR` does not cover ("excluding 30", "except 30",
+# "other than 30"), and a negating answer after its clause's words ("30 cases? No.").
+_EXCLUDED_BEFORE = re.compile(r"\b(?:excluding|exclude[sd]?|except|other than|apart from|"
+                              r"instead of|rather than|not including)[  ]*$", re.I)
+_ANSWERED_NO = re.compile(r"[^.?!;\n]{0,40}?[  ]*[?:=][  ]*(?:no|not(?: yet)?|never|"
+                          r"false)(?=$|[ .,;:!?)\]])(?! [\w(])", re.I)
+# A number that is a label's number, not a quantity: after an id label of the allow-list
+# with or without its delimiters ("SKU 4410", "SKU: 4410", "Order #: 4521", "Invoice No.
+# 4521", "Lot - 5", "page 3"), or after one "#" (a Markdown heading's run, "### 15%
+# deposit", is no label) or "No."; a glued or joined token ("ABC12345", "10/14/2026",
+# "905-555-0187", "1st") is no figure either (``_joined``). An unknown capitalised word
+# is no label.
+_ID_LABEL_BEFORE = re.compile(
+    r"(?:(?:^|(?<=[^\w.]))(?P<label>"
+    # Record and document numbers (the review's allow-list).
+    r"sku|p\.?o|inv|invoice|order|s\.?o|ao|batch|lot|account|acct|ref|reference|item|"
+    r"part|quote|quotation|case|ticket|job|rro|qrm|vendor|customer|task|receipt|"
+    r"shipment|container|tracking|bol|b/l|pi|so|mo|code|"
+    # Locators, versions, contacts and addresses.
+    r"pages?|pg|pp?|steps?|stages?|line|row|sections?|clauses?|rule|table|"
+    r"figure|fig|chapter|gap|phase|question|q|version|ver|v|rev|revision|"
+    r"model|serial|phone|tel|fax|mobile|cell|ext|extension|id|room|bay|aisle|shelf|bin|"
+    r"dock|door|zone|form|route|store|site|suite|unit|apt|zip|zip code|postal|"
+    r"postal code|postcode)\.?"
+    # The label's own number word and delimiters ("Order #:", "Invoice No.", "Lot:").
+    r"(?:[  ]*(?:no|nr|num|number)\b\.?)?[  ]*(?:[:#\-]+[  ]*)*"
+    # A bare "#" names a number; a run of them is a Markdown heading ("### 15% deposit").
+    r"|(?:^|(?<=[^\w#]))(?:#|no\.|nr\.)[  ]*:?[  ]*)$", re.I)
+# A quantity label is never an id label: "TOTAL QTY 1513", "CARTONS 245", "GROSS WT".
+_QUANTITY_LABELS = frozenset({
+    "total", "qty", "quantity", "cartons", "carton", "cases", "pcs", "pieces", "units", "ea",
+    "each", "gross", "net", "wt", "weight", "kg", "lb", "lbs", "pallets", "boxes", "amount",
+    "subtotal", "balance", "count", "yield"})
+# A street number ("123 Main St"), a state code before a zip ("NY 10001").
+_STREET_AFTER = re.compile(r"(?:[  ]+[A-Z][\w'.-]*){1,3}[  ]+(?:St|Street|Ave|"
+                           r"Avenue|Rd|Road|Blvd|Boulevard|Dr|Drive|Ln|Lane|Way|Hwy|Highway|"
+                           r"Ct|Court|Pl|Place|Pkwy|Parkway|Cres|Crescent|Suite)\b")
+# A heading label: one of these words and a number with a colon after it at a clause or line
+# start ("Release 2:", "Step 3:", "Line 5:"). It numbers what follows, so its number is no
+# figure. The colon is required (then white space or the end) and the word must start a
+# clause: the text's or a line's start, or after ";" or ".". Any other word keeps its number
+# ("Received 3: ok", "Qty 2:").
+HEADING_WORDS = ("release", "step", "item", "line", "part", "section", "phase", "stage",
+                 "option", "round", "version", "revision", "page")
+_HEADING_LABEL = re.compile(r"(?:^|(?<=[\n;.]))[ \t]*(?P<word>" + "|".join(HEADING_WORDS)
+                            + r")[ \t]+(?P<number>\d+)[ \t]*:(?=\s|$)", re.IGNORECASE)
+_LAST_WORD = re.compile(r"([A-Za-z]+)[ \u00a0]*[:#]?[ \u00a0]*$")
+_STATE_BEFORE = re.compile(r"\b[A-Z]{2}[  ]+$")
+_PHONE = re.compile(r"(?<!\w)(?:\+\d{1,3}[ . -]?)?\(?\d{3}\)?[ . -]?\d{3}[ . -]"
+                    r"\d{4}(?!\w)")
+_TOKEN_JOINER = frozenset("-/\\.:_@#–—")
+# A scale word after a figure multiplies it ("1.5 million", "12 thousand", "3 dozen").
+_SCALE_WORDS = {"hundred": Decimal(100), "thousand": Decimal(1000), "dozen": Decimal(12),
+                "million": Decimal(10) ** 6, "mn": Decimal(10) ** 6, "mln": Decimal(10) ** 6,
+                "billion": Decimal(10) ** 9, "bn": Decimal(10) ** 9,
+                "trillion": Decimal(10) ** 12}
+_SCALE_AFTER = re.compile(r"[  ]*(" + "|".join(_SCALE_WORDS) + r")\b", re.I)
+_COMPOUND = re.compile(r"-([a-z]{2,})\b")
+_ORDINAL = re.compile(r"(?:st|nd|rd|th)\b", re.I)
+# A currency printed right before a prose figure ("USD 1,710.00", "US$10,800", "€5") or
+# right after it ("1,710.00 USD"). A bare "$" names no single currency.
+_CURRENCY_BEFORE = re.compile(r"(?:\b(?P<code>[A-Z]{3})[  ]?|(?P<sign>(?:US|CA|C|AU|A|NZ|"
+                              r"HK|S)?\$|€|£|¥)[  ]?)$")
+_CURRENCY_AFTER = re.compile(r"[  ]?(?P<code>[A-Z]{3})\b")
+_CURRENCY_SIGNS = {"US$": "USD", "CA$": "CAD", "C$": "CAD", "AU$": "AUD", "A$": "AUD",
+                   "NZ$": "NZD", "HK$": "HKD", "S$": "SGD", "€": "EUR", "£": "GBP",
+                   "$": "$", "¥": "¥"}
 # Characters that join two word runs into one token (``re-quote``, ``1,509``, ``3.78L``,
-# ``it's``, ``10:30``): a quote never starts or ends between them.
+# ``it's``, ``10:30``): a quote never starts or ends between them. A comma or a colon
+# joins two digits only (``1,509``, ``10:30``); between other characters it separates
+# (``app_quote,status`` in a CSV row, ``Status:Open``).
 _JOINERS = frozenset("-.,/'\u2019:")
+_DIGIT_JOINERS = frozenset(",:")
 _WORD_CHAR = re.compile(r"\w")
 _WORD_RUN = re.compile(r"\w+")
 # A negator written directly before a quoted passage reverses it ("not approved", "never
@@ -301,11 +430,13 @@ _NEGATED_AFTER = re.compile(r"(?: ?[?:=\-\u2013\u2014] ?(?:" + _ANSWERS + r"|no)
                             r"(?=$|[ .,;:!?)\]])(?! [\w(])", re.I)
 
 # Names of standards, algorithms and short codes: 2-8 capitals, a hyphen, digits (SHA-256,
-# ISO-8601, UTF-8, AO-77). A single-letter code (P-02458) is not one: claim it as text.
+# ISO-8601, UTF-8, AO-77). A single-letter code (P-02458) is not one: in a claim's text,
+# claim it as text; in an answer text it is a gate label (``_is_gate_label``).
 # Prefixes whose hyphenated or glued digits are names, not quantities: standards and
 # algorithms (SHA-256, ISO-8601, UTF-8, RFC-3339), PLX record codes (AO-77, SO-12, PO-5,
 # OR-3, BC-9) and the case's own item ids (F2, G1, C3, P1, V1, L1). Any other letters
-# glued or hyphenated to digits (SKU-1509, x1509) leave the digits a number.
+# glued or hyphenated to digits (SKU-1509, x1509) leave the digits a number, except a gate
+# label in an answer text (``_is_gate_label``: SKU-1509, never NET30 or QTY-12).
 KNOWN_ID_PREFIXES = frozenset({"SHA", "ISO", "UTF", "RFC", "AO", "SO", "PO", "OR", "BC", "MO",
                                "F", "G", "C", "P", "V", "L"})
 _DIGITS_ONLY_ID = re.compile(r"([A-Z]{2,8})-?(\d+(?:-\d+)*)")
@@ -331,12 +462,27 @@ _ID_COLUMN = re.compile(r"^(?:id[a-z0-9]*|[a-z0-9_]*_id|[a-z0-9_]*(?:code|number
 # Columns whose values are status words (status, state, order_status, approvalState).
 _STATUS_COLUMN = re.compile(r"(?:^|_)(?:[Ss]tatus|[Ss]tate|STATUS|STATE)$|[a-z0-9](?:Status|State)$")
 _CLAIM_KEYS = frozenset({"value", "citation", "field", "calculation", "role", "unit", "op",
-                         "of", "currency"})
+                         "of", "currency", "quote", "expression"})
+# A cited claim's ``quote``: the passage as written in the cited text that holds its value
+# (``_quote_mismatch``). It adds a check and never replaces one.
+MAX_QUOTE_CHARS = 500
 # A value computed over cited rows in the claim itself (``op`` over ``of``): the number of
-# distinct records cited, or the Decimal sum of one field of each.
-OPS = ("count", "sum")
+# distinct records cited, the Decimal sum of one field of each, or an ``expression`` over
+# figures each input reads (``_check_expression``).
+OPS = ("count", "sum", "expression")
 MAX_OP_INPUTS = 100
+MAX_VALUE_CHARS = 200
 _OP_INPUT_KEYS = frozenset({"citation", "field", "unit"})
+# An expression input: the figure as written (``value``) where its cited field holds it,
+# pinned by an optional ``quote``, in an optional ``unit`` (``%``: a printed percent).
+_EXPRESSION_INPUT_KEYS = frozenset({"citation", "field", "value", "quote", "unit"})
+_EXPRESSION_FIGURE = re.compile(r"^[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?%?$")
+MAX_EXPRESSION_CHARS = 500
+# ``x<i>``, the i-th input of an expression claim, and ``round_to_cents(<expression>)``
+# around the whole (half-up to 0.01): the eval scorer's names and rounding
+# (``evals.score.ROUND_TO_CENTS``, ``_INPUT_NAME``), so both recompute one value.
+EXPRESSION_INPUT = re.compile(r"\bx(?:0|[1-9][0-9]{0,2})\b")
+ROUND_TO_CENTS = re.compile(r"^\s*round_to_cents\((.*)\)\s*$", re.S)
 _CURRENCY = re.compile(r"^[A-Z]{3}$")
 # A number written as a lower bound: "at least 8", "no fewer than 8", "8 or more", "8+".
 _AT_LEAST_BEFORE = re.compile(r"(?:\bat least|\bno (?:fewer|less) than|\bnot (?:fewer|less) "
@@ -416,7 +562,9 @@ def parse_value_claims(raw: Any, handles: Sequence[str],
 
     Each claim cites one of ``handles`` (the item's own citations) with a ``field``,
     one recorded ``calculation`` id, or computes its value over cited rows (``op``
-    ``count`` or ``sum`` ``of`` inputs, each one of ``handles``; a sum's with a ``field``).
+    ``count`` or ``sum`` ``of`` inputs, each one of ``handles``; a sum's with a ``field``;
+    an ``expression``'s each a figure ``value`` read on its ``field``, the expression
+    naming them ``x0``, ``x1``, ..., every one, and holding no number of its own).
     Raises ``ValidationError`` with a stable code.
     """
     if isinstance(raw, (str, Mapping)) or not isinstance(raw, Sequence):
@@ -431,19 +579,28 @@ def parse_value_claims(raw: Any, handles: Sequence[str],
         if isinstance(value, bool) or not isinstance(value, (int, str)):
             raise ValidationError(f"value_claim_value_must_be_integer_or_string:{index}")
         text = str(value).strip()
-        if not text or len(text) > 200:
+        if not text:
             raise ValidationError(f"invalid_value_claim_value:{index}")
+        if len(text) > MAX_VALUE_CHARS:
+            raise ValidationError(f"value_claim_value_too_long:{index}")
+        if "expression" in item and item.get("op") != "expression":
+            raise ValidationError(f"invalid_value_claim:{index}")
         claim: dict[str, Any] = {"value": text,
                                  "kind": "number" if _PLAIN_NUMBER.match(text) else "text"}
         if sum(key in item for key in ("citation", "calculation", "op")) != 1 \
                 or ("op" in item) != ("of" in item):
             raise ValidationError(f"value_claim_needs_citation_or_calculation:{index}")
+        if "quote" in item and "citation" not in item:
+            # A computed value is no passage of one record.
+            raise ValidationError(f"invalid_value_claim_quote:{index}")
         if "op" in item:
             if "field" in item:
                 raise ValidationError(f"invalid_value_claim_field:{index}")
             claim.update(op=item["op"], of=_op_inputs(item, handles, index))
             if claim["kind"] != "number":
                 raise ValidationError(f"invalid_value_claim_value:{index}")
+            if item["op"] == "expression":
+                claim["expression"] = _expression_shape(item, len(claim["of"]), index)
         elif "citation" in item:
             if item["citation"] not in handles:
                 raise ValidationError(f"value_claim_citation_not_cited:{index}")
@@ -451,6 +608,12 @@ def parse_value_claims(raw: Any, handles: Sequence[str],
             if not isinstance(field, str) or not (_FIELD.match(field) or field == PAGE_TEXT):
                 raise ValidationError(f"invalid_value_claim_field:{index}")
             claim.update(citation=item["citation"], field=field)
+            if "quote" in item:
+                quote = item["quote"]
+                if not isinstance(quote, str) or not quote.strip() \
+                        or len(quote) > MAX_QUOTE_CHARS:
+                    raise ValidationError(f"invalid_value_claim_quote:{index}")
+                claim["quote"] = quote.strip()
         else:
             if "field" in item:
                 raise ValidationError(f"invalid_value_claim_field:{index}")
@@ -490,19 +653,28 @@ def _op_inputs(item: Mapping[str, Any], handles: Sequence[str], index: int
                ) -> list[dict[str, str]]:
     """The cited inputs of an ``op`` claim, shape only: 1 to ``MAX_OP_INPUTS``, each one of
     ``handles``, none twice; a sum's each with a ``field`` (a row column) and an optional
-    ``unit``, a count's a citation alone."""
+    ``unit``, a count's a citation alone, an expression's a figure (``_expression_input``)."""
     op, inputs = item["op"], item["of"]
     if op not in OPS or isinstance(inputs, (str, Mapping)) or not isinstance(
             inputs, Sequence) or not 1 <= len(inputs) <= MAX_OP_INPUTS:
         raise ValidationError(f"invalid_value_claim_op:{index}")
+    keys = {"sum": _OP_INPUT_KEYS, "count": frozenset({"citation"}),
+            "expression": _EXPRESSION_INPUT_KEYS}[op]
     out, seen = [], set()
     for given in inputs:
-        if not isinstance(given, Mapping) or set(given) - (
-                _OP_INPUT_KEYS if op == "sum" else {"citation"}):
+        if not isinstance(given, Mapping) or set(given) - keys:
             raise ValidationError(f"invalid_value_claim_op:{index}")
         if given.get("citation") not in handles:
             raise ValidationError(f"value_claim_citation_not_cited:{index}")
         entry = {"citation": given["citation"]}
+        if op == "expression":
+            entry = _expression_input(given, index)
+            key = tuple(entry.get(name) for name in ("citation", "field", "value", "quote"))
+            if key in seen:
+                raise ValidationError(f"value_claim_duplicate_input:{index}")
+            seen.add(key)
+            out.append(entry)
+            continue
         if op == "sum":
             field, unit = given.get("field"), given.get("unit")
             if not isinstance(field, str) or not _FIELD.match(field):
@@ -520,6 +692,88 @@ def _op_inputs(item: Mapping[str, Any], handles: Sequence[str], index: int
             raise ValidationError(f"value_claim_duplicate_input:{index}")
         seen.add((entry["citation"], entry.get("field")))
         out.append(entry)
+    return out
+
+
+def _expression_input(given: Mapping[str, Any], index: int) -> dict[str, str]:
+    """One expression input, shape only: its ``citation``, a ``field`` (a row column or a
+    page's ``text``), the figure as written (``value``: digits, an optional thousands comma
+    grouping and fraction, ``%`` for a printed percent), an optional ``quote`` and an
+    optional ``unit`` (``%`` alone beside a percent)."""
+    field, figure = given.get("field"), given.get("value")
+    if not isinstance(field, str) or not (_FIELD.match(field) or field == PAGE_TEXT):
+        raise ValidationError(f"invalid_value_claim_field:{index}")
+    if isinstance(figure, bool) or not isinstance(figure, (int, str)) \
+            or not _EXPRESSION_FIGURE.match(str(figure).strip()):
+        raise ValidationError(f"value_claim_expression_input_value:{index}")
+    entry = {"citation": given["citation"], "field": field, "value": str(figure).strip()}
+    if "quote" in given:
+        quote = given["quote"]
+        if not isinstance(quote, str) or not quote.strip() or len(quote) > MAX_QUOTE_CHARS:
+            raise ValidationError(f"invalid_value_claim_quote:{index}")
+        entry["quote"] = quote.strip()
+    unit = given.get("unit")
+    if unit is not None:
+        percent = isinstance(unit, str) and _page_unit(unit) == "percent"
+        try:
+            if not isinstance(unit, str) or len(unit) > 100:
+                raise ValidationError("unit")
+            if not percent:
+                parse_unit(unit)
+        except ValidationError:
+            raise ValidationError(f"invalid_value_claim_unit:{index}") from None
+        if entry["value"].endswith("%") and not percent:
+            raise ValidationError(f"invalid_value_claim_unit:{index}")
+        entry["unit"] = unit.strip()
+    return entry
+
+
+def _expression_shape(item: Mapping[str, Any], count: int, index: int) -> str:
+    """An expression claim's ``expression``, shape only: at most ``MAX_EXPRESSION_CHARS``,
+    optionally ``round_to_cents(...)`` around the whole, naming each of its ``count``
+    inputs ``x0`` ... exactly once and nothing else, with no number of its own (every
+    operand is a figure a cited text holds; a figure printed twice is two inputs, each
+    quoted where it is printed, so no input builds a constant, x0 / x0). The
+    evaluator decides the rest when the claim is checked."""
+    expression = item.get("expression")
+    if not isinstance(expression, str) or not expression.strip() \
+            or len(expression) > MAX_EXPRESSION_CHARS:
+        raise ValidationError(f"invalid_value_claim_expression:{index}")
+    rounded = ROUND_TO_CENTS.match(expression)
+    body = rounded.group(1) if rounded else expression
+    rest = EXPRESSION_INPUT.sub(" ", body)
+    if re.search(r"\d", rest):
+        raise ValidationError(f"value_claim_expression_literal:{index}")
+    named = EXPRESSION_INPUT.findall(body)
+    names = set(named)
+    if re.search(r"[A-Za-z_]", rest) or names - {f"x{n}" for n in range(count)}:
+        raise ValidationError(f"value_claim_expression_name:{index}")
+    if len(named) != len(names):
+        raise ValidationError(f"value_claim_expression_repeated_input:{index}")
+    if len(names) != count:
+        raise ValidationError(f"value_claim_expression_unused_input:{index}")
+    return expression.strip()
+
+
+def expression_inputs(claim: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """An expression claim's inputs as the cited value claims the gate checks each by
+    (``_check_value_claim``): the figure without its ``%`` and, for a percent, unit
+    ``percent`` (the page must print it as one); none for any other claim."""
+    if claim.get("op") != "expression":
+        return []
+    out = []
+    for given in claim.get("of") or ():
+        figure = given["value"]
+        percent = figure.endswith("%") or _page_unit(given.get("unit") or "") == "percent"
+        sub = {"value": figure.rstrip("%"), "kind": "number", "citation": given["citation"],
+               "field": given["field"]}
+        if "quote" in given:
+            sub["quote"] = given["quote"]
+        if percent:
+            sub["unit"] = "percent"
+        elif given.get("unit"):
+            sub["unit"] = given["unit"]
+        out.append(sub)
     return out
 
 
@@ -917,7 +1171,10 @@ def _same_value(claim: Mapping[str, Any], cell: Any, form: str = "text",
         return number is not None and number == to_decimal(claim["value"])
     if cell is None or isinstance(cell, bool):
         return False
-    text = str(cell).strip()
+    # A JSON cell (a Teams sender, a chat's participants) is stated as the projection
+    # writes it: canonical JSON (ontology/project.py ``_text``), never Python's repr.
+    text = (json.dumps(cell, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            if isinstance(cell, (dict, list)) else str(cell).strip())
     if text == claim["value"]:
         return True
     if form == "enum":
@@ -987,11 +1244,94 @@ def _role_accepts(claimed: str, pinned: str) -> bool:
 
 def _check_value_claim(claim: Mapping[str, Any], handles: Sequence[str],
                        evidence: _Evidence) -> dict[str, Any]:
-    out = {key: claim[key] for key in ("value", "citation", "field", "calculation", "role",
-                                       "unit", "op", "of", "currency") if key in claim}
+    """A value claim's result (``_checked_value``); a passed one that gives a ``quote``
+    then passes only when the quote holds too (``_quote_mismatch``)."""
+    result = _checked_value(claim, handles, evidence)
+    if "quote" not in claim or result.get("status") != "passed":
+        return result
+    problem = _quote_mismatch(claim, evidence.row(claim["citation"]), result)
+    if problem is not None:
+        return _fail({key: result[key] for key in _RESULT_KEYS if key in result},
+                     "claim_value_mismatch", problem)
+    return {**result, "quote_basis": "verified"}
+
+
+_RESULT_KEYS = ("value", "citation", "field", "calculation", "role", "unit", "op", "of",
+                "currency", "quote")
+
+
+def _quote_mismatch(claim: Mapping[str, Any], resolved: Mapping[str, Any] | None,
+                    result: Mapping[str, Any]) -> str | None:
+    """Why a cited claim's ``quote`` does not hold, or None. The quote must hold the value
+    as written (a number as a number token of the same value, a status word case-folded,
+    a date as written, other text verbatim on token boundaries and not negated inside the
+    quote), and the cited text must hold the quote: an original's text or page text as a
+    quote of it (``supported_quotes``), any other cell verbatim on token boundaries. A cell
+    that is no text or number, or a row not readable now, holds no quote (fail closed).
+    The value's own check has passed already; the quote only narrows it."""
+    quote, value, field = claim["quote"], claim["value"], claim["field"]
+    if resolved is None:
+        return "the cited row is not readable now, so the quote cannot be verified"
+    if field == PAGE_TEXT:
+        text, original = resolved.get("text"), True
+    else:
+        _exists, text = dig(resolved, field)
+        original = field in ORIGINAL_TEXT_FIELDS and \
+            claim["citation"].partition("://")[0] in ORIGINAL_SCHEMES or \
+            isinstance(text, str) and text_field(field) and result.get("value_basis") in (
+                "text_span", "text_figure")
+    want = _normalised(quote)
+    if isinstance(text, (int, float, Decimal)) and not isinstance(text, bool):
+        # A number cell holds a quote that is that one number as written (``12500`` of
+        # 12500.0), nothing around it.
+        whole = NUMBER.fullmatch(want)
+        if whole is None or to_decimal(text) is None \
+                or number_value(whole) != to_decimal(text):
+            return f"the cited {field} is a number; the quote is not that number"
+        text = want
+    if not isinstance(text, str):
+        return f"the cited {field} holds no text, so it holds no quote"
+    if claim["kind"] == "number":
+        number = to_decimal(value)
+        percent = "unit" in claim and _page_unit(claim["unit"]) == "percent"
+        held = any((figure.value * 100 if figure.percent and percent else figure.value)
+                   == number for figure in _text_figures(want))
+    elif result.get("value_form") == "enum":
+        folded = _normalised(value).casefold().replace("_", " ")
+        held = bool(_spans(folded, want.casefold().replace("_", " ")))
+    elif result.get("value_form") == "date":
+        held = _normalised(value) in want
+    else:
+        held = any(not _negated(_normalised(value), want, at)
+                   for at in _spans(_normalised(value), want)) or bool(
+            claim["kind"] == "text" and isinstance(text, str) and _ISO_DAY.fullmatch(value)
+            and _printed_date_problem(claim, text, "the cited text") is None)
+    if not held:
+        return _not_in_quote(value)
+    if original:
+        return _quote_problem(quote, text, f"the cited {field}")
+    if not quoted_spans(quote, text):
+        return f"the cited {field} does not hold the quote verbatim on token boundaries"
+    return None
+
+
+def _not_in_quote(value: str) -> str:
+    """Why a claim's quote fails because it does not hold the claim's value, in words a
+    repair can act on (EMD-10: a value longer than the quote meant to hold it)."""
+    shown = value if len(value) <= 60 else value[:57] + "..."
+    return (f"the value {shown} is not inside its own quote: a quote is the passage as "
+            "written that holds the whole value; quote a passage that contains all of it, "
+            "or claim as the value only what the quote holds")
+
+
+def _checked_value(claim: Mapping[str, Any], handles: Sequence[str],
+                   evidence: _Evidence) -> dict[str, Any]:
+    out = {key: claim[key] for key in _RESULT_KEYS if key in claim}
     role = claim.get("role")
     if claim.get("op") == "count":
         return _check_count(claim, out, handles, evidence)
+    if claim.get("op") == "expression":
+        return _check_expression(claim, out, handles, evidence)
     if "calculation" in claim or claim.get("op") == "sum":
         if "calculation" in claim:
             calc, name = evidence.calcs.get(claim["calculation"]), claim["calculation"]
@@ -1067,6 +1407,12 @@ def _check_value_claim(claim: Mapping[str, Any], handles: Sequence[str],
         return _fail(out, "claim_value_mismatch", f"the cited row has no {field}")
     if claim["kind"] == "text" and field in ORIGINAL_TEXT_FIELDS and \
             handle.partition("://")[0] in ORIGINAL_SCHEMES:
+        return _check_quote(claim, out, cell, field)
+    if isinstance(cell, str) and text_field(field) and not _same_value(claim, cell):
+        # Prose of any record: a figure or a quote of it, never the whole cell. A cell that
+        # is the value itself keeps the field rule below (contracts, roles, units).
+        if claim["kind"] == "number":
+            return _check_text_figure(claim, out, cell, f"the cited {field}")
         return _check_quote(claim, out, cell, field)
     form = value_form(claim, handle, resolved, field)
     zone = None
@@ -1193,6 +1539,160 @@ def _check_count(claim: Mapping[str, Any], out: dict[str, Any], handles: Sequenc
                      f"a count of records has no unit, the claim says {claim['unit']}")
     return {**out, "status": "passed", "role_basis": "calculation", "quantity_type": None,
             "bound": bound}
+
+
+def _check_expression(claim: Mapping[str, Any], out: dict[str, Any], handles: Sequence[str],
+                      evidence: _Evidence) -> dict[str, Any]:
+    """An expression claim (``op: expression``): every input a figure its cited field holds
+    now, checked as a cited value claim is (``expression_inputs``: on a page or in free
+    text the figure rule, its quote pinning the occurrence; a percent only where it is
+    printed as one), then the expression evaluated over those figures by the case
+    evaluator (``operating.cases.evaluate``: Decimal, units combined and never added
+    across; ``round_to_cents`` rounds half-up to 0.01) as the eval scorer recomputes it: a
+    percent is its fraction, an input's unit its own (else none). The claimed value must
+    be the result, the claim's unit the result's. A figure of text grounds no quantity
+    type: the result is untyped, a quantity role ``claim_role_unverified``."""
+    values: dict[str, tuple[Decimal, Any]] = {}
+    unverified = False
+    marks: list[tuple[str | None, str | None]] = []
+    places: dict[tuple[Any, ...], str] = {}
+    for number, sub in enumerate(expression_inputs(claim)):
+        percent = sub.get("unit") == "percent"
+        shown = f"input x{number} ({sub['value']}{'%' if percent else ''})"
+        result = _check_value_claim(sub, handles, evidence)
+        if result.get("status") != "passed":
+            return _fail(out, result.get("code") or "claim_value_mismatch",
+                         f"{shown}: {result.get('detail')}"[:400])
+        figure = to_decimal(sub["value"])
+        if figure is None:
+            return _fail(out, "claim_value_mismatch", f"{shown} is no number")
+        # Once by place: an input that may be the figure another input reads (the same
+        # spot, however quoted or written: "1,000" and "1000") is that input again.
+        for place in _input_places(sub, evidence):
+            if place in places:
+                return _fail(out, "claim_value_mismatch", (
+                    f"value_claim_expression_repeated_input: {shown} reads the figure "
+                    f"input {places[place]} reads; name each input once (a figure printed "
+                    "twice is two inputs, each quoted where it is printed)"))
+            places[place] = f"x{number}"
+        if percent:
+            if result.get("unit_basis") in (None, "unverified"):
+                return _fail(out, "claim_value_mismatch", f"{shown}: the cited text never "
+                             "prints it as a percent")
+            figure, unit = figure / 100, parse_unit("1")
+        else:
+            unit = parse_unit(sub.get("unit") or "1")
+            unverified = unverified or (
+                "unit" in sub and result.get("unit_basis") in (None, "unverified"))
+            marks.append(_printed_mark(sub, evidence))
+        values[f"x{number}"] = (figure, unit)
+    rounded = ROUND_TO_CENTS.match(claim["expression"])
+    body = rounded.group(1) if rounded else claim["expression"]
+    problem = _mixed_marks(marks, body)
+    if problem is not None:
+        return _fail(out, "claim_unit_mismatch", problem)
+    try:
+        value, unit, _inexact, _names = _evaluate(body, values)
+    except UnitMismatch:
+        return _fail(out, "claim_unit_mismatch", "the expression combines inputs in units "
+                     "that do not add (state each input's unit as its text prints it)")
+    except (ValidationError, ArithmeticError, RecursionError) as error:
+        return _fail(out, "claim_value_mismatch", "the expression does not evaluate over "
+                     f"its inputs ({str(error)[:80]})")
+    if rounded:
+        value = value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if to_decimal(claim["value"]) != value:
+        return _fail(out, "claim_value_mismatch",
+                     f"the expression is {_plain(value)} over its inputs, not {claim['value']}")
+    if claim.get("role") in QUANTITY_ROLES:
+        return _fail(out, "claim_role_unverified", "an expression over figures of a text has "
+                     f"no quantity type, so the claimed {claim['role']} cannot be verified")
+    if "unit" in claim:
+        if parse_unit(claim["unit"]) != unit:
+            return _fail(out, "claim_unit_mismatch",
+                         f"the expression is in {format_unit(unit)} by its inputs' units, the "
+                         f"claim says {claim['unit']}")
+        out["unit_basis"] = "unverified" if unverified else "calculation"
+    return {**out, "status": "passed", "role_basis": "calculation", "quantity_type": None}
+
+
+def _input_figures(sub: Mapping[str, Any], evidence: _Evidence
+                   ) -> tuple[str, list[_Figure]] | None:
+    """(normalised cited text, the supporting figures of an expression input's value in
+    it, inside its quote where it gives one); None for a cell that is no text (a
+    structured cell is its own place and prints no unit or currency)."""
+    resolved = evidence.row(sub["citation"])
+    if not isinstance(resolved, Mapping):
+        return None
+    text = resolved.get("text") if sub["field"] == PAGE_TEXT else dig(resolved, sub["field"])[1]
+    if not isinstance(text, str) or not (sub["field"] == PAGE_TEXT or text_field(sub["field"])):
+        return None
+    text, breaks, value = _normalised_text(text), _line_breaks(text), to_decimal(sub["value"])
+    percent = sub.get("unit") == "percent"
+    found = [figure for figure in _text_figures(text, breaks) if figure.supports and (
+        figure.value * 100 if figure.percent and percent else figure.value) == value]
+    if "quote" in sub:
+        want = _normalised(sub["quote"])
+        spans = [(at, at + len(want)) for at in _spans(want, text)]
+        found = [figure for figure in found
+                 if any(start <= figure.start and figure.end <= end for start, end in spans)]
+    return text, found
+
+
+def _input_places(sub: Mapping[str, Any], evidence: _Evidence) -> set[tuple[Any, ...]]:
+    """Where an expression input's figure may be printed: each supporting occurrence (the
+    citation and the figure's offset in the cited text), whatever the quote or the
+    number's formatting; a structured cell is its one place."""
+    read = _input_figures(sub, evidence)
+    if read is None:
+        return {(sub["citation"], sub["field"])}
+    return {(sub["citation"], sub["field"], figure.start) for figure in read[1]}
+
+
+def _printed_mark(sub: Mapping[str, Any], evidence: _Evidence
+                  ) -> tuple[str | None, str | None]:
+    """(currency, page unit) the cited text prints beside an expression input's figure
+    (``_input_figures``: ``$``, an ISO code, ``kg``), or None for either it does not print
+    or prints more than one way; a structured cell prints neither."""
+    read = _input_figures(sub, evidence)
+    if read is None:
+        return None, None
+    text, found = read
+    currencies = {figure.currency for figure in found}
+    # A unit ending a sentence ("500 g.") is no verified unit, yet it is printed: here,
+    # where it can only refuse, it counts.
+    units = {_PAGE_UNITS.get(figure.word or "") or _sentence_unit(text, figure.end)
+             for figure in found}
+    return (next(iter(currencies)) if len(currencies) == 1 else None,
+            next(iter(units)) if len(units) == 1 else None)
+
+
+_SENTENCE_UNIT = re.compile(r"[ \t\u00a0]*([A-Za-z]{1,6})\.(?=\s|$)")
+
+
+def _sentence_unit(text: str, end: int) -> str | None:
+    """The page unit a figure ending at ``end`` prints right before a sentence's period
+    ("500 g."), or None."""
+    found = _SENTENCE_UNIT.match(text, end)
+    return _PAGE_UNITS.get(found.group(1).casefold()) if found else None
+
+
+def _mixed_marks(marks: Sequence[tuple[str | None, str | None]], body: str) -> str | None:
+    """Why an expression's inputs, as their text prints them, do not combine
+    (``expression_mixed_units``), or None: two currencies anywhere (two bare ``$`` combine;
+    a bare ``$`` beside a named one, ``US$``, ``USD``, ``C$``, does not); and in a sum or
+    difference alone, two page units ("10 kg" and "500 g."). Inputs that print none are left
+    as they are."""
+    currencies = {mark[0] for mark in marks} - {None}
+    if len(currencies) > 1:
+        return ("expression_mixed_units: the inputs are printed in different currencies ("
+                f"{', '.join(sorted(currencies))}); an expression combines one currency")
+    if not re.search(r"[*/]", body):
+        units = {mark[1] for mark in marks} - {None}
+        if len(units) > 1:
+            return ("expression_mixed_units: the inputs added or subtracted are printed in "
+                    f"different units ({', '.join(sorted(units))})")
+    return None
 
 
 @lru_cache(maxsize=None)
@@ -1387,26 +1887,44 @@ def _sum_calculation(claim: Mapping[str, Any], handles: Sequence[str],
             "unit": next(iter(inputs.values()))["unit"]}
 
 
-# Units a page's machine-read text may print right after a figure ("1502 EA", "25 kg"),
-# case-folded, by the unit they mean; the percent words are the number's own scale.
-_PAGE_UNITS = {**dict.fromkeys(("ea", "each", "pc", "pcs", "piece", "pieces", "unit", "units"),
-                               "ea"),
-               **dict.fromkeys(_PERCENT_UNITS, "percent"), "lbs": "lb",
-               **{unit: unit for unit in ("kg", "g", "mg", "lb", "oz", "l", "ml", "gal")}}
-_UNIT_AFTER = re.compile(r"[ \t\u00a0]*([A-Za-z]+)\b")
+# Units a page's machine-read text may print right after a figure ("1502 EA", "25 kg",
+# "68,160 grams"), case-folded, by the unit they mean: the Portal's units and spellings
+# (``ontology/units.py``, the one unit table: "cases" is cse, "kilograms" kg), the
+# spellings a page uses that the Portal lists none for, and the percent words (the
+# number's own scale). Assumption, not measured: a ton is the metric tonne (t).
+_PAGE_UNITS = {**{unit: unit for unit in UOM_CANONICAL}, **UOM_ALIASES, **RECEIVE_ALIASES,
+               **dict.fromkeys(("piece", "pieces"), "ea"),
+               **dict.fromkeys(("kilo", "kilos", "kilogramme", "kilogrammes", "kgm"), "kg"),
+               **dict.fromkeys(("gm", "gms"), "g"), "lbm": "lb",
+               **dict.fromkeys(("t", "mt", "mts", "ton", "tons", "tonne", "tonnes",
+                                "metric ton", "metric tons", "metric tonne", "metric tonnes"),
+                               "t"),
+               **dict.fromkeys(("litres", "liters", "ltr", "ltrs", "lts"), "l"),
+               **dict.fromkeys(("millilitre", "millilitres", "milliliter", "milliliters",
+                                "mls"), "ml"),
+               **dict.fromkeys(("pk", "pks", "pkg", "pkgs"), "pack"),
+               **dict.fromkeys(("bx", "bxs"), "box"),
+               **dict.fromkeys(("pallet", "pallets", "plt", "plts"), "plt"),
+               **dict.fromkeys(_PERCENT_UNITS, "percent")}
+_KNOWN_UNITS = frozenset(_PAGE_UNITS.values())
+# The word right after a figure. A one-letter word (g, l, t) is a unit only standing
+# alone: never inside a token or before a period ("7 t-shirts", "line 4 l.", "7 L/min").
+_UNIT_AFTER = re.compile(r"[ \t\u00a0]*((?i:metric[ \t\u00a0]+ton(?:ne)?s?)\b|[A-Za-z]{2,}\b"
+                         r"|[A-Za-z](?![\w'\u2019./-]))")
 
 
 def _page_unit(unit: str) -> str:
-    folded = unit.strip().casefold()
+    folded = " ".join(unit.casefold().split())
     return _PAGE_UNITS.get(folded, folded)
 
 
 def _check_page_claim(claim: Mapping[str, Any], out: dict[str, Any],
                       resolved: Mapping[str, Any]) -> dict[str, Any]:
-    """A figure claimed on an original page citation (``field: "text"``): the page's
-    machine-read text, as re-read now, holds it as one number token (by value at its
-    written scale: ``07`` is 7, ``1,509`` is 1509, ``25%`` is 0.25, or 25 for a claim in
-    percent, as the prose percent contract compares); a text value as a quote of it
+    """A figure claimed on an original page citation (``field: "text"``): a figure of the
+    page's machine-read text as re-read now, by the one prose-figure rule a record's
+    free text follows too (``_check_text_figure``: ``07`` is 7, ``1,509`` is 1509,
+    ``25%`` is 0.25, or 25 for a claim in percent; never a negated, bounded, range,
+    label, date or code number; one meaning or a quote); a text value as a quote of it
     (``supported_quotes``). It proves presence on the page, not in a labelled field.
     Machine-read text grounds no quantity type: the claim is untyped (a quantity role is
     ``claim_role_unverified``) and stays a lead. A stated unit must agree with the unit the
@@ -1419,36 +1937,19 @@ def _check_page_claim(claim: Mapping[str, Any], out: dict[str, Any],
     if not isinstance(resolved.get("page"), int) or not isinstance(text, str):
         return _fail(out, "claim_value_mismatch", "the citation is not an original page with "
                      "machine-read text")
-    claimed = _page_unit(claim["unit"]) if "unit" in claim else None
-    printed: list[str | None] = []
+    where = f"page {resolved['page']}'s machine-read text"
     if claim["kind"] == "number":
-        want = to_decimal(claim["value"])
-        for match in NUMBER.finditer(text):
-            percent = (match.group("scale") or "").strip(" \u00a0").lower() in _PERCENT_WORDS
-            number = number_value(match)
-            if (number * 100 if percent and claimed == "percent" else number) != want:
-                continue
-            after = _UNIT_AFTER.match(text, match.end())
-            word = after and _PAGE_UNITS.get(after.group(1).casefold())
-            printed.append("percent" if percent else word or None)
-    else:
-        problem = _quote_problem(claim["value"], text,
-                                 f"page {resolved['page']}'s machine-read text")
-        if problem:
-            return _fail(out, "claim_value_mismatch", problem)
-        printed = [None]
-    if not printed:
-        return _fail(out, "claim_value_mismatch", f"page {resolved['page']}'s machine-read "
-                     f"text does not hold {claim['value']}")
-    if claimed is not None:
-        if claimed in printed:
-            out["unit_basis"] = "page_text"
-        elif None in printed:
-            out["unit_basis"] = "unverified"
-        else:
-            return _fail(out, "claim_unit_mismatch", f"page {resolved['page']} prints "
-                         f"{claim['value']} in {', '.join(sorted(set(printed)))}, the claim "
-                         f"says {claim['unit']}")
+        result = _check_text_figure(claim, out, text, where, "page_text")
+        return {**result, "text_source": resolved.get("text_source")} \
+            if result["status"] == "passed" else result
+    problem = _quote_problem(claim["value"], text, where)
+    if problem and _ISO_DAY.fullmatch(claim["value"]):
+        # RRO-09: a day the page prints "31 Aug" is claimed as written ISO, 2026-08-31.
+        problem = _printed_date_problem(claim, text, where)
+    if problem:
+        return _fail(out, "claim_value_mismatch", problem)
+    if "unit" in claim:
+        out["unit_basis"] = "unverified"
     if claim.get("role") in QUANTITY_ROLES:
         return _fail(out, "claim_role_unverified", "a figure in a page's machine-read text has "
                      f"no role contract, so the claimed {claim['role']} cannot be verified")
@@ -1466,19 +1967,366 @@ def _check_quote(claim: Mapping[str, Any], out: dict[str, Any], cell: Any,
     ``claim_role_unverified``), and a stated unit is ``unit_basis: unverified``."""
     problem = _quote_problem(claim["value"], cell if isinstance(cell, str) else "",
                              f"the cited {field}")
+    if problem and isinstance(cell, str) and _ISO_DAY.fullmatch(claim["value"]):
+        problem = _printed_date_problem(claim, cell, f"the cited {field}")
     if problem:
         return _fail(out, "claim_value_mismatch", problem)
     if "unit" in claim:
         out["unit_basis"] = "unverified"
     if claim.get("role") in QUANTITY_ROLES:
-        return _fail(out, "claim_role_unverified", "a quote from an original's text has no "
+        return _fail(out, "claim_role_unverified", "a quote from a record's text has no "
                      f"role contract, so the claimed {claim['role']} cannot be verified")
     return {**out, "status": "passed", "role_basis": "untyped", "quantity_type": None,
             "value_basis": "text_span"}
 
 
+def text_field(field: str) -> bool:
+    """Whether a claim's ``field`` is a record's free text (``row.content_text``,
+    ``row.description``, ``row.body``; ``TEXT_FIELD_NAMES``), whatever the record."""
+    return isinstance(field, str) and field.startswith("row.") \
+        and field.rsplit(".", 1)[-1] in TEXT_FIELD_NAMES
+
+
+class _Figure(NamedTuple):
+    """One number of prose as ``_text_figures`` reads it."""
+    start: int
+    end: int
+    value: Decimal          # at its written scale and scale word: 1.5 million, 25% = 0.25
+    percent: bool
+    supports: bool          # not negated, bounded, a range end or a label's number
+    word: str | None        # the word printed right after it (its unit or noun)
+    currency: str | None    # printed beside it: an ISO code, or "$" for a bare dollar
+    meaning: str | None     # its currency and stemmed word: two meanings are ambiguous
+
+
+def _joined(text: str, start: int, end: int) -> bool:
+    """Whether the number at ``text[start:end]`` is a list marker (``(5)``) or part of a
+    longer token: glued to a word character, or joined by ``-``, ``/``, ``.``, ``:`` and
+    the like to one
+    (``ABC12345``, ``10/14/2026``, ``905-555-0187``, ``v2.1.3``, ``1st``); a glued unit
+    (``500ml``, ``10kg``) keeps it a figure."""
+    before = text[start - 1] if start else ""
+    if before == "(" and text[end:end + 1] == ")":
+        return True        # "(5)": a list marker
+    if before == "," and start > 1 and text[start - 2].isdigit() or \
+            re.match(r",\d", text[end:end + 2]):
+        return True        # "1,2": a decimal comma, or a list of numbers glued by commas
+    if before.isalnum() or before == "_" or before in _TOKEN_JOINER and (
+            before in "#@_" or start > 1 and text[start - 2].isalnum()):
+        return True
+    if _COMPOUND.match(text, end):
+        return False       # "30-day", "12-pack": a figure of a compound word
+    after = text[end:end + 2]
+    if after[:1].isdigit() or after[:1] == "_" or after[:1] in _TOKEN_JOINER \
+            and after[1:2].isalnum():
+        return True
+    glued = re.match(r"[A-Za-z]+", text[end:])
+    return glued is not None and (_ORDINAL.fullmatch(glued.group(0)) is not None
+                                  or glued.group(0).casefold() not in _PAGE_UNITS)
+
+
+@lru_cache(maxsize=8)
+def _text_figures(text: str, breaks: tuple[int, ...] = ()) -> tuple[_Figure, ...]:
+    """Every digit number of a normalised prose ``text`` with what it states
+    (``_Figure``), outside handles, ISO and month-name dates, times, identifiers and
+    phone numbers (blanked in place). A number supports no claim of its value when a
+    negator reverses it (``not 12``, ``excluding 30``, ``30 cases? No.``), a bound or
+    approximation qualifies it (``max 30``, ``30 or fewer``, ``about 30``), it ends a
+    range (``20-30``, ``between 20 and 30``), it is a label's number (``SKU 4410``,
+    ``Invoice #4521``, ``PO 4521``, ``page 3``) or part of a longer token
+    (``_joined``). A heading label's number (``_HEADING_LABEL``: ``Release 2:`` at a
+    clause start) is no figure at all. A scale word scales it (``1.5 million``). ``breaks``:
+    where the normalised text joined two lines (``_line_breaks``): the words that give a
+    figure a meaning (its label, unit, currency, the word after it) come from its own line
+    only, so "... 5,984" ending a line never means the "STAND" opening the next; the words
+    that refuse or bound it (a negator, exclusion, bound, at least or range before it; a
+    range, bound or negating answer after it) reach across one line break each way, as
+    wrapped text goes on. Cached: one cited text serves many
+    claims."""
+    clean = text
+    for pattern in (HANDLE, _PROSE_MOMENT, ISO_DATE, _DATE_WORDS, _TIME, IDENTIFIER, _PHONE):
+        clean = pattern.sub(lambda match: " " * len(match.group(0)), clean)
+    from ontology import identifiers   # the one grammar's labelled and shaped mentions
+    for mention in identifiers.find_identifiers(text):
+        clean = clean[:mention.start] + " " * (mention.end - mention.start) + clean[mention.end:]
+    for heading in _HEADING_LABEL.finditer(clean):
+        start, end = heading.span("number")
+        clean = clean[:start] + " " * (end - start) + clean[end:]
+    out = []
+    for match in NUMBER.finditer(clean):
+        start, end = match.start(), match.end()
+        if match.group("sign") and start and not text[start - 1].isspace():
+            start += 1     # "20-30": the dash joins, it is no sign
+        at = bisect.bisect_left(breaks, start)
+        line = breaks[at - 1] + 1 if at else 0
+        after = bisect.bisect_left(breaks, end)
+        stop = breaks[after] if after < len(breaks) else len(text)
+        # and after it, across one line break too ("20\nto 30", "900\nmax")
+        beyond = breaks[after + 1] if after + 1 < len(breaks) else len(text)
+        window = max(line, start - 48)
+        # Words that refuse or bound a figure reach across one line break before it:
+        # wrapped text goes on there ("is not\n900"); line scope only narrows ambiguity.
+        reach = max(breaks[at - 2] + 1 if at > 1 else 0, start - 48)
+        value = number_value(match) if start == match.start() else -number_value(match)
+        scale = (match.group("scale") or "").strip("  ").lower()
+        tail = end
+        scaled = _SCALE_AFTER.match(text, end, stop) if not scale else None
+        if scaled is not None:
+            value *= _SCALE_WORDS[scaled.group(1).lower()]
+            tail = scaled.end()
+        label = _LAST_WORD.search(text, window, start)
+        quantity_label = label is not None and label.group(1).casefold() in _QUANTITY_LABELS
+        after = _COMPOUND.match(text, tail, stop) or _UNIT_AFTER.match(text, tail, stop)
+        word = " ".join(after.group(1).casefold().split()) if after else None
+        digits = match.group("int") or ""
+        plain = digits.isdigit() and not match.group("frac") and not scale and tail == end
+        before = _CURRENCY_BEFORE.search(text, max(line, start - 8), start)
+        trailing = _CURRENCY_AFTER.match(text, tail, stop)
+        currency = None
+        if before is not None:
+            currency = before.group("code") if before.group("code") in ISO_4217 \
+                else _CURRENCY_SIGNS.get(before.group("sign") or "")
+        if currency is None and trailing is not None and trailing.group("code") in ISO_4217 \
+                and trailing.group("code") not in WORD_CODES:   # "12 KGS" is kilograms
+            currency = trailing.group("code")
+        counted = quantity_label or currency is not None or word is not None and (
+            word in _PAGE_UNITS or word in _QUANTITY_LABELS or _stem(word) in _QUANTITY_LABELS)
+        supports = not (
+            _joined(text, start, end)
+            or _NEGATOR.search(text, reach, start) or _EXCLUDED_BEFORE.search(text, reach, start)
+            or _NEGATED_AFTER.match(text, tail, beyond) or _ANSWERED_NO.match(text, tail, beyond)
+            or _BOUND_BEFORE.search(text, reach, start) or _BOUND_AFTER.match(text, tail, beyond)
+            or _AT_LEAST_BEFORE.search(text, reach, start) or _AT_LEAST_AFTER.match(text, tail, beyond)
+            or _RANGE_BEFORE.search(text, reach, start) or _RANGE_AFTER.match(text, tail, beyond)
+            or not quantity_label and _ID_LABEL_BEFORE.search(text, window, start)
+            or _STREET_AFTER.match(text, tail, stop)
+            # A bare year (1900-2099) or a zip after a state code, unless counted.
+            or plain and not counted and len(digits) == 4 and 1900 <= int(digits) <= 2099
+            or plain and not counted and len(digits) == 5
+            and _STATE_BEFORE.search(text, window, start))
+        if currency is not None and word is not None and word.upper() == currency:
+            word = None
+        percent = scale in _PERCENT_WORDS
+        meaning = "%" if percent else _stem(word) if word else None
+        out.append(_Figure(start, end, value, percent, supports, word, currency,
+                           f"{currency or ''} {meaning or ''}".strip() or None))
+    return tuple(out)
+
+
+def figure_words(text: str) -> list[tuple[Decimal, int, int, str]]:
+    """``(value, start, end, word)`` of each word prose ``text`` prints right after a
+    figure (``_text_figures``' word: its unit or noun, case-folded), ``text[start:end]``
+    the word with the space before it; never a percent."""
+    out = []
+    for figure in _text_figures(text):
+        after = _UNIT_AFTER.match(text, figure.end)
+        if figure.word is None or figure.percent or after is None \
+                or " ".join(after.group(1).casefold().split()) != figure.word:
+            continue
+        out.append((figure.value, figure.end, after.end(), figure.word))
+    return out
+
+
+def unit_words(text: str) -> list[tuple[Decimal, int, int, str]]:
+    """``(value, start, end, unit)`` of each unit word prose ``text`` prints right after a
+    figure (``figure_words``; ``_PAGE_UNITS``: "68,160 grams" is g), ``text[start:end]``
+    the word with the space before it; never a percent or the count word unit(s), which
+    names no unit of measure."""
+    return [(value, start, end, unit) for value, start, end, word in figure_words(text)
+            if (unit := _PAGE_UNITS.get(word)) not in (None, "percent")
+            and word not in ("unit", "units")]
+
+
+def currency_words(text: str) -> list[tuple[Decimal, int, int, str]]:
+    """``(value, start, end, currency)`` of each currency prose ``text`` prints beside a
+    figure (``_text_figures``: an ISO code or a sign before it, a code after it),
+    ``text[start:end]`` the code or sign with the space between it and the figure;
+    ``currency`` the ISO code, or the sign (``$``, ``¥``) where it names no one currency."""
+    return [(value, start, end, currency)
+            for value, _figure, start, end, currency in _figure_currencies(text)]
+
+
+def _figure_currencies(text: str) -> list[tuple[Decimal, tuple[int, int], int, int, str]]:
+    """``currency_words`` with each figure's own span (``_text_figures``)."""
+    out = []
+    for figure in _text_figures(text):
+        if figure.currency is None:
+            continue
+        before = _CURRENCY_BEFORE.search(text, max(0, figure.start - 8), figure.start)
+        after = _CURRENCY_AFTER.match(text, figure.end)
+        named = None
+        if before is not None:
+            named = before.group("code") if before.group("code") in ISO_4217 \
+                else _CURRENCY_SIGNS.get(before.group("sign") or "")
+        span = (figure.start, figure.end)
+        if named is not None and named == figure.currency:
+            out.append((figure.value, span, before.start(), before.end(), figure.currency))
+        elif after is not None and after.group("code") == figure.currency:
+            out.append((figure.value, span, after.start(), after.end(), figure.currency))
+    return out
+
+
+def same_currency(written: str, checked: str) -> bool:
+    """Whether a currency written beside a figure (``currency_words``) agrees with a
+    checked ISO code: the same code, or a sign that writes it (``$`` a dollar, ``¥`` the
+    yen or yuan; ``ontology.units.SIGN_CURRENCIES``), the code in any case. Anything else
+    contradicts it."""
+    checked = checked.strip().upper()
+    return written.upper() == checked or checked in SIGN_CURRENCIES.get(written, ())
+
+
+def _check_text_figure(claim: Mapping[str, Any], out: dict[str, Any], cell: str,
+                       where: str, unit_basis: str = "text") -> dict[str, Any]:
+    """A number claimed on prose: a record's free text (``text_field``) or an original
+    page's machine-read text (``_check_page_claim``), one rule. The value must be a
+    figure of the text as re-read now that supports it (``_text_figures``: by value at
+    its written scale, ``25%`` is 25 for a claim in percent; not negated, bounded, a
+    range end, a label's number or inside a token), with the claim's unit and currency
+    where it states them; a ``quote`` pins the occurrence (only figures inside it count).
+    Two supporting occurrences with different meanings (``30 cases``, ``30 days``) are
+    ambiguous: the claim must quote the passage it means. A figure of prose grounds no
+    quantity type: untyped, a quantity role is ``claim_role_unverified``."""
+    text = _normalised_text(cell)
+    value = to_decimal(claim["value"])
+    claimed = _page_unit(claim["unit"]) if "unit" in claim else None
+    percent = claimed == "percent"
+    found = [figure for figure in _text_figures(text, _line_breaks(cell))
+             if (figure.value * 100 if figure.percent and percent else figure.value) == value]
+    if "quote" in claim:
+        want = _normalised(claim["quote"])
+        spans = [(at, at + len(want)) for at in _spans(want, text)]
+        if not spans:
+            return _fail(out, "claim_value_mismatch",
+                         f"{where} does not hold the quote verbatim on token boundaries")
+        found = [figure for figure in found
+                 if any(start <= figure.start and figure.end <= end for start, end in spans)]
+        if not found:
+            return _fail(out, "claim_value_mismatch",
+                         f"{_not_in_quote(claim['value'])} (as a figure of {where})")
+    if not found:
+        return _fail(out, "claim_value_mismatch", f"{where} does not hold {claim['value']}")
+    found = [figure for figure in found if figure.supports]
+    if not found:
+        return _fail(out, "claim_value_mismatch", f"{where} holds {claim['value']} only "
+                     "negated, as a bound or range (not, max, at least, 20-30 ...), as a "
+                     "label's number (SKU: 4410), a year, a street number or zip, a "
+                     "decimal comma (1,2, ambiguous) or part of a code, date or phone number")
+    if claimed is not None:
+        def printed(figure: _Figure) -> str | None:
+            if figure.percent:
+                return "percent"
+            if figure.word is None:
+                return None
+            if _stem(figure.word) == _stem(claimed):
+                return claimed
+            # A known page unit contradicts only a claimed unit the table knows too; a
+            # claim's spelling it does not know ("grs") is left unverified, never refused.
+            known = _PAGE_UNITS.get(figure.word)
+            return known if claimed in _KNOWN_UNITS else None
+        units = [printed(figure) for figure in found]
+        if claimed in units:
+            found = [figure for figure, unit in zip(found, units) if unit == claimed]
+            out["unit_basis"] = unit_basis
+        elif None in units:
+            found = [figure for figure, unit in zip(found, units) if unit is None]
+            out["unit_basis"] = "unverified"
+        else:
+            return _fail(out, "claim_unit_mismatch", f"{where} prints {claim['value']} in "
+                         f"{', '.join(sorted(set(map(str, units))))}, the claim says "
+                         f"{claim['unit']}")
+    if "currency" in claim:
+        stated = claim["currency"]
+        printed_in = sorted({figure.currency or "no currency" for figure in found
+                             if figure.currency != stated})
+        found = [figure for figure in found if figure.currency == stated]
+        if not found:
+            return _fail(out, "claim_currency_mismatch", f"{where} prints {claim['value']} "
+                         f"with {' and '.join(printed_in)} (a bare $ names no single "
+                         f"currency), the claim says {stated}")
+    meanings = sorted({figure.meaning or "(no word after it)" for figure in found})
+    if len(meanings) > 1:
+        return _fail(out, "claim_value_mismatch", f"{claim['value']} is ambiguous: {where} "
+                     f"holds it {len(found)} times with different meanings "
+                     f"({'; '.join(meanings)[:200]}); quote the passage that holds the one "
+                     "meant")
+    if claim.get("role") in QUANTITY_ROLES:
+        return _fail(out, "claim_role_unverified", f"a figure in {where} has no role "
+                     f"contract, so the claimed {claim['role']} cannot be verified")
+    return {**out, "status": "passed", "role_basis": "untyped", "quantity_type": None,
+            "value_basis": "text_figure"}
+
+
+# A run of spaces and pipes holding at least one pipe: a table's cell break, however many
+# empty cells or spaces it spans ("|  |  |" of one row, "|" of another, as an agent copies
+# or a page renders it).
+_CELL_BREAK = re.compile(r"\s*\|[\s|]*")
+
+
+_LINE_ENDS = frozenset("\n\r\f\v\x1c\x1d\x1e\x85\u2028\u2029")
+
+
+@lru_cache(maxsize=8)
+def _line_breaks(text: str) -> tuple[int, ...]:
+    """The positions of ``_normalised(text)`` where it joined two lines of ``text``: the one
+    space a white-space run holding a line end became (a run inside a table cell break is
+    the cell break)."""
+    text = unicodedata.normalize("NFKC", text)
+    if "|" in text:
+        text = _CELL_BREAK.sub(" | ", text)
+    out, length, ended, started = [], 0, False, False
+    for token in re.split(r"(\s+)", text):
+        if not token:
+            continue
+        if token.isspace():
+            ended = ended or any(char in _LINE_ENDS for char in token)
+            continue
+        if started:
+            if ended:
+                out.append(length)
+            length += 1
+        length += len(token)
+        started, ended = True, False
+    return tuple(out)
+
+
 def _normalised(text: str) -> str:
-    return " ".join(unicodedata.normalize("NFKC", text).split())
+    """``text`` NFKC-normalised with every white-space run one space and every table cell
+    break (``_CELL_BREAK``: a run of spaces, tabs and pipes) one `` | ``, so a table-row
+    quote is verbatim whatever empty cells or spacing it was copied with."""
+    text = unicodedata.normalize("NFKC", text)
+    if "|" in text:
+        text = _CELL_BREAK.sub(" | ", text)
+    return " ".join(text.split())
+
+
+def verbatim_quote(quote: str, text: str) -> str | None:
+    """The passage of ``text`` as written that a ``quote`` matched (``_normalised``: its
+    white space and table cell breaks may differ, "Total |  | 1,200" for the row's "Total |
+    1,200"), the first occurrence on token boundaries; None when it holds none."""
+    want = _normalised(quote)
+    if not want:
+        return None
+    parts = []
+    for piece in re.split(r"( ?\| ?| )", want):
+        if "|" in piece:
+            parts.append(r"\s*?\|[\s|]*?")
+        elif piece == " ":
+            parts.append(r"\s+")
+        elif piece:
+            parts.append(re.escape(piece))
+    pattern = re.compile("".join(parts))
+    for source in (text, unicodedata.normalize("NFKC", text)):
+        for found in pattern.finditer(source):
+            span = found.group(0).strip()
+            if _normalised(span) != want:
+                continue
+            # The shortest such passage: no cell break of the row before or after it.
+            while span[:1] == "|" and _normalised(span[1:].lstrip()) == want:
+                span = span[1:].lstrip()
+            while span[-1:] == "|" and _normalised(span[:-1].rstrip()) == want:
+                span = span[:-1].rstrip()
+            return span
+    return None
 
 
 # One cited text is quoted by many claims of a case: normalised once.
@@ -1490,9 +2338,15 @@ def _splits_token(text: str, at: int) -> bool:
     characters, or next to a joiner between two (``re|-quote``, ``1,|509``)."""
     def word(index: int) -> bool:
         return 0 <= index < len(text) and _WORD_CHAR.match(text[index]) is not None
-    return (word(at - 1) and word(at)) or (
-        word(at - 1) and text[at:at + 1] in _JOINERS and word(at + 1)) or (
-        word(at) and at > 0 and text[at - 1] in _JOINERS and word(at - 2))
+
+    def joins(index: int) -> bool:
+        """Whether ``text[index]`` joins the characters on either side into one token."""
+        if not (0 < index < len(text) - 1 and text[index] in _JOINERS
+                and word(index - 1) and word(index + 1)):
+            return False
+        return text[index] not in _DIGIT_JOINERS or (
+            text[index - 1].isdigit() and text[index + 1].isdigit())
+    return (word(at - 1) and word(at)) or joins(at) or joins(at - 1)
 
 
 def _spans(want: str, text: str) -> list[int]:
@@ -1690,7 +2544,8 @@ def _names(match: re.Match[str]) -> str:
 def _identifier(blank: Callable[[re.Match[str]], str]) -> Callable[[re.Match[str]], str]:
     """An identifier is blanked, except capitals + digits alone (``SKU-1509``,
     ``ABC12345``) under a prefix that is not a known id prefix: those digits stay numbers.
-    Letters elsewhere (``AO-26005B``, ``DVS-5003-3.78L-A``) keep it an identifier."""
+    Letters elsewhere (``AO-26005B``, ``DVS-5003-3.78L-A``) keep it an identifier.
+    ``label_numbers`` reads a label's digits by it."""
     def replace(match: re.Match[str]) -> str:
         digits_only = _DIGITS_ONLY_ID.fullmatch(match.group(0))
         if digits_only and digits_only.group(1) not in KNOWN_ID_PREFIXES:
@@ -1699,9 +2554,77 @@ def _identifier(blank: Callable[[re.Match[str]], str]) -> Callable[[re.Match[str
     return replace
 
 
-def _strip(text: str, blank: Callable[[re.Match[str]], str]) -> str:
+# Prefixes that make a figure of the digits after them, never a label: quantity labels,
+# unit words, terms and lead-time words (``QTY-12``, ``KG-25``, ``NET-30``, ``LT-14``,
+# ``MOQ-500``), money and period words (``PRICE-500``, ``AMT-500``, ``COST-500``,
+# ``DUE-30``, ``ETA-14``, ``MONTHS-3``) and currency codes (``USD-1200``, ``CAD500``:
+# amounts). ``R-`` is no money word: a raw material's code is ``R-1696`` (``R500`` glued
+# is a figure anyway). ``MO-`` is no period word: the Portal writes a manufacturing order
+# ``mo-10718``.
+_FIGURE_PREFIXES = frozenset({"moq", "ctn", "ctns", "lt", "lead", "net", "terms", "fy",
+                              "day", "days", "wk", "wks", "w", "hr", "hrs", "min", "max",
+                              "no", "nr", "num", "tot",
+                              "price", "prices", "amt", "cost", "costs", "fee", "fees",
+                              "rate", "charge", "due", "eta", "etd", "week", "weeks",
+                              "mos", "month", "months", "yr", "yrs", "year", "years"})
+
+
+def _figure_prefix(prefix: str) -> bool:
+    folded = prefix.casefold()
+    return (prefix in ISO_4217 or folded in _FIGURE_PREFIXES or folded in _QUANTITY_LABELS
+            or folded in _PAGE_UNITS)
+
+
+def _is_label(match: re.Match[str]) -> bool:
+    """Whether a ``LABEL`` match is a label at all: not a currency code glued to digits
+    (``USD1200``, ``CAD-500``: an amount, left to the number rules)."""
+    prefix = _LABEL_PREFIX.match(match.group(0))
+    return not (prefix and prefix.group(0) in ISO_4217)
+
+
+def labels(text: str) -> list[re.Match[str]]:
+    """The labels of ``text`` (``LABEL``, ``_is_label``), in order: the final reply
+    screen's tokens (``answer_gate.unbacked``), bare ones (``Q3``) included."""
+    return [match for match in LABEL.finditer(text) if _is_label(match)]
+
+
+def _is_gate_label(match: re.Match[str]) -> bool:
+    """Whether a ``LABEL`` match is a label for the gate's answer-text check (supervisor
+    decision 2026-10-29): hyphenated after a prefix that is no quantity, unit, term or
+    currency word (``P-02458``, ``SKU-1509``, ``F-26-0001``, ``QRM-26037``; never
+    ``QTY-12``, ``KG-25``, ``NET-30``), or a whole token of an identifier kind the
+    identifier grammar finds by its shape (``ontology/schema/identifiers.json``:
+    ``PO5447``, ``OR1000000001``). A bare letters+digits token (``NET30``, ``KG25``,
+    ``Q3``, ``W30``, ``FY2026``) stays a figure."""
+    token = match.group(0)
+    prefix = _LABEL_PREFIX.match(token)
+    if prefix is None or _figure_prefix(prefix.group(0)):
+        return False
+    if token[len(prefix.group(0)):].startswith("-"):
+        return True
+    from ontology import identifiers
+    return any(mention.start == 0 and mention.end == len(token) and mention.form == "shape"
+               for mention in identifiers.find_identifiers(token))
+
+
+def _label(blank: Callable[[re.Match[str]], str]) -> Callable[[re.Match[str]], str]:
+    """A gate label (``_is_gate_label``) is blanked: it names something and states no
+    figure."""
+    def replace(match: re.Match[str]) -> str:
+        return blank(match) if _is_gate_label(match) else match.group(0)
+    return replace
+
+
+def _strip(text: str, blank: Callable[[re.Match[str]], str], with_labels: bool = False
+           ) -> str:
+    """``text`` without handles, dates, times, identifiers and names (``blank``); with
+    ``with_labels`` (the answer text: ``prose_numbers(labels=True)``) without gate labels
+    too (``_is_gate_label``). A claim's own text keeps them: a code it states is claimed
+    as text (``Line P-02458.``)."""
     for pattern in (HANDLE, _PROSE_MOMENT, ISO_DATE, _DATE_WORDS, _TIME):
         text = pattern.sub(blank, text)
+    if with_labels:
+        text = LABEL.sub(_label(blank), text)
     text = IDENTIFIER.sub(_identifier(blank), text)
     return _GLUED.sub(_names, _CODE_NAME.sub(_names, text))
 
@@ -1748,16 +2671,81 @@ def _page_locators(text: str, pages: frozenset[int],
 
 def prose_numbers(text: str, covered_texts: Iterable[str] = (),
                   pages: frozenset[int] = frozenset(),
-                  claimed: Iterable[Any] = ()) -> list[tuple[str, Decimal]]:
+                  claimed: Iterable[Any] = (), labels: bool = False
+                  ) -> list[tuple[str, Decimal]]:
     """(as written, value) of every number in ``text`` that is not part of a handle,
     identifier, date, time, known id name, one of ``covered_texts`` (text values a
     claim covers) or a locator of one of ``pages`` (pages the item cites; never a number
-    in ``claimed``, the item's claimed values)."""
+    in ``claimed``, the item's claimed values); with ``labels`` (an answer text), nor of
+    a gate label (``_is_gate_label``)."""
     text = _page_locators(text, pages, claimed)
     for covered in sorted({item for item in covered_texts if item}, key=len, reverse=True):
         text = text.replace(covered, " ")
-    text = _strip(text, lambda match: " ")
+    text = _strip(text, lambda match: " ", with_labels=labels)
     return _numbers_in(text) + _number_words(text)
+
+
+# A whole token of a text: letters and digits, joined inside by ``-``, ``/`` or ``.``
+# (``Q9``, ``MIDAS2``, ``PO-00349``, ``F-26-0001``; ``Q9.`` ends at the full stop).
+_WHOLE_TOKEN = re.compile(r"(?<![A-Za-z0-9])[A-Za-z0-9]+(?:[-/.][A-Za-z0-9]+)*"
+                          r"(?![A-Za-z0-9])")
+
+
+# A token that is one quantity glued to its unit or term: digits then letters (``12kg``),
+# or letters, an optional ``-``, then digits (``NET30``, ``QTY-12``).
+_GLUED_QUANTITY = re.compile(r"(?P<n>[0-9]+(?:\.[0-9]+)?)(?P<unit>[A-Za-z]+)"
+                             r"|(?P<term>[A-Za-z]+)-?[0-9]+(?:\.[0-9]+)?")
+
+
+def _glued_quantity(token: str) -> bool:
+    """Whether a token is a quantity glued to a unit (``_PAGE_UNITS``: ``12kg``, ``500ML``)
+    or after a figure prefix (``_figure_prefix``: ``NET30``, ``QTY-12``, ``PRICE-500``;
+    one letter only for a ``_FIGURE_PREFIXES`` word: ``W30``, never ``L9`` or ``R-1696``):
+    a figure, never a restated question token."""
+    match = _GLUED_QUANTITY.fullmatch(token)
+    if match is None:
+        return False
+    if match.group("unit") is not None:
+        return match.group("unit").casefold() in _PAGE_UNITS
+    term = match.group("term")
+    # a one-letter unit (``L9``, ``G7``) names a thing; ``W30`` is a figure
+    return (len(term) > 1 or term.casefold() in _FIGURE_PREFIXES) \
+        and _figure_prefix(term.upper())
+
+
+def asked_tokens_blanked(text: str, question: Any, keep: Iterable[Any] = ()) -> str:
+    """``text`` with each whole token (``_WHOLE_TOKEN``) that holds a letter and a digit
+    and that the ``question`` holds as a whole token, equal but for case, blanked (same
+    length): the question restated (``Q9``, ``MIDAS2``, ``PO-00349``), never a figure the
+    answer asserts (supervisor decision 2026-10-29). A word without a digit is no figure
+    anyway and stays, so a label word keeps its number (``PO 4521``). A bare number, a
+    number and a unit apart (``12 kg``) and a token the question writes otherwise
+    (``Q9-10`` for ``Q9``) stay, and so does a token inside a text of ``keep`` (a text
+    claim's value, which covers its exact text whole). A token that is a quantity glued
+    to its unit or term (``_glued_quantity``: ``12kg``, ``NET30``, ``QTY-12``) is a figure
+    even when the question holds it."""
+    if not isinstance(question, str) or not question or not text:
+        return text
+    asked = {token.casefold() for token in _WHOLE_TOKEN.findall(question)
+             if any(char.isalpha() for char in token)
+             and any(char.isdigit() for char in token) and not _glued_quantity(token)}
+    if not asked:
+        return text
+    kept = [(found.start(), found.end()) for value in keep
+            if isinstance(value, str) and value
+            for found in re.finditer(re.escape(value), text)]
+    return _WHOLE_TOKEN.sub(lambda match: " " * len(match.group(0))
+                            if match.group(0).casefold() in asked and not any(
+                                start <= match.start() and match.end() <= end
+                                for start, end in kept) else match.group(0), text)
+
+
+def label_numbers(label: str) -> list[Decimal]:
+    """The numbers a label (``LABEL``) holds as digits read apart from its letters
+    (``SKU-1509``: 1509; ``Q3``: 3), none for a name (``F2``, ``AO-77``, ``UTF-8``:
+    ``KNOWN_ID_PREFIXES``; ``AO-26005B``: an identifier): what a reply must back for an
+    unasked label it writes (``answer_gate.unbacked``)."""
+    return [number for _written, number in _numbers_in(_strip(label, lambda m: " "))]
 
 
 def _numbers_in(text: str) -> list[tuple[str, Decimal]]:
@@ -1792,6 +2780,121 @@ def written_dates(text: str
             continue
         out.append((match.group(0), (day.isoformat(), None), False))
     return out
+
+
+# A day printed in words or digits in a text: "31 Aug", "31 August 2026", "Aug 31, 2026",
+# "September 2", "31/08/2026" (``_printed_days``).
+_DAY_MONTH = re.compile(r"(?<![\w/.-])(?P<d>\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?(?P<mon>"
+                        + _MONTH + r")\b(?:\.?,?\s+(?P<y>\d{4})\b)?", re.I)
+_MONTH_DAY = re.compile(r"(?<![\w-])(?P<mon>" + _MONTH + r")\.?\s+(?P<d>\d{1,2})"
+                        r"(?:st|nd|rd|th)?\b(?![.,:/-]\d)(?:,?\s+(?P<y>\d{4})\b)?", re.I)
+_DIGIT_DAY = re.compile(r"(?<![\w/.-])(?P<a>\d{1,2})(?P<s>[/.])(?P<b>\d{1,2})(?P=s)(?P<y>\d{4})"
+                        r"(?![\w/]|[.-]\w)")
+# A year in any form a text prints (``_years``): 19xx/20xx alone or opening an ISO date,
+# 'YY, FY2025 or FY25, two digits right after a day and month ("31 Aug 25", "Aug 31, 25")
+# or ending a digit date ("31/08/25").
+_YEAR = re.compile(r"(?<![\w.,/-])(?:19|20)\d{2}(?![\w]|[.,/]\d)|(?<![\w.])(?:19|20)\d{2}"
+                   r"(?=-\d{2}-\d{2})")
+# Two digits that open the next day of a list ("25 Aug" of "18 Aug, 25 Aug"): no year.
+_NEXT_DAY = r"(?!(?:st|nd|rd|th)?\s+(?:of\s+)?" + _MONTH + r"\b)"
+_SHORT_YEARS = (
+    re.compile(r"(?<![\w'’])['’](?P<y>\d{2})(?!\w)"),
+    re.compile(r"\bFY ?(?P<y>\d{4}|\d{2})(?!\d)", re.I),
+    re.compile(r"(?<![\w/.-])\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?" + _MONTH
+               + r"\b\.?,?\s+(?P<y>\d{2})(?![\d:])" + _NEXT_DAY, re.I),
+    re.compile(r"(?<![\w-])" + _MONTH + r"\.?\s+\d{1,2}(?:st|nd|rd|th)?\b,?\s+(?P<y>\d{2})"
+               r"(?![\d:])" + _NEXT_DAY, re.I),
+    re.compile(r"(?<![\w/.-])\d{1,2}[/.]\d{1,2}[/.](?P<y>\d{2}|\d{4})(?![\w/]|[.-]\w)"))
+# A year right after a printed day and month that names none in four digits: "31 Aug 25",
+# "31 Aug '25", "Aug 31, 25" (never a clock time, "Aug 31 10:00", nor the next day of a
+# list, "18 Aug, 25 Aug").
+_YEAR_AFTER = re.compile(r"\.?,?\s*(?:['’]\d{2}(?!\w)|\d{2}(?![\d:])" + _NEXT_DAY
+                         + r"|\d{4}(?!\d))", re.I)
+_ISO_DAY = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
+
+
+def _years(text: str) -> set[int]:
+    """Every year a text prints, in any form (``_YEAR``, ``_SHORT_YEARS``: a two-digit year
+    is 20YY)."""
+    found = {int(match.group(0)) for match in _YEAR.finditer(text)}
+    for pattern in _SHORT_YEARS:
+        for match in pattern.finditer(text):
+            year = int(match.group("y"))
+            found.add(year if year >= 100 else 2000 + year)
+    return found
+
+
+def _printed_days(value: str, text: str) -> tuple[list[tuple[int, int]], bool]:
+    """(the spans of normalised ``text`` that print the ISO day ``value`` (``2026-08-31``)
+    in another written form, unnegated; whether a form of that day was refused only for
+    its year). Forms: ``31 Aug`` or ``Aug 31`` (``August``, ``31st``, a trailing ``.``; the
+    span is the day and month), with ``2026`` stating that year; and ``31/08/2026`` or
+    ``08/31/2026`` only where day and month cannot be swapped (one above 12, or both
+    equal). A form without its year holds only when no year in any form follows it
+    (``_YEAR_AFTER``: ``31 Aug 25``) and the whole cited ``text`` prints exactly one year in
+    any form (``_years``), the claimed one; never a year the agent's quote adds. Any other
+    value: none."""
+    match = _ISO_DAY.fullmatch(value.strip())
+    if match is None:
+        return [], False
+    try:
+        day = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    except ValueError:
+        return [], False
+    implied = _years(text) == {day.year}
+    found, by_year = [], False
+    for pattern in (_DAY_MONTH, _MONTH_DAY):
+        for written in pattern.finditer(text):
+            month = _MONTHS.index(written.group("mon")[:3].lower()) + 1
+            if (month, int(written.group("d"))) != (day.month, day.day):
+                continue
+            year = written.group("y")
+            if year:
+                if int(year) == day.year:
+                    found.append(written.span())
+                else:
+                    by_year = True
+                continue
+            stop = max(written.end("mon"), written.end("d"))
+            if implied and not _YEAR_AFTER.match(text, stop):
+                found.append((written.start(), stop))
+            else:
+                by_year = True
+    for written in _DIGIT_DAY.finditer(text):
+        first, second = int(written.group("a")), int(written.group("b"))
+        if int(written.group("y")) != day.year:
+            continue
+        if (first, second) == (day.day, day.month) and (first > 12 or first == second) \
+                or (first, second) == (day.month, day.day) and (second > 12 or first == second):
+            found.append(written.span())
+    return [(start, end) for start, end in found
+            if not _negated(text[start:end], text, start)], by_year
+
+
+def _printed_date_problem(claim: Mapping[str, Any], text: str, where: str) -> str | None:
+    """Why an ISO date value claimed on a cited text (an original page, a record's free
+    text) is not a day the text prints in another form (``_printed_days``), or None when it
+    is: inside an occurrence of the claim's quote where it gives one."""
+    want = _normalised_text(text)
+    spans, by_year = _printed_days(claim["value"], want)
+    if "quote" in claim and spans:
+        quote = _normalised(claim["quote"])
+        held = [(at, at + len(quote)) for at in _spans(quote, want)]
+        spans = [span for span in spans
+                 if any(start <= span[0] and span[1] <= end for start, end in held)]
+        if not spans:
+            return (f"the quote holds no printed form of the day {claim['value']} (such as "
+                    f"31 Aug or Aug 31, 2026) that {where} prints: quote the passage that "
+                    "holds the date as printed")
+    if spans:
+        return None
+    if by_year:
+        return (f"{where} prints no unambiguous year for the day {claim['value']} as printed "
+                "there (no year beside it, or another year, and the text names more or "
+                "other years than this one): cite a figure that prints its year")
+    return (f"{where} prints no day {claim['value']} (as written, or as a printed date with "
+            "its year or in a text that prints only that year, unnegated; a digit date only "
+            "where day and month cannot be swapped)")
 
 
 def _date_reading(claim: Mapping[str, Any], handles: Sequence[str], evidence: _Evidence
@@ -1831,10 +2934,11 @@ def _states(text: str, claim: Mapping[str, Any], form: str,
 
 
 def _uncovered(texts: Iterable[str], claims: Sequence[Mapping[str, Any]],
-               dated: Sequence[_Dated], pages: frozenset[int] = frozenset()
-               ) -> list[tuple[str, str, str]]:
+               dated: Sequence[_Dated], pages: frozenset[int] = frozenset(),
+               labels: bool = False) -> list[tuple[str, str, str]]:
     """(as written, detail, ``number`` or ``date``) of each number of ``texts`` no claim
-    covers by value, and of each ISO date or timestamp (the whole token, its time and
+    covers by value (with ``labels``, the answer text's: gate labels are no numbers,
+    ``prose_numbers``), and of each ISO date or timestamp (the whole token, its time and
     offset too) no date claim (``dated``) covers (``_covers``)."""
     numbers = [claim for claim in claims if claim["kind"] == "number"]
     percents = {to_decimal(claim["value"]) for claim in numbers
@@ -1860,7 +2964,8 @@ def _uncovered(texts: Iterable[str], claims: Sequence[Mapping[str, Any]],
                 out.append((written, f"{written} states a time of day; a date claim covers "
                                      "only the instant of the cell it was read from"
                             if timed else "", "date"))
-        for written, number in prose_numbers(text or "", covered, pages, values | percents):
+        for written, number in prose_numbers(text or "", covered, pages, values | percents,
+                                             labels=labels):
             if written in (seen for seen, _, _ in out):
                 continue
             # The percent contract: a number written as a percent is covered ONLY by a
@@ -1895,7 +3000,8 @@ def check_items(items: Iterable[Mapping[str, Any]], *, rows: Rows,
                 contracts: Contracts | None = None,
                 unusable: Iterable[str] = (),
                 outcome: str | None = None,
-                returned: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                returned: Mapping[str, Any] | None = None,
+                question: str | None = None) -> dict[str, Any]:
     """The gate over a case's readable items.
 
     ``items``: ``{"id", "texts": [...], "citations": [{"handle", "status"}],
@@ -1903,7 +3009,9 @@ def check_items(items: Iterable[Mapping[str, Any]], *, rows: Rows,
     ``rows(handle)`` returns the resolved citation view the caller re-read and
     digest-checked, or None. ``unusable`` are ids of items that cannot be read (withheld,
     changed): the result is then not passed. ``outcome`` is the case's close outcome,
-    whose numbers and ISO dates must be covered by some claim of the case. ``returned``:
+    whose numbers and ISO dates must be covered by some claim of the case; a token of it
+    the ``question`` holds (``asked_tokens_blanked``: ``Q9`` of "the Q9 review") is the
+    question restated, never a figure it asserts. ``returned``:
     what tools returned to this reader that op claims bind to (``returned_evidence``);
     without it every count is a lower bound and only the schema marks money.
     """
@@ -1984,6 +3092,8 @@ def check_items(items: Iterable[Mapping[str, Any]], *, rows: Rows,
         if results or leads:
             entries.append({"item": item["id"], "claims": results, "leads": leads})
     if outcome:
+        outcome = asked_tokens_blanked(outcome, question, [
+            claim["value"] for claim in all_claims if claim.get("kind") == "text"])
         for result in _lower_bound_failures([outcome], all_floors, all_exact,
                                             frozenset(all_pages)):
             counts["claims"] += 1
@@ -1991,7 +3101,7 @@ def check_items(items: Iterable[Mapping[str, Any]], *, rows: Rows,
             failures.append({"item": "outcome", "code": result["code"],
                              "value": result["value"], "detail": result["detail"]})
         for written, scale, what in _uncovered([outcome], all_claims, all_dated,
-                                               frozenset(all_pages)):
+                                               frozenset(all_pages), labels=True):
             counts["claims"] += 1
             counts["failed"] += 1
             counts["unstructured"] += 1
@@ -2185,7 +3295,7 @@ def wording_check(text: str, claims: Sequence[Mapping[str, Any]],
     A number with no claim is ``claim_unstructured`` elsewhere. ``pages`` are the pages the
     text's item cites: their locators (``_page_locators``) are blanked before binding."""
     # Page locators of cited pages are blanked first, exactly as for the number check, so a
-    # type word never binds (and is never used up) on "page 3".
+    # type word never binds (and is never used up) on "page 3" (review of 8257aee).
     claimed = [claim["value"] for claim in claims if claim["kind"] == "number"]
     clean = _QC_PASSED.sub(" qcpassed ", _strip(_page_locators(text, pages, claimed),
                                                 lambda match: " " * len(match.group(0))))
@@ -2530,6 +3640,9 @@ def screen_prose(text: str, claims: Sequence[Mapping[str, Any]],
 
     * ``claim_value_unstated``: a claim's value written negated (``is not OPEN``,
       ``passed? No``): the text denies what the claim states.
+    * ``claim_currency_mismatch``: a claim's figure written beside a currency other than
+      the one it checked (``1,260.50 EUR`` of a claim in USD; a bare ``$`` agrees with a
+      dollar, ``same_currency``).
     * ``claim_prose_unchecked``, at most one per sentence: a word that is not grammar, an
       ontology object-type noun (``frame_nouns``) or a record code (``AO``, as written); a
       digit, a non-ASCII letter, a sign or a symbol outside a value; a value glued to a word
@@ -2550,6 +3663,9 @@ def screen_prose(text: str, claims: Sequence[Mapping[str, Any]],
         text = text.replace(LEAD_MARK, " " * len(LEAD_MARK))
         spans = _found_spans(text, claims)
     declared = _declared_gaps(gaps)
+    # A currency written beside a claim's figure other than the one it checked (EUR beside
+    # a value checked in USD) states what no claim checked: it fails, as a negation does.
+    written_currencies = _figure_currencies(text)
     failures: list[dict[str, Any]] = []
     tokens: list[tuple[str, str, int | None]] = []   # (kind, text, claim index)
     at = 0
@@ -2564,6 +3680,15 @@ def screen_prose(text: str, claims: Sequence[Mapping[str, Any]],
                              "code": "claim_value_unstated",
                              "detail": "the text writes this value negated; a value claim "
                                        "backs only what the text says"})
+        checked = claim.get("currency")
+        other = [currency for _, (first, last), _, _, currency in written_currencies
+                 if start <= first and last <= end and isinstance(checked, str) and checked
+                 and not same_currency(currency, checked)]
+        if other:
+            failures.append({"value": str(claim.get("value", "")),
+                             "code": "claim_currency_mismatch",
+                             "detail": f"the text writes this value in {other[0]}, the "
+                                       f"claim checked {checked}"[:300]})
         at = end
     _tokenize(text[at:], tokens)
     sentence: list[tuple[str, str, int | None]] = []
@@ -2718,9 +3843,10 @@ def _sentence_problem(tokens: Sequence[tuple[str, str, int | None]],
     return None
 
 
-__all__ = ["FAILURE_CODES", "HANDLE", "IDENTIFIER", "ISO_DATE", "LEAD_MARK", "NUMBER",
+__all__ = ["FAILURE_CODES", "asked_tokens_blanked", "HANDLE", "IDENTIFIER", "ISO_DATE", "LABEL", "LEAD_MARK", "NUMBER",
            "OTHER_ROLES", "PROSE_UNCHECKED", "QUANTITY_ROLES", "ROLES", "SCHEMA", "case_items",
            "check_items", "dig", "field_label", "frame_nouns", "screen_prose", "wording_check",
-           "number_value", "parse_value_claims", "prose_numbers", "quoted_spans",
-           "returned_evidence", "schema_role", "supported_quotes", "to_decimal", "value_form",
-           "written_dates"]
+           "label_numbers", "labels", "number_value", "parse_value_claims", "prose_numbers",
+           "quoted_spans",
+           "returned_evidence", "schema_role", "supported_quotes", "text_field", "to_decimal",
+           "value_form", "written_dates"]

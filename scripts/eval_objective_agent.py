@@ -1,6 +1,6 @@
 """Objective-investigation eval: a free-form business objective, investigated by the
 investigation agent with ``plx.*`` tools, ending in recorded MC follow-up proposals only
-(live check ``eval.objective_agent``).
+(directive 0231e09aa175, ROADMAP B4; live check ``eval.objective_agent``).
 
 An objective names only a root (identifier and identifier kind) and a business goal in an
 employee's words (``evals/objectives/fixture.json``, format ``plx-eval-objectives/v1``):
@@ -55,8 +55,8 @@ grounded, else 0), ``action_calls`` (tool calls proposing or performing an effec
 ``action_free``. Per part: ``discovery_recall`` (mean), ``false_gap_rate``,
 ``confident_unsupported`` (unsupported facts / facts), ``grounded_proposal_share``
 (grounded attempts / attempts; null with none), ``action_calls`` and
-``resume_duplicates`` (summed), ``chain_intact`` and the session counts. The bar
-(to be reset after the first run): ``discovery_recall >= 0.6``,
+``resume_duplicates`` (summed), ``chain_intact`` and the session counts. ROADMAP B4's bar
+(the owner's to reset after the first run): ``discovery_recall >= 0.6``,
 ``grounded_proposal_share >= 0.8``, ``confident_unsupported <= 0.02``,
 ``action_calls == 0``.
 
@@ -422,32 +422,58 @@ def _handles(citations: Any) -> list[str]:
 
 
 def case_view(host: Any, case_id: str) -> dict[str, Any]:
-    """The whole case as the reader sees it now (``plx.case_get``, host code), its
-    sections paged in when the case is a summary."""
+    """The whole case as the reader sees it now (``plx.case_get``, host code). A case
+    over one response comes back as a summary (``view`` ``summary``: counts, no
+    sections); its sections are then paged in (``section``, ``offset``; each page's
+    ``items``, a finding carrying its ``bucket``) until ``next_offset`` is null, and each
+    must hold as many items as the summary counts. Any other shape is
+    ``case_unreadable``: an unread section never scores as an empty one."""
     view = host.read("plx.case_get", {"case_id": case_id, "include_citation_status": True})
     if not isinstance(view, Mapping) or view.get("ok") is False:
         raise runner.RunnerError("case_unreadable")
+    if view.get("view") == "full":
+        return dict(view)
+    counts = view.get("counts")
+    if view.get("view") != "summary" or not isinstance(counts, Mapping):
+        raise runner.RunnerError("case_unreadable")
     view = dict(view)
     for section in ("findings", "gaps", "proposals", "timeline"):
-        if view.get(section) is None or (isinstance(view.get(section), Mapping)
-                                         and "next_offset" in view[section]):
-            items: Any = [] if section != "findings" else {}
-            offset: Any = 0
-            while offset is not None:
-                page = host.read("plx.case_get", {"case_id": case_id, "section": section,
-                                                  "offset": offset, "limit": 200,
-                                                  "include_citation_status": True})
-                if not isinstance(page, Mapping) or page.get("ok") is False:
+        items: list[Any] = []
+        offset: Any = 0
+        while offset is not None:
+            page = host.read("plx.case_get", {"case_id": case_id, "section": section,
+                                              "offset": offset, "limit": 200,
+                                              "include_citation_status": True})
+            if not isinstance(page, Mapping) or page.get("section") != section \
+                    or not isinstance(page.get("items"), list):
+                raise runner.RunnerError("case_unreadable")
+            items.extend(page["items"])
+            following = page.get("next_offset")
+            if following is not None and (not page["items"]
+                                          or following != offset + len(page["items"])):
+                raise runner.RunnerError("case_unreadable")  # a page that does not advance
+            offset = following
+        # Each item once: a row read twice (a page boundary that moved) is not two rows.
+        key = "seq" if section == "timeline" else "id"
+        if not all(isinstance(item, Mapping) and item.get(key) is not None for item in items):
+            raise runner.RunnerError("case_unreadable")
+        if len({item[key] for item in items}) != len(items):
+            raise runner.RunnerError("case_incomplete")
+        if section == "findings":
+            expected = counts.get("findings")
+            if not isinstance(expected, Mapping):
+                raise runner.RunnerError("case_unreadable")
+            grouped: dict[str, list[Any]] = {}
+            for item in items:
+                if item.get("bucket") not in expected:
                     raise runner.RunnerError("case_unreadable")
-                part = page.get(section)
-                if isinstance(part, Mapping) and "items" in part:
-                    part = part["items"]
-                if isinstance(items, dict) and isinstance(part, Mapping):
-                    for bucket, rows in part.items():
-                        items.setdefault(bucket, []).extend(rows or [])
-                elif isinstance(part, list):
-                    items.extend(part)
-                offset = page.get("next_offset")
+                grouped.setdefault(item["bucket"], []).append(item)
+            if {bucket: len(grouped.get(bucket, ())) for bucket in expected} != dict(expected):
+                raise runner.RunnerError("case_incomplete")
+            view[section] = grouped
+        else:
+            if len(items) != counts.get(section):
+                raise runner.RunnerError("case_incomplete")
             view[section] = items
     return view
 
@@ -740,7 +766,7 @@ def part_summary(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 
 
 def meets_bar(summary: Mapping[str, Any]) -> bool:
-    """The bar on a part (a null number never meets it)."""
+    """ROADMAP B4's bar on a part (a null number never meets it)."""
     return all(isinstance(summary.get(k), (int, float)) and summary[k] >= v
                for k, v in BAR_MIN.items()) and all(
         isinstance(summary.get(k), (int, float)) and summary[k] <= v

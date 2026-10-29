@@ -1,8 +1,8 @@
-"""One final-answer gate (measure what ships): the real-agent path (the Claude
+"""One final-answer gate (ROADMAP B1, measure what ships): the real-agent path (the Claude
 Code agent of ``evals.runner``, an MCP client of the stdio case host behind the tool gate)
 and the console's Ask loop (``operating.agent_loop``) gate a final answer by the same
-product function, ``operating.answer_gate.gate_answer``; the eval harness never rewrites
-an answer.
+product function, ``operating.answer_gate.gate_answer``; the scored reply holds only what
+that gate passed (``evals.runner.gate_final_reply``).
 
 Evidence label: ``injected-transport``. The fixture world's mirror and projection
 (``scripts.eval_real_agent.fixture_parts``); the agent is a scripted MCP client driving the
@@ -222,6 +222,123 @@ class OneGateTests(unittest.TestCase):
             "passed_claims": [0, 1, 0], "refused_claims": [1, 0, 1], "final": "abstained",
             "repaired": True})
         self.assertNotIn(handle, sc.canonical(transcript["agent"]["answer_gate"]))
+
+    def test_the_scored_reply_holds_only_what_the_session_gate_passed(self):
+        # The real stdio host behind the tool gate: a value the gate refused (twice),
+        # stated in the final message anyway, leaves withheld; a passed one leaves as is.
+        host = self.host()
+        handle, field, value = self.record(self.in_process(host))
+        cite = [{"l1_handle": handle, "field_path": field}]
+        for name, submitted, stated, kept in (
+                ("refused, restated", [_wrong(value)] * 2, _wrong(value), False),
+                ("passed", [value], value, True)):
+            with self.subTest(name):
+                final = fx.final_text({
+                    "format": sc.ANSWER_FORMAT, "answerability": "answerable",
+                    "text": "The record states it.", "gaps": [],
+                    "values": [{"name": "stated", "value": stated, "citations": cite}]})
+
+                def spawn(argv, cwd, env, timeout, submitted=submitted, final=final):
+                    server = json.loads(Path(argv[argv.index("--mcp-config") + 1]).read_text(
+                        encoding="utf-8"))["mcpServers"]["plx"]
+                    client = _Client(server, env)
+                    try:
+                        client.call("plx.find", {"query": self.item["root"]["identifier"]})
+                        client.call("plx.read", {"citation": handle})
+                        for said in submitted:
+                            client.call("plx.case_get", {"answer": {
+                                "claims": [self.claim(handle, field, said)]}})
+                    finally:
+                        client.close()
+                    from evals.tests.test_runner import _stream
+                    return 0, _stream(final, client.calls)
+
+                transcript = runner.record(
+                    self.item, runner.ClaudeCodeAgent(spawn=spawn, max_turns=8),
+                    self.host(), evidence_label="injected-transport",
+                    run_pin=self.pin_for(self.item))
+                stated_value = transcript["answer"]["values"][0]
+                reply = transcript["agent"]["final_reply"]
+                if kept:
+                    self.assertEqual(transcript["final_text"], final)
+                    self.assertEqual((stated_value["value"], stated_value["citations"]),
+                                     (value, cite))
+                    self.assertFalse(reply["rewritten"])
+                else:
+                    self.assertEqual((reply["gate"], reply["withheld"]),
+                                     ("abstained", ["stated"]))
+                    self.assertIsNone(stated_value["value"])
+                    self.assertNotIn(_wrong(value), transcript["final_text"])
+                    self.assertEqual(reply["agent_final_text"], final)
+                    # Its plain prose states nothing unbacked and stays: partial, not blocked.
+                    self.assertEqual(transcript["answer"]["answerability"], "partial")
+                    self.assertIn("The record states it.", transcript["answer"]["text"])
+                    score = sc.score(self.item, transcript)
+                    self.assertNotIn("unsupported_assertion", score["codes"])
+                    self.assertFalse(sc.confident_unsupported(score))
+
+    def test_every_answer_path_gives_the_reply_of_the_one_final_reply_function(self):
+        # The same answer through the MCP host's answer mode, the eval's scored reply and
+        # the Ask loop: each reply is ``answer_gate.final_reply`` of it, so the scorer
+        # grades what a user gets. A sentence and an unknown no passed claim backs go.
+        host = self.host()
+        handle, field, value = self.record(self.in_process(host))
+        prose = f"The record states {value}. It was 42 days late."
+        unknowns = ["not in the record: line 3 receipts", "not in the record: the carrier"]
+        submitted = {"claims": [self.claim(handle, field, value)], "unknowns": unknowns,
+                     "text": prose}
+        final = fx.final_text({"format": sc.ANSWER_FORMAT, "answerability": "partial",
+                               "text": prose, "gaps": [], "values": [{
+                                   "name": "stated", "value": value, "citations": [
+                                       {"l1_handle": handle, "field_path": field}]}]})
+        seen = {}
+
+        def spawn(argv, cwd, env, timeout):
+            server = json.loads(Path(argv[argv.index("--mcp-config") + 1]).read_text(
+                encoding="utf-8"))["mcpServers"]["plx"]
+            client = _Client(server, env)
+            try:
+                client.call("plx.find", {"query": self.item["root"]["identifier"]})
+                client.call("plx.read", {"citation": handle})
+                seen["mcp"] = _plain(client.call("plx.case_get", {"answer": submitted})[0])
+            finally:
+                client.close()
+            from evals.tests.test_runner import _stream
+            return 0, _stream(final, client.calls)
+
+        transcript = runner.record(self.item, runner.ClaudeCodeAgent(spawn=spawn, max_turns=8),
+                                   host, evidence_label="injected-transport",
+                                   run_pin=self.pin_for(self.item))
+        mcp = seen["mcp"]
+        self.assertEqual(mcp["outcome"], "answered")
+        expected = answer_gate.final_reply(prose, mcp["claims"],
+                                           unknowns=mcp["unknowns"])
+        self.assertEqual(mcp["reply"]["text"].splitlines(), [
+            f"The record states {value}.", answer_gate.WITHHELD_STATEMENTS])
+        self.assertEqual(mcp["reply"]["unknowns"], unknowns[1:])
+        self.assertEqual(mcp["reply"]["text"], expected["text"])
+        self.assertEqual(transcript["answer"]["text"], mcp["reply"]["text"])
+        self.assertEqual(transcript["answer"]["values"][0]["value"], value)
+        # The unbacked sentence is gone from the reply (the citation handle's content hash
+        # may hold any digits, so the bare number is checked in the reply text only).
+        self.assertNotIn("42 days late", transcript["final_text"])
+        self.assertNotIn("42", transcript["answer"]["text"])
+        self.assertEqual(transcript["agent"]["final_reply"]["removed_sentences"], 1)
+
+        answers = iter([{"action": "call", "calls": [
+            {"tool": "plx.read", "arguments": {"citation": handle}}]},
+            {"action": "answer", "claims": [{"id": "c1", "value": value, "citation": handle,
+                                             "field": field}],
+             "text": "The record states {c1}.", "unknowns": unknowns}])
+        ask = agent_loop.run("What does the record state?", self.in_process(host),
+                             lambda request: (next(answers), None))
+        self.assertEqual(ask["outcome"], "answered")
+        self.assertEqual(ask["unknowns"], unknowns[1:])
+        self.assertEqual(ask["final_reply"]["removed_unknowns"], 1)
+        self.assertEqual(ask["text"], answer_gate.final_reply(
+            answer_gate.rendered_text(ask["claims"], ask["prose"]), ask["claims"],
+            unknowns=unknowns, question=ask["question"])["text"])
+        self.assertNotIn("42", ask["text"])
 
     def test_n_claims_1_10_60_one_refused_none_lost_or_duplicated(self):
         host = self.host()

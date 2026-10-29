@@ -8,8 +8,8 @@ Evidence label: ``isolated-fixture`` (synthetic Portal and BC captures through t
 projector, the compiled repository schema and the read tools; no source is read). The live
 count over the captured projection is the proposed spec
 ``ontology/tests/fixtures/identity.po_same_record.proposed.json``: it moves to
-``verify/live-checks/`` once a human adds ``scripts.po_twin_probe`` to
-``verify/live_verify.py`` ``ALLOWED_MODULES`` (a reviewed security change); until then the
+``devloop/live-checks/`` once a human adds ``scripts.po_twin_probe`` to
+``devloop/live_verify.py`` ``ALLOWED_MODULES`` (a reviewed security change); until then the
 count is live-unverified.
 """
 
@@ -47,7 +47,7 @@ SCHEMA = load_schema()
 TWIN = ids.TWIN_LINK
 FULL = Actor("plx", frozenset({"staff:purchasing"}), "restricted")
 NO_SUPPLIER = Actor("plx", frozenset({"staff:orders"}), "restricted")   # no supplier audience
-NO_FINANCE = Actor("plx", frozenset({"staff:buyer"}), "restricted")    # no finance marking
+NO_FINANCE = Actor("plx", frozenset({"staff:buyer"}), "restricted")    # no price marking
 
 
 class Source:
@@ -125,7 +125,10 @@ def tools(case, path):
         "api:public.app_purchase_order": everyone,
         "api:public.app_supplier": {"staff:purchasing", "staff:buyer"},
         "bc:*": everyone},
-        markings={m: ({"staff:purchasing", "staff:orders"} if m == "finance" else everyone)
+        # The PO total is purchasing_prices (owner decision 2026-10-27, 44e13e0177); the
+        # buyer holds neither it nor finance, so it is the reader without the totals.
+        markings={m: ({"staff:purchasing", "staff:orders"}
+                      if m in ("finance", "purchasing_prices") else everyone)
                   for m in store_ddl.MARKINGS})
     reader = ot.StoreReader.open(path)
     case.addCleanup(reader.conn.close)
@@ -203,12 +206,13 @@ class PoIdentityFirmTests(unittest.TestCase):
         self.assertEqual(json.loads(firm["evidence_handles"]), [
             "api://public.app_purchase_order/p1@X", "api://public.app_supplier/s1@X",
             "bc://production/bc_manufacturing/purchaseOrders/b1@X"])
-        self.assertEqual(json.loads(firm["markings"]), ["finance"])   # the totals it read
+        # the totals it read (PurchaseOrder.total_cost: purchasing_prices)
+        self.assertEqual(json.loads(firm["markings"]), ["purchasing_prices"])
 
     def test_the_live_check_spec_passes_on_its_probe_over_a_built_projection(self):
         import contextlib
         import io
-        from verify import live_verify
+        from devloop import live_verify
         from scripts import po_twin_probe
         self.run_world([(supplier(1, AMBER), portal_po(1, "PO#7001", "s1", day=None),
                          bc_po(1, "PO7001", "AMBER POLYMERS")),

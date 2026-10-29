@@ -39,7 +39,7 @@ import unittest
 from unittest import mock
 from urllib.parse import urlsplit
 
-from verify import live_verify as lv
+from devloop import live_verify as lv
 from integrations.source_mirror import AudienceMap
 from integrations.tests import test_bc_capture as tb
 from integrations.tests import test_capture_mail as mail_t
@@ -53,7 +53,7 @@ from operating.tests import order_fixture as fixture
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC_ID = "case.po_document_chain"
-SPEC = json.loads((ROOT / "verify" / "live-checks" / f"{SPEC_ID}.json").read_text("utf-8"))
+SPEC = json.loads((ROOT / "devloop" / "live-checks" / f"{SPEC_ID}.json").read_text("utf-8"))
 # The purchasing and operations mailboxes a PO's mail lives in, the shared purchase-order
 # inbox first: the fake Graph serves all of them, whatever the check's mail scope names.
 PURCHASING_MAIL = json.loads(
@@ -178,9 +178,11 @@ class PoDocumentChainTest(unittest.TestCase):
         runtime = live_ws.offline_runtime(state, MIRROR_AUDIENCE, "plx", live=live,
                                           environ=ENV)
         self.addCleanup(runtime.close)
+        # The projection the spec's cases were opened on: the host's served generation.
+        projection = live_ws.run_projection(state, actor.tenant)
+        self.addCleanup(projection.close)
         session = live_ws._Session(runtime, actor, AudienceMap.from_file(MIRROR_AUDIENCE),
-                                   live_ws.projection_file(state, actor.tenant),
-                                   captures=state)
+                                   projection.path, captures=state)
         self.addCleanup(session.close)
         return session
 
@@ -189,6 +191,12 @@ class PoDocumentChainTest(unittest.TestCase):
         self.assertEqual(SPEC["cadence"], "daily")
         code, document, text = run_spec(self.temp)
         self.assertEqual(lv.check_expectations(SPEC, code, document), [], document)
+        # The cases were read on the generation the host's cycle committed, never on a
+        # projection of the run's own.
+        self.assertEqual((document["projection"]["source"], document["projection"]["pinned"]),
+                         ("served", True))
+        built = (Path(self.temp) / "state" / live_ws.INDEX_DIR).glob("*ontology-*")
+        self.assertEqual(list(built), [])
         # The pick opened the PO a supplier confirmation names (the only one), and the
         # links around its case are the projection's, counted per schema link type for the
         # investigator (the two documents' links to the PO among them); the reader without
@@ -234,8 +242,7 @@ class PoDocumentChainTest(unittest.TestCase):
                 ({"documents": ()}, "unlinked", "pick_source_not_configured:sharepoint"),
                 ({"documents": unheld}, "failed", "pick_linked_unjoined"),
                 ({"documents": unheld, "bc_down": tb.CO[1]}, "unlinked",
-                 "pick_source_not_captured:bc"),
-                ({"mail_budget": 1e-9}, "unlinked", "pick_source_not_captured:graph_mail")):
+                 "pick_source_not_captured:bc")):
             with self.subTest(missing=missing), tempfile.TemporaryDirectory() as temp:
                 code, document, text = run_spec(temp, **router)
                 self.assertEqual([(c["status"], c.get("missing")) for c in document["cases"]],
@@ -262,6 +269,19 @@ class PoDocumentChainTest(unittest.TestCase):
                 self.assertEqual((sources["mail"]["complete"], sources["mail"]["reasons"]),
                                  (False, ["time_budget"]) if "mail_budget" in router
                                  else (True, []))
+
+        # A mail capture the host's own budget cut is a typed capture gap (documents-findable):
+        # blocked on it, with a blocked_upstream part naming the cause, never a failed run.
+        with tempfile.TemporaryDirectory() as temp:
+            code, document, _text = run_spec(temp, mail_budget=1e-9)
+            self.assertEqual([(c["status"], c.get("missing")) for c in document["cases"]],
+                             [("blocked", "blocked_upstream:graph_mail")], document)
+            self.assertEqual((code, document["failed"], document["blocked"]), (0, 0, 1))
+            self.assertEqual(document["blocked_upstream"], [{
+                "part": "mail", "source": "microsoft-graph",
+                "error_code": "capture_budget_cut", "cause": "capture_gap"}], document)
+            # The spec reads the real summary as blocked, not failed.
+            self.assertEqual(lv.check_expectations(SPEC, code, document, SPEC["expect_blocked"]), [])
 
         def portal_down(url, headers, *, max_bytes):
             raise SourceHttpError("HTTP 500", status=500, error_code="internal")

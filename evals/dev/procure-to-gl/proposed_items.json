@@ -1,6 +1,6 @@
 {
  "format": "plx-eval-case-card-proposals/v1",
- "status": "PROPOSED dev cards for lead triage, never gold. Two stakeholder procure-to-GL maps: the Screening Process Map (Draft 6, outside bottle/towel screening from blank PO through conversion to GL; cards SP-*) and Vince's Packaging Procure-to-GL Map (brief to GL with one partial real example; cards PG-*). Both are process syntheses whose code readings, decisions and gaps are source-reported and not rechecked here. The screening ZIP is pinned by its source descriptor only (it is not a row of examples/case_originals.json and its members were not read by the Workbench); the packaging map is read only through its pinned rendered text and the source assessment. Cards carry no line anchors, no amounts and no expected values; those come after a verified read through scripts.case_originals read.",
+ "status": "PROPOSED dev cards for lead triage, never gold. Two stakeholder procure-to-GL maps: the Screening Process Map (Draft 6, outside bottle/towel screening from blank PO through conversion to GL; cards SP-*) and Vince's Packaging Procure-to-GL Map (brief to GL with one partial real example; cards PG-*). Both are process syntheses whose code readings, decisions and gaps are source-reported and not rechecked here. The screening ZIP is pinned by its advisory descriptor only (it is not a row of examples/case_originals.json and its members were not read by the Workbench); the packaging map is read only through its pinned rendered text and the advisory assessment. Cards carry no line anchors, no amounts and no expected values; those come after a verified read through scripts.case_originals read.",
  "case": "procure-to-gl",
  "maps": {
   "SP": {
@@ -17,7 +17,7 @@
  "source": {
   "advisory": {
    "id": "advisory:4f8c497adb40",
-   "ref": "source-records@9d6e7933636e883c243b9b4b20b854c658539fa7",
+   "ref": "origin/codex/advisory@9d6e7933636e883c243b9b4b20b854c658539fa7",
    "path": "context/4f8c497adb409f2785be205012121535ed513326e36bde79007cb0309995656d.json",
    "record_sha256": "b899c6dd75984938d7cb967d4b7a01119b402fae7867c8231c2fb50b04a9170d",
    "source_revision": "1.0:c3bbec44baba86a761b4442854f5522820c9c5cc46598e899acde6e53c456707",
@@ -27,7 +27,7 @@
    {
     "id": "advisory:6d4918ddaffe",
     "role": "classification supplement of advisory:4f8c497adb40 (project-input/use-case)",
-    "ref": "source-records@54b47488f73ad4d384344c376b0a6f90538f1e42",
+    "ref": "origin/codex/advisory@54b47488f73ad4d384344c376b0a6f90538f1e42",
     "path": "context/6d4918ddaffe605d3baabf6aa0c9cdc367af8e01e0d70896a3f03c712b1ae0e0.json",
     "record_sha256": "58497ac8884385d9b53d83484c5b66778bf9ef64980ce44b6c43594c0274bd05",
     "source_revision": "7639478241d1662a618c65fc51748555cc5eb404b194e3cf3ec0809783b730ab",
@@ -35,8 +35,8 @@
    },
    {
     "id": "advisory:1a0ce08d8937",
-    "role": "Vince's submission of the Packaging Procure-to-GL Map (messages only, artifact unread)",
-    "ref": "source-records@c3ece3159141817fda6bb48100d59740c5e3a7d1",
+    "role": "Vince's hand-off of the Packaging Procure-to-GL Map (messages only, artifact unread)",
+    "ref": "origin/codex/advisory@c3ece3159141817fda6bb48100d59740c5e3a7d1",
     "path": "context/1a0ce08d89377190523c59558cd904e236973f70f081d62201296ac1bcdb8cd9.json",
     "record_sha256": "df31dbf1fcb2d44611edf04e02874988ce55508350a5284573797613fed45007",
     "source_revision": "e4ce201806d55cebaaba96aa6d69f11242c552d5346f65f3dfc7112ea213c2c8",
@@ -45,7 +45,7 @@
    {
     "id": "advisory:2fa3c0aa13ed",
     "role": "assessment of the map's contents; updates advisory:1a0ce08d8937",
-    "ref": "source-records@0a1656d869054b80f451428f171e340722c1f9b4",
+    "ref": "origin/codex/advisory@0a1656d869054b80f451428f171e340722c1f9b4",
     "path": "context/2fa3c0aa13eddff533ff5d6bb098a51732ae9d2fbdc811f2f3ac1cac89d29134.json",
     "record_sha256": "f7ee7bd84596c3d9c89062ae4e05181d4e9f4293c70f9e9511ed9c49a38fef21",
     "source_revision": "7620a5340e13a5cc73cc61310edb35907ce6278bad408d3907b37b249dc70b66",
@@ -194,6 +194,8 @@
    },
    {
     "id": "SP-02",
+    "own_document_evidence": false,
+    "own_document_note": "own-document quote does not meet the criterion (audit 2026-10-28)",
     "layer": "comprehension",
     "question": "How does the screening map propose to cost a screened unit that can be sold?",
     "criterion": "Attribute the target to the map: total blank, landed, screening and two-way freight cost divided by good units. It is a target, not current practice. Any figure is Decimal with its currency and a per-good-unit unit, computed only from cost lines read; an unread part makes the total unknown, never zero.",
@@ -212,6 +214,7 @@
    },
    {
     "id": "SP-04",
+    "anchor_gap": "the screening ZIP members are unread and its advisories name no DPO purchase order",
     "layer": "tracing",
     "question": "Did this drop-ship (DPO) blank purchase order and its receipt reach Business Central?",
     "criterion": "The map reports DPO and receipt exclusions from the BC sync; the pinned drain code skips fulfillment mode DISTRIBUTE for purchase orders and their receipts. That is a code reading, not deployed behaviour. For one PO, name the keys tried in BC purchase orders and receipts; the Portal-to-BC entity map is not served, so a PO absent in BC is 'not found under the keys checked', never 'never posted'.",
@@ -221,6 +224,7 @@
    },
    {
     "id": "SP-05",
+    "anchor_gap": "the screening ZIP members are unread and its advisories name no screening job",
     "layer": "tracing",
     "question": "Which screened SKU was made from which blank SKU in this screening job?",
     "criterion": "Needs a recorded blank-to-screened link or a screening job naming both. The map reports that link missing, and no Portal model at 1f2d42d records a screening job. Report the gap; never match a blank to a screened SKU by description, name, artwork or date.",
@@ -239,6 +243,7 @@
    },
    {
     "id": "SP-07",
+    "own_document_audited": {"date": "2026-10-28", "quotes": ["9473980f311718a0339d669b198f6b343bff3077e0f8c8b8f407a605889e6983", "3384d262c3b4bc6db2fbda738486b52d2382be96a6042d95516c4839f2ec15c7", "0d618517c8b366f797cd150403c04430bda1417f19a5a0044629b2364e031b4b", "8001f650a020fc430d22ecc40111d378718074468f59da59edb7cd32e8ea4d9a"]},
     "layer": "tracing",
     "question": "Does the screener's invoice match the rate-card PO and the good units screened?",
     "criterion": "Compare the posted purchase invoice lines with the rate-card PO lines and the good-unit count, Decimal money with its currency. An invoice is tied to the PO only by a recorded link (BC order reference or the entity map); a number in invoice text is a lead. The map reports quantity and invoice reconciliation missing; answer with the keys tried and the gap.",
@@ -248,6 +253,7 @@
    },
    {
     "id": "SP-08",
+    "own_document_audited": {"date": "2026-10-28", "quotes": ["2adc1461747dfaea58d10bc873a32ee8c2b03a58185ebe4a1e71358429c1e4c1"]},
     "layer": "tracing",
     "question": "Which G/L entries did the blank purchase, the screening charge and the conversion post, and to which accounts?",
     "criterion": "G/L entries tie to a posted purchase invoice only by document No. (corroborated, not typed). No served source ties item ledger entries, a receipt or a conversion to G/L entries, and the clearing account is not approved. Name the entries found with their keys and report the G/L lineage gap; never assign an entry to the job by amount, date or account.",
@@ -293,6 +299,7 @@
    },
    {
     "id": "PG-05",
+    "anchor": {"identifier": "PO5447", "identifier_kind": "po_number", "object_type": "PurchaseOrder", "source": "the Packaging Procure-to-GL Map rendered text (examples/case_originals.json co-9b95f4c321f9; repo copy e059ffc6ee:context/f82f3bca13c5a8b73cea9421e43587e8ee5082fd4751bfbf321fb96e500448f8.json facts[0].extracted_text) lines 987-1007 (PO5447, 50,000 bottles, US$40,100) and 1064-1086 (the forwarder quotes this card names quote that cargo); PO5447 is the one packaging purchase the map names, examples/case_originals.json:2516"},
     "layer": "tracing",
     "question": "What is the landed cost per unit of this packaging, freight and duties included?",
     "criterion": "Per unit landed cost is (goods + freight + duty + other) / quantity in one currency, Decimal, with explicit FX (operating.landed_cost). Forwarder quotes are options, not actuals; receipt freight and duties are actuals, and ERP-D-015 sends receipt freight to expense G/L, so the BC item cost can differ from the landed cost. Any unknown part makes the total unknown.",
@@ -302,6 +309,7 @@
    },
    {
     "id": "PG-06",
+    "anchor": {"identifier": "PO5447", "identifier_kind": "po_number", "object_type": "PurchaseOrder", "source": "the Packaging Procure-to-GL Map rendered text (examples/case_originals.json co-9b95f4c321f9; repo copy e059ffc6ee:context/f82f3bca13c5a8b73cea9421e43587e8ee5082fd4751bfbf321fb96e500448f8.json facts[0].extracted_text) line 960 (the samples thread this card names, co-b6d353bc1e06, is PO5447's proof) and 1104-1110 (receive still to come for this example); examples/case_originals.json:2516"},
     "layer": "tracing",
     "question": "Was this packaging received and checked by incoming QC, and against which PO line?",
     "criterion": "Read the served Portal receipt and receipt lines tied to the PO, and the BC posted receipt only through a recorded link. Incoming QC records are not served: report the gap, never 'passed'. The assessment found no receipt lot id for the example, so an answer without a read receipt is 'not found under the keys checked'.",
@@ -311,6 +319,7 @@
    },
    {
     "id": "PG-07",
+    "anchor": {"identifier": "PO5447", "identifier_kind": "po_number", "object_type": "PurchaseOrder", "source": "the Packaging Procure-to-GL Map rendered text (examples/case_originals.json co-9b95f4c321f9; repo copy e059ffc6ee:context/f82f3bca13c5a8b73cea9421e43587e8ee5082fd4751bfbf321fb96e500448f8.json facts[0].extracted_text) lines 987-1007: PO5447 is the one packaging purchase the map's example names (PO5470, line 1088, is raw materials); examples/case_originals.json:2516"},
     "layer": "tracing",
     "question": "Which G/L entries did this packaging purchase post, and to which accounts?",
     "criterion": "Only G/L entries carrying a posted purchase invoice No. are tied, and only as corroborated. Nothing served ties the receipt or item ledger entries to G/L entries. The assessment found no G/L entry numbers for the example. Name the keys tried and report the G/L lineage gap; never match entries by amount or date.",

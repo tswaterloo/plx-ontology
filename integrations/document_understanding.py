@@ -10,7 +10,9 @@ reading; else Portal's MarkItDown path (``doc_convert``) when the optional
 provenance, then poppler's text layer. A DOCX/PPTX the stdlib converter opens is
 read by MarkItDown when installed, else by that converter in MarkItDown's shape
 (``doc_convert.convert_stdlib``), labelled the same way. XLSX
-keeps the Workbench cell transcription, with a span per sheet. Outlook ``.msg``
+keeps the Workbench cell transcription, with a span per sheet. An HTML file is its
+visible text (:func:`html_text`, the one HTML reading; bounded by ``MAX_HTML_BYTES``)
+and JSON is plain text as written. Outlook ``.msg``
 messages are read like RFC822 ones: a message's text is its own headers and body
 only. Its attachments, nested messages included (attached as a file or carried: a
 ``message/rfc822`` entity, an embedded Outlook item), are not read here: each is a
@@ -62,7 +64,7 @@ from . import child_process, doc_convert
 from .xlsx_extract import extract_xlsx_text
 
 
-EXTRACTOR_VERSION = "plx-document-understanding/v2"
+EXTRACTOR_VERSION = "plx-document-understanding/v3"
 MAX_BYTES = 20_000_000
 MAX_TEXT = 100_000
 MAX_PAGES = 200
@@ -165,17 +167,33 @@ def _provenance(url: str, start: int, end: int) -> str:
 class _HTMLText(HTMLParser):
     """Visible text of an HTML document: script/style content is dropped and a
     block element's end is a line break and a table cell's end (td/th) is a tab, so
-    adjacent blocks and cells never run together."""
+    adjacent blocks and cells never run together.
+
+    Two sibling elements with no text between them (``</b><span>``, ``</span><span>``:
+    a page that styles inline elements as blocks) are separated by one space, unless
+    the first holds a word fragment (no space in its text, or a lone last character)
+    that the second continues: a letter followed by a lowercase letter, or a digit by
+    a digit
+    (``<b>Re</b><i>lease</i>`` stays ``Release``). Text straight after an end tag
+    (``<b>Re</b>lease``) is never split, and nothing is added before punctuation."""
 
     _BLOCKS = {"br", "p", "div", "tr", "li", "h1", "h2", "h3", "h4", "h5", "h6",
-               "table", "ul", "ol", "blockquote", "pre", "section", "article"}
+               "table", "ul", "ol", "blockquote", "pre", "section", "article",
+               "dl", "dt", "dd", "nav", "header", "footer", "main", "aside", "figure",
+               "figcaption", "caption", "hr", "details", "summary", "address",
+               "fieldset", "legend", "form", "dialog", "hgroup", "thead", "tbody",
+               "tfoot", "title"}
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
         self._skip = 0
+        self._after_end = False   # an end tag, with no text since
+        self._sibling = False     # a start tag right after an end tag, with no text since
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if self._after_end:
+            self._sibling = True
         if tag in {"script", "style"}:
             self._skip += 1
         elif tag in self._BLOCKS:
@@ -184,17 +202,44 @@ class _HTMLText(HTMLParser):
     def handle_endtag(self, tag: str) -> None:
         if tag in {"script", "style"}:
             self._skip = max(0, self._skip - 1)
-        elif tag in {"td", "th"}:
+            return
+        if not self._skip:
+            self._after_end = True
+        if tag in {"td", "th"}:
             self.parts.append("\t")
         elif tag in self._BLOCKS:
             self.parts.append("\n")
 
     def handle_data(self, data: str) -> None:
-        if not self._skip:
-            self.parts.append(data)
+        if self._skip or not data:
+            return
+        if self._sibling and self.parts:
+            piece = self.parts[-1]
+            before, after = piece[-1:], data[0]
+            # A word continued: the first element's text is one fragment (no space in
+            # it) or ends in a lone character after a space (``( M</em><em>ail``), and
+            # the second goes on in the same class (lowercase letter, or digit).
+            tail = piece.split()[-1:] or [""]
+            continued = (len(tail[0]) == 1 or not any(c.isspace() for c in piece)) and (
+                (before.isalpha() and after.isalpha() and after.islower())
+                or (before.isdigit() and after.isdigit()))
+            if before and not before.isspace() and after.isalnum() and not continued:
+                self.parts.append(" ")
+        self._after_end = self._sibling = False
+        self.parts.append(data)
 
     def text(self) -> str:
         return "".join(self.parts)
+
+
+def html_text(source: str) -> str:
+    """The visible text of an HTML document (:class:`_HTMLText`), runs of blank lines
+    folded to one: the one HTML reading of a standalone file, a container member, a mail
+    body part and a case original alike."""
+    parser = _HTMLText()
+    parser.feed(source)
+    parser.close()
+    return re.sub(r"\n[ \t]*(?:\n[ \t]*)+", "\n\n", parser.text()).strip()
 
 
 # ------------------------------------------------------- the one PDF/Office reader
@@ -424,8 +469,18 @@ def _ocr_reading(content: bytes, source: str, max_pages: int | None,
     """Local OCR's reading; with ``first_pages`` a PDF over the page bound is read on
     its first pages and the rest are the reading's ``skipped_pages``, as without OCR."""
     reader = _portable_pdf_text if _local_ocr_backend() == "portable" else _macos_pdf_text
-    text, spans, status, warnings, ocr_pages, count = reader(
-        content, max_pages=max_pages, first_pages=first_pages)
+    try:
+        text, spans, status, warnings, ocr_pages, count = reader(
+            content, max_pages=max_pages, first_pages=first_pages)
+    except OcrFailed as error:
+        if error.cause != "pdf_unreadable":
+            raise
+        # poppler refuses the file: pypdf, which is more forgiving of a damaged
+        # structure, reads its text layer when it can; else the cause is typed by bytes.
+        fallback = _pypdf_fallback(content, source, max_pages, first_pages)
+        if fallback is None:
+            raise OcrFailed(_unreadable_cause(content)) from error
+        return fallback
     method = "poppler-tesseract" if reader is _portable_pdf_text else "macos-pdfkit-vision"
     failure = None
     if status == "unsupported":
@@ -437,6 +492,35 @@ def _ocr_reading(content: bytes, source: str, max_pages: int | None,
                    failure=failure, ocr_pages=frozenset(ocr_pages),
                    skipped_pages=((len(pages) + 1, count)
                                   if failure is None and count > len(pages) else None))
+
+
+
+def _unreadable_cause(content: bytes) -> str:
+    """The typed cause of a PDF poppler refused, by the bytes' shape alone."""
+    if b"%PDF-" not in content[:1024]:
+        return "not_a_pdf"
+    if b"%%EOF" not in content[-1024:]:
+        return "pdf_truncated"
+    if b"stream" not in content:
+        return "pdf_stub"   # whole, but no stream anywhere: no page can hold a mark
+    return "pdf_unreadable"
+
+
+def _pypdf_fallback(content: bytes, source: str, max_pages: int | None,
+                    first_pages: bool) -> Reading | None:
+    """pypdf's text-layer reading of a PDF poppler would not open (its pages by
+    ``pypdf-text``, no OCR), or None when pypdf cannot read text from it either."""
+    reader, _failure, opened = _pypdf_open(content, None if first_pages else max_pages)
+    if reader is None:
+        return None
+    first = max_pages if (first_pages and max_pages is not None
+                          and len(reader.pages) > max_pages) else None
+    paged = _pypdf_pages(source, reader, None, first)
+    if paged.failure is not None or not paged.text.strip() or any(
+            page.unread for page in paged.pages):
+        return None
+    return replace(paged, warnings=tuple(dict.fromkeys(
+        ("pdf_read_by_pypdf_after_poppler_refused", *opened, *paged.warnings))))
 
 
 def _pdf_reading(content: bytes, *, ocr: bool, max_pages: int | None,
@@ -757,8 +841,15 @@ def _png_size(path: Path) -> tuple[int, int]:
 
 
 # Why a local OCR run failed (:class:`OcrFailed`): a tool call past the document's
-# deadline; a tool that exited non-zero, said by tool (``pdf_unreadable``: pdfinfo could
+# deadline; a PDF poppler refused and pypdf cannot read, typed by its bytes
+# (:func:`_unreadable_cause`: ``not_a_pdf`` no ``%PDF-`` header in the first KB, empty
+# included; ``pdf_truncated`` a header but no ``%%EOF`` in the last KB; ``pdf_stub``
+# both but no ``stream`` anywhere, so no page content, image or font: a placeholder);
+# a tool that exited non-zero, said by tool (``pdf_unreadable``: pdfinfo could
 # not open the file or found no page in it, damaged or truncated or a stub or not a PDF;
+# :func:`_unreadable_cause` types it by the bytes: ``not_a_pdf`` (no ``%PDF-`` header
+# in the first KB: an HTML page, an image), ``pdf_truncated`` (a header but no ``%%EOF``
+# in the last KB), ``pdf_stub`` (whole but no ``stream``), else ``pdf_unreadable``;
 # ``pdfinfo_exit``;
 # ``text_layer_exit``: pdftotext; ``render_exit``: pdftoppm; ``recognize_exit``:
 # tesseract) or ``tool_signal`` (a tool killed by a signal, out of memory); ``tool_exit``
@@ -770,6 +861,7 @@ def _png_size(path: Path) -> tuple[int, int]:
 # (``integrations.captured_text``): one file's failure is its own typed result, never
 # the run's.
 OCR_FAILURE_CAUSES = ("deadline", "tool_exit", "pdf_unreadable", "pdfinfo_exit",
+                      "not_a_pdf", "pdf_truncated", "pdf_stub",
                       "text_layer_exit", "render_exit", "recognize_exit", "tool_signal",
                       "output_bound", "render_mismatch", "image_page_bound", "page_bound",
                       "page_count", "ocr_output_invalid")
@@ -886,7 +978,7 @@ LAYOUT_MARK = "[ocr word-box layout]"
 # read at or above 91, while most of the text in a handwritten box reads below it (a
 # stray glyph in handwriting may still read high: ``ontology.document_fields`` decides a
 # box by its share of such text; decision
-# docs/decisions/2026-10-19-ao-handwritten-reader-limit.md). The mark line names the
+# devloop/DECISIONS/2026-10-19-ao-handwritten-reader-limit.md). The mark line names the
 # spans of such words on its page: '[ocr word-box layout] below 85: 120-125 300-307'.
 HANDWRITING_CONFIDENCE = 85
 _LAYOUT_LINE = re.compile(r"\n" + re.escape(LAYOUT_MARK) +
@@ -1792,6 +1884,32 @@ def _converted_claims(text: str, ranges: list[tuple[int, int, str,
     return tuple(mapped_claims), tuple(mapped_items)
 
 
+# JSON is read as written (never re-serialized: a parse would round floats and reorder
+# nothing worth the loss), its raw bytes hashed as every file's are.
+PLAIN_TEXT_TYPES = ("text/plain", "text/markdown", "text/x-markdown", "text/csv",
+                    "application/json", "text/json")
+PLAIN_TEXT_SUFFIXES = (".csv", ".md", ".markdown", ".txt", ".json")
+HTML_TYPES = ("text/html", "application/xhtml+xml")
+HTML_SUFFIXES = (".html", ".htm", ".xhtml")
+# An HTML file is parsed (stdlib HTMLParser) only up to this many bytes (about 1.5 s with
+# its claims at the bound): a map or a report page is a few hundred KB; past the bound it
+# is ``unsupported`` with the ``html_exceeds_bound`` warning, never parsed on a read.
+MAX_HTML_BYTES = 2_000_000
+
+
+def is_plain_text(kind: str, filename: str = "") -> bool:
+    """Whether a file of MIME ``kind`` (lower case, no parameters) named ``filename`` is
+    read as UTF-8 text as written: plain text, Markdown, CSV or JSON by type or by name."""
+    return (any(kind.startswith(t) for t in PLAIN_TEXT_TYPES)
+            or filename.lower().endswith(PLAIN_TEXT_SUFFIXES))
+
+
+def is_html(kind: str, filename: str = "") -> bool:
+    """Whether a file of MIME ``kind`` (lower case, no parameters) named ``filename`` is
+    read as HTML (its visible text, :func:`html_text`) by type or by name."""
+    return kind in HTML_TYPES or filename.lower().endswith(HTML_SUFFIXES)
+
+
 def extract_document(content: bytes, mime_type: str, *, original_url: str,
                      filename: str = "", local_pdf_ocr: bool = False) -> ExtractedDocument:
     """Extract a bounded authorized source document without fetching or writing.
@@ -1844,7 +1962,19 @@ def extract_document(content: bytes, mime_type: str, *, original_url: str,
         text, warnings = (_msg_text if msg else _eml_text)(content)
         status = "extracted" if text.strip() else "unsupported"
         method = "outlook-msg" if msg else "rfc822-mime"
-    elif kind.startswith("text/plain"):
+    elif is_html(kind, filename):
+        method, text = "html-text", ""
+        if len(content) > MAX_HTML_BYTES:
+            status, warnings = "unsupported", (f"html_exceeds_bound:{MAX_HTML_BYTES}",)
+        else:
+            try:
+                text = html_text(content.decode("utf-8-sig"))
+                status = "extracted" if text else "no_text"
+            except UnicodeDecodeError:
+                status, warnings = "unsupported", ("text_encoding_unsupported",)
+    elif is_plain_text(kind, filename):
+        # A .csv is text whatever the host declares (vnd.ms-excel), as a member's is; a
+        # Markdown or CSV file is plain text read as written (no rendering).
         try:
             text = content.decode("utf-8-sig")
             status, method = "extracted", "utf8-text"
@@ -1854,7 +1984,9 @@ def extract_document(content: bytes, mime_type: str, *, original_url: str,
     else:
         text, status, method = "", "unsupported", "none"
         warnings = (f"unsupported_mime_type:{kind}",)
-    if len(text) > MAX_TEXT:
+    # An HTML file's cost is bounded by its bytes (MAX_HTML_BYTES); its visible text is
+    # never longer than they are, so it is read whole (a map page holds >MAX_TEXT chars).
+    if len(text) > (MAX_HTML_BYTES if method == "html-text" else MAX_TEXT):
         raise ValidationError("extracted document text exceeds bound")
     if len(warnings) > MAX_WARNINGS:
         raise ValidationError("document warning count exceeds bound")

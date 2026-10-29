@@ -1,4 +1,4 @@
-"""``access.control_proof`` person A asking for person B's mail, a non-member
+"""``access.control_proof`` (ROADMAP A6): person A asking for person B's mail, a non-member
 asking for Teams content and a non-finance reader asking for a finance-only file are each
 refused with a typed reason by every consumer; an excluded person's data reaches nobody.
 
@@ -14,13 +14,15 @@ from datetime import datetime, timezone
 import io
 import json
 from pathlib import Path
+import shutil
+import sqlite3
 import tempfile
 import time
 import unittest
 from unittest import mock
 import uuid
 
-from verify import live_verify
+from devloop import live_verify
 from integrations import capture_sharepoint as cs
 from integrations import graph_read
 from integrations.capture_mail import CaptureScope, MailCapture, MailCaptureStore
@@ -33,14 +35,25 @@ from integrations.source_mirror import AUDIENCE_SCHEMA
 from integrations.tests import test_capture_mail as tcm
 from integrations.tests import test_capture_sharepoint as tcs
 from integrations.tests import test_capture_teams as tct
+from ontology import identifiers
+from ontology.project import build_store
+from ontology.schema import load_schema
+from ontology.types import Actor
+from operating import cases as case_store
+from operating import host as host_module
+from operating import ontology_tools as ot
 from operating.case_mail_scope import MailScope
-from operating.case_runtime import CaseRuntime
-from operating.employee_permissions import (EntraDirectoryRead, POLICY_SCHEMA,
-                                            PORTAL_ACCESS_SNAPSHOT_SCHEMA)
+from operating.case_runtime import CaseRuntime, LiveReaders
+from operating.case_tools_host import CaseCaptures
+from operating.employee_permissions import (EmployeePermissionPolicy,
+                                            EmployeePermissionResolver, EntraDirectoryRead,
+                                            POLICY_SCHEMA, PORTAL_ACCESS_SNAPSHOT_SCHEMA,
+                                            PortalAccessSnapshot)
 from operating.tests.test_employee_permissions import TID
 from scripts import access_control_proof as proof
+from tests.test_customer_po_scope import _Rows, _so
 
-SPEC = json.loads(Path("verify/live-checks/access.control_proof.json").read_text())
+SPEC = json.loads(Path("devloop/live-checks/access.control_proof.json").read_text())
 EXCL = "0e0e0e0e-0000-4000-8000-00000000e0e1"   # tcm.ENV's excluded person
 UPN_C = "excluded@example-plx.com"
 OID_F = "ffff0000-0000-4000-8000-00000000000f"   # finance (directory and Portal)
@@ -71,11 +84,12 @@ BASE_USERS = [_user("cmusera", tcm.BOX_A, tcm.UPN_A), _user("cmuserb", tcm.BOX_B
               _user("cmuserc", EXCL, UPN_C)]
 
 
-def build(root: Path, *, capture_excluded: bool = False) -> Path:
+def build(root: Path, *, capture_excluded: bool = False, statements=()) -> Path:
     """Mail of A, B and the excluded person C (captured only when ``capture_excluded``: C
     was excluded after capture, as were B's and D's messages to A; D's own mailbox is not
     captured), Teams channel/private/chat messages, SharePoint files of which one is a
-    finance-only tax form; and the host's config files."""
+    finance-only tax form; the host's config files, a projection of Portal orders
+    (``PO_ROWS``) and a stored case (``write_cases``)."""
     state = root / "state"
     graph = tcm.FakeGraph()
     graph.users[EXCL] = {"id": EXCL, "userPrincipalName": UPN_C, "mail": UPN_C,
@@ -149,10 +163,57 @@ def build(root: Path, *, capture_excluded: bool = False) -> Path:
                             "sharepoint:*": "internal"},
         "source_acl_required": ["sharepoint:*"],
         "identities": {"staff:all": [tcs.RICARDO, tcs.SALES]}}))
-    (root / "mirror.json").write_text(json.dumps({"schema": AUDIENCE_SCHEMA, "tenant": "plx",
-                                                  "audiences": {}}))
+    (root / "mirror.json").write_text(json.dumps({
+        "schema": AUDIENCE_SCHEMA, "tenant": "plx",
+        "audiences": {"public.app_sales_order": ["staff:all"]}}))
     write_config(root)
+    build_store(host_module.projection_path(state), load_schema(),
+                {"portal_api": _Rows(PO_ROWS)}, normalizer=identifiers.normalize)
+    write_cases(root, state, statements)
     return state
+
+
+# Portal orders whose po_reference is a PO number, a person's name and a placeholder.
+PO_ROWS = [_so("so-1", "PO-4471", "c-1"), _so("so-2", "Jane Smith", "c-1"),
+           _so("so-3", "N/A", "c-2")]
+NON_PO = ("Jane Smith", "N/A")
+
+
+def write_cases(root: Path, state: Path, statements=()) -> None:
+    """A case A opened for all staff: a fact and a gap citing A's own mail (no other
+    reader resolves them) and an uncited interpretation (``statements`` more of them)."""
+    config = host_module.HostConfig.from_file(root / "host.json")
+    policy = EmployeePermissionPolicy.from_file(config.employee_policy)
+    runtime = CaseRuntime(state, client=None, audience=config.mirror_audience, tenant="plx",
+                          live=LiveReaders(LiveSourceAudience.from_file(config.live_audience)),
+                          employee_permissions=EmployeePermissionResolver(
+                              policy, PortalAccessSnapshot(config.portal_access),
+                              directory=directory),
+                          require_employee=True,
+                          mail_scope=MailScope([tcm.UPN_A, tcm.UPN_B, UPN_C]),
+                          people_exclusion=PeopleExclusion.from_env(
+                              {"PLX_EXCLUDED_PEOPLE_OIDS": EXCL}))
+    try:
+        runtime.captures = CaseCaptures(runtime, mail_capture_dir=state,
+                                        sharepoint_capture_dir=state)
+        db = sqlite3.connect(state / "mail-capture" / "capture.db")
+        [handle] = [r[0] for r in db.execute(
+            "SELECT l1_handle FROM messages WHERE message_id = 'MSG-A1'")]
+        db.close()
+        owner = Actor("plx", frozenset({"employee:" + tcm.BOX_A}))
+        case = runtime.cases.open(owner, "Has order SO000001 shipped?", audience=["staff:all"])
+        runtime.cases.finding(owner, case, SECRET_STATEMENT, "fact", "supported",
+                              citations=[handle])
+        runtime.cases.gap(owner, case, SECRET_GAP, "A's note is the only record",
+                          "the dispatcher", "unknown", citations=[handle])
+        for statement in ("Order SO000001 is confirmed", *statements):
+            runtime.cases.finding(owner, case, statement, "interpretation", "unknown")
+    finally:
+        runtime.close()
+
+
+SECRET_STATEMENT = "A's note says the carrier collected on Tuesday"
+SECRET_GAP = "carrier tracking number"
 
 
 def write_users(root: Path, users) -> None:
@@ -180,12 +241,41 @@ def environ(root: Path, **extra) -> dict[str, str]:
     return {k: v for k, v in env.items() if v is not None}
 
 
-def run(env) -> tuple[int, dict]:
+def run(env, argv=()) -> tuple[int, dict]:
     printed = io.StringIO()
     with contextlib.redirect_stdout(printed):
-        code = proof.main([], environ=env, directory=directory,
+        code = proof.main(list(argv), environ=env, directory=directory,
                           mail_scope=MailScope([tcm.UPN_A, tcm.UPN_B, UPN_C]))
     return code, json.loads(printed.getvalue())
+
+
+def copy_world(root: Path, target: Path) -> Path:
+    """A copy of the world at ``root`` (its own state, config and stores) at ``target``."""
+    shutil.copytree(root, target, symlinks=True)
+    return target
+
+
+def append_finding(cases_file: Path, **payload) -> None:
+    """Append, past the case store's own API, a finding event to the stored case whose
+    payload is the last finding's with ``payload`` over it (the event chain kept intact)."""
+    db = sqlite3.connect(cases_file)
+    db.row_factory = sqlite3.Row
+    try:
+        last = db.execute("SELECT * FROM case_event WHERE kind = 'finding.recorded' "
+                          "ORDER BY seq DESC LIMIT 1").fetchone()
+        top = db.execute("SELECT case_seq, event_hash FROM case_event WHERE case_id = ? "
+                         "ORDER BY case_seq DESC LIMIT 1", (last["case_id"],)).fetchone()
+        body = json.dumps({**json.loads(last["payload_json"]), "finding_id": "F9", **payload})
+        seq = top["case_seq"] + 1
+        db.execute("INSERT INTO case_event (case_id, case_seq, kind, actor, at, payload_json, "
+                   "prev_hash, event_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                   (last["case_id"], seq, "finding.recorded", last["actor"], last["at"], body,
+                    top["event_hash"], case_store.CaseStore._event_hash(
+                        last["case_id"], seq, "finding.recorded", last["actor"], last["at"],
+                        body, top["event_hash"])))
+        db.commit()
+    finally:
+        db.close()
 
 
 def strings(value):
@@ -240,7 +330,8 @@ class AccessControlProofTest(unittest.TestCase):
                           document["kinds"]["teams_other"]["requests"]})
         # Counts and codes only: no object id, e-mail or handle is printed.
         for text in strings(document):
-            for secret in (EXCL, UPN_C, tcm.BOX_A, tcm.UPN_B, OID_F, TID, "://"):
+            for secret in (EXCL, UPN_C, tcm.BOX_A, tcm.UPN_B, OID_F, TID, "://",
+                           SECRET_STATEMENT, *NON_PO, "PO-4471"):
                 self.assertNotIn(secret.lower(), text.lower())
 
     def test_reader_cardinality_loses_and_duplicates_no_probe(self):
@@ -265,11 +356,27 @@ class AccessControlProofTest(unittest.TestCase):
                     self.assertEqual(entry["requests"], per_kind[kind] * readers)
                     self.assertGreater(per_kind[kind], 0)
                 self.assertEqual(document["probes"], readers * sum(per_kind.values()))
+                # Every stranger reads the case once and is withheld A's two cited items,
+                # and is served each of the three po_reference values' orders once.
+                self.assertEqual(document["cases_read"], readers)
+                self.assertEqual(document["case_items_unresolved"], 2 * readers)
+                self.assertEqual(document["withheld_unresolved"], 2 * readers)
+                self.assertEqual(document["po_reference_scanned"], 3 * readers)
+                self.assertEqual(document["po_like_served"], readers)
+                self.assertEqual(document["echoed_non_po"], 0)
+                # Per non-PO-like value (two, each on an order and its customer PO): both
+                # objects and the case for every reader; the value whole and its first
+                # word ("Jane") searched by the first readers, one answer each for fewer.
+                self.assertEqual(document["po_probed_by"], {
+                    "object": 4 * readers, "case": 2 * readers,
+                    "find": 3 * min(readers, proof.MAX_FIND_READERS),
+                    "answer": 2 * min(readers, proof.MAX_ANSWER_READERS)})
                 self.assertLess(elapsed, SPEC["timeout_seconds"])
         self.assertEqual(per_kind["mail_other"], 2)   # A's and B's message, once each
 
     def test_a_refusal_without_a_typed_reason_fails_closed(self):
-        with mock.patch.object(CaseRuntime, "resolve_citation", side_effect=RuntimeError()):
+        with mock.patch.object(CaseRuntime, "resolve_citation", side_effect=RuntimeError()), \
+                self.assertLogs("operating.cases", "WARNING"):
             code, document = run(environ(self.root))
         self.assertEqual(code, 1)
         self.assertFalse(document["ok"])
@@ -292,10 +399,28 @@ class AccessControlProofTest(unittest.TestCase):
                                  (0, False, reason))
                 self.assertIn(SPEC["blocked_causes"].get(reason, SPEC["blocked_cause"]),
                               live_verify.CAUSES)
+        # A host that names no state dir or config is the host's own misconfiguration, never
+        # a gap in the source (the verifier's run on main 1e2f02bd read source_gap).
+        for reason in ("state_dir_unset", "host_config_unset", "state_dir_absent",
+                       "employee_policy_unset", "live_audience_unset"):
+            self.assertEqual(SPEC["blocked_causes"].get(reason), "host_misconfiguration", reason)
+        # The verifier's run on main 1e2f02bd: a state dir but no host config in the
+        # environment. The spec names the verifier's host config, read only when the
+        # environment names none, so the proof reaches the host's real blocker: no Portal
+        # access snapshot until the role tables are served (later_ask portal-role-tables).
+        args = SPEC["command"][3:]
+        code, document = run(environ(self.root, PLX_WORKBENCH_HOST_CONFIG=None), args)
+        self.assertEqual((code, document["blocked_reason"], document["host_config_from"]),
+                         (0, "portal_role_tables_unshared", "default"))
+        self.assertEqual(SPEC["blocked_causes"]["portal_role_tables_unshared"], "later_ask")
+        self.assertIn("host_config_from", SPEC["record_enums"])
+        code, document = run(environ(self.root), args)   # the host's own config wins
+        self.assertEqual(document["host_config_from"], "environment")
+        self.assertTrue(document["ok"], document)
+        self.assertEqual(live_verify.check_expectations(SPEC, code, document), [])
         write_config(self.root, portal_access=True)
         code, document = run(environ(self.root))
         self.assertEqual((code, document["blocked_reason"]), (0, "portal_role_tables_unshared"))
-        self.assertEqual(SPEC["blocked_causes"]["portal_role_tables_unshared"], "later_ask")
         (self.root / "host.json").write_text("{not json")
         code, document = run(environ(self.root))
         self.assertEqual(document["blocked_reason"], "host_config_invalid")
@@ -310,6 +435,118 @@ class AccessControlProofTest(unittest.TestCase):
         self.assertEqual(proof._reason(EmployeeAccessRefused(EXCL)), "untyped")
         self.assertEqual(proof._reason(CitationUnresolvable("excluded_people_oids_absent")),
                          "excluded_people_oids_absent")
+
+    def test_an_unresolvable_citations_values_are_withheld_from_every_other_reader(self):
+        """GOV-19: A's fact and gap cite A's own mail; every other reader of the case is
+        served them withheld, and the check fails the moment one is served."""
+        code, document = run(environ(self.root))
+        self.assertEqual(live_verify.check_expectations(SPEC, code, document), [], document)
+        readers = document["readers"]
+        self.assertEqual(document["cases_read"], readers)
+        # Two items (the fact and the gap) for each reader but A; F2 is uncited.
+        self.assertEqual(document["case_items_unresolved"], 2 * (readers - 1))
+        self.assertEqual(document["withheld_unresolved"], document["case_items_unresolved"])
+        self.assertEqual((document["unresolved_served"], document["case_items_unreadable"]),
+                         (0, 0))
+        self.assertGreater(document["case_items_resolved"], 0)   # A is served its own items
+        for text in strings(document):
+            for secret in (SECRET_STATEMENT, SECRET_GAP, "carrier", "dispatcher"):
+                self.assertNotIn(secret.lower(), text.lower())
+
+        # The store serving content its reader cannot resolve is caught as a leak.
+        with mock.patch.object(case_store.CaseStore, "_current_digest",
+                               lambda self, handle, actor: "served"):
+            code, document = run(environ(self.root))
+        self.assertEqual((code, document["ok"]), (1, False))
+        self.assertEqual(document["unresolved_served"], 2 * (readers - 1))
+        self.assertEqual(document["withheld_unresolved"], 0)
+        self.assertGreaterEqual(document["denied_leaks"], document["unresolved_served"])
+        self.assertNotEqual(live_verify.check_expectations(SPEC, code, document), [])
+
+    def test_a_stored_item_of_unknown_shape_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            world = copy_world(self.root, Path(tmp) / "w")
+            append_finding(world / "state" / "case-runtime" / "cases.sqlite",
+                           citations=[{"handle": 5, "digest": "d"}])
+            code, document = run(environ(world))
+        self.assertEqual((code, document["ok"]), (1, False))
+        self.assertEqual(document["case_items_unreadable"], document["readers"])
+        self.assertNotEqual(live_verify.check_expectations(SPEC, code, document), [])
+
+    def test_a_po_like_po_reference_is_served_and_passes(self):
+        """REC-07: the PO number is served (the guard is not withholding everything), the
+        name and the placeholder are stated by no served object, find result or answer."""
+        code, document = run(environ(self.root))
+        self.assertEqual(live_verify.check_expectations(SPEC, code, document), [], document)
+        readers = document["readers"]
+        self.assertEqual((document["po_reference_values"], document["po_reference_non_po_like"]),
+                         (3, len(NON_PO)))
+        self.assertEqual(document["po_reference_scanned"], 3 * readers)
+        self.assertEqual(document["po_like_served"], readers)
+        self.assertEqual(document["echoed_non_po"], 0)
+        self.assertEqual(document["echoed_by"], {"object": 0, "find": 0, "answer": 0, "case": 0})
+        for where, probed in document["po_probed_by"].items():
+            with self.subTest(where):
+                self.assertGreater(probed, 0)   # every consumer was asked and answered
+        for text in strings(document):
+            for value in (*NON_PO, "PO-4471"):
+                self.assertNotIn(value.lower(), text.lower())
+
+    def test_a_non_po_like_po_reference_echoed_by_any_consumer_fails_the_proof(self):
+        # Every ontology consumer stating the raw text (the guard removed).
+        with mock.patch.object(ot, "withheld_po_text", lambda field_path, text: False):
+            code, document = run(environ(self.root))
+        self.assertEqual((code, document["ok"]), (1, False))
+        for where in ("object", "find", "answer"):
+            with self.subTest(where):
+                self.assertGreater(document["echoed_by"][where], 0)
+        self.assertEqual(document["echoed_non_po"], sum(document["echoed_by"].values()))
+        self.assertNotEqual(live_verify.check_expectations(SPEC, code, document), [])
+        for text in strings(document):
+            self.assertNotIn("jane", text.lower())
+
+    def test_a_served_case_stating_a_po_reference_fails_only_when_it_is_not_po_like(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "like"
+            build(root, statements=("Customer PO given as PO-4471",))
+            code, document = run(environ(root))
+            self.assertEqual(live_verify.check_expectations(SPEC, code, document), [],
+                             document)
+            self.assertEqual(document["echoed_by"]["case"], 0)
+            root = Path(tmp) / "name"
+            build(root, statements=("Customer PO given as Jane Smith",))
+            code, document = run(environ(root))
+        self.assertEqual((code, document["ok"]), (1, False))
+        # One served case states it, once per reader (each lists the case).
+        self.assertEqual(document["echoed_by"]["case"], document["readers"])
+        self.assertEqual(document["echoed_non_po"], document["readers"])
+        self.assertNotEqual(live_verify.check_expectations(SPEC, code, document), [])
+
+    def test_without_a_case_store_or_po_text_it_reads_blocked_with_a_cause(self):
+        def drop_cases(world):
+            (world / "state" / "case-runtime" / "cases.sqlite").unlink()
+
+        def drop_projection(world):
+            host_module.projection_path(world / "state").unlink()
+
+        def drop_po_text(world):
+            db = sqlite3.connect(host_module.projection_path(world / "state"))
+            with db:
+                db.execute("DELETE FROM object_values WHERE field_path LIKE '%po_reference'")
+            db.close()
+
+        for reason, prepare in (("case_store_absent", drop_cases),
+                                ("projection_absent", drop_projection),
+                                ("po_reference_values_absent", drop_po_text)):
+            with self.subTest(reason), tempfile.TemporaryDirectory() as tmp:
+                world = copy_world(self.root, Path(tmp) / "w")
+                prepare(world)
+                code, document = run(environ(world))
+                self.assertEqual((code, document["ok"], document["blocked_reason"]),
+                                 (0, True, reason))
+                self.assertEqual(document["denied_leaks"], 0)
+                self.assertEqual(SPEC["blocked_causes"].get(reason, SPEC["blocked_cause"]),
+                                 "source_gap")
 
     def test_spec_is_valid(self):
         live_verify.validate_spec(SPEC)
@@ -424,6 +661,31 @@ class ExcludedAfterCaptureTest(unittest.TestCase):
         self.assertEqual(other["controls_served"], other["controls"])
         self.assertGreater(other["controls"], 0)
 
+    def test_one_kept_mail_store_serves_every_reader_as_a_store_per_read_did(self):
+        # Every captured message (the excluded person's mail to A, mail of mailboxes a
+        # reader may not open, each reader's own) for every reader and consumer: the
+        # runtime's kept read-only store decides each one as a store opened per read did,
+        # and the per-read writer store (schema and journal statements) is not opened.
+        from operating.case_runtime import CaseRuntime
+        handles = self.stored(("mail-capture/capture.db", "SELECT l1_handle FROM messages"))
+        env = environ(self.root, PLX_EXCLUDED_PEOPLE_OIDS=",".join([EXCL, tcm.BOX_B]))
+        writer = MailCaptureStore.__init__
+        counts = {"writer": 0}
+
+        def counted(store, *args, **kwargs):
+            counts["writer"] += 1
+            writer(store, *args, **kwargs)
+
+        with mock.patch.object(MailCaptureStore, "__init__", counted):
+            kept, _ = self.served(env, handles)
+            kept_writers, counts["writer"] = counts["writer"], 0
+            with mock.patch.object(CaseRuntime, "mail_reader", None):
+                fresh, _ = self.served(env, handles)
+        self.assertEqual(kept, fresh)
+        decisions = [hit for by in kept.values() for hit in by.values()]
+        self.assertTrue(any(decisions) and not all(decisions), kept)
+        self.assertGreater(counts["writer"], kept_writers)
+
     def test_teams_content_of_a_person_excluded_after_capture_is_refused_at_serve_time(self):
         handles = proof.targets(self.root / "state",
                                 PeopleExclusion.from_env(environ(self.root)))[0]["teams_other"]
@@ -434,9 +696,13 @@ class ExcludedAfterCaptureTest(unittest.TestCase):
         # Before anyone in Teams is excluded, the members are served (the controls).
         seen, _document = self.served(environ(self.root), handles)
         self.assertTrue(all(any(by.values()) for by in seen.values()), seen)
+        # The private channel's own record names only its member Vince, never Cos.
+        private = [h for h in channel if "/conversation@" in h and "private" in h]
+        self.assertEqual(len(private), 1, channel)
         cases = {
-            # Cos sent every message: none of them is served to anyone.
-            "sender": (tct.U_COS, handles, []),
+            # Cos sent every message and is a participant of every other conversation:
+            # none of them is served to anyone.
+            "sender": (tct.U_COS, [h for h in handles if h not in private], private),
             # The guest is only a member of the chat: the chat is refused, channels served.
             "chat_member": (tct.U_OTHER, chat, channel),
         }

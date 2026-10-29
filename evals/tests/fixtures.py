@@ -67,7 +67,7 @@ def item(**changes: Any) -> dict[str, Any]:
         },
         "must_not": ["claim_uncited_number", "invent_absent_value"],
         "oracle": {"id": "oracle:f3_quantities@0123456789ab", "interface": "plx-eval-oracle/v1",
-                   "derived_from": ["docs/reference/portal-code-map.md#fixture"],
+                   "derived_from": ["devloop/CONTEXT/03-PORTAL.md#fixture"],
                    "computed_at": "2099-01-02T03:05:00Z"},
         "label": {"status": "oracle_only"},
         "created_at": "2099-01-02T03:05:00Z",

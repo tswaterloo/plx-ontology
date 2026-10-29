@@ -5,18 +5,19 @@ the AO-26005B live trace: AO item 58383 planned 1509 / actual 1503, link 1245 qt
 1503, Filling task 14355 qty 1502, Line clearance task 14354 qty 1, order line 1140 qty
 1920, Portal manufacturing order quantity / size_pieces 1509) and ``injected-transport``
 for the AO-26005B case driven through the MCP case tools over
-``FakeWorkbench``. Nothing here is live data. The prose phrasings cover
-(separators, bullets, tables, newlines, number words, extra rows).
+``FakeWorkbench``. Nothing here is live data. The prose phrasings are the reviewer's probes
+(review of 7604d54: separators, bullets, tables, newlines, number words, extra rows).
 """
 
 from __future__ import annotations
 
 from decimal import Decimal
+import time
 import unittest
 from unittest.mock import patch
 
 from ontology.core import Actor, ValidationError
-from operating import case_verification, claim_checks
+from operating import answer_gate, case_verification, claim_checks
 from operating import playbook_eval as pe
 from operating.source_units import SourceUnitContracts
 from operating.tests import test_ao_26005b_case as ao_tests
@@ -122,7 +123,7 @@ def vc(value, handle=None, field=None, role=None, unit=None, calculation=None):
 
 
 def gate(text, citations, claims=(), rows=None, calculations=CALCS, outcome=None,
-         contracts=CONTRACTS, returned=None, **item):
+         contracts=CONTRACTS, returned=None, question=None, **item):
     handles = list(citations)
     parsed = claim_checks.parse_value_claims(list(claims), handles,
                                              [calc["id"] for calc in calculations])
@@ -132,7 +133,7 @@ def gate(text, citations, claims=(), rows=None, calculations=CALCS, outcome=None
           "citations": [{"handle": handle, "status": "resolved"} for handle in handles],
           **item}],
         rows=rows.get, calculations=calculations, contracts=contracts, outcome=outcome,
-        returned=returned)
+        returned=returned, question=question)
 
 
 def codes(result):
@@ -307,7 +308,7 @@ class StructuredClaimTests(unittest.TestCase):
                                     calculations=[tampered])), ["claim_uncited"])
 
     def test_a_calculation_role_is_recomputed_from_contracts_never_taken_as_declared(self):
-        # "planned - damaged as produced" laundered a planned figure.
+        # Review of fb5ac6b: "planned - damaged as produced" laundered a planned figure.
         result = gate("1509 finished units.", [MO],
                       [vc("1509", role="produced", unit="pc", calculation="C4")])
         self.assertEqual(codes(result), ["claim_role_mismatch"])
@@ -327,7 +328,7 @@ class StructuredClaimTests(unittest.TestCase):
                                                      calculation="C1")])["passed"])
 
     def test_a_derived_name_never_chooses_its_quantity_type(self):
-        # "planned - damaged as produced_net" let "produced 1509" pass,
+        # Review of 8855f22: "planned - damaged as produced_net" let "produced 1509" pass,
         # because the wording took the type from the caller's name. The type now comes
         # from the expression tree (planned - damaged is a planned-family figure by the
         # documented SUBTRACTIONS rule) and the name is a label that must fit it.
@@ -349,7 +350,7 @@ class StructuredClaimTests(unittest.TestCase):
                 [failure] = [item for item in result["failures"]
                              if item["code"] == "claim_role_mismatch"]
                 self.assertIn(why, failure["detail"])
-        # planned - damaged has no documented sub-quantity rule: it is
+        # planned - damaged has no documented sub-quantity rule (review of d889cba): it is
         # untyped, so no type word may describe it under any label.
         for name in ("good_units", "planned_net"):
             with self.subTest(label=name):
@@ -486,7 +487,7 @@ D_MO = _input(MO, "row.qty_damaged", "pc")
 
 
 class ReviewProbeRegressions(unittest.TestCase):
-    """A sum, a
+    """Review of 69467b8 (probes p1.py, p4.py) and of 8855f22 on the pure gate: a sum, a
     commuted operand or an identity never relabels a figure; the type is the form's."""
 
     def probe(self, expression, relations, inputs, result, role, text, handles=(ITEM, MO, LINK),
@@ -549,7 +550,7 @@ class ReviewProbeRegressions(unittest.TestCase):
             "planned")
 
     def test_one_row_read_in_two_captures_is_one_cell(self):
-        # A handle's '@generation-capture' tail named a new
+        # Review of d889cba (rvct_p.py): a handle's '@generation-capture' tail named a new
         # variable, so p + q over one planned cell read twice passed as 3018 planned.
         from operating import quantity_types as qt
         again = ITEM.replace("@g-8", "@g-9")
@@ -567,7 +568,7 @@ class ReviewProbeRegressions(unittest.TestCase):
         self.assertEqual(codes(out), ["claim_wording_role_unverified"])
 
     def test_one_row_read_at_two_values_never_cancels(self):
-        # With the capture tail dropped, m + p - q over
+        # Review of 6948548 (rvct2/cancel.py): with the capture tail dropped, m + p - q over
         # one planned cell read at 1509 (capture 9) and 1600 (capture 12) cancelled to m
         # and 1412 passed as manufactured. Two reads of one cell merge only at one value.
         from operating import quantity_types as qt
@@ -600,7 +601,7 @@ class ReviewProbeRegressions(unittest.TestCase):
         self.assertEqual(qt.type_calculation("m + p - q", same)["type"], "manufactured")
 
     def test_two_reads_compare_the_re_read_values_not_the_recorded_ones(self):
-        # Inputs without a recorded value merged.
+        # Review of 5548698 (rvct2/cancel.py): inputs without a recorded value merged.
         again = ITEM.replace("@g-8", "@g-12")
         changed = {"relation": "silver.assembly_order_items",
                    "row": {**ROWS[ITEM]["row"], "quantity": 1600.0}}
@@ -616,7 +617,7 @@ class ReviewProbeRegressions(unittest.TestCase):
         self.assertIn("one_cell_two_values", out["failures"][0]["detail"])
 
     def test_nested_division_by_a_sum_types_fast_and_fails_closed(self):
-        # Opaque keys built from repr strings doubled per
+        # Review of d889cba (rvct_dos.py): opaque keys built from repr strings doubled per
         # nesting level; 'x/(y+x/(y+...))' at 24 levels took 12.6 s. Opaque factors are
         # structural now and nest at most MAX_OPAQUE_DEPTH deep (deeper: untyped).
         import time
@@ -878,7 +879,7 @@ class TypeAlgebraProperties(unittest.TestCase):
         self.assertGreater(passed, 50)
 
 
-# Probe phrasings: every one carries a
+# The reviewer's probe phrasings (scratchpad probe.py on 7604d54): every one carries a
 # number, and with no structured claim every one must fail closed.
 PROBES = (
     "produced 1,509", "Produced: 1,509.", "Produced (1,509).", "Produced - 1509",
@@ -932,7 +933,7 @@ class ProseTests(unittest.TestCase):
 
     def test_a_number_keeps_its_written_scale(self):
         # Review p0-b: "%", "k" and "M" were dropped, so "0.25%" passed over a cell holding
-        # the fraction 0.25 (25 %). Percent contract ("2500%"
+        # the fraction 0.25 (25 %). Percent contract (Dot and plx-reviewer-p0b-1: "2500%"
         # passed over a claim of 25 percent, 25 USD, 25 kg or a bare 25): a number written
         # as a percent is covered only by a claim with a percent unit, at percent scale.
         formula = "api://silver.formula_items/%7B%22id%22%3A7%7D@g-3"
@@ -986,7 +987,7 @@ class ProseTests(unittest.TestCase):
                 self.assertEqual(result["leads"], 0)
 
     def test_prose_that_types_a_number_against_its_claim_blocks(self):
-        # An honest claim (planned) under dishonest prose (produced)
+        # Review of fb5ac6b: an honest claim (planned) under dishonest prose (produced)
         # passed. A quantity-type word bound to a number now has to agree with its claim.
         honest = [vc("1509", ITEM, "row.quantity", "planned"),
                   vc("1502", FILLING, "row.qty", "filled")]
@@ -1012,7 +1013,7 @@ class ProseTests(unittest.TestCase):
         self.assertTrue(gate("1509 units, not produced yet.", [ITEM], honest[:1])["passed"])
 
     def test_correct_prose_binds_each_word_to_its_own_number(self):
-        # Two false fails among seven correct phrasings occurred when a
+        # The reviewer measured two false fails among seven correct phrasings when a
         # trailing word bound forward; clause separators keep each word with its number.
         claims = [vc("1509", ITEM, "row.quantity", "planned"),
                   vc("1503", ITEM, "row.actual_amount", "actual"),
@@ -1049,7 +1050,7 @@ class ProseTests(unittest.TestCase):
         self.assertEqual([item["code"] for item in failures], ["claim_wording_role_mismatch"])
 
     def test_an_unbound_type_word_is_checked_against_its_sentence(self):
-        # Comma and window phrasings escaped the binder.
+        # Review of 8855f22 (minor): comma and window phrasings escaped the binder.
         honest = [vc("1509", ITEM, "row.quantity", "planned")]
         for text in ("Produced, 1509 finished goods.",
                      "AO-26005B was produced in full, 1509 finished goods.",
@@ -1111,6 +1112,73 @@ class ProseTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertTrue(gate(text, [ITEM])["passed"])
 
+    def test_the_answer_text_reads_a_hyphenated_or_grammar_label_as_no_figure(self):
+        """GP-05 and review of af134706d2 (supervisor decision 2026-10-29). In the answer
+        text (the close outcome) a hyphenated label after a prefix that is no quantity,
+        unit, term or currency word, or a whole token of an identifier kind's shape,
+        states no figure. A bare letters+digits token and a hyphenated quantity, unit,
+        term or currency token stay figures: each refuses when the record says another
+        number (ITEM's row says 1509). A claim's own text keeps every code a figure."""
+        claims = [vc("1509", ITEM, "row.quantity", "planned")]
+
+        def outcome(text):
+            return gate("planned 1509", [ITEM], claims, outcome=text)
+        for text in ("Terms are NET30.", "Ship QTY-12 now.", "MOQ500 applies.", "LT14 days.",
+                     "KG25 net.", "PLT3 left.", "CTN120 packed.", "R500 spent.",
+                     "W30 delivery.", "FY2026 plan.", "The Q9 review.", "NET-30 terms.",
+                     "Paid USD-12.", "Paid CAD500.", "x82 boxes.", "KG-25 net.",
+                     # money and period words hyphenated need a claim as bare ones do
+                     "PRICE-500 agreed.", "AMT-500 due.", "COST-500 now.", "DUE-30 days.",
+                     "ETA-14 set.", "MONTHS-3 left.", "FEE-40 paid.", "YEARS-2 term."):
+            with self.subTest(refused=text):
+                result = outcome(text)
+                self.assertEqual([(f["item"], f["code"]) for f in result["failures"]],
+                                 [("outcome", "claim_unstructured")])
+        for text in ("Line P-02458 holds it.", "SKU-2222 shipped.", "File F-26-0001 is in.",
+                     "Batch BC-12345D held.", "QRM-12345 is open.", "PO5447 and PO-5 ran.",
+                     "Order OR1000000001 closed.", "planned 1509 on SKU-1509.",
+                     # a raw material's one-letter code is no rand amount
+                     "Raw material R-1696 used."):
+            with self.subTest(passed=text):
+                self.assertTrue(outcome(text)["passed"], outcome(text)["failures"])
+        # the same codes in a claim's own text are claimed as text, as before
+        self.assertEqual(codes(gate("Line P-02458.", [ITEM], claims)), ["claim_unstructured"])
+
+    def test_a_token_the_question_holds_is_restated_never_a_figure_of_the_answer(self):
+        """Supervisor decision 2026-10-29 (GP-05, RM-05): a whole token of the answer text
+        holding a letter and a digit that the question holds as a whole token, equal but
+        for case, is the question restated. A bare number, a number and a unit apart, a
+        token written otherwise, and the same token with no question stay figures."""
+        claims = [vc("1509", ITEM, "row.quantity", "planned")]
+
+        def outcome(text, question):
+            result = gate("planned 1509", [ITEM], claims, outcome=text, question=question)
+            return [(f["item"], f["code"], f["value"]) for f in result["failures"]]
+        asked = "What did the NGen Q9 review of MIDAS2 (PO-00349) and lot 12 kg reject?"
+        for text in ("The Q9 review rejected it.", "No arrival for MIDAS2 is recorded.",
+                     "The q9 review.", "PO-00349 (midas2) planned 1509."):
+            with self.subTest(restated=text):
+                self.assertEqual(outcome(text, asked), [])
+        for text, value in (("The Q9 review cut 12 rows.", "12"), ("It holds 12 kg.", "12"),
+                            ("The Q9-10 review.", "9"), ("The Q10 review.", "10"),
+                            ("NET30 terms.", "30"), ("The Q9 review.", "9")):
+            with self.subTest(figure=text):
+                question = None if text == "The Q9 review." else asked
+                self.assertIn(("outcome", "claim_unstructured", value),
+                              outcome(text, question))
+        # a quantity glued to its unit or term is a figure though the question holds it
+        glued = "Did 12kg, 500ML, NET30, QTY-12, PRICE-500 or W30 apply to L9 and Q9?"
+        for text, value in (("It was 12kg.", "12"), ("It was 500ML.", "500"),
+                            ("It was NET30.", "30"), ("It was QTY-12.", "12"),
+                            ("It was PRICE-500.", "500"), ("It was W30.", "30")):
+            with self.subTest(glued=text):
+                self.assertIn(("outcome", "claim_unstructured", value), outcome(text, glued))
+        self.assertEqual(outcome("L9 and Q9 did.", glued), [])
+        # a token inside a text claim's value stays: the claim covers its text whole
+        self.assertEqual(claim_checks.asked_tokens_blanked(
+            "Send it for Q9 by 9/30. Q9 too.", asked, ["Send it for Q9 by 9/30."]),
+            "Send it for Q9 by 9/30.    too.")
+
     def test_text_claims_cover_codes_with_digits(self):
         claims = [vc("P-02458", PO_LINE, "row.code"),
                   vc("12500.0", PO_LINE, "row.quantity", unit="EA")]
@@ -1139,7 +1207,7 @@ class ProseTests(unittest.TestCase):
                          [("outcome", "claim_unstructured")])
 
     def test_the_close_outcome_is_worded_by_the_grounded_types_of_the_case(self):
-        # The outcome, the case's answer, was never wording-checked.
+        # Review of 8855f22: the outcome, the case's answer, was never wording-checked.
         claims = [vc("1509", ITEM, "row.quantity", "planned")]
         for outcome in ("Closed: AO-26005B produced 1509 finished goods.",
                         "AO-26005B produced 1509 finished goods; closed.",
@@ -1177,7 +1245,7 @@ PO_ROWS = {PO: {"relation": "public.app_purchase_order", "row": {
 
 
 class TextValueClaimTests(unittest.TestCase):
-    """Text, status and date values are checked as values, and a
+    """Directive 912374bc973a: text, status and date values are checked as values, and a
     claim's text must state the values its claims back, as its numbers must be claimed."""
 
     def check(self, text, *claims, outcome=None, contracts=CONTRACTS):
@@ -1235,7 +1303,7 @@ class TextValueClaimTests(unittest.TestCase):
                          ["claim_unstructured"])
 
     def test_dates_compare_by_instant_or_by_the_date_as_written(self):
-        """``_same_value`` on timestamps, directly."""
+        """e356dc4031b9 item 4: ``_same_value`` on timestamps, directly."""
         def same(claimed, cell):
             claim = {"value": claimed, "kind": "text"}
             return claim_checks._same_value(claim, cell, claim_checks.value_form(claim))
@@ -1263,7 +1331,7 @@ class TextValueClaimTests(unittest.TestCase):
                 self.assertIs(same(claimed, cell), expected)
 
     def test_a_timestamp_is_covered_whole_only_at_an_instant_a_claim_establishes(self):
-        """A date claim read from a cell covers the
+        """da836e2f3f55 item 1 and Dot 94539984: a date claim read from a cell covers the
         cell's timestamp written whole (no time or offset left as numbers), never another
         instant of the day; shipped_at is 2026-01-07T23:30:00-05:00."""
         day = ("shipped_at", "2026-01-07")
@@ -1291,7 +1359,7 @@ class TextValueClaimTests(unittest.TestCase):
                                  [("claim_value_mismatch", claimed)])
 
     def test_a_claimed_timestamp_states_its_day_in_the_zone_its_source_declares(self):
-        """expected_date is 2026-01-07T00:00:00.000Z, its
+        """The architect's rule (da836e2f3f55): expected_date is 2026-01-07T00:00:00.000Z, its
         UTC day, unless its source declares a zone (here a unit contract's time_zone)."""
         stamp = ("expected_date", "2026-01-07T00:00:00.000Z")
         zoned = SourceUnitContracts({"schema": "plx-source-unit-contracts/v1", "contracts": [{
@@ -1329,13 +1397,13 @@ class TextValueClaimTests(unittest.TestCase):
                                      contracts=unknown), [("claim_value_mismatch", "2026-01-07")])
 
     def test_a_date_inside_an_identifier_token_needs_no_date_claim(self):
-        """A lot code is an identifier, not an ISO date."""
+        """da836e2f3f55 item 2: a lot code is an identifier, not an ISO date."""
         self.assertEqual(self.failed("Lot 2026-01-07-A was received."), [])
         self.assertEqual(self.failed("Received 2026-01-07, lot A."),
                          [("claim_unstructured", "2026-01-07")])
 
     def test_no_before_a_number_is_the_abbreviation_of_number(self):
-        """"No. 5" right after a label is a number; after a
+        """da836e2f3f55 item 3: "No. 5" right after a label is a number; after a
         separator (an answer position, line breaks included) it is still the answer."""
         for value, text, supported in (
                 ("QC Lot", "QC Lot No. 5 passed.", 1),
@@ -1348,7 +1416,7 @@ class TextValueClaimTests(unittest.TestCase):
                 self.assertEqual(claim_checks.supported_quotes(value, text), supported)
 
     def test_no_longer_and_not_yet_negate(self):
-        """"no longer X" and "not yet X" do not state X."""
+        """da836e2f3f55 item 4: "no longer X" and "not yet X" do not state X."""
         for text in ("The order is no longer REVISED.", "The order is not yet revised.",
                      "The order isn't yet REVISED."):
             with self.subTest(text=text):
@@ -1473,7 +1541,7 @@ class AoCaseClaimTests(unittest.TestCase):
     def test_a_calculation_relabelled_as_produced_is_refused_on_the_real_case(self):
         # planned - damaged "as produced" / "as produced_net" / filled_* / inspected_*: the
         # label names another type than the form (planned - damaged, a planned figure),
-        # so compute refuses it and records nothing.
+        # so compute refuses it and records nothing (review of fb5ac6b, of 8855f22).
         inputs = self.inputs(p=("mo", "row.quantity"), d=("mo", "row.qty_damaged"))
         for name in ("produced", "produced_net", "produced_good", "filled_capacity",
                      "inspected_ok", "manufactured_net"):
@@ -1484,7 +1552,7 @@ class AoCaseClaimTests(unittest.TestCase):
                 self.assertIn("planned - damaged", text)
 
     def test_round_five_sum_relabels_are_refused_on_the_real_case(self):
-        # The relations, verbatim. Each label
+        # Review of 69467b8 (probes p2/p3): the reviewer's relations, verbatim. Each label
         # names a type the simplified form is not, so compute refuses and records nothing.
         made = self.inputs(m=("link", "row.qtymfg_c"), p=("mo", "row.quantity"))
         item = self.inputs(a=("item", "row.actual_amount"), p=("item", "row.quantity"))
@@ -1560,7 +1628,7 @@ class AoCaseClaimTests(unittest.TestCase):
         self.assertTrue(report["summary"]["passed_all"])
 
     def test_nested_division_stays_fast_through_mcp(self):
-        # The claim check hung once a finding
+        # Review of d889cba (rvct_dos_mcp.py): the claim check hung once a finding
         # cited a deeply nested division; with a declared role plx.case_compute hung.
         import time
         line = self.out["cite"]["line"]
@@ -1602,7 +1670,7 @@ class AoCaseClaimTests(unittest.TestCase):
         self.assertEqual((scaled["result_role"], scaled["result_type"]), ("planned", None))
 
     def test_a_recaptured_changed_row_never_cancels_through_mcp(self):
-        # The AO item row read at capture 9
+        # Review of 6948548 (rvct2/cancel_mcp.py): the AO item row read at capture 9
         # (quantity 1509) and, after it changed, at capture 12 (1600).
         def read():
             return self.call("mirror.rows", {
@@ -1760,7 +1828,7 @@ class AoCaseClaimTests(unittest.TestCase):
 
 
 class OriginalPageClaimTests(unittest.TestCase):
-    """The paper/FM conflict gaps of the AO case with an
+    """Review of 6948548 (rvct2/orig.py): the paper/FM conflict gaps of the AO case with an
     attached original wrote 20, 3, 11, 11 without claims. FM figures are claimed on their
     rows, the paper figure on the page's machine-read text, and 'page N' is a locator."""
 
@@ -1794,7 +1862,7 @@ class OriginalPageClaimTests(unittest.TestCase):
                          ["claim_value_mismatch"])
 
     def test_page_numbers_are_locators_only_for_pages_the_item_cites(self):
-        # "pages N, M ..." blanked any number after a
+        # Review of 5548698 (rvct3/loc.py): "pages N, M ..." blanked any number after a
         # comma, 'and', 'to' or a dash. Now a number is a locator only when the item cites
         # that page (original://...#page=N); the run ends at the first other number.
         page3, page4 = self.PAGE, self.PAGE.replace("page=3", "page=4")
@@ -1827,7 +1895,7 @@ class OriginalPageClaimTests(unittest.TestCase):
                          frozenset({3, 11}))
 
     def test_a_type_word_never_binds_to_a_cited_page_number(self):
-        # The wording check kept "page 3", so
+        # Review of 8257aee (rvct4/word.py, outc.py): the wording check kept "page 3", so
         # "produced" bound to the unclaimed 3 and was used up; 1509 (planned) then passed.
         rows = dict(ROWS, **{self.PAGE: self.VIEW})
         planned = vc("1509", ITEM, "row.quantity", "planned")
@@ -1855,7 +1923,7 @@ class OriginalPageClaimTests(unittest.TestCase):
                 self.assertEqual([item["value"] for item in out["failures"]], [quantity])
 
     def test_a_claimed_value_is_never_a_page_locator(self):
-        # A claimed number that coincided with a cited
+        # Review of 5dea961 (rvct5/coin.py): a claimed number that coincided with a cited
         # page was blanked, so its type word was never checked. It now stays a quantity.
         page = lambda n: self.PAGE.replace("page=3", f"page={n}")  # noqa: E731
         rows = dict(ROWS, **{page(n): dict(self.VIEW, page=n) for n in (1, 3, 4, 11)})
@@ -1882,7 +1950,7 @@ class OriginalPageClaimTests(unittest.TestCase):
                              [damaged3], rows=rows)["passed"])
 
     def test_page_abbreviations_stay_quantities_and_split_no_sentence(self):
-        # "p. 4" ended the sentence
+        # Review of 9d55e3f (rvct6/split.py, oc.py, abbr2.py): "p. 4" ended the sentence
         # for the wording check, so "Produced (p. 4): 1509." passed with 1509 planned, and
         # digits right after a letter and a period ("p.3") were no number at all. Only
         # "page"/"pages" are locators; abbreviations stay quantities needing claims.
@@ -1920,7 +1988,7 @@ class OriginalPageClaimTests(unittest.TestCase):
         self.assertTrue(gate("page 3 units were produced.", [self.PAGE], rows=rows)["passed"])
 
     def test_an_abbreviation_joins_a_sentence_only_before_a_number(self):
-        # The abbreviation list ignored every
+        # Review of e7a1db3 (rvct7/join*.py, gate.py): the abbreviation list ignored every
         # such period, so "...produced on Line E. The FM row counts 1503." joined two
         # sentences and "produced" found the produced 1503. Only "p. 4" / "No. 3" (a digit
         # right after, or after one space) are joined now; e and i are no abbreviations.
@@ -1963,7 +2031,7 @@ class OriginalPageClaimTests(unittest.TestCase):
                                                              "unit": unit}],
                         rows=dict(ROWS, **page))
 
-        # A unit the page prints after the figure must
+        # Dot P8-AO-original-page-unit-route: a unit the page prints after the figure must
         # agree (count words are EA, % is percent); with none printed the unit is left
         # unverified for the reader (the scorer's expected unit) to judge.
         for text, value, unit, basis in (
@@ -1977,6 +2045,83 @@ class OriginalPageClaimTests(unittest.TestCase):
         for text, value, unit in (("Net 25 kg", "25", "percent"), ("Yield 25%", "0.25", "EA"),
                                   ("Filled qty: 1502 EA", "1502", "kg")):
             self.assertEqual(codes(unit_gate(text, value, unit)), ["claim_unit_mismatch"])
+
+    def test_a_page_unit_spelled_out_is_the_unit_it_names(self):
+        def unit_gate(text, value, unit):
+            page = {self.PAGE: dict(self.VIEW, text=text)}
+            return gate(f"It reads {value}.", [self.PAGE], [
+                {"value": value, "citation": self.PAGE, "field": "text", "unit": unit}],
+                rows=dict(ROWS, **page))
+
+        # Spelled-out, plural and abbreviated forms name the unit the gate knows: a
+        # contradiction is refused, the same unit in any spelling is verified.
+        for text, value, claimed, other in (
+                ("Net weight 68,160 grams", "68160", "g", "kg"),
+                ("Net weight 68 kilograms", "68", "kgs", "g"),
+                ("Net weight 68 kilos", "68", "kilogram", "lb"),
+                ("Gross 12 KGS", "12", "kg", "lb"),
+                ("Shipped 3 tonnes", "3", "mt", "kg"),
+                ("Shipped 3 metric tons", "3", "tonne", "lb"),
+                ("Shipped 3 t, by sea", "3", "tons", "kg"),
+                ("Packed 40 pounds", "40", "lbs", "kg"),
+                ("Filled 20 litres", "20", "L", "ml"),
+                ("Filled 20 liters", "20", "litre", "gal"),
+                ("Filled 250 millilitres", "250", "ml", "l"),
+                ("Made 400 pieces", "400", "pcs", "kg"),
+                ("Made 400 each", "400", "ea", "cases"),
+                ("Packed 30 cases", "30", "cs", "pallets"),
+                ("Stacked 4 pallets", "4", "plt", "cases")):
+            with self.subTest(text=text):
+                out = unit_gate(text, value, claimed)
+                self.assertTrue(out["passed"], out["failures"])
+                self.assertEqual(checked(out)[0]["unit_basis"], "page_text")
+                self.assertEqual(codes(unit_gate(text, value, other)), ["claim_unit_mismatch"])
+        # Common abbreviations of a claim's unit name the page's unit too.
+        for text, value, claimed in (
+                ("Net 500 grams", "500", "gms"), ("Net 500 grams", "500", "gm"),
+                ("Filled 20 litres", "20", "ltr"), ("Filled 20 litres", "20", "ltrs"),
+                ("Filled 20 litres", "20", "lts"), ("Sold 6 packs", "6", "pk"),
+                ("Sold 6 packs", "6", "pkg"), ("Sold 6 boxes", "6", "bx"),
+                ("Shipped 5 t", "5", "MTs"), ("Net 68 kilograms", "68", "kilogramme"),
+                ("Net 68 kilograms", "68", "kgm"), ("Filled 250 millilitres", "250", "mls"),
+                ("Packed 40 pounds", "40", "lbm")):
+            with self.subTest(text=text, claimed=claimed):
+                out = unit_gate(text, value, claimed)
+                self.assertTrue(out["passed"], out["failures"])
+                self.assertEqual(checked(out)[0]["unit_basis"], "page_text")
+        # A plural abbreviation is its singular's unit, on the page and in the claim
+        # ("120 pkgs" was unverified against a claim in packs).
+        for text, value, claimed, other in (
+                ("Shipped 120 pkgs", "120", "pack", "box"), ("Sold 6 packs", "6", "pkgs", "bx"),
+                ("Shipped 120 pks", "120", "pkg", "box"), ("Sold 6 boxes", "6", "bxs", "pk"),
+                ("Stacked 4 plts", "4", "pallets", "cases"),
+                ("Stacked 4 pallets", "4", "plts", "bxs")):
+            with self.subTest(text=text, claimed=claimed):
+                out = unit_gate(text, value, claimed)
+                self.assertTrue(out["passed"], out["failures"])
+                self.assertEqual(checked(out)[0]["unit_basis"], "page_text")
+                self.assertEqual(codes(unit_gate(text, value, other)), ["claim_unit_mismatch"])
+        # A claim's unit spelling the gate does not know is unverified, never refused:
+        # only a known unit contradicts a known page unit.
+        for text, value, claimed in (("Net 500 grams", "500", "grs"),
+                                     ("Gross 25 kg", "25", "kilogs"),
+                                     ("Filled 20 litres", "20", "litrz")):
+            with self.subTest(text=text, claimed=claimed):
+                out = unit_gate(text, value, claimed)
+                self.assertTrue(out["passed"], out["failures"])
+                self.assertEqual(checked(out)[0]["unit_basis"], "unverified")
+        # A letter that only looks like a unit: inside a token, or an abbreviation's
+        # letter before a period, is no unit; the claim's unit stays unverified.
+        for text, value in (("PO 123 t-shirt, 7 t-shirts packed", "7"),
+                            ("Packed 7 l. per line", "7"), ("Packed 7 L/min", "7"),
+                            ("Packed 7 g's", "7")):
+            with self.subTest(text=text):
+                out = unit_gate(text, value, "kg")
+                self.assertTrue(out["passed"], out["failures"])
+                self.assertEqual(checked(out)[0]["unit_basis"], "unverified")
+        # A case number before the figure is no unit of it.
+        out = unit_gate("Moved case 12 to bay", "12", "kg")
+        self.assertNotEqual(checked(out)[0].get("unit_basis"), "page_text")
 
     def test_the_ao_case_with_its_attached_original_passes_the_gate(self):
         from operating.tests import test_ao_originals as orig_tests
@@ -1996,7 +2141,7 @@ class OriginalPageClaimTests(unittest.TestCase):
 
 
 class OriginalTextQuoteTests(unittest.TestCase):
-    """docs/decisions/2026-10-06-use-case-evals-text-claims.md option 1: a text value
+    """devloop/DECISIONS/2026-10-06-use-case-evals-text-claims.md option 1: a text value
     cited on the re-read text of an original (a captured file's or attachment's text, a
     message body, an original page) is a quote, verified verbatim on token boundaries."""
 
@@ -2005,6 +2150,7 @@ class OriginalTextQuoteTests(unittest.TestCase):
     MAIL = "graph-mail://ops@example.com/AAMk1@CQAAAB"
     REFUSAL = "graph-mail://ops@example.com/AAMk2@CQAAAC"
     NOTE = "api://public.app_note/%7B%22id%22%3A1%7D@g-1"
+    NAMED_ITEM = "api://public.app_item/%7B%22id%22%3A7%7D@g-1"
     PAGE = OriginalPageClaimTests.PAGE
     TEXTS = {
         FILE: {"relation": "sharepoint.driveItems", "row": {
@@ -2018,6 +2164,7 @@ class OriginalTextQuoteTests(unittest.TestCase):
             "The re-quote was not approved. PO\u00a0held; ship date never confirmed, "
             "non\u2011conforming lot. Total 12,500.00 units.")}},
         NOTE: {"relation": "public.app_note", "row": {"text": "the supplier moved it to Jan 9."}},
+        NAMED_ITEM: {"relation": "public.app_item", "row": {"name": "Lavender soap bar 500 ml"}},
         PAGE: OriginalPageClaimTests.VIEW}
 
     def quote(self, value, handle=FILE, field="row.content_text", cites=None, role=None):
@@ -2047,14 +2194,19 @@ class OriginalTextQuoteTests(unittest.TestCase):
                 ("the forwarder held it until Jan 12.", self.FILE, "row.content_text", None),
                 ("the forwarder held it until Jan 12.", self.FILE, "row.content_text",
                  [self.FILE, self.OTHER]),
-                # A record's text column is no original: its value is the whole cell.
-                ("the supplier moved it", self.NOTE, "row.text", None)):
+                # A structured column is no text field: its value is the whole cell.
+                ("Lavender soap", self.NAMED_ITEM, "row.name", None)):
             with self.subTest(value=value, handle=handle):
                 self.assertEqual(codes(self.quote(value, handle, field, cites)),
                                  ["claim_value_mismatch"])
-        # Numbers keep their rules (a field holds the number itself), and a quote is
-        # untyped: a quantity role on it is never verified.
-        self.assertEqual(codes(self.quote("1509")), ["claim_value_mismatch"])
+        # A record's free-text column is prose too, whatever the record (a note's text).
+        self.assertTrue(self.quote("the supplier moved it", self.NOTE, "row.text")["passed"])
+        # A number is a figure of the text, never the whole cell (``TextFigureTests``); on a
+        # structured column it keeps the field rule. A quote is untyped: a quantity role on
+        # it is never verified.
+        self.assertTrue(self.quote("1509")["passed"])
+        self.assertEqual(codes(self.quote("500", self.NAMED_ITEM, "row.name")),
+                         ["claim_value_mismatch"])
         self.assertEqual(codes(self.quote("the supplier moved it to Jan 9.", role="damaged")),
                          ["claim_role_unverified"])
         # A number inside a quote is untyped: a type word bound to it is not verified.
@@ -2064,8 +2216,60 @@ class OriginalTextQuoteTests(unittest.TestCase):
         self.assertEqual(codes(gate("Produced: Total 1,509 units", [self.FILE], claim,
                                     rows=rows)), ["claim_wording_role_unverified"])
 
+    def test_a_claims_quote_is_checked_as_well_as_its_value_never_instead(self):
+        """v6 scoreboard (``invalid_value_claim:0``): a ``quote`` beside a cited value was
+        an unknown key. It is accepted and checked: it must hold the value as written and
+        the cited text must hold it; a forged one refuses a claim whose value holds."""
+        rows = dict(ROWS, **self.TEXTS)
+
+        def check(value, quote, handle=self.FILE, field="row.content_text"):
+            claim = dict(vc(value, handle, field), quote=quote)
+            return gate(value, [handle], [claim], rows=rows)
+
+        for value, quote, handle, field in (
+                ("moved it to Jan 9.", "Outcome: the supplier moved it to Jan 9.",
+                 self.FILE, "row.content_text"),
+                ("P-01274", "P-01274 11 shipper box", self.PAGE, "text"),
+                # Any other cell: the quote verbatim in it, a number cell that number.
+                ("P-02458", "P-02458", PO_LINE, "row.code"),
+                ("12500", "12500", PO_LINE, "row.quantity"),
+                ("12500", "12,500.0", PO_LINE, "row.quantity")):
+            with self.subTest(quote=quote):
+                out = check(value, quote, handle, field)
+                self.assertTrue(out["passed"], out["failures"])
+                self.assertEqual(checked(out)[0]["quote_basis"], "verified")
+        for value, quote, handle, field in (
+                # Forged: not in the cited text (or from another original).
+                ("moved it to Jan 9.", "Outcome: the forwarder moved it to Jan 9.",
+                 self.FILE, "row.content_text"),
+                ("moved it to Jan 9.", "the forwarder held it until Jan 12.",
+                 self.FILE, "row.content_text"),
+                # Real passage, but it does not hold the value (or holds it negated).
+                ("moved it to Jan 9.", "Who changed the ship date?",
+                 self.FILE, "row.content_text"),
+                ("approved", "The re-quote was not approved.", self.REFUSAL,
+                 "row.body_text"),
+                ("P-01274", "11 shipper box", self.PAGE, "text"),
+                ("P-02458", "P-02458 lid", PO_LINE, "row.code"),
+                ("12500", "12500 EA", PO_LINE, "row.quantity"),
+                ("12500", "12501", PO_LINE, "row.quantity")):
+            with self.subTest(quote=quote, value=value):
+                self.assertIn("claim_value_mismatch", codes(check(value, quote, handle,
+                                                                   field)))
+        # A quote on a computed value, or not a short string, is malformed.
+        for claim in ({"value": "1503", "calculation": "C7", "quote": "1503 units"},
+                      {"value": "1", "op": "count", "of": [{"citation": MO}],
+                       "quote": "one"},
+                      dict(vc("P-02458", PO_LINE, "row.code"), quote=""),
+                      dict(vc("P-02458", PO_LINE, "row.code"), quote=["P-02458"]),
+                      dict(vc("P-02458", PO_LINE, "row.code"), quote="x" * 501)):
+            with self.subTest(claim=claim):
+                with self.assertRaisesRegex(claim_checks.ValidationError,
+                                            "invalid_value_claim_quote:0"):
+                    claim_checks.parse_value_claims([claim], [MO, PO_LINE], ["C7"])
+
     def test_a_short_or_negated_quote_is_refused(self):
-        """Any token-bounded substring verified, however short
+        """Directive af63ee29e91d: any token-bounded substring verified, however short
         (``approved`` out of ``not approved``, ``.``, ``PO``)."""
         for value, handle, field in (
                 ("approved", self.REFUSAL, "row.body_text"),
@@ -2095,7 +2299,7 @@ class OriginalTextQuoteTests(unittest.TestCase):
         self.assertEqual(claim_checks.supported_quotes(
             "approved", "Not approved Monday; approved Tuesday."), 1)
         # "No" after a label before an identifier is the abbreviation of number; a negating
-        # answer after the passage reverses it.
+        # answer after the passage reverses it (direction review of a5b32e19).
         for value, text, supported in (
                 ("LOT-FXA", "Lot No LOT-FXA", 1), ("PO5447", "PO No PO5447", 1),
                 ("PO5447", "There is no PO5447", 0), ("QC passed", "QC passed? No", 0),
@@ -2106,15 +2310,30 @@ class OriginalTextQuoteTests(unittest.TestCase):
                 self.assertEqual(claim_checks.supported_quotes(value, text), supported)
 
     def test_a_quote_never_ends_inside_a_joined_token(self):
-        for value, text in (("Jan 9", "Jan 9,2026"), ("1", "1,509"), ("re", "re-quote")):
+        for value, text in (("Jan 9", "Jan 9,2026"), ("1", "1,509"), ("re", "re-quote"),
+                            ("509 units", "1,509 units"), ("30 boxes", "at 10:30 boxes"),
+                            ("quote today", "re-quote today")):
             with self.subTest(value=value):
                 self.assertEqual(claim_checks.quoted_spans(value, text), 0)
 
+    def test_a_comma_between_words_separates_a_csv_field(self):
+        # A CSV row: the comma between two words is a field separator, not a joiner, so a
+        # field quoted whole verifies; a negator in the next field reverses nothing.
+        row = ("13,Lost: rejected or expired,Portal,app_quote,status REJECTED/EXPIRED "
+               "· rejected_at,no reason list,gap")
+        for value, supported in (("status REJECTED/EXPIRED · rejected_at", 1),
+                                 ("Lost: rejected or expired", 1),
+                                 ("Status:Open", 0), ("REJECTED/EXP", 0)):
+            with self.subTest(value=value):
+                self.assertEqual(claim_checks.supported_quotes(value, row), supported)
+        self.assertEqual(claim_checks.supported_quotes("Open item", "Status:Open item"), 1)
+
     def test_a_number_is_no_quote_and_a_quotes_unit_is_unverified(self):
-        # The body holds 12,500.00 verbatim, but a number claim keeps the field rule: the
-        # cell is the whole body, not that number.
-        self.assertEqual(codes(self.quote("12,500.00", self.REFUSAL, "row.body_text")),
-                         ["claim_value_mismatch"])
+        # The body holds 12,500.00 as a figure: a number claim of it is the figure rule
+        # (``TextFigureTests``), never a quote; a quoted sentence's unit is unverified.
+        out = self.quote("12500", self.REFUSAL, "row.body_text")
+        self.assertTrue(out["passed"], out["failures"])
+        self.assertEqual(checked(out)[0]["value_basis"], "text_figure")
         out = gate("Total 12,500.00 units", [self.REFUSAL],
                    [vc("Total 12,500.00 units", self.REFUSAL, "row.body_text", unit="EA")],
                    rows=dict(ROWS, **self.TEXTS))
@@ -2122,8 +2341,280 @@ class OriginalTextQuoteTests(unittest.TestCase):
         self.assertEqual(checked(out)[0].get("unit_basis"), "unverified")
 
 
+class TextFigureTests(unittest.TestCase):
+    """A number inside a record's free text (``claim_checks.text_field``: a SharePoint
+    file's ``content_text``, a Mission Control task's ``description``) is cited as a figure
+    of that text, the rule an original page's figure follows: saved runs refused such
+    claims as "holds another value" because the whole cell was compared."""
+
+    FILE = "sharepoint://b!drive/03ITEM@%22%7Betag%7D%2C2%22"
+    TASK = "mc://live/tasks/TASK-1@abc-1"
+    NOTE = "api://public.app_note/%7B%22id%22%3A2%7D@g-1"
+    NAMED = "api://public.app_item/%7B%22id%22%3A7%7D@g-1"
+    TEXT = ("Worked example: the bill of lading's 245 cartons only added up at 10 kits per "
+            "case (the labels), not 12 (Sage). Hold 30 cases for QC and re-check in 30 days. "
+            "Deposit US$10,800, a 30% deposit; freight $900. At least 40 pallets moved. "
+            "Dated 2026-10-12, lot AO-26005B. The order was restated 144 units short; "
+            "144 units short is final.")
+    ROWS = {FILE: {"relation": "sharepoint.driveItems", "row": {"content_text": TEXT}},
+            TASK: {"relation": "mission_control.tasks", "row": {"description": (
+                "DVS stock check: 5 of 17 label SKUs hold superseded artwork.")}},
+            NOTE: {"relation": "public.app_note", "row": {"notes": "12"}},
+            NAMED: {"relation": "public.app_item", "row": {"name": "Lavender soap 500 ml"}}}
+
+    def check(self, value, handle=FILE, field=None, rows=None, **extra):
+        field = field or ("row.description" if handle == self.TASK else "row.content_text")
+        said = extra.pop("said", value)
+        claim = dict(vc(value, handle, field, extra.pop("role", None),
+                        extra.pop("unit", None)), **extra)
+        return gate(said, [handle], [claim], rows=dict(ROWS, **(rows or self.ROWS)))
+
+    def test_a_figure_of_a_records_text_passes_untyped_and_pinned_by_a_quote(self):
+        for value, handle, extra in (
+                ("245", self.FILE, {}),
+                ("245", self.FILE, {"quote": "the bill of lading's 245 cartons"}),
+                ("5", self.TASK, {}), ("17", self.TASK, {"quote": "5 of 17 label SKUs"}),
+                # One value with one meaning, written twice, is no ambiguity.
+                ("144", self.FILE, {"unit": "EA"}),
+                ("10800", self.FILE, {"currency": "USD"}),
+                ("30", self.FILE, {"unit": "percent", "said": "30%"}),
+                ("12", self.NOTE, {"field": "row.notes"})):
+            with self.subTest(value=value, extra=extra):
+                out = self.check(value, handle, **extra)
+                self.assertTrue(out["passed"], out["failures"])
+                result = checked(out)[0]
+                self.assertEqual((result["role_basis"], result["quantity_type"]),
+                                 ("untyped", None))
+                self.assertEqual("quote_basis" in result, "quote" in extra)
+        self.assertEqual(checked(self.check("245"))[0]["value_basis"], "text_figure")
+        # The rendered answer never shows a text field whole as the value "as recorded".
+        self.assertIsNone(answer_gate._recorded(
+            vc("5", self.TASK, "row.description"), self.ROWS.get))
+
+    def test_ambiguous_wrong_negated_bounded_or_mistyped_figures_are_refused(self):
+        refused = (
+            # 30 cases and 30 days: two meanings, no quote to pin one.
+            ("30", {}, "claim_value_mismatch", "ambiguous"),
+            ("999", {}, "claim_value_mismatch", "does not hold"),
+            ("12", {}, "claim_value_mismatch", "negated"),
+            ("12", {"quote": "not 12 (Sage)"}, "claim_value_mismatch", "negated"),
+            ("40", {}, "claim_value_mismatch", "bound"),
+            # A quote must be in the text, hold the value and tell passages apart.
+            ("30", {"quote": "Hold 31 cases"}, "claim_value_mismatch", "quote"),
+            ("245", {"quote": "Hold 30 cases"}, "claim_value_mismatch", "quote"),
+            ("245", {"quote": "245"}, "claim_value_mismatch", "too short"),
+            # A date or an identifier's digits are no figure.
+            ("10", {"quote": "Dated 2026-10-12"}, "claim_value_mismatch", "quote"),
+            ("26005", {}, "claim_value_mismatch", "does not hold"),
+            ("144", {"unit": "kg"}, "claim_unit_mismatch", "prints"),
+            ("10800", {"currency": "CAD"}, "claim_currency_mismatch", "USD"),
+            ("900", {"currency": "USD"}, "claim_currency_mismatch", "bare $"),
+            ("245", {"role": "produced"}, "claim_role_unverified", "role contract"))
+        for value, extra, code, detail in refused:
+            with self.subTest(value=value, extra=extra):
+                out = self.check(value, **extra)
+                self.assertEqual(codes(out), [code], out["failures"])
+                self.assertIn(detail, out["failures"][0]["detail"])
+        # The quote that pins one meaning passes the ambiguous value.
+        out = self.check("30", quote="re-check in 30 days")
+        self.assertTrue(out["passed"], out["failures"])
+
+    def test_structured_cells_rereads_and_calculations_keep_their_rules(self):
+        # A structured column is never prose: a number in it is the whole cell or nothing.
+        self.assertEqual(codes(self.check("500", self.NAMED, "row.name")),
+                         ["claim_value_mismatch"])
+        # A field the record does not have, or a row this reader no longer reads, fails.
+        self.assertEqual(codes(self.check("245", field="row.body")), ["claim_value_mismatch"])
+        unread = gate("245", [self.FILE], [vc("245", self.FILE, "row.content_text")],
+                      rows=dict(ROWS))
+        self.assertEqual(codes(unread), ["claim_uncited"])
+        # A product of two figures is no figure of the text, and a sum over text is refused.
+        self.assertEqual(codes(self.check("120")), ["claim_value_mismatch"])
+        summed = gate("255", [self.FILE], [{"value": "255", "op": "sum", "of": [
+            {"citation": self.FILE, "field": "row.content_text"}]}],
+            rows=dict(ROWS, **self.ROWS))
+        self.assertFalse(summed["passed"])
+
+    # Review of 74849da938: each form a number of prose takes that is not the claimed
+    # value (all refused on main, where the whole cell was compared).
+    NOT_THE_VALUE = (
+        # Dates, phone numbers, identifiers and labelled numbers.
+        ("14", "Ship date 10/14/2026, 3 pallets."), ("10", "Ship date 10/14/2026."),
+        ("12", "Delivered Oct 12."), ("12", "Delivered 12 Oct 2026."),
+        ("2026", "Dated 2026-10-12."), ("30", "Booked at 10:30 today."),
+        ("905", "Call 905-555-0187."), ("555", "Call 905-555-0187."),
+        ("187", "Call 905-555-0187."), ("905", "Call (905) 555-0187."),
+        ("555", "Call +1 905 555 0187."),
+        ("1509", "Item SKU-1509 shipped."), ("1509", "Item SKU 1509 shipped."),
+        ("4521", "Invoice #4521 paid."), ("4521", "Invoice 4521 paid."),
+        ("4521", "PO 4521 was raised."), ("12345", "Code ABC12345."),
+        ("12345", "Code 12345."), ("5", "Lot No. 5 held."), ("30", "Bin #30 is full."),
+        ("3", "See page 3 of 5."), ("2", "See line 2."), ("1", "The 1st lot."),
+        ("5", "Gap 3 (stages 5, 8, 13)."), ("5", "Fix (5) first."),
+        ("2", "Version 2.1 shipped."), ("26005", "AO-26005B was released."),
+        # A label with a colon, number word or other delimiter (re-check of 464b1af27c).
+        ("1509", "SKU: 1509 shipped."), ("4521", "PO: 4521"), ("4521", "P.O. 4521"),
+        ("4521", "Invoice: 4521"), ("4521", "Order #: 4521"), ("12345", "Account: 12345"),
+        ("26005", "Batch: 26005"), ("5", "Lot: 5"), ("4521", "Invoice No. 4521"),
+        ("4521", "Order no: 4521"), ("4521", "Lot - 4521"), ("3301", "Quote # 3301"),
+        ("7731", "Job 7731"),
+        # Addresses, years and decimal commas.
+        ("123", "123 Main St, Toronto"), ("200", "Suite 200"),
+        ("10001", "New York, NY 10001"), ("44113", "Zip 44113"),
+        ("2026", "In 2026 we moved."), ("1", "1,2 kg"), ("2", "1,2 kg"),
+        # Bounds, approximations and ranges.
+        ("30", "max 30 cases"), ("30", "max. 30 cases"), ("30", "maximum 30 cases"),
+        ("30", "min 30 cases"), ("30", "minimum 30 cases"), ("30", "30 max"),
+        ("30", "30 cases max"), ("30", "30 or less"), ("30", "30 or fewer"),
+        ("30", "30 at most"), ("30", "at most 30"), ("30", "at least 30"),
+        ("30", "30 or more"), ("30", "30+ cases"), ("30", "up to 30 cases"),
+        ("30", "more than 30 cases"), ("30", "no more than 30 cases"),
+        ("30", "under 30 cases"), ("30", "about 30 cases"), ("30", "~30 cases"),
+        ("30", "≥ 30 cases"), ("20", "20-30 cases"), ("30", "20-30 cases"),
+        ("30", "20 – 30 cases"), ("30", "20 to 30 cases"),
+        ("20", "between 20 and 30 cases"), ("30", "between 20 and 30 cases"),
+        # Negations.
+        ("12", "not 12 cases"), ("30", "excluding 30 cases"), ("30", "except 30 cases"),
+        ("30", "other than 30 cases"), ("30", "30 cases? No."), ("30", "30 cases: not yet."),
+        # Scale words scale the figure.
+        ("1.5", "US$1.5 million"), ("12", "12 thousand units"), ("3", "3 dozen jars"))
+
+    def test_a_number_of_prose_that_is_not_the_value_supports_no_claim(self):
+        for value, text in self.NOT_THE_VALUE:
+            with self.subTest(value=value, text=text):
+                out = self.check(value, rows={self.FILE: {
+                    "relation": "sharepoint.driveItems", "row": {"content_text": text}}})
+                self.assertEqual(codes(out), ["claim_value_mismatch"], out["failures"])
+        for value, text, extra in (
+                ("14", "14 cartons arrived.", {}), ("12", "Loaded 12 pallets.", {}),
+                ("1500000", "US$1.5 million", {"currency": "USD"}),
+                ("12000", "12 thousand units", {}), ("36", "3 dozen jars", {}),
+                ("30", "a 30-day extension", {}), ("500", "500ml bottles", {}),
+                ("1710", "USD 1,710.00 freight", {"currency": "USD"}),
+                ("1509", "Total: 1,509 units", {"unit": "EA"}),
+                # One value written twice with one meaning needs no quote.
+                ("30", "30 cases ordered, 30 cases damaged.", {})):
+            with self.subTest(value=value, text=text):
+                out = self.check(value, rows={self.FILE: {
+                    "relation": "sharepoint.driveItems", "row": {"content_text": text}}},
+                    **extra)
+                self.assertTrue(out["passed"], out["failures"])
+
+    def test_an_all_caps_packing_list_states_its_figures(self):
+        """Re-check of 464b1af27c: a capitalised quantity label before a figure (a scanned
+        packing list) is no id label: the figures pass, with and without a quote, on a
+        record's text and on an original page; a year counted with a unit passes too."""
+        scan = ("PACKING LIST\nTOTAL QTY 1513\nCARTONS 245\nGROSS WT 1,850 KG\n"
+                "QTY 1502 EA\nSHIPPED 2000 CARTONS")
+        page = OriginalPageClaimTests.PAGE
+        for value, extra in (("1513", {}), ("245", {}), ("1850", {"unit": "kg"}),
+                             ("1502", {"unit": "EA"}), ("2000", {}),
+                             ("1513", {"quote": "TOTAL QTY 1513"}),
+                             ("1850", {"quote": "GROSS WT 1,850 KG"})):
+            with self.subTest(value=value, extra=extra):
+                out = self.check(value, rows={self.FILE: {
+                    "relation": "sharepoint.driveItems", "row": {"content_text": scan}}},
+                    **extra)
+                self.assertTrue(out["passed"], out["failures"])
+                rows = dict(ROWS, **{page: dict(OriginalPageClaimTests.VIEW, text=scan)})
+                out = gate(value, [page], [dict({"value": value, "citation": page,
+                                                 "field": "text"}, **extra)], rows=rows)
+                self.assertTrue(out["passed"], out["failures"])
+        # The refusal names what the text prints, never "None".
+        out = self.check("900", currency="USD")
+        self.assertIn("with $", out["failures"][0]["detail"])
+        self.assertNotIn("None", out["failures"][0]["detail"])
+
+    def test_end_to_end_a_date_or_a_bound_never_verifies_a_count(self):
+        for text, said, value in (("Ship date 10/14/2026", "14 cartons arrived.", "14"),
+                                  ("max 12 pallets per truck", "12 pallets were loaded.",
+                                   "12")):
+            with self.subTest(text=text):
+                rows = dict(ROWS, **{self.FILE: {"relation": "sharepoint.driveItems",
+                                                 "row": {"content_text": text}}})
+                out = gate(said, [self.FILE], [vc(value, self.FILE, "row.content_text")],
+                           rows=rows)
+                self.assertFalse(out["passed"])
+                self.assertIn("claim_value_mismatch", codes(out))
+
+    def test_one_rule_for_an_original_pages_figures(self):
+        """The page-figure rule is the text-figure rule: page figures that are dates,
+        bounds, labels or negated, which a page claim passed before, are refused; the
+        page's real figures still pass."""
+        page = OriginalPageClaimTests.PAGE
+
+        def on_page(text, value, said=None, **extra):
+            rows = dict(ROWS, **{page: dict(OriginalPageClaimTests.VIEW, text=text)})
+            return gate(said or value, [page], [dict({"value": value, "citation": page,
+                                                      "field": "text"}, **extra)], rows=rows)
+        for text, value in (("Ship date 10/14/2026", "14"), ("max 12 pallets", "12"),
+                            ("SKU 1509 label", "1509"), ("not 12 (Sage)", "12"),
+                            ("Call 905-555-0187", "555"), ("20-30 cases", "30"),
+                            ("30 cases; QC in 30 days", "30")):
+            with self.subTest(text=text):
+                self.assertEqual(codes(on_page(text, value)), ["claim_value_mismatch"])
+        for text, value, extra in (("P-01274 11 shipper box\nP-0121: 07", "11", {}),
+                                   ("P-01274 11 shipper box\nP-0121: 07", "7", {}),
+                                   ("30 cases; QC in 30 days", "30",
+                                    {"quote": "QC in 30 days"}),
+                                   ("Yield 25%", "25", {"unit": "percent", "said": "25%"})):
+            with self.subTest(text=text, value=value):
+                out = on_page(text, value, **extra)
+                self.assertTrue(out["passed"], out["failures"])
+
+    def test_a_heading_labels_number_is_no_figure(self):
+        """main red since daad9589a3 (evals PinnedOriginalTests): "release 2:" read as a
+        figure made the page's "2 pallets" ambiguous. A word and a number with a colon at a
+        clause start numbers what follows; a quantity label's number still counts."""
+        page = OriginalPageClaimTests.PAGE
+        release = "Release 1: 10,032 lb x 2 pallets; release 2: 6,000 lb x 3."
+
+        def on_page(text, value, **extra):
+            rows = dict(ROWS, **{page: dict(OriginalPageClaimTests.VIEW, text=text)})
+            return gate(value, [page], [dict({"value": value, "citation": page,
+                                              "field": "text"}, **extra)], rows=rows)
+        for text, value in ((release, "2"), (release, "3"), (release, "10032"),
+                            ("Qty: 2", "2"), ("Step 3: pack 2 cases.", "2"),
+                            ("Pallets 4: stacked", "4"), ("Received 3: ok", "3")):
+            with self.subTest(text=text, value=value):
+                out = on_page(text, value)
+                self.assertTrue(out["passed"], out["failures"])
+        self.assertEqual([figure.value for figure in claim_checks._text_figures(release)],
+                         [10032, 2, 6000, 3])
+        # Only at a clause start and only with the colon: elsewhere the number is a figure.
+        for text, value in (("Release 1: 10,032 lb", "1"), ("Step 3: pack 2 cases", "3"),
+                            ("x; item 4: none", "4"), ("Line 5: ok", "5"),
+                            *((f"{word.title()} 6: ok", "6")
+                              for word in claim_checks.HEADING_WORDS)):
+            with self.subTest(heading=text):
+                self.assertEqual(codes(on_page(text, value)), ["claim_value_mismatch"])
+        for text in ("shipped release 2: done", "release 2 pallets", "Qty 2: kept",
+                     "Qty: 2", "Received 2: ok", "x. Pallets 2: stacked"):
+            with self.subTest(figure=text):
+                self.assertIn(Decimal(2), [f.value for f in claim_checks._text_figures(text)])
+
+    def test_n_1_10_60_figures_of_one_text_none_lost_or_slowed(self):
+        for count in (1, 10, 60):
+            with self.subTest(count=count):
+                text = " ".join(f"Bay {n}: {1000 + n} cartons." for n in range(count)) * 40
+                rows = dict(ROWS, **{self.FILE: {"relation": "sharepoint.driveItems",
+                                                 "row": {"content_text": text}}})
+                claims = [vc(str(1000 + n), self.FILE, "row.content_text")
+                          for n in range(count)] + [vc("999", self.FILE, "row.content_text")]
+                started = time.monotonic()
+                out = claim_checks.check_items(
+                    [{"id": f"F{n}", "texts": [], "value_claims":
+                      claim_checks.parse_value_claims([claim], [self.FILE], []),
+                      "citations": [{"handle": self.FILE, "status": "resolved"}]}
+                     for n, claim in enumerate(claims)], rows=rows.get)
+                self.assertLess(time.monotonic() - started, 5)
+                self.assertEqual(out["counts"]["passed"], count)
+                self.assertEqual([failure["item"] for failure in out["failures"]],
+                                 [f"F{count}"])
+
+
 class CustomerPoClaimTests(CustomerPoEvalBase, unittest.TestCase):
-    """Customer-PO texts on Portal SO-YYYY-####
+    """Review of fb5ac6b, on the generic tools: customer-PO texts on Portal SO-YYYY-####
     orders and numeric POs pass the claim gate when their numbers carry value claims
     citing the source fields, and fail it when they do not."""
 
@@ -2180,7 +2671,7 @@ class CustomerPoClaimTests(CustomerPoEvalBase, unittest.TestCase):
                 self.doCleanups()
 
     def test_a_portal_so_year_label_in_caller_text_is_an_identifier_not_numbers(self):
-        # The "-0003" tail of a Portal SO-YYYY-#### label before a
+        # Review of ee55df3: the "-0003" tail of a Portal SO-YYYY-#### label before a
         # full stop was read as the number -3; the label is one identifier.
         case_id = self.case_for("SO-2026-0003", "PO-7788")
         report = pe.evaluate(CPO, self.call, case_id, transcript=self.actual.names)
@@ -2201,7 +2692,7 @@ class CustomerPoClaimTests(CustomerPoEvalBase, unittest.TestCase):
         self.assertFalse(report["summary"]["passed_all"])
 
 
-# BC capture rows (a capture view: the store's own citation, its
+# Directive 24e7aa78f585: BC capture rows (a capture view: the store's own citation, its
 # row) and Portal receipt rows, synthetic, for the Ask's BC roles and its counts and sums.
 CO = "0c5a1b2c-3d4e-4f50-8a6b-7c8d9e0f1a2b"
 
@@ -2292,7 +2783,7 @@ class AskClaimFormTests(unittest.TestCase):
                          ["claim_wording_role_unverified"])
 
     def test_a_count_is_exact_only_when_a_complete_count_entry_binds_it(self):
-        """An Ask that saw 12 receipts and cited 8 must not
+        """Directive 2aafc4270e73 item 2: an Ask that saw 12 receipts and cited 8 must not
         pass "8 receipts"; a count is exact only over a complete count a tool returned."""
         for size in (1, 10, 60):
             with self.subTest(size=size):
@@ -2401,7 +2892,7 @@ class AskClaimFormTests(unittest.TestCase):
                              rows=rows, calculations=())["passed"])
 
     def test_a_money_sum_carries_the_currency_of_its_cited_values(self):
-        """A sum of money states the currency the tools
+        """Directive 2aafc4270e73 item 3: a sum of money states the currency the tools
         returned for its values, or it is refused."""
         rows = dict(sales_order(index, f"{index}00.50") for index in (1, 2))
         handles = list(rows)
@@ -2476,6 +2967,390 @@ class AskClaimFormTests(unittest.TestCase):
         # Received plus ordered combine into no type (as a recorded calculation's do).
         self.assertEqual(codes(gate("90.", both, [mixed_roles], rows=BC_ROWS,
                                     calculations=())), ["claim_role_mismatch"])
+
+
+RRO_PAGE = "original://rro#page=8"
+RRO_TEXT = ("| Item | Ordered | Price |\n| --- | --- | --- |\n"
+            "| BZ-DEO-20F Golden | 10,032 | 1.65 |\n| BZ-DEO-21F Whipped | 10,032 | 1.65 |\n"
+            "| BZ-DEO-22F Toasted | 6,000 | 1.65 |\n| BZ-DEO-23F Golden | 6,000 | 1.65 |\n"
+            "| BZ-DEO-24F Santal | 6,000 | 1.65 |\n| BZ-DEO-26F to 35F (10 SKUs) | 3,024 each "
+            "| 1.65 |\n| Total | 68,304 | 68,160 | 144 |\n\nComment: 15% deposit, $18,901.08 "
+            "received; 15% of $123,429.27 is $18,514.39.\n"
+            "| Total open, all 1–30 days |  | 9,900.00 |\nHold 9,900.00 for review.\n")
+RRO_VIEW = {"original_id": "rro", "page": 8, "text": RRO_TEXT, "text_source": "pdf"}
+DATED_PAGE = "original://rro#page=10"
+DATED_TEXT = ("Invoice IN1000180047, 31 Aug 2026.\nAll seven invoices are dated 31 Aug. The "
+              "due date is not 30 Aug. Pick-up September 2. Statement 28/09/2026; "
+              "reminder 05/08/2026.")
+DATED_VIEW = {"original_id": "rro", "page": 10, "text": DATED_TEXT, "text_source": "pdf"}
+
+
+def expression(value, expr, inputs, **more):
+    """An expression value claim over page figures (``op: expression``)."""
+    return {"value": value, "op": "expression", "expression": expr,
+            "of": [{"citation": RRO_PAGE, "field": "text", **given} for given in inputs],
+            **more}
+
+
+class GateCorrectValueTests(unittest.TestCase):
+    """v8 scoreboard (rerun cards A01, A05, A07, A08, RRO-09, PS-04, EMD-10): the gate
+    refused or withheld values that the cited text supports. An expression over figures
+    the gate verifies on the page is one value claim, recomputed as the scorer recomputes
+    it; a printed date in another written form is that day where nothing makes it
+    ambiguous; a table-row quote matches across runs of spaces and pipes; and a value that
+    cannot pass says why in words a repair can act on."""
+
+    ROWS = dict(ROWS, **{RRO_PAGE: RRO_VIEW, DATED_PAGE: DATED_VIEW})
+
+    def page(self, claims, cites=(RRO_PAGE,), text=""):
+        return gate(text, list(cites), claims, rows=self.ROWS, calculations=())
+
+    def test_an_expression_over_verified_page_figures_is_recomputed(self):
+        deposit = {"value": "18,901.08", "quote": "$18,901.08 received"}
+        fifteen = {"value": "18514.39", "quote": "is $18,514.39"}
+        for claim in (
+                expression("386.69", "x0 - x1", [deposit, fifteen]),     # A07
+                expression("16905.24", "x0 * x1 * x2", [                 # A05
+                    {"value": "68,304", "quote": "| Total | 68,304 |"},
+                    {"value": "1.65", "quote": "| 10,032 | 1.65 |"},
+                    {"value": "15%", "quote": "15% deposit"}]),
+                # A01: a figure printed twice is two inputs, each quoted where printed.
+                expression("68304", "x0 + x1 + x2 + x3 + x4 + x5 * x6", [
+                    {"value": "10032", "quote": "| BZ-DEO-20F Golden | 10,032 |"},
+                    {"value": "10032", "quote": "| BZ-DEO-21F Whipped | 10,032 |"},
+                    {"value": "6000", "quote": "BZ-DEO-22F Toasted | 6,000"},
+                    {"value": "6000", "quote": "BZ-DEO-23F Golden | 6,000"},
+                    {"value": "6000", "quote": "BZ-DEO-24F Santal | 6,000"},
+                    {"value": "3024", "quote": "3,024 each"},
+                    {"value": "10", "quote": "(10 SKUs)"}]),
+                # A percent input printed as a percent, given bare under its unit.
+                expression("0.25", "round_to_cents(x0 * x1)",
+                           [{"value": "1.65", "quote": "| 10,032 | 1.65 |"},
+                            {"value": "15", "unit": "%", "quote": "15% deposit"}])):
+            with self.subTest(claim=claim["expression"]):
+                out = self.page([claim])
+                self.assertTrue(out["passed"], out["failures"])
+                (result,) = checked(out)
+                self.assertEqual((result["role_basis"], result["quantity_type"]),
+                                 ("calculation", None))
+        for claim, code, said in (
+                (expression("386.70", "x0 - x1", [deposit, fifteen]),
+                 "claim_value_mismatch", "is 386.69"),
+                (expression("0.2475", "round_to_cents(x0 * x1)", [
+                    {"value": "1.65", "quote": "| 10,032 | 1.65 |"},
+                    {"value": "15%", "quote": "15% deposit"}]), "claim_value_mismatch", "0.25"),
+                # An input the page does not print, or prints under another quote.
+                (expression("386.70", "x0 - x1", [{"value": "18,901.09"}, fifteen]),
+                 "claim_value_mismatch", "input x0"),
+                (expression("386.69", "x0 - x1", [
+                    {"value": "18,901.08", "quote": "$18,901.08 paid"}, fifteen]),
+                 "claim_value_mismatch", "input x0"),
+                # A bare figure under a percent unit: the page never prints it as a percent.
+                (expression("1504.8", "x0 * x1", [{"value": "10,032", "unit": "%"},
+                                                  {"value": "15%", "quote": "15% deposit"}]),
+                 "claim_value_mismatch", "percent"),
+                (expression("386.69", "x0 - x1", [deposit, fifteen], role="ordered"),
+                 "claim_role_unverified", "no quantity type"),
+                (expression("386.69", "x0 - x1", [deposit, fifteen], unit="kg"),
+                 "claim_unit_mismatch", "kg")):
+            with self.subTest(failing=claim["value"], code=code):
+                out = self.page([claim])
+                self.assertEqual(codes(out), [code], out["failures"])
+                self.assertIn(said, out["failures"][0]["detail"])
+        # The shape is refused before any read: a literal operand, an unused or unknown
+        # input, an input the item does not cite, a copied input, no expression.
+        for claim, code in (
+                (expression("18801.08", "x0 - 100", [deposit]), "value_claim_expression_literal"),
+                # Each input once (x0 / x0, x0 - x0 + x1 build a constant).
+                (expression("1", "x0 / x0", [deposit]), "value_claim_expression_repeated_input"),
+                (expression("18514.39", "x0 - x0 + x1", [deposit, fifteen]),
+                 "value_claim_expression_repeated_input"),
+                (expression("37802.16", "x0 + x0", [deposit]),
+                 "value_claim_expression_repeated_input"),
+                (expression("18901.08", "x0", [deposit, fifteen]),
+                 "value_claim_expression_unused_input"),
+                (expression("18901.08", "x0 + y", [deposit]), "value_claim_expression_name"),
+                (expression("37802.16", "x0 + x1", [deposit, deposit]),
+                 "value_claim_duplicate_input"),
+                (dict(expression("1", "x0", [deposit]), expression=""),
+                 "invalid_value_claim_expression"),
+                ({**expression("1", "x0", [deposit]), "of": [{**deposit, "citation": PAGE_OTHER,
+                                                              "field": "text"}]},
+                 "value_claim_citation_not_cited"),
+                ({"value": "1", "citation": RRO_PAGE, "field": "text", "expression": "x0"},
+                 "invalid_value_claim")):
+            with self.subTest(refused=code):
+                with self.assertRaises(ValidationError) as raised:
+                    self.page([claim])
+                self.assertTrue(str(raised.exception).startswith(code), str(raised.exception))
+
+    def test_a_markdown_heading_run_is_no_number_label(self):
+        # A05's page: "Stages 4–6\n\n### 15% deposit" read "#" as the number sign of
+        # "# 15", so "15% deposit" was refused in the gate and the scorer alike.
+        page = "original://map#page=8"
+        text = ("cancel the BC order as well.\n\nStages 4–6\n\n### 15% deposit, "
+                "recorded as a comment\n\nShelf # 4521 holds it. Box #77 too.")
+        rows = {page: {"original_id": "map", "page": 8, "text": text, "text_source": "pdf"}}
+
+        def figure(value, quote=None, unit=None):
+            claim = {"value": value, "citation": page, "field": "text",
+                     **({"quote": quote} if quote else {}), **({"unit": unit} if unit else {})}
+            return gate("", [page], [claim], rows=rows, calculations=())
+        self.assertTrue(figure("15", "15% deposit", "percent")["passed"])
+        self.assertTrue(figure("15", "### 15% deposit", "percent")["passed"])
+        # One "#" still names a number: never a quantity.
+        for value in ("4521", "77"):
+            with self.subTest(value=value):
+                self.assertEqual(codes(figure(value)), ["claim_value_mismatch"])
+
+    def test_n_1_10_60_expression_inputs_none_lost_or_slowed(self):
+        rows = "".join(f"| Lot {n} | {100 + n} kits |\n" for n in range(60))
+        view = {"original_id": "lots", "page": 1, "text": rows, "text_source": "pdf"}
+        page = "original://lots#page=1"
+        for count in (1, 10, 60):
+            inputs = [{"citation": page, "field": "text", "value": str(100 + n),
+                       "quote": f"| Lot {n} | {100 + n} kits |"} for n in range(count)]
+            claim = {"value": str(sum(100 + n for n in range(count))), "op": "expression",
+                     "expression": " + ".join(f"x{n}" for n in range(count)), "of": inputs}
+            started = time.monotonic()
+            out = gate("", [page], [claim], rows={page: view}, calculations=())
+            self.assertTrue(out["passed"], (count, out["failures"]))
+            wrong = dict(claim, value=str(int(claim["value"]) + 1))
+            self.assertEqual(codes(gate("", [page], [wrong], rows={page: view},
+                                        calculations=())), ["claim_value_mismatch"])
+            self.assertLess(time.monotonic() - started, 5.0)
+
+    def test_a_printed_date_states_the_iso_day_only_where_nothing_is_ambiguous(self):
+        def dated(value, quote=None, view=DATED_VIEW):
+            claim = {"value": value, "citation": DATED_PAGE, "field": "text",
+                     **({"quote": quote} if quote else {})}
+            return gate("", [DATED_PAGE], [claim], rows={DATED_PAGE: view}, calculations=())
+        for value, quote in (("2026-08-31", None),        # RRO-09: "dated 31 Aug"
+                             ("2026-08-31", "All seven invoices are dated 31 Aug."),
+                             ("2026-08-31", "Invoice IN1000180047, 31 Aug 2026"),
+                             ("2026-09-02", "Pick-up September 2"),
+                             ("2026-09-28", "Statement 28/09/2026")):
+            with self.subTest(value=value, quote=quote):
+                out = dated(value, quote)
+                self.assertTrue(out["passed"], out["failures"])
+        for value, quote, view in (
+                ("2026-08-30", None, DATED_VIEW),            # printed only negated
+                ("2026-09-01", None, DATED_VIEW),            # not printed
+                ("2025-08-31", None, DATED_VIEW),            # another year
+                ("2026-08-05", None, DATED_VIEW),            # 05/08: day and month swap
+                ("2026-05-08", None, DATED_VIEW),
+                ("2026-08-31", "All seven invoices are dated 31 Aug.",   # the page prints
+                 dict(DATED_VIEW, text=DATED_TEXT.replace("31 Aug 2026", "1 Sep 2025")),
+                 ),                                          # two years: no year implied
+                ("2026-08-30", "The due date is not 30 Aug", DATED_VIEW)):
+            with self.subTest(refused=value, quote=quote):
+                self.assertEqual(codes(dated(value, quote, view)), ["claim_value_mismatch"])
+        # A record's free text follows the same rule.
+        note = "sharepoint://b!drive/04ITEM@%22%7Betag%7D%2C1%22"
+        rows = {note: {"relation": "sharepoint.driveItems", "row": {"content_text": DATED_TEXT}}}
+        self.assertTrue(gate("", [note], [vc("2026-08-31", note, "row.content_text")],
+                             rows=rows, calculations=())["passed"])
+        self.assertEqual(codes(gate("", [note], [vc("2026-08-05", note, "row.content_text")],
+                                    rows=rows, calculations=())), ["claim_value_mismatch"])
+
+    def test_a_printed_day_without_its_year_holds_only_under_one_year_of_the_text(self):
+        """Review of 1cbae4da8d (rv-gate attack2/attack3): "31 Aug" took its year from the
+        agent's quote or from a text printing another year in a form the gate did not
+        read (25, '25, FY2025). A printed day without its year holds only when no year in
+        any form follows it and the whole cited text prints exactly one year, the claim's."""
+        page = "original://doc#page=1"
+        note = "sharepoint://b!drive/04ITEM@%22%7Betag%7D%2C1%22"
+
+        def dated(text, value, quote=None, on_note=False):
+            handle = note if on_note else page
+            rows = {note: {"relation": "sharepoint.driveItems", "row": {"content_text": text}},
+                    page: {"original_id": "doc", "page": 1, "text": text, "text_source": "pdf"}}
+            claim = {"value": value, "citation": handle,
+                     "field": "row.content_text" if on_note else "text",
+                     **({"quote": quote} if quote else {})}
+            return gate("", [handle], [claim], rows=rows, calculations=())
+        for text, value, quote, on_note in (
+                ("Invoice dated 31 Aug 25. Budget 2026.", "2026-08-31", None, False),
+                ("Invoice dated 31 Aug 25.", "2025-08-31", None, False),
+                ("Invoice dated 31 Aug '25. Budget 2026.", "2026-08-31", None, False),
+                ("FY2025 close: invoices dated 31 Aug. Plan 2026 next.", "2026-08-31",
+                 "invoices dated 31 Aug. Plan 2026", False),
+                ("Year 2025 close: invoices dated 31 Aug. Plan for 2026 next.", "2026-08-31",
+                 "invoices dated 31 Aug. Plan for 2026", False),
+                ("FY2025 invoices dated 31 Aug. Printed 2026.", "2026-08-31", None, False),
+                ("FY25 invoices dated 31 Aug. Printed 2026.", "2026-08-31", None, False),
+                ("Invoices dated 31 Aug.", "2026-08-31", None, False),
+                ("Paid 31 Aug 2025. Next due 31 Aug.", "2026-08-31", None, False),
+                ("Ship 2025-08-31. Also 31 Aug.", "2026-08-31", None, False),
+                ("Inv 31 Aug 25 | Printed 01 Sep 2026", "2026-08-31", None, False),
+                ("Paid 31/08/25. Due 31 Aug. Printed 2026.", "2026-08-31", None, False),
+                ("dated 31 Aug 25; 2026 plan", "2026-08-31", None, True),
+                ("Statement 02/03/2026.", "2026-03-02", None, False),
+                ("Statement 02/03/2026.", "2026-02-03", None, False)):
+            with self.subTest(refused=text, value=value):
+                out = dated(text, value, quote, on_note)
+                self.assertEqual(codes(out), ["claim_value_mismatch"])
+        self.assertIn("no unambiguous year", dated("Invoices dated 31 Aug 25. 2026.",
+                                                   "2026-08-31")["failures"][0]["detail"])
+        for text, value, quote in (
+                ("Invoice 31 Aug 2025", "2025-08-31", None),
+                ("Statement 13/02/2026.", "2026-02-13", None),
+                ("Last year's invoices were dated 31 Aug. Report printed 2026.", "2026-08-31",
+                 None),
+                ("Meeting Aug 31 10:00 2026", "2026-08-31", None),
+                # RRO page 10: the next day of a list is no two-digit year.
+                ("Emails of 18 Aug, 31 Aug and 2 Sep 2026.", "2026-08-31", None),
+                ("Emails of 31 Aug, 25 Aug and 2 Sep 2026.", "2026-08-31", None),
+                # A trailing dot after the month: the day is "31 Aug", inside the quote.
+                ("Invoices dated 31 Aug. Printed 2026.", "2026-08-31", "dated 31 Aug"),
+                ("Invoices dated 31 Aug. Printed 2026.", "2026-08-31", "dated 31 Aug.")):
+            with self.subTest(passes=text, quote=quote):
+                out = dated(text, value, quote)
+                self.assertTrue(out["passed"], out["failures"])
+        # The day printed elsewhere than the quote: the detail names the date form.
+        out = dated("Invoices dated 31 Aug. Printed 2026.", "2026-08-31", "Printed 2026")
+        self.assertIn("the quote holds no printed form of the day", out["failures"][0]["detail"])
+
+    def test_an_expression_states_a_figure_of_every_input_in_one_currency_and_unit(self):
+        # Review of 1cbae4da8d and 1bdaaf699d (rv-gate attack5 c1, c2, c7): CAD 100 + USD 50
+        # is an untyped 150; a bare $ beside a named currency, and 10 kg - 500 g., too.
+        page = "original://mix#page=1"
+        text = ("Freight CAD 100 paid. Duty USD 50 paid. Deposit $40 held. Fee 30 kg box. "
+                "Tare 12 lb box. Count 6 cartons. Rate 2.50 per carton. Charge US$70 due. "
+                "Bond $25 held. Gross 10 kg. Tare 500 g.")
+        rows = {page: {"original_id": "mix", "page": 1, "text": text, "text_source": "pdf"}}
+
+        def computed(value, expr, *figures):
+            claim = {"value": value, "op": "expression", "expression": expr, "of": [
+                {"citation": page, "field": "text", "value": figure} for figure in figures]}
+            return gate("", [page], [claim], rows=rows, calculations=())
+        for value, expr, figures, said in (
+                ("150", "x0 + x1", ("100", "50"), "expression_mixed_units"),
+                ("90", "x0 + x1", ("50", "40"), "expression_mixed_units"),     # USD and $
+                ("140", "x0 + x1", ("100", "40"), "expression_mixed_units"),   # CAD and $
+                ("110", "x0 + x1", ("40", "70"), "expression_mixed_units"),    # $ and US$
+                ("-490", "x0 - x1", ("10", "500"), "expression_mixed_units"),  # kg, "g."
+                ("42", "x0 + x1", ("30", "12"), "expression_mixed_units"),
+                ("5000", "x0 * x1", ("100", "50"), "expression_mixed_units")):
+            with self.subTest(refused=expr, figures=figures):
+                out = computed(value, expr, *figures)
+                self.assertEqual(codes(out)[:1], ["claim_unit_mismatch"], out)
+                self.assertIn(said, out["failures"][0]["detail"])
+        for value, expr, figures in (("65", "x0 + x1", ("40", "25")),     # two bare $
+                                     ("15", "x0 * x1", ("6", "2.50")),    # cartons by rate
+                                     ("5000", "x0 * x1", ("10", "500"))):  # kg by g
+            with self.subTest(passes=expr, figures=figures):
+                out = computed(value, expr, *figures)
+                self.assertTrue(out["passed"], out["failures"])
+
+    def test_two_inputs_on_one_printed_figure_are_one_input(self):
+        """Re-check of a04a19a551 (attack8 D1-D3, D6): once-only by name let one figure
+        enter twice under two names, quoted and not, or written 1,000 and 1000."""
+        page = "original://once#page=1"
+        rows = {page: {"original_id": "once", "page": 1, "text": "Fee $100.00 due. Tax $5.00. "
+                       "Fee 1,000 net.", "text_source": "pdf"}}
+
+        def computed(value, expr, *inputs):
+            claim = {"value": value, "op": "expression", "expression": expr, "of": [
+                {"citation": page, "field": "text", **given} for given in inputs]}
+            return gate("", [page], [claim], rows=rows, calculations=())
+        for value, expr, inputs in (
+                ("1", "x0 / x1", ({"value": "100.00"},
+                                  {"value": "100.00", "quote": "Fee $100.00"})),
+                ("1", "x0 / x1", ({"value": "100.00", "quote": "$100.00 due"},
+                                  {"value": "100.00", "quote": "Fee $100.00"})),
+                ("0", "x0 - x1", ({"value": "1,000"}, {"value": "1000"})),
+                ("5", "x0 - x1 + x2", ({"value": "100.00"},
+                                       {"value": "100.00", "quote": "Fee $100.00"},
+                                       {"value": "5.00"}))):
+            with self.subTest(inputs=inputs):
+                out = computed(value, expr, *inputs)
+                self.assertEqual(codes(out), ["claim_value_mismatch"], out)
+                self.assertIn("value_claim_expression_repeated_input",
+                              out["failures"][0]["detail"])
+        self.assertTrue(computed("105", "x0 + x1", {"value": "100.00"},
+                                 {"value": "5.00"})["passed"])
+
+    def test_a_refusing_word_reaches_across_one_line_break_a_meaning_word_never(self):
+        """Review of 1bdaaf699d (rv-gate attack5 b3, b4, b10, b11): line scope dropped the
+        negator, bound or range on the line before the figure. Line scope only narrows
+        ambiguity: a word that refuses or bounds a figure still reaches one line back."""
+        page = "original://wrap#page=1"
+
+        def figure(text, value):
+            rows = {page: {"original_id": "wrap", "page": 1, "text": text,
+                           "text_source": "pdf"}}
+            return gate("", [page], [{"value": value, "citation": page, "field": "text"}],
+                        rows=rows, calculations=())
+        for text, value in (("Shipped quantity is not\n900 kits", "900"),
+                            ("At least\n900 kits", "900"),
+                            ("Qty 20 -\n30 units", "30"),
+                            ("Qty between 20 and\n30 units", "30"),
+                            ("Shipped quantity is not\r\n900 kits", "900"),
+                            # Re-check of a04a19a551 (attack8 L3, L6, L9): the words after
+                            # a figure that refuse or bound it reach one line on too.
+                            ("Lead time 20\nto 30 days", "20"),
+                            ("Qty 900 -\n1,000 units", "900"),
+                            ("Load 900\nmax", "900"),
+                            ("Order 900\nor more units", "900"),
+                            ("Received 900\nNo.", "900")):
+            with self.subTest(refused=text):
+                self.assertEqual(codes(figure(text, value)), ["claim_value_mismatch"])
+        # Two lines back is another sentence; a meaning word stays on its own line.
+        for text, value in (("Shipped quantity is not\nlate.\nReceived 900 kits", "900"),
+                            ("Ordered 5,984\nSTAND by. Kept 5,984.", "5984"),
+                            ("Received 900\nkits.\nNot shipped yet", "900"),
+                            # As on one line, "not shipped" answers nothing about 900.
+                            ("Received 900\nnot shipped", "900")):
+            with self.subTest(passes=text):
+                out = figure(text, value)
+                self.assertTrue(out["passed"], out["failures"])
+
+    def test_a_table_row_quote_matches_across_runs_of_spaces_and_pipes(self):
+        def quoted(quote, value="9900"):
+            return self.page([{"value": value, "citation": RRO_PAGE, "field": "text",
+                               "quote": quote}])
+        # A08: the agent's row had one empty cell more than the page prints.
+        for quote in ("Total open, all 1–30 days |  |  | 9,900.00",
+                      "| Total open, all 1–30 days | 9,900.00 |",
+                      "Total open, all 1–30 days\t|\t\t| 9,900.00"):
+            with self.subTest(quote=quote):
+                out = quoted(quote)
+                self.assertTrue(out["passed"], out["failures"])
+        for quote in ("Total open all 1–30 days | 9,900.00",       # a word differs
+                      "Total open, all 1–30 days | 9,900.00 | 0.00",
+                      "Total open, all 1–30 days 9,900.00"):        # no cell break
+            with self.subTest(refused=quote):
+                self.assertEqual(codes(quoted(quote)), ["claim_value_mismatch"])
+        # The passage the quote matched, as the page writes it.
+        self.assertEqual(claim_checks.verbatim_quote(
+            "Total open, all 1\u201330 days |  |  | 9,900.00", RRO_TEXT),
+            "Total open, all 1\u201330 days |  | 9,900.00")
+        self.assertIsNone(claim_checks.verbatim_quote("Total open | 9,901.00", RRO_TEXT))
+        # Bare, 9900 has two meanings on the page: the quote still pins one.
+        self.assertIn("ambiguous", self.page([{"value": "9900", "citation": RRO_PAGE,
+                                               "field": "text"}])["failures"][0]["detail"])
+
+    def test_a_value_that_cannot_pass_says_why_in_repairable_words(self):
+        # PS-04: a passage over 200 characters as the value.
+        long = "A new packaging component is approved only when " + "x " * 100
+        with self.assertRaises(ValidationError) as raised:
+            self.page([{"value": long, "citation": RRO_PAGE, "field": "text"}])
+        self.assertTrue(str(raised.exception).startswith("value_claim_value_too_long:0"))
+        # EMD-10: a value longer than the quote meant to hold it.
+        text = ("a waiver releases an expired lot to one batch without a new date. With "
+                "Strict Expiration Posting, BC refuses consumption of that lot.")
+        note = "sharepoint://b!drive/05ITEM@%22%7Betag%7D%2C1%22"
+        rows = {note: {"relation": "sharepoint.driveItems", "row": {"content_text": text}}}
+        claim = dict(vc(text, note, "row.content_text"),
+                     quote="a waiver releases an expired lot to one batch without a new date")
+        out = gate("", [note], [claim], rows=rows, calculations=())
+        self.assertEqual(codes(out), ["claim_value_mismatch"])
+        self.assertIn("is not inside its own quote", out["failures"][0]["detail"])
+        self.assertLess(len(out["failures"][0]["detail"]), 400)
+
+
+PAGE_OTHER = "original://other#page=1"
 
 
 if __name__ == "__main__":

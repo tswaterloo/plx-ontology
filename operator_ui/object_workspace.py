@@ -1,4 +1,4 @@
-"""Employee workspace over the generic ontology tools, read-only.
+"""Employee workspace over the generic ontology tools (10-DECISION #4), read-only.
 
 An employee finds any served business object with ``plx.find`` and opens it. The
 workspace is the answer of the same tools the case host serves, called for the one
@@ -118,7 +118,7 @@ system (``business_system_writes`` stays 0):
 
 Ask (``ask``, with a planner configured by the host) runs the employee agent loop
 (``operating.agent_loop.run``, unchanged: the one loop and the one evidence rule,
-docs/decisions/2026-10-07-agent-evidence-contract.md) about the object in view, for
+devloop/DECISIONS/2026-10-07-agent-evidence-contract.md) about the object in view, for
 this reader: its session is an MCP server over this reader's case host
 (``HostAccess.agent_server``: the employee gate on every call, the grant of the request
 in progress), never a wider principal, and the question names the object, which must be
@@ -128,7 +128,9 @@ reader in this run and passed the loop's claim gate (``operating.answer_gate`` i
 ``agent_loop.run``, the one claim gate: each structured claim's value is checked by
 reference against the record it cites); the workspace shows that verdict and runs no
 check of its own. The answer's text (``text``) is code's: ``answer_gate.rendered_text`` of
-the claims shown here and the planner's templates naming them, never its prose as written. A claim whose citations the run did not return, or that
+the claims shown here and the planner's templates naming them, never its prose as written,
+through ``answer_gate.final_reply`` (the one final reply: no sentence or unknown states
+what no shown claim backs). A claim whose citations the run did not return, or that
 failed the gate, is shown as unsupported (its text, with the gate's codes), except that
 one citing a record this reader may not open (``access.decide``, the same filter as kept
 claims) shows its reason and codes only, never its text; an answer with none left is an
@@ -174,7 +176,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager, nullcontext
 import copy
-from datetime import datetime, timezone
+from datetime import date
 import functools
 import hashlib
 import json
@@ -186,6 +188,7 @@ import threading
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from ontology.types import Actor, ValidationError
+from operating import po_status
 from operating.explanations import explain
 
 MAX_HANDLE = 4096
@@ -197,11 +200,13 @@ MAX_GAPS = 300
 MAX_ORIGINALS = 200
 MAX_DOCUMENTS = 20
 MAX_QUESTION = 1000
-ASK_FIELDS = frozenset({"object_id", "question", "case_id", "family"})
+# plan_answer (with family): the family's plan result, stated whole by code, is the answer
+# (no planner call); without it the planner starts from that result.
+ASK_FIELDS = frozenset({"object_id", "question", "case_id", "family", "plan_answer"})
 # How the question names the object in view to the loop's planner.
 ASK_FRAME = "{question}\n\nThe business object in view (plx object id): {object_id}"
 ASK_NOTE = ("Each claim cites only records a tool returned to you, resolved, in this run "
-            "(docs/decisions/2026-10-07-agent-evidence-contract.md), and passed the "
+            "(devloop/DECISIONS/2026-10-07-agent-evidence-contract.md), and passed the "
             "claim checks, which are fail-closed: a value that is not what its record "
             "holds, a number, ISO date or quantity word no checked value claim covers, or a "
             "name, status or date value the claim's text does not state, makes the claim "
@@ -265,12 +270,14 @@ RECORD_NOTE = ("Recorded on the Workbench case only: each follow-up and draft re
 # with these readers after (actor, intent_id); any other step (another person's approval,
 # a reconciliation, escalate, re-register, none) is shown with its detail, never taken.
 ACTION_STEPS: Mapping[str, tuple[str, ...]] = {
-    "prepare_call": (), "prepare_gate": ("task_id", "mc"), "request_gate": ("mc",),
+    "prepare_call": (), "prepare_gate": ("task_id", "mc"), "approve_call": (),
+    "request_gate": ("mc",),
     "record_decision": ("mc",), "reconcile_gate": ("mc",), "dispatch": ("registry", "mc"),
     "send_call": ("mc",), "read_back": ("read_back",), "read_back_call": ("mc",)}
-ACTION_FIELDS = frozenset({"intent_id", "step", "task_id"})
+ACTION_FIELDS = frozenset({"intent_id", "step", "task_id", "approves_sha256"})
 STEP_LABELS = {"prepare_call": "Request approval of the call",
                "prepare_gate": "Request approval",
+               "approve_call": "Approve exactly this call (records your approval; sends nothing)",
                "request_gate": "Send the approved approval request (once)",
                "record_decision": "Check the decision in Mission Control",
                "reconcile_gate": "Find the approval request in Mission Control",
@@ -279,12 +286,15 @@ STEP_LABELS = {"prepare_call": "Request approval of the call",
 _NOT_CONFIGURED = {"mc": "mc_not_configured", "registry": "dispatcher_not_configured",
                    "read_back": "read_back_not_configured"}
 # The steps that would put a request or a write towards the owning system in motion.
+# ``approve_call`` is not one: it records a person's approval of a request the guard
+# already admitted at ``prepare_gate`` (gate request flavour) and sends nothing.
 _GUARDED_STEPS = frozenset({"prepare_call", "prepare_gate", "request_gate", "dispatch",
                             "send_call"})
 _INTENT_ID = re.compile(r"^act_[0-9a-f]{24}$")
-ACTIONS_NOTE = ("Approval is a person's other than whoever the action is for, in Mission "
-                "Control or on the exact call; this console never approves. With an action "
-                "role you may request approval, dispatch once approved and verify.")
+ACTIONS_NOTE = ("Approval is a person's other than whoever the action is for: the exact call "
+                "here, by an approver on the roster (it records the approval and sends "
+                "nothing), and the gate in Mission Control. With an action role you may "
+                "request approval, dispatch once approved and verify.")
 MAX_FOLLOW_UP_TEXT = 1000
 # What is missing becomes the MC task title (mc_create_task: at most 500 characters).
 MAX_FOLLOW_UP_TITLE = 500
@@ -426,6 +436,19 @@ def _handles(value: Any, out: set[str]) -> None:
     elif isinstance(value, list):
         for item in value:
             _handles(item, out)
+
+
+def _final_reply(claims: Sequence[Mapping[str, Any]], result: Mapping[str, Any],
+                 question: str) -> dict[str, Any]:
+    """The Ask's final reply for this reader (``answer_gate.final_reply``, the one every
+    answer path runs): the text code renders from the claims the reader is shown, and the
+    loop's unknowns, each without what no shown claim backs."""
+    from operating import answer_gate
+
+    return answer_gate.final_reply(
+        answer_gate.rendered_text(list(claims), result.get("prose")), list(claims),
+        unsupported=result.get("unsupported_claims") or [],
+        unknowns=result.get("unknowns") or [], question=question)
 
 
 def _records_of(card: Mapping[str, Any]) -> list[str]:
@@ -701,7 +724,7 @@ class ObjectWorkspace:
 
         with self._request():
             self._base()   # a refused store answers nothing
-            day = as_of or datetime.now(timezone.utc).date()
+            day = as_of or po_status.business_today()
 
             def readable(handles: Sequence[str]) -> set[str]:
                 granted = self.access.decide(handles)
@@ -960,7 +983,7 @@ class ObjectWorkspace:
     # ---- ask ----------------------------------------------------------------------
 
     def _ask(self, request: Any) -> dict[str, Any]:
-        from operating import agent_loop, answer_gate
+        from operating import agent_loop
 
         if not self._ask_served():
             raise LookupError("ask_not_served")
@@ -973,6 +996,9 @@ class ObjectWorkspace:
                 or len(question) > MAX_QUESTION:
             raise ValueError("question_1_to_1000_chars_required")
         question = question.strip()
+        plan_answer = request.get("plan_answer", False)
+        if not isinstance(plan_answer, bool) or (plan_answer and request.get("family") is None):
+            raise ValueError("ask_plan_answer_needs_family")
         cases, case_id = self._session_case(request.get("case_id"))
         base = self._base()
         card = self._call("plx.object", {"object_id": object_id})
@@ -995,7 +1021,10 @@ class ObjectWorkspace:
                                 withholds=lambda handles: any(
                                     marker is not None
                                     for marker in self.access.decide(handles).values()),
-                                seed=seed)
+                                seed=seed,
+                                # the person asked for the named family's plan answer: its
+                                # result, stated whole by code, is the answer
+                                answer_seeded_plan=plan_answer)
         claims = self._shown_claims(result["claims"])
         outcome, reason = result["outcome"], result["reason"]
         if outcome == "answered" and not claims:
@@ -1003,7 +1032,7 @@ class ObjectWorkspace:
         # The answer text is code's, rendered from the claims this reader is shown only.
         asked = {"base": base, "object_id": object_id, "question": question,
                  "outcome": outcome, "reason": reason, "claims": claims,
-                 "text": answer_gate.rendered_text(claims, result.get("prose")),
+                 "text": _final_reply(claims, result, question)["text"],
                  "withheld": len(result["claims"]) - len(claims), "loop": result}
         if cases is not None:
             anchors: set[str] = set()
@@ -1091,14 +1120,12 @@ class ObjectWorkspace:
     def _answer(self, asked: Mapping[str, Any]) -> dict[str, Any]:
         """The Ask's answer as the workspace shows it; its text rendered by code from the
         shown claims and the loop's prose (an objective's answer passes no text of its own)."""
-        from operating import answer_gate
-
         result = asked["loop"]
+        reply = _final_reply(asked["claims"], result, asked["question"])
         return {**asked["base"], "object_id": asked["object_id"],
                 "question": asked["question"], "note": ASK_NOTE,
                 "answer": {"outcome": asked["outcome"], "reason": asked["reason"],
-                           "text": answer_gate.rendered_text(asked["claims"],
-                                                             result.get("prose")),
+                           "text": reply["text"],
                            "claims": [{"text": claim["text"],
                                        "citations": [{"l1_handle": handle,
                                                       "openable": self._can_open(handle)}
@@ -1106,7 +1133,7 @@ class ObjectWorkspace:
                                        "check": claim["check"]} for claim in asked["claims"]],
                            "unsupported": result["unsupported_claims"],
                            "dropped_claims": result["dropped_claims"] + asked["withheld"],
-                           "unknowns": result["unknowns"],
+                           "unknowns": reply["unknowns"],
                            "claim_checks": result["claim_checks"],
                            "steps": result["steps"], "usage": result["usage"],
                            "tool_calls": [{key: call[key] for key in ("step", "tool",
@@ -1250,7 +1277,7 @@ class ObjectWorkspace:
                 raise LookupError("follow_up_draft_not_served")
             may_read, held = grant()
             draft = proactive_engine.order_draft(
-                path, object_id, datetime.now(timezone.utc).date(),
+                path, object_id, po_status.business_today(),
                 may_read=may_read, held=held, decide=self.access.decide)
             if draft is None:
                 raise ValueError("follow_up_draft_not_derived")
@@ -1648,7 +1675,7 @@ def _intent_summary(intent: Mapping[str, Any], hits: Sequence[str]) -> dict[str,
     keys = ("case_id", "proposal_id", "intent_id", "state", "outcome", "capability",
             "owner_system", "expected_effect", "human_preconditions", "production_guard",
             "call_approved", "gate", "chain_ok", "next_safe_step", "evidence_label",
-            "gate_reason")
+            "gate_reason", "call_approval_subject", "call_approval_sha256")
     out = {key: intent.get(key) for key in keys}
     out["approval"] = approval_of(intent.get("state"))
     out.update(cited_records=list(hits),
@@ -1936,7 +1963,11 @@ class WorkspaceActions:
     ``take`` maps one step to one ``ActionPath`` call for the session and lets the path
     decide: approvals, separation of duties, preconditions, the production guard,
     idempotent replay and recovery are all the path's. A step the path refuses is
-    answered with its code and nothing else changes.
+    answered with its code and nothing else changes. ``approve_call`` is the signed-in
+    person's own per-call approval (``ActionPath.approve_in_session``) of the call the
+    control showed them (``approves``; the request names its ``approves_sha256``): it
+    only records the approval, and sending stays the separate ``request_gate`` /
+    ``send_call`` step.
     """
 
     def __init__(self, path: Any, session: Any, *, actors: Iterable[str] = (),
@@ -1967,13 +1998,30 @@ class WorkspaceActions:
         step = safe.get("step")
         if step in ACTION_STEPS:
             guard = intent.get("production_guard")
-            why = self._missing(step) or (guard if step in _GUARDED_STEPS else None)
+            why = (self._missing(step) or (guard if step in _GUARDED_STEPS else None)
+                   or (self._approver_refusal(actor) if step == "approve_call" else None))
         else:   # not a console step: someone else's, or nothing; the path says why
             why = safe.get("detail") or f"state {intent.get('state')!r} has no step here"
         return {"step": step, "label": STEP_LABELS.get(step), "by": safe.get("by"),
                 "available": step in ACTION_STEPS and not why, "why": why,
                 "needs_task_id": step == "prepare_gate",
+                # What the approval approves, shown before the click; the click names its
+                # digest, so a call changed since it was shown is refused, never approved.
+                **({"approves": intent.get("call_approval_subject"),
+                    "approves_sha256": intent.get("call_approval_sha256")}
+                   if step == "approve_call" else {}),
                 "outcome": intent.get("outcome"), "done": intent.get("outcome") == "verified"}
+
+    def _approver_refusal(self, actor: Actor) -> str | None:
+        """Why this session can never approve a call (an eval principal, no known email
+        or oid); whether the person is an allowed approver is the path's, on the click."""
+        from operating.action_path import ActionPathError, session_approver
+
+        try:
+            session_approver(self.session, actor)
+        except ActionPathError as error:
+            return error.code
+        return None
 
     def _missing(self, step: str) -> str | None:
         for reader in ACTION_STEPS[step]:
@@ -2009,9 +2057,14 @@ class WorkspaceActions:
                 raise ActionPathError(missing)
             readers = {"mc": self.mc, "registry": self.registry, "read_back": self.read_back,
                        "task_id": request.get("task_id")}
-            result = getattr(self.path, step)(actor, intent_id,
-                                               *(readers[name] for name in ACTION_STEPS[step]),
-                                               session=self.session)
+            if step == "approve_call":   # the signed-in person approves what they were shown
+                result = self.path.approve_in_session(
+                    actor, intent_id, session=self.session,
+                    shown_sha256=request.get("approves_sha256"))
+            else:
+                result = getattr(self.path, step)(actor, intent_id,
+                                                   *(readers[name] for name in ACTION_STEPS[step]),
+                                                   session=self.session)
             refused = None
         except ActionPathError as error:
             refused = error.code
@@ -2232,7 +2285,7 @@ def host_access(runtime: Any, store_path: Any, actor: Actor, *, markings: Iterab
             policy = super().policy_now(reader)
             principals = frozenset(reader.principals)
             return ReadPolicy(policy.tenant, policy.audiences,
-                              {marking: principals for marking in held})
+                              {marking: principals for marking in held}, policy.units)
 
     host = ConsoleHost(runtime, actor, store_path=store_path,
                        mail_capture_dir=mail_capture_dir,
@@ -2462,6 +2515,7 @@ def _computed_verdict(answer: Sequence[Mapping[str, Any]], name: str, words_: st
     shown = _text_of((entry or {}).get("value"))
     if shown is not None:
         unit = (entry or {}).get("unit")
+        shown = _money_shown(shown, unit or (entry or {}).get("currency"))
         open_ = [word for word in _reason_words(reasons)]
         return {"state": "partial" if open_ else "answered",
                 "text": f"{words_} {shown}{' ' + str(unit) if unit else ''}"
@@ -2472,6 +2526,18 @@ def _computed_verdict(answer: Sequence[Mapping[str, Any]], name: str, words_: st
              and all(_text_of(e.get("value")) is None for _, e in received) else [])
     words_found = _reason_words(reasons)
     return _not_established(_parts(words_found[:1], empty, words_found[1:]))
+
+
+def _money_shown(shown: str, unit: Any) -> str:
+    """A money amount as the verdict reads it: rounded to cents (``landed_cost.money_text``),
+    never the answer's value itself, which keeps its full precision."""
+    from decimal import Decimal, InvalidOperation
+    from operating.landed_cost import money_text
+    try:
+        number = Decimal(shown)
+    except (InvalidOperation, ValueError):
+        return shown
+    return money_text(number, unit) if isinstance(unit, str) and unit else shown
 
 
 def _facts(answer: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -2485,6 +2551,8 @@ def _facts(answer: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
                 "property", "computed", "compute", "count"):
             continue
         shown = _text_of(entry.get("value"))
+        if shown is not None and entry.get("kind") != "property":
+            shown = _money_shown(shown, entry.get("unit") or entry.get("currency"))
         handle = (entry.get("citation") or {}).get("l1_handle") \
             if isinstance(entry.get("citation"), Mapping) else None
         if shown is None or not isinstance(handle, str) or not handle.startswith(L1_SCHEMES):

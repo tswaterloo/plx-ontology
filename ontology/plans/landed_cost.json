@@ -6,7 +6,7 @@
   "F7"
  ],
  "title": "Landed cost of a purchase order, line by line, with every unknown visible",
- "description": "Goods, freight and duty of any purchase order from projected cited values, computed by the one landed-cost engine (operating/landed_cost.py: po_line_landed, assess_freight_quote, compute_landed_cost). Goods: each line's cited unit price per its cited unit times its ordered quantity; a $0.000 line takes the cited amount of the proforma naming the PO (a lead) when it is that line's alone; differing proformas: PI_VERSION_UNRESOLVED; an unread amount: PI_AMOUNT_UNREAD; none picked. Freight: the Portal's allocatePoFreightPerUnit (plx-customer-portal@6e76a5b portal/src/lib/costing/project-landed-quote.ts:915-941, byte-identical to the golden pin 5724575) of the header shipping estimate over a fully received purchase order, or the receipt's posted actual; every freight step names its basis. Each forwarder quote naming the PO (a lead) is its own entry: its stated total is never multiplied, a per-container rate only by a cited container count; total freight only when its cited scope covers origin, main carriage and destination, it is valid on the as-of date and, priced per container, the count is cited; a destination-only, tax-excluded or expired quote stays a typed gap, and a header estimate equal to such a quote is not allocated. Duty: only a receipt actual or a cited rate; the ontology projects an HS code but no duty rate, so duty is HS_CODE_NOT_CITED or DUTY_RATE_SOURCE_ABSENT. Stages (LOG-09): counts of the confirmations, forwarder quotes, receipts, purchase invoices, vendor payments and G/L entries the walk reached, one count per binding; a stage nothing reached is not counted as zero. Packaging: cases per line from the item's units per case (differing records: UNITS_PER_CASE_CONFLICT); case dimensions (app_product_pack_spec) are not served, so no container count is derived. Two currencies, an unknown price denominator, an unreceived line or a missing estimate leave that line and the total null, typed. Every record is an analytic estimate, not item cost (ERP-D-015).",
+ "description": "Goods, freight and duty of any purchase order from projected cited values, computed by operating/landed_cost.py. Goods: each line's cited unit price per its cited unit times its ordered quantity; a $0.000 line takes the cited amount of the proforma naming the PO (a lead) when it is that line's alone; differing proformas: PI_VERSION_UNRESOLVED; an unread amount: PI_AMOUNT_UNREAD; none picked. Freight: the Portal's allocatePoFreightPerUnit (plx-customer-portal@6e76a5b project-landed-quote.ts:915-941) of the header shipping estimate over a fully received purchase order, or the receipt's posted actual; every freight step names its basis. Each forwarder quote naming the PO (a lead) is its own entry: its stated total is never multiplied, a per-container rate only by a cited container count; total freight only when its cited scope covers origin, main carriage and destination, it is valid on the as-of date and, priced per container, the count is cited; a destination-only, tax-excluded or expired quote stays a typed gap and is never allocated as the header estimate. Duty: a receipt actual or a cited rate; before receipt, the tariff_c (SupplierItem.tariff_rate, finance) of the item's FileMaker row offered by the order's own supplier, written with its unit and re-read for the reader (empty: absent); else HS_CODE_NOT_CITED or DUTY_RATE_SOURCE_ABSENT. FM hscode, countryoforigin and tierpricing are not served. Stages (LOG-09): counts of the confirmations, forwarder quotes, receipts, purchase invoices, vendor payments and G/L entries the walk reached, one count per binding; a stage nothing reached is not counted as zero. Packaging: cases per line from the item's units per case (differing records: UNITS_PER_CASE_CONFLICT); case dimensions (app_product_pack_spec) are not served, so no container count is derived. Two currencies, an unknown denominator, an unreceived line or a missing estimate leave the line and total null, typed. An analytic estimate, not item cost (ERP-D-015).",
  "root": {
   "object_types": [
    "PurchaseOrder"
@@ -52,9 +52,37 @@
    }
   },
   {
+   "id": "twins_back",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrder.same_record_as",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   },
+   "description": "The order's records that name this one as their twin (a Business Central order's Portal record names it by custom_fields.renumberedTo, a lead by PO number text): same_record_as is read only from the naming side, so a BC root reaches its Portal header, and its shipping and duty estimates, only in reverse."
+  },
+  {
    "id": "twin_read",
    "tool": "plx.object",
-   "from": "twins",
+   "from": [
+    "twins",
+    "twins_back"
+   ],
    "bind": "object_id"
   },
   {
@@ -288,6 +316,165 @@
     "limit": 50
    },
    "description": "Stage: the G/L entries those invoices posted."
+  },
+  {
+   "id": "suppliers",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrder.ordered_from",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The order's own supplier: the only supplier whose FileMaker rows may state this order's duty rate.",
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "supplier_twins",
+   "tool": "plx.around",
+   "from": "suppliers",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Supplier.same_record_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The supplier's FileMaker record (the app supplier's external_id), which the FileMaker supplier rows name.",
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "supplier_items",
+   "tool": "plx.around",
+   "from": "items",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SupplierItem.for_item",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "Supplier rows of the line items and their FileMaker twins (raw_material_supplier, packaging_supplier); the engine keeps only rows the order's own supplier offers.",
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "supplier_item_twin_rows",
+   "tool": "plx.around",
+   "from": "item_twins",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SupplierItem.for_item",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The supplier rows of the line items' FileMaker records, a step of its own so each collection is read through its set handle (one call per page, not one per item).",
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "supplier_item_suppliers",
+   "tool": "plx.around",
+   "from": "supplier_items",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SupplierItem.offered_by",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "Who offers each supplier row, so a row of another supplier never states this order's rate.",
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "supplier_item_twin_row_suppliers",
+   "tool": "plx.around",
+   "from": "supplier_item_twin_rows",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SupplierItem.offered_by",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "Who offers each supplier row of the items' FileMaker records (read through that collection's set handle).",
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "supplier_item_read",
+   "tool": "plx.object",
+   "from": [
+    "supplier_items",
+    "supplier_item_twin_rows"
+   ],
+   "bind": "object_id"
   }
  ],
  "evidence": [
@@ -322,7 +509,8 @@
    "kind": "property",
    "object_type": "PurchaseOrderLine",
    "properties": [
-    "unit_price"
+    "unit_price",
+    "bc_direct_unit_cost"
    ],
    "required": true
   },
@@ -493,6 +681,72 @@
    ]
   },
   {
+   "name": "supplier_tariff_rate",
+   "kind": "property",
+   "object_type": "SupplierItem",
+   "properties": [
+    "tariff_rate"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "supplier_origin",
+   "kind": "property",
+   "object_type": "SupplierItem",
+   "properties": [
+    "country_of_origin"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "receipt_currency",
+   "kind": "property",
+   "object_type": "Receipt",
+   "properties": [
+    "currency"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "po_number",
+   "kind": "property",
+   "object_type": "PurchaseOrder",
+   "properties": [
+    "po_number"
+   ],
+   "omit_empty": true,
+   "description": "The order's own numbers: the key its recorded duty and freight charges (Sage AP, linked by a recorded reference at capture time) are looked up by."
+  },
+  {
+   "name": "bc_line_amount",
+   "kind": "property",
+   "object_type": "PurchaseOrderLine",
+   "properties": [
+    "bc_amount_excluding_tax"
+   ],
+   "omit_empty": true,
+   "description": "A BC line's net goods value (after the line discount, before tax): a BC line's goods, since its directUnitCost is gross."
+  },
+  {
+   "name": "bc_line_discount",
+   "kind": "property",
+   "object_type": "PurchaseOrderLine",
+   "properties": [
+    "bc_line_discount_amount",
+    "bc_line_discount_percent"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "bc_prices_include_tax",
+   "kind": "property",
+   "object_type": "PurchaseOrder",
+   "properties": [
+    "bc_prices_include_tax"
+   ],
+   "omit_empty": true
+  },
+  {
    "name": "landed_cost",
    "kind": "compute",
    "required": true,
@@ -523,13 +777,24 @@
      "quote_pallets": "quote_pallets",
      "confirmation_amount": "confirmation_amount",
      "confirmation_unit_price": "confirmation_unit_price",
-     "confirmation_quantity": "confirmation_quantity"
+     "confirmation_quantity": "confirmation_quantity",
+     "supplier_tariff": "supplier_tariff_rate",
+     "supplier_origin": "supplier_origin",
+     "receipt_currency": "receipt_currency",
+     "po_number": "po_number",
+     "bc_line_amount": "bc_line_amount",
+     "bc_line_discount": "bc_line_discount",
+     "prices_include_tax": "bc_prices_include_tax"
     },
     "item_link": "PurchaseOrderLine.for_item",
     "line_link": "PurchaseOrderLine.line_of",
     "quote_link": "ForwarderQuote.for_purchase_order",
     "item_twin_link": "Product.same_record_as",
-    "confirmation_link": "SupplierConfirmation.confirms"
+    "confirmation_link": "SupplierConfirmation.confirms",
+    "supplier_item_link": "SupplierItem.for_item",
+    "supplier_link": "SupplierItem.offered_by",
+    "po_supplier_link": "PurchaseOrder.ordered_from",
+    "supplier_twin_link": "Supplier.same_record_as"
    }
   },
   {

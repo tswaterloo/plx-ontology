@@ -1,8 +1,8 @@
-"""HTTP-egress check tests: positive (must flag) and negative (must pass) samples.
+"""HTTP-egress gate tests: positive (must flag) and negative (must pass) samples.
 
-``scripts/check_http_egress.py`` is the `http-egress` check. These tests prove
+``scripts/check_http_egress.py`` is the `http-egress` gate check. These tests prove
 it catches aliased Request, getattr/partial, opener.open(url, data), http.client
-and friends, scans scripts/ and verify/, and that the current tree is clean.
+and friends, scans scripts/ and devloop/, and that the current tree is clean.
 """
 
 from __future__ import annotations
@@ -40,8 +40,8 @@ BYPASSES = [
     ("from multiprocessing.connection import Client", "operating/x.py", "banned-import"),
     ("import urllib.request as ur\nur.install_opener(ur.build_opener())",
      "integrations/http.py", "install-opener"),
-    ("class C:\n    def urllib_sender(self):\n        Request(u, data=b'x', method='POST')",
-     "integrations/live_source_guard.py", "non-get-request"),
+    ("class C:\n    def fire(self):\n        Request(u, data=b'x', method='POST')",
+     "devloop/wake_bridge.py", "non-get-request"),
     ("from urllib.request import build_opener\nclass C:\n    def __init__(s):\n"
      "        s.o = build_opener()\n    def go(s):\n        s.o.open(u, b'x')",
      "integrations/http.py", "opener-body"),
@@ -138,7 +138,7 @@ NEGATIVE = [
 ]
 
 
-# ALLOWED entries landed before their file (CI runs main's allowlist).
+# ALLOWED entries landed before their file (the gate runs main's allowlist): path -> lane.
 AWAITING_LANE: dict[str, str] = {}
 
 # The sender of operating/messages_planner.py (messages-api-planner, 3f924d62), verbatim.
@@ -199,15 +199,16 @@ class HttpEgressScanTests(unittest.TestCase):
                 "def {name}():\n    return Request(u, data=b'x', method='POST')\n")
         self.assertEqual(rules(post.format(name="urllib_sender"),
                                "integrations/live_source_guard.py"), set())
+        self.assertEqual(rules(post.format(name="fire"), "devloop/wake_bridge.py"), set())
         # same code elsewhere, or under another function name, is flagged
         self.assertIn("non-get-request", rules(post.format(name="other"),
                                                "integrations/live_source_guard.py"))
         self.assertIn("non-get-request", rules(post.format(name="urllib_sender"),
                                                "integrations/other.py"))
         # qualified name: a method named like an allowed function is not excused
-        method = ("from urllib.request import Request\nclass C:\n    def urllib_sender(self):\n"
+        method = ("from urllib.request import Request\nclass C:\n    def fire(self):\n"
                   "        Request(u, data=b'x', method='POST')\n")
-        self.assertIn("non-get-request", rules(method, "integrations/live_source_guard.py"))
+        self.assertIn("non-get-request", rules(method, "devloop/wake_bridge.py"))
         # the allowlist never excuses a banned import
         self.assertIn("banned-import", rules("import http.client",
                                              "integrations/live_source_guard.py"))
@@ -232,18 +233,18 @@ class HttpEgressScanTests(unittest.TestCase):
                       'OTHER = b"https://example.com/"\n'):
             self.assertIn("unlisted-url", rules(PLANNER_SENDER + extra, planner), extra)
 
-    def test_scope_covers_scripts_and_verify(self):
+    def test_scope_covers_scripts_and_devloop(self):
         self.assertIn("scripts", gate.SCANNED)
-        self.assertIn("verify", gate.SCANNED)
+        self.assertIn("devloop", gate.SCANNED)
         self.assertIn(("scripts/x.py", "<module>", "banned-import"),
                       gate.scan_source("import requests", "scripts/x.py"))
-        self.assertIn(("verify/x.py", "<module>", "banned-import"),
-                      gate.scan_source("import requests", "verify/x.py"))
+        self.assertIn(("devloop/x.py", "<module>", "banned-import"),
+                      gate.scan_source("import requests", "devloop/x.py"))
 
     def test_allowlisted_senders_still_exist_and_are_exercised(self):
         report = gate.scan_report()
         for path, function in gate.ALLOWED - report["excused"]:
-            # only an entry allowlisted ahead of its file may be absent, and only while absent
+            # only an entry allowlisted ahead of its lane may be absent, and only while absent
             self.assertIn(path, AWAITING_LANE, (path, function))
             self.assertFalse((ROOT / path).exists(), f"{path} landed: drop it from AWAITING_LANE")
         for path in gate.URLLIB_FILES - set(AWAITING_LANE):
@@ -309,21 +310,21 @@ class HttpEgressScanTests(unittest.TestCase):
         self.assertEqual(gate.scan_tree(), set())
         # the live check gate.http_egress holds on this tree's real --json output
         import contextlib, io, json
-        from verify import live_verify
-        spec = json.loads((ROOT / "verify/live-checks/gate.http_egress.json").read_text())
+        from devloop import live_verify
+        spec = json.loads((ROOT / "devloop/live-checks/gate.http_egress.json").read_text())
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             code = gate.main(["--json"])
         document = json.loads(out.getvalue())
         self.assertEqual(live_verify.check_expectations(spec, code, document), [])
-        self.assertTrue({"integrations/live_source_guard.py:urllib_sender"}
-                        <= set(document["allowlisted_senders"]))
+        self.assertTrue({"integrations/live_source_guard.py:urllib_sender",
+                         "devloop/wake_bridge.py:fire"} <= set(document["allowlisted_senders"]))
         # one finding fails it
         failed = {**document, "status": "findings", "findings": 1,
                   "unlisted_senders": ["operating/x.py:f:non-get-request"]}
         self.assertTrue(live_verify.check_expectations(spec, 1, failed))
         self.assertNotIn("blocked_reason", document)
-        # a root without a required tree is never clean: blocked in --json, exit 1 as the check
+        # a root without a required tree is never clean: blocked in --json, exit 1 as the gate
         import tempfile
         with tempfile.TemporaryDirectory() as empty:
             out = io.StringIO()

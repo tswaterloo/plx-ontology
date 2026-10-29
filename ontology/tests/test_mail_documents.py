@@ -41,6 +41,7 @@ NOW = dt.datetime(2026, 10, 2, 12, 0, tzinfo=dt.timezone.utc)
 T0 = "2026-09-01T10:00:00.000000Z"
 OUTSIDER = Actor("plx", frozenset({"staff:outsider"}), "restricted")
 LINK = "Email.mentions_purchase_order"
+RESTATED = "2026-10-05T10:00:00.000000Z"
 
 
 def po(relation, key, row):
@@ -212,7 +213,7 @@ class MailDocumentsTests(unittest.TestCase):
         return {e["to"]: e for e in out["edges"]}
 
     def test_ambiguity_is_decided_per_reader_from_visible_candidates_only(self):
-        # MSG-2 names PO100236, held by Portal PO p3 and
+        # Review of 4665b18 (material): MSG-2 names PO100236, held by Portal PO p3 and
         # FM generated PO 9. A reader who sees both is told the mention is ambiguous;
         # a reader denied the FM relation sees one plain lead and no hint of the other.
         p3 = self.object_id('PurchaseOrder:portal.app_purchase_order:{"id":"p3"}')
@@ -283,7 +284,8 @@ class MentionCorroborationTests(unittest.TestCase):
                 ("M-EARLY", "sales@acme-bottles.example", "About PO100302."),
                 ("M-TWO", "sales@acme-bottles.example", "PO100301 and PO100303 ship."),
                 ("M-PETRA", "buyer@example-plx.com", "Please confirm PO100304."),
-                ("M-REPLY", "acme.sales@gmail.com", "Confirmed PO100304.")):
+                ("M-REPLY", "acme.sales@gmail.com", "Confirmed PO100304."),
+                ("M-RESTATED", "sales@birch-caps.example", "Shipping PO100305.")):
             graph.put(BOX_A, mid, "CK-" + mid, body=body, subject="Order", received=day)
             graph.messages[BOX_A][mid]["from"] = {"emailAddress": {"address": sender}}
         for mid in ("M-PETRA", "M-REPLY"):
@@ -310,6 +312,19 @@ class MentionCorroborationTests(unittest.TestCase):
             rows.append(po("public.app_purchase_order", {"id": pid},
                            {"id": pid, "po_number": number, "supplier_id": "s1",
                             "date_generated": dated}))
+        # A supplier a later capture recorded again (a new version from 2026-10-05, after
+        # the mail, its website unchanged): its order's supplier link and its website are
+        # each two stored rows that join without a gap and hold over the mention's time.
+        for version, phone, since, until in (("g-1", "555-0100", T0, RESTATED),
+                                             ("g-2", "555-0199", RESTATED, None)):
+            rows.append(CapturedRecord(
+                "portal_api", "public.app_supplier", '{"id":"s3"}',
+                {"id": "s3", "name": "Birch", "website": "https://birch-caps.example",
+                 "phone": phone}, f"api://public.app_supplier/s3@{version}", "row",
+                version[-1] * 64, since, until, until or RESTATED, "api:public.app_supplier"))
+        rows.append(po("public.app_purchase_order", {"id": "p5"},
+                       {"id": "p5", "po_number": "PO100305", "supplier_id": "s3",
+                        "date_generated": "2026-09-01"}))
         cls.path = Path(cls.tmp.name) / "ontology.sqlite"
         with MailCaptures(cls.state, internal_domains=SCOPE.internal_domains) as mail:
             cls.report = build_store(cls.path, compiled,
@@ -353,9 +368,17 @@ class MentionCorroborationTests(unittest.TestCase):
         self.assertEqual(self.links("M-EARLY")["p2"]["tier"], "lead")
         self.assertEqual({k: r["tier"] for k, r in self.links("M-TWO").items()},
                          {"p1": "lead", "p3": "lead"})
+        # A supplier link and website stored as two rows each that join without a gap
+        # hold over the mention's time: the restated supplier's order corroborates.
+        restated = self.links("M-RESTATED")["p5"]
+        self.assertEqual(restated["tier"], "corroborated")
+        self.assertEqual(self.agreeing(restated),
+                         ["identifier_mention", "identity_candidate", "party_domain"])
+        self.assertIn("api://public.app_supplier/s3@g-2",
+                      json.loads(restated["evidence_handles"]))
         step = self.report["post_project"]["mentions"]
-        self.assertEqual(step["link_tiers"], {"lead": step["counts"]["links"] - 2,
-                                              "corroborated": 2})
+        self.assertEqual(step["link_tiers"], {"lead": step["counts"]["links"] - 3,
+                                              "corroborated": 3})
 
     def test_a_reader_who_may_not_read_the_supplier_sees_the_lead(self):
         # plx.around and plx.object: the corroboration rests on the supplier record; a
@@ -420,7 +443,7 @@ class MentionLinkRuleTests(unittest.TestCase):
         self.assertEqual((binding["kind"], binding["tier_ceiling"], binding["from_binding"]),
                          ("mention", "corroborated", "graph_mail.messages"))
         self.assertEqual([e["path"] if "path" in e else e["ref"] for e in binding["evidence"]],
-                         ["ontology/mentions.py", "docs/reference/ontology-design.md#C.2"])
+                         ["ontology/mentions.py", "devloop/CONTEXT/07-ONTOLOGY-DESIGN.md#C.2"])
 
     def test_a_new_served_type_with_an_identifier_gets_its_link_and_a_copy_is_refused(self):
         docs = self.documents()
@@ -454,7 +477,7 @@ class MentionLinkRuleTests(unittest.TestCase):
 
 
 class MentionStepScalingTests(unittest.TestCase):
-    """The step looks handles up through an index, streams
+    """Review of 4665b18 (minors): the step looks handles up through an index, streams
     documents and leaves no index behind in the generation."""
 
     def test_handle_lookup_uses_an_index_and_documents_stream(self):
@@ -589,8 +612,8 @@ class ProbeWithMailTests(unittest.TestCase):
         self.assertGreater(result["citations"]["by_scheme"]["graph-mail"], 0)
         for secret in ("PO-1001", "graph-mail://", BOX_A, "MSG-1", address):
             self.assertNotIn(secret, text)
-        from verify import live_verify as lv
-        spec = json.loads((ROOT / "verify/live-checks/ontology.mentions.json")
+        from devloop import live_verify as lv
+        spec = json.loads((ROOT / "devloop/live-checks/ontology.mentions.json")
                           .read_text(encoding="utf-8"))
         lv.validate_spec(spec, stem="ontology.mentions")
         # No normalizer passed (as the CLI): the probe claim-checks identifier values
@@ -607,7 +630,7 @@ class ProbeWithMailTests(unittest.TestCase):
         self.assertEqual(result["bc_capture"]["evidence_label"], "injected-transport")
 
     def test_a_cold_build_with_no_room_for_a_rebuild_reports_mentions_and_phase_seconds(self):
-        """Live (07:03Z): BC listed its companies without an etag and the second
+        """Live b593c374 (07:03Z): BC listed its companies without an etag and the second
         cold build could not fit, so the report held no mention table, check or phase
         timing. Now the cold path builds once (decision 2026-10-14-mentions-cold-path,
         option 3): every check runs on that build, the report carries phase_seconds and
@@ -615,7 +638,7 @@ class ProbeWithMailTests(unittest.TestCase):
         is versioned by its content and the unit completes."""
         from urllib.parse import urlsplit
 
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from integrations import bc_read
         from integrations.live_source_guard import LiveSourceAudience
         from integrations.tests import test_bc_capture as tb
@@ -679,7 +702,7 @@ class ProbeWithMailTests(unittest.TestCase):
                          ([], ["bc", "graph_mail", "portal_api"]))
         self.assertEqual(again["units_reused"], again["units_total"] - 3)
         self.assertEqual(reread, [])
-        spec = json.loads((ROOT / "verify/live-checks/ontology.mentions.json")
+        spec = json.loads((ROOT / "devloop/live-checks/ontology.mentions.json")
                           .read_text(encoding="utf-8"))
         failures = lv.check_expectations(spec, 0, result)
         self.assertFalse([f for f in failures if "mention" in f or "rebuild" in f], failures)

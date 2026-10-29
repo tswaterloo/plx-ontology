@@ -14,7 +14,7 @@ What it decides, and what it never decides:
   ``PO5447``). A normalised value finds candidates; it is never an identity.
   An exact match stays the literal comparison the owning system makes (Portal
   ``TRIM(x) ILIKE TRIM($1)``), and orders, POs, AOs and invoices never
-  auto-merge (``identity_rules`` in the schema).
+  auto-merge (``identity_rules`` in the schema; 10-DECISION decision 3).
 * ``identity_key`` is the identity one value names. A kind whose grammar declares
   ``identity_scope`` is unique only within that scope (``customer_po``: per customer,
   as the Portal matches a PO only with its customer), so its key carries the scope
@@ -552,8 +552,14 @@ def _int_text(value: Any) -> str | None:
 def _split_fm_suffix(text: str) -> tuple[str, str | None]:
     upper = text.upper()
     index = upper.rfind("-FM")
-    if index > 0 and _ascii_digits(text[index + 3:]):
-        return text[:index], text[index + 3:]
+    if index > 0:
+        # ``-FM77`` (the Portal's clash suffix) or ``-FM-77`` (as migrated FM orders and BC
+        # Your Reference write it).
+        tail = text[index + 3:]
+        if tail.startswith("-"):
+            tail = tail[1:]
+        if _ascii_digits(tail):
+            return text[:index], tail
     return text, None
 
 
@@ -1030,6 +1036,50 @@ _PROFILE_ORDER = (("mail_labelled", "labelled", 0), ("petra_po_labelled", "label
                   ("shapes", "shape", 1))
 
 
+# A labelled value that is a quantity (``quote 120 mL``, ``PO 4821 kg``, ``quote 10 cases``):
+# a number with a unit word right after it (glued, or past spaces or tabs on its line).
+# The unit words are the Portal's unit spellings (``ontology.units``: its options, its
+# aliases and the receiving plurals). A measurement unit (mass, volume, dozen) makes any
+# number a quantity; a count word (``unit``, ``case``, ``each``, ``pack``, ``box``,
+# ``piece`` ...) only a decimal or a number of at most three digits: ``Quote 26037 unit
+# price`` names a quote.
+_QUANTITY_VALUE = re.compile(r"([0-9]+)(\.[0-9]+)?([A-Za-z]*)")
+_UNIT_AFTER = re.compile(r"[ \t]*([A-Za-z]+)(?![A-Za-z0-9])")
+_MEASURES = frozenset({"kg", "g", "mg", "lb", "oz", "l", "ml", "gal", "dz"})
+COUNT_WORD_MAX_DIGITS = 3
+
+
+@lru_cache(maxsize=1)
+def _unit_words() -> dict[str, bool]:
+    """Unit word -> whether it is a measurement unit (else a count word)."""
+    from .units import RECEIVE_ALIASES, UOM_ALIASES, UOM_CANONICAL
+    words = {word: word in _MEASURES for word in UOM_CANONICAL}
+    words.update({word: target in _MEASURES for word, target in UOM_ALIASES.items()})
+    words.update({word: target in _MEASURES for word, target in RECEIVE_ALIASES.items()})
+    words.update({"piece": False, "pieces": False})
+    return words
+
+
+def is_quantity(text: str, value: str, end: int) -> bool:
+    """Whether a labelled ``value`` ending at ``end`` in ``text`` is a quantity with a
+    unit, not an identifier: digits (one decimal point allowed) followed by a unit word
+    (:func:`_unit_words`, case-insensitive), glued to it or after spaces or tabs. A
+    measurement unit blocks any number; a count word blocks a decimal or a number of at
+    most ``COUNT_WORD_MAX_DIGITS`` digits."""
+    found = _QUANTITY_VALUE.fullmatch(value)
+    if found is None:
+        return False
+    word = found.group(3)
+    if not word:
+        after = _UNIT_AFTER.match(text, end)
+        word = after.group(1) if after is not None else ""
+    measure = _unit_words().get(word.lower())
+    if measure is None:
+        return False
+    return measure or found.group(2) is not None \
+        or len(found.group(1)) <= COUNT_WORD_MAX_DIGITS
+
+
 def _mention_value(kind: str, value: str, label_text: str) -> str | None:
     if kind == "petra_po":
         if _ascii_digits(_split_fm_suffix(value)[0]):
@@ -1042,7 +1092,8 @@ def find_identifiers(text: Any) -> list[Mention]:
     """Every identifier mention in ``text``: span of the value, kind, normalised
     value, form (``labelled`` / ``shape``) and the profile that found it.
 
-    Labelled values must contain a digit. Overlapping mentions resolve
+    Labelled values must contain a digit and are never a quantity with a unit
+    (:func:`is_quantity`: ``quote 120 mL`` names no quote). Overlapping mentions resolve
     deterministically: earlier start first, then the longer value, then a
     labelled mention before a bare shape (``Customer PO PO12172025`` is a
     customer PO, not a Petra PO). When a value's shape matches kind X but its
@@ -1063,6 +1114,8 @@ def find_identifiers(text: Any) -> list[Mention]:
                 end = start + len(value)
                 if not value or (form == "labelled" and not any("0" <= c <= "9" for c in value)):
                     continue
+                if form == "labelled" and is_quantity(text, value, end):
+                    continue   # "quote 120 mL": an amount, never an identifier
                 label_text = text[match.start():end]
                 mention = Mention(kind, start, end, value, _mention_value(kind, value, label_text),
                                   form, match.start(), name, entry.confidence,

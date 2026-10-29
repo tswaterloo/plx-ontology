@@ -18,7 +18,7 @@ import sys
 import unittest
 from urllib.parse import parse_qsl, urlsplit
 
-from verify import live_verify
+from devloop import live_verify
 from integrations import amazon_sp_read as sp
 from integrations import freightcom_read as fc
 from integrations import live_source_grammar as grammar
@@ -448,7 +448,7 @@ class CredentialsAbsentLiveChecks(unittest.TestCase):
     def test_live_specs_block_credentials_absent_naming_unset_settings_only(self):
         for spec_id, source in (("freightcom.bookings", "freightcom"),
                                 ("amazon.inbound_shipments", "amazon-sp-api")):
-            spec = json.loads((ROOT / f"verify/live-checks/{spec_id}.json").read_text())
+            spec = json.loads((ROOT / f"devloop/live-checks/{spec_id}.json").read_text())
             live_verify.validate_spec(spec)
             required = list(fc.REQUIRED_SETTINGS if source == "freightcom"
                             else sp.REQUIRED_SETTINGS)
@@ -483,13 +483,13 @@ class CredentialsAbsentLiveChecks(unittest.TestCase):
 
     def test_injected_transport_output_never_satisfies_a_live_spec(self):
         out = sp.probe(SP_ENV, transport=GuardedTransport(Recorder(_sp_route())), sleep=lambda s: None)
-        spec = json.loads((ROOT / "verify/live-checks/amazon.inbound_shipments.json").read_text())
+        spec = json.loads((ROOT / "devloop/live-checks/amazon.inbound_shipments.json").read_text())
         failures = live_verify.check_expectations(spec, 0, json.loads(json.dumps(out)))
         self.assertTrue(any("evidence_label" in f for f in failures), failures)
         bookings = {"fc-test-1": _booking("fc-test-1", [])}
         out = fc.probe({"FREIGHTCOM_API_TOKEN": TOKEN_VALUE},
                        transport=GuardedTransport(Recorder(_fc_route(bookings))))
-        spec = json.loads((ROOT / "verify/live-checks/freightcom.bookings.json").read_text())
+        spec = json.loads((ROOT / "devloop/live-checks/freightcom.bookings.json").read_text())
         failures = live_verify.check_expectations(spec, 0, json.loads(json.dumps(out)))
         self.assertEqual([f for f in failures if "evidence_label" not in f], [])
         self.assertTrue(failures)

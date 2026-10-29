@@ -1,11 +1,11 @@
 {
  "schema": "plx-entra-resource/v1",
- "note": "The console's Entra resource (operator_ui.case_console --entra-resource; the live check session.employee_recorded reads this file unless PLX_CONSOLE_ENTRA_RESOURCE names another). Identifiers only, never a secret. Sign-in uses the existing app registration with its delegated scope; app-only tokens are refused. A value is committed only where committed repository content states it (sources); every other field is a typed unset naming its later ask: the resource URI and the tenant's JWKS file wait for the hosting VM, and the console's redirect URI (on the app registration, not in this file) with them (docs/decisions/2026-10-20-a9-console-signin-proof.md).",
+ "note": "The console's Entra resource (operator_ui.case_console --entra-resource; the live check session.employee_recorded reads this file unless PLX_CONSOLE_ENTRA_RESOURCE names another). Identifiers only, never a secret. Sign-in uses the existing app registration 'PLX Workbench (Tanush)' with its delegated scope; app-only tokens are refused. A value is committed only where committed repository content states it (sources); every other field is a typed unset naming its later ask: the resource URI and the tenant's JWKS file wait for the hosting VM, and the console's redirect URI (on the app registration, not in this file) with them (devloop/DECISIONS/2026-10-20-a9-console-signin-proof.md).",
  "sources": {
-  "tenant_id": "PLX's Entra tenant: docs/decisions/2026-10-20-a9-console-signin-proof.md, update 2026-10-21",
-  "client_id": "The existing app registration: docs/decisions/2026-10-20-a9-console-signin-proof.md, update 2026-10-21",
-  "app_id_uri": "docs/decisions/2026-10-20-a9-console-signin-proof.md, update 2026-10-21 (relayed from the Vince meeting)",
-  "required_scope": "docs/decisions/2026-10-20-a9-console-signin-proof.md, update 2026-10-21 (relayed from the Vince meeting)"
+  "tenant_id": "PLX's Entra tenant: devloop/ROADMAP.md section 5, human ask 1 (entraTenantId); devloop/DECISIONS/2026-10-20-a9-console-signin-proof.md, update 2026-10-21",
+  "client_id": "The existing app registration: devloop/ACCOUNT-SWITCH.md (Graph); devloop/DECISIONS/2026-10-20-a9-console-signin-proof.md, update 2026-10-21",
+  "app_id_uri": "devloop/DECISIONS/2026-10-20-a9-console-signin-proof.md, update 2026-10-21 (relayed from the Vince meeting handoff)",
+  "required_scope": "devloop/DECISIONS/2026-10-20-a9-console-signin-proof.md, update 2026-10-21 (relayed from the Vince meeting handoff)"
  },
  "tenant_id": "dc28356c-e440-4a9e-b8e6-e40967bfee06",
  "client_id": "8ea4aa90-4223-4327-b004-cd7658f9be63",

@@ -1,7 +1,7 @@
 {
  "format": "plx-case-ontology-gaps/v1",
  "case": "packaging-sourcing",
- "status": "What the ontology lacks to answer evals/dev/packaging-sourcing/proposed_items.json. proposal_says is the proposal's claim, attributed to Ross's walkthrough of 16 Oct 2026; proposed_rule names the rule it rests on, proposed, pending Vince; implementation, where present, is a claim about deployed Portal or BC behaviour from the system map of 30 Sep 2026 that nobody here verified. Each gap names its system of record, or says 'source unknown' with the question to ask. Sources are named, never read here; OntologyProject refs are at the base d3b3fc7555d0, the proposal's at 448579b0c49a.",
+ "status": "What the ontology lacks to answer evals/dev/packaging-sourcing/proposed_items.json. proposal_says is the proposal's claim, attributed to Ross's walkthrough of 16 Oct 2026; proposed_rule names the rule it rests on, proposed, pending Vince; implementation, where present, is a claim about deployed Portal or BC behaviour from the system map of 30 Sep 2026 that nobody here verified. Each gap names its system of record, or says 'source unknown' with the question to ask. Sources are named, never read here; OntologyProject refs are at the base d3b3fc7555d0, the proposal's record at codex/advisory 448579b0c49a.",
  "advisory": "advisory:62802e1f72f6",
  "gaps": [
   {
@@ -22,13 +22,13 @@
      "ref": "OntologyProject:ontology/schema/generated/portal_not_served_s_z.json@d3b3fc7555d0:272-300"
     },
     {
-     "system": "source-record",
-     "relation": "the proposal's source record (the claim, not a reader)",
+     "system": "dot",
+     "relation": "the proposal's advisory record (the claim, not a reader)",
      "ref": "OntologyProject:context/62802e1f72f68f40f39c3d858760fc145ce5c274aed4fcaf2216b90403363cc7.json@448579b0c49a"
     }
    ],
    "source": "source unknown",
-   "open_question": "Ross or Vince: where are the customer, QC and costing sign-offs of a packaging quote recorded today (email, Teams, the sourcing request), and who gives each?"
+   "dot_question": "Ross or Vince: where are the customer, QC and costing sign-offs of a packaging quote recorded today (email, Teams, the sourcing request), and who gives each?"
   },
   {
    "id": "PS-GAP-02",
@@ -56,7 +56,7 @@
     {
      "system": "map",
      "relation": "the Sept 30 map's stage 09 (a claim, unverified)",
-     "ref": "OntologyProject:docs/reference/cases-and-artifacts.md@d3b3fc7555d0:193-209"
+     "ref": "OntologyProject:devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md@d3b3fc7555d0:193-209"
     }
    ],
    "system_of_record": "the Portal product (public.app_product, served) for the part; the quote-to-part and part-to-project links have no system of record"
@@ -86,7 +86,7 @@
     {
      "system": "map",
      "relation": "the Sept 30 map's stage 09 (a claim, unverified)",
-     "ref": "OntologyProject:docs/reference/cases-and-artifacts.md@d3b3fc7555d0:193-209"
+     "ref": "OntologyProject:devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md@d3b3fc7555d0:193-209"
     }
    ],
    "system_of_record": "the Portal product (public.app_product.hs_code, served) for the HS code; the drawing as a Portal attachment (app_attachment, not served)"
@@ -117,7 +117,7 @@
     {
      "system": "map",
      "relation": "the Sept 30 map's stage 09 (a claim, unverified)",
-     "ref": "OntologyProject:docs/reference/cases-and-artifacts.md@d3b3fc7555d0:193-209"
+     "ref": "OntologyProject:devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md@d3b3fc7555d0:193-209"
     }
    ],
    "system_of_record": "the Portal supplier item (public.app_supplier_product, served) for a quoted price; the allocation rule has no system of record"
@@ -146,7 +146,7 @@
     {
      "system": "map",
      "relation": "the Sept 30 map's stage 06 (a claim, unverified)",
-     "ref": "OntologyProject:docs/reference/cases-and-artifacts.md@d3b3fc7555d0:161-173"
+     "ref": "OntologyProject:devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md@d3b3fc7555d0:161-173"
     }
    ],
    "system_of_record": "the Portal sourcing request's vendor response (app_sourcing_request and siblings, not served) and the supplier item (public.app_supplier_product, served)"
@@ -177,11 +177,11 @@
     {
      "system": "map",
      "relation": "the Sept 30 map's stage 13 (a claim, unverified)",
-     "ref": "OntologyProject:docs/reference/cases-and-artifacts.md@d3b3fc7555d0:242-250"
+     "ref": "OntologyProject:devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md@d3b3fc7555d0:242-250"
     }
    ],
    "source": "source unknown",
-   "open_question": "Ross or Vince: where is a vendor PI kept today (an email attachment, the PO's attachments, a folder), and which number ties it to the PO?"
+   "dot_question": "Ross or Vince: where is a vendor PI kept today (an email attachment, the PO's attachments, a folder), and which number ties it to the PO?"
   },
   {
    "id": "PS-GAP-07",
@@ -201,13 +201,13 @@
      "ref": "OntologyProject:ontology/schema/domains/purchasing.json@d3b3fc7555d0:12-25"
     },
     {
-     "system": "source-record",
-     "relation": "the proposal's source record (the claim, not a reader)",
+     "system": "dot",
+     "relation": "the proposal's advisory record (the claim, not a reader)",
      "ref": "OntologyProject:context/62802e1f72f68f40f39c3d858760fc145ce5c274aed4fcaf2216b90403363cc7.json@448579b0c49a"
     }
    ],
    "source": "source unknown",
-   "open_question": "Ross or Vince: who checks a vendor PI against the PO before a deposit or payment, and where is that check recorded?"
+   "dot_question": "Ross or Vince: who checks a vendor PI against the PO before a deposit or payment, and where is that check recorded?"
   },
   {
    "id": "PS-GAP-08",
@@ -240,7 +240,7 @@
     {
      "system": "map",
      "relation": "the Sept 30 map's stage 12 (a claim, unverified)",
-     "ref": "OntologyProject:docs/reference/cases-and-artifacts.md@d3b3fc7555d0:234-241"
+     "ref": "OntologyProject:devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md@d3b3fc7555d0:234-241"
     }
    ],
    "system_of_record": "Business Central (the proposal's target is the PO prepayment; today's manual booking is the map's claim, unverified)"
@@ -264,11 +264,11 @@
     {
      "system": "map",
      "relation": "the Sept 30 map's stage 08 (a claim, unverified)",
-     "ref": "OntologyProject:docs/reference/cases-and-artifacts.md@d3b3fc7555d0:183-192"
+     "ref": "OntologyProject:devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md@d3b3fc7555d0:183-192"
     }
    ],
    "source": "source unknown",
-   "open_question": "Vince: does a DDP vendor price already include freight and duty, and how should the landed-cost multiplier avoid counting them twice?"
+   "dot_question": "Vince: does a DDP vendor price already include freight and duty, and how should the landed-cost multiplier avoid counting them twice?"
   },
   {
    "id": "PS-GAP-10",
@@ -284,8 +284,8 @@
    ],
    "sources": [
     {
-     "system": "source-record",
-     "relation": "the proposal's source record (the claim, not a reader)",
+     "system": "dot",
+     "relation": "the proposal's advisory record (the claim, not a reader)",
      "ref": "OntologyProject:context/62802e1f72f68f40f39c3d858760fc145ce5c274aed4fcaf2216b90403363cc7.json@448579b0c49a"
     },
     {
@@ -295,14 +295,14 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Ross: where does the fuller map the proposal links live (is it the Sept 30 Packaging Procure-to-GL Map or a later version), where do the P-02486 item records, PI-SWC025623 and the deposit record live (a SharePoint folder, mail, BC), and can they be added to /Ontology UseCases?"
+   "dot_question": "Ross: where does the fuller map the proposal links live (is it the Sept 30 Packaging Procure-to-GL Map or a later version), where do the P-02486 item records, PI-SWC025623 and the deposit record live (a SharePoint folder, mail, BC), and can they be added to /Ontology UseCases?"
   },
   {
    "id": "PS-GAP-11",
    "kind": "reader",
    "name": "A read receipt of the proposal file itself (body read and hashed equal to the pin)",
    "proposal_says": "the proposal file is the case's source",
-   "ontology_today": "The file is pinned by item id and SHA-256 from the source record; the live check's discovered receipt has no body, so no receipt matches the pin.",
+   "ontology_today": "The file is pinned by item id and SHA-256 from the advisory record; the live verifier's discovered receipt has no body, so no receipt matches the pin.",
    "needed_by": [
     "PS-01",
     "PS-A4"
@@ -326,20 +326,20 @@
    "kind": "object",
    "name": "RuleDecision (Vince's decision on each of P1 to P6: accepted, changed or refused, with date and scope)",
    "proposal_says": "P1 to P6 are proposed, pending Vince; the introduction counts five rules and the table six",
-   "ontology_today": "No decision object; the proposal's rules exist only as its text, pinned through the source record.",
+   "ontology_today": "No decision object; the proposal's rules exist only as its text, pinned through the advisory record.",
    "needed_by": [
     "PS-02",
     "PS-11"
    ],
    "sources": [
     {
-     "system": "source-record",
-     "relation": "the proposal's source record (the claim, not a reader)",
+     "system": "dot",
+     "relation": "the proposal's advisory record (the claim, not a reader)",
      "ref": "OntologyProject:context/62802e1f72f68f40f39c3d858760fc145ce5c274aed4fcaf2216b90403363cc7.json@448579b0c49a"
     }
    ],
    "source": "source unknown",
-   "open_question": "Vince: which of P1 to P6 do you accept, change or refuse, and where will that decision be recorded?"
+   "dot_question": "Vince: which of P1 to P6 do you accept, change or refuse, and where will that decision be recorded?"
   }
  ]
 }

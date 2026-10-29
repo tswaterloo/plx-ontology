@@ -185,7 +185,7 @@ class PurchaseOrderIdentityTest(unittest.TestCase):
         self.assertEqual(named(b_no), [b_no])                      # the question's number
 
     def test_a_shared_name_goes_to_the_portal_precedence_gold_then_bc_then_fm(self):
-        # The Portal readers order gold po_number > BC No. > FM fmPoNumber
+        # Review em-1: the Portal readers order gold po_number > BC No. > FM fmPoNumber
         # (keys.PO_DOCUMENT_CITE); a name that is one PO's gold number and another's BC
         # No. names the gold one, and a BC No. beats an FM number.
         world = build_live_shaped_world(documents=False)
@@ -227,7 +227,7 @@ class PurchaseOrderIdentityTest(unittest.TestCase):
                                  portal), "gold_native_staging")
         raw = portal.lookup(K.FM_RECEIPT_RAW, "id", 96991)[0]
         self.assertEqual(lineage(K.FM_RECEIPT_RAW, raw, portal), "gold_native_staging")
-        # Its closed raw receipt is never a receipt root (staging rows stay
+        # Its closed raw receipt is never a receipt root (10-DECISION #2: staging rows stay
         # out of the benchmark), in the dev-set strata and in the cross-system sample.
         self.assertNotIn("FX99901-1", {c.identifier for c in
                                        portal_candidates(sources, "receipt")})
@@ -589,7 +589,7 @@ class DocumentNumberVariantTest(unittest.TestCase):
 
 
 class RootFirstTest(unittest.TestCase):
-    """Root first (gap-04f9b49ebae9): the document strata search
+    """Root first (architect-20261013T1224Z, gap-04f9b49ebae9): the document strata search
     the documents for the numbers of the split's closed roots instead of reading documents
     and hoping one names a closed record (three live runs: 4/4/3 of ~800 spans named a
     Portal row, all open)."""

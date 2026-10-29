@@ -50,10 +50,10 @@ VECTOR = {"state": "unavailable", "reason": "no_offline_embedding_model"}
 # $defs/field_path of the tool contract: a field a reader is cited to.
 _FIELD_PATH = re.compile(r"^row(?:\.[A-Za-z_][A-Za-z0-9_]*){1,3}$")
 _SPACE = re.compile(r"\s+")
-_STORED_TEXT = ("SELECT 1 FROM value_sources s JOIN value_cells c ON c.src = s.src "
-                "JOIN value_fields f ON f.field = c.field JOIN value_kinds k ON k.kind = c.kind "
-                "WHERE s.object_id = ? AND s.l1_handle = ? AND f.field_path = ? "
-                "AND k.value_type = 'text' AND c.value IS NOT NULL LIMIT 1")
+# A text value word-indexed under the version's field (a cell: a packed record's values
+# are not word-indexed, so its document text is).
+_STORED_TEXT = ("SELECT 1 FROM object_values_numbered WHERE object_id = ? AND l1_handle = ? "
+                "AND field_path = ? AND value_type = 'text' AND value IS NOT NULL LIMIT 1")
 
 
 def chunks(text: str) -> list[tuple[int, str]]:

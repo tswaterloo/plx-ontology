@@ -4,7 +4,7 @@ This is the wiring layer the oracle itself is not allowed to contain: it builds 
 injected ports from the reviewed GET-only clients and hands them to ``evals.oracle``
 (which never imports ``ontology``, ``operating`` or ``integrations``).
 
-* ``live`` (credentialed live-check runner): Portal reporting API through
+* ``live`` (credentialed live verifier): Portal reporting API through
   ``integrations.workbench_read_api.WorkbenchReadApiClient``; BC Production through
   ``integrations.bc_read`` (GET only); optionally one mailbox (or one of its folders,
   ``--folder``) through ``integrations.graph_read.GraphMailReader`` and one SharePoint
@@ -17,7 +17,7 @@ injected ports from the reviewed GET-only clients and hands them to ``evals.orac
 * ``fixture`` (keyless): the synthetic world in ``evals/oracle/fixture_world.py`` served
   through the same Portal client with an injected fetch (evidence ``injected-transport``);
   ``--write evals/dev`` freezes the items and a manifest there.
-* ``heldout`` (credentialed): the hidden held-out set, 120 items over
+* ``heldout`` (credentialed, 10-DECISION 8): the hidden held-out set, 120 items over
   F1-F6 (F5/F6 have no plan), roots from the held-out half of the root partition, and no
   item whose answer chain touches a record of the frozen dev set (its root or any chain
   record). The first run of a run id freezes the items and their digest list in the
@@ -37,7 +37,7 @@ injected ports from the reviewed GET-only clients and hands them to ``evals.orac
   in ``blocked_upstream`` and counted ``counts.blocked_upstream``, never as label drift;
   BC, mail and SharePoint still measure (``counts.measured``). A generation with blocked
   parts is never frozen (``frozen.deferred``): the set would lack the Portal families.
-  **Live partition** (``evals/partition.py``): the live dev runs
+  **Live partition** (bb664f58910f section 2, ``evals/partition.py``): the live dev runs
   (``scripts.eval_dev_baseline live``) leave a digest manifest per run in
   ``<state>/live/dev/``; a held-out generation excludes their records and every item whose
   group (shared document, root or identifier) touches their key digests
@@ -53,7 +53,7 @@ failure; ``counts.nondeterministic_by`` counts the items that differ by family a
 value), ``root_resolves`` (the
 answer has a root, i.e. is not blocked). ``blocked_upstream`` lists the strata whose source
 read failed upstream (a Portal outage blocks the four Portal strata; BC and the documents
-still run), so the live-check runner records such a run as blocked, never as a pass. A document
+still run), so the live verifier records such a run as blocked, never as a pass. A document
 stratum whose source refused every search it was asked (a tenant refusing mail ``$search``
 and the listing that stands in for it: HTTP 403) is blocked upstream the same way, with the
 status and error code of the refusal (``later_ask: graph-mail-directory-consent``); one
@@ -93,7 +93,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = "plx-eval-oracle-dev-run/v1"
 MANIFEST_FORMAT = "plx-eval-dev-manifest/v1"
 HELDOUT_FORMAT = "plx-eval-heldout-manifest/v1"
-# The run id the live spec draws (verify/live-checks/eval.heldout.json; v1 was frozen
+# The run id the live spec draws (devloop/live-checks/eval.heldout.json; v1 was frozen
 # before the metamorphic variants).
 HELDOUT_RUN_ID = "heldout-v2"
 HELDOUT_RUN_ID_SHAPE = re.compile(r"heldout-v[0-9]{1,4}")
@@ -147,6 +147,9 @@ SAMPLE_CAPS = frozenset({"item_cap", "page_cap"})
 # search, a query it will not parse), typed ``refused: tenant`` with the status and error
 # code, never a failed read.
 MAX_SEARCH_TEXTS = 48
+# Mail attachments read per message whose body was read: file attachments of a text kind
+# (TEXT_SUFFIXES), not inline, each at most MAX_TEXT_BYTES, read as capture reads them.
+MAX_MAIL_ATTACHMENTS = 3
 # A tenant that refuses every mail ``$search`` (live daily 8ecf8680c: search_refused_tenant on
 # every query) is read by listing instead: the newest ``MAIL_SCAN_PAGES`` pages of the
 # mailbox, each query matched against the listed subjects and previews. Complete only if
@@ -155,7 +158,7 @@ MAX_SEARCH_TEXTS = 48
 MAIL_SCAN_PAGES = 8
 MAIL_SCAN_TRIES = 2
 # A whole mailbox (no --folder) is read without the well-known folders of mail never sent
-# or received as it stands, or discarded: a message there names
+# or received as it stands, or discarded (directive f6427307e9b0): a message there names
 # nothing (``LiveDocuments._list_mail``; counted ``excluded``, never withheld). A subfolder
 # of one of them is not known as such and is read.
 EXCLUDED_MAIL_FOLDERS = ("drafts", "outbox", "deleteditems", "recoverableitemsdeletions",
@@ -442,7 +445,8 @@ class LiveDocuments:
                  drive_paths: Sequence[str] = (), guard: Guard = _no_guard,
                  max_drive_depth: int = MAX_DRIVE_DEPTH, max_drive_folders: int | None = None,
                  max_text_bytes: int = MAX_TEXT_BYTES) -> None:
-        self._guard = guard
+        self._guard = self._root_guard = guard
+        self._shares: dict[str, Deadline] = {}
         self._max_depth = min(max_drive_depth, MAX_DRIVE_DEPTH)
         self._max_folders = max_drive_folders
         self._max_bytes = min(max_text_bytes, MAX_TEXT_BYTES)
@@ -469,7 +473,32 @@ class LiveDocuments:
 
     def sample(self, kind: str, limit: int, *, windows: Sequence[str] = (),
                seed: str = "") -> dict[str, Any]:
-        return _read(self._guard, self._sample, kind, limit, seed)
+        return self._shared(kind, self._sample, kind, limit, seed)
+
+    def _shared(self, kind: str, read: Callable[..., Any], *args: Any) -> Any:
+        """``read`` under the run's ``Deadline`` as this kind's share of it: the first time
+        a kind is read it gets an equal part of the time left among the configured kinds not
+        yet started (mail, SharePoint), so a stratum that spends its part is blocked by the
+        budget alone and cannot starve the next (live b823b276b1: mail spent the run's
+        1200 s, SharePoint searched 0 of 24 roots). What a kind leaves unspent goes to the
+        kinds after it. Any other guard is not divided."""
+        whole = self._root_guard
+        if not isinstance(whole, Deadline):
+            return _read(whole, read, *args)
+        if kind not in self._shares:
+            kinds = {"mail": self._mail is not None and bool(self._units),
+                     "sharepoint": self._drive is not None and bool(self._paths)}
+            left = sum(1 for k, on in kinds.items() if on and k not in self._shares)
+            self._shares[kind] = Deadline(whole.remaining() / max(1, left), whole._monotonic)
+        self._guard = self._shares[kind]
+        try:
+            return _read(self._guard, read, *args)
+        except BudgetExhausted:
+            if whole.remaining() <= 0:
+                whole.hit = True   # the run's own budget is spent, not only this share
+            raise
+        finally:
+            self._guard = whole
 
     def list_documents(self, kind: str, limit: int, *, seed: str = "") -> dict[str, Any] | None:
         """``DocumentPort.list_documents``, read when the root searches named no root:
@@ -482,10 +511,10 @@ class LiveDocuments:
         if kind == "mail":
             if self._mail is None or not any(u.blocked is None for u in self._units):
                 return None
-            return _read(self._guard, self._list_units, limit, seed)
+            return self._shared(kind, self._list_units, limit, seed)
         if kind != "sharepoint":
             return None
-        return _read(self._guard, self._sharepoint, limit, seed, True)
+        return self._shared(kind, self._sharepoint, limit, seed, True)
 
     def search(self, kind: str, queries: Sequence[str], *, hits: int,
                seed: str = "") -> dict[str, Any]:
@@ -498,7 +527,7 @@ class LiveDocuments:
         once, read or unread by cause (``UNREAD_CAUSES``), one never tried included. A
         query the guard, the audience or the grammar refuses is ``refused: guard``, one the source answers 400/403/501
         ``refused: tenant``, any other failure (a reader's ValueError included) ``failed``."""
-        return _read(self._guard, self._search, kind, list(queries), hits, seed)
+        return self._shared(kind, self._search, kind, list(queries), hits, seed)
 
     def _mail_unconfigured(self) -> dict[str, Any] | None:
         """The ``not_configured`` answer of mail without a reader or mailbox, else None."""
@@ -508,6 +537,15 @@ class LiveDocuments:
             f"mail:{self._mailbox or ''}/{self._folder or ''}"],
             "not_configured": "mail_reader_not_configured" if self._units
             else "mailbox_not_given"}
+
+    def budget_state(self) -> dict[str, dict[str, bool]]:
+        """By configured document kind: whether its share of the run's read time ran out
+        (``exhausted``), a kind not yet read having spent none. Mail's ``--mailbox`` or
+        scope units and SharePoint's paths decide which kinds are configured."""
+        kinds = {"mail": self._mail is not None and bool(self._units),
+                 "sharepoint": self._drive is not None and bool(self._paths)}
+        return {k: {"exhausted": k in self._shares and self._shares[k].hit}
+                for k, on in kinds.items() if on}
 
     def blocked_mail(self) -> dict[str, str]:
         """Each blocked mail unit's later_ask code by label (scope id, or ``mailbox`` for
@@ -540,7 +578,9 @@ class LiveDocuments:
                 seen = [self._hits[c] for c in messages if c in self._hits]
                 read = self._read_bodies([pair for c, pair in messages.items()
                                           if c not in self._hits],
-                                         MAX_SEARCH_TEXTS, seed, every=True)
+                                         MAX_SEARCH_TEXTS, seed, every=True,
+                                         first=_first(queries, [r for rs in per_unit
+                                                                for r in rs]))
             self._hits.update((r["handle"], r) for r in read["records"])
             return {"source": source, "results": _merged(per_unit),
                     **read, "records": seen + read["records"], **self._scope_blocked()}
@@ -555,7 +595,8 @@ class LiveDocuments:
             seen = [self._hits[e["citation"]] for e in entries if e["citation"] in self._hits]
             files = [({"handle": entry["citation"], "texts": [entry.get("name") or ""]}, entry)
                      for entry in entries if entry["citation"] not in self._hits]
-            read, unread, pages = self._read_texts(files, MAX_SEARCH_TEXTS, seed, every=True)
+            read, unread, pages = self._read_texts(files, MAX_SEARCH_TEXTS, seed, every=True,
+                                                   first=_first(queries, results))
             self._hits.update((record["handle"], record) for record, _ in files)
             return {"records": seen + [record for record, _ in files],
                     "source": ["sharepoint:/"], "results": results,
@@ -795,17 +836,20 @@ class LiveDocuments:
         return {**listing, "items": kept, "excluded": len(listing["items"]) - len(kept)}
 
     def _read_bodies(self, messages: Sequence[tuple[_MailUnit, Mapping[str, Any]]],
-                     count: int, seed: str, every: bool = False) -> dict[str, Any]:
+                     count: int, seed: str, every: bool = False,
+                     first: Callable[..., tuple] | None = None) -> dict[str, Any]:
         """The records of ``messages`` (each with the unit it was listed in), the text
-        bodies of ``count`` of them (ranked by a digest of the seed and the handle) in their
-        ``contents``, and the read counts; ``every``: the messages not tried are counted too
-        (``text_budget``, one without an id ``failed``)."""
+        bodies of ``count`` of them in their ``contents`` (ranked by ``first``, then by a
+        digest of the seed and the handle), the names and text of a read message's
+        attachments (``_attachments``), and the read counts; ``every``: the messages not
+        tried are counted too (``text_budget``, one without an id ``failed``)."""
         from integrations.live_source_guard import NotVisible, SourceUnavailable
         pairs = [(_message(message), message, unit) for unit, message in messages]
         ranked = sorted(((digest([seed, record["handle"]]), record, message, unit)
                          for record, message, unit in pairs
                          if isinstance(message.get("id"), str)),
-                        key=lambda found: found[0])
+                        key=lambda found: ((first(found[1], found[2]) if first else ()),
+                                           found[0]))
         unread: dict[str, int] = {}
         read = 0
         if every:
@@ -835,7 +879,69 @@ class LiveDocuments:
                 continue
             record["contents"] = [body]
             read += 1
+            if message.get("has_attachments") is True:
+                self._attachments(unit, got, record, unread)
         return {"records": [record for record, _, _ in pairs], **_text_counts(read, unread)}
+
+    def _attachments(self, unit: _MailUnit, message: Mapping[str, Any],
+                     record: dict[str, Any], unread: dict[str, int]) -> None:
+        """The names of a read message's attachments are added to its ``texts`` and the text
+        of up to ``MAX_MAIL_ATTACHMENTS`` of its non-inline file attachments of a text kind
+        (not over ``MAX_TEXT_BYTES``) to its ``contents``, as capture reads them; one not
+        read is counted in ``unread`` by cause as a text (``_unread_cause``), within
+        ``MAX_TEXT_SECONDS`` as ``_read_texts`` reads files. A listing the reader refuses or
+        cannot read adds nothing."""
+        import time
+        from integrations.captured_text import capture_text
+        from integrations.live_source_guard import NotVisible, SourceUnavailable
+        self._guard()
+        try:
+            listed = self._mail.list_attachments(self._actor, unit.mailbox, message["id"])
+        except (NotVisible, SourceUnavailable, ValueError):
+            return
+        items = [a for a in listed["items"] if isinstance(a, Mapping)]
+        record["texts"] = [*record["texts"], *(a["name"] for a in items if a.get("name"))]
+        end = time.monotonic() + MAX_TEXT_SECONDS
+        tried = 0
+        for item in items:
+            if tried >= MAX_MAIL_ATTACHMENTS:
+                break
+            if item.get("is_inline") or not text_kind(item.get("name")) \
+                    or not isinstance(item.get("id"), str) or (
+                        isinstance(item.get("size"), int) and item["size"] > self._max_bytes):
+                continue
+            tried += 1
+            left = end - time.monotonic()
+            if isinstance(self._guard, Deadline):
+                left = min(left, self._guard.remaining())
+            if left <= 0:
+                _count(unread, "time_budget")
+                continue
+            self._guard()
+            try:
+                got = self._mail.get_attachment(self._actor, unit.mailbox, message["id"],
+                                                item["id"], max_bytes=self._max_bytes,
+                                                message=message)
+            except NotVisible:
+                _count(unread, "refused")
+                continue
+            except (SourceUnavailable, ValueError):
+                _count(unread, "unavailable")
+                continue
+            meta = {"name": item["name"], "content_type": item.get("content_type")}
+            if text_kind(item["name"]) in PLAIN_TEXT_SUFFIXES:
+                meta = {**meta, "content_type": None, "mime_type": "text/plain"}
+            found = _within(left, capture_text, got["content"], meta, max_chars=MAX_TEXT_CHARS)
+            if found is None:
+                self._guard()
+                _count(unread, "time_budget")
+                end = time.monotonic()
+                continue
+            status, text = found
+            if text is None or not text.strip():
+                _count(unread, "no_text" if text is not None else _unread_cause(status))
+                continue
+            record["contents"] = [*record["contents"], text[:MAX_TEXT_CHARS]]
 
     def _sharepoint(self, limit: int, seed: str, once: bool = False) -> dict[str, Any]:
         """``once``: a file the run's searches read is reused, one read here is kept for
@@ -897,11 +1003,12 @@ class LiveDocuments:
 
     def _read_texts(self, files: Sequence[tuple[dict[str, Any], Mapping[str, Any]]],
                     budget: int, seed: str, every: bool = False,
-                    tried: list[dict[str, Any]] | None = None
+                    tried: list[dict[str, Any]] | None = None,
+                    first: Callable[..., tuple] | None = None
                     ) -> tuple[int, dict[str, int], int]:
         """Reads the text of up to ``budget`` readable files into their records'
-        ``contents``, ranked by a digest of the seed and the handle, as capture reads
-        them; (read, unread by cause, scanned pages left unread). ``every``: the files
+        ``contents``, ranked by ``first`` (``_first``), then by a digest of the seed and
+        the handle, as capture reads them; (read, unread by cause, scanned pages left unread). ``every``: the files
         not tried are counted too: ``not_text_kind``, ``exceeds_cap`` (over
         ``MAX_TEXT_BYTES``) or ``text_budget`` (past ``budget``). A reading the
         ``MAX_TEXT_SECONDS`` end (a long OCR) and every file after it are
@@ -911,7 +1018,7 @@ class LiveDocuments:
         page bound) keeps that text, is ``skipped_by_cap`` and never read, so no match
         in it is ever taken for absence. ``tried`` receives each record read or counted."""
         import time
-        from integrations.captured_text import OCR_UNAVAILABLE, capture_text, text_status_kind
+        from integrations.captured_text import OCR_UNAVAILABLE, capture_text
         from integrations.live_source_guard import NotVisible, SourceUnavailable
         from ontology.mentions import text_pages
         unread: dict[str, int] = {}
@@ -928,7 +1035,8 @@ class LiveDocuments:
                 _count(unread, cause)
                 if tried is not None:
                     tried.append(record)
-        readable.sort(key=lambda ranked: ranked[0])
+        readable.sort(key=lambda ranked: ((first(ranked[1], ranked[2]) if first else ()),
+                                          ranked[0]))
         if every:
             for _, record, _ in readable[max(0, budget):]:
                 _count(unread, "text_budget")
@@ -971,7 +1079,7 @@ class LiveDocuments:
                 continue
             status, text = found
             if text is None or not text.strip():
-                _count(unread, "no_text" if text is not None else text_status_kind(status))
+                _count(unread, "no_text" if text is not None else _unread_cause(status))
                 continue
             record["contents"] = [text[:MAX_TEXT_CHARS]]
             skipped = _pages_skipped(content, meta, text)
@@ -1037,9 +1145,48 @@ def _on_thread(seconds: float, read: Callable[..., Any], *args: Any, **kwargs: A
     return out[0]
 
 
+_OCR_TYPED = re.compile(r"ocr_failed_[a-z_]{1,24}")
+
+
 def _count(unread: dict[str, int], cause: str) -> None:
-    cause = cause if cause in UNREAD_CAUSES else "failed"
+    """One more text unread for ``cause`` (``UNREAD_CAUSES``, or ``ocr_failed_<cause>``
+    from ``_unread_cause``; any other is ``failed``)."""
+    cause = cause if cause in UNREAD_CAUSES or _OCR_TYPED.fullmatch(cause) else "failed"
     unread[cause] = unread.get(cause, 0) + 1
+
+
+def _unread_cause(status: str) -> str:
+    """A text status as an unread cause: an OCR run that failed keeps its typed cause
+    (``ocr_failed_deadline``), any other status loses a suffix it has not."""
+    from integrations.captured_text import ocr_failure_cause, text_status_kind
+    cause = ocr_failure_cause(status)
+    return text_status_kind(status) if cause is None else f"ocr_failed_{cause}"
+
+
+def _alnum(text: Any) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(text).lower())
+
+
+def _first(queries: Sequence[str], results: Sequence[Mapping[str, Any]]
+           ) -> Callable[[Mapping[str, Any], Mapping[str, Any]], tuple[int, int, int]]:
+    """The order a search reads its hits in, spending the text budget where a root can be
+    named first (live 2026-10-20: 53 of 405 mail documents read by a digest of the seed,
+    352 left past the budget): a hit whose subject, preview or file name holds a number
+    searched for (letters and digits alone), then a message with attachments (their names
+    and text may), then the hit the fewest documents answered a query with (the most
+    specific search), the seed's digest after (``_read_bodies``, ``_read_texts``)."""
+    wanted = [n for n in map(_alnum, queries) if n]
+    hits: dict[str, int] = {}
+    for result in results:
+        handles = result.get("handles") or ()
+        for handle in handles:
+            hits[handle] = min(hits.get(handle, len(handles)), len(handles))
+
+    def key(record: Mapping[str, Any], entry: Mapping[str, Any]) -> tuple[int, int, int]:
+        head = _alnum(" ".join(map(str, record.get("texts") or ())))
+        return (not any(n in head for n in wanted), entry.get("has_attachments") is not True,
+                hits.get(record.get("handle"), 10 ** 9))
+    return key
 
 
 def _text_counts(read: int, unread: Mapping[str, int]) -> dict[str, Any]:
@@ -1595,7 +1742,7 @@ def label_view(result: Mapping[str, Any], frozen: Mapping[str, Any] | None = Non
     return _PORTAL_GENERATION.sub(r"\1", json.dumps(result, sort_keys=True))
 
 
-MAX_LABEL_DRIFT = 0.10  # decision: more than 10% drifted labels fails the run
+MAX_LABEL_DRIFT = 0.10  # controller decision: more than 10% drifted labels fails the run
 
 
 def heldout_ok(manifest: Mapping[str, Any]) -> bool:
@@ -1714,7 +1861,8 @@ def run_heldout(args: argparse.Namespace, env: Mapping[str, str]) -> tuple[dict,
                 resolved += again["answerability"] != "blocked"
         except BudgetExhausted:
             pass
-        budget["exhausted"] = deadline.hit
+        budget_by = budget_by_stratum(documents)
+        budget["exhausted"] = deadline.hit or any(s["exhausted"] for s in budget_by.values())
         failures = sources.portal.failures()
         if sources.bc is not None:
             failures.update(sources.bc.failures())
@@ -1725,6 +1873,7 @@ def run_heldout(args: argparse.Namespace, env: Mapping[str, str]) -> tuple[dict,
                             "schema_valid": sum(1 for i in items if not validate(i)),
                             "root_resolves": resolved}
         manifest = heldout_manifest(report, items, dev, budget=budget, dev_keys=dev_keys)
+        manifest["budget_by_stratum"] = budget_by
         manifest["counts"].update(label_drift=drift, blocked_upstream=blocked,
                                   measured=len(items) - blocked)
         manifest["frozen"] = {"reused": True, "frozen_at": record["frozen_at"],
@@ -1738,13 +1887,21 @@ def run_heldout(args: argparse.Namespace, env: Mapping[str, str]) -> tuple[dict,
                                     exclude_roots=sorted(dev[1]), exclude_keys=dev_keys)
         except BudgetExhausted:
             raise RuntimeError("heldout_budget_exhausted_before_items") from None
-        budget["exhausted"] = deadline.hit
+        budget_by = budget_by_stratum(documents)
+        budget["exhausted"] = deadline.hit or any(s["exhausted"] for s in budget_by.values())
         manifest = heldout_manifest(report, items, dev, budget=budget, dev_keys=dev_keys)
+        manifest["budget_by_stratum"] = budget_by
         manifest["counts"].update(label_drift=0, blocked_upstream=0, measured=len(items))
         manifest["frozen"] = {"reused": False, "frozen_at": now, "source": args.source}
         if report["blocked_upstream"]:
             # A set drawn while parts were blocked would lack their families: not frozen.
             manifest["frozen"]["deferred"] = "blocked_upstream"
+        elif any(s["exhausted"] for s in budget_by.values()):
+            # A document kind whose share of the read time ran out is exhausted for this
+            # gate: its stratum is cut by the budget, however it is typed (decision
+            # 2026-10-21-oracle-freeze-budget). Named by stratum, never frozen.
+            manifest["frozen"]["deferred"] = "budget_exhausted:" + ",".join(
+                k for k, s in budget_by.items() if s["exhausted"])
         elif heldout_ok(manifest):  # only a clean first generation is frozen
             item_dir = set_dir / "items"
             item_dir.mkdir(parents=True, exist_ok=True)
@@ -1775,6 +1932,55 @@ def run_heldout(args: argparse.Namespace, env: Mapping[str, str]) -> tuple[dict,
     return manifest, 0 if heldout_ok(manifest) else 3
 
 
+MAX_SCOPE_MAILBOXES = 999   # scope ids mailbox-1 .. mailbox-999
+
+
+def mail_scope_target(path: Path) -> tuple[list[tuple[str, str, str]], list[tuple[str, str]]]:
+    """(units, blocked) of a mail capture scope file (``plx-mail-capture-scope/v1``, as
+    ``examples/mail_capture_scope.*.json``), parsed by the capture's own
+    ``CaptureScope.from_file``: each named mailbox gets a scope id by its place in the file
+    (``mailbox-<n>``, the only name a report gives it); a mailbox inside the allowlist
+    (``operating/case_mail_scope.json``) is one unit (scope id, address, folder) per
+    folder, one outside it is blocked (``mail-scope-grant``) and never read. The scope
+    names mailboxes only: ``allowlisted_mailboxes``, ``all_mailboxes`` enabled or an
+    unrestricted allowlist would widen it past the file and are refused, as is anything the
+    capture refuses (a ValueError either way, so a bad scope fails closed)."""
+    from integrations.capture_mail import CaptureError, CaptureScope
+
+    scope = CaptureScope.from_file(path)   # the capture's own validation first
+    document = json.loads(Path(path).read_text(encoding="utf-8"))
+    if "allowlisted_mailboxes" in document or scope.all_mailboxes \
+            or scope.allowlist.is_unrestricted:
+        raise CaptureError("mail_scope_widens")
+    named = [entry["address"] for entry in document.get("mailboxes", [])]
+    if not named or len(named) > MAX_SCOPE_MAILBOXES:
+        raise CaptureError("mail_scope_mailboxes_invalid")
+    # ``all_mailboxes.exclude`` names mailboxes never read: dropped from the target (their
+    # scope ids stay those of their place in the file). An exclusion matching no named
+    # mailbox (an object id, a typo) is not understood: refused, never ignored.
+    # ``internal_domains`` only classes senders; it selects no mailbox.
+    lowered = {address.lower() for address in named}
+    if scope.excluded - lowered:
+        raise CaptureError("mail_scope_exclude_unmatched")
+    folders = dict(scope.mailboxes)
+    outside = set(scope.outside_allowlist)
+    units: list[tuple[str, str, str]] = []
+    blocked: list[tuple[str, str]] = []
+    for index, address in enumerate(named, 1):
+        scope_id = f"mailbox-{index}"
+        if address.lower() in scope.excluded:
+            continue
+        if address in folders:
+            units += [(scope_id, address, folder) for folder in folders[address]]
+        elif address in outside:
+            blocked.append((scope_id, "mail-scope-grant"))
+        else:   # the capture kept a mailbox neither read nor set aside: never guess
+            raise CaptureError("mail_scope_mailboxes_invalid")
+    if not units and not blocked:   # everything excluded: nothing left to read
+        raise CaptureError("mail_scope_mailboxes_invalid")
+    return units, blocked
+
+
 def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None = None,
          live_build: Callable[..., tuple[Sources, Any, dict[str, str]]] | None = None,
          monotonic: Callable[[], float] | None = None) -> int:
@@ -1792,6 +1998,11 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     live.add_argument("--no-bc", action="store_true")
     live.add_argument("--mailbox")
     live.add_argument("--folder")
+    live.add_argument("--mail-scope", type=Path, default=None,
+                      help="a mail capture scope (plx-mail-capture-scope/v1, named mailboxes "
+                           "only): its allowlisted mailboxes and folders are the mail read, "
+                           "instead of --mailbox/--folder, each reported by scope id; one "
+                           "outside the allowlist is blocked (later_ask mail-scope-grant)")
     live.add_argument("--sharepoint-path", action="append", default=[])
     live.add_argument("--budget-seconds", type=float, default=DEV_BUDGET_SECONDS,
                       help="reads stop after this; the strata they cut say blocked: budget")
@@ -1818,6 +2029,13 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     heldout.add_argument("--folder")
     heldout.add_argument("--sharepoint-path", action="append", default=[])
     args = parser.parse_args(argv)
+    if getattr(args, "mail_scope", None) is not None:
+        if args.mailbox or args.folder:
+            parser.error("--mail-scope replaces --mailbox and --folder")
+        try:
+            args.mail_units, args.mail_blocked = mail_scope_target(args.mail_scope)
+        except (OSError, ValueError) as exc:
+            parser.error(f"--mail-scope: {type(exc).__name__}")
     env = os.environ if environ is None else environ
     try:
         if args.command == "heldout":
@@ -1844,7 +2062,7 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
                                     count=args.count, audit=args.audit, id_suffix="live",
                                     evidence_note=None, evidence_label="live-read",
                                     configured=configured)
-            report["budget"] = {"seconds": args.budget_seconds, "exhausted": deadline.hit}
+            stamp_budget(report, documents, seconds=args.budget_seconds, hit=deadline.hit)
             args.output_dir.mkdir(parents=True, exist_ok=True)
             for item in items:  # values stay in the verifier's temporary directory
                 (args.output_dir / f"{item['id']}.json").write_text(
@@ -1854,6 +2072,22 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
         return 1
     print(json.dumps(report, indent=1, sort_keys=True))
     return exit_code(report)
+
+
+def budget_by_stratum(documents: Any) -> dict[str, dict[str, bool]]:
+    """Each configured document kind's share of the read time: ``exhausted`` when it ran
+    out (``LiveDocuments.budget_state``; a fixture port has no shares, so none)."""
+    state = getattr(type(documents), "budget_state", None)   # a pure state read
+    return state(documents) if state else {}
+
+
+def stamp_budget(report: dict[str, Any], documents: Any, *, seconds: float,
+                 hit: bool) -> None:
+    """A live report's budget: exhausted when the run's deadline hit or any document
+    kind's share ran out (decision 2026-10-21-oracle-freeze-budget)."""
+    report["budget_by_stratum"] = budget_by_stratum(documents)
+    report["budget"] = {"seconds": seconds, "exhausted": hit or any(
+        s["exhausted"] for s in report["budget_by_stratum"].values())}
 
 
 def exit_code(report: Mapping[str, Any]) -> int:

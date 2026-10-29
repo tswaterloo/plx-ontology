@@ -15,8 +15,10 @@ citation names:
   capture store (``MailCaptureStore.resolve``); the revision is the changeKey it names;
 * ``sharepoint://<drive>/<item>@<eTag>[#page=<n>]`` through the SharePoint capture store
   (``SharePointCaptureStore.resolve``); a ``#page`` citation reads as that page's text.
-  A byte-pinned ``#sha256=`` citation is left to the harness's document reader
-  (``evals.baseline.ToolHost`` ``documents``: the re-extracted fields).
+  A byte-pinned ``#sha256=`` citation of a whole file is left to the harness's document
+  reader (``evals.baseline.ToolHost`` ``documents``: the re-extracted fields); a member of a
+  captured container (``#sha256=<container>&member=<path>&member_sha256=<hex>``) is the
+  store's own read of that member (its text), for a reader who may see the container.
 
 A read is ``{"ok": true, "relation", "key"?, "row" | "page"+"text", "provenance":
 {"source": "capture-store", "revision"}}``; the runner keeps ``provenance`` in the
@@ -53,7 +55,8 @@ def reader(*, bc: Resolver | None = None, mail: Resolver | None = None,
                     "provenance": {"source": SOURCE,
                                    "revision": found.get("source_version")}}
         resolve = {"graph-mail": mail, "sharepoint": sharepoint}.get(scheme)
-        if resolve is None or (scheme == "sharepoint" and "sha256=" in handle):
+        if resolve is None or (scheme == "sharepoint" and "sha256=" in handle
+                               and "&member=" not in handle):
             return None
         found = resolve(handle)
         if not isinstance(found, Mapping) or not isinstance(found.get("row"), Mapping):

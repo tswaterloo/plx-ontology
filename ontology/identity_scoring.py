@@ -1438,22 +1438,9 @@ class _Twin:
         versions = (self._version(a), self._version(b))
         if None in versions or any(v["lineage"] in self.never for v in versions):
             return "lineage_not_authority", None
-        sides = []
-        for oid in (a, b):
-            side = {"po": self._values(oid, _TWIN_PO_PROPS), "supplier": [], "handles": [],
-                    "marks": [], "times": []}
-            suppliers = self._suppliers(oid)
-            if len(suppliers) > 1:
-                return "supplier_ambiguous", None
-            for link in suppliers:
-                version = self._version(link["to_object"])
-                if version is None:
-                    continue
-                side["supplier"] = self._values(link["to_object"], _TWIN_SUPPLIER_PROPS)
-                side["handles"] += [version["l1_handle"], *json.loads(link["evidence_handles"])]
-                side["marks"] += [version["markings"], link["markings"]]
-                side["times"] += [version["recorded_at"], link["recorded_at"]]
-            sides.append(side)
+        sides = [self._side(a), self._side(b)]
+        if None in sides:
+            return "supplier_ambiguous", None
         features = [self._number(sides)]
         if not features[0]["agrees"]:
             return "number_not_exact", None
@@ -1470,6 +1457,24 @@ class _Twin:
         # only what agrees is recorded (an unknown total would mark the link finance)
         features += [f for f in supplier + secondary if f["agrees"]]
         return "firm", self._row(lead, versions, sides, features)
+
+    def _side(self, oid: str) -> dict[str, Any] | None:
+        """One order's PO values and its supplier's (read through its one verified
+        ``ordered_from`` link), with what they cite; None when it has several suppliers."""
+        side: dict[str, Any] = {"po": self._values(oid, _TWIN_PO_PROPS), "supplier": [],
+                                "handles": [], "marks": [], "times": []}
+        suppliers = self._suppliers(oid)
+        if len(suppliers) > 1:
+            return None
+        for link in suppliers:
+            version = self._version(link["to_object"])
+            if version is None:
+                continue
+            side["supplier"] = self._values(link["to_object"], _TWIN_SUPPLIER_PROPS)
+            side["handles"] += [version["l1_handle"], *json.loads(link["evidence_handles"])]
+            side["marks"] += [version["markings"], link["markings"]]
+            side["times"] += [version["recorded_at"], link["recorded_at"]]
+        return side
 
     @staticmethod
     def _cite(row: Any) -> dict[str, str]:
@@ -1620,3 +1625,404 @@ class _Twin:
                 "reviewed_at": None, "review_action_id": None,
                 "markings": markings_text(marks), "recorded_at": max(times),
                 "superseded_at": None}
+
+
+# ------------------------------------------------- BC Your Reference: the FM PO number link
+#
+# A BC purchase order's ``Your Reference`` often holds the FileMaker PO number the Portal
+# order was sent with (``identifiers.json`` binding ``bc_po_your_reference``; the Portal's
+# BC send documents the mechanism). BC API v2.0 ``purchaseOrders`` does not expose it; the
+# ODataV4 ``PurchaseOrder`` page (Page 50) does, and ``integrations.bc_read`` captures it
+# as the field page ``purchaseOrderReferences`` (one record per API order, stored only when
+# its ``No`` names exactly one API order of the same vendor).
+#
+# The link stands on data evidence, not on a rule anyone gave (decision
+# ``devloop/DECISIONS/2026-10-27-your-reference-evidence.md``; live 2026-10-27: 236 of the
+# 270 non-blank references name exactly one Portal order). Whether a match is firm or a
+# lead is decided by :func:`your_reference_verdict` (the flagship evaluation's oracle
+# holds the same rule, tied by a parity test): firm only when the match is unique and the
+# supplier or the order date (within ``YRF_DATE_WINDOW_DAYS``) corroborates it, with
+# nothing conflicting. A firm link is a ``same_record`` link of tier ``corroborated`` (never an
+# identity tier: ``verified`` and ``reviewed`` stay a person's, so identity precision,
+# ``_twins`` in ``operating/ontology_tools_process.py`` and ``proactive_engine`` are
+# unchanged); a lead is the same link at tier ``lead``.
+#
+# Before the rule, a BC order links nothing and is counted under one typed reason
+# (``YOUR_REFERENCE_OUTCOMES``) unless all of these hold:
+#
+# * the order has exactly one current Page 50 record whose ``No`` is the order's number;
+# * its ``Your_Reference`` is a non-blank ``petra_po`` identifier;
+# * a Portal order (``portal.app_purchase_order``) holds that number in
+#   ``custom_fields.fmPoNumber`` (an FM clash-series number: in ``po_number``) by equal
+#   normal forms (the store keeps no literal);
+# * the BC order is not of a lineage that is never authority, and no person rejected the
+#   pair, and the pair is not already firm or corroborated.
+#
+# The rule then reads, per Portal candidate: how many Portal orders hold the number, how
+# many BC orders name the candidate, whether either order already has a same-record link
+# to another order of the other system, the supplier (``_Twin`` name and sent vendor
+# number rules: a ``near`` name is unknown) and the order dates (``_Twin._date``).
+# Several candidates each get a lead.
+#
+# The link cites what it read: ``your_reference`` (the Page 50 record's handle and field,
+# and the Portal value's), ``bc_number`` (the Page 50 ``No`` and the order's number) and,
+# on a firm link, each corroborating feature that agreed (``supplier_name`` /
+# ``supplier_number`` cite the supplier records, so a reader who may not read them is
+# shown the lead, ``ontology.mentions.reader_view``; ``order_date`` cites both orders'
+# dates). A lead says why it is not firm in ``why_not`` (the rule's code; no supplier
+# citation). No value is copied into the reason. ``evidence_handles`` are the two orders'
+# versions (a reader sees the link only when it may read both; the Page 50 record is read
+# under its parent order's grant, ``capture_store.BC_FIELD_PAGES``) and its markings are
+# the union of both orders' and every cited value's.
+
+YOUR_REFERENCE_PREFIX = "yrf-po-"
+YOUR_REFERENCE_SET = "purchaseOrderReferences"
+YOUR_REFERENCE_FIELD = "Your_Reference"
+YOUR_REFERENCE_BINDING = "bc_po_your_reference"
+YOUR_REFERENCE_DECISION = "devloop/DECISIONS/2026-10-27-your-reference-evidence.md"
+_YRF_BC, _YRF_PORTAL, _YRF_FM = ("bc.purchase_orders", "portal.app_purchase_order",
+                                 "portal.fm_generated_purchase_order")
+_YRF_KIND, _YRF_BC_KIND = "petra_po", "bc_document_no"
+# One typed outcome per current BC order: ``linked`` is a firm link; ``ambiguous_fm``,
+# ``ambiguous_bc``, ``conflict``, ``supplier_conflict`` and ``uncorroborated`` wrote leads;
+# every other code wrote nothing.
+YOUR_REFERENCE_OUTCOMES = (
+    "linked", "no_reference_record", "missing", "bc_number_unread", "bc_number_mismatch",
+    "not_an_identifier",
+    "no_match", "fm_only", "po_number_only", "ambiguous_fm", "ambiguous_bc",
+    "lineage_not_authority", "rejected", "already_firm", "already_corroborated", "conflict",
+    "supplier_conflict", "uncorroborated", "unreadable_handle")
+# Beside the outcomes: firm links per corroborating field that agreed (one link may count
+# under both).
+YOUR_REFERENCE_FIRM_BY = ("firm_by_supplier", "firm_by_order_date")
+
+# The firm-or-lead rule (decision record above). The flagship evaluation's raw-capture
+# oracle holds the same rule as ``evals/oracle/po_reference.py``: two gates keep product
+# and evaluation code apart in both directions (the oracle import ban, and the
+# no-hardcoded-cases ``eval_reference`` rule), so the two copies are tied by a test that
+# runs both over every input combination and fails on any difference
+# (``ontology/tests/test_bc_po_your_reference.py`` ``RuleParityTests``).
+YRF_FIRM, YRF_LEAD = "firm", "lead"
+YRF_SUPPLIER, YRF_ORDER_DATE = "supplier", "order_date"
+# Live 2026-10-27: of the 236 unique matches 118 lie 0 days apart and the rest 21 or more;
+# any window from 0 to 20 days decides the same. A week allows a weekend and a late send.
+YRF_DATE_WINDOW_DAYS = 7
+
+
+def your_reference_verdict(*, portal_matches: Any, bc_claimants: Any, authority: Any,
+                           other_partner: Any, supplier: Any, order_days_apart: Any
+                           ) -> tuple[str | None, str, tuple[str, ...]]:
+    """``(tier, code, corroborated_by)`` of one BC order's reference against one Portal
+    candidate: tier ``YRF_FIRM``, ``YRF_LEAD`` or None (nothing to link). Firm only when the
+    match is unique (one Portal order holds the number, one BC order names it), nothing
+    conflicts (no other partner, the supplier does not disagree) and the supplier agrees
+    or the order dates lie at most ``YRF_DATE_WINDOW_DAYS`` apart. An input of another
+    type than documented is unknown and never corroborates."""
+    if not isinstance(portal_matches, int) or isinstance(portal_matches, bool) \
+            or portal_matches < 1:
+        return None, "no_match", ()
+    if authority is not True:
+        return None, "lineage_not_authority", ()
+    if portal_matches > 1:
+        return YRF_LEAD, "ambiguous_fm", ()
+    if not isinstance(bc_claimants, int) or isinstance(bc_claimants, bool) \
+            or bc_claimants != 1:
+        return YRF_LEAD, "ambiguous_bc", ()
+    if other_partner is not False:
+        return YRF_LEAD, "conflict", ()
+    if supplier is False:
+        return YRF_LEAD, "supplier_conflict", ()
+    by = []
+    if supplier is True:
+        by.append(YRF_SUPPLIER)
+    if isinstance(order_days_apart, int) and not isinstance(order_days_apart, bool) \
+            and 0 <= order_days_apart <= YRF_DATE_WINDOW_DAYS:
+        by.append(YRF_ORDER_DATE)
+    if not by:
+        return YRF_LEAD, "uncorroborated", ()
+    return YRF_FIRM, "firm", tuple(by)
+
+
+def your_reference_step(builder: Any, projector: Any) -> dict[str, Any]:
+    """The ``post_project`` step (``your_reference``): links each BC order to the Portal
+    order its Page 50 ``Your Reference`` names (:func:`link_po_your_references`), reading
+    the BC capture's field page as of the build's cut. A build without a BC capture that
+    serves field pages reads none (every BC order counted ``no_reference_record``) and says
+    so in ``reference_capture``."""
+    source = (getattr(projector, "sources", None) or {}).get("bc")
+    read = getattr(source, "field_page_records", None)
+    gap = getattr(source, "capture_gap", None)
+    if read is None:
+        records, state = [], "source_not_captured"
+    else:
+        records = read(YOUR_REFERENCE_SET, getattr(projector, "cut", None))
+        state = gap(YOUR_REFERENCE_SET) if gap is not None else None
+    report = link_po_your_references(builder.connection, projector.schema, records,
+                                     lambda rows: builder.add("links", rows),
+                                     normalizer=getattr(projector, "normalizer", None))
+    report["reference_capture"] = state or "complete"
+    return report
+
+
+def link_po_your_references(conn: sqlite3.Connection, schema: Any, references: Iterable[Any],
+                            add: Callable[[list[dict[str, Any]]], int], *,
+                            normalizer: Callable[[str, Any], str | None] | None = None,
+                            replace: bool = True) -> dict[str, Any]:
+    """Write the Your Reference links (section comment) after removing the ones a
+    previous build wrote. ``references``: the Page 50 ``CapturedRecord``s
+    (``record_key`` ``<company>/<order id>``). Returns ``counts`` (one typed outcome per
+    current BC order, plus ``bc_orders``, ``references`` and ``reference_without_order``),
+    ``outcomes`` (BC order id -> code) and ``link_tiers``. ``replace=False`` judges
+    without removing anything."""
+    from integrations.capture_store import parse_handle
+    from ontology.resolve import NEVER_AUTHORITY, binding_spec, identifiers_agree
+
+    if normalizer is None:
+        normalizer = identifiers.normalize
+    previous = conn.row_factory
+    conn.row_factory = sqlite3.Row
+    try:
+        if replace:
+            conn.execute("DELETE FROM links WHERE substr(link_id, 1, ?) = ?",
+                         (len(YOUR_REFERENCE_PREFIX), YOUR_REFERENCE_PREFIX))
+        counts = Counter({code: 0 for code in YOUR_REFERENCE_OUTCOMES + YOUR_REFERENCE_FIRM_BY})
+        outcomes: dict[str, str] = {}
+        refs: dict[tuple[str, str], list[Any]] = {}
+        for rec in references:
+            company, _, order = str(rec.record_key).partition("/")
+            refs.setdefault((company.lower(), order.lower()), []).append(rec)
+            counts["references"] += 1
+        ends = (binding_spec(schema, _YRF_PORTAL), binding_spec(schema, _YRF_BC))
+        if None in ends:
+            # A schema without both PO bindings has nothing to link: report it, typed.
+            counts["reference_without_order"] = counts["references"]
+            return {"counts": dict(counts), "outcomes": {},
+                    "skipped": "schema_lacks_binding", "link_tiers": {TWIN_TIER: 0, "lead": 0}}
+        twin = _Twin(conn, schema, _YRF_KIND, ends, normalizer, identifiers.sent_form,
+                     identifiers_agree, NEVER_AUTHORITY)
+        index = _fm_numbers(conn, normalizer)
+        seen: set[tuple[str, str]] = set()
+        pending: dict[str, tuple[Any, list[dict[str, Any]]]] = {}
+        for order in conn.execute(
+                "SELECT o.object_id, v.l1_handle, v.digest, v.lineage, v.markings, "
+                "v.recorded_at FROM objects o JOIN object_versions v ON v.object_id = "
+                "o.object_id AND v.superseded_at IS NULL WHERE o.binding_id = ? "
+                "ORDER BY o.object_id", (_YRF_BC,)).fetchall():
+            counts["bc_orders"] += 1
+            try:
+                path = parse_handle(order["l1_handle"])[1]
+            except ValueError:
+                code, candidates = "unreadable_handle", []
+            else:
+                key = (str(path[1]).lower(), str(path[-1]).lower())
+                seen.add(key)
+                code, candidates = _judge_reference(twin, order, refs.get(key, []), index)
+            if candidates:
+                pending[order["object_id"]] = (order, candidates)
+            else:
+                counts[code] += 1
+                outcomes[order["object_id"]] = code
+        counts["reference_without_order"] = sum(len(v) for k, v in refs.items()
+                                                if k not in seen)
+        # how many BC orders' references name each Portal order (a pair a person
+        # rejected, or one already firm, names nothing here)
+        named = Counter(c["portal"] for _order, found in pending.values() for c in found
+                        if c["excluded"] is None)
+        rows = []
+        for bc_oid, (order, found) in sorted(pending.items()):
+            if len(found) == 1 and found[0]["excluded"] is not None:
+                code = found[0]["excluded"]
+            else:
+                code = "ambiguous_fm"
+                for candidate in found:
+                    if candidate["excluded"] is not None:
+                        continue
+                    tier, rule_code, by = your_reference_verdict(
+                        portal_matches=len(found), bc_claimants=named[candidate["portal"]],
+                        authority=True, other_partner=candidate["other_partner"],
+                        supplier=candidate["supplier"],
+                        order_days_apart=candidate["days_apart"])
+                    if len(found) == 1:
+                        code = "linked" if tier == YRF_FIRM else rule_code
+                    if tier is None:
+                        continue
+                    rows.append(_reference_row(order, candidate, tier, rule_code, by))
+                    for field in by:
+                        counts[f"firm_by_{field}"] += 1
+            counts[code] += 1
+            outcomes[bc_oid] = code
+        written = add(rows) if rows else 0
+        tiers = Counter(row["tier"] for row in rows) if written else Counter()
+        return {"counts": dict(counts), "outcomes": outcomes,
+                "link_tiers": {TWIN_TIER: tiers[TWIN_TIER], "lead": tiers["lead"]}}
+    finally:
+        conn.row_factory = previous
+
+
+def _fm_numbers(conn: sqlite3.Connection, normalizer: Callable[[str, Any], str | None]
+                ) -> dict[tuple[str, str], list[Any]]:
+    """(binding, normal form) -> the current values that may hold an FM PO number: the
+    Portal order's ``fm_po_number`` (``custom_fields.fmPoNumber``) and ``po_number``, and
+    the FM generated order's ``fm_po_number`` (``ponumber``)."""
+    out: dict[tuple[str, str], list[Any]] = {}
+    for row in conn.execute(
+            "SELECT object_id, property, value, l1_handle, field_path, digest, lineage, "
+            "binding_id, markings, recorded_at FROM object_values WHERE superseded_at IS NULL "
+            "AND value IS NOT NULL AND ((binding_id = ? AND property IN ('fm_po_number', "
+            "'po_number')) OR (binding_id = ? AND property = 'fm_po_number')) "
+            "ORDER BY object_id, property, l1_handle, field_path", (_YRF_PORTAL, _YRF_FM)):
+        try:
+            normal = normalizer(_YRF_KIND, row["value"])
+        except (KeyError, ValueError):
+            normal = None
+        if normal is not None:
+            tag = row["binding_id"] if row["property"] == "fm_po_number" else "po_number"
+            out.setdefault((tag, normal), []).append(row)
+    return out
+
+
+def _judge_reference(twin: "_Twin", order: Any, refs: Sequence[Any],
+                     index: Mapping[tuple[str, str], list[Any]]
+                     ) -> tuple[str, list[dict[str, Any]]]:
+    """One BC order's reference: a typed code and no candidate (nothing to link), or
+    ``candidates`` and the evidence of each Portal order it names, for the rule
+    (:func:`your_reference_verdict`) once every BC order is read."""
+    bc_oid = order["object_id"]
+    if order["lineage"] in twin.never:
+        return "lineage_not_authority", []
+    if len(refs) != 1 or not isinstance(refs[0].row, Mapping):
+        return "no_reference_record", []
+    ref = refs[0]
+    numbers = twin._usable(twin._values(bc_oid, ("po_number",)), "po_number")
+    stated = ref.row.get("No")
+    if not numbers:   # the order's number is not a PO identifier: nothing to tie it by
+        return "bc_number_unread", []
+    if not all(identifiers.exact_compare(_YRF_BC_KIND, n["value"], stated) for n in numbers):
+        return "bc_number_mismatch", []
+    text = ref.row.get(YOUR_REFERENCE_FIELD)
+    if not isinstance(text, str) or not text.strip():
+        return "missing", []
+    try:
+        normal = twin.normalizer(_YRF_KIND, text)
+    except (KeyError, ValueError):
+        normal = None
+    if normal is None:
+        return "not_an_identifier", []
+
+    def exact(tag: str) -> list[Any]:
+        # The store holds a PO number in its normal form (PO#7001 is stored PO7001), so the
+        # Portal's literal comparison cannot be replayed: two values match when their
+        # normal forms are equal (same series, number and FM suffix), never on digits alone.
+        return list(index.get((tag, normal), ()))
+    found = exact(_YRF_PORTAL)
+    parsed = identifiers.parse(_YRF_KIND, text)
+    if not found and parsed is not None and parsed.part("fm"):
+        # An FM clash-series number (PO2-FM-106) is never a BC number: a migrated Portal
+        # order holds it in po_number (fmPoNumber null), so that carrier is the match.
+        found = exact("po_number")
+    portals = sorted({r["object_id"] for r in found})
+    if not portals:
+        # Only ``custom_fields.fmPoNumber`` is the binding's carrier: an FM order or a
+        # Portal ``po_number`` holding the number is counted, never linked.
+        return ("fm_only" if exact(_YRF_FM) else
+                "po_number_only" if exact("po_number") else "no_match"), []
+    return "candidates", [_reference_candidate(twin, order, ref, numbers[0], portal,
+                                               [r for r in found if r["object_id"] == portal])
+                          for portal in portals]
+
+
+def _reference_candidate(twin: "_Twin", order: Any, ref: Any, bc_number: Any, portal: str,
+                         values: Sequence[Any]) -> dict[str, Any]:
+    """The evidence the rule reads for one (BC order, Portal order) pair: ``excluded``
+    (a code when the pair is never linked: lineage, a person's rejection, already firm or
+    corroborated), ``other_partner``, ``supplier`` (True / False / None) with its agreeing
+    features, and ``days_apart`` with the order-date feature."""
+    bc_oid = order["object_id"]
+    out: dict[str, Any] = {"portal": portal, "order": order, "ref": ref,
+                           "bc_number": bc_number, "fm_value": values[0],
+                           "version": twin._version(portal), "excluded": None,
+                           "other_partner": False, "supplier": None, "supplier_features": [],
+                           "days_apart": None, "date_feature": None, "sides": None}
+    version = out["version"]
+    if version is None or version["lineage"] in twin.never \
+            or any(r["lineage"] in twin.never for r in values):
+        out["excluded"] = "lineage_not_authority"
+        return out
+    tiers = {r["tier"] for r in twin._pair_links(portal, bc_oid)}
+    if "contradicted" in tiers:
+        out["excluded"] = "rejected"
+    elif tiers & set(IDENTITY_TIERS):
+        out["excluded"] = "already_firm"
+    elif TWIN_TIER in tiers:
+        out["excluded"] = "already_corroborated"
+    if out["excluded"] is not None:
+        return out
+    out["other_partner"] = bool(twin._partners(portal, _YRF_BC) - {bc_oid}
+                                or twin._partners(bc_oid, _YRF_PORTAL) - {portal})
+    sides = [twin._side(portal), twin._side(bc_oid)]
+    if None in sides:   # several suppliers on one side: never agreement
+        out["supplier"] = False
+        return out
+    out["sides"] = sides
+    supplier = [f for f in (twin._supplier_name(sides), twin._supplier_number(sides)) if f]
+    if any(f["agrees"] is False for f in supplier):
+        out["supplier"] = False
+    elif any(f["agrees"] for f in supplier):
+        out["supplier"] = True
+        out["supplier_features"] = [f for f in supplier if f["agrees"]]
+    date_feature = twin._date(sides)
+    if date_feature is not None:
+        out["days_apart"] = date_feature["days_apart"]
+        out["date_feature"] = {
+            **date_feature, "within_days": YRF_DATE_WINDOW_DAYS,
+            "agrees": date_feature["days_apart"] <= YRF_DATE_WINDOW_DAYS}
+    return out
+
+
+def _reference_row(order: Any, candidate: Mapping[str, Any], tier: str, rule_code: str,
+                   by: Sequence[str]) -> dict[str, Any]:
+    """The link of one judged pair: tier ``corroborated`` (firm) or ``lead``."""
+    from ontology.store import canonical, instant, markings_text
+    cite = _Twin._cite
+    ref, version = candidate["ref"], candidate["version"]
+    fm_value, bc_number = candidate["fm_value"], candidate["bc_number"]
+    ref_cite = {"l1_handle": ref.l1_handle,
+                "field_path": f"{ref.field_prefix}.{YOUR_REFERENCE_FIELD}",
+                "digest": ref.digest, "lineage": ref.capture_lineage}
+    reason = [
+        {"feature": "your_reference", "agrees": True, "level": "normalized",
+         "identifier_kind": _YRF_KIND, "binding": YOUR_REFERENCE_BINDING,
+         "decision": YOUR_REFERENCE_DECISION, "citations": [ref_cite, cite(fm_value)]},
+        {"feature": "bc_number", "agrees": True, "level": "exact",
+         "identifier_kind": _YRF_BC_KIND,
+         "citations": [{**ref_cite, "field_path": f"{ref.field_prefix}.No"}, cite(bc_number)]}]
+    firm = tier == YRF_FIRM
+    features: list[Mapping[str, Any]] = []
+    if firm and YRF_SUPPLIER in by:
+        features += candidate["supplier_features"]
+    if firm and YRF_ORDER_DATE in by:
+        features.append(candidate["date_feature"])
+    reason += [{k: v for k, v in f.items() if k != "used"} for f in features]
+    used = [r for f in features for r in f["used"]]
+    why_not = [] if firm else [{"feature": "your_reference_rule", "agrees": False,
+                                "code": rule_code, "decision": YOUR_REFERENCE_DECISION}]
+    marks: set[str] = set()
+    texts = [order["markings"], version["markings"], fm_value["markings"],
+             bc_number["markings"]] + [r["markings"] for r in used]
+    times = [order["recorded_at"], version["recorded_at"], fm_value["recorded_at"],
+             bc_number["recorded_at"], instant(ref.recorded_at)] + [r["recorded_at"] for r in used]
+    if firm and YRF_SUPPLIER in by:
+        texts += [m for s in candidate["sides"] for m in s["marks"]]
+        times += [t for s in candidate["sides"] for t in s["times"]]
+    for text in texts:
+        marks.update(json.loads(text or "[]"))
+    portal, bc_oid = fm_value["object_id"], order["object_id"]
+    return {"link_id": YOUR_REFERENCE_PREFIX + sha256(
+                f"{bc_oid}|{portal}".encode()).hexdigest()[:32],
+            "link_type": TWIN_LINK, "from_object": portal, "to_object": bc_oid,
+            "tier": TWIN_TIER if firm else "lead", "binding_kind": "same_record",
+            "link_contract": None, "reason": canonical(reason), "why_not": canonical(why_not),
+            "evidence_handles": canonical(sorted({order["l1_handle"], version["l1_handle"]})),
+            "reviewed_by": None, "reviewed_at": None, "review_action_id": None,
+            "markings": markings_text(marks), "recorded_at": max(times),
+            "superseded_at": None}

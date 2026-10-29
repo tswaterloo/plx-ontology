@@ -3,7 +3,8 @@
 Each spec's own argv runs in-process through ``operating.host`` cycles on a BC-only host
 configuration over the BC fake of ``integrations/tests/test_bc_capture.py`` (synthetic
 records), and its output is judged by ``live_verify.check_expectations``: the check passes
-on the fixed product and fails on a reproduction of the defect it guards. Evidence label: injected-transport.
+on the fixed product and fails on a reproduction of the defect it guards (directives
+0e2ad8516c64 (a)-(c) and 994e0179c227). Evidence label: injected-transport.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from verify import live_verify
+from devloop import live_verify
 from integrations.tests import test_bc_capture as tb
 from integrations.tests.test_live_source_adapters import ENV
 from ontology.tests.test_project_bc import MAN, gid, purchase_world, record
@@ -32,7 +33,7 @@ UNAVAILABLE = (503, {}, b'{"error":{"code":"Unavailable"}}')
 TOO_MANY = (429, {"Retry-After": "1"}, b'{"error":{"code":"TooManyRequests"}}')
 CHECKS = ("tools.schema_paging", "tools.find_unknown_property", "tools.investigate_bc_claims",
           "tools.investigate_inline_plans")
-# The ~23 min investigate check runs in the daily set.
+# Directive f8e4e5ed5f28 (1): the ~23 min investigate check runs in the daily set.
 CADENCE = {"tools.schema_paging": "hourly", "tools.find_unknown_property": "hourly",
            "tools.investigate_bc_claims": "daily", "tools.investigate_inline_plans": "daily"}
 
@@ -258,7 +259,7 @@ class LiveEmployeeToolsTest(unittest.TestCase):
         self.assertIn("portal_not_configured_gaps", failures)
 
     def test_prose_words_in_a_hint_are_not_listed_names(self):
-        """A declared property named like a word of the
+        """Review of employee-tools-followups: a declared property named like a word of the
         hint's prose ('filter', 'schema', 'lists') counted as listed and false-failed a
         hint that lists the rest with a correct (+N more). Only the listed names count."""
         long = [f"declared_property_{n:03d}" for n in range(60)]
@@ -285,15 +286,18 @@ class LiveEmployeeToolsTest(unittest.TestCase):
         self.assertEqual(set(families), set(doc["families_run"]))
         self.assertTrue({"three_way_match", "customer_po_status", "landed_cost"} <= set(families))
         # LOG-09: the landed-cost walk on each sampled BC purchase order records its stages
-        # and typed gaps. The engine runs (a required price no record carries is a typed
-        # unpriced line, never engine_failed); the finance-marked deposit and G/L stages are
-        # withheld from this reader, named by step, never counted.
+        # and typed gaps. The engine runs (never engine_failed). This reader holds neither
+        # finance nor purchasing_prices, so the line price is named withheld, never read as
+        # an unpriced line; the finance-marked deposit and G/L stages are withheld from this
+        # reader, named by step, never counted.
         landed = families["landed_cost"]
         self.assertEqual((landed["roots"], landed["errors"]), (2, 0))
         self.assertEqual(landed["stages"], {"stage_bc_receipt": 2, "stage_purchase_invoice": 2})
         self.assertEqual(landed["stages_reached"], landed["stages"])
         self.assertNotIn("engine_failed", landed["gap_codes"])
-        self.assertIn("unpriced_line", landed["gap_codes"])
+        self.assertTrue({"unit_price_withheld", "receipt_actual_withheld"}
+                        <= set(landed["gap_codes"]))
+        self.assertNotIn("unpriced_line", landed["gap_codes"])
         self.assertTrue({"payments:marking_withheld", "gl_entries:marking_withheld"}
                         <= set(landed["stage_gaps"]))
         recorded = self.verdict(spec, code, doc)["detail"]
@@ -380,7 +384,7 @@ class LiveEmployeeToolsTest(unittest.TestCase):
         self.assertEqual((code, json.loads(out.getvalue())["error"]), (1, "PlanError"))
 
     def test_families_rotate_oldest_evidence_first_and_a_cut_keeps_what_ran(self):
-        """Families ran in sorted order, so a budget stop always cut
+        """f8e4e5ed5f28 (2): families ran in sorted order, so a budget stop always cut
         three_way_match. They now run oldest evidence first (families_age from the
         previous daily report), a cut keeps the families that ran, and the verifier's
         recorded families_age orders the next run."""
@@ -389,7 +393,8 @@ class LiveEmployeeToolsTest(unittest.TestCase):
             "id": "tools.investigate_bc_claims", "detail": {"fields": {"families_age": {
                 "three_way_match": 5, "landed_cost": 1, "chain": 0, "commercial_chain": 0,
                 "customer_po_status": 0, "decision_evidence": 0, "impact_chain": 0,
-                "item_lineage": 0, "late_po": 0, "order_margin": 0, "order_quantities": "x"}}}}]}),
+                "item_lineage": 0, "late_po": 0, "order_margin": 0, "people_on_record": 0,
+                "order_quantities": "x"}}}}]}),
             "utf-8")
         call = le.Caller.__call__
 
@@ -400,10 +405,11 @@ class LiveEmployeeToolsTest(unittest.TestCase):
         with mock.patch.object(le.Caller, "__call__", cut_after_six):
             spec, code, doc = self.run_spec("tools.investigate_bc_claims", daily=previous)
         # An age that is no run count is dropped: that family runs first, as never aged.
+        # people_on_record (8e63046f6b) is one more family, aged 0 like the others.
         self.assertEqual(doc["families_run"], [
             "order_quantities", "three_way_match", "landed_cost", "chain", "commercial_chain",
             "customer_po_status", "decision_evidence", "impact_chain", "item_lineage",
-            "late_po", "order_margin"])
+            "late_po", "order_margin", "people_on_record"])
         self.assertEqual((code, doc["budget_exhausted"]), (1, True))
         self.assertEqual(set(doc["families"]),
                          {"order_quantities", "three_way_match", "landed_cost"})
@@ -412,7 +418,8 @@ class LiveEmployeeToolsTest(unittest.TestCase):
         self.assertEqual(doc["families_age"], {
             "order_quantities": 0, "three_way_match": 0, "landed_cost": 2, "chain": 1,
             "commercial_chain": 1, "customer_po_status": 1, "decision_evidence": 1,
-            "impact_chain": 1, "item_lineage": 1, "late_po": 1, "order_margin": 1})
+            "impact_chain": 1, "item_lineage": 1, "late_po": 1, "order_margin": 1,
+            "people_on_record": 1})
         entry = self.verdict(spec, code, doc)
         self.assertEqual(entry["result"], "fail")
         self.assertEqual(entry["detail"]["fields"]["families_age"], doc["families_age"])
@@ -423,11 +430,11 @@ class LiveEmployeeToolsTest(unittest.TestCase):
         self.assertEqual(doc["families_run"], [
             "landed_cost", "chain", "commercial_chain", "customer_po_status",
             "decision_evidence", "impact_chain", "item_lineage", "late_po", "order_margin",
-            "order_quantities", "three_way_match"])
+            "people_on_record", "order_quantities", "three_way_match"])
         self.assertEqual(set(doc["families_age"].values()), {0})
 
     def test_a_family_bc_holds_no_root_of_is_blocked_and_a_dropped_one_fails(self):
-        """A plan rooted on a captured type with no projected record
+        """f8e4e5ed5f28 (3): a plan rooted on a captured type with no projected record
         failed the run. When BC answered every set binding its root types in full, in
         every pinned company, and holds none, it is blocked (no_root_records); when a
         pinned company was left unread, or the capture holds them but the projection does
@@ -448,7 +455,7 @@ class LiveEmployeeToolsTest(unittest.TestCase):
         self.assertEqual(entry["result"], "blocked")
         self.assertEqual(live_verify.check_expectations(
             {**spec, "expect": spec["expect_blocked"]}, code, doc), [])
-        # A budget stop in the second company's shipments left the
+        # Directive 1cbf6c9e46b5: a budget stop in the second company's shipments left the
         # third company's sales orders unread (no run), and the two read in full were
         # taken for every company. Unread, no set is empty: the stop fails the run.
         from integrations import bc_read
@@ -491,7 +498,7 @@ class LiveEmployeeToolsTest(unittest.TestCase):
         self.assertEqual(self.verdict(spec, code, doc)["result"], "fail")
 
     def test_many_long_gap_codes_stay_under_the_detail_cap(self):
-        """Live gap codes could push the recorded detail past the
+        """f8e4e5ed5f28 (4): live gap codes could push the recorded detail past the
         verifier's 4000-char cap (fields_truncated). Forty distinct 62-char gap and
         reason codes per answer (each map under the verifier's 50-key summary) fold
         into ``other``, every gap still counted."""

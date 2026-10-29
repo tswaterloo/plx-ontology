@@ -5,7 +5,7 @@
  "source": {
   "advisory": {
    "id": "advisory:62802e1f72f6",
-   "ref": "advisory@448579b0c49a675b5731b119e8e74328ff2d63f4",
+   "ref": "origin/codex/advisory@448579b0c49a675b5731b119e8e74328ff2d63f4",
    "path": "context/62802e1f72f68f40f39c3d858760fc145ce5c274aed4fcaf2216b90403363cc7.json",
    "record_sha256": "d7b0553494bc711e85a7eada40077f93ed8414091730af4b117d6f9964c40efe",
    "source_revision": "version:1.0;modified:2026-10-16T18:49:04Z;sha256:98fb0accf8525793dd3b0ac0d5239056d5415d00b6395f47201783b70b9ac351",
@@ -15,7 +15,7 @@
    {
     "id": "advisory:f82f3bca13c5",
     "role": "the Packaging Procure-to-GL Map artifact extraction of 30 Sep 2026, the candidate for the system map of Sept 30 whose Portal and BC lanes the proposal relies on (that it is the same map is unverified)",
-    "ref": "advisory@e059ffc6ee9e1d1dfab49276457176c8cf1d4fee",
+    "ref": "origin/codex/advisory@e059ffc6ee9e1d1dfab49276457176c8cf1d4fee",
     "path": "context/f82f3bca13c5a8b73cea9421e43587e8ee5082fd4751bfbf321fb96e500448f8.json",
     "record_sha256": "87f4a182c4ea7749bba55aad6ef7255fcee7c66d24dcb24fcba6f5ecd438899f",
     "source_revision": "sha256:17cd652f6783ed3945050817bad4029fdd229dd74546e3a6a747f73d43fa60ab",
@@ -24,7 +24,7 @@
   ],
   "originals_registry": "examples/case_originals.json",
   "watched_originals": {
-   "note": "The proposal file, pinned from the advisory record (source_id item, source_revision sha256, the evidence's byte count); the discovered receipt (entry nr-1c6c5bb396ae, 17 Oct 2026) lists the same item, size and modification time but its body was unavailable, so no read receipt matches this pin yet. Name only, no contents.",
+   "note": "The proposal file, pinned from the advisory record (source_id item, source_revision sha256, the evidence's byte count); the live verifier's discovered receipt (entry nr-1c6c5bb396ae, 17 Oct 2026) lists the same item, size and modification time but its body was unavailable, so no read receipt matches this pin yet. Name only, no contents.",
    "folders": {
     "Ontology UseCases": "wf-a672d852ff20"
    },
@@ -123,7 +123,7 @@
    "gap": "PS-GAP-01"
   }
  ],
- "missing_originals_note": "Typed here because the registry generator makes gap rows only from the baseline and delta source-pin records. not_fetched: the proposal links it and the intake did not fetch it; not_provided: the proposal cites the record but no copy reached the Workbench; not_evidenced: the proposal requires it and evidences none. None was read; a card never infers their content.",
+ "missing_originals_note": "Typed here because the registry generator makes gap rows only from the Dot's baseline and delta source-pin records. not_fetched: the proposal links it and the intake did not fetch it; not_provided: the proposal cites the record but no copy reached the Workbench; not_evidenced: the proposal requires it and evidences none. None was read; a card never infers their content.",
  "live_sources": [
   {
    "id": "sharepoint.ontology_usecases",
@@ -244,6 +244,7 @@
    },
    {
     "id": "PS-02",
+    "own_document_audited": {"date": "2026-10-29", "quotes": ["a5dfc01c56620417d4037271bc08931f5bb60e1f058f3ad2120bc7baa84f3551"]},
     "layer": "comprehension",
     "question": "Which business rules does the proposal put to Vince, and what is their status?",
     "criterion": "Name the six as the proposal's (proposed_rules): P1 three sign-offs before a packaging quote is approved; P2 part creation at approval with the order prerequisites; P3 linking the part to its project; P4 allocating cost to the component that carries it; P5 who requests and records a vendor deposit; P6 a PO before the vendor PI and the PI matched before payment. Each is proposed, pending Vince: an answer never describes any of them as decided, as current practice or as built, and notes the five-versus-six count mismatch in the proposal.",
@@ -320,6 +321,7 @@
    },
    {
     "id": "PS-07",
+    "own_document_audited": {"date": "2026-10-28", "quotes": ["87f69b9d68089ba3d48425f54dfe92a7ec8a7ea7fd1d14bc430a7eacca7b952a"]},
     "layer": "tracing",
     "question": "How should prices be recorded when the components of one packaging item ship separately?",
     "criterion": "The proposal: a price per component when the parts ship separately, and the cost allocated to the component that carries it (P4, proposed, pending Vince). The Sept 30 map (unverified): a supplier item carries one cost with price tiers per supplier and product. An answer describes the price structure (per component, currency, unit, tier) and states no price figures.",
@@ -462,7 +464,7 @@
     "id": "PS-A4",
     "layer": "actual_case_answerability",
     "question": "Which originals of this case exist, and which have been read?",
-    "criterion": "Pinned: the proposal file (item id, SHA-256 and size from the advisory record), watched in /Ontology UseCases; its body was read by the intake, which exported minimised facts only, and the discovered receipt of 17 Oct 2026 lists the item with its body unavailable, so nothing here was read from it. Not supplied (missing_originals): the fuller map the proposal links (not fetched), the P-02486 item records, PI-SWC025623, the deposit record and the three sign-offs. An answer lists each unread original with its state and infers nothing about its content.",
+    "criterion": "Pinned: the proposal file (item id, SHA-256 and size from the advisory record), watched in /Ontology UseCases; its body was read by the Dot's intake, which exported minimised facts only, and the live verifier's discovered receipt of 17 Oct 2026 lists the item with its body unavailable, so nothing here was read from it. Not supplied (missing_originals): the fuller map the proposal links (not fetched), the P-02486 item records, PI-SWC025623, the deposit record and the three sign-offs. An answer lists each unread original with its state and infers nothing about its content.",
     "originals": [],
     "live_sources": [
      "sharepoint.ontology_usecases"

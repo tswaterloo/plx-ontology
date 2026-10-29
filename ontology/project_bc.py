@@ -52,7 +52,14 @@ import sqlite3
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 from urllib.parse import unquote
 
-from integrations.capture_store import BC_KIND, FORMAT, REMOVALS_COLUMN, make_handle, removals_of
+from integrations.capture_store import (
+    BC_FIELD_PAGES,
+    BC_KIND,
+    FORMAT,
+    REMOVALS_COLUMN,
+    make_handle,
+    removals_of,
+)
 from ontology.project import (CapturedRecord, ProjectionError, RowSample, _Relations,
                               _sampled)
 
@@ -246,5 +253,33 @@ class BcCaptures:
 
         return _Relations(relations, stream)
 
+    def field_page_records(self, relation: str, as_known_at: str | None = None
+                           ) -> list[CapturedRecord]:
+        """The versions of one field-page relation (``capture_store.BC_FIELD_PAGES``, e.g.
+        ``purchaseOrderReferences``) current at ``as_known_at`` (store instant text, as
+        ``Projector.cut``; None: now), in every company: recorded by then, not superseded
+        and not missing from the source by then (instants compared as the projector does,
+        ``ontology.store.instant``). A field page is no projected binding: a
+        ``post_project`` step reads it (``ontology.identity_scoring.your_reference_step``).
+        Never opens or ends the projection's snapshot."""
+        from ontology.store import instant
+        if relation not in BC_FIELD_PAGES:
+            raise ProjectionError("bc_field_page_unknown", relation)
+        cut = instant(as_known_at) if as_known_at is not None else None
+        out = []
+        for company in sorted(self._units.get(relation, ())):
+            for row in self._conn.execute(
+                    f"SELECT *, {REMOVALS_COLUMN} FROM versions WHERE kind = ? AND unit = ? "
+                    "ORDER BY path, recorded_at, capture_id",
+                    (SOURCE, f"bc:{company}/{relation}")):
+                ended = [instant(row[c]) for c in ("superseded_at", "missing_from_source_since")
+                         if row[c] is not None]
+                if cut is None:
+                    current = not ended
+                else:
+                    current = instant(row["recorded_at"]) <= cut and all(e > cut for e in ended)
+                if current:
+                    out.append(self._record(relation, row))
+        return out
 
 __all__ = ["BcCaptures", "INCOMPLETE", "NOT_CAPTURED"]

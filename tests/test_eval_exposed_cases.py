@@ -10,7 +10,7 @@ Two boundaries:
   GET-only Graph readers, a changed byte fails the check, and the output carries no
   name, id or path.
 
-Evidence label: the items are curated data (no live read); the checker tests are
+Evidence label: the items are advisory-curated data (no live read); the checker tests are
 ``injected-transport`` (the real ``SharePointReader`` / ``GraphMailReader`` over the
 in-process ``FakeSender`` of the adapter tests, with synthetic bytes).
 """
@@ -31,7 +31,7 @@ from unittest import mock
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 import zipfile
 
-from verify import live_verify
+from devloop import live_verify
 from evals import partition, runner, score
 from evals.tests import fixtures as fx
 from integrations.tests.test_live_source_adapters import (DRIVE, ENV, MAILBOX, MSG_PATH,
@@ -166,7 +166,7 @@ class ExposedItemsTest(unittest.TestCase):
                 self.assertIn("Pending human label", item["label"]["note"])
 
     def test_root_identifiers_are_denylisted_for_product_code(self):
-        denylist = json.loads((ROOT / "verify" / "hardcoded-case-denylist.json")
+        denylist = json.loads((ROOT / "devloop" / "hardcoded-case-denylist.json")
                               .read_text(encoding="utf-8"))
         patterns = [re.compile(entry["pattern"]) for entry in denylist["identifiers"]]
         for item in self.items:
@@ -174,14 +174,14 @@ class ExposedItemsTest(unittest.TestCase):
             self.assertTrue(any(pattern.search(root) for pattern in patterns), root)
 
     def test_every_case_card_is_converted_or_excluded_with_a_reason(self):
-        cards = _read(EXPOSED / "eval_batch_01_cases.json")["real_example"]["cards"]
+        cards = _read(EXPOSED / "dot_eval_batch_01_cases.json")["real_example"]["cards"]
         converted = {row["batch_unit"] for row in self.manifest["items"]}
         excluded = {row["batch_unit"]: row["reason"] for row in self.manifest["excluded"]}
         for card in cards:
             self.assertTrue(card["id"] in converted or excluded.get(card["id"]), card["id"])
 
     def test_imported_p2p8_items_cite_the_original_their_gold_was_read_from(self):
-        # Imported from the bundle as untrusted data: the page/span gold names the
+        # Imported from the Dot's bundle as untrusted data: the page/span gold names the
         # original by byte SHA-256; the item's byte pin and every citation are that one.
         gold = _read(EXPOSED / "p2p8-field-evidence.json")
         imported = [row for row in self.manifest["items"] if "p2p8-field-evidence.json" in
@@ -242,7 +242,7 @@ class EvalDirectoryLoaderTest(unittest.TestCase):
 
     def test_an_undeclared_unknown_or_unreadable_file_is_refused_not_skipped(self):
         # The case-card batch was silently skipped before it declared a format.
-        cards = _read(EXPOSED / "eval_batch_01_cases.json")
+        cards = _read(EXPOSED / "dot_eval_batch_01_cases.json")
         undeclared = {key: value for key, value in cards.items() if key != "format"}
         self.write("cases/batch.json", undeclared)
         self.refused("eval_file_undeclared:batch.json")
@@ -301,6 +301,11 @@ class ExposedRunTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
         (self.root / "state").mkdir()  # no source mirror: exposed items cite no mirror row
+        # an originals store that holds nothing (no store at all is unknown, never "not
+        # held": evals.runner.originals_held)
+        from operating.case_originals import OriginalStore
+        from operating.case_runtime import CASE_RUNTIME_DIR
+        OriginalStore(self.root / "state" / CASE_RUNTIME_DIR)
 
     def run_cli(self, stub):
         out = io.StringIO()
@@ -360,13 +365,26 @@ class ExposedRunTest(unittest.TestCase):
         self.assertEqual((summary["originals_not_held"], live_verify.blocked_parts(summary)),
                          (cite_pins, [{"part": "pinned_originals", "source": "case-originals",
                                        "cause": "capture_gap"}]))
-        # A stated answer over the same empty state is still scored: never blocked.
+        # A stated answer over the same empty state is still scored: never blocked. The
+        # agent's uncited value never passed the session's answer gate, so the reply
+        # withholds it (``runner.gate_final_reply``); the agent's own answer, scored as
+        # stated, is not blocked.
         stated = fx.final_text({"format": score.ANSWER_FORMAT, "answerability": "answerable",
                                 "text": "42.", "values": [{"name": "x", "value": "42",
                                                            "citations": []}], "gaps": []})
         shutil.rmtree(self.root / "out")
         _, summary = self.run_cli(StubClaude(self.root, stated))
-        self.assertEqual(summary["outcomes"]["blocked"], 0)
+        by_id = {item["id"]: item for item in self.items}
+        transcripts = [_read(path) for path in (self.root / "out").rglob("*.transcript.json")]
+        self.assertEqual(len(transcripts), len(self.items))
+        for transcript in transcripts:
+            reply = transcript["agent"]["final_reply"]
+            self.assertEqual((reply["withheld"], reply["agent_final_text"]), (["x"], stated))
+            self.assertNotIn("42", transcript["final_text"])
+            own, _ = score.parse_answer(stated)
+            as_stated = score.score(by_id[transcript["item_id"]],
+                                    {**transcript, "final_text": stated, "answer": own})
+            self.assertNotEqual(score.outcome_of(as_stated), "blocked")
 
     def test_an_agent_that_abstains_everywhere_has_no_coverage_and_no_accuracy(self):
         self.hold_pinned_originals()
@@ -555,7 +573,7 @@ class ExposedSourcesCheckTest(unittest.TestCase):
         self.assertIn("scripts.eval_exposed_sources", live_verify.ALLOWED_MODULES)
         for spec_id, command in (("case.exposed_originals", "documents"),
                                  ("case.exposed_mail", "mail")):
-            spec = json.loads((ROOT / "verify" / "live-checks" / f"{spec_id}.json")
+            spec = json.loads((ROOT / "devloop" / "live-checks" / f"{spec_id}.json")
                               .read_text(encoding="utf-8"))
             live_verify.validate_spec(spec)
             self.assertEqual(spec["command"][2:], ["scripts.eval_exposed_sources", command])

@@ -1,7 +1,7 @@
 """Packaging sourcing case: PROPOSED dev-exposed cards and the gaps they need.
 
 ``evals/dev/packaging-sourcing/proposed_items.json`` holds the questions of Ross's New
-Packaging Sourcing proposal (PS-*): approval sign-offs, part
+Packaging Sourcing proposal (PS-*, advisory 62802e1f72f6): approval sign-offs, part
 creation at approval, drawing and HS code before order, component-level prices, PO before
 PI, PI checks before payment, deposits as BC PO prepayments and the P-02486 allocation. The
 proposal file is pinned by item id and SHA-256 (the record's source_id and source_revision)
@@ -87,7 +87,7 @@ def problems(cards: dict, gaps: dict, originals: dict) -> list[str]:
             out.append(f"proposal_says {g['id']}")
         if not (str(g.get("system_of_record", "")).strip()
                 or (g.get("source") == contract.UNKNOWN
-                    and str(g.get("open_question", "")).endswith("?"))):
+                    and str(g.get("dot_question", "")).endswith("?"))):
             out.append(f"system of record {g['id']}")
         if "implementation" in g and "unverified" not in g["implementation"]:
             out.append(f"implementation claim {g['id']}")
@@ -128,12 +128,12 @@ class PackagingSourcingCardsTest(unittest.TestCase):
 
     def test_pin_matches_the_advisory_record(self):
         """record_sha256 is the SHA-256 of the record at its commit, and the watched file is
-        the record's own source item, revision hash and byte count."""
+        the record's own source item, revision hash and byte count. Needs codex/advisory."""
         pins = [self.cards["source"]["advisory"], *self.cards["source"]["related_advisories"]]
         for pin in pins:
             raw = _git_show(pin["ref"], pin["path"])
             if raw is None:
-                self.skipTest(f"commit of {pin['id']} is not in this clone")
+                self.skipTest(f"advisory commit of {pin['id']} is not in this clone")
             self.assertEqual(hashlib.sha256(raw).hexdigest(), pin["record_sha256"], pin["id"])
             record = json.loads(raw)
             self.assertEqual((record["source_revision"], record["created_at"]),

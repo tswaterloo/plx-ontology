@@ -1,10 +1,10 @@
-"""The oracle's own order margin of a Business Central sales order (family F10, held-out).
+"""The oracle's own order margin of a Business Central sales order (family F10, held-out lane).
 
 Computed from raw BC records only (the GET-only reads of ``evals.oracle.source.BcReads``
 over an injected ``BcPort``: live BC through ``integrations.bc_read``, a BC capture store, or
 the synthetic ``fixture_world`` below). It never imports ``ontology/`` or ``operating/``: it
 shares no code with the projection, ``plx.investigate`` or ``operating/order_margin.py``, so
-it can score them (independent oracle).
+it can score them (10-DECISION decision 8, independent oracle lane).
 
 Rules, read from BC API v2.0 semantics and the Portal where it has one:
 

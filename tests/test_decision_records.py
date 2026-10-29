@@ -1,4 +1,4 @@
-"""Decision records read from documents (O2).
+"""Decision records read from documents (roadmap lane decision-records, O2).
 
 An approval, release, sign-off or ruling document mailed or filed in SharePoint is a
 ``DecisionRecord`` (profile ``decision_record``, ``ontology/schema/document_fields.json``):

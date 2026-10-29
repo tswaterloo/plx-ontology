@@ -354,7 +354,7 @@ class ShapeAndOriginRuleTests(unittest.TestCase):
         columns = ["id", "custom_fields"]
         # Mirrors Portal lib/wms/sage-ship-queue.ts (isSageBackedSalesOrder: sageOrdUniq |
         # sageSourceOrdUniq | source; isFmOnlySalesOrder: fmId and not Sage-backed) and
-        # the two bridge sources (fm-oe-ensure, gold-so-bridge).
+        # the two bridge sources (fm-oe-ensure, gold-so-bridge), per context pack 03 s.9.
         cases = {json.dumps(SAGE): ("sage_import", "sage_etl", "custom_fields.source"),
                  json.dumps({"sageOrdUniq": "8812"}): ("sage_import", "sage_etl",
                                                        "custom_fields.sageOrdUniq"),
@@ -709,7 +709,7 @@ class CoverageTests(CoverageTestCase):
 
 
 class PortalLineageTests(CoverageTestCase):
-    """Portal facts mirrored from docs/reference/portal-code-map.md s.3.2-3.4 and s.9
+    """Portal facts mirrored from devloop/CONTEXT/03-PORTAL.md s.3.2-3.4 and s.9
     (petralabx/plx-customer-portal staging@6c9415973; no Portal checkout here)."""
 
     COLUMNS = ["id", "order_number", "po_reference", "custom_fields"]
@@ -738,7 +738,7 @@ class PortalLineageTests(CoverageTestCase):
         self.assertEqual(renumbered["status"], "absent_in_this_source")
         self.assertNotIn("fm_order_entry_created_by_portal", renumbered)
         # Equality is not proof of the fallback: an explicitly typed value equal to the
-        # order number gets the same ambiguous label.
+        # order number gets the same ambiguous label (advisory d158d081).
         typed = cpo.classify_order({"order_number": "SO7", "po_reference": "SO7",
                                     "custom_fields": None}, self.COLUMNS)
         self.assertEqual(typed["fields"]["po_reference"]["status"],
@@ -1010,7 +1010,7 @@ ORDER_ENTRY_HEADER = {
 
 
 class PortalDivergenceTests(CoverageTestCase):
-    """Customer PO rows shaped
+    """Directive 1746a096c3 items 1, 2, 8 and c9e0ba19e1 (customer PO), rows shaped
     like the Portal contract (petralabx/plx-customer-portal staging@8da33e4, files
     unchanged since 6c9415973)."""
 
@@ -1105,7 +1105,7 @@ class PortalDivergenceTests(CoverageTestCase):
         self.assertIn("900000", result["rules"]["fm_order_entry"])
 
     def test_incomplete_fm_scan_never_labels_an_unread_row_read(self):
-        """A capped FM scan that missed the order's row is
+        """Review 7f818ce minor: a capped FM scan that missed the order's row is
         fm_row_not_scanned / read_incomplete, never fm_row_not_found / read."""
         self.fake.tables["public.app_sales_order"] = [
             _order(1, custom_fields={"fmId": 351, "source": "fm-oe-ensure"}),

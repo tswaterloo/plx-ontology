@@ -345,7 +345,7 @@ class OriginalStoreTests(unittest.TestCase):
             self.assertEqual(caught.exception.code, "unsupported_original_type")
 
     def test_a_scan_over_the_page_cap_records_the_pages_ocr_skipped(self):
-        """OCR reads pages 1-200 of a 300-page scan and the stored
+        """Directive 84dda19af1d5: OCR reads pages 1-200 of a 300-page scan and the stored
         extraction says the rest were skipped by the cap (the extraction contract's
         ``skipped_by_cap``) in every view; a scan within the cap has no such field."""
         store = OriginalStore(self.root, local_ocr=True)  # the real extract_document
@@ -387,7 +387,7 @@ class OriginalStoreTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("pdftotext") or _importable("pypdf"),
                          "no PDF text reader installed")
     def test_a_pdf_over_the_page_bound_names_the_pages_it_did_not_read(self):
-        """Pages 1-200 are read and the rest is a structured
+        """Directive d82b7c38fc7b: pages 1-200 are read and the rest is a structured
         skipped range in the original's extraction, not only a warning."""
         from integrations.tests.test_doc_convert import make_pdf
 

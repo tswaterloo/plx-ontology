@@ -1,4 +1,4 @@
-"""Deterministic landed-cost contract (overseas packaging case).
+"""Deterministic landed-cost contract (overseas packaging case, milestone M1-B).
 
 per-unit landed cost = (goods + freight + duty/tariff + other) / quantity, in a
 target currency. Decimal only (the Portal engine port below computes in doubles exactly as
@@ -35,7 +35,7 @@ Rules this module enforces:
 * The record lists inputs, each arithmetic step as text, and a sha256 over the
   canonical inputs + steps + outcome, so equal inputs give an equal digest.
 
-Cost treatment (Portal staging ``5724575``; docs/reference/portal-code-map.md sections 4.1-4.3, 9):
+Cost treatment (Portal staging ``5724575``; devloop/CONTEXT/03-PORTAL.md sections 4.1-4.3, 9):
 PLX's current Portal decision is to expense freight and duty to Sage G/L (ERP-D-015, Approved
 2026-09-10, ``docs/projects/business-central-erp-modernization/decision-log.md``;
 ``portal/src/lib/procurement/landed-gl.ts``); Vince's step 18 asks to reopen it. So every
@@ -63,10 +63,11 @@ non-mapping is an unresolvable citation, which fails closed to unknown.
 
 from __future__ import annotations
 
+from collections import Counter
 import math
 import re
 from datetime import date, datetime, timedelta, timezone
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_HALF_UP, Decimal, localcontext
 from typing import Any, Callable, Mapping, Sequence
 
 from ontology.core import ValidationError
@@ -246,11 +247,41 @@ class _Reader:
         return record, number, unit, None
 
 
+CENT = Decimal("0.01")
+SUB_CENT = Decimal("0.0001")
+
+
+def money_text(value: Decimal, unit: Unit | str) -> str:
+    """How an amount reads in a step or verdict: money rounded half-up, the value itself kept.
+
+    An amount in one currency (``CAD``) shows at most 2 decimal places; a price per a
+    non-currency unit (``CAD/kg``) at most 2 when it is 1 or more, else at most 4 (a bulk
+    price below a cent stays readable). Anything else (a quantity, an exchange rate
+    ``CAD/USD``, a duty rate) is shown exactly, as is an amount with no more places than
+    that (``2500``, ``275.5``). The computed ``value`` of every entry keeps its full
+    precision: only the text is rounded."""
+    try:
+        terms = parse_unit(unit) if isinstance(unit, str) else tuple(unit)
+    except (ExpressionError, TypeError, ValueError):
+        terms = ()   # an unreadable unit is no money unit: shown exactly
+    money = [p for n, p in terms if n in ISO_4217]
+    if not isinstance(value, Decimal) or not value.is_finite() or money != [1] or any(
+            p > 0 for n, p in terms if n not in ISO_4217):
+        return _dec_str(value) if isinstance(value, Decimal) else str(value)
+    per_unit = any(p < 0 for _n, p in terms)
+    places = SUB_CENT if per_unit and abs(value) < 1 else CENT
+    text = _dec_str(value)   # trailing zeros dropped: 10025.000 is 10025
+    if len(text.partition(".")[2]) <= -places.as_tuple().exponent:
+        return text
+    return format(value.quantize(places, rounding=ROUND_HALF_UP), "f")
+
+
 def _calc(expr: str, values: Mapping[str, tuple[Decimal, Unit]], steps: list[str],
           label: str) -> tuple[Decimal, Unit]:
     result, unit, inexact, _ = evaluate(expr, values)
-    bound = ", ".join(f"{k}={_dec_str(v)} {format_unit(u)}" for k, (v, u) in sorted(values.items()))
-    steps.append(f"{label}: {expr} [{bound}] = {_dec_str(result)} {format_unit(unit)}"
+    bound = ", ".join(f"{k}={money_text(v, u)} {format_unit(u)}"
+                      for k, (v, u) in sorted(values.items()))
+    steps.append(f"{label}: {expr} [{bound}] = {money_text(result, unit)} {format_unit(unit)}"
                  + (" (inexact, rounded half-even at 50 digits)" if inexact else ""))
     return result, unit
 
@@ -443,7 +474,7 @@ def _compute(
         cur = currencies[0]
         if unit == ((cur, 1),):
             amount, amount_unit = num, unit
-            steps.append(f"{name}: {_dec_str(num)} {cur} (total)")
+            steps.append(f"{name}: {money_text(num, unit)} {cur} (total)")
         elif unit == parse_unit(f"{cur}/{qname}"):
             amount, amount_unit = _calc(f"{name} * qty", {name: (num, unit), "qty": (qnum, qunit)},
                                         steps, f"{name} total")
@@ -556,7 +587,7 @@ def _compute(
 # rows no longer change from the cost sheet or the scratch cost write; the reads
 # (``toDraftRow``, ``loadDraftCostStore``) are unchanged, and both harnesses print the same
 # output with that file at 1f2d42d or at 40237ed.
-# Re-read at d4d1bb2 (2026-10-15); the citations below and both
+# Re-read at d4d1bb2 (2026-10-15, drift-1015-portal-costing); the citations below and both
 # goldens now pin d4d1bb2. 35cfb18 (TASK-2811) changed the one ported behaviour: the census
 # labour detail of an unrouted quote now says it is priced at $0 and reported, not "the 1-hour
 # placeholder" (``derive_ready_to_quote``); the arithmetic was already $0 in both. 0f9fbee
@@ -578,7 +609,7 @@ def _compute(
 # ``readErrors`` is not a separate output here: a relation whose read failed arrives as None,
 # is priced with the Portal fallback and is named as a RECORDS_NOT_READ unknown
 # (``QUOTE_RELATIONS``), so the quote is never shown as verified while one is open.
-# Re-read at d53137e (2026-10-16): no file cited here changed.
+# Re-read at d53137e (2026-10-16, drift-1015-portal-followup): no file cited here changed.
 # 335dc8a (TASK-2878, CT-E2) has recalc-theoretical-fg.ts ``--apply`` also re-stamp a draft
 # whose costs did not move but whose fingerprint is missing or stale, and 8c68104 (TASK-2918)
 # adds the report-only TheoreticalFG freshness columns that Recalc and Activate write: writes
@@ -3060,9 +3091,28 @@ def freight_cost_input(assessment: Mapping[str, Any]) -> dict[str, Any]:
             "who_can_answer": first["who_can_answer"]}
 
 
+def _actual_line_duty(actual: Mapping[str, Any], line: Mapping[str, Any]) -> Decimal | None:
+    try:
+        rate = Decimal(str(actual["rate"]))
+    except (ArithmeticError, KeyError):
+        return None
+    price, qty = js_number(line.get("unitPrice")), js_number(line.get("quantity"))
+    if price is None or qty is None or not math.isfinite(price) or not math.isfinite(qty) \
+            or not rate.is_finite() or rate < 0 or price < 0 or qty <= 0:
+        return None
+    return rate * Decimal(repr(price)) * Decimal(repr(qty))
+
+
 def po_line_landed(po: Mapping[str, Any], lines: Sequence[Mapping[str, Any]], line_id: Any,
                    *, tariff: Mapping[str, Any] | None = None,
-                   receipt: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                   receipt: Mapping[str, Any] | None = None,
+                   receipts_read: int = 0,
+                   incoterm: Mapping[str, Any] | None = None,
+                   actual_duty: Mapping[str, Any] | None = None,
+                   actual_freight: Mapping[str, Any] | None = None,
+                   receipt_withheld: Sequence[str] = (),
+                   header_withheld: Mapping[str, Sequence[str]] | None = None
+                   ) -> dict[str, Any]:
     """Freight, duty and receipt-actual inputs for one purchase-order line.
 
     ``po``: ``{_source, shippingCost, dutiesCost}`` (header estimates, ERP-D-015: PO header =
@@ -3083,9 +3133,31 @@ def po_line_landed(po: Mapping[str, Any], lines: Sequence[Mapping[str, Any]], li
     ``receipt_actual`` is None and an actual above zero replaces the estimate: freight is the
     Portal's allocation of the posted freight, and duty is the posted actual on a single-line PO
     (what was paid needs no tariff classification; a multi-line PO still has no per-line duty
-    allocation). The Portal's own readings stay in ``portal_allocation`` / ``posted_if_received``
-    for comparison.
+    allocation). ``receipts_read``: how many receipts of the purchase order the caller read
+    when ``receipt`` is None; at least one means the receipt was read and records no freight or
+    duty actual (RECEIPT_ACTUAL_NOT_RECORDED), not that no receipt was read. The Portal's own
+    readings stay in ``portal_allocation`` / ``posted_if_received`` for comparison.
+    ``incoterm`` (``operating.hs_tariff.resolve_incoterm``): a cost the term
+    leaves with the seller is a cited zero, not an unknown; a cost the buyer bears, or no
+    stated term, changes nothing. The term, its rule status (provisional) and the tariff's
+    ``provisional_rules`` come back in ``provisional_rules``.
+    ``actual_duty`` (``operating.duty_actual.actual_duty_for_po_line``): the PO's effective duty
+    rate from recorded broker/duty charges. It applies after a receipt actual and before any
+    tariff rate or header estimate; the line's duty is the rate times the line's goods value
+    (pro rata on a multi-line PO), labelled actual and, when the account also holds brokerage,
+    an upper bound.
+    ``actual_freight`` (``operating.duty_actual.actual_freight_for_po_line``): the PO's
+    effective freight rate from recorded inbound freight charges. It applies after a receipt
+    actual and before the header estimate; the line's freight is the rate times the line's
+    goods value (``basis`` actual_recorded), so it needs no received-value allocation.
+    ``receipt_withheld``: the markings the reader lacks on the receipt's freight and duty
+    actuals. With no usable receipt, the receipt actual is then RECEIPT_ACTUAL_WITHHELD (who:
+    FIN), never 'the receipt records none': the reader cannot see whether it does.
+    ``header_withheld``: per part (``freight``, ``duty``), the markings the reader lacks on the
+    header's estimate. A header estimate it is not shown is then PO_FREIGHT_ESTIMATE_WITHHELD /
+    PO_DUTY_ESTIMATE_WITHHELD (who: FIN), never 'the header records none'.
     """
+    header_withheld = header_withheld or {}
     shipping = js_number(po.get("shippingCost"))
     duty = js_number(po.get("dutiesCost"))
     receipt_freight, receipt_duty = ((receipt or {}).get(k) for k in ("freightCost", "dutiesCost"))
@@ -3108,7 +3180,24 @@ def po_line_landed(po: Mapping[str, Any], lines: Sequence[Mapping[str, Any]], li
         return received is not None and ordered is not None and ordered > 0 and received == ordered
 
     freight: dict[str, Any]
-    if shipping is None or not math.isfinite(shipping) or shipping <= 0:
+    share = None if freight_actual or not actual_freight else \
+        _actual_line_duty(actual_freight, target)
+    if share is not None:
+        freight = {"derived": {
+            "value": _dec_str(share), "per_quantity_unit": False,
+            "from": [actual_freight["_source"], target.get("_source")],
+            "basis": "actual_recorded",
+            "rule": f"actual recorded freight: PO effective rate {actual_freight['rate']} "
+                    "(inbound freight charges linked to this PO by a recorded reference) times "
+                    "this line's goods value" + ("; whole purchase order" if len(lines) == 1
+                                                 else "; pro rata by goods value")}}
+    elif shipping is None and header_withheld.get("freight"):
+        freight = {"unknown": "PO_FREIGHT_ESTIMATE_WITHHELD: the purchase order header's "
+                              "shipping estimate carries the "
+                              f"{', '.join(sorted(header_withheld['freight']))} marking, which "
+                              "this reader does not hold; a reader holding it gets it",
+                   "who_can_answer": "FIN"}
+    elif shipping is None or not math.isfinite(shipping) or shipping <= 0:
         freight = {"unknown": "PO_FREIGHT_NOT_RECORDED: the purchase order header has no "
                               "shipping cost; the Portal would read that as zero freight",
                    "who_can_answer": FORWARDER}
@@ -3154,6 +3243,23 @@ def po_line_landed(po: Mapping[str, Any], lines: Sequence[Mapping[str, Any]], li
                                           "duty, posted over the PO estimate ("
                                           + PORTAL_SOURCES["landed_gl"]
                                           + " resolvePostedLandedAmounts)"}}
+    elif actual_duty and _actual_line_duty(actual_duty, target) is not None:
+        duty_input = {"derived": {
+            "value": _dec_str(_actual_line_duty(actual_duty, target)),
+            "per_quantity_unit": False,
+            "from": [actual_duty["_source"], target.get("_source")],
+            "basis": "actual_recorded",
+            "rule": f"actual recorded duty: PO effective rate {actual_duty['rate']} (broker/duty "
+                    "charges linked to this PO by a recorded reference) times this line's goods "
+                    "value" + ("; an upper bound, the G/L account also holds the broker's fee"
+                               if actual_duty.get("includes_brokerage") else "")
+                    + ("; whole purchase order" if len(lines) == 1
+                       else "; pro rata by goods value, no per-line duty is recorded")}}
+    elif rate is not None and rate.is_finite() and rate == 0:
+        duty_input = {"derived": {"value": "0", "per_quantity_unit": False,
+                                  "from": [tariff["_source"]],
+                                  "rule": f"cited duty rate 0 (HS {tariff['hs_code']}): the duty "
+                                          "is 0, whatever the header estimate says"}}
     elif rate is None or not rate.is_finite():
         duty_input = {"unknown": "TARIFF_TREATMENT_UNVERIFIED: no cited HS classification and "
                                  "duty rate for this item"
@@ -3161,6 +3267,12 @@ def po_line_landed(po: Mapping[str, Any], lines: Sequence[Mapping[str, Any]], li
                                     "estimate, not a classification)"
                                     if duty is not None and math.isfinite(duty) and duty > 0
                                     else "; the header records no duty"),
+                      "who_can_answer": "FIN"}
+    elif duty is None and header_withheld.get("duty"):
+        duty_input = {"unknown": "PO_DUTY_ESTIMATE_WITHHELD: the purchase order header's duty "
+                                 "estimate carries the "
+                                 f"{', '.join(sorted(header_withheld['duty']))} marking, which "
+                                 "this reader does not hold; a reader holding it gets it",
                       "who_can_answer": "FIN"}
     elif duty is None or not math.isfinite(duty) or duty <= 0:
         duty_input = {"unknown": "PO_DUTY_NOT_RECORDED: a classification is cited but the "
@@ -3177,14 +3289,49 @@ def po_line_landed(po: Mapping[str, Any], lines: Sequence[Mapping[str, Any]], li
                                   "rule": f"single-line purchase order: header duty estimate "
                                           f"(ERP-D-015) with cited HS {tariff['hs_code']} rate "
                                           f"{rate}"}}
-    unread = None if receipt is not None else {
+    provisional: list[dict[str, Any]] = list((tariff or {}).get("provisional_rules") or [])
+    seller_bears = {k for k, v in ((incoterm or {}).get("buyer_bears") or {}).items() if not v}
+    if incoterm and incoterm.get("bearing"):
+        provisional.append({"id": f"incoterm {incoterm['incoterm']}",
+                            "status": incoterm["status"]})
+    recorded = {"freight": bool(freight_actual) or "basis" in freight.get("derived", {}),
+                "duty": bool(duty_actual) or "basis" in duty_input.get("derived", {})}
+    for name, slot in (("freight", freight), ("duty", duty_input)):
+        if name in seller_bears and recorded[name]:
+            provisional.append({"id": f"incoterm {incoterm['incoterm']} not applied to {name}",
+                                "status": "a recorded actual wins over the provisional rule"})
+        elif name in seller_bears:
+            slot.clear()
+            slot["derived"] = {"value": "0", "per_quantity_unit": False,
+                               "from": [incoterm["source"]],
+                               "rule": f"{incoterm['incoterm']} ({incoterm['set_by']}): the "
+                                       f"seller bears {name}, so it adds nothing to the "
+                                       f"buyer's landed cost; provisional rule, "
+                                       f"{incoterm['status']}; nothing is recorded for it"}
+    # A read receipt that records no actual is moot once freight and duty both rest on
+    # recorded charges (what was paid); an unread receipt is not: it might record an actual,
+    # which comes first.
+    paid_both = receipts_read > 0 and not receipt_withheld and all(
+        "basis" in slot.get("derived", {}) for slot in (freight, duty_input))
+    unread = None if (receipt is not None and not receipt_withheld) or paid_both else {
+        "unknown": f"RECEIPT_ACTUAL_WITHHELD: the receipt's freight and duty actuals carry the "
+                   f"{', '.join(sorted(receipt_withheld))} marking, which this reader does not "
+                   "hold, so whether a receipt records one is not shown; a reader holding it "
+                   "gets them",
+        "who_can_answer": "FIN"} if receipt_withheld else {
+        "unknown": f"RECEIPT_ACTUAL_NOT_RECORDED: {receipts_read} receipt(s) of this purchase "
+                   "order are read and none records a freight or duty actual; the Portal "
+                   "posts one over the PO estimates only when a receipt records it "
+                   "(resolvePostedLandedAmounts)",
+        "who_can_answer": "WH"} if receipts_read > 0 else {
         "unknown": "RECEIPT_ACTUAL_NOT_READ: the Portal posts receipt freight and duty "
                    "actuals over the PO estimates (resolvePostedLandedAmounts); no "
                    "verified receipt of this purchase order is read",
         "who_can_answer": "WH"}
     return {"portal_allocation": portal, "freight": freight, "duty": duty_input,
             "receipt_actual": unread,
-            "posted_if_received": posted,
+            "posted_if_received": posted, "incoterm_bearing": incoterm,
+            "provisional_rules": provisional,
             "source": PORTAL_SOURCES["po_freight_allocation"]}
 
 
@@ -3433,11 +3580,43 @@ _COUNT_ROLES = ("quote_basis_count", "quote_volume", "quote_weight", "quote_pall
 # (a share of that amount, same currency) is taken to be that quote's figure.
 ESTIMATE_QUOTE_TOLERANCE = Decimal("0.005")
 CONFIRMATION_ROLES = ("confirmation_amount", "confirmation_unit_price", "confirmation_quantity")
+# The real inputs (lane landed-cost-real-inputs): the FileMaker replica supplier row of the
+# order's own supplier for the line's item (``tariff_c``, ``hscode``, ``countryoforigin``),
+# FileMaker's own landed cost ``dlt_costlanded_c`` on that row's price tiers (``tierpricing``:
+# each tier's minimum quantity and figure, compared as counts only), the Portal rate settings
+# ``tariff_rate`` and the Sage receipt's own currency. Each is optional: a plan naming none of
+# them runs as before (devloop/DECISIONS/2026-10-21-landed-cost-real-inputs-wiring.md).
+SUPPLIER_ROW_ROLES = ("supplier_tariff", "supplier_hs_code", "supplier_origin")
+TIER_ROLES = ("fm_landed_cost", "fm_tier_quantity")
+REAL_INPUT_ROLES = SUPPLIER_ROW_ROLES + TIER_ROLES + ("rate_setting_tariff",
+                                                      "receipt_currency")
+# A BC line's directUnitCost is gross: before the line discount, and with tax when the order's
+# pricesIncludeTax is true. Its goods are the line's amountExcludingTax over its quantity, else
+# it is known net only when the line records no discount and the order no tax-inclusive price.
+BC_NET_ROLES = ("bc_line_amount", "bc_line_discount", "prices_include_tax")
+BC_GROSS_PRICE = "bc_direct_unit_cost"
 PLAN_ROLES = ("currency", "unit_price", "quantity", "received", "freight_estimate",
               "duty_estimate", "classification", "receipt_freight", "receipt_duty",
-              "units_per_box") + QUOTE_ROLES + CONFIRMATION_ROLES
+              "units_per_box", "po_number") + QUOTE_ROLES + CONFIRMATION_ROLES \
+    + REAL_INPUT_ROLES + BC_NET_ROLES
 _OPTIONAL_ROLES = frozenset(("classification", "receipt_freight", "receipt_duty",
-                             "units_per_box") + QUOTE_ROLES + CONFIRMATION_ROLES)
+                             "units_per_box", "po_number") + QUOTE_ROLES + CONFIRMATION_ROLES
+                            + REAL_INPUT_ROLES + BC_NET_ROLES)
+# The links a supplier row is proven to be this order's supplier's row for the line's item by:
+# row -> item (``supplier_item_link``), row -> supplier (``supplier_link``), order -> supplier
+# (``po_supplier_link``) and supplier twins (``supplier_twin_link``). Without the first three
+# no row is ever read.
+SUPPLIER_LINK_ARGS = ("supplier_item_link", "supplier_link", "po_supplier_link")
+# The link a FileMaker price tier (``tierpricing``, keyed by its supplier row) is that row's
+# tier by: tier -> supplier row. Without it no tier, so no FileMaker figure, is ever read.
+TIER_LINK_ARG = "tier_link"
+# FileMaker's dlt_costlanded_c and ours agree within this share of FileMaker's figure.
+FM_AGREEMENT_TOLERANCE = Decimal("0.01")
+# Every duty rate stays a labelled assumption until Vince answers later_ask duty-rate-rule.
+DUTY_RULE_PENDING = "the duty-rate rule (later_ask duty-rate-rule) is pending with Vince"
+_TARIFF_PERCENT = re.compile(r"(\d{1,3}(?:\.\d{1,6})?)\s*%")
+_TARIFF_UNITS = {"%": Decimal(100), "percent": Decimal(100), "pct": Decimal(100),
+                 "ratio": Decimal(1), "fraction": Decimal(1)}
 _LINE_ROLES = ("unit_price", "quantity", "received")
 MAX_STEP_CHARS = 400
 # The roles whose sources a cost input rests on (named in its gap as what was searched).
@@ -3460,10 +3639,16 @@ _GAP_STATES = {"DUTY_RATE_SOURCE_ABSENT": "not_ingested",
                "PO_DUTY_NOT_RECORDED": "absent_in_source",
                "CURRENCY_UNCITED": "absent_in_source",
                "UNIT_PRICE_DENOMINATOR_UNKNOWN": "absent_in_source",
+               "UNIT_PRICE_WITHHELD": "inaccessible",
+               "PO_FREIGHT_ESTIMATE_WITHHELD": "inaccessible",
+               "PO_DUTY_ESTIMATE_WITHHELD": "inaccessible",
                "LINE_QUANTITY_UNKNOWN": "absent_in_source",
                **{code: state for code, (state, _, _) in _QUOTE_GAPS.items()}}
 FREIGHT_LABELS = {"posted": "freight basis: historical posted actual (the receipt's freight, "
                             "which the Portal posts over the estimate)",
+                  "actual": "freight basis: recorded actual (inbound freight charges posted in "
+                            "Sage AP and linked to the purchase order by a recorded reference), "
+                            "not the header estimate and not a quote",
                   "estimate": "freight basis: purchase order header estimate (ERP-D-015), not a "
                               "posted actual and not a quote",
                   "quote": "freight basis: current quote (a forwarder's offer read from a "
@@ -3486,7 +3671,13 @@ FREIGHT_LABELS = {"posted": "freight basis: historical posted actual (the receip
 ESTIMATE_LABEL = ("ESTIMATE before receipt (ERP-D-015: the purchase order header is an "
                   "estimate, the receipt the actual); not the actual landed cost, which is "
                   "stated only after receipt")
-ESTIMATE_BASIS = ("pro-rated by ordered line value (unit price x ordered quantity); the "
+RECEIVED_ESTIMATE_LABEL = ("ESTIMATE after receipt: the receipts read record no freight or duty "
+                           "actual, so each part not recorded is estimated (from PLX history or "
+                           "a labelled default); not the actual landed cost")
+# The basis of each landed-cost part in an estimate's steps ("part <name>: <basis>"): what was
+# paid, what a record states, what PLX history suggests, or a default no record states.
+PART_BASES = ("actual", "recorded", "estimated_from_history", "default", "not_applicable")
+ESTIMATE_BASIS =("pro-rated by ordered line value (unit price x ordered quantity); the "
                   "Portal's allocatePoFreightPerUnit splits by received line value, which "
                   "does not exist before receipt")
 ASSUMPTION_KINDS = ("duty_rate",)
@@ -3552,28 +3743,86 @@ def prorate(total: Decimal, weights: Sequence[Decimal]) -> list[Decimal]:
         raise LandedCostError("prorate_needs_positive_weights")
     exponent = min(total.as_tuple().exponent, -2) if total.is_finite() else -2
     quantum = Decimal(1).scaleb(exponent)
-    whole = sum(weights)
-    exact = [total * w / whole for w in weights]
-    shares = [x.quantize(quantum, rounding="ROUND_DOWN") for x in exact]
-    left = int(((total - sum(shares)) / quantum).to_integral_value())
-    order = sorted(range(len(weights)), key=lambda i: (-(exact[i] - shares[i]), i))
-    for i in order[:left]:
-        shares[i] += quantum
+    # A total with a long tail (a history rate x goods) needs more digits than the default
+    # 28 to quantize at its own precision: computed in a wide enough context, never refused.
+    with localcontext() as ctx:
+        ctx.prec = max(ctx.prec, len(total.as_tuple().digits) - exponent + 30)
+        whole = sum(weights)
+        exact = [total * w / whole for w in weights]
+        shares = [x.quantize(quantum, rounding="ROUND_DOWN") for x in exact]
+        left = int(((total - sum(shares)) / quantum).to_integral_value())
+        order = sorted(range(len(weights)), key=lambda i: (-(exact[i] - shares[i]), i))
+        for i in order[:left]:
+            shares[i] += quantum
     return shares
+
+
+def _part_steps(*, freight_basis: str, freight_label: str, duty_basis: Mapping[str, str],
+                history: Mapping[str, Mapping[str, Any]],
+                actuals: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    """The basis of each part of an estimate, one step each (``part <name>: <basis>``, a
+    ``PART_BASES`` word first): goods are always recorded; a history estimate names its
+    level, method, sample, period and spread, and the capture it came from."""
+    def hist(part: str) -> str:
+        h = history[part]
+        return f": {h['label']} ({h['note']})"
+    steps = ["part goods: recorded (cited unit price x ordered quantity of every line)",
+             "part freight: estimated_from_history" + hist("freight")
+             if freight_basis == "estimated_from_history" else
+             f"part freight: {freight_basis} ({freight_label})"]
+    counts = Counter(duty_basis.values())
+    if len(counts) == 1:
+        [basis] = counts
+        steps.append(f"part duty: {basis}"
+                     + (hist("duty") if basis == "estimated_from_history" else ""))
+    elif counts:
+        steps.append("part duty: " + ", ".join(f"{b} on {counts[b]} line(s)" for b in PART_BASES
+                                               if counts.get(b))
+                     + (hist("duty") if counts.get("estimated_from_history") else ""))
+    duty_from = (actuals.get("duty") if "actual" in counts else None) or (
+        history.get("duty") if "estimated_from_history" in counts else None)
+    steps.append("part brokerage: included in the duty part (the Sage 'Duties & Brokerage' "
+                 "account holds both, so that duty is an upper bound); not stated separately"
+                 if duty_from and duty_from.get("includes_brokerage") else
+                 "part brokerage: not_applicable (no brokerage charge is recorded for this "
+                 "purchase order; none is added)")
+    if "estimated_from_history" in (freight_basis, *counts):
+        steps.append("ESTIMATE: at least one part is estimated from PLX history, not recorded "
+                     "for this purchase order, so the total is an estimate")
+    return [s[:MAX_STEP_CHARS] for s in steps]
 
 
 def _pre_receipt_estimate(*, name: str, target: str | None, line_ids: Sequence[str],
               every_line: Sequence[str], prices: Mapping[str, Mapping[str, Any]],
               quantities: Mapping[str, Mapping[str, Any]], linked: bool, complete: bool,
-              covered: bool, freight_est: Mapping[str, Any] | None,
+              covered: bool, held_back: int, freight_est: Mapping[str, Any] | None,
               duty_est: Mapping[str, Any] | None, partial_quote: bool,
               quotes: Sequence[tuple[Decimal, str, Sequence[Mapping[str, Any]]]],
               hs_of: Mapping[str, Mapping[str, Any] | None],
               assumptions: Sequence[Mapping[str, Any]], header_ids: set[str], as_of: str,
               resolver: Resolver | None, actor: Any,
-              unknown: Callable[..., None], currency_step: str | None = None
-              ) -> list[dict[str, Any]]:
+              unknown: Callable[..., None], currency_step: str | None = None,
+              currency_gap: str | None = None,
+              rows: Mapping[str, Mapping[str, Any]] | None = None,
+              setting: Mapping[str, Any] | None = None,
+              actuals: Mapping[str, Mapping[str, Any]] | None = None,
+              net_goods: Mapping[str, Mapping[str, Any]] | None = None,
+              history: Mapping[str, Mapping[str, Any]] | None = None,
+              incoterm: Mapping[str, Any] | None = None,
+              header_withheld: Mapping[str, Sequence[str]] | None = None,
+              label: str = ESTIMATE_LABEL) -> list[dict[str, Any]]:
     """The estimate entries of an open purchase order (the block above ``duty_assumption``).
+
+    ``actuals``: the purchase order's recorded duty and freight rates (``_recorded_actuals``);
+    a recorded rate comes first, before the header estimate, a quote or any assumed rate.
+    ``history``: the order's estimates from PLX history (``_recorded_actuals``). Freight with
+    no actual, no header estimate and no forwarder quote is the history rate times the goods;
+    a line's duty with no actual, header estimate, person's rate or supplier-row tariff is the
+    history rate times its goods, before the Portal rate setting or code default. Where the
+    recorded ``incoterm`` leaves that part with the seller, it is a cited zero instead
+    (provisional rule). Every part is labelled in the steps (``part <name>: <basis>``,
+    ``PART_BASES``); a history estimate is never worded as recorded. ``label``: the estimate
+    label (``ESTIMATE_LABEL``, or ``RECEIVED_ESTIMATE_LABEL`` after receipt).
 
     Amounts are stated only over a line set proven whole (a complete run, a reader whose scope
     covers the lines, every line read with a unit price and an ordered quantity) whose every
@@ -3581,7 +3830,18 @@ def _pre_receipt_estimate(*, name: str, target: str | None, line_ids: Sequence[s
     order's currency) is cited, with a freight source; each line is computed by
     ``compute_landed_cost``, which re-reads every cited input for the actor. Otherwise each
     entry is null and a gap names the missing input and who can give it. Gaps and steps name
-    codes, entries, rates and amounts the reader read, never source text."""
+    codes, entries, rates and amounts the reader read, never source text.
+
+    Duty, with no header duty estimate and no person's recorded rate, is per line: the
+    ``tariff_c`` of the order's own supplier's FileMaker replica row for the line's item
+    (``rows[oid]``: ``rate``, the tariff ``entries``, a ``problem`` (code, detail) when a row's
+    rate is unreadable or the rows disagree, and the row's ``hs``/``origin`` entries), else
+    the Portal rate settings ``tariff_rate`` (``setting``: ``rate``, ``entries``, ``problem``),
+    else the code default. Each is a labelled assumption naming its source. The entries a
+    rate rests on are re-read for the actor before it is used: a line whose row rate (or, at
+    the rate setting, whose setting) this reader cannot re-read has no value and no step or
+    gap states that rate (SUPPLIER_TARIFF_UNREAD, RATE_SETTING_TARIFF_UNREAD); it never falls
+    back to another rate."""
     def handle(entry: Mapping[str, Any] | None) -> str | None:
         return entry["citation"]["l1_handle"] if entry and entry.get("citation") else None
 
@@ -3599,11 +3859,12 @@ def _pre_receipt_estimate(*, name: str, target: str | None, line_ids: Sequence[s
 
     def close(why: str) -> list[dict[str, Any]]:
         for entry in out:
-            entry["steps"] = [why[:MAX_STEP_CHARS], ESTIMATE_LABEL]
+            entry["steps"] = [why[:MAX_STEP_CHARS], label]
         return out
 
     if target is None:
-        return close("no estimate: no target currency (see the currency gap)")
+        return close(f"no estimate: {currency_gap or 'CURRENCY_UNCITED'} (no target currency; "
+                     "see the purchase order currency gap)")
     for entry in out:
         entry.update(unit=target, currency=target)
 
@@ -3627,10 +3888,12 @@ def _pre_receipt_estimate(*, name: str, target: str | None, line_ids: Sequence[s
         # A reader limit, not a missing input: a value this reader lacks may be withheld from
         # it, so no person is named for it (a grant would answer it).
         unknown("ESTIMATE_READ_SCOPE_UNPROVEN", "estimate lines",
-                "this reader's read scope (every store marking and the line source's "
-                "audience) is not proven to show every line of the purchase order; the "
-                "estimate pro-rates header freight over every ordered line, never a partial "
-                "set", "unit_price", "quantity")
+                (f"{held_back} line(s) of the purchase order carry a marking this reader does "
+                 "not hold and are withheld from it" if held_back else
+                 "this reader's read scope (the markings on the order's lines and the line "
+                 "source's audience) is not proven to show every line of the purchase order")
+                + "; the estimate pro-rates header freight over every ordered line, never a "
+                "partial set", "unit_price", "quantity")
         return close("no estimate: ESTIMATE_READ_SCOPE_UNPROVEN (see the gaps)")
     if not every_line:
         # No line reached: PO_LINES_INCOMPLETE already names that cause and who can give the
@@ -3640,7 +3903,8 @@ def _pre_receipt_estimate(*, name: str, target: str | None, line_ids: Sequence[s
     if not (complete and covered and linked) or any(oids for _, oids in missing):
         why = "; ".join(f"{len(oids)} of {len(every_line)} line(s) were read with no {role}"
                         for role, oids in missing if oids) or (
-            "the run was truncated or cut by its step budget" if not complete else
+            "the run was truncated or cut by its step budget, so lines past the read are not "
+            "read" if not complete else
             "this reader's read scope is not proven to show every line of the purchase order"
             if not covered else "no line of the purchase order was reached")
         unknown("ESTIMATE_LINES_INCOMPLETE", "estimate lines",
@@ -3664,14 +3928,31 @@ def _pre_receipt_estimate(*, name: str, target: str | None, line_ids: Sequence[s
                 "line value to pro-rate over", "unit_price", "quantity", who="PROC")
         return close("no estimate: ESTIMATE_LINE_VALUE_UNCITED (see the gaps)")
     weights = [values[oid] for oid in line_ids]
-    weight_handles = [h for oid in line_ids
-                      for h in (handle(prices[oid]), handle(quantities[oid])) if h]
+    net_goods = net_goods or {}
+    weight_handles = list(dict.fromkeys(
+        h for oid in line_ids
+        for h in (handle(prices[oid]), handle(quantities[oid]),
+                  *((net_goods.get(oid) or {}).get("derived", {}).get("from") or ())) if h))
     goods_total = sum(weights, Decimal(0))
 
-    # Freight: the header estimate, else one usable quote total, in the target currency.
+    # Freight: the recorded actual rate, else the header estimate, else one usable quote total,
+    # in the target currency.
     freight: tuple[Decimal, list[Mapping[str, Any]], str] | None = None
     header = _entry_decimal(freight_est)
-    if header is not None and header > 0 and freight_est.get("currency") == target \
+    actuals = actuals or {}
+    history = history or {}
+
+    def seller_bears(part: str) -> bool:
+        return bool(incoterm and incoterm.get("bearing")
+                    and (incoterm.get("buyer_bears") or {}).get(part) is False)
+    freight_actual = actuals.get("freight")
+    freight_basis = "recorded"
+    if freight_actual is not None:
+        freight = (Decimal(freight_actual["rate"]) * goods_total, [],
+                   f"recorded actual freight rate {freight_actual['rate']} (inbound freight "
+                   f"charges linked by a recorded reference; {freight_actual['note']}) x goods")
+        freight_basis = "actual"
+    elif header is not None and header > 0 and freight_est.get("currency") == target \
             and not partial_quote:
         freight = (header, [freight_est], f"purchase order header shipping estimate "
                    f"{freight_est['name']}")
@@ -3695,24 +3976,53 @@ def _pre_receipt_estimate(*, name: str, target: str | None, line_ids: Sequence[s
                     f"{len(totals)} usable forwarder quotes state different total freight in "
                     f"{target}; none is chosen", "freight_estimate", who="PROC")
         elif header is None or header <= 0:
-            unknown("PO_FREIGHT_NOT_RECORDED", "estimate freight",
-                    "the purchase order header has no shipping estimate and no usable forwarder "
-                    f"quote states the total freight in {target}; the Portal would read that as "
-                    "zero freight", "freight_estimate", who=FORWARDER)
-    goods_step = (f"goods: {_dec_str(goods_total)} {target} over {len(line_ids)} line(s) (cited "
+            if header is None and (header_withheld or {}).get("freight"):
+                # Withheld from this reader, not absent: the history estimate below is
+                # labelled as such, never as the header's.
+                unknown("PO_FREIGHT_ESTIMATE_WITHHELD", "estimate freight",
+                        "the purchase order header's shipping estimate carries the "
+                        f"{', '.join(sorted(header_withheld['freight']))} marking, which this "
+                        "reader does not hold, and no usable forwarder quote states the total "
+                        f"freight in {target}", "freight_estimate", who="FIN")
+            else:
+                unknown("PO_FREIGHT_NOT_RECORDED", "estimate freight",
+                        "the purchase order header has no shipping estimate and no usable "
+                        f"forwarder quote states the total freight in {target}; the Portal "
+                        "would read that as zero freight", "freight_estimate", who=FORWARDER)
+            # Nothing records the freight: the recorded incoterm may leave it with the seller,
+            # else PLX history estimates it (labelled, never as recorded).
+            if seller_bears("freight"):
+                freight = (Decimal(0), [], f"incoterm {incoterm['incoterm']} "
+                           f"({incoterm['set_by']}): the seller bears freight; provisional rule, "
+                           f"{incoterm['status']}")
+                freight_basis = "recorded"
+            elif history.get("freight") is not None:
+                hist = history["freight"]
+                freight = (Decimal(hist["rate"]) * goods_total, [],
+                           f"freight ESTIMATED FROM PLX HISTORY, rate {hist['rate']} x goods "
+                           "(its basis: see 'part freight')")
+                freight_basis = "estimated_from_history"
+    goods_step = (f"goods: {money_text(goods_total, target)} {target} over {len(line_ids)} line(s) (cited "
                   "unit price x ordered quantity)")
     if freight is None:
         subtotal["steps"] = [goods_step, "freight: no source (see the estimate freight gap); no "
-                             "subtotal is stated", ESTIMATE_LABEL]
+                             "subtotal is stated", label]
         total["steps"] = ["no estimate: no freight source (see the estimate freight gap)",
-                          ESTIMATE_LABEL]
+                          label]
         for entry in lines:
             entry["steps"] = ["no estimate: no freight source (see the estimate freight gap)",
-                              ESTIMATE_LABEL]
+                              label]
         return out
     freight_total, freight_entries, freight_label = freight
     freight_shares = prorate(freight_total, weights)
     freight_from = [h for h in (handle(e) for e in freight_entries) if h] + weight_handles
+    if freight_actual is not None:
+        freight_from = [freight_actual["_source"]] + weight_handles
+    elif freight_basis == "estimated_from_history":
+        freight_from = [history["freight"]["_source"]] + weight_handles
+    elif not freight_entries and seller_bears("freight") and not quotes:
+        freight_from = [incoterm["source"]] + weight_handles
+    duty_basis: dict[str, str] = {}
 
     # Duty: the header duty estimate, else a person's recorded rate, else the Portal default.
     duty_header = _entry_decimal(duty_est)
@@ -3722,17 +4032,63 @@ def _pre_receipt_estimate(*, name: str, target: str | None, line_ids: Sequence[s
         unknown("DUTY_ASSUMPTIONS_DISAGREE", "estimate duty assumption",
                 f"{len(recorded)} recorded duty-rate assumptions state {len(rates)} different "
                 "rates; none is applied", holds=True, who="FIN")
-    duty_from: list[str] = list(weight_handles)
     listed: list[str] = []
-    default = False
-    if duty_header is not None and duty_header > 0 and duty_est.get("currency") == target:
+    rows = rows or {}
+    # Per line: the entries its duty rests on beyond the weights (named as its inputs and
+    # re-read for the actor), its duty rule, and its row notes (origin).
+    own: dict[str, list[Mapping[str, Any]]] = {oid: [] for oid in line_ids}
+    notes: dict[str, list[str]] = {oid: [] for oid in line_ids}
+    from_of: dict[str, list[str]] = {}
+    rule_of: dict[str, str] = {}
+    fallback: list[str] = []          # lines at the rate setting or the code default
+    row_rated: set[str] = set()
+    withheld: set[str] = set()        # lines whose rate this reader cannot re-read
+    set_rate = (setting or {}).get("rate")
+    fallback_label = ("the Portal rate settings tariff_rate" if set_rate is not None
+                      else "the Portal default tariffRate")
+    for oid in line_ids:
+        row = rows.get(oid) or {}
+        if hs_of.get(oid) is not None and any(hs_of[oid] is e for e in row.get("hs") or ()):
+            own[oid].append(hs_of[oid])
+        origins = list(row.get("origin") or ())
+        if origins:
+            own[oid] += origins
+            notes[oid].append("origin: " + ", ".join(e["name"] for e in origins)[:200]
+                              + " (countryoforigin on the FileMaker replica supplier row; with "
+                              "the HS code it decides the duty rate, which no source projects)")
+    duty_actual = actuals.get("duty")
+    if duty_actual is not None:
+        rate = Decimal(duty_actual["rate"])
+        duty_shares = [rate * w for w in weights]
+        duty_rule = (f"estimate duty: goods x the recorded actual duty rate {duty_actual['rate']} "
+                     f"(broker/duty charges linked by a recorded reference; "
+                     f"{duty_actual['note']})" + ("; an upper bound, the G/L account also holds "
+                                                  "the broker's fee"
+                                                  if duty_actual.get("includes_brokerage")
+                                                  else ""))
+        for oid in line_ids:
+            from_of[oid], rule_of[oid] = [duty_actual["_source"]] + list(weight_handles), \
+                duty_rule
+        listed.append("actual: the recorded duty rate of this purchase order applies to every "
+                      "line by goods value")
+        duty_basis.update((oid, "actual") for oid in line_ids)
+    elif duty_header is not None and duty_header > 0 and duty_est.get("currency") == target:
         duty_shares = prorate(duty_header, weights)
-        duty_from = [h for h in (handle(duty_est),) if h] + duty_from
+        header_from = [h for h in (handle(duty_est),) if h] + list(weight_handles)
         duty_rule = (f"estimate duty: purchase order header duty estimate {duty_est['name']} "
-                     f"{_dec_str(duty_header)} {target} {ESTIMATE_BASIS}")
+                     f"{money_text(duty_header, target)} {target} {ESTIMATE_BASIS}")
+        for oid in line_ids:
+            from_of[oid], rule_of[oid] = header_from, duty_rule
+            own[oid].insert(0, duty_est)
         listed.append("assumption: the header duty estimate spreads by ordered line value (one "
                       "rate for every line; the Portal has no per-line duty allocation)")
+        duty_basis.update((oid, "recorded") for oid in line_ids)
     else:
+        if duty_header is None and (header_withheld or {}).get("duty"):
+            unknown("PO_DUTY_ESTIMATE_WITHHELD", "estimate duty",
+                    "the purchase order header's duty estimate carries the "
+                    f"{', '.join(sorted(header_withheld['duty']))} marking, which this reader "
+                    "does not hold", "duty_estimate", who="FIN")
         if duty_header is not None and duty_header > 0:
             unknown("PO_ESTIMATE_CURRENCY_DIFFERS", "estimate duty",
                     "the header duty estimate carries no cited currency equal to the purchase "
@@ -3741,34 +4097,156 @@ def _pre_receipt_estimate(*, name: str, target: str | None, line_ids: Sequence[s
             rate = Decimal(assumption["rate"])
             duty_rule = "estimate duty: goods x " + _assumption_text(assumption)
             listed.append("assumption: " + _assumption_text(assumption))
-        else:
-            default = True
-            rate = Decimal(str(PORTAL_QUOTE_DUTY_RATE))
-            duty_rule = (f"estimate duty: goods x the Portal default tariffRate {_dec_str(rate)} "
-                         f"({PORTAL_SOURCES['rate_defaults']} RATE_MASTER_DEFAULTS), an "
-                         "assumption no person recorded")
-            listed.append(f"assumption: duty at the Portal default tariffRate {_dec_str(rate)} "
-                          f"({PORTAL_SOURCES['rate_defaults']}); no duty rate is cited or "
-                          "recorded (see the estimate duty gap)")
             for oid in line_ids:
-                hs = hs_of.get(oid)
-                code, who = (("DUTY_RATE_SOURCE_ABSENT", "FIN") if _entry_text(hs) else
-                             ("HS_CODE_NOT_CITED", "PROC"))
-                unknown(code, "estimate duty",
-                        ("an HS code is cited for the item, but no duty rate is cited or "
-                         "recorded; Finance can record the rate (with its source) on the case"
-                         if code == "DUTY_RATE_SOURCE_ABSENT" else
-                         "no HS code is cited for the item and no duty rate is recorded; "
-                         "Procurement can give the HS code, Finance the rate")
-                        + f"; the estimate applies the Portal default tariffRate {_dec_str(rate)}"
-                        " as a labelled assumption", "duty_estimate", "classification",
-                        line=labels[oid], who=who)
-        duty_shares = [rate * w for w in weights]
-    if any(_entry_text(hs_of.get(oid)) for oid in line_ids):
+                from_of[oid], rule_of[oid] = list(weight_handles), duty_rule
+            duty_shares = [rate * w for w in weights]
+            duty_basis.update((oid, "recorded") for oid in line_ids)
+        else:
+            default_rate = Decimal(str(PORTAL_QUOTE_DUTY_RATE))
+            if setting and setting.get("problem"):
+                unknown("RATE_SETTING_TARIFF_UNREADABLE", "estimate duty rate setting",
+                        setting["problem"], "rate_setting_tariff", holds=False, who="FIN")
+            set_entries = list((setting or {}).get("entries") or ())
+            set_names = ", ".join(e["name"] for e in set_entries)[:120]
+            # A rate is used only when every entry it rests on re-reads for this reader;
+            # otherwise the line is withheld, its rate named by entry only, never stated.
+            reader = _Reader(resolver, actor)
+
+            def rereads(entries: Sequence[Mapping[str, Any]]) -> bool:
+                return all(handle(e) and reader.resolve(handle(e)) is not None
+                           for e in entries)
+            set_withheld = set_rate is not None and not rereads(set_entries)
+            row_steps: list[str] = []
+            duty_shares = []
+            for oid, weight in zip(line_ids, weights):
+                row = rows.get(oid) or {}
+                if row.get("problem"):
+                    code, detail = row["problem"]
+                    unknown(code, "estimate duty", detail, "supplier_tariff", line=labels[oid],
+                            holds=False, who="FIN")
+                rate = row.get("rate")
+                if rate is not None and not rereads(row["entries"]):
+                    withheld.add(oid)
+                    names = ", ".join(e["name"] for e in row["entries"])[:120]
+                    unknown("SUPPLIER_TARIFF_UNREAD", "estimate duty",
+                            f"{names} (tariff_c on the FileMaker replica supplier row) is not "
+                            "readable for this reader; the line's duty rests on it, so the "
+                            "line states no estimate and no other rate replaces it",
+                            "supplier_tariff", line=labels[oid], who="FIN")
+                    duty_shares.append(Decimal(0))
+                    continue
+                if rate is None and set_withheld and not (
+                        seller_bears("duty") or history.get("duty") is not None):
+                    withheld.add(oid)
+                    unknown("RATE_SETTING_TARIFF_UNREAD", "estimate duty rate setting",
+                            f"{set_names} (public.app_rate_settings tariff_rate) is not "
+                            "readable for this reader; no estimate line rests on it and no "
+                            "other rate replaces it", "rate_setting_tariff",
+                            line=labels[oid], who="FIN")
+                    duty_shares.append(Decimal(0))
+                    continue
+                if rate is not None:
+                    names = ", ".join(e["name"] for e in row["entries"])[:120]
+                    row_rated.add(oid)
+                    own[oid] += list(row["entries"])
+                    from_of[oid] = [h for h in map(handle, row["entries"]) if h] \
+                        + list(weight_handles)
+                    rule_of[oid] = (f"estimate duty: goods x {_dec_str(rate)}, the FileMaker "
+                                    f"supplier row tariff {names} (tariff_c), an assumption: "
+                                    f"{DUTY_RULE_PENDING}")
+                    row_steps.append(f"{names} {_dec_str(rate)}")
+                    duty_basis[oid] = "recorded"
+                elif seller_bears("duty") or history.get("duty") is not None:
+                    # Nothing records this line's duty: the recorded incoterm may leave it with
+                    # the seller, else PLX history estimates it (labelled, never as recorded).
+                    if seller_bears("duty"):
+                        rate = Decimal(0)
+                        from_of[oid] = [incoterm["source"]] + list(weight_handles)
+                        rule_of[oid] = (f"estimate duty: 0, incoterm {incoterm['incoterm']} "
+                                        f"({incoterm['set_by']}): the seller bears duty; "
+                                        f"provisional rule, {incoterm['status']}")
+                        duty_basis[oid] = "recorded"
+                        why = f"incoterm {incoterm['incoterm']} leaves duty with the seller"
+                    else:
+                        hist = history["duty"]
+                        rate = Decimal(hist["rate"])
+                        from_of[oid] = [hist["_source"]] + list(weight_handles)
+                        rule_of[oid] = (f"estimate duty: goods x {hist['rate']}, ESTIMATED FROM "
+                                        "PLX HISTORY, not recorded for this purchase order "
+                                        "(its basis: see 'part duty')")
+                        duty_basis[oid] = "estimated_from_history"
+                        why = (f"the estimate applies the duty rate {hist['rate']} estimated "
+                               "from PLX history, labelled as such")
+                    hs = hs_of.get(oid)
+                    code, who = (("DUTY_RATE_SOURCE_ABSENT", "FIN") if _entry_text(hs) else
+                                 ("HS_CODE_NOT_CITED", "PROC"))
+                    unknown(code, "estimate duty",
+                            ("an HS code is cited for the item, but no duty rate is cited or "
+                             "recorded; Finance can record the rate (with its source) on the "
+                             "case" if code == "DUTY_RATE_SOURCE_ABSENT" else
+                             "no HS code is cited for the item and no duty rate is recorded; "
+                             "Procurement can give the HS code, Finance the rate")
+                            + f"; {why}", "duty_estimate", "classification",
+                            line=labels[oid], who=who)
+                else:
+                    fallback.append(oid)
+                    duty_basis[oid] = "default"
+                    if set_rate is not None:
+                        rate = set_rate
+                        own[oid] += set_entries
+                        from_of[oid] = [h for h in map(handle, set_entries) if h] \
+                            + list(weight_handles)
+                        rule_of[oid] = (f"estimate duty: goods x the Portal rate settings "
+                                        f"tariff_rate {_dec_str(rate)} ({set_names}), a flat rate "
+                                        "and not the item's: an assumption no person recorded")
+                    else:
+                        rate = default_rate
+                        from_of[oid] = list(weight_handles)
+                        rule_of[oid] = (f"estimate duty: goods x the Portal default tariffRate "
+                                        f"{_dec_str(rate)} ({PORTAL_SOURCES['rate_defaults']} "
+                                        "RATE_MASTER_DEFAULTS), an assumption no person recorded")
+                    hs = hs_of.get(oid)
+                    code, who = (("DUTY_RATE_SOURCE_ABSENT", "FIN") if _entry_text(hs) else
+                                 ("HS_CODE_NOT_CITED", "PROC"))
+                    unknown(code, "estimate duty",
+                            ("an HS code is cited for the item, but no duty rate is cited or "
+                             "recorded; Finance can record the rate (with its source) on the "
+                             "case" if code == "DUTY_RATE_SOURCE_ABSENT" else
+                             "no HS code is cited for the item and no duty rate is recorded; "
+                             "Procurement can give the HS code, Finance the rate")
+                            + f"; the estimate applies {fallback_label} {_dec_str(rate)} as a "
+                            "labelled assumption", "duty_estimate", "classification",
+                            line=labels[oid], who=who)
+                duty_shares.append(rate * weight)
+            if row_steps:
+                shown = row_steps[:10] + ([f"... {len(row_steps) - 10} more"]
+                                          if len(row_steps) > 10 else [])
+                listed.append("assumption: duty at the FileMaker supplier row tariff (tariff_c "
+                              "on the FileMaker replica supplier row of the order's own "
+                              f"supplier for the line's item) on {len(row_steps)} of "
+                              f"{len(line_ids)} line(s); {DUTY_RULE_PENDING}, so each rate is "
+                              "an assumption: " + "; ".join(shown))
+            if fallback and set_rate is not None:
+                listed.append(f"assumption: duty at the Portal rate settings tariff_rate "
+                              f"{_dec_str(set_rate)} ({set_names}, public.app_rate_settings) on "
+                              f"{len(fallback)} line(s): a flat rate, not the item's; "
+                              f"{DUTY_RULE_PENDING} (see the estimate duty gap)")
+            elif fallback:
+                listed.append(f"assumption: duty at the Portal default tariffRate "
+                              f"{_dec_str(default_rate)} ({PORTAL_SOURCES['rate_defaults']}); no "
+                              "duty rate is cited or recorded (see the estimate duty gap)")
+    if any(_entry_text(hs_of.get(oid)) and oid not in row_rated | withheld
+           for oid in line_ids):
         listed.append("tariff: the ontology projects no duty rate for a cited HS code")
+    listed += _part_steps(freight_basis=freight_basis, freight_label=freight_label,
+                          duty_basis=duty_basis, history=history, actuals=actuals)
 
     line_totals: list[Decimal] = []
     for oid, entry, share, duty in zip(line_ids, lines, freight_shares, duty_shares):
+        if oid in withheld:
+            entry["steps"] = ["no estimate: the duty rate this line rests on is not readable "
+                              "for this reader (see the estimate duty gaps)", label]
+            continue
         price, qty = prices[oid], quantities[oid]
         unit = unit_token(qty.get("unit"))
         entry.update(unit=f"{target}/{unit}"[:20])
@@ -3776,21 +4254,23 @@ def _pre_receipt_estimate(*, name: str, target: str | None, line_ids: Sequence[s
         # already the actual-cost lines' inputs, and naming them on every estimate line would
         # make them shared across all answer pages (result_too_large on a long PO). The line's
         # own cited price and quantity are its basis object and its compute steps.
-        header_used = [*freight_entries] + (
-            [duty_est] if duty_from and duty_est and handle(duty_est) in duty_from else [])
+        header_used = [*freight_entries, *own[oid]]
         entry["inputs"] = list(dict.fromkeys(e["name"] for e in header_used if e))[:50]
         entry["basis"] = sorted({oid} | {e["object_id"] for e in header_used
                                          if e and e.get("object_id")})[:100]
         costs = [{"name": "goods", "category": "goods",
-                  **(_corrected_input(price, f"{target}/{unit}", target) or {
+                  **({**net_goods[oid], "unit": f"{target}/{unit}", "currency": target}
+                     if oid in net_goods else
+                     _corrected_input(price, f"{target}/{unit}", target) or {
                       "citation": handle(price), "field": price["citation"]["field_path"],
                       "unit": f"{target}/{unit}", "currency": target})},
                  {"name": "freight", "category": "freight", "unit": target, "currency": target,
                   "derived": {"value": _dec_str(share), "from": freight_from,
                               "rule": f"estimate freight: {freight_label} "
-                                      f"{_dec_str(freight_total)} {target} {ESTIMATE_BASIS}"}},
+                                      f"{money_text(freight_total, target)} {target} "
+                                      f"{ESTIMATE_BASIS}"}},
                  {"name": "duty", "category": "duty", "unit": target, "currency": target,
-                  "derived": {"value": _dec_str(duty), "from": duty_from, "rule": duty_rule}}]
+                  "derived": {"value": _dec_str(duty), "from": from_of[oid], "rule": rule_of[oid]}}]
         try:
             record = compute_landed_cost(costs, _corrected_input(qty, unit) or {
                 "citation": handle(qty), "field": qty["citation"]["field_path"], "unit": unit},
@@ -3798,18 +4278,18 @@ def _pre_receipt_estimate(*, name: str, target: str | None, line_ids: Sequence[s
         except (ValidationError, ArithmeticError) as exc:
             unknown(_code_of(str(exc)), "estimate inputs",
                     "the landed-cost engine refused the estimate inputs", line=entry["name"])
-            entry["steps"] = [f"refused: {_code_of(str(exc))}", ESTIMATE_LABEL]
+            entry["steps"] = [f"refused: {_code_of(str(exc))}", label]
             continue
         for item in record["unknowns"]:
             unknown(_code_of(item["reason"]), f"estimate {item['input']}",
                     f"{item['reason']} for this reader", line=entry["name"],
                     who=item.get("who_can_answer") or "PROC")
         rules = [f"goods: {price['name']} x {qty['name']} (this line's cited inputs)",
-                 f"freight share: {_dec_str(share)} {target} of the {freight_label} "
-                 f"{_dec_str(freight_total)} {target}, {ESTIMATE_BASIS}",
-                 f"duty: {_dec_str(duty)} {target}; {duty_rule}"]
+                 f"freight share: {money_text(share, target)} {target} of the {freight_label} "
+                 f"{money_text(freight_total, target)} {target}, {ESTIMATE_BASIS}",
+                 f"duty: {money_text(duty, target)} {target}; {rule_of[oid]}", *notes[oid]]
         entry["steps"] = ([s[:MAX_STEP_CHARS] for s in record["steps"]][:30]
-                          + [s[:MAX_STEP_CHARS] for s in rules + listed] + [ESTIMATE_LABEL])
+                          + [s[:MAX_STEP_CHARS] for s in rules + listed] + [label])
         entry["digest"] = record["digest"]
         if record["status"] == "computed":
             entry["value"] = record["per_unit"]["value"]
@@ -3819,29 +4299,38 @@ def _pre_receipt_estimate(*, name: str, target: str | None, line_ids: Sequence[s
     computed = len(line_totals) == len(line_ids)
     duty_total = sum(duty_shares, Decimal(0))
     sub = goods_total + freight_total
-    subtotal["steps"] = [goods_step, f"freight: {_dec_str(freight_total)} {target} "
+    subtotal["steps"] = [goods_step, f"freight: {money_text(freight_total, target)} {target} "
                          f"({freight_label}), {ESTIMATE_BASIS}"[:MAX_STEP_CHARS],
-                         f"subtotal: goods + freight = {_dec_str(sub)} {target}",
-                         ESTIMATE_LABEL]
+                         f"subtotal: goods + freight = {money_text(sub, target)} {target}",
+                         label]
     if not computed:
         subtotal["steps"].insert(-1, "not every line's cited inputs resolved for this reader "
                                      "(see the gaps); no subtotal is stated")
         total["steps"] = [f"{len(line_ids) - len(line_totals)} of {len(line_ids)} estimate "
-                          "line(s) have no value; no estimate is stated", ESTIMATE_LABEL]
+                          "line(s) have no value; no estimate is stated", label]
         return out
     subtotal["value"] = _dec_str(sub)
     subtotal["digest"] = _sha(_canon({"steps": subtotal["steps"]}))
     estimate = sum(line_totals, Decimal(0))
-    steps = [f"{e['name']}: total {_dec_str(v)} {target}" for e, v in zip(lines, line_totals)]
+    steps = [f"{e['name']}: total {money_text(v, target)} {target}"
+             for e, v in zip(lines, line_totals)]
     steps = steps[:20] + ([f"... {len(steps) - 20} more line(s)"] if len(steps) > 20 else [])
-    steps += [f"subtotal (goods + freight): {_dec_str(sub)} {target}",
-              f"duty: {_dec_str(duty_total)} {target}", *listed,
+    steps += [f"subtotal (goods + freight): {money_text(sub, target)} {target}",
+              f"duty: {money_text(duty_total, target)} {target}", *listed,
               *([currency_step] if currency_step else [])]
-    if default:
-        steps.append(f"range: {_dec_str(sub)} {target} (no duty) to {_dec_str(estimate)} "
-                     f"{target} (duty at the Portal default tariffRate)")
-    steps.append(ESTIMATE_LABEL)
-    total.update(value=_dec_str(estimate), steps=[s[:MAX_STEP_CHARS] for s in steps][:40],
+    if fallback and len(fallback) == len(line_ids):
+        steps.append(f"range: {money_text(sub, target)} {target} (no duty) to "
+                     f"{money_text(estimate, target)} "
+                     f"{target} (duty at {fallback_label})")
+    elif fallback:
+        at = {oid: d for oid, d in zip(line_ids, duty_shares)}
+        low = estimate - sum((at[oid] for oid in fallback), Decimal(0))
+        steps.append(f"range: {money_text(low, target)} {target} (no duty on the "
+                     f"{len(fallback)} line(s) "
+                     f"at {fallback_label.replace(' tariffRate', '')}) to "
+                     f"{money_text(estimate, target)} {target} (duty at {fallback_label})")
+    steps = [s[:MAX_STEP_CHARS] for s in steps][:39] + [label]
+    total.update(value=_dec_str(estimate), steps=steps,
                  digest=_sha(_canon({"lines": [e.get("digest") for e in lines],
                                      "steps": steps})))
     total["inputs"] = list(dict.fromkeys([subtotal["name"]] + total["inputs"]))[:50]
@@ -3895,6 +4384,28 @@ def plan_check(args: Mapping[str, Any], doc: Mapping[str, Any], index: int,
                                    link["from"] != box.get("object_type")):
             out.append("item_twin_link must be a declared link between records of the "
                        "units_per_box's type")
+    if len(types_of(SUPPLIER_ROW_ROLES)) > 1:
+        out.append("the supplier row roles must be read from one object type")
+    if "receipt_currency" in roles and len(types_of(
+            ("receipt_freight", "receipt_duty", "receipt_currency"))) > 1:
+        out.append("the receipt roles must be read from one object type")
+    if set(SUPPLIER_ROW_ROLES) & set(roles) and not all(args.get(a) for a in SUPPLIER_LINK_ARGS):
+        out.append("the supplier row roles need " + ", ".join(SUPPLIER_LINK_ARGS))
+    if set(TIER_ROLES) & set(roles):
+        tier_types = types_of(TIER_ROLES)
+        if not set(TIER_ROLES) <= set(roles):
+            out.append("the FileMaker tier roles need " + " and ".join(TIER_ROLES))
+        if len(tier_types) > 1:
+            out.append("the FileMaker tier roles must be read from one object type")
+        if not args.get(TIER_LINK_ARG) or not all(args.get(a) for a in SUPPLIER_LINK_ARGS):
+            out.append("the FileMaker tier roles need " + ", ".join(
+                (TIER_LINK_ARG,) + SUPPLIER_LINK_ARGS))
+        link = links.get(args.get(TIER_LINK_ARG))
+        row_link = links.get(args.get("supplier_link"))
+        if schema is not None and (link is None or {link["from"]} != tier_types or
+                                   row_link is None or link["to"] != row_link["from"]):
+            out.append("tier_link must be a declared link from the tier type to the supplier "
+                       "row type")
     for group, first, link_arg in ((QUOTE_ROLES, "quote_amount", "quote_link"),
                                    (CONFIRMATION_ROLES, "confirmation_amount",
                                     "confirmation_link")):
@@ -3930,6 +4441,37 @@ def _entry_decimal(entry: Mapping[str, Any] | None) -> Decimal | None:
     except ArithmeticError:
         return None
     return number if number.is_finite() else None
+
+
+def supplier_tariff_rate(entry: Mapping[str, Any] | None) -> Decimal | None:
+    """The duty rate (a fraction in [0, 1]) a FileMaker supplier row's ``tariff_c`` states,
+    only when it is written with its unit: text ``N%`` (``4%``, ``4 %``, ``6.5%``), or a
+    number whose cited unit is ``%``/``percent``/``pct`` (divided by 100) or
+    ``ratio``/``fraction`` (as is). Anything else (a bare number, whose unit nobody has
+    stated, a float, words, a sign, a rate over 100%) is None: never guessed."""
+    if entry is None:
+        return None
+    value = entry.get("value")
+    if isinstance(value, Mapping) or (isinstance(value, str) and "%" in value):
+        text = _entry_text(entry)
+        match = _TARIFF_PERCENT.fullmatch(text or "")
+        rate = Decimal(match.group(1)) / 100 if match else None
+    else:
+        scale = _TARIFF_UNITS.get(unit_token(entry.get("unit")) or "")
+        number = _entry_decimal(entry)
+        rate = number / scale if scale is not None and number is not None else None
+    return rate if rate is not None and Decimal(0) <= rate <= Decimal(1) else None
+
+
+def rate_setting_tariff(entry: Mapping[str, Any] | None) -> Decimal | None:
+    """The Portal rate settings ``tariff_rate``: a decimal fraction in [0, 1] (the Portal
+    stores tariffRate as a fraction, rate-masters.ts); a percent sign, a float, text or a
+    value outside [0, 1] is None."""
+    value = (entry or {}).get("value")
+    if isinstance(value, str) and "%" in value:
+        return None
+    number = _entry_decimal(entry)
+    return number if number is not None and Decimal(0) <= number <= Decimal(1) else None
 
 
 def person_correction(entry: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
@@ -4177,12 +4719,531 @@ def _quote_record(quote: Mapping[str, Mapping[str, Any] | None], *, as_of: str,
     return out, found, None if usable else (amount, currency), conflicts
 
 
+def _evidence_edge(edge: Mapping[str, Any]) -> bool:
+    """An edge an amount may rest on: no tier stated (a stored link) or a tier at or above the
+    traversal's default floor (``stored_by_text_join``); a lead-tier edge (an unconfirmed
+    twin, a text match) never is."""
+    from .ontology_tools_traverse import DEFAULT_TIER_FLOOR, TIER_ORDER
+    tier = edge.get("tier")
+    return tier is None or tier in TIER_ORDER[:TIER_ORDER.index(DEFAULT_TIER_FLOOR) + 1]
+
+
+def _closed(seeds: set[str], pairs: Sequence[tuple[str, str]]) -> set[str]:
+    """``seeds`` with every record a twin pair joins to them, transitively."""
+    out, grew = set(seeds), True
+    while grew:
+        grew = False
+        for one, other in pairs:
+            if (one in out) != (other in out):
+                out |= {one, other}
+                grew = True
+    return out
+
+
+def _supplier_rows(args: Mapping[str, Any], edges: Sequence[Mapping[str, Any]],
+                   line_ids: Sequence[str], po_ids: set[str]) -> dict[str, list[str]]:
+    """The FileMaker replica supplier rows of each line: a row (``supplier_item_link``) for the
+    line's item (``item_link``, closed over ``item_twin_link``) offered (``supplier_link``) by
+    the purchase order's own supplier (``po_supplier_link`` from the order, closed over
+    ``supplier_twin_link``). Only edges an amount may rest on count; a plan naming none of the
+    three supplier links reads no row."""
+    if not all(args.get(arg) for arg in SUPPLIER_LINK_ARGS):
+        return {oid: [] for oid in line_ids}
+    strong = [e for e in edges if _evidence_edge(e) and isinstance(e.get("from"), str)
+              and isinstance(e.get("to"), str)]
+
+    def pairs(arg: str) -> list[tuple[str, str]]:
+        return [(e["from"], e["to"]) for e in strong if args.get(arg)
+                and e.get("link_type") == args[arg]]
+    suppliers = _closed({to for one, to in pairs("po_supplier_link") if one in po_ids},
+                        pairs("supplier_twin_link"))
+    offered = {}
+    for row, supplier in pairs("supplier_link"):
+        offered.setdefault(row, set()).add(supplier)
+    item_twins = pairs("item_twin_link")
+    out: dict[str, list[str]] = {}
+    for oid in line_ids:
+        items = _closed({to for one, to in pairs("item_link") if one == oid}, item_twins)
+        out[oid] = sorted({row for row, item in pairs("supplier_item_link")
+                           if item in items and offered.get(row, set()) & suppliers})
+    return out
+
+
+def _row_inputs(got: Mapping[str, Sequence[Mapping[str, Any]]],
+                rows_of: Mapping[str, Sequence[str]]) -> dict[str, dict[str, Any]]:
+    """Per line, the supplier rows' duty inputs (``_pre_receipt_estimate``'s ``rows``): the
+    one rate their ``tariff_c`` states (``supplier_tariff_rate``), its entries, a ``problem``
+    (code, detail) when a row's rate is unreadable or the rows state different rates (then no
+    rate), and the rows' HS code and origin entries. Details name entries, never values."""
+    out: dict[str, dict[str, Any]] = {}
+    for oid, rows in rows_of.items():
+        def on_rows(role: str) -> list[Mapping[str, Any]]:
+            return [e for e in got[role] if e.get("object_id") in rows
+                    and e.get("value") is not None]
+        # An empty tariff_c states no rate: absent, as a row with no tariff_c is, never a gap.
+        tariffs = [e for e in on_rows("supplier_tariff") if not _blank(e.get("value"))]
+        rates = [supplier_tariff_rate(e) for e in tariffs]
+        names = ", ".join(e["name"] for e in tariffs)[:200]
+        problem = None
+        if any(r is None for r in rates):
+            bad = ", ".join(e["name"] for e, r in zip(tariffs, rates) if r is None)[:200]
+            problem = ("SUPPLIER_TARIFF_UNREADABLE",
+                       f"{bad} (tariff_c on the FileMaker replica supplier row) is not written "
+                       "as a rate with its unit (N%, or a value cited in %, percent or ratio, "
+                       "between 0 and 100%); it is not applied")
+        elif len(set(rates)) > 1:
+            problem = ("SUPPLIER_TARIFF_RECORDS_DISAGREE",
+                       f"the supplier rows of the order's supplier for the item ({names}) state "
+                       f"{len(set(rates))} different tariff_c rates; none is chosen")
+        out[oid] = {"rate": rates[0] if rates and problem is None else None,
+                    "entries": tariffs if problem is None else [], "problem": problem,
+                    "hs": [e for e in on_rows("supplier_hs_code") if _entry_text(e)],
+                    "origin": [e for e in on_rows("supplier_origin") if _entry_text(e)]}
+    return out
+
+
+def _blank(value: Any) -> bool:
+    """A cell stating nothing: text (or untrusted text) that is empty or whitespace only."""
+    if isinstance(value, Mapping) and set(value) <= {"untrusted_text"}:
+        value = value.get("untrusted_text")
+        return value is None or (isinstance(value, str) and not value.strip())
+    return isinstance(value, str) and not value.strip()
+
+
+def _rate_setting(found: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+    """The Portal rate settings ``tariff_rate`` (``_pre_receipt_estimate``'s ``setting``):
+    the one rate every cited value states, else a ``problem`` and no rate; None when no value
+    was read."""
+    stated = [e for e in found if e.get("value") is not None]
+    if not stated:
+        return None
+    rates = [rate_setting_tariff(e) for e in stated]
+    names = ", ".join(e["name"] for e in stated)[:200]
+    if any(r is None for r in rates):
+        bad = ", ".join(e["name"] for e, r in zip(stated, rates) if r is None)[:200]
+        return {"rate": None, "entries": [], "problem":
+                f"{bad} (public.app_rate_settings tariff_rate) is not a decimal fraction "
+                "between 0 and 1; it is not applied"}
+    if len(set(rates)) > 1:
+        return {"rate": None, "entries": [], "problem":
+                f"the rate settings records ({names}) state {len(set(rates))} different "
+                "tariff_rate values; none is applied"}
+    return {"rate": rates[0], "entries": stated, "problem": None}
+
+
+def _fm_tiers(args: Mapping[str, Any], edges: Sequence[Mapping[str, Any]],
+           rows_of: Mapping[str, Sequence[str]]) -> dict[str, list[str]]:
+    """Per line, the FileMaker price tiers (``tierpricing``) of its supplier rows: a tier
+    joined (``tier_link``, tier -> row) to one of the line's rows by an edge an amount may
+    rest on. A plan naming no ``tier_link`` reads no tier."""
+    link = args.get(TIER_LINK_ARG)
+    if not link:
+        return {oid: [] for oid in rows_of}
+    joined = [(e["from"], e["to"]) for e in edges if e.get("link_type") == link
+              and _evidence_edge(e) and isinstance(e.get("from"), str)
+              and isinstance(e.get("to"), str)]
+    return {oid: sorted({tier for tier, row in joined if row in rows})
+            for oid, rows in rows_of.items()}
+
+
+def _chosen_tier(tiers: Sequence[str], ordered: Mapping[str, Any] | None,
+                 least: Sequence[Mapping[str, Any]], figures: Sequence[Mapping[str, Any]],
+                 reader: "_Reader") -> tuple[Mapping[str, Any] | None, str | None]:
+    """The FileMaker figure of the tier the line's ordered quantity reaches, else why not.
+
+    The rule (devloop/DECISIONS/2026-10-21-landed-cost-real-inputs-wiring.md, the Portal's
+    ``pickSupplierCardTierPrice``): the tier with the highest minimum quantity at or below
+    the ordered quantity, in Decimal, with no fallback. Every tier's minimum quantity must be
+    a number cited in the line's ordered unit and re-read for the reader (a tier it cannot
+    read could be the one reached); tiers sharing that minimum must state one figure."""
+    count, unit = _entry_decimal(ordered), unit_token((ordered or {}).get("unit"))
+    if not tiers:
+        return None, "no FileMaker tier price (tierpricing) on the supplier row"
+    if count is None or unit is None or count <= 0:
+        return None, "no ordered quantity to choose a FileMaker tier by"
+    minimum: dict[str, Decimal] = {}
+    for tier in tiers:
+        stated = [e for e in least if e.get("object_id") == tier and e.get("value") is not None]
+        values = {_entry_decimal(e) for e in stated}
+        if not stated or None in values or len(values) > 1:
+            return None, "a FileMaker tier quantity is not one readable number"
+        if any(unit_token(e.get("unit")) != unit for e in stated):
+            return None, "a FileMaker tier quantity is not in the line's ordered unit"
+        if not all(e.get("citation") and reader.resolve(e["citation"]["l1_handle"]) is not None
+                   for e in stated):
+            return None, "a FileMaker tier quantity is not readable for this reader"
+        minimum[tier] = values.pop()
+    reached = [m for m in minimum.values() if m <= count]
+    if not reached:
+        return None, "no FileMaker tier starts at or below the ordered quantity"
+    chosen = [t for t, m in minimum.items() if m == max(reached)]
+    found = [e for e in figures if e.get("object_id") in chosen]
+    if not found:
+        return None, "the FileMaker tier the ordered quantity reaches records no figure"
+    if len({str(e["value"]) for e in found}) > 1:
+        return None, "the FileMaker tiers the ordered quantity reaches state different figures"
+    return found[0], None
+
+
+def _fm_agreement(*, name: str, target: str | None, line_ids: Sequence[str],
+                  quantities: Mapping[str, Mapping[str, Any]],
+                  tiers_of: Mapping[str, Sequence[str]], found: Sequence[Mapping[str, Any]],
+                  least: Sequence[Mapping[str, Any]],
+                  ours: Mapping[str, tuple[Any, str]], currency_handles: Sequence[str],
+                  resolver: Resolver | None, actor: Any) -> list[dict[str, Any]]:
+    """FileMaker's recorded landed cost (``dlt_costlanded_c`` on the price tier of the line's
+    supplier row its ordered quantity reaches, ``_chosen_tier``) against ours, per line, as
+    counts only: agree (within ``FM_AGREEMENT_TOLERANCE`` of FileMaker's figure per unit),
+    differ, or missing (with why). No amount is stated: the entry's value is null and its
+    steps name lines, outcomes and the tier figure compared. FileMaker's figure is re-read
+    for the actor; a line whose figure or whose own amount this reader cannot read is
+    missing. FileMaker's figure is what FileMaker recorded, never an actual. Empty when the
+    run reached no FileMaker figure."""
+    stated = [e for e in found if e.get("value") is not None]
+    if not stated:
+        return []
+    reader = _Reader(resolver, actor)
+    ours_readable = all(reader.resolve(h) is not None for h in currency_handles)
+    steps: list[str] = []
+    counts = {"agree": 0, "differ": 0, "missing": 0}
+    inputs: list[str] = []
+    basis: set[str] = set()
+    for index, oid in enumerate(line_ids, start=1):
+        label = f"{name}_line_{index}"[:64]
+        value, mode = ours.get(oid, (None, "estimate"))
+        unit = unit_token((quantities.get(oid) or {}).get("unit"))
+        entry, outcome = _chosen_tier(tiers_of.get(oid, ()), quantities.get(oid), least,
+                                      stated, reader)
+        outcome = f"missing ({outcome})" if outcome else None
+        if outcome is None and (target is None or unit is None or
+                                entry.get("currency") != target or
+                                _fm_unit(entry.get("unit"), target) != unit):
+            outcome = "missing (FileMaker's figure is not in the line's currency per its unit)"
+        elif outcome is None and (value is None or not ours_readable):
+            outcome = f"missing (no {mode} for this reader)"
+        if outcome is None:
+            try:
+                _, fm, _, why = reader.read(entry["name"], {
+                    "citation": entry["citation"]["l1_handle"],
+                    "field": entry["citation"]["field_path"],
+                    "unit": f"{target}/{unit}", "currency": target})
+            except (ValidationError, ArithmeticError, ValueError, KeyError, TypeError):
+                fm, why = None, "unreadable"
+            if fm is None or why is not None or fm <= 0:
+                outcome = "missing (FileMaker's figure is not a readable amount for this reader)"
+            else:
+                agree = abs(Decimal(str(value)) - fm) <= fm * FM_AGREEMENT_TOLERANCE
+                outcome = (f"{'agree' if agree else 'differ'} (our {mode} against FileMaker's "
+                           f"recorded dlt_costlanded_c {entry['name']})")
+            inputs.append(entry["name"])
+            basis.add(entry["object_id"])
+        counts[outcome.split(" ", 1)[0]] += 1
+        steps.append(f"{label}: {outcome}"[:MAX_STEP_CHARS])
+        inputs.append(label)
+    shown = steps[:38] + ([f"... {len(steps) - 38} more line(s)"] if len(steps) > 38 else [])
+    shown.append(f"counts: agree {counts['agree']}, differ {counts['differ']}, missing "
+                 f"{counts['missing']} (within {_dec_str(FM_AGREEMENT_TOLERANCE * 100)}% of "
+                 "FileMaker's recorded dlt_costlanded_c per unit, at the tier the ordered "
+                 "quantity reaches; counts only, no amount is stated)")
+    return [{"name": f"{name}_fm_agreement"[:64], "kind": "computed", "value": None,
+             "inputs": list(dict.fromkeys(inputs))[:50], "steps": shown,
+             "basis": sorted(basis)[:100], "check": "not_applicable"}]
+
+
+def _fm_unit(unit: Any, target: str) -> str | None:
+    """The quantity unit a FileMaker per-unit figure is cited per: ``ea``, or ``USD/ea`` in
+    the target currency; None for anything else."""
+    if not isinstance(unit, str):
+        return None
+    if "/" in unit:
+        currency, per = unit.split("/", 1)
+        return unit_token(per) if currency.strip().upper() == target else None
+    return unit_token(unit)
+
+
+_ACTUALS_SUBJECT = "purchase order recorded charges"
+_GAP_CODE = re.compile(r"[A-Z][A-Z0-9_]{0,79}")
+
+
+HISTORY_LEVEL_TEXT = {"supplier": "this purchase order's supplier",
+                      "country": "suppliers in the supplier's recorded country",
+                      "all": "all suppliers (company-wide)"}
+HISTORY_METHOD_TEXT = {
+    "median_of_po_rates": "median effective rate of POs with charges linked by reference",
+    "pooled_period_ratio": "Sage AP charges / goods received, pooled by quarter (no charge "
+                           "names a PO)"}
+_HISTORY_KEYS = frozenset(("rate", "level", "method", "n", "unit", "period", "median", "q1", "q3",
+                           "includes_brokerage"))
+_HISTORY_PERIOD = re.compile(r"\d{4}-(?:\d{2}|Q[1-4])\.\.\d{4}-(?:\d{2}|Q[1-4])|undated")
+
+
+def _history_estimate(rec: Any, part: str, *, default: bool = False) -> dict[str, Any] | None:
+    """A capture-built history estimate (``duty_actual.history_from_rates`` /
+    ``aggregate_ratio``), validated, or None: nothing unknown is accepted (an extra or missing
+    key, a level or method the engine does not word, a rate outside (0, the kind's ceiling], a
+    spread outside [0, ceiling] or out of order, a sample below
+    ``duty_actual.HISTORY_MIN_SAMPLE`` of its unit (``_history_too_small``), a period not in
+    its form). A company-wide ``default`` must be level ``all``."""
+    from . import duty_actual as da
+    if not isinstance(rec, Mapping) or set(rec) != _HISTORY_KEYS:
+        return None
+    if rec["level"] not in HISTORY_LEVEL_TEXT or (default and rec["level"] != "all") \
+            or rec["method"] not in HISTORY_METHOD_TEXT \
+            or da.HISTORY_METHODS.get(rec["method"]) != rec["unit"] \
+            or not isinstance(rec["n"], int) or isinstance(rec["n"], bool) \
+            or rec["n"] < da.HISTORY_MIN_SAMPLE[rec["unit"]] \
+            or not isinstance(rec["period"], str) \
+            or not _HISTORY_PERIOD.fullmatch(rec["period"]) \
+            or not isinstance(rec["includes_brokerage"], bool):
+        return None
+    ceiling = Decimal(da.kind_rules(part)["max_plausible_rate"])
+    values: dict[str, Decimal] = {}
+    for key in ("rate", "median", "q1", "q3"):
+        if not isinstance(rec[key], str):
+            return None
+        try:
+            values[key] = Decimal(rec[key])
+        except ArithmeticError:
+            return None
+        if not values[key].is_finite() or values[key] < 0 or values[key] > ceiling:
+            return None
+    if values["rate"] <= 0 or not values["q1"] <= values["median"] <= values["q3"]:
+        return None
+    return {**{k: rec[k] for k in ("level", "method", "n", "unit", "period",
+                                    "includes_brokerage")},
+            **{k: _dec_str(v) for k, v in values.items()}}
+
+
+def _history_too_small(rec: Any) -> bool:
+    """True when ``rec`` is a history estimate whose sample (``n`` of a known unit) is below
+    ``duty_actual.HISTORY_MIN_SAMPLE``: too few purchase orders or quarters to estimate from."""
+    from . import duty_actual as da
+    if not isinstance(rec, Mapping):
+        return False
+    n, floor = rec.get("n"), da.HISTORY_MIN_SAMPLE.get(str(rec.get("unit")))
+    return isinstance(n, int) and not isinstance(n, bool) and floor is not None and n < floor
+
+
+def _history_sample_gap(part: str, unknown: Callable[..., None], small: int) -> None:
+    from . import duty_actual as da
+    unknown("HISTORY_SAMPLE_TOO_SMALL", f"history {part} estimate",
+            f"{small} {part} estimate(s) from PLX history in the capture rest on fewer than "
+            f"{da.HISTORY_MIN_SAMPLE['purchase_orders']} purchase orders or "
+            f"{da.HISTORY_MIN_SAMPLE['quarters']} quarters; none of them is used",
+            holds=False, who="FIN")
+
+
+def _history_label(est: Mapping[str, Any], part: str) -> str:
+    """The basis of a history estimate, worded: level, method, sample, period and spread."""
+    return (f"ESTIMATED FROM PLX HISTORY ({part}), not recorded for this PO: "
+            f"{HISTORY_LEVEL_TEXT[est['level']]}, {HISTORY_METHOD_TEXT[est['method']]}; rate "
+            f"{est['rate']} over {est['n']} {est['unit'].replace('_', ' ')}, {est['period']}; "
+            f"spread median {est['median']}, IQR {est['q1']} to {est['q3']}"
+            + ("; includes brokerage"
+               if est["includes_brokerage"] else ""))
+
+
+def _actuals_note(got: Mapping[str, Any]) -> str:
+    return f"capture {str(got.get('digest'))[:16]} built {str(got.get('built_at'))[:32]}"
+
+
+def _history_defaults(got: Mapping[str, Any], cite: str, unknown: Callable[..., None],
+                      note: str) -> dict[str, dict[str, Any]]:
+    """The capture's company-wide history estimates (level ``all``), validated and labelled,
+    for a reader shown no recorded charge; each part without a usable one is named."""
+    defaults = got.get("default_estimates")
+    defaults = defaults if isinstance(defaults, Mapping) else {}
+    history: dict[str, dict[str, Any]] = {}
+    for part in ("duty", "freight"):
+        chosen = (_history_estimate(defaults[part], part, default=True)
+                  if defaults.get(part) is not None else None)
+        if chosen is None and _history_too_small(defaults.get(part)):
+            _history_sample_gap(part, unknown, 1)
+        elif defaults.get(part) is not None and chosen is None:
+            unknown("HISTORY_ESTIMATE_UNUSABLE", f"history {part} estimate",
+                    f"the company-wide {part} estimate from PLX history in the capture does "
+                    "not validate; it is not used", holds=False, who="FIN")
+        if chosen is None:
+            unknown("HISTORY_ESTIMATE_NOT_AVAILABLE", f"history {part} estimate",
+                    f"the capture holds no usable company-wide {part} estimate from PLX "
+                    "history", holds=False, who="FIN")
+            continue
+        history[part] = {**chosen, "basis": "estimated_from_history", "_source": cite,
+                         "label": _history_label(chosen, part), "note": note}
+    return history
+
+
+def _recorded_actuals(numbers: Sequence[str], landed_actuals: Callable[[Sequence[str]], Any],
+                      cite: str, unknown: Callable[..., None]
+                      ) -> tuple[dict[str, dict[str, Any]], dict[str, Any] | None,
+                                 dict[str, dict[str, Any]]]:
+    """The purchase order's recorded duty and freight rates and its incoterm from the
+    capture-built charges (``duty_actual.ActualsFile``, through the reader's finance gate),
+    looked up by the PO numbers its own records state. -> (``{part: actual}``, incoterm,
+    ``{part: history estimate}``).
+
+    A part with no usable actual gets the estimate from PLX history the capture resolved for
+    the order (its supplier's, else its country's), else the capture's company-wide estimate;
+    numbers of one order that carry different estimates fall back to the company-wide one
+    (HISTORY_ESTIMATES_DISAGREE). An estimate that does not validate is named
+    (HISTORY_ESTIMATE_UNUSABLE) and never used; none at all is HISTORY_ESTIMATE_NOT_AVAILABLE.
+    Each history estimate is labelled ``estimated_from_history`` with its basis.
+
+    Every outcome that is not a usable rate is a named gap that does not by itself make the
+    answer partial (the line's freight or duty gap does): a reader who lacks the finance
+    marking (ACTUAL_CHARGES_WITHHELD), no capture on this host, a number the capture never
+    linked against, numbers of one order carrying different charges, a rate the capture
+    flagged (its plausibility code) or one that is not a rate within the kind's ceiling, and
+    no recorded incoterm. A usable actual cites ``cite`` (a record of this purchase order the
+    run read for this reader) and names the capture it came from."""
+    from . import duty_actual as da
+    from . import hs_tariff
+    keys = sorted({k for k in (da.po_key(n) for n in numbers) if k})
+    if not keys:
+        unknown("PO_NUMBER_UNCITED", _ACTUALS_SUBJECT,
+                "no record of the purchase order states its number, so no recorded duty or "
+                "freight charge is looked up", "po_number", holds=False, who="PROC")
+        return {}, None, {}
+    got = landed_actuals(keys)
+    got = got if isinstance(got, Mapping) else {"unavailable": "LANDED_ACTUALS_UNREADABLE"}
+    if got.get("withheld"):
+        unknown("ACTUAL_CHARGES_WITHHELD", _ACTUALS_SUBJECT,
+                "recorded duty and freight charges are money, which carries the finance "
+                "marking this reader does not hold; a reader holding it gets them",
+                holds=False, who="FIN")
+        return {}, None, {}
+    if got.get("actuals_withheld"):
+        # A purchasing reader: the recorded charges stay finance-only; the labelled
+        # company-wide estimate from PLX history (a rate, no per-transaction record) applies.
+        unknown("ACTUAL_CHARGES_WITHHELD", _ACTUALS_SUBJECT,
+                "recorded duty and freight charges are money, which carries the finance "
+                "marking this reader does not hold; a reader holding it gets them, and only "
+                "the company-wide estimate from PLX history is used here",
+                holds=False, who="FIN")
+        return {}, None, _history_defaults(got, cite, unknown, _actuals_note(got))
+    if got.get("unavailable") or not isinstance(got.get("records"), Mapping):
+        code = str(got.get("unavailable") or "LANDED_ACTUALS_UNREADABLE")
+        code = code if _GAP_CODE.fullmatch(code) else "LANDED_ACTUALS_UNREADABLE"
+        unknown(code, _ACTUALS_SUBJECT,
+                "the recorded duty and freight charges (Sage AP lines linked to purchase "
+                "orders by a recorded reference at capture time) are not readable on this "
+                "host, so none is used", holds=False, who="FIN")
+        return {}, None, {}
+    records = {k: r for k, r in got["records"].items() if k in keys and isinstance(r, Mapping)}
+    if not set(got.get("known") or ()) & set(keys):
+        unknown("PO_NOT_IN_CHARGE_CAPTURE", _ACTUALS_SUBJECT,
+                "the purchase order's number is not one the recorded charges were linked "
+                "against at capture time, so no charge was looked for", holds=False, who="FIN")
+    note = _actuals_note(got)
+    out: dict[str, dict[str, Any]] = {}
+    for part in ("duty", "freight"):
+        found = [r[part] for r in records.values() if isinstance(r.get(part), Mapping)]
+        if len(found) > 1:
+            unknown("ACTUAL_CHARGES_ON_SEVERAL_PO_NUMBERS", f"recorded {part}",
+                    f"{len(found)} numbers of this purchase order each carry recorded {part} "
+                    "charges; none is chosen", holds=False, who="FIN")
+            continue
+        if not found:
+            continue
+        rec = found[0]
+        ceiling = Decimal(da.kind_rules(part)["max_plausible_rate"])
+        try:
+            rate = Decimal(str(rec.get("rate")))
+        except ArithmeticError:
+            rate = None
+        if rec.get("rate") is None or rate is None or not rate.is_finite() or rate <= 0 \
+                or rate > ceiling:
+            flag = str(rec.get("gap") or "RATE_NOT_A_PLAUSIBLE_NUMBER")
+            flag = flag if _GAP_CODE.fullmatch(flag) else "RATE_NOT_A_PLAUSIBLE_NUMBER"
+            unknown(f"ACTUAL_{part.upper()}_UNUSABLE", f"recorded {part}",
+                    f"recorded {part} charges are linked to the purchase order, but no "
+                    f"usable rate is derived from them ({flag}); none is used",
+                    holds=False, who="FIN")
+            continue
+        out[part] = {"rate": _dec_str(rate), "basis": "actual_recorded", "_source": cite,
+                     "includes_brokerage": bool(rec.get("includes_brokerage")), "note": note}
+    terms = {(str((r.get("incoterm") or {}).get("po") or ""),
+              str((r.get("incoterm") or {}).get("vendor_default") or ""))
+             for r in records.values() if isinstance(r.get("incoterm"), Mapping)}
+    incoterm = None
+    if len(terms) > 1:
+        unknown("INCOTERMS_DISAGREE", "purchase order incoterm",
+                f"{len(terms)} numbers of this purchase order record different incoterms; none "
+                "is applied", holds=False, who="PROC")
+    else:
+        po_term, vendor_term = next(iter(terms), ("", ""))
+        resolved = hs_tariff.resolve_incoterm(po_term, vendor_term)
+        if resolved.get("bearing"):
+            incoterm = {**resolved, "source": cite}
+        else:
+            unknown(resolved.get("gap") or "INCOTERM_NOT_RECORDED", "purchase order incoterm",
+                    "neither the purchase order nor its supplier records an incoterm the rules "
+                    "state, so who bears freight and duty follows no recorded term"
+                    if resolved.get("gap") != "INCOTERM_RULE_NOT_RECORDED" else
+                    "the recorded incoterm is not one the incoterm rules state; it is not "
+                    "applied", holds=False, who="PROC")
+    history: dict[str, dict[str, Any]] = {}
+    defaults = got.get("default_estimates")
+    defaults = defaults if isinstance(defaults, Mapping) else {}
+    for part in ("duty", "freight"):
+        if part in out:
+            continue
+        found: list[dict[str, Any]] = []
+        bad = small = 0
+        for r in records.values():
+            raw = r.get("estimate")
+            raw = raw.get(part) if isinstance(raw, Mapping) else None
+            if raw is None:
+                continue
+            checked = _history_estimate(raw, part)
+            if checked is None and _history_too_small(raw):
+                small += 1
+            elif checked is None:
+                bad += 1
+            elif checked not in found:
+                found.append(checked)
+        chosen = found[0] if len(found) == 1 else None
+        if len(found) > 1:
+            unknown("HISTORY_ESTIMATES_DISAGREE", f"history {part} estimate",
+                    f"{len(found)} numbers of this purchase order carry different {part} "
+                    "estimates from PLX history; the company-wide estimate applies",
+                    holds=False, who="FIN")
+        if chosen is None and defaults.get(part) is not None:
+            chosen = _history_estimate(defaults[part], part, default=True)
+            if chosen is None and _history_too_small(defaults[part]):
+                small += 1
+            else:
+                bad += chosen is None
+        if small:
+            _history_sample_gap(part, unknown, small)
+        if bad:
+            unknown("HISTORY_ESTIMATE_UNUSABLE", f"history {part} estimate",
+                    f"{bad} {part} estimate(s) from PLX history in the capture do not "
+                    "validate; none of them is used", holds=False, who="FIN")
+        if chosen is None:
+            unknown("HISTORY_ESTIMATE_NOT_AVAILABLE", f"history {part} estimate",
+                    f"the capture holds no usable {part} estimate from PLX history for this "
+                    "purchase order", holds=False, who="FIN")
+            continue
+        history[part] = {**chosen, "basis": "estimated_from_history", "_source": cite,
+                         "label": _history_label(chosen, part), "note": note}
+    return out, incoterm, history
+
+
 def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[str, Any]]],
              edges: Sequence[Mapping[str, Any]], *, items: Mapping[str, Mapping[str, Any]],
              name: str, as_of: str, resolver: Resolver | None, actor: Any,
              complete: bool, covers: Callable[[str], bool],
-             assumptions: Sequence[Mapping[str, Any]] | None = None) -> dict[str, Any]:
+             assumptions: Sequence[Mapping[str, Any]] | None = None,
+             withheld: Callable[[str], int | None] | None = None,
+             markings_lacked: Callable[[str], Sequence[str]] | None = None,
+             landed_actuals: Callable[[Sequence[str]], Any] | None = None) -> dict[str, Any]:
     """Computed answer entries, gaps and reason codes for one plan run (see the block above).
+
+    ``landed_actuals`` (the host's capture-built recorded charges behind the reader's finance
+    gate, ``InvestigateTools``): with a ``po_number`` role, the purchase order's recorded duty
+    and freight rates and incoterm (``_recorded_actuals``) feed ``po_line_landed`` and the
+    estimate; without one, nothing changes.
 
     ``evidence``: the answer entries the plan produced, by evidence name; ``edges``: the links
     the run reached; ``items``: the plan's evidence items by name (the gap's searched sources);
@@ -4213,6 +5274,9 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
     received, with no receipt actual posted, also gets the estimate entries (``ESTIMATE_LABEL``,
     ``_estimate``); ``assumptions``: the person-recorded assumptions of the case on this
     purchase order (``duty_assumption`` records; one that does not validate is a gap, never used).
+    ``markings_lacked(evidence name)``: the markings the reader lacks on every property that
+    evidence reads (schema and grant only); a unit price it may not read is UNIT_PRICE_WITHHELD
+    on each line, a reader limit, never UNPRICED_LINE.
     """
     roles = args["roles"]
     got = {role: list(evidence.get(roles.get(role) or "", ())) for role in PLAN_ROLES}
@@ -4279,6 +5343,11 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
         got[role] = kept
     header_ids = {e["object_id"] for role in ("currency", "freight_estimate", "duty_estimate")
                   for e in got[role] if isinstance(e.get("object_id"), str)}
+    # A real input read only through a lead-tier link never feeds a number either: the
+    # supplier row, rate setting or receipt currency it would rest on is not proven this
+    # order's (it stays unused; the line's missing input is named as before).
+    for role in REAL_INPUT_ROLES:
+        got[role] = [e for e in got[role] if e.get("lead_basis") is not True]
 
     # Each cited currency cell is read by the ontology's one rule (``currency_code``: a code
     # in any case, or an ISO code with its own sign attached such as the Portal's ``CAD$``);
@@ -4287,11 +5356,14 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
     currencies = sorted({code or t for t, (code, _) in folded.items()})
     rules = sorted({rule for code, rule in folded.values() if rule and code in currencies})
     target: str | None = None
+    currency_gap: str | None = None
     if not currencies:
+        currency_gap = "CURRENCY_UNCITED"
         unknown("CURRENCY_UNCITED", "purchase order currency",
                 "no record of the purchase order states its currency; none is assumed",
-                "currency")
+                "currency", who="PROC")
     elif len(currencies) > 1:
+        currency_gap = "MIXED_CURRENCY_NO_CITED_RATE"
         valid = [c for c in currencies if c in ISO_4217]
         others = len(currencies) - len(valid)
         unknown("MIXED_CURRENCY_NO_CITED_RATE", "purchase order currency",
@@ -4299,11 +5371,12 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
                 f"{len(currencies)} currencies: " + " and ".join(
                     valid + ([f"{others} value(s) that are not ISO 4217 codes"] if others else []))
                 + "; the ontology projects no exchange rate, so no amount is converted",
-                "currency")
+                "currency", who="PROC")
     elif currencies[0] not in ISO_4217:
+        currency_gap = "CURRENCY_NOT_ISO_4217"
         unknown("CURRENCY_NOT_ISO_4217", "purchase order currency",
                 f"the cited currency ({entry_names('currency')}) is not an ISO 4217 code",
-                "currency")
+                "currency", who="PROC")
     else:
         target = currencies[0]
     currency_step = (f"currency: the cited currency cell(s) read as {target} by the ontology "
@@ -4311,19 +5384,78 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
                      "whose currency is not in doubt)") if target and rules else None
 
     prices, quantities, received = (by_object(r) for r in _LINE_ROLES)
+    prices = dict(prices)
+    # A BC line's directUnitCost is gross (before the line discount; with tax when the
+    # order's pricesIncludeTax is true). Its goods are its amountExcludingTax over its ordered
+    # quantity (a derived net unit cost citing both); else it counts as net only when its
+    # discounts read zero and the order's prices read tax-exclusive; else BC_PRICE_NOT_NET
+    # and the line has no price (no weight, no allocation, no estimate rests on the gross).
+    net_goods: dict[str, dict[str, Any]] = {}
+    net_used: dict[str, Mapping[str, Any]] = {}
+    not_net: dict[str, str] = {}
+    if roles.get("bc_line_amount"):
+        amounts = by_object("bc_line_amount")
+        discounts: dict[str, list[Mapping[str, Any]]] = {}
+        for e in got["bc_line_discount"]:
+            if e.get("object_id") is not None:
+                discounts.setdefault(e["object_id"], []).append(e)
+        incl = [e.get("value") for e in got["prices_include_tax"]
+                if e.get("lead_basis") is not True and e.get("value") is not None]
+        tax_free = bool(incl) and all(v is False or str(v).strip().lower() in ("false", "0")
+                                      for v in incl)
+        for oid, price in list(prices.items()):
+            if price.get("property") != BC_GROSS_PRICE or price.get("value") is None:
+                continue
+            qty, net = quantities.get(oid), amounts.get(oid)
+            amount, count = _entry_decimal(net), _entry_decimal(qty)
+            if amount is not None and amount >= 0 and count is not None and count > 0 \
+                    and net.get("currency") is not None \
+                    and net.get("currency") == price.get("currency") and handle(net):
+                unit = amount / count
+                prices[oid] = {**price, "value": _dec_str(unit), "unit": qty.get("unit")}
+                net_goods[oid] = {"derived": {
+                    "value": _dec_str(unit), "per_quantity_unit": True,
+                    "from": [handle(net), handle(qty)],
+                    "rule": f"BC line {net['name']} (amountExcludingTax: after the line "
+                            f"discount, before tax) / {qty['name']}: the net unit cost "
+                            "(directUnitCost is gross)"}}
+                net_used[oid] = net
+                continue
+            stated = [_entry_decimal(e) for e in discounts.get(oid, ())]
+            if stated and all(d is not None and d == 0 for d in stated) and tax_free:
+                continue
+            why = ("the line records a discount" if any(d for d in stated if d is not None)
+                   else "the order's prices include tax" if incl and not tax_free
+                   else "no line discount and tax-exclusive price is read for it")
+            prices[oid] = {**price, "value": None}
+            not_net[oid] = why
+    # The markings the unit price carries that this reader does not hold (schema and grant
+    # only, never a row): no line is then priced for it, a withheld input, never a missing one.
+    price_lacked = sorted(markings_lacked(roles["unit_price"]) or ()) \
+        if markings_lacked is not None and roles.get("unit_price") else []
+    price_withheld = (f"the unit price carries the {', '.join(price_lacked)} marking, which "
+                      "this reader does not hold") if price_lacked else None
     line_ids = sorted(set(prices) | set(quantities))
     linked = {e["from"] for e in edges if e.get("link_type") == args.get("line_link")}
     unproven = sorted(oid for oid in linked | set(line_ids) if not all(
         (role.get(oid) or {}).get("value") is not None for role in (prices, quantities, received)))
     covered = covers(args["line_link"])
+    # Lines the reader's markings withhold (a count, never a row or an amount): named in the
+    # gaps, never silently dropped; no total or allocation is stated over the lines it reads.
+    held_back = (withheld(args["line_link"]) or 0) if withheld is not None and not covered else 0
     lines_complete = complete and covered and bool(linked) and not unproven
     if not lines_complete:
         if unproven:
             why = (f"{len(unproven)} of {len(linked | set(line_ids))} line(s) of the purchase "
-                   "order were not read with a price, an ordered and a received quantity")
+                   "order were not read with a price, an ordered and a received quantity"
+                   + (f" ({price_withheld})" if price_withheld else ""))
         elif not complete:
             why = ("the run was truncated or cut by its step budget, so the line set is not "
                    "proven complete")
+        elif held_back:
+            why = (f"{held_back} line(s) of the purchase order carry a marking this reader does "
+                   "not hold and are withheld from it, so the lines it reads are not the whole "
+                   "set")
         elif not covered:
             why = ("this reader's read scope is not proven to show every line of the purchase "
                    "order (a marking or a source grant it lacks may withhold one), so the line "
@@ -4335,6 +5467,14 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
                   "set", "unit_price", "quantity", "received")
     item_of = {e["from"]: e["to"] for e in edges if e.get("link_type") == args.get("item_link")}
     classes = by_object("classification")
+    # The order's own records only (those its header values were read from): a line linked to
+    # another purchase order as well never brings that order's supplier's rows.
+    rows_of = _supplier_rows(args, edges, line_ids, header_ids)
+    row_inputs = _row_inputs(got, rows_of)
+    # The HS code a line's duty reads: the item's classification, else its supplier row's.
+    hs_of = {oid: classes.get(item_of.get(oid, "")) or next(iter(row_inputs[oid]["hs"]), None)
+             for oid in line_ids}
+    setting = _rate_setting(got["rate_setting_tariff"])
 
     def grounded(oid: str) -> bool:
         """The line's allocation weight (unit price x received quantity) is a cited amount: its
@@ -4378,10 +5518,53 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
              "quantity": (quantities.get(oid) or {}).get("value"),
              "quantityReceived": (received.get(oid) or {}).get("value")} for oid in line_ids]
 
+    # Recorded duty and freight charges and the incoterm, looked up by the order's own
+    # (non-lead) numbers; each actual cites the order's currency record the run read.
+    # A part with no recorded actual may rest on an estimate from PLX history (a rate, so it
+    # applies to goods in any currency); only the estimate entries use it, labelled.
+    actuals: dict[str, dict[str, Any]] = {}
+    history: dict[str, dict[str, Any]] = {}
+    incoterm_used: dict[str, Any] | None = None
+    po_cite = next((h for h in map(handle, got["currency"]) if h), None)
+    if landed_actuals is not None and roles.get("po_number") and po_cite and target:
+        numbers = [t for t in (_entry_text(e) for e in got["po_number"]
+                               if e.get("lead_basis") is not True) if t]
+        actuals, incoterm_used, history = _recorded_actuals(numbers, landed_actuals, po_cite,
+                                                            unknown)
+
     # Receipt actuals (first receipt of a PO only): read when any receipt value was reached; an
     # actual is used only with a cited currency equal to the target, else that part is unknown.
     receipt: dict[str, Any] | None = None
     receipt_entries = got["receipt_freight"] + got["receipt_duty"]
+    # Receipts of this order the run reached (records this reader may read), whether or not
+    # one records a freight or duty actual.
+    receipts_read = len({e["from"] for e in edges if e.get("link_type") == "Receipt.receives"
+                         and e.get("tier") != "lead"})
+    # The markings this reader lacks on the receipt's actuals (schema and grant only): a
+    # receipt it reads may record an actual it is not shown, which is withheld, not absent.
+    # The same for the header's freight and duty estimates (finance; PO prices are
+    # purchasing_prices): a purchasing reader is not shown them, which is not 'none recorded'.
+    header_lacked = {part: sorted(markings_lacked(roles[role]) or ())
+                     for part, role in (("freight", "freight_estimate"), ("duty", "duty_estimate"))
+                     if roles.get(role) and markings_lacked is not None}
+    header_lacked = {part: lacked for part, lacked in header_lacked.items() if lacked}
+    receipt_lacked = sorted({m for role in ("receipt_freight", "receipt_duty")
+                             if roles.get(role) and markings_lacked is not None
+                             for m in markings_lacked(roles[role]) or ()})
+
+    def currency_records(entry: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+        """The receipt's own currency records (a Sage receipt header's currency)."""
+        return [c for c in got["receipt_currency"] if c.get("object_id") is not None
+                and c.get("object_id") == entry.get("object_id") and _entry_text(c)]
+
+    def receipt_currency_of(entry: Mapping[str, Any]) -> str | None:
+        """The one ISO 4217 code the actual's own currency and its receipt's currency records
+        state, else None (none, or two different ones: never a pick)."""
+        codes = {entry["currency"]} if entry.get("currency") is not None else set()
+        codes |= {currency_code(_entry_text(c))[0] or _entry_text(c)
+                  for c in currency_records(entry)}
+        code = next(iter(codes)) if len(codes) == 1 else None
+        return code if code in ISO_4217 else None
     actual = {part: [e for e in got[role] if _positive(e.get("value"))]
               for part, role in (("freight", "receipt_freight"), ("duty", "receipt_duty"))}
     carriers = sorted({e["object_id"] for found in actual.values() for e in found})
@@ -4393,17 +5576,31 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
                 "them on the first receipt of a purchase order only", "receipt_freight", "receipt_duty")
     else:
         for part, found in actual.items():
-            if found and any(e.get("currency") is None or e.get("currency") != target
+            if found and any(receipt_currency_of(e) is None or receipt_currency_of(e) != target
                              for e in found):
                 blocked.add(part)
                 unknown("RECEIPT_ACTUAL_CURRENCY_UNRECORDED", f"receipt actual {part}",
                         f"the receipt records {part} {found[0]['value']}, which the Portal posts "
                         "over the purchase order estimate, without a cited currency equal to the "
                         "purchase order's", f"receipt_{part}")
+    # A zero actual is no actual (resolvePostedLandedAmounts posts only one above zero): the
+    # Portal keeps the estimate, and whether nothing was charged is the Warehouse's to say.
+    zero_parts = []
+    for part, role in (("freight", "receipt_freight"), ("duty", "receipt_duty")):
+        stated = [_entry_decimal(e) for e in got[role] if e.get("value") is not None]
+        if stated and not actual[part] and all(v is not None and v <= 0 for v in stated):
+            zero_parts.append(part)
+            unknown("RECEIPT_ACTUAL_ZERO", f"receipt actual {part}",
+                    f"the receipt records its {part} actual at zero, which the Portal reads as "
+                    f"no actual posted; the Warehouse can say whether any {part} was charged",
+                    role, holds=False, who="WH")
     usable: dict[str, Mapping[str, Any]] = {}
+    receipt_currency_used: list[Mapping[str, Any]] = []
     if receipt_entries:
         usable = {part: found[0] for part, found in actual.items()
                   if found and part not in blocked}
+        receipt_currency_used = list({id(c): c for e in usable.values()
+                                      for c in currency_records(e)}.values())
         receipt = {"_source": handle(next(iter(usable.values()), receipt_entries[0])),
                    "freightCost": (usable.get("freight") or {}).get("value"),
                    "dutiesCost": (usable.get("duty") or {}).get("value")}
@@ -4590,8 +5787,8 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
         label = f"{name}_line_{index}"
         qty, price = quantities.get(oid), prices.get(oid)
         from_confirmation = confirmed_goods(oid)
-        used = [e for e in (price, qty, received.get(oid), freight_est, duty_est,
-                            classes.get(item_of.get(oid, "")), *receipt_entries,
+        used = [e for e in (price, qty, net_used.get(oid), received.get(oid), freight_est, duty_est,
+                            hs_of.get(oid), *receipt_entries, *receipt_currency_used,
                             *(from_confirmation or ((), ()))[1]) if e]
         entry: dict[str, Any] = {"name": label[:64], "kind": "computed", "value": None,
                                  "inputs": [e["name"] for e in used][:50], "steps": [],
@@ -4607,6 +5804,16 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
         price_unit = unit_token(price.get("unit")) if price else None
         if from_confirmation is not None:
             goods: dict[str, Any] = from_confirmation[0]
+        elif price is None and price_withheld:
+            # A reader limit, not a missing input: Finance, who holds the marking, can give
+            # the figure (or a reader holding it reads it).
+            goods = {"unknown": f"UNIT_PRICE_WITHHELD: {price_withheld}; a reader holding it "
+                                "gets the figure", "who_can_answer": "FIN"}
+        elif oid in not_net:
+            goods = {"unknown": f"BC_PRICE_NOT_NET: the BC line's directUnitCost is a gross "
+                                f"price and {not_net[oid]}; its amount excluding tax is not "
+                                "read, so no net goods value is stated",
+                     "who_can_answer": "FIN"}
         elif price is None or price.get("value") is None:
             goods = {"unknown": "UNPRICED_LINE: no cited unit price",
                                      "who_can_answer": "PROC"}
@@ -4620,13 +5827,20 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
         elif price.get("currency") is None:
             goods = {"unknown": "UNIT_PRICE_CURRENCY_UNCITED: no currency comes with the cited "
                                 "unit price", "who_can_answer": "PROC"}
+        elif oid in net_goods:
+            goods = {**net_goods[oid], "unit": f"{price['currency']}/{qty_unit}",
+                     "currency": price["currency"]}
         else:
             goods = _corrected_input(price, f"{price['currency']}/{qty_unit}",
                                      price["currency"]) or {
                 "citation": handle(price), "field": price["citation"]["field_path"],
                 "unit": f"{price['currency']}/{qty_unit}", "currency": price["currency"]}
-        engine = po_line_landed(po, view, oid, receipt=receipt)
-        hs = classes.get(item_of.get(oid, ""))
+        engine = po_line_landed(po, view, oid, receipt=receipt, receipts_read=receipts_read,
+                                actual_duty=actuals.get("duty"),
+                                actual_freight=actuals.get("freight"), incoterm=incoterm_used,
+                                receipt_withheld=() if usable else receipt_lacked,
+                                header_withheld=header_lacked)
+        hs = hs_of.get(oid)
         costs: list[dict[str, Any]] = [{"name": "goods", "category": "goods", **goods}]
         # What each derived part is computed from: the header (or the receipt actual the
         # Portal posts over it) and, for freight, every line's allocation weight.
@@ -4638,7 +5852,18 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
             spec = engine[part]
             if spec is None:
                 continue
-            if part in ("freight", "duty") and not lines_complete:
+            # A recorded actual is this line's own goods value times the order's recorded
+            # rate: no header amount is allocated, so the line-set and estimate checks below
+            # do not apply to it (a blocked receipt actual still does).
+            recorded_actual = (spec.get("derived") or {}).get("basis") == "actual_recorded"
+            if recorded_actual:
+                derived = dict(spec["derived"])
+                derived["rule"] = f"{derived['rule']} ({actuals[part]['note']})"
+                spec = {**spec, "derived": derived}
+                rests[part] = [prices.get(oid), quantities.get(oid)]
+            if recorded_actual and part not in blocked:
+                pass
+            elif part in ("freight", "duty") and not lines_complete:
                 spec = {"unknown": "PO_LINES_INCOMPLETE: header " + part + " is not allocated "
                                    "over a partial line set (see the lines gap)",
                         "who_can_answer": "PROC"}
@@ -4667,6 +5892,10 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
                 # on the correction too, and the line names it as an input.
                 fixed = [e for e in rests[part] if e and person_correction(e)]
                 derived = dict(spec["derived"])
+                if part in usable and receipt_currency_used:
+                    # The receipt's currency the actual is read in is re-read for the actor.
+                    derived["from"] = list(dict.fromkeys(list(derived["from"]) + [
+                        h for h in map(handle, receipt_currency_used) if h]))
                 if fixed:
                     derived["from"] = list(dict.fromkeys(derived["from"] + [
                         h for e in fixed for h in correction_sources(e, person_correction(e))]))
@@ -4691,8 +5920,10 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
             entry["basis"] = sorted(set(entry["basis"]) | {
                 e["object_id"] for e in corrected_inputs})[:100]
         freight_cost = next((c for c in costs if c["name"] == "freight"), {})
-        freight_label = FREIGHT_LABELS["none" if "derived" not in freight_cost else
-                                       "posted" if "freight" in usable else "estimate"]
+        freight_label = FREIGHT_LABELS[
+            "none" if "derived" not in freight_cost else "posted" if "freight" in usable else
+            "actual" if freight_cost["derived"].get("basis") == "actual_recorded" else
+            "estimate"]
         if qty_unit is None:
             # The engine divides by a known quantity; every other open input is still named.
             unknown("LINE_QUANTITY_UNKNOWN", "quantity", "no cited ordered quantity with a unit",
@@ -4735,8 +5966,8 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
     if target is not None:
         total.update(unit=target, currency=target)
     if line_ids and len(totals) == len(line_ids):
-        steps: list[str] = [f"{label}: total {_dec_str(value)} {target} (record {digest[:12]})"
-                            for label, digest, value in totals]
+        steps: list[str] = [f"{label}: total {money_text(value, target)} {target} "
+                            f"(record {digest[:12]})" for label, digest, value in totals]
         values = {f"line_{i}": (value, parse_unit(target))
                   for i, (_, _, value) in enumerate(totals, start=1)}
         result, _ = _calc(" + ".join(values), values, steps, "purchase order landed cost")
@@ -4758,28 +5989,51 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
             got_in >= ordered and unit is not None and \
             unit == unit_token((received.get(oid) or {}).get("unit"))
     estimates: list[dict[str, Any]] = []
+    # Fully received only over a line set proven whole: a line past the read may be open, so
+    # a purchase order cut at the read gets the estimate, which names the missing lines.
+    all_received = lines_complete and bool(line_ids) and \
+        all(fully_received(oid) for oid in line_ids)
     # A purchase order header with no line reached is open too: its estimate names the lines.
-    if (line_ids or header_ids) and not usable \
-            and not (line_ids and all(fully_received(oid) for oid in line_ids)):
+    # A received purchase order whose read receipts record no actual gets the same estimate,
+    # labelled as after receipt, when PLX history gives an estimate (else the null estimate
+    # below names the receipt gap).
+    received_estimate = all_received and not usable and bool(history) and target is not None \
+        and (receipt is not None or receipts_read > 0) and not receipt_lacked \
+        and not blocked and not zero_parts
+    if ((line_ids or header_ids) and not usable and not all_received) or received_estimate:
         estimates = _pre_receipt_estimate(
             name=name, target=target, line_ids=line_ids, every_line=sorted(linked | set(line_ids)),
             prices=prices, quantities=quantities, linked=bool(linked), complete=complete,
-            covered=covered, freight_est=freight_est, duty_est=duty_est,
+            covered=covered, held_back=held_back, freight_est=freight_est, duty_est=duty_est,
             partial_quote=estimate_is_partial_quote, quotes=quote_totals,
-            hs_of={oid: classes.get(item_of.get(oid, "")) for oid in line_ids},
-            assumptions=assumptions or (), header_ids=header_ids, as_of=as_of,
-            resolver=resolver, actor=actor, unknown=unknown, currency_step=currency_step)
-    elif line_ids and not usable and target is not None:
+            hs_of=hs_of, assumptions=assumptions or (), header_ids=header_ids, as_of=as_of,
+            resolver=resolver, actor=actor, unknown=unknown, currency_step=currency_step,
+            currency_gap=currency_gap, rows=row_inputs, setting=setting, actuals=actuals,
+            net_goods=net_goods, history=history, incoterm=incoterm_used,
+            header_withheld=header_lacked,
+            label=RECEIVED_ESTIMATE_LABEL if received_estimate else ESTIMATE_LABEL)
+    elif all_received and not usable:
         # Every line read fully received with no usable receipt actual: no estimate applies
         # (the receipt is the actual), and the null estimate cites the receipt gap that holds
         # the actual back, so an open purchase order never ends with no estimate entry.
-        why = ("no estimate: RECEIPT_ACTUAL_NOT_READ (every line read is fully received; the "
+        why = (f"no estimate: {currency_gap} (no target currency; see the purchase order "
+               "currency gap)" if target is None else
+               "no estimate: RECEIPT_ACTUAL_WITHHELD (every line read is fully received; the "
+               "landed cost rests on the receipt actuals, which carry a marking this reader "
+               "does not hold; see the gaps)" if receipt_lacked else
+               "no estimate: RECEIPT_ACTUAL_NOT_RECORDED (every line read is fully received; "
+               "the landed cost rests on the receipt actuals, and the receipt(s) read record "
+               "none; see the gaps)" if receipt is None and receipts_read else
+               "no estimate: RECEIPT_ACTUAL_NOT_READ (every line read is fully received; the "
                "landed cost rests on the receipt actuals, and no verified receipt of this "
                "purchase order is read; see the gaps)" if receipt is None else
                "no estimate: RECEIPT_ACTUALS_ON_SEVERAL_RECEIPTS (every line read is fully "
                "received; see the gaps)" if blocked and len(carriers) > 1 else
                "no estimate: RECEIPT_ACTUAL_CURRENCY_UNRECORDED (every line read is fully "
                "received; see the gaps)" if blocked else
+               "no estimate: RECEIPT_ACTUAL_ZERO (every line read is fully received and the "
+               "receipt records a zero actual, which the Portal reads as none; see the gaps)"
+               if zero_parts else
                "no estimate: every line read is fully received and the receipt records no "
                "freight or duty actual above zero; the landed cost entries state what the "
                "Portal posts")
@@ -4787,9 +6041,20 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
         inputs = [e["name"] for e in entries][:50]
         steps = [why[:MAX_STEP_CHARS], ESTIMATE_LABEL]
         estimates = [{"name": f"{name}_estimate"[:64], "kind": "computed", "value": None,
-                      "unit": target, "currency": target, "inputs": inputs, "steps": steps,
+                      **({"unit": target, "currency": target} if target else {}),
+                      "inputs": inputs, "steps": steps,
                       "digest": _sha(_canon({"inputs": inputs, "steps": steps})),
                       "check": "not_applicable"}]
+    agreement = _fm_agreement(
+        name=name, target=target, line_ids=line_ids, quantities=quantities,
+        tiers_of=_fm_tiers(args, edges, rows_of), found=got["fm_landed_cost"],
+        least=got["fm_tier_quantity"], ours={
+            oid: (e.get("value"), "landed cost") for oid, e in zip(line_ids, entries)}
+        if not estimates or all_received else {
+            oid: (e.get("value"), "estimate") for oid, e in zip(
+                line_ids, [x for x in estimates if "_estimate_line_" in x["name"]])},
+        currency_handles=[h for h in map(handle, got["currency"]) if h],
+        resolver=resolver, actor=actor)
 
     # Packaging (LOG-01): the cases each line ships in, from its item's cited units per case,
     # read from every record of the item (its other records by ``item_twin_link``).
@@ -4859,7 +6124,7 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
         gap["subject"] = gap["subject"][:700]
         gaps.append(gap)
     return {"entries": [total] + entries + ([confirmed] if confirmed else []) + packaging
-            + quote_entries + estimates, "gaps": gaps,
+            + quote_entries + estimates + agreement, "gaps": gaps,
             "reasons": reasons, "conflicts": conflicts}
 
 

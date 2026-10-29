@@ -1,4 +1,4 @@
-"""Capture breadth over injected Graph transports: every allowlisted mailbox,
+"""Capture breadth (lane P7) over injected Graph transports: every allowlisted mailbox,
 inbox and sent items, plus SharePoint roots that follow their drive's change feed.
 
 No network, no credentials. Evidence: injected-transport. Covers the rules at their
@@ -249,12 +249,14 @@ class MailBreadthTests(BreadthCase):
         self.assertEqual((run["complete_bound"], run["bound_total"]), (1, 1))
         self.assertEqual(self.graph.mailbox_calls(UPN_X, BOX_X, "accounting1", BOX_R), [])
 
-    def test_the_shipped_scope_is_every_tenant_mailbox_inbox_and_sent_items(self):
+    def test_the_shipped_scope_is_every_tenant_mailbox_every_folder_all_history(self):
         from operating.case_mail_scope import MailScope
 
         shipped = CaptureScope.from_file(capture_mail.DEFAULT_SCOPE)
         self.assertTrue(shipped.all_mailboxes)
-        self.assertEqual(shipped.all_mailbox_folders, ("inbox", "sentitems"))
+        # Owner requirement 2026-10-27: every email of every mailbox, so every folder and
+        # the history older than the delta window (integrations.capture_mail ALL_FOLDERS).
+        self.assertEqual((shipped.all_mailbox_folders, shipped.history), (("all",), "all"))
         self.assertEqual(shipped.internal_domains, MailScope.builtin().internal_domains)
         document = json.loads(capture_mail.DEFAULT_SCOPE.read_text(encoding="utf-8"))
         self.assertIsInstance(document["all_mailboxes"]["exclude"], list)   # explicit
@@ -262,7 +264,7 @@ class MailBreadthTests(BreadthCase):
                         "case_mail_purchasing_capture_scope"):
             CaptureScope.from_file(ROOT / "examples" / f"{example}.live-check.json")
         # The breadth check's capture principal holds a grant for any tenant mailbox.
-        spec = json.loads((ROOT / "verify/live-checks/capture.breadth.json").read_text())
+        spec = json.loads((ROOT / "devloop/live-checks/capture.breadth.json").read_text())
         command = spec["command"]
         self.assertEqual(command[command.index("--mail-scope") + 1],
                          "integrations/mail_capture_scope.json")
@@ -276,7 +278,7 @@ class MailBreadthTests(BreadthCase):
 
 
 class TenantScopeTests(BreadthCase):
-    """Every mailbox of the tenant directory, paged, minus the exclusion list,
+    """ING-06: every mailbox of the tenant directory, paged, minus the exclusion list,
     each with its own cursor; a refused mailbox is a bound gap (injected-transport)."""
 
     def scope(self, *excluded):
@@ -429,7 +431,7 @@ class TenantScopeTests(BreadthCase):
                                   (1, "sentitems"): ("failed", None)})
 
     def test_a_spent_time_budget_cuts_folders_and_roots_partial_and_they_resume(self):
-        # Live 2026-10-08: capture.breadth ran into its 6900 s timeout.
+        # Live 2026-10-08: capture.breadth ran into its 6900 s timeout (gap-1905d4c737ae).
         # Each delta page costs one second of this clock and the cycle has one: the inbox
         # stops after its first page, every other folder and the SharePoint root are cut
         # before any read, each a partial unit with its typed reason, never a timeout.
@@ -468,7 +470,7 @@ class TenantScopeTests(BreadthCase):
             store.close()
 
     def test_mail_cannot_spend_the_sharepoint_share_of_a_cycle(self):
-        # Mail ran first on the whole cycle budget, so a large
+        # Directive d272cbc332e2: mail ran first on the whole cycle budget, so a large
         # mailbox starved SharePoint. Each mail delta page costs one second of a cycle of
         # four: the inbox stops at its half (time_budget), the SharePoint root walks to
         # the end on its own share, and a mailbox done early leaves the rest to it.
@@ -678,7 +680,7 @@ class SharePointFeedTests(BreadthCase):
                          ("full", "feed_unavailable", True))
 
     def test_a_cut_walk_resumes_and_the_feed_still_carries_what_changed_meanwhile(self):
-        # A complete root the budget reaches before its drive's
+        # Directive d272cbc332e2. A complete root the budget reaches before its drive's
         # feed is read is deferred: still complete and following the feed (its walked
         # folders and the drive's cursor kept); a walk cut midway resumes from its
         # position, and the feed after it starts where the walk did, so a file that
@@ -827,7 +829,7 @@ class SharePointFeedTests(BreadthCase):
         return roots
 
     def test_roots_of_one_drive_under_churn_converge_once_it_stops(self):
-        # One change-feed cursor per drive, held back
+        # Reviews of 06d71da2 and 4480d69a: one change-feed cursor per drive, held back
         # (or dropped) while a complete root was deferred, never converged under churn:
         # the replay since it outgrew one budget (decision
         # 2026-10-12-capture-cursor-convergence); the base code re-walked every root a
@@ -932,7 +934,7 @@ class SharePointFeedTests(BreadthCase):
             self.drive.file(f"01BIG{n}", f"b{n}.pdf", "01BIG", b"%%PDF-1.7 big %d" % n)
 
     def test_a_walk_whose_first_run_had_no_feed_cursor_takes_one_as_it_starts(self):
-        # The drive's feed read failed in the walk's first
+        # Directive 5bc5d10c2c8d (3): the drive's feed read failed in the walk's first
         # run, so the walk had no cursor; the run that ended it stored none and every
         # root of the drive walked again. The walk takes one as it starts.
         self.big_folder()
@@ -948,7 +950,7 @@ class SharePointFeedTests(BreadthCase):
                          [("incremental", "complete")])
 
     def test_a_walk_longer_than_full_walk_hours_is_due_again_after_it_ended(self):
-        # A walk whose runs spanned more than full_walk_hours
+        # Directive 5bc5d10c2c8d (6): a walk whose runs spanned more than full_walk_hours
         # was due another full walk as soon as it ended (timed from its first run).
         scope = capture_sharepoint.CaptureScope(
             [{"id": "quality", "drive_id": ts.DRIVE, "folders": [ts.QUALITY_FOLDER]}],
@@ -1127,7 +1129,7 @@ class CliTests(BreadthCase):
 
 
     def test_a_round_a_budget_cut_in_cycle_one_reads_resumed_in_cycle_two(self):
-        # A mail folder the budget cut in cycle 1 (mid-round, or
+        # Directive d272cbc332e2: a mail folder the budget cut in cycle 1 (mid-round, or
         # before its first round) goes on in cycle 2; that is a resumed partial unit, not
         # a rerun of its initial round (which failed the check's ok).
         for n in range(1, 4):
@@ -1155,7 +1157,7 @@ class CliTests(BreadthCase):
         self.assertTrue(report["ok"], summary)
 
     def test_a_round_the_page_budget_stopped_reads_resumed_in_cycle_two(self):
-        # Decided: a mail round that goes on from the page
+        # Directive 5bc5d10c2c8d (4), decided: a mail round that goes on from the page
         # cursor the page budget left (the live check's 20 pages per folder) is resumed,
         # a partial unit, never a rerun failing the check's ok.
         for n in range(1, 6):

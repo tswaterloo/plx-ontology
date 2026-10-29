@@ -1,7 +1,7 @@
 {
  "format": "plx-case-ontology-gaps/v1",
  "case": "amazon-fba",
- "status": "What the ontology lacks to answer evals/dev/amazon-fba/proposed_items.json: one entry per ranked gap (map_rank 1-7), weak link or dependency of the Amazon FBA Replenishment Map, plus the unread originals. map_says is the map's claim, attributed to Greg's walkthrough of 16 Oct 2026; implementation, where present, is a claim about deployed code that nobody here verified (the map's author read no Portal or BC code). Sources are named, never read here; OntologyProject refs are at the base f635203cfe41, the map's at e58e8a98f3ef. 'source unknown' carries the question for Greg or Vince that would find one.",
+ "status": "What the ontology lacks to answer evals/dev/amazon-fba/proposed_items.json: one entry per ranked gap (map_rank 1-7), weak link or dependency of the Amazon FBA Replenishment Map, plus the unread originals. map_says is the map's claim, attributed to Greg's walkthrough of 16 Oct 2026; implementation, where present, is a claim about deployed code that nobody here verified (the map's author read no Portal or BC code). Sources are named, never read here; OntologyProject refs are at the base f635203cfe41, the map's record at codex/advisory e58e8a98f3ef. 'source unknown' carries the question for Greg or Vince that would find one.",
  "advisory": "advisory:45cd3b70238a",
  "gaps": [
   {
@@ -33,10 +33,10 @@
    "ontology_today": "No Amazon or SP-API object, binding or source registry entry exists.",
    "needed_by": ["FBA-03", "FBA-A1", "FBA-A3"],
    "sources": [
-    {"system": "source-record", "relation": "the map's source record (the claim, not a reader)", "ref": "OntologyProject:context/45cd3b70238a0ac8371ea62bb873b9e9ac36c5727504198dcd051ca1487f6ef1.json@e58e8a98f3ef"}
+    {"system": "dot", "relation": "the map's advisory record (the claim, not a reader)", "ref": "OntologyProject:context/45cd3b70238a0ac8371ea62bb873b9e9ac36c5727504198dcd051ca1487f6ef1.json@e58e8a98f3ef"}
    ],
    "source": "source unknown",
-   "open_question": "Greg or Vince: does PLX's Seller Central app (the dashboard's SP-API connection) hold the inbound/fulfilment role, and may a read-only reader use it to list inbound shipments with their shipment ID, FC and box/pallet labels?"
+   "dot_question": "Greg or Vince: does PLX's Seller Central app (the dashboard's SP-API connection) hold the inbound/fulfilment role, and may a read-only reader use it to list inbound shipments with their shipment ID, FC and box/pallet labels?"
   },
   {
    "id": "FBA-GAP-03",
@@ -51,7 +51,7 @@
    "needed_by": ["FBA-02", "FBA-A4"],
    "sources": [],
    "source": "source unknown",
-   "open_question": "Greg or Vince: which system is the source of truth for last-30-day Amazon sales per SKU (Seller Central reports, the dashboard, Sage or another tool), and do days of supply count FBA inbound units?"
+   "dot_question": "Greg or Vince: which system is the source of truth for last-30-day Amazon sales per SKU (Seller Central reports, the dashboard, Sage or another tool), and do days of supply count FBA inbound units?"
   },
   {
    "id": "FBA-GAP-04",
@@ -65,10 +65,10 @@
    "ontology_today": "Shipment has no pallet, dimension or weight members the cards can cite.",
    "needed_by": ["FBA-06", "FBA-A4"],
    "sources": [
-    {"system": "source-record", "relation": "the map's source record (the claim, not a reader)", "ref": "OntologyProject:context/45cd3b70238a0ac8371ea62bb873b9e9ac36c5727504198dcd051ca1487f6ef1.json@e58e8a98f3ef"}
+    {"system": "dot", "relation": "the map's advisory record (the claim, not a reader)", "ref": "OntologyProject:context/45cd3b70238a0ac8371ea62bb873b9e9ac36c5727504198dcd051ca1487f6ef1.json@e58e8a98f3ef"}
    ],
    "source": "source unknown",
-   "open_question": "Greg or Vince: where are final pallet dims and weights recorded today (email only, Sage, the WMS) and who enters them?"
+   "dot_question": "Greg or Vince: where are final pallet dims and weights recorded today (email only, Sage, the WMS) and who enters them?"
   },
   {
    "id": "FBA-GAP-05",
@@ -81,10 +81,10 @@
    "ontology_today": "No customs document or certificate object; Product has no certificate link.",
    "needed_by": ["FBA-04", "FBA-A2"],
    "sources": [
-    {"system": "source-record", "relation": "the map's source record (the claim, not a reader)", "ref": "OntologyProject:context/45cd3b70238a0ac8371ea62bb873b9e9ac36c5727504198dcd051ca1487f6ef1.json@e58e8a98f3ef"}
+    {"system": "dot", "relation": "the map's advisory record (the claim, not a reader)", "ref": "OntologyProject:context/45cd3b70238a0ac8371ea62bb873b9e9ac36c5727504198dcd051ca1487f6ef1.json@e58e8a98f3ef"}
    ],
    "source": "source unknown",
-   "open_question": "Greg or Vince: who prepares the customs packet and from which item data, and where are the signed certificates kept?"
+   "dot_question": "Greg or Vince: who prepares the customs packet and from which item data, and where are the signed certificates kept?"
   },
   {
    "id": "FBA-GAP-06",
@@ -102,7 +102,7 @@
     {"system": "portal", "relation": "Freightcom hosts in the WMS carrier config (implementation evidence only)", "ref": "OntologyProject:ontology/source_registry.json@f635203cfe41:185"}
    ],
    "source": "source unknown",
-   "open_question": "Greg or Vince: is the Portal's Freightcom client used for Amazon LTL quotes and bookings, and under which Freightcom account can a read-only reader list bookings, BOLs and tracking?"
+   "dot_question": "Greg or Vince: is the Portal's Freightcom client used for Amazon LTL quotes and bookings, and under which Freightcom account can a read-only reader list bookings, BOLs and tracking?"
   },
   {
    "id": "FBA-GAP-07",
@@ -149,7 +149,7 @@
     {"system": "portal-reporting-api", "relation": "sage.ic_item (Product)", "ref": "OntologyProject:ontology/schema/domains/catalog_parties.json@f635203cfe41:12"}
    ],
    "source": "source unknown",
-   "open_question": "Greg or Vince: is the Sage item number used as the Amazon seller SKU, and where are FNSKU and ASIN kept per item?"
+   "dot_question": "Greg or Vince: is the Sage item number used as the Amazon seller SKU, and where are FNSKU and ASIN kept per item?"
   },
   {
    "id": "FBA-GAP-10",
@@ -180,7 +180,7 @@
     {"system": "ontology", "relation": "Email, SharePointFile", "ref": "OntologyProject:ontology/schema/domains/documents.json@f635203cfe41:9"}
    ],
    "source": "source unknown",
-   "open_question": "Greg: where were the 'A FA to HIA-1' source files uploaded (drive and folder), so they can be watched and read?"
+   "dot_question": "Greg: where were the 'A FA to HIA-1' source files uploaded (drive and folder), so they can be watched and read?"
   }
  ]
 }

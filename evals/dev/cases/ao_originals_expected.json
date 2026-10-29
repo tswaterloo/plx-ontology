@@ -1,6 +1,6 @@
 {
   "schema": "plx-sharepoint-originals-expected/v1",
-  "note": "Expected identity of Ricardo's six Quality AO packets, used ONLY to compare what the read-only SharePoint reader returns (never as a value of any case). Not authority and not live-verified from the cloud: a Mac Graph listing and hash audit, docs/reference/cases-and-artifacts.md section 3.1 ([ADV 8e7b8ae2], [ADV cf8b2498]), read 2026-09-30.",
+  "note": "Expected identity of Ricardo's six Quality AO packets, used ONLY to compare what the read-only SharePoint reader returns (never as a value of any case). Not authority and not live-verified from the cloud: a Mac Graph listing and hash audit, devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md section 3.1 ([ADV 8e7b8ae2], [ADV cf8b2498]), read 2026-09-30.",
   "site": "https://petrasoap.sharepoint.com/sites/QCQA",
   "drive_id": "b!ubhBC91PLkOOCpyUeCUJMLOi0jT3ADZHi0QxVdjuwxvq6wHrgPmdQqNrzbAMxVqk",
   "folder": "/AOs/2026 - AOs",

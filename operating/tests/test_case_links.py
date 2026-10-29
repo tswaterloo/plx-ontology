@@ -1,4 +1,4 @@
-"""Workbench-checked links: contracts, the check, the case record, MCP.
+"""Workbench-checked links (convergence slice 2): contracts, the check, the case record, MCP.
 
 Evidence label: ``injected-transport``. The AO chain rows are the 2026-09-30
 live-trace values served by the in-process ``FakeWorkbench`` (the same fixture
@@ -199,8 +199,8 @@ class ContractFileTests(unittest.TestCase):
             if contract["fm_source_fk"]:
                 self.assertEqual(contract["pairs"][0]["from"],
                                  FM_SOURCE_FK[contract["fm_source_fk"]][0])
-            # Every Portal behaviour is cited at a commit (a base commit, or the
-            # file's verify/upstream-pins.json pin: tests/test_customer_po_scope.py).
+            # Every Portal behaviour is cited at a commit (the context pack's, or the
+            # file's devloop/upstream-pins.json pin: tests/test_customer_po_scope.py).
             for item in contract["evidence"]:
                 if item.startswith("Portal"):
                     self.assertRegex(item, r"^Portal [0-9a-f]{12}\b", contract_id)
@@ -479,7 +479,10 @@ class AoChainTests(LinkHarness):
         text = self.refused(server, add, link_mode(case_id, "ao-to-anything", cite["link"],
                                                    cite["ao"]))
         self.assertIn("unknown_link_contract", text)
-        self.assertIn("fm-order-line-to-order", text)
+        # the contracts that fit the cited rows come first: the whole list no longer fits
+        # one message (operating/link_contracts.json holds 26)
+        self.assertIn("one of fm-ao-link-to-assembly-order, ", text)   # fits both rows
+        self.assertIn("fm-ao-link-to-order-line", text)                # fits the from row
         self.assertIn("citation_scheme_not_supported", self.refused(server, add, link_mode(
             case_id, "fm-ao-link-to-assembly-order", "https://example.test/x", cite["ao"])))
         self.assertIn("link_needs_two_different_citations", self.refused(
@@ -548,7 +551,7 @@ class PortalLinkTests(LinkHarness):
         case_id = self.open(server)
         po = self.cite(server, "public.app_purchase_order", "po-synth-5447")
         # Portal stores the receipt's PO id but set it by a PO-number text join
-        # (a weak link): recorded, qualified, never verified.
+        # (pack 02 line 281, weak link 2): recorded, qualified, never verified.
         by_id = self.link(server, case_id, "portal-receipt-to-po-by-id",
                           self.cite(server, "public.app_receipt", "rcpt-synth-1"), po)
         self.assertEqual((by_id["outcome"], by_id["recorded"], by_id["finding_id"]),

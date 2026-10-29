@@ -1,7 +1,7 @@
 {
  "format": "plx-case-ontology-gaps/v1",
  "case": "stephen-assets",
- "status": "What the ontology lacks to answer evals/dev/asset-tracker/proposed_items.json. Sources are named, never read here; 'source unknown' carries the question that would find one.",
+ "status": "What the ontology lacks to answer evals/dev/asset-tracker/proposed_items.json. Sources are named, never read here; 'source unknown' carries the Dot question that would find one.",
  "advisory": "advisory:0abdc81c06d0",
  "gaps": [
   {
@@ -73,7 +73,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Does PLX have read-only API access to Fiix (petra-hygienic.macmms.com) for its asset list, and is the asset register owned by the tracker workbook or by Fiix?"
+   "dot_question": "Does PLX have read-only API access to Fiix (petra-hygienic.macmms.com) for its asset list, and is the asset register owned by the tracker workbook or by Fiix?"
   },
   {
    "id": "AT-GAP-04",
@@ -104,7 +104,7 @@
     "AT-06"
    ],
    "source": "source unknown",
-   "open_question": "Where does the CFO record a capitalize-versus-expense decision for an equipment purchase (Sage, BC, mail, the tracker or elsewhere), who is the CFO contact, and what threshold applies?"
+   "dot_question": "Where does the CFO record a capitalize-versus-expense decision for an equipment purchase (Sage, BC, mail, the tracker or elsewhere), who is the CFO contact, and what threshold applies?"
   },
   {
    "id": "AT-GAP-06",
@@ -123,7 +123,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Where does the purchaser record new, replacement or repair for an equipment purchase: a tracker column, the PO or requisition, or mail?"
+   "dot_question": "Where does the purchaser record new, replacement or repair for an equipment purchase: a tracker column, the PO or requisition, or mail?"
   },
   {
    "id": "AT-GAP-07",
@@ -153,7 +153,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Which key, if any, ties a tracker asset to its Sage PO or invoice or its BC purchase invoice (asset tag on the PO line, invoice number in the tracker, something else)?"
+   "dot_question": "Which key, if any, ties a tracker asset to its Sage PO or invoice or its BC purchase invoice (asset tag on the PO line, invoice number in the tracker, something else)?"
   },
   {
    "id": "AT-GAP-08",
@@ -164,7 +164,7 @@
     "AT-11"
    ],
    "source": "source unknown",
-   "open_question": "Which Sage AP or G/L tables hold the coding of equipment invoices, and can the reporting API serve them read-only?"
+   "dot_question": "Which Sage AP or G/L tables hold the coding of equipment invoices, and can the reporting API serve them read-only?"
   },
   {
    "id": "AT-GAP-09",
@@ -203,7 +203,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Where are grant claims and their cost lines recorded (funder portal exports, a workbook, Sage), and which purchase key do they carry?"
+   "dot_question": "Where are grant claims and their cost lines recorded (funder portal exports, a workbook, Sage), and which purchase key do they carry?"
   },
   {
    "id": "AT-GAP-11",
@@ -222,7 +222,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Does PLX use Business Central Fixed Assets (or plan to) for capitalized equipment, and in which of the three companies?"
+   "dot_question": "Does PLX use Business Central Fixed Assets (or plan to) for capitalized equipment, and in which of the three companies?"
   }
  ]
 }

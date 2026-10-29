@@ -22,7 +22,7 @@ import json
 from pathlib import Path
 import unittest
 
-from verify import live_verify as lv
+from devloop import live_verify as lv
 from integrations import graph_read
 from integrations.capture_mail import CaptureScope, MailCapture, MailCaptureStore
 from integrations.capture_sharepoint import CaptureScope as DriveScope

@@ -1,0 +1,23 @@
+{
+ "schema": "plx-live-source-audience/v1",
+ "tenant": "plx",
+ "note": "EXAMPLE ONLY, not a PLX-confirmed grant: the host capture principal of examples/ingest_all_sources.json: every mailbox of the directory (mail:*), every SharePoint drive, the Production BC company and every Mission Control collection and project of scope live (mc:live:*). What is read is bounded by the capture scopes, the people-exclusion guard and the Exchange application access policy, never by this grant. Default deny.",
+ "default_classification": "confidential",
+ "audiences": {
+  "mail:*": [
+   "svc:workbench-host"
+  ],
+  "sharepoint:*": [
+   "svc:workbench-host"
+  ],
+  "bc:production:*": [
+   "svc:workbench-host"
+  ],
+  "mc:live:*": [
+   "svc:workbench-host"
+  ]
+ },
+ "classifications": {
+  "mail:*": "restricted"
+ }
+}

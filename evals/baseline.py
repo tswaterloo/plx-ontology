@@ -1,7 +1,7 @@
-"""Dev-set baseline: dev items through the runner on the generic ontology tools.
+"""Dev-set baseline: L11 dev items through the L10 runner on the generic ontology tools.
 
-Evaluation is the progress metric; track
-dev-set pass rates in ``state.status`` and the daily report. This module is the harness
+10-DECISION decision 8 (evaluation is the progress metric), directive f6643c209267 (track
+dev-set pass rates in ``state.status`` and the daily report). This module is the harness
 between three existing pieces; it adds no case logic:
 
 * **Items**: ``plx-eval-item/v1`` from the independent oracle (``evals/oracle``; fixture
@@ -60,7 +60,7 @@ sources disagree, a paper field left blank) is an ``unknown`` gap naming it
 recorded, scored, and counted as ``needs_agent`` (never a pass, never a fail).
 
 **Run pin.** Each item runs on the runner's run pin (``evals.runner.make_run_pin``,
-docs/decisions/2026-10-02-oracle-pinning.md): the mirror captures pinned at or after the
+devloop/DECISIONS/2026-10-02-oracle-pinning.md): the mirror captures pinned at or after the
 item's time, given to the agent in the prompt and read by the scorer. A pin whose cited
 fields drifted from the oracle's read makes the item ``pin_drift``: counted, excluded from
 every rate. The harness supplies the oracle's own reads for the drift check.
@@ -81,6 +81,7 @@ Evidence: a run over ``evals/dev`` with the fixture world is ``isolated-fixture`
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from decimal import Decimal
 import functools
 import json
 import re
@@ -461,14 +462,20 @@ class DeterministicInvestigator:
 
     @staticmethod
     def plan_root(found: Any, question: str) -> dict[str, Any]:
-        """The identifier ``plx.find`` matched in the question (the plan resolves it again),
-        else the question text itself."""
+        """The typed identifier ``plx.find`` bound in the question (the first candidate
+        whose stated match may make a root, ``ROOT_REASONS``; the plan resolves it again),
+        else the question text itself: a lead (free text, a secondary reading) or a
+        candidate stating no reason never binds it."""
+        from operating.ontology_tools import ROOT_REASONS
         candidates = found.get("candidates") if isinstance(found, Mapping) else None
-        matched = (candidates[0].get("matched") or {}) if candidates else {}
-        if isinstance(matched.get("normalized"), str) and \
-                matched.get("identifier_kind") not in (None, "object_key"):
-            return {"identifier": matched["normalized"],
-                    "identifier_kind": matched["identifier_kind"]}
+        for candidate in candidates or ():
+            matched = candidate.get("matched") or {}
+            if candidate.get("reason") in ROOT_REASONS \
+                    and matched.get("identifier_kind") != "display_text" \
+                    and isinstance(matched.get("normalized"), str) \
+                    and matched.get("identifier_kind") not in (None, "object_key"):
+                return {"identifier": matched["normalized"],
+                        "identifier_kind": matched["identifier_kind"]}
         return {"identifier": question[:200]}
 
     @staticmethod
@@ -507,15 +514,63 @@ class DeterministicInvestigator:
             for cell in cells]}
 
     @staticmethod
+    def total(entry: Mapping[str, Any],
+              named: Mapping[str, Mapping[str, Any]]) -> dict[str, Any] | None:
+        """The ``sum`` calculation of a plan's computed quantity total over the cited
+        property entries it names (F3 ordered over an order's lines), or None unless the
+        scorer would recompute it: two or more inputs, each a cited, distinct record of the
+        total's quantity role and unit, none failed its claim check or rests on a lead, and
+        their sum is the stated total."""
+        role, total = entry.get("quantity_role"), scoring.to_decimal(entry.get("value"))
+        inputs = [named.get(name) for name in entry.get("inputs") or ()]
+        if entry.get("kind") != "computed" or not isinstance(role, str) or total is None \
+                or entry.get("lead_basis") or len(inputs) < 2 or None in inputs:
+            return None
+        unit = str(entry.get("unit") or "").casefold()
+        for line in inputs:
+            if line.get("kind") != "property" or not isinstance(line.get("citation"), Mapping) \
+                    or line.get("check") == "failed" or line.get("lead_basis") \
+                    or line.get("quantity_role") != role or isinstance(line.get("value"), bool) \
+                    or str(line.get("unit") or "").casefold() != unit:
+                return None
+        figures = [scoring.to_decimal(line.get("value")) for line in inputs]
+        identities = [scoring.cite_identity(line["citation"].get("l1_handle")) for line in inputs]
+        if None in figures or None in identities or len(set(identities)) != len(inputs) \
+                or sum(figures, Decimal(0)) != total:
+            return None
+        return {"op": "sum", "inputs": [
+            {"l1_handle": line["citation"]["l1_handle"],
+             "field_path": line["citation"]["field_path"],
+             **{key: line[key] for key in ("unit", "quantity_role")
+                if isinstance(line.get(key), str)}}
+            for line in inputs]}
+
+    @staticmethod
     def plan_answer(result: Mapping[str, Any]) -> tuple[dict[str, Any], int]:
-        """(the answer, uncited entries left out) of one ``plx.investigate`` result."""
+        """(the answer, uncited entries left out) of one ``plx.investigate`` result. A
+        computed total that is a recomputable ``sum`` (``total``) is stated as one, and the
+        line values it consumed are not stated again."""
         values: list[dict[str, Any]] = []
         gaps = [{"state": gap["state"], "subject": str(gap["subject"])[:200],
                  "reason": str(gap.get("reason") or "plan_gap"),
                  **({"concerns": gap["concerns"]} if gap.get("concerns") else {})}
                 for gap in result.get("gaps") or []]
         uncited = 0
-        for entry in result.get("answer") or []:
+        entries = [e for e in result.get("answer") or [] if isinstance(e, Mapping)]
+        named = {e.get("name"): e for e in entries}
+        totals = {e["name"]: calc for e in entries
+                  if (calc := DeterministicInvestigator.total(e, named)) is not None}
+        consumed = {name for e in entries if e.get("name") in totals
+                    for name in e.get("inputs") or ()}
+        for entry in entries:
+            if entry["name"] in consumed:
+                continue
+            if entry["name"] in totals:
+                values.append({"name": entry["name"], "value": str(entry["value"]),
+                               "calculation": totals[entry["name"]],
+                               **{key: entry[key] for key in ("unit", "quantity_role")
+                                  if isinstance(entry.get(key), str)}})
+                continue
             value = entry.get("value")
             if isinstance(value, Mapping):  # an untrusted_text envelope: its text
                 value = value.get("untrusted_text")
@@ -526,7 +581,7 @@ class DeterministicInvestigator:
                 continue
             if entry.get("kind") == "count" and value == 0 and entry.get("proof"):
                 # A proven zero cites no record, and the answer format has no citation of a
-                # complete search yet (docs/decisions/open-plan-party-twins-proven-zero-
+                # complete search yet (devloop/DECISIONS/2026-10-28-plan-party-twins-proven-zero-
                 # zero-citation.md): not stated, and not an uncited figure either.
                 continue
             if entry.get("kind") != "property" or not entry.get("citation") \
@@ -751,7 +806,7 @@ def _verified_twin_of(want: Mapping[str, Any], result: Mapping[str, Any]) -> boo
     """Whether the item's root row is a verified twin of the plan's root: an entry of the
     plan's ``root_twins_not_roots`` gap ``twins`` (structured data, never its prose) names
     it by a handle whose row is the oracle's root row and joins it at an identity tier. One
-    rule for every record held in several systems (docs/decisions/2026-10-15-ao-root-
+    rule for every record held in several systems (devloop/DECISIONS/2026-10-15-ao-root-
     twin.md); a ``lead`` twin, an unknown tier, an unparseable handle or another row does
     not count."""
     wanted = (want.get("relation"), scoring.canonical(

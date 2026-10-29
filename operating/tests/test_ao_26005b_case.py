@@ -14,7 +14,7 @@ the scan. The rows are the values of the 2026-09-30 live trace
 10718 -> link 1245 -> SalesOrderLine 1140 -> SalesOrder 351 / OR1000151885),
 served by the in-process ``FakeWorkbench`` under the FM column names the trace
 records; that the live reporting API exposes the
-same columns is what the live checks verify. The scan is a
+same columns is what the auditor's live-verify checks. The scan is a
 synthetic image-only PDF (``fixtures/ao-26005b-scan-fixture.pdf``, marked
 "SYNTHETIC TEST FIXTURE"), not Ricardo's original. Nothing here is live data.
 
@@ -23,7 +23,7 @@ resolve and cite the rows, derive planned and produced finished goods from the
 component consumed one per unit, compute planned / produced / filled and ordered
 vs produced with the case compute tool, keep damage per component (never one
 "pack" total), record the gaps and the evidence conflicts (FM lateness, paper vs
-FM), and report the paper figures as unverified leads outside the case. The test
+FM), and report the pack's paper figures as unverified leads outside the case. The test
 then attaches the scan through the quality inbox, cites its OCR page, and reads
 the same case back from a fresh runtime (a later session).
 """
@@ -55,7 +55,7 @@ from operating.tests.firewall_view import client_result
 from operating.tests.test_case_originals import FIXTURE, local_ocr_available
 
 # AO-26005B's expectations: the 2026-09-30 live trace
-# (EVIDENCE/live/2026-09-30-ao-26005b-live-trace.json). They
+# (EVIDENCE/live/2026-09-30-ao-26005b-live-trace.json; devloop/CONTEXT/02 section 3.4). They
 # belong to this test and to the evaluation data (evals/), never to product
 # code; every computed value is read from a cited row and only compared with these.
 AO_CODE, ORDER_CODE = "AO-26005B", "OR1000151885"
@@ -122,7 +122,7 @@ AO_CATALOG = {
 
 # Values from the live trace; the AO header quantities were empty live. The Portal
 # manufacturing order row is NOT from the trace (the trace did not read that relation):
-# its values are fixture assumptions, checked by the live checks.
+# its values are fixture assumptions, checked live by the auditor.
 AO_TABLES = {
     # Packaging master rows of the live trace (code = the code the paper packet prints).
     "public.packaging": [

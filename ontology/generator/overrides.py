@@ -15,7 +15,7 @@ with ``OverrideError``, so a typo never silently drops a marking.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 from pathlib import Path
 import re
@@ -26,18 +26,19 @@ from ontology.units import MONEY_MEASURES, TAX_BASES
 
 FORMAT = "plx-generator-overrides/v1"
 OVERRIDES_DIR = Path(__file__).resolve().parent.parent / "schema" / "overrides"
-KINDS = ("identity", "lineage", "markings", "money", "names")
+KINDS = ("identity", "lineage", "markings", "money", "names", "storage")
 _HEAD = {"format", "kind", "description"}
 _KEYS = {
     "money": _HEAD | {"evidence", "markings", "columns", "source_columns"},
-    "markings": _HEAD | {"name_rules"},
+    "markings": _HEAD | {"name_rules", "domain_markings", "scoped_markings"},
     "identity": _HEAD | {"key_name", "scope", "verified_key_sources", "unverified_tier"},
     "lineage": _HEAD | {"note", "sources"},
     "names": _HEAD | {"sources"},
+    "storage": _HEAD | {"evidence", "sources"},
 }
 _MONEY_SPEC = {"measure", "tax_basis", "header", "per_unit_from", "currency_from",
                "tax_basis_from"}
-_OPTIONAL = {"money": {"source_columns"}}
+_OPTIONAL = {"money": {"source_columns"}, "markings": {"scoped_markings"}}
 _NAME_RULE = {"marking", "value_types", "matches", "unless", "applied", "exception_label",
               "exceptions"}
 _SNAKE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -68,6 +69,19 @@ class NameRule:
 
 
 @dataclass(frozen=True)
+class ScopedMarking:
+    """A declared marking that replaces ``replaces`` on the listed raw ``columns``
+    ((relation, column)) and curated ``properties`` ((object type, property)) only."""
+
+    marking: str
+    replaces: str
+    held_with: tuple[str, ...]
+    description: str
+    columns: Mapping[tuple[str, str], str]
+    properties: frozenset[tuple[str, str]]
+
+
+@dataclass(frozen=True)
 class Overrides:
     money: Mapping[str, Mapping[str, Mapping[str, str]]]
     source_money: Mapping[str, Mapping[str, Mapping[str, Mapping[str, str]]]]
@@ -79,6 +93,14 @@ class Overrides:
     # source -> unserved relation -> object_type, note, optional anchor and markings
     names: Mapping[str, Mapping[str, Mapping[str, Any]]]
     paths: tuple[str, ...]
+    # source domain (the catalog's, e.g. people-access) -> the type markings every served
+    # type of that domain carries: a reader without them never reaches the type.
+    domain_markings: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    # markings.json scoped_markings: owner-decided markings replacing a rule's on listed
+    # columns and properties.
+    scoped_markings: tuple[ScopedMarking, ...] = ()
+    # storage.json: source -> relation -> its generated binding's value_storage.
+    storage: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
 
     def lineage_of(self, source: str, relation: str) -> str | None:
         return next((lineage for prefix, lineage in self.lineage.get(source, ())
@@ -91,6 +113,12 @@ class Overrides:
                if self.lineage_of(source, relation) is not None}
         out.update(self.source_money.get(source, {}))
         return out
+
+    def scoped_marking(self, marking: str, relation: str, column: str) -> str:
+        """The marking a name rule's ``marking`` becomes on ``relation.column``: a scoped
+        marking that replaces it there, else ``marking`` itself."""
+        return next((s.marking for s in self.scoped_markings if s.replaces == marking
+                     and (relation, column) in s.columns), marking)
 
     def name_rule(self, marking: str) -> NameRule:
         return next(rule for rule in self.name_rules if rule.marking == marking)
@@ -205,6 +233,60 @@ def _name_rule(rule: Any, where: str) -> NameRule:
                     _text(rule["exception_label"], where, "exception_label"), exceptions)
 
 
+def _scoped_marking(item: Any, rules: tuple[NameRule, ...], where: str) -> ScopedMarking:
+    keys = {"marking", "replaces", "held_with", "description", "columns", "properties"}
+    _keys(item, keys, keys, where)
+    marking, replaces = (_markings([item[k]], where)[0] for k in ("marking", "replaces"))
+    _need(marking != replaces and any(r.marking == replaces for r in rules), where,
+          "replaces must name another name rule's marking")
+    held_with = tuple(item["held_with"]) if isinstance(item["held_with"], list) else ()
+    # The read policies imply the marking from store_ddl.MARKING_HELD_WITH; both must agree.
+    _need(held_with == tuple(store_ddl.MARKING_HELD_WITH.get(marking, ())) and
+          replaces in held_with, where,
+          "held_with must equal ontology/store_ddl.py MARKING_HELD_WITH and hold replaces")
+    columns: dict[tuple[str, str], str] = {}
+    _need(isinstance(item["columns"], list), where, "columns must be a list")
+    for c in item["columns"]:
+        _keys(c, {"relation", "column", "reason"}, {"relation", "column", "reason"}, where)
+        key = (_text(c["relation"], where, "relation"), _text(c["column"], where, "column"))
+        _need(key not in columns, where, f"column {key} listed twice")
+        columns[key] = _text(c["reason"], where, "reason")
+    _need(isinstance(item["properties"], list), where, "properties must be a list")
+    props: set[tuple[str, str]] = set()
+    for c in item["properties"]:
+        _keys(c, {"object_type", "property"}, {"object_type", "property"}, where)
+        key = (_text(c["object_type"], where, "object_type"),
+               _text(c["property"], where, "property"))
+        _need(key not in props, where, f"property {key} listed twice")
+        props.add(key)
+    _need(bool(columns) or bool(props), where, "names no column and no property")
+    return ScopedMarking(marking, replaces, held_with,
+                         _text(item["description"], where, "description"), columns,
+                         frozenset(props))
+
+
+def _storage(doc: Mapping[str, Any]) -> dict[str, dict[str, str]]:
+    """storage.json ``sources``: source -> relation -> value storage (each with evidence)."""
+    _text(doc["evidence"], "storage.json", "evidence")
+    sources = doc["sources"]
+    _need(isinstance(sources, dict), "storage.json", "sources must be an object")
+    out: dict[str, dict[str, str]] = {}
+    for source, entries in sources.items():
+        where = f"storage.json {source}"
+        _need(isinstance(entries, list) and bool(entries), where, "must be a non-empty list")
+        out[source] = {}
+        for item in entries:
+            _keys(item, {"relation", "value_storage", "evidence"},
+                  {"relation", "value_storage", "evidence"}, where)
+            relation = _text(item["relation"], where, "relation")
+            _text(item["evidence"], where, "evidence")
+            _need(item["value_storage"] in store_ddl.VALUE_STORAGES, where,
+                  f"value_storage must be one of {store_ddl.VALUE_STORAGES}")
+            _need(relation not in out[source], where, f"relation {relation!r} listed twice")
+            out[source][relation] = item["value_storage"]
+    return out
+
+
 def load_overrides(directory: Path = OVERRIDES_DIR) -> Overrides:
     """Read and validate every override file; any problem raises ``OverrideError``."""
     docs: dict[str, Any] = {}
@@ -256,11 +338,24 @@ def load_overrides(directory: Path = OVERRIDES_DIR) -> Overrides:
     _text(docs["money"]["evidence"], "money.json", "evidence")
     money_markings = _markings(docs["money"]["markings"], "money.json")
     _need("finance" in money_markings, "money.json", "money must be finance-marked")
+    domain_markings: dict[str, tuple[str, ...]] = {}
+    for n, item in enumerate(docs["markings"].get("domain_markings", [])):
+        where = f"markings.json domain_markings[{n}]"
+        _keys(item, {"domain", "markings", "applied"}, {"domain", "markings", "applied"}, where)
+        domain = _text(item["domain"], where, "domain")
+        _need(domain not in domain_markings, where, f"domain {domain!r} listed twice")
+        _text(item["applied"], where, "applied")
+        domain_markings[domain] = _markings(item["markings"], where)
+    scoped = tuple(_scoped_marking(item, rules, f"markings.json scoped_markings[{n}]")
+                   for n, item in enumerate(docs["markings"].get("scoped_markings", [])))
+    _need(len({s.marking for s in scoped}) == len(scoped), "markings.json",
+          "a scoped marking is listed twice")
     return Overrides(
+        domain_markings=domain_markings, scoped_markings=scoped,
         money=_money(docs["money"], lineage, "money.json"),
         source_money=_source_money(docs["money"], "money.json"),
         money_markings=money_markings,
         name_rules=rules, identity=identity, lineage=lineage,
         lineage_note=_text(docs["lineage"]["note"], "lineage.json", "note"),
-        names=_names(docs["names"]["sources"]),
+        names=_names(docs["names"]["sources"]), storage=_storage(docs["storage"]),
         paths=tuple(f"ontology/schema/overrides/{p.name}" for p in paths))

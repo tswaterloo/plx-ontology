@@ -1,6 +1,6 @@
 {
   "schema": "plx-case-link-contracts/v1",
-  "note": "Each contract declares how one cited source row links to another, with its evidence. fk and json_path agreement is a verified link between the two cited rows (what the source stores, not proof the stored value was right); text_match agreement is only a lead. Portal citations are petralabx/plx-customer-portal at the staging commit each names (portal-relative paths as written in docs/reference/portal-code-map.md): 6c9415973c1990ea9785c9079568aa93d0e37363 as mapped there, not re-read in the run that wrote this file (no upstream checkout in that session); a citation of a file verify/upstream-pins.json pins names the pinned commit and was re-read there (tests/test_customer_po_scope.py). Column names of relations not exercised by a live trace are unverified until a live-check reads them.",
+  "note": "Each contract declares how one cited source row links to another, with its evidence. fk and json_path agreement is a verified link between the two cited rows (what the source stores, not proof the stored value was right); text_match agreement is only a lead. Portal citations are petralabx/plx-customer-portal at the staging commit each names (portal-relative paths as written in devloop/CONTEXT/03-PORTAL.md): 6c9415973c1990ea9785c9079568aa93d0e37363 as mapped there, not re-read in the run that wrote this file (no upstream checkout in that session); a citation of a file devloop/upstream-pins.json pins names the pinned commit and was re-read there (tests/test_customer_po_scope.py). Column names of relations not exercised by a live trace are unverified until a live-check reads them.",
   "contracts": [
     {
       "id": "fm-ao-link-to-assembly-order",
@@ -11,7 +11,7 @@
       "fm_source_fk": "fm_linked_assembly_order",
       "meaning": "An FM AO-to-order-line link row names this assembly order (FM order_entry_item_assembly.idassembly = assembly_order.id). One AO can serve several order lines and a line can have several AOs.",
       "evidence": [
-        "Portal 6c9415973c19 app/api/mrp/assembly/[id] POST (link_oe_item_id) maintains FM public.order_entry_item_assembly(idoeitem, idassembly) and rejects a link when the OE line idfp differs from the AO idfinprod (docs/reference/portal-code-map.md section 3.8).",
+        "Portal 6c9415973c19 app/api/mrp/assembly/[id] POST (link_oe_item_id) maintains FM public.order_entry_item_assembly(idoeitem, idassembly) and rejects a link when the OE line idfp differs from the AO idfinprod (devloop/CONTEXT/03-PORTAL.md section 3.8).",
         "ontology/relation_contracts.py FM_SOURCE_FK fm_linked_assembly_order = (idassembly, assemblyOrderId).",
         "EVIDENCE/live/2026-09-30-ao-26005b-live-trace.json: link 1245 idassembly 10718 = AssemblyOrder 10718 (AO-26005B)."
       ],
@@ -26,7 +26,7 @@
       "fm_source_fk": "fm_assembly_link_for_line",
       "meaning": "An FM AO-to-order-line link row names this FM sales order line (order_entry_item_assembly.idoeitem = order_entry_item.id).",
       "evidence": [
-        "Portal 6c9415973c19 app/api/mrp/assembly/[id] POST (link_oe_item_id) writes order_entry_item_assembly.idoeitem (docs/reference/portal-code-map.md section 3.8).",
+        "Portal 6c9415973c19 app/api/mrp/assembly/[id] POST (link_oe_item_id) writes order_entry_item_assembly.idoeitem (devloop/CONTEXT/03-PORTAL.md section 3.8).",
         "ontology/relation_contracts.py FM_SOURCE_FK fm_assembly_link_for_line = (idoeitem, salesOrderLineId).",
         "EVIDENCE/live/2026-09-30-ao-26005b-live-trace.json: link 1245 idoeitem 1140 = SalesOrderLine 1140."
       ],
@@ -41,7 +41,7 @@
       "fm_source_fk": "fm_line_of_sales_order",
       "meaning": "An FM sales order line belongs to this FM sales order (order_entry_item.idoe = order_entry.id).",
       "evidence": [
-        "Portal 6c9415973c19 lib/wms/ensure-fm-oe-from-sales-order.ts:ensureFmOeFromSalesOrder:153 inserts FM order_entry and its order_entry_item rows (docs/reference/portal-code-map.md section 3.2).",
+        "Portal 6c9415973c19 lib/wms/ensure-fm-oe-from-sales-order.ts:ensureFmOeFromSalesOrder:153 inserts FM order_entry and its order_entry_item rows (devloop/CONTEXT/03-PORTAL.md section 3.2).",
         "ontology/relation_contracts.py FM_SOURCE_FK fm_line_of_sales_order = (idoe, salesOrderId).",
         "EVIDENCE/live/2026-09-30-ao-26005b-live-trace.json: SalesOrderLine 1140 idoe 351 = SalesOrder 351 (OR1000151885)."
       ],
@@ -56,7 +56,7 @@
       "fm_source_fk": "fm_item_of_assembly_order",
       "meaning": "An assembly-order component row (silver copy of FM assembly_order_item) belongs to this assembly order.",
       "evidence": [
-        "Portal 6c9415973c19: FM public.assembly_order_item holds the AO components (qty_c planned, actualamount); silver.assembly_order_items is its served copy (docs/reference/portal-code-map.md section 3.8).",
+        "Portal 6c9415973c19: FM public.assembly_order_item holds the AO components (qty_c planned, actualamount); silver.assembly_order_items is its served copy (devloop/CONTEXT/03-PORTAL.md section 3.8).",
         "ontology/relation_contracts.py FM_SOURCE_FK fm_item_of_assembly_order = (assembly_order_id, assemblyOrderId).",
         "EVIDENCE/live/2026-09-30-ao-26005b-live-trace.json: items 58382-58387 assembly_order_id 10718."
       ],
@@ -72,7 +72,7 @@
       "meaning": "A production task (setup, line clearance, filling, cleaning) was recorded against this assembly order.",
       "evidence": [
         "Portal 38cd3f35c31b lib/inventory/assembly-entries.ts:insertAssemblyProductionTask:364 writes FM production tasks for an AO (unchanged since 6c9415973c19).",
-        "Portal b4118a39b130 gold copy etl-silver-to-gold.ts:etlProductionTasks:1971 (docs/reference/portal-code-map.md section 3.8).",
+        "Portal b4118a39b130 gold copy etl-silver-to-gold.ts:etlProductionTasks:1971 (devloop/CONTEXT/03-PORTAL.md section 3.8).",
         "ontology/relation_contracts.py FM_SOURCE_FK fm_task_of_assembly_order = (mo_id, assemblyOrderId).",
         "EVIDENCE/live/2026-09-30-ao-26005b-live-trace.json: tasks 14353-14356 mo_id 10718."
       ],
@@ -88,7 +88,7 @@
       "meaning": "A damage entry was recorded against this assembly order.",
       "evidence": [
         "Portal 38cd3f35c31b lib/inventory/assembly-entries.ts:insertAssemblyDamage:193 (unchanged since 6c9415973c19).",
-        "Portal b4118a39b130 gold copy etl-silver-to-gold.ts:etlAssemblyOrderDamage:1801 (docs/reference/portal-code-map.md section 3.8).",
+        "Portal b4118a39b130 gold copy etl-silver-to-gold.ts:etlAssemblyOrderDamage:1801 (devloop/CONTEXT/03-PORTAL.md section 3.8).",
         "ontology/relation_contracts.py FM_SOURCE_FK fm_damage_of_assembly_order = (assembly_order_id, assemblyOrderId).",
         "EVIDENCE/live/2026-09-30-ao-26005b-live-trace.json: damage 5444-5446 assembly_order_id 10718."
       ],
@@ -100,13 +100,13 @@
       "to": {"relation": "public.order_entry"},
       "match": "json_path",
       "pairs": [{"from": "custom_fields.fmId", "to": "id", "compare": "integer_id"}],
-      "meaning": "A Portal sales order is bridged to this FM order_entry through custom_fields.fmId, the link Portal itself resolves by. The order number is not a link: Portal rewrites order_number to the BC document No. after drain. Portal's bridge may have first chosen an existing unlinked SO by PO/ERP text (findUnlinkedPortalSo) before stamping fmId; the Portal code map treats the stamped fmId as a source-asserted link (docs/reference/portal-code-map.md section 9), and so does this contract.",
+      "meaning": "A Portal sales order is bridged to this FM order_entry through custom_fields.fmId, the link Portal itself resolves by. The order number is not a link: Portal rewrites order_number to the BC document No. after drain. Portal's bridge may have first chosen an existing unlinked SO by PO/ERP text (findUnlinkedPortalSo) before stamping fmId; the pack treats the stamped fmId as a source-asserted link (03-PORTAL section 9), and so does this contract.",
       "evidence": [
-        "Portal 40f78021b920 lib/orders/order-identity.ts:resolveOrderFromFmOrderId:233 resolves a sales order by custom_fields->>'fmId' (matchedBy 'fmId') (docs/reference/portal-code-map.md section 3.4).",
-        "Portal 6c9415973c19 lib/wms/ensure-sales-order-from-fm-oe.ts:ensureSalesOrderFromFmOe:402 stamps customFields.fmId when it links or creates the gold SO (docs/reference/portal-code-map.md sections 3.2 and 9).",
-        "Portal 549f6f0e0bb0 lib/business-central/align-portal-so-number.ts:alignPortalSoNumberToBc:21 rewrites order_number to the BC document No. (docs/reference/portal-code-map.md section 9)."
+        "Portal 40f78021b920 lib/orders/order-identity.ts:resolveOrderFromFmOrderId:233 resolves a sales order by custom_fields->>'fmId' (matchedBy 'fmId') (devloop/CONTEXT/03-PORTAL.md section 3.4).",
+        "Portal 6c9415973c19 lib/wms/ensure-sales-order-from-fm-oe.ts:ensureSalesOrderFromFmOe:402 stamps customFields.fmId when it links or creates the gold SO (devloop/CONTEXT/03-PORTAL.md sections 3.2 and 9).",
+        "Portal 549f6f0e0bb0 lib/business-central/align-portal-so-number.ts:alignPortalSoNumberToBc:21 rewrites order_number to the BC document No. (devloop/CONTEXT/03-PORTAL.md section 9)."
       ],
-      "verification": "upstream code as mapped in docs/reference/portal-code-map.md; no live transaction checked through this contract yet. fmId may arrive as a JSON number or a digit string; both are compared as integers."
+      "verification": "upstream code as mapped by the context pack; no live transaction checked through this contract yet. fmId may arrive as a JSON number or a digit string; both are compared as integers."
     },
     {
       "id": "portal-po-to-fm-generated-po",
@@ -116,8 +116,8 @@
       "pairs": [{"from": "custom_fields.fmGeneratedPoId", "to": "id", "compare": "integer_id"}],
       "meaning": "A Portal purchase order is the copy of this FM generated purchase order; custom_fields.fmGeneratedPoId is the only link (po_number is rewritten to the BC No.).",
       "evidence": [
-        "Packaging Procure-to-GL map weak link 3: app_purchase_order.custom_fields.fmGeneratedPoId is the only link to the FileMaker PO (operating/process_stage_map.json weak_links; docs/reference/cases-and-artifacts.md section 1.7).",
-        "Portal 6c9415973c19 PurchaseOrder customFields.fmPoNumber/fmGeneratedPoId; lib/mrp/create-fm-purchase-order.ts writes FM then gold (docs/reference/portal-code-map.md section 3.5)."
+        "Packaging Procure-to-GL map weak link 3: app_purchase_order.custom_fields.fmGeneratedPoId is the only link to the FileMaker PO (operating/process_stage_map.json weak_links; devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md section 1.7).",
+        "Portal 6c9415973c19 PurchaseOrder customFields.fmPoNumber/fmGeneratedPoId; lib/mrp/create-fm-purchase-order.ts writes FM then gold (devloop/CONTEXT/03-PORTAL.md section 3.5)."
       ],
       "verification": "upstream code and the map as relayed; no live transaction checked through this contract yet (PO5447's ids are not in the map)."
     },
@@ -130,7 +130,7 @@
       "fm_source_fk": "fm_line_of_purchase_order",
       "meaning": "An FM purchase order line belongs to this FM generated purchase order (gpi.idpogen = gpo.id).",
       "evidence": [
-        "Packaging Procure-to-GL map stage 11: gpi.idpogen -> gpo.id, foreign key, both relations in the API (docs/reference/cases-and-artifacts.md section 1.3).",
+        "Packaging Procure-to-GL map stage 11: gpi.idpogen -> gpo.id, foreign key, both relations in the API (devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md section 1.3).",
         "ontology/relation_contracts.py FM_SOURCE_FK fm_line_of_purchase_order = (idpogen, purchaseOrderId)."
       ],
       "verification": "map and replica FK names; no live transaction checked through this contract yet."
@@ -144,7 +144,7 @@
       "fm_source_fk": "fm_packaging_receipt_detail_for_purchase_line",
       "meaning": "An FM packaging receipt detail was received against this FM purchase order line (idpogenitem = gpi.id). Unlike the Portal receipt's PO number text, this is an id.",
       "evidence": [
-        "Packaging Procure-to-GL map stage 16: receiptpack.idpogenitem -> gpi.id, foreign key; the API serves public.receipt_packaging, probably the same FM table under its replica name (docs/reference/cases-and-artifacts.md section 1.3, marked inference).",
+        "Packaging Procure-to-GL map stage 16: receiptpack.idpogenitem -> gpi.id, foreign key; the API serves public.receipt_packaging, probably the same FM table under its replica name (devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md section 1.3, marked inference).",
         "ontology/relation_contracts.py FM_SOURCE_FK fm_packaging_receipt_detail_for_purchase_line = (idpogenitem, purchaseOrderLineId)."
       ],
       "verification": "that public.receipt_packaging carries idpogenitem in the reporting API is an inference until a live-check reads it."
@@ -159,10 +159,10 @@
       "provenance_note": "Portal stores this PO id; Portal set it by PO-number text match (TRIM(po_number) = ponoqc at receive time, on a po_number that can carry an -FM<id> suffix or be rewritten to the BC No.)",
       "meaning": "A Portal receipt stores this purchase order's id, but the column is loose text that Portal filled by matching TRIM(po_number) = ponoqc. Agreement is recorded as stored_by_text_join, never as a verified link, and cannot support a relation claim; a stored id that differs still contradicts.",
       "evidence": [
-        "Packaging Procure-to-GL map stage 16: app_receipt purchase_order_id set by matching TRIM(po_number) = ponoqc text (docs/reference/cases-and-artifacts.md section 1.3).",
-        "Portal f3e3a5399d42 lib/mrp/upsert-gold-receipt.ts:upsertGoldReceipt:175 (docs/reference/portal-code-map.md section 3.5)."
+        "Packaging Procure-to-GL map stage 16: app_receipt purchase_order_id set by matching TRIM(po_number) = ponoqc text (devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md section 1.3).",
+        "Portal f3e3a5399d42 lib/mrp/upsert-gold-receipt.ts:upsertGoldReceipt:175 (devloop/CONTEXT/03-PORTAL.md section 3.5)."
       ],
-      "verification": "map (classifies the column as 'Loose text') and upstream code as relayed; the packaging fixture uses this column (operating/tests/fixtures/packaging_case_fixture.json, column names pending live-verify)."
+      "verification": "map (02-CASES-AND-ARTIFACTS line 281 classifies the column as 'Loose text') and upstream code as relayed; the packaging fixture uses this column (operating/tests/fixtures/packaging_case_fixture.json, column names pending live-verify)."
     },
     {
       "id": "portal-po-line-to-po",
@@ -172,7 +172,7 @@
       "pairs": [{"from": "purchase_order_id", "to": "id", "compare": "text_id"}],
       "meaning": "A Portal purchase order line belongs to this Portal purchase order.",
       "evidence": [
-        "Portal f3e3a5399d42 prisma PurchaseOrderLine (schema.prisma:3642) relates to PurchaseOrder (docs/reference/portal-code-map.md section 3.5); map stage 11: app_purchase_order_line -> app_purchase_order, foreign key."
+        "Portal f3e3a5399d42 prisma PurchaseOrderLine (schema.prisma:3642) relates to PurchaseOrder (devloop/CONTEXT/03-PORTAL.md section 3.5); map stage 11: app_purchase_order_line -> app_purchase_order, foreign key."
       ],
       "verification": "schema as relayed; column names pending live-verify."
     },
@@ -184,8 +184,8 @@
       "pairs": [{"from": "po_reference", "to": "po_number", "compare": "text"}],
       "meaning": "A receipt's PO number text equals a purchase order's number after trimming. A LEAD only: po_number gets an -FM<id> suffix on clashes and is rewritten to the BC No., and the text is not unique over time.",
       "evidence": [
-        "Packaging Procure-to-GL map weak link 2: po_number is not stable (-FM<id> suffix, overwritten with the BC No.); receipts join by this text (docs/reference/cases-and-artifacts.md section 1.7).",
-        "Portal 6c9415973c19 business-central/align-portal-po-number.ts:alignPortalPoNumberToBc:10 renumbers POs to BC (docs/reference/portal-code-map.md section 3.5)."
+        "Packaging Procure-to-GL map weak link 2: po_number is not stable (-FM<id> suffix, overwritten with the BC No.); receipts join by this text (devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md section 1.7).",
+        "Portal 6c9415973c19 business-central/align-portal-po-number.ts:alignPortalPoNumberToBc:10 renumbers POs to BC (devloop/CONTEXT/03-PORTAL.md section 3.5)."
       ],
       "verification": "upstream behaviour as relayed; text agreement is never a verified link."
     },
@@ -197,11 +197,47 @@
       "pairs": [{"from": "external_document_number", "to": "order_number", "compare": "text"}],
       "meaning": "A BC sales invoice's external document number equals a Portal order number: Portal's fallback after the entity map. A LEAD only: order_number is rewritten to the BC document No. after drain, and the ship-only bridge overwrites external document numbers.",
       "evidence": [
-        "Portal 40f78021b920 lib/orders/order-identity.ts:resolveOrderFromBcInvoiceId:183 tries app_bc_entity_map first, then bc_invoice_snapshot.external_document_number through resolveOrderByNumber (matchedBy 'externalDocNumber'): the order number unscoped, a customer PO only with the invoice's customer (resolvePortalCustomerIdFromBc:158, resolveOrderByNumber:125-149) (docs/reference/portal-code-map.md section 3.4).",
-        "Portal c09de5d5c90e business-central serializers.ts:1114 (serializeSalesInvoice; was 4243499026f2:1113, the same bytes at 0323e19c) sets the BC sales invoice externalDocumentNumber = order_number (docs/reference/portal-code-map.md sections 3.2 and 3.3).",
-        "Portal 549f6f0e0bb0 lib/business-central/align-portal-so-number.ts:alignPortalSoNumberToBc:21 makes order_number mutable (docs/reference/portal-code-map.md section 9)."
+        "Portal 40f78021b920 lib/orders/order-identity.ts:resolveOrderFromBcInvoiceId:183 tries app_bc_entity_map first, then bc_invoice_snapshot.external_document_number through resolveOrderByNumber (matchedBy 'externalDocNumber'): the order number unscoped, a customer PO only with the invoice's customer (resolvePortalCustomerIdFromBc:158, resolveOrderByNumber:125-149) (devloop/CONTEXT/03-PORTAL.md section 3.4).",
+        "Portal c09de5d5c90e business-central serializers.ts:1114 (serializeSalesInvoice; was 4243499026f2:1113, the same bytes at 0323e19c) sets the BC sales invoice externalDocumentNumber = order_number (devloop/CONTEXT/03-PORTAL.md sections 3.2 and 3.3).",
+        "Portal 549f6f0e0bb0 lib/business-central/align-portal-so-number.ts:alignPortalSoNumberToBc:21 makes order_number mutable (devloop/CONTEXT/03-PORTAL.md section 9)."
       ],
-      "verification": "no BC table is in the reporting API manifest (docs/reference/portal-code-map.md section 3.11): this contract applies only once BC invoice rows are mirrored under this relation name; until then no citation can satisfy it."
+      "verification": "public.bc_invoice_snapshot is served by the live reporting API catalog (read 2026-10-26; not in the pinned manifest, live-unverified for row content): text agreement is a lead only, never a verified link."
+    },
+    {
+      "id": "bc-invoice-to-portal-customer-by-erp-code",
+      "from": {"relation": "public.bc_invoice_snapshot"},
+      "to": {"relation": "public.app_customer"},
+      "match": "text_match",
+      "pairs": [{"from": "customer_number", "to": "erp_code", "compare": "text"}],
+      "meaning": "A BC sales invoice's customer number equals a Portal customer's ERP code. A LEAD only: the snapshot carries no company, and customer_bc_system_id has no recorded Portal counterpart on app_customer.",
+      "evidence": [
+        "ontology/schema/generated/meta/portal_catalog.json lists customer_number and customer_bc_system_id on public.bc_invoice_snapshot and erp_code on public.app_customer (live GET /v1/relations 2026-10-26)."
+      ],
+      "verification": "text agreement of two codes from different systems is never a verified link."
+    },
+    {
+      "id": "bc-purchase-invoice-to-portal-po-by-order-number",
+      "from": {"relation": "public.bc_purchase_invoice_snapshot"},
+      "to": {"relation": "public.app_purchase_order"},
+      "match": "text_match",
+      "pairs": [{"from": "order_number", "to": "po_number", "compare": "text"}],
+      "meaning": "A BC purchase invoice names a purchase order by its order No. (the way the Portal finds a PO's invoices). A LEAD only: BC numbers are unique within one company and the snapshot carries no company.",
+      "evidence": [
+        "Same key as the BC-side PurchaseInvoice.names_order link (ontology/schema/domains/purchasing.json), whose evidence is portal.bc_po_finance_invoice_match."
+      ],
+      "verification": "text agreement is a lead only; an empty order_number links nothing."
+    },
+    {
+      "id": "bc-purchase-invoice-to-portal-supplier-by-vendor-number",
+      "from": {"relation": "public.bc_purchase_invoice_snapshot"},
+      "to": {"relation": "public.app_supplier"},
+      "match": "text_match",
+      "pairs": [{"from": "vendor_number", "to": "code", "compare": "text"}],
+      "meaning": "A BC purchase invoice's vendor number equals a Portal supplier code. A LEAD only: vendor_bc_system_id has no recorded Portal counterpart on app_supplier.",
+      "evidence": [
+        "ontology/schema/generated/meta/portal_catalog.json lists vendor_number on public.bc_purchase_invoice_snapshot and code on public.app_supplier (live GET /v1/relations 2026-10-26)."
+      ],
+      "verification": "text agreement of two codes from different systems is never a verified link."
     },
     {
       "id": "portal-quote-to-sales-order-by-converted-id",
@@ -226,6 +262,214 @@
         "Portal 790256ca43d0 portal/src/lib/sales-order/convert.ts:convertAcceptedQuote:104-176 locks the ACCEPTED quote FOR UPDATE, creates the sales order with customFields.sourceQuoteId/sourceQuoteNumber and stamps the quote's customFields.convertedSalesOrderId/convertedSalesOrderNumber/convertedAt in the same transaction (ontology/schema/domains/quotes.json evidence portal.quote_convert)."
       ],
       "verification": "upstream code; live read 2026-10-16 through the reporting API (counts only): 5 app_quote rows, all DRAFT, 0 carrying custom_fields.convertedSalesOrderId; 939 app_sales_order rows, 0 carrying custom_fields.sourceQuoteId or sourceQuoteNumber. No live order is linked to a quote yet, so a cited order without this stamp is an unrecorded link, never one inferred by customer, date or amount."
+    },
+    {
+      "id": "portal-mo-to-sales-order-line",
+      "from": {
+        "relation": "public.app_manufacturing_order"
+      },
+      "to": {
+        "relation": "public.app_sales_order_line"
+      },
+      "match": "fk",
+      "pairs": [
+        {
+          "from": "sales_order_line_id",
+          "to": "id",
+          "compare": "text_id"
+        }
+      ],
+      "meaning": "A Portal manufacturing order (the gold MO of an assembly order) is made for this Portal sales order line (SO Produce line; one live MO per line).",
+      "evidence": [
+        "Schema evidence AssemblyOrder.for_order_line (ontology/schema/domains/manufacturing.json): portal/prisma/schema.prisma@b46934a ManufacturingOrder 2443-2568, salesOrderLineId -> SalesOrderLine.",
+        "Schema evidence: portal/src/lib/mrp/mo-so-line-link.ts@549f6f0 13-16 liveLinkedMo (the one not-CANCELLED MO on a line; pinned in devloop/upstream-pins.json).",
+        "ontology/schema/generated/meta/portal_catalog.json (the 248-relation live catalog, 2026-10-26) lists both columns: app_manufacturing_order.sales_order_line_id, app_sales_order_line.id."
+      ],
+      "verification": "schema and catalog as relayed; no live row pair traced yet (operating.impact_chain names this link's gap when a walk stops at it)."
+    },
+    {
+      "id": "portal-so-line-to-so",
+      "from": {
+        "relation": "public.app_sales_order_line"
+      },
+      "to": {
+        "relation": "public.app_sales_order"
+      },
+      "match": "fk",
+      "pairs": [
+        {
+          "from": "sales_order_id",
+          "to": "id",
+          "compare": "text_id"
+        }
+      ],
+      "meaning": "A Portal sales order line belongs to this Portal sales order.",
+      "evidence": [
+        "Schema evidence SalesOrderLine.line_of (ontology/schema/domains/orders.json, ref prisma.sales_order_line): Prisma SalesOrderLine.salesOrderId -> SalesOrder.",
+        "ontology/schema/generated/meta/portal_catalog.json (the 248-relation live catalog, 2026-10-26) lists both columns: app_sales_order_line.sales_order_id, app_sales_order.id."
+      ],
+      "verification": "schema and catalog as relayed; no live row pair traced yet (operating.impact_chain names this link's gap when a walk stops at it)."
+    },
+    {
+      "id": "portal-so-line-to-product",
+      "from": {
+        "relation": "public.app_sales_order_line"
+      },
+      "to": {
+        "relation": "public.app_product"
+      },
+      "match": "fk",
+      "pairs": [
+        {
+          "from": "product_id",
+          "to": "id",
+          "compare": "text_id"
+        }
+      ],
+      "meaning": "A Portal sales order line sells this Portal product (the item whose recorded unit cost the margin at stake reads).",
+      "evidence": [
+        "Schema evidence SalesOrderLine.for_item (ontology/schema/domains/orders.json, ref prisma.sales_order_line): Prisma SalesOrderLine.productId -> Product.",
+        "ontology/schema/generated/meta/portal_catalog.json (the 248-relation live catalog, 2026-10-26) lists both columns: app_sales_order_line.product_id, app_product.id."
+      ],
+      "verification": "schema and catalog as relayed; no live row pair traced yet (operating.impact_chain names this link's gap when a walk stops at it)."
+    },
+    {
+      "id": "portal-po-line-to-product",
+      "from": {
+        "relation": "public.app_purchase_order_line"
+      },
+      "to": {
+        "relation": "public.app_product"
+      },
+      "match": "fk",
+      "pairs": [
+        {
+          "from": "product_id",
+          "to": "id",
+          "compare": "text_id"
+        }
+      ],
+      "meaning": "A Portal purchase order line orders this Portal product (the impact chain's first item hop).",
+      "evidence": [
+        "Schema evidence PurchaseOrderLine.for_item (ontology/schema/domains/purchasing.json, ref prisma.purchase_order_line): Prisma PurchaseOrderLine.productId -> Product.",
+        "ontology/schema/generated/meta/portal_catalog.json (the 248-relation live catalog, 2026-10-26) lists both columns: app_purchase_order_line.product_id, app_product.id."
+      ],
+      "verification": "schema and catalog as relayed; no live row pair traced yet (operating.impact_chain names this link's gap when a walk stops at it)."
+    },
+    {
+      "id": "fm-ao-component-to-assembly-order",
+      "from": {
+        "relation": "public.assembly_order_item"
+      },
+      "to": {
+        "relation": "public.assembly_order"
+      },
+      "match": "fk",
+      "pairs": [
+        {
+          "from": "idassem",
+          "to": "id",
+          "compare": "integer_id"
+        }
+      ],
+      "meaning": "A FileMaker assembly order component row (bronze assembly_order_item) belongs to this assembly order: the AO that consumes the component.",
+      "evidence": [
+        "Schema evidence AssemblyOrderComponent.component_of (ontology/schema/domains/manufacturing.json, ref upstream-code.fetchassemblyorderitems.f2113b): portal/src/app/mrp/assembly/assembly-queries.ts@b46934a 656-705 fetchAssemblyOrderItems reads idassem.",
+        "The silver copy is contract fm-ao-item-to-assembly-order (silver.assembly_order_items.assembly_order_id).",
+        "ontology/schema/generated/meta/portal_catalog.json (the 248-relation live catalog, 2026-10-26) lists both columns: assembly_order_item.idassem, assembly_order.id."
+      ],
+      "verification": "schema and catalog as relayed; no live row pair traced yet (operating.impact_chain names this link's gap when a walk stops at it)."
+    },
+    {
+      "id": "fm-ao-component-to-packaging",
+      "from": {
+        "relation": "public.assembly_order_item"
+      },
+      "to": {
+        "relation": "public.packaging"
+      },
+      "match": "fk",
+      "pairs": [
+        {
+          "from": "idpack",
+          "to": "id",
+          "compare": "integer_id"
+        }
+      ],
+      "meaning": "A FileMaker assembly order component row consumes this packaging item.",
+      "evidence": [
+        "Schema evidence AssemblyOrderComponent.uses_item (ontology/schema/domains/manufacturing.json, ref upstream-code.fetchassemblyorderitems.f2113b): fetchAssemblyOrderItems reads idpack (part_type Pack).",
+        "ontology/schema/generated/meta/portal_catalog.json (the 248-relation live catalog, 2026-10-26) lists both columns: assembly_order_item.idpack, packaging.id."
+      ],
+      "verification": "schema and catalog as relayed; no live row pair traced yet (operating.impact_chain names this link's gap when a walk stops at it)."
+    },
+    {
+      "id": "fm-ao-component-to-bulk-product",
+      "from": {
+        "relation": "public.assembly_order_item"
+      },
+      "to": {
+        "relation": "public.bulk_product"
+      },
+      "match": "fk",
+      "pairs": [
+        {
+          "from": "idbulk",
+          "to": "id",
+          "compare": "integer_id"
+        }
+      ],
+      "meaning": "A FileMaker assembly order component row consumes this bulk product.",
+      "evidence": [
+        "Schema evidence AssemblyOrderComponent.uses_item (ontology/schema/domains/manufacturing.json, ref upstream-code.fetchassemblyorderitems.f2113b): fetchAssemblyOrderItems reads idbulk (part_type Bulk).",
+        "ontology/schema/generated/meta/portal_catalog.json (the 248-relation live catalog, 2026-10-26) lists both columns: assembly_order_item.idbulk, bulk_product.id."
+      ],
+      "verification": "schema and catalog as relayed; no live row pair traced yet (operating.impact_chain names this link's gap when a walk stops at it)."
+    },
+    {
+      "id": "portal-entity-map-item-to-product",
+      "from": {
+        "relation": "public.app_bc_entity_map"
+      },
+      "to": {
+        "relation": "public.app_product"
+      },
+      "match": "fk",
+      "pairs": [
+        {
+          "from": "source_id",
+          "to": "id",
+          "compare": "text_id"
+        }
+      ],
+      "meaning": "A Portal entity-map item row (source_system portal, status LINKED) names the Portal product the BC drain created a BC item for; its bc_system_id names that BC item (contract portal-entity-map-to-bc-item). The Portal's own BC joins read this row (ontology/schema/domains/bc_entity_map.json binding portal.app_bc_entity_map), never the item number, which recurs across BC companies.",
+      "evidence": [
+        "Live read 2026-10-27 through the Workbench read client (GET, counts only): the reporting API now serves public.app_bc_entity_map (22,170 rows; columns bc_company_id, bc_environment, bc_number, bc_system_id, entity_type, id, source_id, source_system, status, ...), which the open decision devloop/DECISIONS/2026-10-28-identity-spine-lot-bc-company.md waited for.",
+        "Of its item rows 10,700 are portal/LINKED/Production (9,677 in the BC company this host captures, 1,023 in a second company). For the 73 BC items the 92 lines of the 23 late BC purchase orders order (flagship oracle, 2026-10-27), 70 have such a row whose source_id is an app_product the served projection holds."
+      ],
+      "verification": "live row pairs counted 2026-10-27 (counts only, no value kept); projected as Product.bc_posted_as (ontology/schema/domains/bc_entity_map.json) from the next projection build; the impact chain takes it as an item twin (devloop/DECISIONS/2026-10-27-flagship-margin-entity-map.md)."
+    },
+    {
+      "id": "portal-entity-map-to-bc-item",
+      "from": {
+        "relation": "public.app_bc_entity_map"
+      },
+      "to": {
+        "relation": "bc.items"
+      },
+      "match": "fk",
+      "pairs": [
+        {
+          "from": "bc_system_id",
+          "to": "id",
+          "compare": "text_id"
+        }
+      ],
+      "meaning": "An entity-map item row's bc_system_id is the systemId of the BC item the Portal created, in the company bc_company_id names: one record of one company, so the BC company the number-based join cannot know (tier_cap bc_company_not_known) is known.",
+      "evidence": [
+        "Live read 2026-10-27 (counts only): 9,673 of the 9,677 portal/LINKED/Production item rows of the captured company carry a bc_system_id equal to the id of a captured BC item of that company (the BC capture); purchaseOrder rows 352 of 352 and salesOrder rows 158 of 212 match captured BC records. The served replica points at the captured Production records, not UAT (the trap ontology/schema/domains/bc_entity_map.json names)."
+      ],
+      "verification": "live row pairs counted 2026-10-27 (counts only); the 1,023 rows of the second company name a company this host does not capture and are no link here."
     }
   ]
 }

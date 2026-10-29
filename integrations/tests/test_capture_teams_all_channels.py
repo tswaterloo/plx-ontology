@@ -1,9 +1,9 @@
 """Teams everything: every channel the census clears (evidence label: injected-transport).
 
-Requirement "Teams everything" (2026-10-21): the capture widens from the teams a
-member joined to every team the census enumerates and the people guard clears, read
-only once the owner's ``plx-teams-content-confirmation/v1`` of scope
-``all_census_cleared`` (his name, the date, the directive id) sits beside the census.
+Owner directive "Teams everything" (2026-10-21): the capture widens from the teams a
+member joined to every team the census enumerates and the people guard clears. Owner
+decision 2026-10-26: that set is read with no human content confirmation; a
+``content-confirmation.json`` beside the census is neither required nor consulted.
 A team, channel or chat with an excluded member is refused before any request naming
 it, and the client's request log proves no request did; chats without
 ``Chat.Read.All`` stay their own blocked part. The live-check spec
@@ -24,10 +24,10 @@ import unittest
 from unittest import mock
 from urllib.parse import unquote, urlsplit
 
-from verify import live_verify as lv
+from devloop import live_verify as lv
 from integrations import capture_teams, graph_read
-from integrations.capture_teams import (CONFIRMATION_SCHEMA, TeamsCapture, TeamsCaptureError,
-                                        TeamsScope, census_path, confirmation_block,
+from integrations.capture_teams import (CONFIRMATION_PART, CONFIRMATION_SCHEMA, TeamsCapture,
+                                        TeamsCaptureError, TeamsScope, census_path,
                                         confirmation_path, default_state_dir)
 from integrations.tests.test_capture_teams import (CHAT, COS, ENV, GENERAL, PRIVATE,
                                                    SECRET_TEXT, TEAM, U_COS, j)
@@ -105,10 +105,11 @@ class AllChannelsCase(unittest.TestCase):
         return graph
 
     def confirm_all(self, **fields) -> Path:
-        """The owner's all form as the operator writes it beside the census (a fixture shaped
-        as human-authored; ``fields`` replace or, set to None, drop its keys)."""
+        """An old all-form confirmation as Tanush once wrote it beside the census (a
+        fixture shaped as human-authored; ``fields`` replace or, set to None, drop its
+        keys). Since 2026-10-26 the run neither needs nor reads it."""
         document = {"schema": CONFIRMATION_SCHEMA, "scope": "all_census_cleared",
-                    "confirmed_by": "Jane Doe", "confirmed_at": "2026-10-21",
+                    "confirmed_by": "Tanush Shah", "confirmed_at": "2026-10-21",
                     "directive": DIRECTIVE, "note": "Teams everything"}
         document.update(fields)
         path = confirmation_path(self.state)
@@ -156,7 +157,6 @@ class AllChannelsCase(unittest.TestCase):
 class AllFormTests(AllChannelsCase):
     def test_the_all_form_reads_exactly_the_cleared_set_wider_than_member_joined(self):
         graph = self.fixture(extra=3)
-        self.confirm_all()
         code, report, stdout = self.run_spec(graph)
         self.assertEqual(lv.check_expectations(SPEC, code, report), [], report)
         self.assertEqual((report["evidence_label"], lv.blocked_parts(report)),
@@ -168,10 +168,13 @@ class AllFormTests(AllChannelsCase):
         self.assertEqual(chats, {CHAT})
         self.assertEqual(self.read(graph), (channels, chats))
         content, coverage = report["content"], report["coverage"]
-        self.assertEqual((content["form"], content["confirmed_channels"],
-                          content["confirmed_chats"], content["confirmed_not_cleared"],
-                          content["channels_due"], content["chats_due"]),
-                         ("all_census_cleared", 5, 1, 0, 5, 1))
+        self.assertEqual((content["form"], content["status"], content["confirmation"],
+                          content["confirmed_channels"], content["confirmed_chats"],
+                          content["confirmed_not_cleared"], content["channels_due"],
+                          content["chats_due"]),
+                         ("all_census_cleared", "census_cleared", "not_required",
+                          5, 1, 0, 5, 1))
+        self.assertFalse(confirmation_path(self.state).exists())   # code never writes it
         self.assertEqual({k: coverage[k] for k in (
             "channels_enumerated", "channels_member_joined", "wider_than_member_joined",
             "channels_captured", "chats_captured", "excluded_requested", "blocked_unnamed")},
@@ -181,7 +184,7 @@ class AllFormTests(AllChannelsCase):
         self.assertEqual(report["census"]["member_joined"],
                          {"accounts": 2, "accounts_excluded": 0, "teams": 1, "channels": 2})
         self.assert_nothing_named(stdout)
-        # What the live check records: counts, booleans and enums only.
+        # What the verifier records: counts, booleans and enums only.
         recorded = lv._recorded(SPEC, report)
         self.assertEqual(recorded["coverage"], {k: coverage[k] for k in coverage})
         self.assertEqual(recorded["content.form"], "all_census_cleared")
@@ -189,47 +192,52 @@ class AllFormTests(AllChannelsCase):
         # A tenant whose teams the members all joined is no wider: the check fails.
         self.fresh()
         graph = self.fixture(extra=0)
-        self.confirm_all()
         code, report, _ = self.run_spec(graph)
         self.assertIs(report["coverage"]["wider_than_member_joined"], False)
         self.assertIn("coverage.wider_than_member_joined != expected",
                       lv.check_expectations(SPEC, code, report))
 
-    def test_a_malformed_or_code_written_confirmation_refuses_and_reads_no_content(self):
+    def test_no_confirmation_old_or_malformed_changes_what_is_read(self):
+        """Absent, an old all form, or one malformed or code-written: none blocks the run
+        and none widens it. Exactly the census-cleared set is read, the excluded person's
+        team and chat never are, and the file is left as it was."""
         cases = [
-            ("absent", None, "content_confirmation_absent"),
-            ("channels_beside_all", {"channels": [{"team_id": TEAM, "channel_id": GENERAL}]},
-             "content_confirmation_invalid"),
-            ("other_scope", {"scope": "all_teams"}, "content_confirmation_invalid"),
-            ("no_directive", {"directive": None}, "content_confirmation_invalid"),
-            ("directive_not_an_id", {"directive": "Teams everything"},
-             "content_confirmation_invalid"),
-            ("not_a_date", {"confirmed_at": "2026-13-01"}, "content_confirmation_invalid"),
-            ("no_signer", {"confirmed_by": None}, "content_confirmation_not_owner"),
-            ("capture_principal", {"confirmed_by": "svc:teams-capture"},
-             "content_confirmation_not_owner"),
-            ("an_agent", {"confirmed_by": "Claude Opus"}, "content_confirmation_not_owner"),
-            ("workbench_code", {"confirmed_by": "Workbench Controller"},
-             "content_confirmation_not_owner"),
-            ("a_role", {"confirmed_by": "owner"}, "content_confirmation_not_owner"),
-            ("an_address", {"confirmed_by": COS}, "content_confirmation_not_owner"),
+            ("absent", None),
+            ("old_all_form", {}),
+            ("channels_beside_all", {"channels": [{"team_id": TEAM, "channel_id": GENERAL}]}),
+            ("other_scope", {"scope": "all_teams"}),
+            ("not_a_date", {"confirmed_at": "2026-13-01"}),
+            ("an_agent", {"confirmed_by": "Claude Opus"}),
+            ("an_address", {"confirmed_by": COS}),
         ]
-        for name, fields, code_wanted in cases:
+        for name, fields in cases:
             with self.subTest(name):
                 self.fresh()
-                if fields is not None:
-                    self.confirm_all(**fields)
+                path = self.confirm_all(**fields) if fields is not None else None
+                before = path.read_bytes() if path else None
                 graph = self.fixture()
                 code, report, stdout = self.run_spec(graph)
-                self.assertEqual(report["blocked_upstream"], [confirmation_block(code_wanted)])
-                self.assertEqual((code, report["status"], report["runs"]), (1, "blocked", []))
-                self.assertFalse([u for u in self.urls(graph) if "/messages" in u])
-                self.assertEqual(lv.check_expectations(SPEC, code, report,
-                                                       SPEC["expect_blocked"]), [], report)
-                self.assertNotEqual(lv.check_expectations(SPEC, code, report), [])
+                self.assertEqual(lv.check_expectations(SPEC, code, report), [], report)
+                self.assertEqual((code, report["status"], report["blocked_upstream"]),
+                                 (0, "complete", []), report)
+                self.assertNotIn(CONFIRMATION_PART, json.dumps(report))
+                self.assertEqual((report["content"]["status"],
+                                  report["content"]["confirmation"],
+                                  report["content"]["confirmed_not_cleared"]),
+                                 ("census_cleared", "not_required", 0))
+                channels, chats = self.cleared()
+                self.assertEqual((len(channels), chats), (5, {CHAT}))
+                self.assertEqual(self.read(graph), (channels, chats))
+                urls = self.urls(graph)
+                for value in (EXCLUDED, EXCLUDED_ADDRESS, EXCLUDED_CHAT.lower()):
+                    self.assertFalse([u for u in urls if value in u], value)
+                self.assertFalse([u for u in urls if EXCLUDED_TEAM in u and "/members" not in u])
+                self.assertEqual(report["coverage"]["excluded_requested"], 0)
                 self.assert_nothing_named(stdout)
-                if fields is None:   # code never writes or defaults the confirmation
+                if path is None:   # code never writes or defaults a confirmation
                     self.assertFalse(confirmation_path(self.state).exists())
+                else:              # nor rewrites or removes one left over
+                    self.assertEqual(path.read_bytes(), before)
         # A scope naming the cleared set by another word fails closed before any request.
         document = json.loads(SHIPPED[1].read_text(encoding="utf-8"))
         for teams in ("all", "all_member_joined", True):
@@ -242,7 +250,6 @@ class AllFormTests(AllChannelsCase):
 class ExcludedPeopleTests(AllChannelsCase):
     def test_excluded_members_never_reach_a_request_url(self):
         graph = self.fixture()
-        self.confirm_all()
         code, report, stdout = self.run_spec(graph)
         self.assertEqual(code, 0, report)
         urls = self.urls(graph)
@@ -264,7 +271,6 @@ class ExcludedPeopleTests(AllChannelsCase):
         # The log is not vacuous: with the chat-id check disabled, the one-on-one chat is
         # requested (its members read refuses it after), and the run is not ok.
         graph = self.fixture()
-        self.confirm_all()
         with mock.patch.object(TeamsCapture, "_id_excluded", return_value=False):
             code, report, _ = self.run_spec(graph)
         self.assertTrue([u for u in self.urls(graph) if EXCLUDED_CHAT.lower() in u])
@@ -283,7 +289,6 @@ class ChatPermissionTests(AllChannelsCase):
                 self.fresh()
                 graph = self.fixture()
                 graph.forbidden = [forbidden]
-                self.confirm_all()
                 code, report, stdout = self.run_spec(graph)
                 self.assertEqual((code, report["status"]), (1, "blocked"))
                 self.assertEqual({(p["part"], p["error_code"], p.get("permission"))
@@ -299,7 +304,6 @@ class ChatPermissionTests(AllChannelsCase):
         self.fresh()
         graph = self.fixture()
         graph.failing = {r"/chats/[^/]+/messages$": 401}
-        self.confirm_all()
         code, report, _ = self.run_spec(graph)
         self.assertEqual(report["coverage"]["blocked_unnamed"], 1)
         self.assertIn("coverage.blocked_unnamed != expected",
@@ -312,7 +316,6 @@ class CardinalityTests(AllChannelsCase):
             with self.subTest(extra=extra):
                 self.fresh()
                 graph = self.fixture(extra)
-                self.confirm_all()
                 started = time.monotonic()
                 code, report, _ = self.run_spec(graph)
                 elapsed = time.monotonic() - started

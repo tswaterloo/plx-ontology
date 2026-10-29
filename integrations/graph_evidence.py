@@ -1,6 +1,6 @@
 """Case mail evidence shapes: attachment citations, file-attachment decoding, mail people.
 
-Mail as a product source inside cases. The reads
+Mail as a product source inside cases (WS-08, ING-02, DOC-04). The reads
 themselves go through ``integrations.graph_read.GraphMailReader`` (one guarded
 GET path, audience before any content read); this module owns the parts that
 are pure evidence shape: the attachment citation grammar, the decoding and

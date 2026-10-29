@@ -1,4 +1,4 @@
-"""One link-tier rule for plx.around, plx.aggregate and plx.process.
+"""One link-tier rule for plx.around, plx.aggregate and plx.process (R1).
 
 ``operating.ontology_tools._effective_tier`` is the one rule: a link touching a
 ``gold_native_staging`` row is capped at ``lead``, except a foreign key one source stores
@@ -6,7 +6,7 @@ between its own rows. The three tools are asked about the same stored links in o
 store (the real compiled schema and stage graphs, synthetic records) and must agree:
 either each counts the link at the default floor, or each holds it as a lead.
 
-plx.process is stricter about the record on purpose: it serves the same
+plx.process is stricter about the record on purpose (09-CRITIQUE R1): it serves the same
 link tier, but a staging record reached from an authority record is never evidence
 (``never_authority_record``), and every answer from a staging root is a lead
 (``staging_root``). The last tests pin that split. Evidence label: isolated-fixture.
@@ -198,7 +198,7 @@ class OneTierTests(unittest.TestCase):
         self.assertTrue(t.aggregate_counts(ln, "SalesOrderLine.line_of", "forward",
                                            "order_number"))
         # plx.process follows the same key (order -> line -> MO) and observes the MO;
-        # the staging root still makes the answer a lead, never proven.
+        # the staging root still makes the answer a lead, never proven (R1).
         mfg = t.process(so)["manufacturing_order"]
         self.assertEqual((mfg["state"], mfg["missing"]["state"], mfg["missing"]["reason"]),
                          ("missing", "unknown", "staging_root"))
@@ -258,7 +258,7 @@ class OneTierTests(unittest.TestCase):
 
 class ProcessRecordSplitTests(unittest.TestCase):
     """The documented split: one link tier, but plx.process never counts a staging
-    record as evidence for an authority record."""
+    record as evidence for an authority record (R1)."""
 
     def test_staging_record_behind_a_verified_key_is_never_process_evidence(self):
         s = Store()

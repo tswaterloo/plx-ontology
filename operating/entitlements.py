@@ -2,7 +2,7 @@
 
 The per-employee resolver is ``operating.employee_permissions`` (Portal role ∩
 Entra groups ∩ SharePoint item permissions, mirrored from the Portal's own
-RBAC; docs/reference/permissions.md). It replaced the earlier entitlement map here,
+RBAC; devloop/PERMISSIONS.md). It replaced the earlier entitlement map here,
 which **added** principals from Entra groups and explicit grants to the
 Portal-role principals (a union across sources) and used Workbench-invented
 role ceilings instead of the Portal's role and capability matrix.

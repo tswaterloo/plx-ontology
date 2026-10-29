@@ -1,9 +1,9 @@
-"""nextLink paging across OData key syntax.
+"""nextLink paging across OData key syntax (directive 4f484b130e05).
 
 Graph answers a folder listing requested as
 ``/v1.0/users/<guid>/mailFolders/<id>/messages`` with a nextLink on
-``/v1.0/users/<guid>/mailFolders('<id>')/messages`` (live).
-Every mail listing with a second page used to raise
+``/v1.0/users/<guid>/mailFolders('<id>')/messages`` (auditor live repro on
+main d28c699). Every mail listing with a second page used to raise
 ``nextLink escaped the collection``. These tests are keyless and use an
 injected transport (evidence label: injected-transport, never live).
 """
@@ -156,7 +156,7 @@ class CanonicalCollectionTests(unittest.TestCase):
         self.ok(keyed("/messages?$filter=receivedDateTime%20ge%20x&$skip=1"), spaced)
 
     def test_graph_echo_of_a_filtered_request_is_accepted(self):
-        """Live shape: the request is urlencode-built
+        """Live shape (directive 4458d0e6d280): the request is urlencode-built
         ('+' for spaces, ':' as %3A, ',' as %2C); Graph echoes $orderby
         byte-identically and $filter with ':' unescaped but '+' kept, adds
         $skip. Raw '+' positions coincide and the rest decodes to the same
@@ -262,7 +262,7 @@ class CanonicalCollectionTests(unittest.TestCase):
         self.refused(f"{collection}?$top=6&aid=FIN&$skiptoken={token}", top)
 
     def test_an_accepted_continuation_is_always_one_the_guard_sends(self):
-        """A link repeating ``$filter`` with RAW spaces matched the
+        """Repair of 61a29755: a link repeating ``$filter`` with RAW spaces matched the
         request's decoded value, was accepted (and stored as a cursor), then refused
         by ``check_request`` when followed. Raw spaces, control characters and a
         malformed ``%`` escape now refuse where the link arrives, BC and Graph."""
@@ -284,7 +284,7 @@ class CanonicalCollectionTests(unittest.TestCase):
 
 
 class MailFolderPagingTests(unittest.TestCase):
-    """The live repro through the reader, injected transport."""
+    """The auditor's repro through the reader, injected transport."""
 
     def setUp(self):
         self.folders_seen: list[str] = []
@@ -330,7 +330,7 @@ class MailFolderPagingTests(unittest.TestCase):
         self.assertEqual(listing["completeness"]["truncation_reason"], "page_cap")
 
     def test_page_cap_is_checked_before_the_continuation_is_inspected(self):
-        """A max_pages=1 read never validates or
+        """Directive e01868f5b9cd (b): a max_pages=1 read never validates or
         follows the nextLink; it reports honest page_cap truncation."""
         for link in (keyed("/messages?$skip=1", user=CEO_ID),          # would escape
                      keyed("/messages?$expand=attachments&$skip=1"),  # would refuse
@@ -387,7 +387,7 @@ class SharePointChildrenPagingTests(unittest.TestCase):
 
 
     def test_a_listing_resumes_at_its_next_page_and_position_and_refuses_a_foreign_start(self):
-        # a listing stopped at its caps had no way on. ``next`` is the
+        # gap-375b698206de: a listing stopped at its caps had no way on. ``next`` is the
         # page and position of the first child not handed back; passed as ``start`` the
         # listing continues there, one child at a time here (max_items 1, pages of 2).
         children = f"{DRIVE_BASE}/items/FOLDER-CUST/children"
@@ -464,8 +464,8 @@ class BusinessCentralPagingTests(unittest.TestCase):
 
 
 class MailPagingLiveCheckShapeTests(unittest.TestCase):
-    """verify/live-checks/graph.mail_paging.json against an injected Graph
-    (shape of the check only; the live run is the live check's, never this)."""
+    """devloop/live-checks/graph.mail_paging.json against an injected Graph
+    (shape of the check only; the live run is the verifier's, never this)."""
 
     MAILBOX_ID = "12345678-aaaa-bbbb-cccc-0000000000aa"
 
@@ -473,11 +473,11 @@ class MailPagingLiveCheckShapeTests(unittest.TestCase):
         import tempfile
         from pathlib import Path
 
-        from verify import live_verify
+        from devloop import live_verify
         from operating import ingestion
 
         root = Path(__file__).resolve().parents[2]
-        spec = json.loads((root / "verify/live-checks/graph.mail_paging.json").read_text())
+        spec = json.loads((root / "devloop/live-checks/graph.mail_paging.json").read_text())
         live_verify.validate_spec(spec)
         command = spec["command"]
         sources_path = root / command[command.index("--sources") + 1]
@@ -529,7 +529,7 @@ class MailPagingLiveCheckShapeTests(unittest.TestCase):
 
     def test_graph_echo_nextlink_satisfies_the_check(self):
         """Graph re-escapes the echoed $filter (':' raw) but keeps '+' for
-        spaces: followed to the page cap."""
+        spaces (live directive 4458d0e6d280): followed to the page cap."""
         def echo(query):
             parsed = {k: v[0] for k, v in parse_qs(query).items()}
             return keyed("/messages?" + urlencode(

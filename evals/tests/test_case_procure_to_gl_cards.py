@@ -1,9 +1,9 @@
 """Two procure-to-GL case maps: PROPOSED dev-exposed cards and the ontology gaps they need.
 
 ``evals/dev/procure-to-gl/proposed_items.json`` holds the employee questions of the
-Screening Process Map (SP-*,
-gap-25d6764d61b3) and of Vince's Packaging Procure-to-GL Map (PG-*,
-gap-894ce0e4f47d), each with answer criteria, the
+Screening Process Map (SP-*, advisory 4f8c497adb40 and its classification 6d4918ddaffe,
+gap-25d6764d61b3) and of Vince's Packaging Procure-to-GL Map (PG-*, advisory
+1a0ce08d8937 and its assessment, gap-894ce0e4f47d), each with answer criteria, the
 originals and live sources it needs; ``ontology_gaps.json`` names the screening decision,
 conversion step, G/L posting lineage and the other objects, links and readers the
 ontology lacks. The contract is the Asset Tracker cards' checker; the captures beyond the
@@ -37,7 +37,7 @@ class ProcureToGlCardsTest(unittest.TestCase):
     def test_committed_cards_and_gaps_satisfy_the_contract(self):
         self.assertEqual(problems(self.cards, self.gaps, self.originals), [])
         cards = self.cards["real_example"]["cards"]
-        # Both maps, each under its gap and citing one of its case source records.
+        # Both maps, each under its gap and citing one of its case advisories.
         for prefix, (gap, advisories) in MAPS.items():
             entry = self.cards["maps"][prefix]
             self.assertEqual(entry["gap"], gap)
@@ -77,9 +77,9 @@ class ProcureToGlCardsTest(unittest.TestCase):
             "unknown live source": lambda c, g: cards_of(c, "SP")[0]["live_sources"]
             .append("bc.valueEntries"),
             "keys": lambda c, g: cards_of(c, "SP")[0].update(values=["1"]),
-            "open question": lambda c, g: next(x for x in g["gaps"]
+            "Dot question": lambda c, g: next(x for x in g["gaps"]
                                               if x.get("source") == contract.UNKNOWN)
-            .update(open_question="ask the owner"),
+            .update(dot_question="ask the Dot"),
             "no source": lambda c, g: next(x for x in g["gaps"] if "source" not in x)
             .update(sources=[]),
             "path@commit": lambda c, g: g["gaps"][0]["sources"][0].update(ref="the map"),

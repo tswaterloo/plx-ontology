@@ -19,7 +19,7 @@ from pathlib import Path
 import unittest
 from unittest import mock
 
-from verify import live_verify
+from devloop import live_verify
 from evals.oracle import cross_sample as cs
 from evals.oracle.fixture_world import build_live_shaped_world
 from evals.oracle.generator import candidate_split, portal_candidates
@@ -181,7 +181,7 @@ class DocumentTextReadTest(unittest.TestCase):
             self.assertEqual(stratum["funnel"]["texts_read"], read, stratum)
             self.assertGreaterEqual(stratum["funnel"]["texts_unread_unavailable"], 1)
         live = {**report, "evidence_label": "live-read"}
-        spec = json.loads((ROOT / "verify" / "live-checks" / "eval.oracle_dev.json")
+        spec = json.loads((ROOT / "devloop" / "live-checks" / "eval.oracle_dev.json")
                           .read_text(encoding="utf-8"))
         problems = live_verify.check_expectations(spec, dev.exit_code(live), live)
         for kind in ("mail", "sharepoint"):

@@ -156,7 +156,7 @@ class DriftCheckTests(unittest.TestCase):
 
     def test_align_moves_only_a_checkout_behind_its_repo_pin(self):
         # A session may attach an upstream checkout behind the pin: every pinned file then
-        # reads as drift that is only the checkout's age (3 doc pins).
+        # reads as drift that is only the checkout's age (drift-1010-mc, 3 doc pins).
         (self.up / "a.ts").write_text("one\ntwo\nthree\n")
         _git(self.up, "commit", "-qam", "c2")
         c2 = _git(self.up, "rev-parse", "HEAD")
@@ -189,7 +189,7 @@ class DriftCheckTests(unittest.TestCase):
 # (pin path, module entry) -> why that module legitimately lacks the path's basename.
 NAMED_EXCEPTIONS = {
     ("docs/projects/plx-sharepoint-site/README.md",
-     "docs/reference/live-sources.md (SharePoint site mapping; named by the drift-watch directive)"):
+     "devloop/CONTEXT/06-LIVE-SOURCES.md (SharePoint site mapping; named by the drift-watch directive)"):
         "module entry is a prose note, not a file path",
     ("portal/prisma/schema.prisma", "tests/test_case_workspace_http.py"):
         "the test mirrors Prisma models by name, never by file name",
@@ -231,7 +231,7 @@ def stale_module_entries(pins: list[dict], root: Path = REPO) -> list[str]:
 
 class PinFileTests(unittest.TestCase):
     def test_committed_pin_file_is_well_formed(self) -> None:
-        pins = json.loads((REPO / "verify" / "upstream-pins.json").read_text())
+        pins = json.loads((REPO / "devloop" / "upstream-pins.json").read_text())
         self.assertIn("_usage", pins)
         self.assertTrue(pins["pins"])
         for pin in pins["pins"]:
@@ -246,7 +246,7 @@ class PinFileTests(unittest.TestCase):
                             for p in pins["pins"]))
 
     def test_pin_modules_still_name_their_upstream_path(self) -> None:
-        pins = json.loads((REPO / "verify" / "upstream-pins.json").read_text())["pins"]
+        pins = json.loads((REPO / "devloop" / "upstream-pins.json").read_text())["pins"]
         self.assertEqual(stale_module_entries(pins), [])
 
     def test_a_module_that_lost_the_path_or_file_fails(self) -> None:
@@ -269,7 +269,7 @@ class AdoptedReadingTests(unittest.TestCase):
     def test_receipt_release_reading_cites_the_pinned_routes(self) -> None:
         import re
         pins = {p["path"]: p["commit"] for p in json.loads(
-            (REPO / "verify/upstream-pins.json").read_text(encoding="utf-8"))["pins"]
+            (REPO / "devloop/upstream-pins.json").read_text(encoding="utf-8"))["pins"]
             if p.get("repo") == "plx-customer-portal"}
         stage_map = json.loads((REPO / "operating/process_stage_map.json")
                                .read_text(encoding="utf-8"))

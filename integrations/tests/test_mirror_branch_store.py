@@ -1,10 +1,11 @@
-"""The last complete Portal mirror on a private git ref, over a local bare repository standing in for the
+"""The last complete Portal mirror on a private git ref (owner policy e251073ef3c5
+item 6, directive 013e99e52e50), over a local bare repository standing in for the
 private remote.
 
 Evidence label: ``injected-transport``. Copies come from the real ``SourceMirror``
 behind the real ``WorkbenchReadApiClient`` over the source-mirror tests' SYNTHETIC
 ``FakeWorkbench``; git is real, against a temporary bare repository (never the
-repository's own remote). The live check's attestation on the results branch is a commit
+repository's own remote). The verifier's attestation on claude/devloop-live is a commit
 made here (``attest``). The live check reading the ref is tested with the spec's other
 tests (``test_source_mirror_persisted.LiveCheckSpecTests``).
 """
@@ -15,6 +16,7 @@ from hashlib import sha256
 import io
 import contextlib
 import json
+import sqlite3
 import lzma
 from pathlib import Path
 import subprocess
@@ -59,7 +61,7 @@ def commit_tree(cwd, entries):
 
 
 def attest(repo, record, remote="origin"):
-    """The live check's results commit on the results branch holding ``record`` at
+    """The verifier's results commit on claude/devloop-live holding ``record`` at
     ``results/mirror-attestation.json``, as the reader fetched it."""
     inner, _ = commit_tree(repo, [("100644", "blob", "mirror-attestation.json",
                                    json.dumps(record).encode())])
@@ -133,7 +135,13 @@ class BranchTestCase(unittest.TestCase):
         return self.store
 
     def local_copy(self, store=None):
-        return Path((store or self.store).load(RELATIONS, tenant="plx")["path"])
+        """The file a publish of the store's newest copy carries (a pin's scope exported)."""
+        return self.local_manifest(store)[1]
+
+    def local_manifest(self, store=None):
+        work = self.root / f"export-{len(list(self.root.glob('export-*')))}"
+        work.mkdir()
+        return mbs.scope_copy((store or self.store).load(RELATIONS, tenant="plx"), work)
 
     def plant(self, blobs, copy):
         """A self-consistent commit any pusher can put on the ref: part digests and the
@@ -172,7 +180,7 @@ class PublishAndRestoreTests(BranchTestCase):
         clone = self.root / "clone"
         git(self.root, "clone", "--quiet", str(self.bare), str(clone))
         git(clone, "fetch", "--quiet", "origin")
-        self.assertEqual(git(clone, "for-each-ref", "refs/verify").strip(), b"")
+        self.assertEqual(git(clone, "for-each-ref", "refs/devloop").strip(), b"")
         attested = attest(self.repo, json.loads(record.read_text()))
 
         fresh = mc.MirrorCaptureStore(self.root / "fresh", clock=self.clock)
@@ -197,7 +205,7 @@ class PublishAndRestoreTests(BranchTestCase):
         self.assertEqual((served["served_from"], served["source_freshness"]["label"]),
                          ("persisted_capture", LABEL), served)
         self.assertEqual(self.branch.restore_into(fresh, RELATIONS)["status"], "present")
-        # A reader without access to the remote reads the ref the live check fetched by name.
+        # A reader without access to the remote reads the ref the verifier fetched by name.
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             self.assertEqual(mbs.main(["fetch", "--repo", str(self.repo)]), 0)
@@ -224,7 +232,7 @@ class PublishAndRestoreTests(BranchTestCase):
 
     def test_only_the_copy_the_verifier_attested_is_restored(self):
         """Any session that can push can plant a self-consistent commit; it is served
-        only when the live check's own record names its commit and copy digest."""
+        only when the verifier's own record names its commit and copy digest."""
         self.persist_live()
         report = publish_attested(self.branch, self.store)
         genuine = attest(self.repo, {"schema": mbs.ATTESTATION_SCHEMA, "ref": mbs.REF,
@@ -233,9 +241,9 @@ class PublishAndRestoreTests(BranchTestCase):
         self.clock.advance(60)
         self.fake.tables["public.app_sales_order"][0]["status"] = "PLANTED-ROW"
         planted = self.copy_in("planted")
-        copy = {k: v for k, v in planted.load(RELATIONS, tenant="plx").items() if k != "path"}
-        commit = self.plant([lzma.compress(self.local_copy().read_bytes())], copy)
-        for record in (None,  # the live check's record names the earlier commit
+        copy, planted_file = self.local_manifest(planted)
+        commit = self.plant([lzma.compress(planted_file.read_bytes())], copy)
+        for record in (None,  # the verifier's record names the earlier commit
                        {"commit": commit, "copy_sha256": report["copy_sha256"]},
                        {"commit": commit, "copy_sha256": copy["sha256"], "ref": "refs/x"}):
             if record is not None:
@@ -251,9 +259,8 @@ class PublishAndRestoreTests(BranchTestCase):
 
     def test_a_compressed_copy_that_is_truncated_oversized_or_continued_fails_typed(self):
         self.persist_live()
-        original = self.local_copy().read_bytes()
-        copy = {k: v for k, v in self.store.load(RELATIONS, tenant="plx").items()
-                if k != "path"}
+        copy, exported = self.local_manifest()
+        original = exported.read_bytes()
         whole = lzma.compress(original)
         for blobs, reason in (([whole[:-64]], "branch_copy_truncated"),
                               ([lzma.compress(original + b"\0" * (3 << 20))],
@@ -269,22 +276,25 @@ class PublishAndRestoreTests(BranchTestCase):
     def test_an_incomplete_unverified_or_changing_copy_is_never_written(self):
         self.assertEqual(self.branch.publish(self.store, {})["reason"], "no_complete_copy")
         self.persist_live()
-        copy = self.local_copy()
-        data = bytearray(copy.read_bytes())
-        data[-1] ^= 0xFF
-        copy.write_bytes(bytes(data))  # digest no longer matches its manifest
-        self.assertEqual(self.branch.publish(self.store, {})["reason"], "no_complete_copy")
-        data[-1] ^= 0xFF
-        copy.write_bytes(bytes(data))
         scan = mbs._scan_values
 
         def changed_after_the_scan(path, found):
             scan(path, found)
-            path.write_bytes(bytes(data[:-1]) + bytes([data[-1] ^ 0xFF]))
+            data = bytearray(path.read_bytes())
+            data[-1] ^= 0xFF
+            path.write_bytes(bytes(data))
         with patch.object(mbs, "_scan_values", changed_after_the_scan):
             with self.assertRaises(mbs.BranchStoreError) as caught:
                 self.branch.publish(self.store, {})
         self.assertEqual(caught.exception.code, "copy_changed")
+        self.assertEqual(self.heads(), [])
+        # A pin whose mirror no longer holds a completed capture of its scope never publishes.
+        pinned = Path(self.store.load(RELATIONS, tenant="plx")["path"])
+        conn = sqlite3.connect(pinned)
+        conn.execute("DELETE FROM relation_state WHERE relation = ?", (RELATIONS[0],))
+        conn.commit()
+        conn.close()
+        self.assertEqual(self.branch.publish(self.store, {})["reason"], "no_complete_copy")
         self.assertEqual(self.heads(), [])
 
     def test_a_head_whose_manifest_is_invalid_is_replaced_with_its_reason(self):

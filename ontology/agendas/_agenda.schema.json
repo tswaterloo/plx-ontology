@@ -1,0 +1,95 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "plx-meeting-agenda/v1",
+ "title": "Meeting agenda spec",
+ "description": "One recurring meeting's agenda, assembled by operating/meeting_agenda.py from cited records since the previous meeting, read only through the generic primitives as the asking reader. Lanes name the object types that feed the agenda and the properties each line cites; scope properties are filtered by values the caller gives (a chat id, a list id, an MC bucket) or, when it gives none for a lane, by that lane's default_scope (values with the evidence that names them). A source the ontology does not hold is a not_in_ontology entry, reported as a named gap on every answer. Every type, property and link type must exist in the compiled ontology schema (checked by the loader); a lane's text_expected properties may be undeclared: each is a binding_expected gap until a projection declares it.",
+ "type": "object",
+ "additionalProperties": false,
+ "required": ["$schema", "format", "id", "title", "description", "source", "sections", "lanes", "not_in_ontology"],
+ "properties": {
+  "$schema": {"type": "string"},
+  "format": {"const": "plx-meeting-agenda/v1"},
+  "id": {"$ref": "#/$defs/name"},
+  "title": {"type": "string", "minLength": 1, "maxLength": 200},
+  "description": {"type": "string", "minLength": 1, "maxLength": 2000},
+  "source": {
+   "type": "object", "additionalProperties": false, "required": ["advisory", "ref", "path"],
+   "description": "The process map this agenda follows (a pinned advisory context file).",
+   "properties": {
+    "advisory": {"type": "string", "pattern": "^advisory:[0-9a-f]{12}$"},
+    "ref": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+@[0-9a-f]{7,40}$"},
+    "path": {"type": "string", "pattern": "^context/[0-9a-f]{64}\\.json$"}
+   }
+  },
+  "sections": {
+   "type": "array", "minItems": 1, "maxItems": 12,
+   "items": {"type": "object", "additionalProperties": false, "required": ["id", "label"],
+             "properties": {"id": {"$ref": "#/$defs/name"}, "label": {"type": "string", "minLength": 1, "maxLength": 80}}}
+  },
+  "previous_agenda": {
+   "type": "object", "additionalProperties": false, "required": ["lane", "property", "name_pattern"],
+   "description": "Where the previous agenda was posted: the latest record of this lane whose JSON list property holds an item named by name_pattern; its time is the start of the cycle when the caller gives no since.",
+   "properties": {
+    "lane": {"$ref": "#/$defs/name"},
+    "property": {"$ref": "#/$defs/name"},
+    "name_pattern": {"type": "string", "minLength": 1, "maxLength": 200}
+   }
+  },
+  "lanes": {"type": "array", "minItems": 1, "maxItems": 24, "items": {"$ref": "#/$defs/lane"}},
+  "not_in_ontology": {
+   "type": "array", "maxItems": 24,
+   "items": {
+    "type": "object", "additionalProperties": false, "required": ["id", "label", "feeds", "needs"],
+    "properties": {
+     "id": {"$ref": "#/$defs/name"},
+     "label": {"type": "string", "minLength": 1, "maxLength": 120},
+     "object_type": {"$ref": "#/$defs/type_id", "description": "A declared type no source serves yet; when one serves it, the answer says the spec has no lane for it."},
+     "feeds": {"type": "array", "minItems": 1, "maxItems": 4, "items": {"enum": ["open_projects", "changes", "blockers", "decisions_needed", "owners"]}},
+     "needs": {"type": "string", "minLength": 1, "maxLength": 400}
+    }
+   }
+  }
+ },
+ "$defs": {
+  "name": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+  "type_id": {"type": "string", "pattern": "^[A-Z][A-Za-z0-9]{1,63}$"},
+  "props": {"type": "array", "minItems": 1, "maxItems": 6, "uniqueItems": true, "items": {"$ref": "#/$defs/name"}},
+  "condition": {
+   "type": "object", "additionalProperties": false, "required": ["property"],
+   "oneOf": [{"required": ["in"]}, {"required": ["not_in"]}],
+   "properties": {
+    "property": {"$ref": "#/$defs/name"},
+    "in": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "string"}},
+    "not_in": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "string"}},
+    "evidence": {"type": "string", "minLength": 1, "maxLength": 400}
+   }
+  },
+  "lane": {
+   "type": "object", "additionalProperties": false,
+   "required": ["id", "label", "object_type", "role", "section", "changed"],
+   "oneOf": [{"required": ["scope"], "not": {"required": ["via"]}}, {"required": ["via"], "not": {"required": ["scope"]}}],
+   "description": "role activity: records changed since the previous meeting are changes. project: every open record is an open project with its status; one changed since is a change, one unchanged since is a blocker (no_change_since_last_meeting). decision: records reached via another lane's records that are open are decisions needed; their project is blocked (waiting_on_decision).",
+   "properties": {
+    "id": {"$ref": "#/$defs/name"},
+    "label": {"type": "string", "minLength": 1, "maxLength": 120},
+    "object_type": {"$ref": "#/$defs/type_id"},
+    "role": {"enum": ["activity", "project", "decision"]},
+    "section": {"$ref": "#/$defs/name"},
+    "scope": {"type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true, "items": {"$ref": "#/$defs/name"}, "description": "Properties the caller gives exact values for (eq filters); a lane without its scope (given or default_scope) is not read and is a lane_scope_not_given gap."},
+    "default_scope": {"type": "object", "additionalProperties": false, "required": ["values", "evidence"], "description": "The scope values the lane is read with when the caller gives none for it (all or nothing: a caller's scope for the lane replaces it whole). Every property in scope, and only those. The answer names each lane read so (scope_basis default). A filter only: every record is still read as the asking reader.", "properties": {"values": {"type": "object", "minProperties": 1, "maxProperties": 4, "additionalProperties": {"type": "string", "minLength": 1, "maxLength": 200}}, "evidence": {"type": "string", "minLength": 1, "maxLength": 400}}},
+    "via": {
+     "type": "object", "additionalProperties": false, "required": ["lane", "link_type", "direction"],
+     "properties": {"lane": {"$ref": "#/$defs/name"}, "link_type": {"type": "string", "pattern": "^[A-Z][A-Za-z0-9]{1,63}\\.[a-z][a-z0-9_]{0,63}$"}, "direction": {"enum": ["forward", "reverse"]}}
+    },
+    "changed": {"$ref": "#/$defs/name"},
+    "title": {"$ref": "#/$defs/props"},
+    "text_expected": {"$ref": "#/$defs/props"},
+    "owner": {"$ref": "#/$defs/props"},
+    "status": {"$ref": "#/$defs/name"},
+    "open": {"$ref": "#/$defs/condition"},
+    "skip": {"$ref": "#/$defs/condition"},
+    "note": {"type": "string", "minLength": 1, "maxLength": 400}
+   }
+  }
+ }
+}

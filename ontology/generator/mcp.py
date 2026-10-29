@@ -34,6 +34,10 @@ literal or ``const`` reference resolvable in that repository is ``input: null`` 
 Commands (repository root; local git only, no network)::
 
     python3 -m ontology.generator.mcp pin [--checkout REPO=PATH ...]   # rewrite the pin
+    python3 -m ontology.generator.mcp repin-digest --previous-registry FILE
+        # no checkout: carry the pin to a registry whose MCP tool entries and upstream
+        # commits are those of FILE, the registry the pin was built from
+        # (git show <pin's commit>:ontology/source_registry.json > FILE); else fails
     python3 -m ontology.generator.mcp generate [--check]               # action types
     python3 -m ontology.generator.mcp status                           # roles as JSON
 """
@@ -55,7 +59,7 @@ PIN_PATH = ROOT / "ontology" / "schema" / "generated" / "meta" / "mcp_tools.json
 REGISTRY_PATH = ROOT / "ontology" / "source_registry.json"
 POLICY_PATH = ROOT / "integrations" / "mc_tool_policy.json"
 DOMAIN_PATH = ROOT / "ontology" / "schema" / "domains" / "mission_control.json"
-DECISION = "docs/decisions/2026-10-07-mcp-tool-roles.md"
+DECISION = "devloop/DECISIONS/2026-10-07-mcp-tool-roles.md"
 # Registry system -> the upstream repository that serves it.
 SYSTEMS = {"plx-mc": "PLX_MC", "plx-brain": "agentic-swarm", "vmc-context": "agentic-swarm"}
 KIND = "mcp_tool"
@@ -364,16 +368,52 @@ def build_pin(registry: Mapping[str, Any], checkouts: Mapping[str, Path]) -> dic
                       "code at the source registry's commits (local git): per MCP tool its "
                       "registration and zod input shape. Source-derived, not a tools/list "
                       "capture; scripts.live_read_probes mc-tools checks it against the live "
-                      "MC tools/list (verify/live-checks/mc.initialize_tools_list.json). "
+                      "MC tools/list (devloop/live-checks/mc.initialize_tools_list.json). "
                       "Do not edit by hand.",
             "evidence": "source-derived",
             "upstream": upstream, "registry_entries_digest": registry["entries_digest"],
             "servers": servers}
 
 
+def _entries_digest(entries: Sequence[Mapping[str, Any]]) -> str:
+    """``scripts.source_registry.entries_digest`` (ontology never imports scripts; a test
+    pins the two equal)."""
+    canonical = json.dumps(entries, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def carry_pin_digest(pin: Mapping[str, Any], previous: Mapping[str, Any],
+                     current: Mapping[str, Any]) -> dict[str, Any]:
+    """The pin re-stamped with ``current``'s entries digest, without an upstream checkout.
+
+    ``build_pin`` reads only the MCP tool entries and the upstream commits of the registry,
+    at those fixed commits; so when ``previous`` is the registry the pin was built from (its
+    recomputed digest is the pin's) and ``current`` has the same tool entries and commits,
+    ``build_pin(current)`` equals the pin but for the digest. Anything else fails closed:
+    run ``pin`` from the checkouts."""
+    problems = []
+    for name, registry in (("previous", previous), ("current", current)):
+        if _entries_digest(registry.get("entries", [])) != registry.get("entries_digest"):
+            problems.append(f"{name} registry entries differ from its entries_digest")
+    if previous.get("entries_digest") != pin.get("registry_entries_digest"):
+        problems.append("previous registry is not the one the pin was built from")
+    if not problems:
+        if tool_entries(previous) != tool_entries(current):
+            problems.append("MCP tool entries changed since the pin")
+        repos = sorted(set(SYSTEMS.values()))
+        commits = [{repo: r["upstream"][repo]["commit"] for repo in repos}
+                   for r in (previous, current)]
+        if commits[0] != commits[1] or commits[1] != pin.get("upstream"):
+            problems.append("upstream commits changed since the pin")
+    if problems:
+        raise McpGenError("cannot carry the pin digest: " + "; ".join(problems)
+                          + " (python3 -m ontology.generator.mcp pin)")
+    return {**pin, "registry_entries_digest": current["entries_digest"]}
+
+
 def checkouts_for(repos: Iterable[str], overrides: Mapping[str, str]) -> dict[str, Path]:
     from ontology.upstream import checkout_for
-    pins = _read_json(ROOT / "verify" / "upstream-pins.json")
+    pins = _read_json(ROOT / "devloop" / "upstream-pins.json")
     return {repo: checkout_for(repo, dict(overrides), pins) for repo in repos}
 
 
@@ -538,6 +578,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("pin", help="rewrite the pin from the upstream checkouts")
     p.add_argument("--checkout", action="append", default=[], metavar="REPO=PATH")
+    r = sub.add_parser("repin-digest", help="carry the pin to the current registry digest "
+                                            "when no tool entry or upstream commit moved")
+    r.add_argument("--previous-registry", required=True, type=Path, metavar="FILE")
     g = sub.add_parser("generate", help="write the MC action types from the pin")
     g.add_argument("--check", action="store_true", help="exit 1 on any role or pin problem")
     sub.add_parser("status", help="every MCP tool entry with its role")
@@ -548,6 +591,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         pin = build_pin(registry, checkouts_for(set(SYSTEMS.values()), overrides))
         PIN_PATH.write_text(dump(pin), encoding="utf-8")
         print(json.dumps({"ok": True, "tools": sum(len(s["tools"]) for s in pin["servers"].values())}))
+        return 0
+    if args.command == "repin-digest":
+        try:
+            pin = carry_pin_digest(_read_json(PIN_PATH), _read_json(args.previous_registry),
+                                   _read_json(REGISTRY_PATH))
+        except McpGenError as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}))
+            return 1
+        PIN_PATH.write_text(dump(pin), encoding="utf-8")
+        print(json.dumps({"ok": True, "registry_entries_digest": pin["registry_entries_digest"]}))
         return 0
     registry, compiled, scope, policy, pin, domain, decision = _inputs()
     if args.command == "status":

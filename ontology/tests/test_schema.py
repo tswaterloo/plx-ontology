@@ -1,8 +1,8 @@
-"""Ontology schema loader, validator, digest, drift report and skeleton generator.
+"""Ontology schema loader, validator, digest, drift report and skeleton generator (L4).
 
 Fixtures: the committed skeleton and its pinned offline catalog
 (``ontology/schema/generated/meta/portal_catalog.json``, built from the upstream
-manifest, not live), the live purchase catalog read
+manifest, not live), the auditor's live purchase catalog read
 (``operating/tests/fixtures/live_purchase_catalog_2026-10-01.json``, column names
 only) and synthetic documents. No network: the live probe runs on an injected client.
 """
@@ -37,7 +37,7 @@ def _docs():
 
 # The Portal skeleton only: curated domain files and other sources' generated files
 # (generated/graph_*, generated/bc_*: the BC files bind through curated BC types) belong
-# to other modules and are tested there, so these tests stay valid whatever
+# to other lanes and are tested there, so these tests stay valid whatever
 # ontology/schema/domains/ holds.
 _DOCS = [(name, doc) for name, doc in s.load_documents() if name.startswith("generated/portal_")]
 _CATALOG = s.load_catalog()
@@ -88,7 +88,8 @@ def errors_of(fn):
 class CommittedSkeletonTests(unittest.TestCase):
     def test_skeleton_validates_against_the_pinned_catalog(self):
         compiled = compile_docs(_docs())
-        self.assertEqual(len([t for t in compiled.object_types.values() if t["bindings"]]), 104)
+        # One bound Portal type per relation the live API served on 2026-10-26.
+        self.assertEqual(len([t for t in compiled.object_types.values() if t["bindings"]]), 248)
         self.assertEqual({t["availability"]["state"] for t in compiled.object_types.values()
                           if not t["bindings"]}, {"not_served"})
         self.assertGreater(len(compiled.link_types), 0)
@@ -98,7 +99,9 @@ class CommittedSkeletonTests(unittest.TestCase):
     def test_every_served_relation_is_bound_or_explicitly_excluded(self):
         compiled = compile_docs(_docs())
         served = set(_CATALOG.served())
-        self.assertEqual(len(_CATALOG.relations), 104)   # the manifest at Portal 52c9116
+        # The 104 relations of the manifest at Portal 52c9116 plus the 144 more the live
+        # GET /v1/relations served on 2026-10-26 (live_added records its count and digest).
+        self.assertEqual(len(_CATALOG.relations), 248)
         bound = set(compiled.portal_bindings())
         self.assertEqual(served - bound - set(compiled.excluded_relations), set())
         self.assertEqual(set(_COVERAGE["relations"]), set(_CATALOG.relations))
@@ -169,7 +172,17 @@ class CommittedSkeletonTests(unittest.TestCase):
         # Prisma FK and the matching link contract are one link, not two.
         self.assertEqual(by_contract["portal-po-line-to-po"][0],
                          "RelPublicAppPurchaseOrderLine.purchase_order")
-        self.assertIn("not served", _COVERAGE["link_contracts"]["bc-invoice-to-portal-order-by-doc-number"])
+        # public.bc_invoice_snapshot is served live since the 2026-10-26 read: its text
+        # agreements bind, and only as leads, never verified links.
+        bc_contracts = [c for c in by_contract if c.startswith("bc-")]
+        self.assertEqual(len(bc_contracts), 4)
+        self.assertEqual(_COVERAGE["link_contracts"]["bc-invoice-to-portal-order-by-doc-number"],
+                         "bound as RelPublicBcInvoiceSnapshot."
+                         "bc_invoice_to_portal_order_by_doc_number")
+        for contract in bc_contracts:
+            self.assertEqual((by_contract[contract][1]["kind"],
+                              by_contract[contract][1]["tier_ceiling"]),
+                             ("text_match", "lead"), contract)
         for name, entry in _COVERAGE["fm_source_fk"].items():
             self.assertIn(entry["status"], ("bound", "no link contract"), name)
 
@@ -195,7 +208,16 @@ class CommittedSkeletonTests(unittest.TestCase):
         estimated = prop("RelPublicAppPrLineItem", "estimated_cost")
         self.assertEqual((estimated["value_type"], estimated["markings"]),
                          ("decimal", ["finance"]))
-        # Every other raw column whose name reads as money is finance-marked too.
+        # Every other raw column whose name reads as money is finance-marked too, except a
+        # column markings.json scoped_markings declares: it carries that marking instead.
+        scoped = {key: rule.marking for rule in gen.OVERRIDES.scoped_markings
+                  for key in rule.columns}
+        for tid, t in compiled.object_types.items():
+            for p in t["properties"]:
+                key = (t["bindings"][0]["relation"], p["sources"][0]["path"])
+                if key in scoped:
+                    self.assertEqual(p.get("markings"), [scoped[key]], f"{tid}.{p['name']}")
+        self.assertTrue(scoped)
         unmarked = sorted(
             f"{tid}.{p['name']}" for tid, t in compiled.object_types.items()
             for p in t["properties"]
@@ -203,6 +225,7 @@ class CommittedSkeletonTests(unittest.TestCase):
             and gen._MONEY_NAME.search(p["sources"][0]["path"])
             and not gen._NOT_MONEY_NAME.search(p["sources"][0]["path"])
             and (t["bindings"][0]["relation"], p["sources"][0]["path"]) not in gen.NOT_MONEY
+            and (t["bindings"][0]["relation"], p["sources"][0]["path"]) not in scoped
             and "finance" not in set(t.get("markings", [])) | set(p.get("markings", [])))
         self.assertEqual(unmarked, [])
 
@@ -410,7 +433,7 @@ class ValidatorTests(unittest.TestCase):
 
 
 class FormatV1RepairTests(unittest.TestCase):
-    """C0: evidence refs, via_link hops, lineage inherit, per-source units."""
+    """C0 9674d95: evidence refs, via_link hops, lineage inherit, per-source units."""
 
     def _line(self, ex):
         return next(t for t in ex["object_types"] if t["id"] == "SalesOrderLine")
@@ -523,7 +546,7 @@ class ShadowingTests(unittest.TestCase):
         self.assertIn("RelPublicAppSalesOrderLine.sales_order", compiled.shadowed)
         drift = s.drift_report(compiled, _CATALOG)
         self.assertEqual(drift["unbound_relations"], [])
-        # The curated type reads fewer columns: the rest are reported, never ignored.
+        # The curated type reads fewer columns: the rest are reported, never ignored (R9c).
         self.assertIn("public.app_sales_order", drift["unbound_columns"])
         self.assertIn("notes", drift["unbound_columns"]["public.app_sales_order"])
         self.assertNotIn("order_number", drift["unbound_columns"]["public.app_sales_order"])
@@ -819,7 +842,7 @@ class LiveProbeInjectedTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertTrue(report["ok"])
         self.assertEqual(report["unbound_relation_count"], 0)
-        self.assertEqual(report["served_relations"], 104)
+        self.assertEqual(report["served_relations"], 248)
         self.assertEqual(report["catalog_evidence_mode"], "live-read")
 
     def test_probe_reports_degraded_and_unbound(self):
@@ -837,8 +860,8 @@ class LiveProbeInjectedTests(unittest.TestCase):
         """The live 2026-10-14 state (eight bound sage relations listed with every approved
         column missing or not granted) blocks the spec, never passes it; a bound relation
         the catalog no longer lists fails it even beside such a block."""
-        from verify import live_verify
-        spec = json.loads((Path(__file__).resolve().parents[2] / "verify" / "live-checks" /
+        from devloop import live_verify
+        spec = json.loads((Path(__file__).resolve().parents[2] / "devloop" / "live-checks" /
                            "schema.catalog_drift.json").read_text())
         gone = ("ar_customer", "ar_ship_to", "oe_shipment_detail", "oe_shipment_header",
                 "po_detail", "po_header", "po_receipt_detail", "po_receipt_header")
@@ -849,7 +872,9 @@ class LiveProbeInjectedTests(unittest.TestCase):
                                                            "columns are missing or not granted")
         code, report = self._run(rels)
         self.assertEqual(code, 0)
-        self.assertEqual(report["catalog_digest_prefix"], "sha256:c48d16db83ea9741")
+        # The digest of this read: the 248-relation catalog pinned from the 2026-10-26 live
+        # read with the eight sage relations above marked unavailable.
+        self.assertEqual(report["catalog_digest_prefix"], "sha256:b07c7b8d256b6b0b")
         self.assertEqual((report["missing_relation_count"], report["missing_unexplained_count"]),
                          (8, 0))
         parts = live_verify.blocked_parts(report)

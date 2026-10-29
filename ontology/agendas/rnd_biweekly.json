@@ -1,0 +1,141 @@
+{
+ "$schema": "_agenda.schema.json",
+ "format": "plx-meeting-agenda/v1",
+ "id": "rnd_biweekly",
+ "title": "R&D bi-weekly meeting agenda",
+ "description": "The R&D bi-weekly agenda from one meeting to the next (process map 'R&D bi-weekly agenda preparation', step 8 of 8, 20 Oct 2026): open projects and their status, what changed since the last meeting, blockers, decisions needed and owners, every line cited to the record it came from. The cycle starts at the previous agenda's posting in the meeting chat (stage 1, 'start from last cycle's agenda'). Sources the map names that the ontology does not hold (the R&D KB Board, Portal R&D projects, samples, sourcing requests, stability, FileMaker formulas) are named gaps on every answer, never silent. The Teams lanes read the projected Teams messages (ontology/schema/generated/graph_teams.json); message text is cited, and becomes a line's title only once a projection declares a body property (text_expected).",
+ "source": {
+  "advisory": "advisory:d7076d889756",
+  "ref": "OntologyProject@57bce1d4cd7d",
+  "path": "context/d7076d8897560e9c362ad0ee6cdfc810209b31313db58cc50360bf20e8784818.json"
+ },
+ "sections": [
+  {"id": "rnd_updates", "label": "R&D Updates"},
+  {"id": "ongoing_project_updates", "label": "Ongoing Project Updates"},
+  {"id": "sourcing_updates", "label": "Sourcing Updates"}
+ ],
+ "previous_agenda": {
+  "lane": "meeting_chat",
+  "property": "attachments",
+  "name_pattern": "^R&D Meeting \\d{4}-\\d{2}-\\d{2}\\.pdf$"
+ },
+ "lanes": [
+  {
+   "id": "meeting_chat",
+   "label": "R&D Bi-weekly Meeting chat",
+   "object_type": "TeamsChatMessage",
+   "role": "activity",
+   "section": "rnd_updates",
+   "scope": ["chat_id"],
+   "default_scope": {"values": {"chat_id": "19:meeting_YTZhMWU0ZTQtNjBmNy00NjQwLTk4NTEtZmMwOWUxOWQzMGMw@thread.v2"}, "evidence": "Teams census 2026-10-29: the one chat whose topic is 'R&D Bi-weekly Meeting'; its captured messages carry the posted 'R&D Meeting <date>.pdf' agendas (June to October 2026)."},
+   "changed": "created_at",
+   "title": ["subject"],
+   "text_expected": ["body_preview"],
+   "owner": ["from"],
+   "skip": {"property": "message_type", "in": ["systemEventMessage", "chatEvent", "typing"], "evidence": "Graph chatMessage.messageType: only 'message' is a person's post."},
+   "note": "Map stage 11: the agenda PDF is posted here; stage 12: same-day follow-ups start the next cycle."
+  },
+  {
+   "id": "kb_channel",
+   "label": "R&D KB channel",
+   "object_type": "TeamsChannelMessage",
+   "role": "activity",
+   "section": "ongoing_project_updates",
+   "scope": ["team_id", "channel_id"],
+   "changed": "created_at",
+   "title": ["subject"],
+   "text_expected": ["body_preview"],
+   "owner": ["from"],
+   "skip": {"property": "message_type", "in": ["systemEventMessage", "chatEvent", "typing"]},
+   "note": "Map stage 7: R&D KB tickets jog the memory for Ongoing Project Updates."
+  },
+  {
+   "id": "qa_handoffs",
+   "label": "QA hand-offs chat",
+   "object_type": "TeamsChatMessage",
+   "role": "activity",
+   "section": "rnd_updates",
+   "scope": ["chat_id"],
+   "changed": "created_at",
+   "title": ["subject"],
+   "text_expected": ["body_preview"],
+   "owner": ["from"],
+   "skip": {"property": "message_type", "in": ["systemEventMessage", "chatEvent", "typing"]}
+  },
+  {
+   "id": "sourcing_chat",
+   "label": "Sourcing updates chat",
+   "object_type": "TeamsChatMessage",
+   "role": "activity",
+   "section": "sourcing_updates",
+   "scope": ["chat_id"],
+   "default_scope": {"values": {"chat_id": "19:meeting_YTgxZDlhZjAtODBkOC00YmJlLWI1NjUtMWI2MGQ3NTI2Mzcz@thread.v2"}, "evidence": "Teams census 2026-10-29: the one chat whose topic is 'Sourcing Updates (Weekly Internal Meetings)', the section this lane feeds."},
+   "changed": "created_at",
+   "title": ["subject"],
+   "text_expected": ["body_preview"],
+   "owner": ["from"],
+   "skip": {"property": "message_type", "in": ["systemEventMessage", "chatEvent", "typing"]},
+   "note": "Map stage 6: sourcing news arrives as a Teams message from Sourcing (proposed rule: by 9:00 on meeting day)."
+  },
+  {
+   "id": "sample_shipments",
+   "label": "WH Tasks list (samples sent)",
+   "object_type": "SharePointListItem",
+   "role": "activity",
+   "section": "rnd_updates",
+   "scope": ["sharepoint_ids_list_id"],
+   "changed": "last_modified_date_time",
+   "title": ["fields"],
+   "owner": ["last_modified_by", "created_by"],
+   "note": "Map stage 3: samples sent; the hand-kept Sample Tracking Info Loop file is not readable (not_in_ontology)."
+  },
+  {
+   "id": "knowledge",
+   "label": "R&D knowledge items",
+   "object_type": "KnowledgeItem",
+   "role": "activity",
+   "section": "ongoing_project_updates",
+   "scope": ["project_slug"],
+   "changed": "updated_at",
+   "title": ["title", "snippet"]
+  },
+  {
+   "id": "mc_tasks",
+   "label": "Mission Control R&D tasks",
+   "object_type": "MCTask",
+   "role": "project",
+   "section": "ongoing_project_updates",
+   "scope": ["bucket"],
+   "changed": "updated_at",
+   "title": ["title"],
+   "owner": ["assignee"],
+   "status": "stage",
+   "open": {"property": "stage", "not_in": ["merged", "verified", "cancelled"], "evidence": "PLX_MC src/lib/mc-data/policy.ts TERMINAL_STAGES (operating/goal2_mc_approval.py CLOSED_STAGES)."}
+  },
+  {
+   "id": "mc_gates",
+   "label": "Mission Control approval gates",
+   "object_type": "MCApproval",
+   "role": "decision",
+   "section": "ongoing_project_updates",
+   "via": {"lane": "mc_tasks", "link_type": "MCApproval.gate_of", "direction": "reverse"},
+   "changed": "requested_at",
+   "title": ["reason"],
+   "owner": ["requested_by"],
+   "status": "status",
+   "open": {"property": "status", "in": ["pending"], "evidence": "integrations/mc_sources.py GATE_STATUSES (pending, approved, rejected)."}
+  }
+ ],
+ "not_in_ontology": [
+  {"id": "rnd_project", "label": "Portal R&D project (client + formula, status, waiting on, since when)", "object_type": "RelPublicAppProject", "feeds": ["open_projects", "blockers", "owners"], "needs": "Map target (stage 1): open items are Portal R&D tasks; public.app_project is not served by the Portal reporting API, so open projects come only from Mission Control here."},
+  {"id": "rnd_project_task", "label": "Portal R&D project task", "object_type": "RelPublicAppProjectTask", "feeds": ["open_projects", "owners"], "needs": "Map target: one task per client and formula with its owner; public.app_project_task is not served."},
+  {"id": "sourcing_request", "label": "Portal sourcing request", "object_type": "RelPublicAppSourcingRequest", "feeds": ["changes", "blockers"], "needs": "Map stage 6: sourcing news on a sourcing record linked to the task; public.app_sourcing_request is not served."},
+  {"id": "sample_dispatch", "label": "Portal sample dispatch", "object_type": "RelPublicAppSampleDispatch", "feeds": ["changes"], "needs": "Map stage 3: a sample shipment activity with destination and tracking; public.app_sample_dispatch is not served."},
+  {"id": "stability", "label": "Portal stability study", "object_type": "RelPublicAppStabilityStudy", "feeds": ["changes"], "needs": "Map stage 7: stability results as activities on the task (today in Google Sheets); public.app_stability_study is not served."},
+  {"id": "formulas", "label": "FileMaker R&D > Formulas (samples made, F-numbers)", "object_type": "Formulation", "feeds": ["changes"], "needs": "Map stage 2: every sample has a formula number in FileMaker; FM formulas are not served (FileMaker formula access is needed)."},
+  {"id": "intake_forms", "label": "Microsoft Forms intake responses", "feeds": ["changes"], "needs": "Map stage 4: Forms responses are not captured; the client is visible only inside each response."},
+  {"id": "kb_board", "label": "R&D KB Board (Planner)", "feeds": ["open_projects", "owners"], "needs": "Map stage 7: the closest thing to a log, one Planner task per client and formula; Planner is not captured."},
+  {"id": "sample_tracking_file", "label": "Sample Tracking Info Loop file", "feeds": ["changes"], "needs": "Map stage 3: a hand-kept Loop file with no row ids; not readable by the tools."},
+  {"id": "waiting_on", "label": "Waiting on (and since when)", "feeds": ["blockers"], "needs": "Map field tracer: 'waiting on' and since when is recorded nowhere; a blocker here is only a task unchanged this cycle or waiting on a pending gate."}
+ ]
+}

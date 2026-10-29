@@ -1,7 +1,7 @@
 """Pallet builder and skid math (LOG-01, LOG-08).
 
 The Portal's pallet builder and 3PL skid math, ported line by line from
-petralabx/plx-customer-portal staging @ 48d76e8 (pinned in ``verify/upstream-pins.json``):
+petralabx/plx-customer-portal staging @ 48d76e8 (pinned in ``devloop/upstream-pins.json``):
 
 * ``portal/src/lib/wms/pallet-layout.ts``: interlacing patterns and the Layer A/B placement
   (``layout_layer_pair``; only what ``buildPallets`` uses: the UI helpers ``layoutLayer``,

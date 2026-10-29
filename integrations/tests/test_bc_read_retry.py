@@ -3,7 +3,7 @@
 No network and no credentials: every request goes to an in-process sender that
 fails on a script and otherwise answers from the ``test_bc_read_entities``
 fixture routes. Evidence label: ``injected-transport``. Live behaviour is
-checked by ``verify/live-checks/bc.case_entities.json`` on reviewed main.
+checked by ``devloop/live-checks/bc.case_entities.json`` on reviewed main.
 """
 
 from __future__ import annotations
@@ -318,7 +318,7 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(sender.threads, {threading.get_ident()})  # one thread, sequential
 
     def test_one_unit_under_repeated_transport_failure_sends_at_most_three_gets(self):
-        """One retry layer: ``ProbeRetry`` read a unit again
+        """One retry layer (directive 5e686cece6a4): ``ProbeRetry`` read a unit again
         around ``SourceApi``'s own retry, up to 9 GETs per read; now a probe GET is sent
         at most 1 + MAX_RETRIES times, after the probe's 5 s and 15 s pauses."""
         retry, sleeps = probe_backoff()

@@ -1,6 +1,6 @@
 """Capability-keyed proposal guards (the owner entries of operating/action_catalog.json + operating/capability_guards.py).
 
-Retiring the customer-PO proposal tool removed its guards, and
+Review of ee55df3 (M1): retiring the customer-PO proposal tool removed its guards, and
 three wrong proposals passed the playbook and the claim gate. The guards are now data per
 capability, checked by plx.case_propose, plx.act (mode propose) and the playbook evaluator.
 Evidence label: injected-transport (FakeWorkbench mirror).
@@ -130,7 +130,7 @@ class FieldStateTests(unittest.TestCase):
 
 
 class NoOverwriteTests(unittest.TestCase):
-    """The owner-side re-check of a type's no-overwrite guards: on the
+    """The owner-side re-check of a type's no-overwrite guards (review c6e87271): on the
     owner's record every written field such a guard names must hold nothing."""
 
     def test_any_held_value_of_a_guarded_written_field_fails_and_empty_passes(self):
@@ -155,7 +155,7 @@ class NoOverwriteTests(unittest.TestCase):
 
 
 class NumericEvidenceTests(unittest.TestCase):
-    """WH-NUMERIC-EVIDENCE-1: the catalog declares the AO header
+    """WH-NUMERIC-EVIDENCE-1 (Dot review of 2643a25): the catalog declares the AO header
     quantities numeric, so a JSON float (1509.0, a 1.0 ratio) is the number it says and
     keeps its raw value; identifiers (the customer PO) still never parse a float."""
 
@@ -202,7 +202,7 @@ class NumericEvidenceTests(unittest.TestCase):
         self.assertEqual(cg.number_state(True, "1.0")["number"], 1)
         self.assertEqual(cg.number_state(True, None)["state"], "absent")
         self.assertEqual(cg.number_state("column_not_mirrored", None)["state"], "unreadable")
-        # Numeric text is a plain ASCII decimal only: no exponent,
+        # Numeric text is a plain ASCII decimal only (review f732d09): no exponent,
         # underscore, non-ASCII digit or spelled-out infinity.
         for text in ("1509", " -1509.50 ", "+1509", ".5", "1509."):
             self.assertEqual(cg.number_state(True, text)["state"], "value", text)
@@ -534,7 +534,7 @@ class CustomerPoGuardTests(CustomerPoEvalBase, unittest.TestCase):
                 self.assertIn(kind, kinds)
 
     def test_only_canonical_declared_capability_names_are_recorded(self):
-        # 'name ' skipped the guards (lookup by raw text, store
+        # Re-review of 7e2d2ff, M1: 'name ' skipped the guards (lookup by raw text, store
         # by trimmed text). One canonical spelling everywhere; anything else is refused.
         for capability, code in ((CAPABILITY + " ", "capability_not_canonical"),
                                  (CAPABILITY.upper(), "capability_not_canonical"),
@@ -553,7 +553,7 @@ class CustomerPoGuardTests(CustomerPoEvalBase, unittest.TestCase):
                 arguments["citations"])
 
     def test_the_effect_may_write_only_the_capabilitys_fields(self):
-        # fields ['order_number'] with equals 'PO-7788' passed every guard.
+        # Re-review M2: fields ['order_number'] with equals 'PO-7788' passed every guard.
         for fields in (["order_number"], ["po_reference", "order_number"], []):
             with self.subTest(fields=fields):
                 _, arguments = self.propose(self.order, "PO-7788")
@@ -662,7 +662,7 @@ AO_CAPABILITY = "portal.assembly_order.set_header_quantities"
 
 
 class AoGuardTests(AoEvalCase):
-    """The AO header capability tied neither its effect to its
+    """Re-review of 751fe8d (M2): the AO header capability tied neither its effect to its
     payload nor its value to evidence; 99999, 'abc', a payload/effect mismatch, an empty
     payload and a wrong key were all recorded. One value per field, each in the payload
     (numeric), each equal to a declared cited evidence field of this AO."""
@@ -1129,7 +1129,7 @@ class GapGuardTests(CustomerPoEvalBase, unittest.TestCase):
         self.assertNotIn(cpo.RELATION, holders)
 
     def test_an_object_absence_reads_the_subject_rows_link_to_the_type(self):
-        """The cited row is the subject record, with a
+        """Review f732d09 M2 (lead decision): the cited row is the subject record, with a
         key, whose link column to the absent type is present and empty. A row whose
         link is set (it names some object of the type: a dangling reference needs a
         search, and a search shows nothing), a row without that column, or a row with

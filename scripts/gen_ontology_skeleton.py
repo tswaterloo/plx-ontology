@@ -1,9 +1,9 @@
-"""Generate the ontology schema skeleton. No network.
+"""Generate the ontology schema skeleton (09-CRITIQUE R9, lane L4). No network.
 
 Inputs:
 
 * the Portal reporting-API relation catalog: a ``GET /v1/relations`` dump taken by
-  the credentialed live checks (``--live-catalog``), or, offline, the catalog the
+  the credentialed live verifier (``--live-catalog``), or, offline, the catalog the
   API builds from the upstream manifest (``services/workbench-api/manifest/
   allowlist.json``) and its committed catalog facts, with the key and ``since``
   choice mirrored from ``services/workbench-api/src/core/catalog.mjs``;
@@ -26,7 +26,7 @@ facts (``portal_facts``); ``ontology/generator`` turns facts into types, identit
 links and markings for any source.
 
 ``refresh [--portal-repo PATH]`` reads the Portal at its one repo-level pin
-(``verify/upstream-pins.json`` ``repo_pins``, the commit the source registry is
+(``devloop/upstream-pins.json`` ``repo_pins``, the commit the source registry is
 generated at; local git reads of the checkout, never its HEAD) and optionally a live
 catalog dump, and writes the pinned inputs ``ontology/schema/generated/meta/
 portal_catalog.json`` and ``portal_prisma.json``; ``generate`` (the default)
@@ -36,7 +36,7 @@ turns the pinned inputs into ``ontology/schema/generated/portal_<domain>.json``
 catalog digest, and which contracts were or were not bound, with reasons);
 ``generate --check`` exits 1 when the committed files differ from a regeneration.
 ``drift_live`` (run as ``python3 -m scripts.live_read_probes schema-drift`` by the
-credentialed live checks, spec ``verify/live-checks/schema.catalog_drift.json``)
+credentialed live verifier, spec ``devloop/live-checks/schema.catalog_drift.json``)
 compares the committed schema with the live catalog.
 
 Raw types are named ``Rel<Schema><Relation>`` and stay out of the way of curated
@@ -91,7 +91,7 @@ CATALOG_CODE_PATH = "services/workbench-api/src/core/catalog.mjs"
 CATALOG_HELPERS_PATH = "services/workbench-api/test/core/helpers.mjs"
 PRISMA_PATH = "portal/prisma/schema.prisma"
 PRISMA_FORMAT = "plx-prisma-facts/v1"
-# The upstream ask to serve more Portal tables (open
+# The upstream ask to serve more Portal tables (devloop/CONTEXT/09-CRITIQUE.md, open
 # question Q3: approve a manifest expansion), as the curated not_served placeholders cite it.
 UPSTREAM_ASK = "Q3"
 # Generated not_served files by the first letter of the table (``app_`` dropped): a C0
@@ -245,6 +245,57 @@ def catalog_from_live_dump(dump: Mapping[str, Any], ref: str, commit: str) -> di
             "note": "Recorded live GET /v1/relations body (read-only reporting API).",
             "source": {"repo": PORTAL, "commit": commit, "live_ref": ref},
             "relations": relations}
+
+
+LIVE_ADDED_NOTE = ("Added from a recorded live GET /v1/relations body (read-only reporting API): "
+                   "the relation is served live but is not in the pinned manifest.")
+
+
+def served_structure_digest(relations: Iterable[Mapping[str, Any]]) -> str:
+    """Digest of what a catalog serves: each relation's name, sorted columns and key. Never
+    a row value. ``merge-live`` records it for the live body read, so the committed catalog
+    must reproduce it exactly (the pinned set is what the API served on that date)."""
+    rows = sorted([r["name"], sorted(r["columns"]), list(r.get("key") or [])]
+                  for r in relations)
+    text = json.dumps(rows, separators=(",", ":"), sort_keys=True)
+    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def merge_live_catalog(catalog: Mapping[str, Any], dump: Mapping[str, Any], ref: str, *,
+                       as_of: str, skip: Iterable[str] = ()) -> dict[str, Any]:
+    """The offline ``catalog`` with every relation of a recorded ``GET /v1/relations`` body
+    (``dump``) it lacks added, structure only (name, columns, key, domain, since).
+
+    A relation of the manifest keeps its facts (``key_source``, ``relkind``,
+    ``column_types``) and takes the live ``columns``, ``key``, ``since`` and ``domain``; a
+    type fact of a column the API no longer serves is dropped. A relation only the live
+    body lists (``live_added``) has no facts: its columns are text and its key is the
+    API's own. A ``skip`` relation is left to its own lane. Never a row value."""
+    live = catalog_from_live_dump(dump, ref, "live")["relations"]
+    skipped = set(skip)
+    entries = {e["name"]: dict(e) for e in catalog["relations"]}
+    added = set(catalog.get("live_added", {}).get("relations", ()))
+    for row in live:
+        name = row["name"]
+        if name in skipped:
+            continue
+        old = entries.get(name)
+        if old is None:
+            entries[name] = {**row, "live_added": True}
+            added.add(name)
+            continue
+        for field in ("columns", "key", "since", "domain"):
+            old[field] = row[field]
+        if old.get("column_types"):
+            old["column_types"] = {c: t for c, t in old["column_types"].items()
+                                   if c in old["columns"]}
+    merged = dict(catalog)
+    merged["relations"] = [entries[name] for name in sorted(entries)]
+    served = [row for row in live if row["name"] not in skipped]
+    merged["live_added"] = {"as_of": as_of, "ref": ref, "relations": sorted(added),
+                            "note": LIVE_ADDED_NOTE, "live_served": len(served),
+                            "live_digest": served_structure_digest(served)}
+    return merged
 
 
 # --------------------------------------------------------------- Prisma
@@ -537,6 +588,8 @@ def portal_facts(catalog: Mapping[str, Any], prisma: Mapping[str, Any],
     model_by_table = {m["table"]: name for name, m in prisma["models"].items()}
     enums = prisma.get("enums", {})
     entries = {e["name"]: e for e in catalog["relations"]}
+    live_added = set(catalog.get("live_added", {}).get("relations", ()))
+    live_added_ref = catalog.get("live_added", {}).get("ref", "live GET /v1/relations")
     relations = []
     for name in sorted(parsed.relations):
         rel = parsed.relations[name]
@@ -554,7 +607,12 @@ def portal_facts(catalog: Mapping[str, Any], prisma: Mapping[str, Any],
         evidence = [{"kind": "upstream_code", "repo": PORTAL, "path": MANIFEST_PATH,
                      "commit": commit, "note": f"{name} is an approved reporting-API relation "
                                                f"(manifest domain {domain or 'unassigned'})."}]
-        if live:
+        if name in live_added:
+            # Served live, not in the pinned manifest: cite the live read, never a manifest line.
+            evidence = [{"kind": "live_trace", "ref": live_added_ref[:200],
+                         "note": f"{name} is listed by GET /v1/relations (domain "
+                                 f"{domain or 'unassigned'}); it is not in the pinned manifest."}]
+        elif live:
             evidence.append({"kind": "live_trace", "ref": catalog["source"]["live_ref"][:200],
                              "note": "Relation listed by GET /v1/relations."})
         if model is not None:
@@ -609,7 +667,9 @@ def portal_facts(catalog: Mapping[str, Any], prisma: Mapping[str, Any],
                    for n, m in prisma.get("other_models", {}).items()}}
     excluded = {r["name"]: r["excluded"] for r in relations if r["excluded"]}
     for other in prisma.get("other_models", {}).values():
-        excluded.setdefault("public." + other["table"], None)
+        # A model the catalog serves (live-added) is served, never a not_served type.
+        if "public." + other["table"] not in parsed.relations:
+            excluded.setdefault("public." + other["table"], None)
     reads = route_reads(registry)
     for name in [*(declared or {}), *reads]:
         if name not in entries:   # a pending declaration or a route read outside Prisma
@@ -741,8 +801,8 @@ def q3_ask(registry: Mapping[str, Any] | None, served: Iterable[str],
                           and "public." + e["table"] not in served)
     return {
         "id": UPSTREAM_ASK,
-        "ask": ("Approve a reporting-API manifest expansion: serve "
-                "these relations, in this order; each completes the "
+        "ask": ("Approve a reporting-API manifest expansion (devloop/CONTEXT/09-CRITIQUE.md, "
+                "open question Q3): serve these relations, in this order; each completes the "
                 "Portal API routes whose data is otherwise served."),
         "method": ("Greedy over the source registry's api_route data keys against the pinned "
                    "catalog: the next relation completes the most routes still incomplete "
@@ -753,8 +813,8 @@ def q3_ask(registry: Mapping[str, Any] | None, served: Iterable[str],
         "routes": {"with_data": with_data, "fully_served": with_data - len(open_routes),
                    "need_unserved": len(open_routes)},
         "prisma_models_not_served": unserved_models,
-        # The gap ledger's coverage gaps this ask records: verify/gaps.py gap_id of its
-        # registry keys (not imported: the verify modules stay out of the product's graph).
+        # The gap ledger's coverage gaps this ask records: devloop/gaps.py gap_id of its
+        # registry keys (not imported: the loop's modules stay out of the product's graph).
         "gaps": {"gap-" + hashlib.sha256(f"coverage\0{key}".encode()).hexdigest()[:12]: key
                  for key in (
             "registry:portal.api_route:not_served", "registry:portal.prisma_model:not_served")},
@@ -805,6 +865,7 @@ def generate(catalog: Mapping[str, Any], prisma: Mapping[str, Any],
         "fm_source_fk": report["fm_source_fk"],
         "unit_contracts": report["unit_contracts"],
         "money": report["money"],
+        "storage": report["storage"],
         "upstream_ask": q3_ask(registry, parsed.served(), report["not_served"], prisma),
     }
     return docs, coverage
@@ -839,6 +900,10 @@ def build(catalog_path: Path = CATALOG_PATH, prisma_path: Path = PRISMA_FACTS_PA
     docs, coverage = generate(_read(catalog_path), _read(prisma_path), _read(LINK_CONTRACTS_PATH),
                               _read(UNIT_CONTRACTS_PATH), FM_SOURCE_FK,
                               declared=pending_declarations(), registry=load_registry())
+    unbound = coverage["storage"]["unbound"]
+    if unbound:   # storage.json names a relation the catalog does not generate: a typo
+        raise gen.OverrideError("storage.json portal_api: not a generated binding: "
+                                + ", ".join(unbound))
     out = {GENERATED_DIR / name: dump(doc) for name, doc in docs.items()}
     out[COVERAGE_PATH] = dump(coverage)
     # The Graph generator's files (ontology/generator/graph.py), so --check covers them and
@@ -852,7 +917,7 @@ def build(catalog_path: Path = CATALOG_PATH, prisma_path: Path = PRISMA_FACTS_PA
     return out
 
 
-def portal_pin(pins_path: Path = ROOT / "verify" / "upstream-pins.json") -> str:
+def portal_pin(pins_path: Path = ROOT / "devloop" / "upstream-pins.json") -> str:
     """The Portal's one repo-level pin (the commit the source registry is generated at)."""
     from scripts.source_registry import repo_pins
     pins = repo_pins(_read(pins_path))
@@ -880,7 +945,7 @@ def refresh(portal_repo: Path | None = None, live_catalog: Path | None = None,
     """Re-pin the inputs from the Portal at ``commit`` (default: its repo-level pin)."""
     from scripts.check_upstream_drift import checkout_for
     full = commit or portal_pin()
-    portal_repo = portal_repo or checkout_for(PORTAL, {}, _read(ROOT / "verify" /
+    portal_repo = portal_repo or checkout_for(PORTAL, {}, _read(ROOT / "devloop" /
                                                                 "upstream-pins.json"))
     files = read_portal(portal_repo, full, [PRISMA_PATH] + (
         [] if live_catalog is not None else [MANIFEST_PATH, CATALOG_FACTS_PATH]))
@@ -898,7 +963,7 @@ def refresh(portal_repo: Path | None = None, live_catalog: Path | None = None,
 
 
 def drift_live(environ: Mapping[str, str], *, client: Any = None) -> dict[str, Any]:
-    """Drift of the committed schema against the live catalog.
+    """Drift of the committed schema against the live catalog (R9a-c).
 
     One ``GET /v1/relations`` through the GET-only reporting-API client; the result
     holds relation and column names, digests and counts, never row values."""
@@ -916,19 +981,38 @@ def drift_live(environ: Mapping[str, str], *, client: Any = None) -> dict[str, A
     # A bound relation the live catalog still lists but marks unavailable with an upstream
     # reason (e.g. a Sage full load recreated it before its column grants were restored:
     # Portal docs/runbooks/WORKBENCH-API.md "Column drift after an FM or Sage full load")
-    # is an upstream outage: a blocked part, never a pass and never a rebinding. One the
-    # catalog no longer lists, or lists unserved without a reason, is schema drift.
+    # is an upstream outage: a blocked part, never a pass and never a rebinding. So is a
+    # missing one that ontology/schema/upstream_asks.json declares waiting on a later_ask
+    # (absent or unavailable): the part names the ask. One the catalog no longer lists, or
+    # lists unserved without a reason, and no ask declares, is schema drift.
+    asks = ontology_schema.load_upstream_asks()
     blocked = [m for m in report["missing_relations"]
-               if (rel := live.relations.get(m["relation"])) is not None and rel.unavailable]
+               if m["relation"] in asks or
+               ((rel := live.relations.get(m["relation"])) is not None and rel.unavailable)]
+    waiting: dict[str, list[str]] = {}
+    for m in blocked:
+        if m["relation"] in asks:
+            waiting.setdefault(asks[m["relation"]], []).append(m["relation"])
     report.update({"probe": "schema-catalog-drift/v1",
                    "catalog_relation_count": len(live.relations),
                    "unbound_relation_count": len(report["unbound_relations"]),
                    "missing_relation_count": len(report["missing_relations"]),
                    "missing_unexplained_count": len(report["missing_relations"]) - len(blocked),
-                   "blocked_upstream": [{"part": m["relation"], "source": "portal-workbench-api",
-                                         "cause": "relation_unavailable", "reason": m["reason"]}
-                                        for m in blocked],
+                   "blocked_upstream": [
+                       {"part": m["relation"], "source": "portal-workbench-api",
+                        "cause": "relation_unavailable",
+                        "reason": (f"later_ask {asks[m['relation']]}: "
+                                   f"{'not in the API catalog' if m['reason'] == 'absent' else m['reason']}"
+                                   if m["relation"] in asks else m["reason"])}
+                       for m in blocked],
+                   "waiting_on_later_ask": waiting,
+                   # Declared waiting but served now: the ask is answered; retire the entry.
+                   "later_ask_now_served": sorted(r for r in asks if r in live.served()),
                    "degraded_count": len(report["degraded"]),
+                   "degraded_columns": {b: sorted(d["column"] for d in report["degraded"]
+                                                  if d["binding"] == b)
+                                        for b in sorted({d["binding"] for d in report["degraded"]})},
+                   "waiting_on_later_ask_count": sum(map(len, waiting.values())),
                    "unbound_column_count": sum(map(len, report["unbound_columns"].values())),
                    "catalog_digest_prefix": report["catalog_digest"][:23],
                    "pinned_catalog_digest_prefix": (report["pinned_catalog_digest"] or "")[:23],
@@ -944,13 +1028,26 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--portal-repo", type=Path,
                    help="Portal checkout holding the pin (default: the pin file's checkout)")
     r.add_argument("--live-catalog", type=Path,
-                   help="recorded GET /v1/relations body (taken by the live checks)")
+                   help="recorded GET /v1/relations body (taken by the live verifier)")
+    m = sub.add_parser("merge-live", help="add the relations of a recorded GET /v1/relations "
+                                          "body to the pinned catalog (no Portal checkout), "
+                                          "then generate")
+    m.add_argument("--live-catalog", type=Path, required=True,
+                   help="recorded GET /v1/relations body (structure only)")
+    m.add_argument("--as-of", required=True, help="date of the live read (YYYY-MM-DD)")
+    m.add_argument("--skip", action="append", default=[], metavar="RELATION",
+                   help="a served relation another lane adds")
     g = sub.add_parser("generate", help="generate from the pinned inputs (default)")
     g.add_argument("--check", action="store_true",
                    help="exit 1 if the committed skeleton differs from a regeneration")
     args = parser.parse_args(argv)
     if args.command == "refresh":
         refresh(args.portal_repo, args.live_catalog)
+    elif args.command == "merge-live":
+        merged = merge_live_catalog(_read(CATALOG_PATH), _read(args.live_catalog),
+                                    "live GET /v1/relations@" + args.as_of, as_of=args.as_of,
+                                    skip=args.skip)
+        CATALOG_PATH.write_text(dump(merged), encoding="utf-8")
     outputs = build()
     if getattr(args, "check", False):
         stale = sorted(str(p.relative_to(ROOT)) for p, text in outputs.items()

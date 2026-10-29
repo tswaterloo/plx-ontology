@@ -1,4 +1,4 @@
-"""Incremental projection by generation.
+"""Incremental projection by generation (directive cfac66676d88 P0 T6, lane L7).
 
 ``ontology.project.build_store`` projects every capture into a fresh generation each
 time. :func:`build_generation` keeps generations in a state directory the caller
@@ -28,6 +28,13 @@ Dependencies (bindings whose captures a unit's rows can read):
 * A link unit: its ends (from, to and join binding), ``lin`` of each end (citations
   carry the cited version's lineage) and, for ``same_record``, ``val`` of each end
   (property conflicts compare their values).
+
+Mode: a build whose changed units hold more than ``COLD_SHARE`` of the last generation
+(by values and objects), or whose incremental space estimate exceeds the cold one, is
+cold (a new store beside the committed one, which stays current): rewriting most of a
+seeded copy costs more disk and about as much time. A caller's ``space`` guard that
+refuses the chosen mode gets the other one; the build fails only when it refuses both
+(:func:`space_need`).
 
 A schema whose lineage inheritance is cyclic (a binding inherits, through any chain,
 from itself) has an order-dependent lineage, so it is never built incrementally
@@ -112,6 +119,8 @@ class Generation:
     units_rebuilt: int = 0
     bindings_read: int = 0
     seconds: dict[str, float] = field(default_factory=dict)
+    seed: str | None = None         # how an incremental build laid its seed: clone | copy
+    need: dict[str, Any] = field(default_factory=dict)   # the space estimate it checked
 
 
 # --------------------------------------------------------------------------- plan
@@ -420,8 +429,33 @@ def _sweep(state: Path, keep: set[str]) -> None:
             shutil.rmtree(directory, ignore_errors=True)
 
 
+def _drop_older(state: Path, keep: set[str]) -> None:
+    """Remove every finished generation not in ``keep``. Runs under the build lock."""
+    for directory in _generations(state):
+        if directory.name not in keep and (directory / "units.json").is_file():
+            shutil.rmtree(directory, ignore_errors=True)
+
+
+def _store_format(directory: Path) -> str | None:
+    try:
+        conn = sqlite3.connect(f"file:{directory / 'store.sqlite'}?mode=ro", uri=True)
+        try:
+            row = conn.execute("SELECT value FROM store_meta WHERE key = 'format'").fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    return row[0] if row else None
+
+
 def _prune(state: Path, current: str) -> None:
-    finished = [d for d in _generations(state) if (d / "units.json").is_file()]
+    # A generation of another store format is never read again by this code: it goes now,
+    # not after KEEP more builds (a format change rebuilds the store at a new size).
+    finished = [d for d in _generations(state) if (d / "units.json").is_file()
+                and (d.name == current or _store_format(d) == store_ddl.FORMAT)]
+    for directory in _generations(state):
+        if (directory / "units.json").is_file() and directory not in finished:
+            shutil.rmtree(directory, ignore_errors=True)
     stay = {d.name for d in finished[-KEEP:]} | {current}
     for directory in finished:
         if directory.name not in stay:
@@ -446,6 +480,114 @@ def prune_to_current(state_dir: str | Path) -> bool:
     except ProjectionError:
         return False
     return True
+
+
+# --------------------------------------------------------------------------- space
+
+_CURRENT_GENERATION = object()
+
+# A cold build with no measured store of this format: what it needs is not known here.
+UNKNOWN = None
+# Above this changed share a build is cold (module docstring, "Mode").
+COLD_SHARE = 0.5
+
+
+def _cold_work(sizes: Mapping[str, Any]) -> int:
+    """The working-file peak of the last cold build: an incremental build's own peak is
+    only its changed units' share, so it carries the cold one forward."""
+    return int(sizes.get("cold_work_peak") or sizes.get("work_peak") or 0)
+
+
+def can_clone(directory: str | Path) -> bool:
+    """Whether a file in ``directory`` can be cloned (pages shared until written): a probe
+    of two small files, removed again."""
+    from ontology.store import clone_file
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    probe = directory / f".clone-probe-{os.getpid()}"
+    copy = directory / f".clone-probe-{os.getpid()}.copy"
+    try:
+        probe.write_bytes(b"\0" * 4096)
+        return clone_file(probe, copy)
+    except OSError:
+        return False
+    finally:
+        probe.unlink(missing_ok=True)
+        copy.unlink(missing_ok=True)
+
+
+def space_need(state_dir: str | Path, base: Generation | None = _CURRENT_GENERATION, *,
+               dirty: Iterable[str] | None = None, units: Mapping[str, Any] | None = None,
+               clone: bool | None = None) -> dict[str, Any]:
+    """The bytes the next build of ``state_dir`` writes beside what is on disk, from the
+    committed generation's measured sizes (``units.json`` ``bytes``):
+
+    * incremental (``dirty``: the changed units, ``units``: the base's units.json): the
+      seed (none when the file system clones it, else a byte copy of the base store), plus
+      twice the changed units' share of the base store (their rows deleted and written
+      again inside one transaction) and that share of the last cold working-file peak;
+    * cold: the last measured store of this format plus the last cold working-file peak;
+      ``needed_bytes`` None when no store of this format was measured (a format change:
+      only the running guard of the caller's ``checkpoint`` bounds it).
+
+    ``mode`` names which; ``seed`` is ``clone``, ``copy`` or None."""
+    state = Path(state_dir)
+    if base is _CURRENT_GENERATION:
+        base = current_generation(state)
+    measured = (units if units is not None else
+                (_units_of(base) if base is not None else None)) or {}
+    sizes = measured.get("bytes") if isinstance(measured.get("bytes"), dict) else {}
+    base_bytes = base.store.stat().st_size if base is not None and base.store.is_file() else 0
+    work = _cold_work(sizes)
+    if dirty is not None and base is not None:
+        cloned = can_clone(state / "generations") if clone is None else clone
+        dirty = set(dirty)
+        fragments = measured.get("fragments") or {}
+        keys = measured.get("keys") or {}
+
+        def weight(unit: str) -> int:
+            counts = (fragments.get(unit) or {}).get("counts") or {}
+            return 1 + int(counts.get("values") or 0) + int(counts.get("objects") or 0)
+        total = sum(weight(u) for u in keys) or 1
+        share = min(1.0, sum(weight(u) for u in dirty if u in keys) / total) if keys else 1.0
+        seed = 0 if cloned else base_bytes
+        needed = seed + int(2 * share * base_bytes) + int(share * work)
+        return {"mode": "incremental", "seed": "clone" if cloned else "copy",
+                "base_bytes": base_bytes, "changed_share": round(share, 4),
+                "needed_bytes": needed}
+    store = int(sizes.get("store") or 0) if base is not None else 0
+    return {"mode": "cold", "seed": None, "base_bytes": base_bytes,
+            "needed_bytes": (store + work) if store else UNKNOWN}
+
+
+def _choose_mode(state: Path, base: Generation | None, dirty: set[str] | None,
+                 units: Mapping[str, Any] | None,
+                 space: Callable[[Mapping[str, Any]], None] | None) -> dict[str, Any]:
+    """The space estimate of the mode this build runs in (module docstring, "Mode"):
+    ``dirty`` None = only a cold build is possible. Every estimate is in ``estimates``.
+    ``space`` refusing the preferred mode gets the other; its first refusal is raised
+    when it refuses every mode."""
+    cold = space_need(state, base, units=units)
+    choices = [cold]
+    if dirty is not None:
+        partial = space_need(state, base, dirty=dirty, units=units)
+        smaller = cold["needed_bytes"] is UNKNOWN or \
+            partial["needed_bytes"] <= cold["needed_bytes"]
+        choices = ([partial, cold] if smaller and partial["changed_share"] <= COLD_SHARE
+                   else [cold, partial])
+    estimates = {c["mode"]: c for c in choices}
+    refused: Exception | None = None
+    for choice in choices:
+        need = {**choice, "estimates": estimates, "preferred": choices[0]["mode"]}
+        if space is None:
+            return need
+        try:
+            space(need)
+            return need
+        except Exception as exc:  # noqa: BLE001 - the guard refused this mode
+            refused = refused or exc
+    assert refused is not None
+    raise refused
 
 
 # --------------------------------------------------------------------------- rows of a unit
@@ -490,19 +632,19 @@ def _delete_unit(conn: sqlite3.Connection, the_plan: Plan, unit: str,
         for table in ("event_objects", "events"):
             conn.execute(f"DELETE FROM {table} WHERE event_id IN "
                          "(SELECT event_id FROM temp.plx_unit_events)")
-    # Values by their physical rows (v6: object_values is a view over value_cells and
-    # value_sources); the shared fields, kinds and link texts may stay unreferenced.
+    # Values by their physical rows (v10: object_values is a view over value_cells, whose
+    # sources name their version by rowid); the shared fields, kinds, layouts and link
+    # texts may stay unreferenced.
+    versions = "SELECT rowid FROM object_versions WHERE object_id >= ? AND object_id < ?"
     conn.execute("DELETE FROM value_cells WHERE src IN (SELECT src FROM value_sources "
-                 "WHERE object_id >= ? AND object_id < ?)", (low, high))
-    for table in ("identifiers", "value_sources", "object_versions", "object_removals",
-                  "objects"):
+                 f"WHERE ver IN ({versions}))", (low, high))
+    conn.execute(f"DELETE FROM value_sources WHERE ver IN ({versions})", (low, high))
+    for table in ("identifiers", "object_versions", "object_removals", "objects"):
         conn.execute(f"DELETE FROM {table} WHERE object_id >= ? AND object_id < ?",
                      (low, high))
 
 
 # --------------------------------------------------------------------------- build
-
-_CURRENT_GENERATION = object()
 
 
 def build_generation(state_dir: str | Path, schema: Any, sources: Mapping[str, CaptureSource],
@@ -515,14 +657,18 @@ def build_generation(state_dir: str | Path, schema: Any, sources: Mapping[str, C
                      checkpoint: Callable[[], None] | None = None,
                      reuse: bool = False,
                      before_seed: Callable[[Path], None] | None = None,
-                     on_stage: Callable[[str, int, int], None] | None = None) -> Generation:
+                     on_stage: Callable[[str, int, int], None] | None = None,
+                     space: Callable[[Mapping[str, Any]], None] | None = None) -> Generation:
     """Build the next generation of ``state_dir`` from ``sources`` under ``schema`` and
     commit it (``CURRENT``). ``previous``: the generation to reuse unchanged units from
     (default: the committed one; None = a cold build). ``reuse``: when no unit changed
     from ``previous``, return it as it is (module docstring, "Reuse"). ``before_seed``:
     called with the store a partial build is about to copy, before it copies it (a
     caller's disk check: it may raise, and nothing is written). ``on_stage``:
-    ``Projector.on_stage`` (measurement only; never in a unit key). Every other
+    ``Projector.on_stage`` (measurement only; never in a unit key). ``space``: called with
+    the space estimate of a mode (:func:`space_need`, now that the changed units are known;
+    ``estimates``: every mode's) before anything is written; it may raise (a caller's disk
+    guard), and the build then tries the other mode (module docstring, "Mode"). Every other
     argument is ``build_store``'s. Raises ``ProjectionError("generation_build_in_progress")``
     while another build holds the state directory; on any failure the committed generation
     is left as it was."""
@@ -533,18 +679,22 @@ def build_generation(state_dir: str | Path, schema: Any, sources: Mapping[str, C
         current = current_generation(state)
         base = current if previous is _CURRENT_GENERATION else previous
         _sweep(state, {g.id for g in (current, base) if g is not None})
+        # Before the build lays down its new store, drop every finished generation but the
+        # committed one and the base (a reader holding an earlier one open keeps its file
+        # until it closes it): at most two generations are on disk while it builds.
+        _drop_older(state, {g.id for g in (current, base) if g is not None})
         options = {"normalizer": normalizer if normalizer is not None else
                    _default_normalizer(), "as_known_at": as_known_at, "clock": clock,
                    "batch_size": batch_size, "post_project": post_project,
                    "checkpoint": checkpoint, "on_stage": on_stage}
         try:
             generation = _build(state, schema, sources, base, reuse=reuse,
-                                before_seed=before_seed, **options)
+                                before_seed=before_seed, space=space, **options)
         except _Unattributed:
             # A report entry outside every unit (a projection hook that names none):
             # the rows are right but the report of a partial build would not be, so
             # this build is cold, and so are the next ones until that is fixed.
-            generation = _build(state, schema, sources, None, **options)
+            generation = _build(state, schema, sources, None, space=space, **options)
         if generation.mode != "reused":
             _prune(state, generation.id)
     generation.seconds["total"] = round(time.monotonic() - started, 3)
@@ -561,7 +711,8 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
            post_project: Any, checkpoint: Callable[[], None] | None,
            on_stage: Callable[[str, int, int], None] | None = None,
            reuse: bool = False,
-           before_seed: Callable[[Path], None] | None = None) -> Generation:
+           before_seed: Callable[[Path], None] | None = None,
+           space: Callable[[Mapping[str, Any]], None] | None = None) -> Generation:
     started = time.monotonic()
     the_plan = plan(schema)
     pinned, fingerprints = _pin(sources, the_plan)
@@ -583,6 +734,9 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
         return replace(base, mode="reused", units=len(keys), units_rebuilt=0, bindings_read=0,
                        seconds=seconds)
     incremental = reusable and len(dirty) < len(keys)
+    need = _choose_mode(state, base, dirty if incremental else None, units, space)
+    if need["mode"] == "cold":   # every unit projected again, into a new store
+        incremental, dirty = False, set(keys)
     if incremental and before_seed is not None:
         before_seed(base.store)
     scope: set[str] | None = None
@@ -599,9 +753,16 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
                               batch_size=batch_size, scratch_dir=directory, scope=scope,
                               emit=dirty if incremental else None)
         projector.checkpoint = checkpoint
-        projector.on_stage = on_stage
+        work_peak = [0]
+
+        def stage(name: str, work: int, store: int) -> None:
+            work_peak[0] = max(work_peak[0], work)
+            if on_stage is not None:
+                on_stage(name, work, store)
+        projector.on_stage = stage
         with StoreBuilder(directory / "store.sqlite",
                           seed=base.store if incremental else None) as builder:
+            seed = builder.seed_mode
             open_generation(builder)
             if incremental:
                 _seed_delete(builder.connection, the_plan, schema, dirty)
@@ -628,7 +789,13 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
             "format": FORMAT, "content_digest": report["content_digest"],
             # Parts that miss an entry are never reused: no context, no reuse.
             "context": None if unattributed else context,
-            "keys": keys, "fragments": {u: p for u, p in parts.items() if p != _EMPTY}})
+            "keys": keys, "fragments": {u: p for u, p in parts.items() if p != _EMPTY},
+            # Measured, for the next build's space estimate (``space_need``).
+            "bytes": {"store": (directory / "store.sqlite").stat().st_size,
+                      "work_peak": work_peak[0], "mode": "incremental" if incremental
+                      else "cold",
+                      "cold_work_peak": _cold_work(units.get("bytes") or {})
+                      if incremental else work_peak[0]}})
         _write_json(state / CURRENT, {
             "format": FORMAT, "generation": gen_id, "content_digest": report["content_digest"],
             "mode": mode,
@@ -639,7 +806,7 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
     return Generation(gen_id, directory / "store.sqlite", report["content_digest"], report,
                       mode=mode, units=len(keys), units_rebuilt=len(dirty),
                       bindings_read=len(scope) if scope is not None else len(the_plan.bindings),
-                      seconds=seconds)
+                      seconds=seconds, seed=seed, need=need)
 
 
 def _seed_delete(conn: sqlite3.Connection, the_plan: Plan, schema: Any,
@@ -655,8 +822,9 @@ def _seed_delete(conn: sqlite3.Connection, the_plan: Plan, schema: Any,
         events.setdefault(ev["object_type"], []).append((eid, ev))
     kinds = ", ".join(f"'{kind}'" for kind in _PROJECTED_LINK_KINDS)
     conn.execute(f"DELETE FROM link_rows WHERE binding_kind NOT IN ({kinds})")
-    conn.execute("DELETE FROM value_cells WHERE kind IN "
-                 "(SELECT kind FROM value_kinds WHERE parser = ?)", (POST_PROJECT,))
+    conn.execute("DELETE FROM value_cells WHERE field IS NOT NULL AND layout IN "
+                 "(SELECT lf.layout FROM value_layout_fields lf JOIN value_kinds k "
+                 "ON k.kind = lf.kind WHERE k.parser = ?)", (POST_PROJECT,))
     conn.execute("DELETE FROM value_sources WHERE NOT EXISTS "
                  "(SELECT 1 FROM value_cells c WHERE c.src = value_sources.src)")
     for unit in sorted(dirty):
@@ -664,5 +832,5 @@ def _seed_delete(conn: sqlite3.Connection, the_plan: Plan, schema: Any,
     conn.execute("DROP TABLE temp.plx_unit_events")
 
 
-__all__ = ["CURRENT", "FORMAT", "Generation", "KEEP", "Plan", "build_generation",
-           "current_generation", "plan", "prune_to_current"]
+__all__ = ["CURRENT", "FORMAT", "Generation", "KEEP", "Plan", "UNKNOWN", "build_generation",
+           "can_clone", "current_generation", "plan", "prune_to_current", "space_need"]

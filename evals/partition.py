@@ -1,6 +1,6 @@
 """Partition hygiene: a held-out item must be genuinely unseen.
 
-Held-out items are unseen, and related documents and
+Amendment bb664f58910f section 2: held-out items are unseen, and related documents and
 near-duplicates stay in one partition. An item is *related* to another when both read the
 same source document or record; it is a *near-duplicate* when both name the same root or
 the same identifier. Question templates are shared by design (the oracle generates every

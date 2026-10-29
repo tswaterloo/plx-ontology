@@ -292,8 +292,13 @@ class LiveMirrorWorkspaceTest(unittest.TestCase):
         with mock.patch.object(live_ws, "_last_ingestion_run", lambda state: 10**6):
             self.assertEqual(opener.open_case("ao", "AO-26005B")["status"], "opened")
         self.assertEqual(opener.open_case("ao", "AO-26005B")["status"], "reused")
-        leftovers = [p.name for p in (self.state / live_ws.INDEX_DIR).iterdir()
-                     if p.name not in (live_ws.INDEX_FILE, opener.projection_path.name)]
+        from operating.ontology_tools_traverse import facts_path
+
+        index = self.state / live_ws.INDEX_DIR
+        kept = [index / live_ws.INDEX_FILE, opener.projection_path]
+        # the kept files and the store facts kept beside each (``facts_path``) only
+        allowed = {p.name for p in kept} | {facts_path(p).name for p in kept if p.exists()}
+        leftovers = [p.name for p in index.iterdir() if p.name not in allowed]
         self.assertEqual(leftovers, [])  # each write goes through its own temp file
 
     def test_missing_data_is_named_never_a_silent_pass(self):
@@ -322,8 +327,8 @@ class LiveMirrorWorkspaceTest(unittest.TestCase):
         [outage] = [gap for gap in view["gaps"] if "Portal" in gap["missing"]]
         self.assertEqual(outage["state"], "inaccessible")
         self.assertIn("mirror.source_unavailable", outage["why"])
-        # The live checks' blocked protocol: the run is blocked, never a pass.
-        from verify import live_verify as lv
+        # The live verifier's blocked protocol: the run is blocked, never a pass.
+        from devloop import live_verify as lv
         parts = lv.blocked_parts({"blocked_upstream": live_ws.upstream_parts(reasons)})
         self.assertEqual([(p["part"], p["error_code"]) for p in parts],
                          [("ingestion:portal_relation", "mirror.source_unavailable")])
@@ -347,7 +352,7 @@ class LiveMirrorWorkspaceTest(unittest.TestCase):
         warnings. The run counts those by typed cause in ``stderr_causes``, never a
         message. case-live-cause-honest: only pypdf's records are taken off stderr, where
         pypdf is read; any other record still reaches stderr, a traceback logged with
-        ``exc_info`` whole (``verify/live_verify.py`` reads its exception class)."""
+        ``exc_info`` whole (``devloop/live_verify.py`` reads its exception class)."""
         import logging
         import warnings
 
@@ -742,13 +747,13 @@ class LiveCheckSpecTest(unittest.TestCase):
     files); the Graph reader path is covered by LiveMirrorWorkspaceTest."""
 
     def run_spec(self, fetch=None):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from integrations import workbench_read_api
         from integrations.source_mirror import SourceMirror
         from integrations.tests.test_source_mirror import BASE, KEY
         from operator_ui.tests import case_fixtures
 
-        spec = json.loads((ROOT / "verify" / "live-checks" / "case.workspace_live.json")
+        spec = json.loads((ROOT / "devloop" / "live-checks" / "case.workspace_live.json")
                           .read_text("utf-8"))
         self.assertEqual(lv.validate_spec(spec, stem="case.workspace_live"), [])
         command = list(spec["command"])
@@ -780,7 +785,7 @@ class LiveCheckSpecTest(unittest.TestCase):
         return spec, code, json.loads(out.getvalue())
 
     def test_the_spec_command_meets_its_own_expectations_over_injected_sources(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
 
         spec, code, document = self.run_spec()
         # Without the SharePoint originals no reader shows every panel: the converged
@@ -805,7 +810,7 @@ class LiveCheckSpecTest(unittest.TestCase):
             self.assertNotIn(value, recorded)
 
     def test_a_portal_answering_http_500_makes_the_check_blocked_never_a_pass(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from integrations.http import SourceHttpError
 
         def portal_down(url, headers, *, max_bytes):
@@ -964,7 +969,7 @@ class LiveMirrorPurchaseOrderTest(unittest.TestCase):
                          "opened")
 
     def test_an_answer_from_rows_a_reader_cannot_read_is_withheld_never_uncited(self):
-        """The question families' answers (line quantities, counts,
+        """Review of 18072f8f: the question families' answers (line quantities, counts,
         computed values) were written uncited, so every case reader saw them.
         With the order lines sales-only, an operations reader of the sales order's case
         sees those answers withheld."""
@@ -1001,7 +1006,7 @@ class LiveMirrorPurchaseOrderTest(unittest.TestCase):
         self.assertEqual((check["row_leaks"], check["case_text_leaks"]), (0, 0))
 
     def test_revoking_the_source_grant_hides_the_case_header_on_every_surface(self):
-        """Regression: the question and roots of a narrowed case
+        """Regression (review of bb48071): the question and roots of a narrowed case
         name a PO number read from purchasing relations. Once the mirror audience
         revokes those relations from purchasing, no surface (store get/list, MCP
         case_get in every view, case_list, the console list and workspace) shows the
@@ -1093,7 +1098,7 @@ class LiveMirrorPurchaseOrderTest(unittest.TestCase):
 
 
     def test_the_leak_check_fails_a_case_whose_words_name_a_withheld_po(self):
-        """Regression: opened without the narrowed audience, a PO
+        """Regression (review of e041d6f): opened without the narrowed audience, a PO
         number reaches an operations reader through the question, roots and uncited gaps;
         the check counts it as a row leak, never as allowed case text."""
         from operating.mcp_server import MCPServer, local_client
@@ -1225,7 +1230,7 @@ class PickMissedReferenceTest(unittest.TestCase):
 
 
 class GapDateTest(unittest.TestCase):
-    """A gap's prose keeps a date its own claims state (the claim gate
+    """da836e2f3f55 item 6: a gap's prose keeps a date its own claims state (the claim gate
     checks it) and writes every other bare date and number as "#"."""
 
     PO = "api://public.app_purchase_order/%7B%22id%22%3A%22po-1%22%7D@g-1"
@@ -1275,7 +1280,7 @@ class GapDateTest(unittest.TestCase):
 @unittest.skipUnless(importlib.util.find_spec("pypdf") and importlib.util.find_spec("reportlab"),
                      "the customer PO is a PDF: needs pypdf and reportlab")
 class CustomerPoMissingTest(unittest.TestCase):
-    """``verify/live-checks/case.customer_po_missing.json`` (REC-01) over injected
+    """``devloop/live-checks/case.customer_po_missing.json`` (REC-01) over injected
     sources: its own command, its host config copied with the in-process FakeWorkbench
     (the synthetic order fixture plus order OR1000888001 holding no PO) and a FakeDrive
     for the site; the network refused. Evidence label: injected-transport."""
@@ -1296,7 +1301,7 @@ class CustomerPoMissingTest(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.temp = Path(temp.name)
-        self.spec = json.loads((ROOT / "verify" / "live-checks" / f"{self.SPEC_ID}.json")
+        self.spec = json.loads((ROOT / "devloop" / "live-checks" / f"{self.SPEC_ID}.json")
                                .read_text("utf-8"))
 
     def run_spec(self, *, served=None, fetch=None, po=True) -> tuple[int, dict, str]:
@@ -1366,7 +1371,7 @@ class CustomerPoMissingTest(unittest.TestCase):
         return live_ws._Recorder(call, case_id, upstream=None)
 
     def test_a_document_po_on_an_order_without_one_is_one_lead_cited_to_the_page(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from operating.case_verification import check_claims
 
         self.assertEqual(lv.validate_spec(self.spec, stem=self.SPEC_ID), [])
@@ -1574,7 +1579,7 @@ class CustomerPoMissingTest(unittest.TestCase):
         never configured; the pick said pick_linked_absent, naming no source, and opened
         nothing. The order is the case's root, the linked document a typed gap, and the
         run still fails naming the source never captured (no linked case was rendered)."""
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
 
         code, document, text = self.run_spec(po=False)
         [case] = document["cases"]
@@ -1608,7 +1613,7 @@ class CustomerPoMissingTest(unittest.TestCase):
         self.assertNotIn("graph_mail", json.dumps(restricted))
 
     def test_an_unread_po_field_gives_no_lead_and_an_outage_is_blocked(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from integrations.http import SourceHttpError
         from operating.tests import order_fixture as fixture
 
@@ -1650,6 +1655,9 @@ class ReviewedCustomerLinkTest(unittest.TestCase):
 
         world = uo.OrderWorld(self, invoices=[uo.native("CPO-7781")], customers=uo.CARDS)
         carrier = "portal.app_sales_order.po_reference"
+        # The stored-key link and the decisions on it; the company-name candidate the
+        # projector also writes for the pair is a separate lead this case never decides.
+        not_by_name = "binding_kind <> 'text_match'"
 
         def pick() -> tuple[dict, dict | None, list[str]]:
             opener = world.opener()
@@ -1657,14 +1665,15 @@ class ReviewedCustomerLinkTest(unittest.TestCase):
             with contextlib.closing(sqlite3.connect(opener.projection())) as db:
                 tiers = sorted(tier for (tier,) in db.execute(
                     "SELECT tier FROM links WHERE link_type = ? AND from_object = ? AND "
-                    "superseded_at IS NULL", (link["link_type"], link["from_object"])))
+                    f"superseded_at IS NULL AND {not_by_name}",
+                    (link["link_type"], link["from_object"])))
             return opened, opener.root, tiers
 
         with contextlib.closing(sqlite3.connect(world.opener().projection())) as db:
             db.row_factory = sqlite3.Row
             [link] = [dict(row) for row in db.execute(
                 "SELECT * FROM links WHERE link_type = 'Customer.same_record_as' AND "
-                "from_object = ?", (uo.PORTAL_CUSTOMER,))]
+                f"from_object = ? AND {not_by_name}", (uo.PORTAL_CUSTOMER,))]
         [pair] = json.loads(link["reason"])
         evidence = [{"object_id": oid, **{key: cite[key] for key in
                                           ("l1_handle", "digest", "field_path")}}
@@ -1703,7 +1712,7 @@ class ReviewedCustomerLinkTest(unittest.TestCase):
         self.assertNotEqual(other.projection(), world.opener().projection_path)
         with contextlib.closing(sqlite3.connect(other.projection())) as db:
             self.assertEqual([tier for (tier,) in db.execute(
-                "SELECT tier FROM links WHERE link_type = ? AND from_object = ?",
+                f"SELECT tier FROM links WHERE link_type = ? AND from_object = ? AND {not_by_name}",
                 (link["link_type"], link["from_object"]))], ["lead"])
         with contextlib.closing(sqlite3.connect(world.opener().projection_path)) as db:
             self.assertIn("reviewed", [tier for (tier,) in db.execute(

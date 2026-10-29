@@ -17,7 +17,7 @@ here and nowhere else:
   readers carry: ``documentFields`` (gap ``pages``), the resolve rows
   (``row.skipped_by_cap``), a container's member (a gap); the mention documents, which
   have no gap channel, index its name only and record why
-  (``CapturedText.text_withheld``; ``docs/decisions/pdf-cap-readers-contract.md``).
+  (``CapturedText.text_withheld``; ``devloop/DECISIONS/pdf-cap-readers-contract.md``).
   The stored text status stays ``extracted``/``extracted_ocr``. Bytes over the extractor's bound (a
   capture scope may declare a larger content cap) are never handed to it whole:
   ``exceeds_bound``, no text; a container among them is read member by member below.
@@ -59,13 +59,16 @@ undecoded ``.msg`` property) is a gap with its reason, never silently dropped.
 from __future__ import annotations
 
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from hashlib import sha256
+import json
 import logging
+import os
 from pathlib import Path
 import re
 import subprocess
 import threading
+import zlib
 from typing import Any, Callable, Generic, Hashable, Mapping, TypeVar
 from urllib.parse import parse_qs, quote
 
@@ -78,10 +81,19 @@ TEXT_OCR = "extracted_ocr"           # some pages OCR-read: untrusted, unconfirm
 OCR_UNAVAILABLE = "ocr_unavailable"  # scanned pages and no local OCR engine on this host
 OCR_FAILED = "ocr_failed"            # stored typed: ocr_failed:<cause> (ocr_failure_cause)
 OCR_NO_TEXT = "ocr_no_text"          # OCR ran and read nothing
+# Scanned pages left for a later OCR pass on a host with an engine (the capture defers OCR
+# so one slow scan never holds the capture: ``capture_text(defer_ocr=True)``); the text
+# stored is the text layer's.
+OCR_PENDING = "ocr_pending"
+# Scanned pages whose OCR was put off with the bytes dropped (the mail capture's ``ocr``
+# ``deferred``, ``integrations.capture_mail``): the text layer (if any) is the reading
+# every reader gets, the reading carries ``ocr_deferred`` (a named gap, never an "empty"
+# or "absent" document), and a later pass re-fetches the bytes and OCR-reads them.
+OCR_DEFERRED = "ocr_deferred"
 TEXT_EXCEEDS_BOUND = "exceeds_bound"  # over the extractor's bound: never read whole
 TEXT_READ = (TEXT_EXTRACTED, TEXT_OCR)
 # Statuses a later capture run re-reads from the stored bytes when this host has OCR.
-TEXT_UNREAD = ("no_text", OCR_UNAVAILABLE)
+TEXT_UNREAD = ("no_text", OCR_UNAVAILABLE, OCR_PENDING)
 # An OCR failure stored before a tool's exit was typed by tool (``tool_exit``, or the bare
 # ``ocr_failed``): its cause is unknown, so a host with OCR reads the stored bytes once
 # more; the new reading is typed by tool and is not among these, so never a loop.
@@ -121,6 +133,11 @@ def _name(row: Mapping[str, Any]) -> str:
     return row["name"] if isinstance(row.get("name"), str) else ""
 
 
+def file_type(row: Mapping[str, Any]) -> tuple[str, str]:
+    """(MIME type, name) a captured file is read as (:func:`captured_text`)."""
+    return _mime(row), _name(row)
+
+
 def _joined(text: str, pages: Any) -> str:
     """A PDF's extracted text, page by page (``PAGE_BREAK`` between pages, none inside)."""
     if not pages:
@@ -136,14 +153,17 @@ _WORKBOOK_TEXT = 1_000_000   # a workbook's text read for its first characters
 
 
 def capture_text(content: bytes, record: Mapping[str, Any], *,
-                 max_chars: int | None = None) -> tuple[str, str | None]:
+                 max_chars: int | None = None, defer_ocr: bool = False
+                 ) -> tuple[str, str | None]:
     """(text status, text to store) of newly captured bytes (``record``: the file's
     ``name``, ``mime_type`` or ``content_type`` and optional ``original_url``). A
     failure is a status, never an exception. ``max_chars``: text over the extractor's
     character bound gives its first ``max_chars`` characters (:func:`_first_chars`)
     instead of ``failed``; never for a capture, whose pinned text is the whole file's.
     An OCR run that failed is ``ocr_failed:<cause>``, its typed cause
-    (``document_understanding.OcrFailed``)."""
+    (``document_understanding.OcrFailed``). ``defer_ocr``: no OCR run now; a PDF with
+    pages lacking a text layer is ``ocr_pending`` (text layer kept) on a host with an
+    engine, so a later pass OCR-reads the stored bytes (``ocr_unavailable`` without one)."""
     from .document_understanding import (MAX_BYTES, OcrFailed, extract_document,
                                          local_ocr_available)
 
@@ -152,7 +172,8 @@ def capture_text(content: bytes, record: Mapping[str, Any], *,
     url = record.get("original_url")
     mime, name = _mime(record), _name(record)
     paged = is_paged_file({"mime_type": mime, "name": name})
-    ocr = paged and local_ocr_available()
+    engine = paged and local_ocr_available()
+    ocr = engine and not defer_ocr
     try:
         found = extract_document(content, mime,
                                  original_url=url if isinstance(url, str) else _URL,
@@ -172,7 +193,8 @@ def capture_text(content: bytes, record: Mapping[str, Any], *,
     text = (_joined(found.text, found.pages) if paged else found.text) if read else None
     if paged and not ocr and (found.status == "no_text" or any(
             not found.text[p["start"]:p["end"]].strip() for p in found.pages)):
-        return OCR_UNAVAILABLE, text   # pages without a text layer were not read
+        # Pages without a text layer were not read: later when only deferred.
+        return (OCR_PENDING if engine else OCR_UNAVAILABLE), text
     if read:
         return (TEXT_OCR if found.ocr_pages else TEXT_EXTRACTED), text
     if ocr and found.status == "no_text":
@@ -186,7 +208,7 @@ def _first_chars(content: bytes, mime: str, name: str, max_chars: int
     extractor's bound, read by the extractor's own readers without that bound and without
     OCR: a PDF page without a text layer leaves it ``ocr_unavailable``."""
     from .doc_convert import convertible_kind
-    from .document_understanding import read_pages
+    from .document_understanding import is_plain_text, read_pages
     from .xlsx_extract import extract_xlsx_text
 
     kind = mime.split(";", 1)[0].strip().lower()
@@ -205,7 +227,7 @@ def _first_chars(content: bytes, mime: str, name: str, max_chars: int
             text, status, *_ = extract_xlsx_text(content, max_text=_WORKBOOK_TEXT)
             if status != "extracted":
                 return "failed", None
-        elif kind.startswith("text/plain"):
+        elif is_plain_text(kind, name):
             text = content.decode("utf-8-sig")
         else:
             return "failed", None
@@ -232,6 +254,9 @@ class CapturedText:
     paged: bool
     text_sha256: str | None = None
     skipped_pages: tuple[int, int] | None = None
+    # Its scanned pages were not OCR-read yet (``OCR_DEFERRED``): what it does not state
+    # is unread, not absent.
+    ocr_deferred: bool = False
 
     @property
     def skipped_by_cap(self) -> dict[str, Any] | None:
@@ -301,16 +326,151 @@ def read_text(content: bytes, mime_type: str, *, filename: str = "",
                         frozenset(found.ocr_pages), paged, skipped_pages=found.skipped_pages)
 
 
+# --------------------------------------------------------------------------- stored forms
+#
+# A blob of a capture store's blob directory is kept in one of three forms, the reader
+# never told which: ``<sha256>`` (the bytes), ``<sha256>.z`` (the bytes zlib-compressed: a
+# mail body or text, ``integrations.capture_mail``) or, for an attachment original the mail
+# capture dropped once its text was read, ``<sha256>.dropped``: the readings
+# (:class:`CapturedText`) every reader got from those bytes, kept so that a citation of its
+# text still resolves to the same text, pages and status, plus the bytes' size and
+# quickXorHash. The bytes themselves are re-read from the source on demand
+# (``MailCaptureStore.refetch_original``), never guessed.
+
+COMPRESSED_SUFFIX = ".z"
+DROPPED_SUFFIX = ".dropped"
+DROPPED_FORMAT = "plx-dropped-original/v1"
+MAX_INFLATED_BYTES = 64 * 1024 * 1024   # a stored body or text inflates to at most this
+
+
+def blob_path(blobs: str | Path, digest: str, suffix: str = "") -> Path:
+    """The file of one form of the blob ``digest`` (a SHA-256 hex digest)."""
+    return Path(blobs) / digest[:2] / (digest + suffix)
+
+
+def inflate(packed: bytes) -> bytes | None:
+    """The bytes of a ``.z`` form, or None when it is not one whole zlib stream within
+    :data:`MAX_INFLATED_BYTES`."""
+    try:
+        stream = zlib.decompressobj()
+        content = stream.decompress(packed, MAX_INFLATED_BYTES)
+    except zlib.error:
+        return None
+    if stream.unconsumed_tail or not stream.eof or stream.unused_data:
+        return None
+    return content
+
+
 def read_blob(blobs: str | Path, digest: Any) -> bytes | None:
     """Content-addressed bytes of a capture store's blob directory, re-hashed; None when
-    missing, altered or not a SHA-256."""
+    missing (or dropped), altered or not a SHA-256. The bytes form is read first; only
+    when it does not exist, the compressed form."""
     if not isinstance(digest, str) or _SHA256.fullmatch(digest) is None:
         return None
     try:
-        content = (Path(blobs) / digest[:2] / digest).read_bytes()
+        content: bytes | None = blob_path(blobs, digest).read_bytes()
+    except FileNotFoundError:
+        try:
+            content = inflate(blob_path(blobs, digest, COMPRESSED_SUFFIX).read_bytes())
+        except OSError:
+            return None
     except OSError:
         return None
-    return content if sha256(content).hexdigest() == digest else None
+    return content if content is not None and sha256(content).hexdigest() == digest else None
+
+
+def reading_key(mime: str, name: str, text_digest: str | None) -> str:
+    """The key of one reading of a dropped original: what :func:`captured_text` reads it
+    by (MIME type, name, the pinned OCR text's digest or None)."""
+    return json.dumps([mime, name, text_digest])
+
+
+def encode_reading(found: CapturedText | None) -> dict[str, Any] | None:
+    if found is None:
+        return None
+    return {"source_sha256": found.source_sha256, "mime_type": found.mime_type,
+            "status": found.status, "method": found.method,
+            "pages": [[page, text] for page, text in found.pages],
+            "ocr_pages": sorted(found.ocr_pages), "paged": found.paged,
+            "text_sha256": found.text_sha256,
+            "skipped_pages": None if found.skipped_pages is None else list(found.skipped_pages)}
+
+
+def decode_reading(value: Any) -> CapturedText | None:
+    if value is None:
+        return None
+    skipped = value["skipped_pages"]
+    return CapturedText(value["source_sha256"], value["mime_type"], value["status"],
+                        value["method"], tuple((page, text) for page, text in value["pages"]),
+                        frozenset(value["ocr_pages"]), bool(value["paged"]),
+                        value["text_sha256"], None if skipped is None else tuple(skipped))
+
+
+def _readings_sha256(readings: Mapping[str, Any]) -> str:
+    return sha256(json.dumps(readings, sort_keys=True, ensure_ascii=False).encode("utf-8")
+                  ).hexdigest()
+
+
+def write_dropped(blobs: str | Path, digest: str, size: int, readings: Mapping[str, Any],
+                  quick_xor: str | None) -> int:
+    """Write the ``.dropped`` form of ``digest`` (``readings``: :func:`reading_key` ->
+    :func:`encode_reading`), atomically, private; returns its size on disk."""
+    document = {"format": DROPPED_FORMAT, "sha256": digest, "bytes": size,
+                "quick_xor": quick_xor, "readings": dict(readings),
+                "readings_sha256": _readings_sha256(readings)}
+    packed = zlib.compress(json.dumps(document, sort_keys=True, ensure_ascii=False
+                                      ).encode("utf-8"), 6)
+    target = blob_path(blobs, digest, DROPPED_SUFFIX)
+    target.parent.mkdir(exist_ok=True, mode=0o700)
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(packed)
+    os.replace(temporary, target)
+    return len(packed)
+
+
+def read_dropped(blobs: str | Path, digest: Any) -> dict[str, Any] | None:
+    """The ``.dropped`` form of ``digest``: ``bytes``, ``quick_xor`` and ``readings``;
+    None when there is none or it is not whole (its format, digest or readings checksum
+    does not hold)."""
+    if not isinstance(digest, str) or _SHA256.fullmatch(digest) is None:
+        return None
+    try:
+        raw = inflate(blob_path(blobs, digest, DROPPED_SUFFIX).read_bytes())
+        document = None if raw is None else json.loads(raw.decode("utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(document, dict) or document.get("format") != DROPPED_FORMAT \
+            or document.get("sha256") != digest \
+            or not isinstance(document.get("readings"), dict) \
+            or document.get("readings_sha256") != _readings_sha256(document["readings"]):
+        return None
+    return document
+
+
+def readings_of(content: bytes, keys: Any, texts: Callable[[str], str | None]
+                ) -> dict[str, Any] | None:
+    """The reading of ``content`` under each ``(mime, name, text_digest)`` of ``keys`` as
+    :func:`captured_text` makes it from the bytes (``texts``: a pinned OCR text by its
+    digest), encoded by :func:`reading_key`; a key over the extractor's bounds reads None
+    (as remembered by the memo). None when a reading cannot be made now (a pinned text
+    missing, a transient or unexpected failure): the bytes must then be kept."""
+    out: dict[str, Any] = {}
+    for mime, name, text_digest in keys:
+        text = None
+        if text_digest is not None:
+            text = texts(text_digest)
+            if text is None:
+                return None
+        try:
+            found: CapturedText | None = read_text(content, mime, filename=name, text=text)
+        except Exception as exc:  # noqa: BLE001 - classified exactly as the memo does
+            if _failed(exc, f"original {sha256(content).hexdigest()[:12]}") != "limit":
+                return None
+            found = None
+        out[reading_key(mime, name, text_digest)] = encode_reading(found)
+    return out
 
 
 def ocr_digest(row: Mapping[str, Any]) -> str | None:
@@ -460,14 +620,106 @@ def captured_text(blobs: str | Path, row: Mapping[str, Any]) -> CapturedText | N
         return None
     mime, name, text_digest = _mime(row), _name(row), ocr_digest(row)
 
-    def read() -> CapturedText:
+    def read() -> CapturedText | None:
         content = read_blob(blobs, digest)
+        if content is None:   # a dropped original reads as the readings it left
+            kept = read_dropped(blobs, digest)
+            key = reading_key(mime, name, text_digest)
+            if kept is None or key not in kept["readings"]:
+                raise NotRemembered(digest)
+            return decode_reading(kept["readings"][key])
         text = None if text_digest is None else read_blob(blobs, text_digest)
-        if content is None or (text_digest is not None and text is None):
+        if text_digest is not None and text is None:
             raise NotRemembered(digest)
         return read_text(content, mime, filename=name,
                          text=None if text is None else text.decode("utf-8"))
-    return _CACHE.read((digest, mime, name, text_digest), read)
+    found = _CACHE.read((digest, mime, name, text_digest), read)
+    if found is not None and row.get("text_status") == OCR_DEFERRED:
+        return replace(found, ocr_deferred=True)
+    return found
+
+
+# The statuses whose stored text is the text layer only: scanned pages were left for a
+# later OCR pass (``capture_text(defer_ocr=True)``, the mail capture's deferral).
+SCANS_PENDING = (OCR_PENDING, OCR_DEFERRED)
+
+
+@dataclass(frozen=True)
+class StoredText:
+    """The text a capture stored for one captured file (:func:`stored_text`): ``text``
+    as :attr:`CapturedText.text` cites it (None: none stored, missing, altered or
+    blank), whether it is paged, and the pages past the page bound it does not hold
+    (``skipped_by_cap``'s shape; ``{"cap": "pages", "limit": ...}`` alone when the
+    range cannot be told without reading the file)."""
+
+    text: str | None
+    paged: bool
+    skipped_by_cap: dict[str, Any] | None = None
+
+
+def stored_text(blobs: str | Path, row: Mapping[str, Any]) -> StoredText:
+    """The text the capture stored for a captured file (``row``: its record with
+    ``text_status``, ``text_sha256`` and ``content_sha256``), read from its pinned text
+    blob (re-hashed) and never from its bytes: no extraction and no OCR run. An original
+    the capture dropped reads as the reading it kept (``.dropped``: the reading
+    :func:`captured_text` serves for it). Otherwise the text is what the capture's own
+    extractor run stored: a PDF's pages joined by ``PAGE_BREAK``, any other file's whole
+    text (``capture_text``); an OCR-read file's reading is this text itself. A typed PDF
+    the capture read on a host with OCR went through the OCR-enabled page reader, whose
+    text layer can differ from the reading :func:`captured_text` makes without OCR
+    (devloop/DECISIONS/2026-10-28-identifier-lookup.md). Of a PDF holding ``MAX_PAGES``
+    pages the range past them is told from the PDF's page count (no page read) or the
+    reading a dropped original kept; when neither tells it, every page past the bound is
+    taken as unread (fail closed)."""
+    from .document_understanding import MAX_PAGES, pdf_page_count
+
+    mime, name = _mime(row), _name(row)
+    paged = is_paged_file({"mime_type": mime, "name": name})
+    digest = row.get("content_sha256")
+    if isinstance(digest, str) and _SHA256.fullmatch(digest) is not None \
+            and not blob_path(blobs, digest).exists() \
+            and not blob_path(blobs, digest, COMPRESSED_SUFFIX).exists():
+        # A dropped original: the reading it kept is the one every reader cites.
+        kept = read_dropped(blobs, digest)
+        key = reading_key(mime, name, ocr_digest(row))
+        if kept is not None and key in kept["readings"]:
+            found = decode_reading(kept["readings"][key])
+            return StoredText(None if found is None else found.text, paged,
+                              None if found is None else found.skipped_by_cap)
+    raw = read_blob(blobs, row.get("text_sha256"))
+    try:
+        text = None if raw is None else raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = None
+    if text is None:
+        return StoredText(None, paged)
+    pages = text_pages(text) if paged else [text]
+    if not any(page.strip() for page in pages):
+        return StoredText(None, paged)
+    text = PAGE_BREAK.join(pages) if paged else text.replace(PAGE_BREAK, " ")
+    skipped = None
+    if paged and len(pages) >= MAX_PAGES:
+        count = None
+        content = read_blob(blobs, row.get("content_sha256"))
+        if content is not None:
+            try:
+                count = pdf_page_count(content)
+            except Exception:  # noqa: BLE001 - an uncounted PDF is read as capped
+                count = None
+        else:
+            kept = read_dropped(blobs, row.get("content_sha256"))
+            readings = [] if kept is None else [decode_reading(v) for v in
+                                               kept["readings"].values() if v is not None]
+            ends = {r.skipped_pages for r in readings}
+            if len(ends) == 1:
+                (end,) = ends
+                count = len(pages) if end is None else end[1]
+        if count is None:
+            skipped = {"cap": "pages", "limit": MAX_PAGES}
+        elif count > len(pages):
+            skipped = {"first_page": len(pages) + 1, "last_page": count, "cap": "pages",
+                       "limit": MAX_PAGES}
+    return StoredText(text, paged, skipped)
 
 
 # --------------------------------------------------------------------------- containers
@@ -521,7 +773,8 @@ class ContainerReading:
 # A member without a mail content type is typed by its name: the extractor types the
 # rest (Office files, .msg/.eml) by name itself; a fixed table, never the host's.
 _MEMBER_SUFFIX_TYPES = {".pdf": "application/pdf", ".txt": "text/plain", ".csv": "text/plain",
-                        ".md": "text/plain"}
+                        ".md": "text/plain", ".json": "application/json",
+                        ".html": "text/html", ".htm": "text/html"}
 
 
 def _member_mime(name: str, hint: str | None) -> str:
@@ -689,10 +942,14 @@ def split_member(handle: Any) -> tuple[str, str, str | None] | None:
     return (head[:-1], keys["member"][0], digest) if rebuilt == handle else None
 
 
-__all__ = ["CapturedText", "ContainerReading", "LIMIT_ERRORS", "MAX_CACHED_CHARS",
-           "MEMBER_KEYS", "Member", "NotRemembered", "OCR_FAILED", "OCR_NO_TEXT",
-           "OCR_UNAVAILABLE", "ReadingMemo", "TEXT_EXCEEDS_BOUND", "TEXT_EXTRACTED",
+__all__ = ["COMPRESSED_SUFFIX", "DROPPED_SUFFIX", "blob_path", "decode_reading",
+           "encode_reading", "file_type", "inflate", "read_dropped", "reading_key", "readings_of",
+           "write_dropped",
+           "CapturedText", "ContainerReading", "LIMIT_ERRORS", "MAX_CACHED_CHARS",
+           "MEMBER_KEYS", "Member", "NotRemembered", "OCR_DEFERRED", "OCR_FAILED",
+           "OCR_NO_TEXT",
+           "OCR_PENDING", "OCR_UNAVAILABLE", "ReadingMemo", "SCANS_PENDING", "StoredText", "TEXT_EXCEEDS_BOUND", "TEXT_EXTRACTED",
            "TEXT_OCR", "TEXT_READ", "TEXT_UNREAD", "UNTYPED_OCR_FAILURES", "byte_pinned", "capture_text",
            "captured_text", "container_members", "member_handle", "member_view",
            "ocr_digest", "ocr_failure_cause", "read_blob", "read_container", "read_failure",
-           "read_text", "split_member", "text_status_kind"]
+           "read_text", "split_member", "stored_text", "text_status_kind"]

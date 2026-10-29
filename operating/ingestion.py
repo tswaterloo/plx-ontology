@@ -54,7 +54,7 @@ existing GET-only readers only (no HTTP code here):
   principal granted the collection may read for want of their MC project grant add
   ``withheld:project_grant:<n>`` (``not_measured`` when the audience cannot tell).
 
-Completeness: every unit of every run records pages,
+Completeness (ARCHITECTURE-REVIEW F8): every unit of every run records pages,
 items, new/changed/unchanged, the exact reasons it is incomplete
 (``cap:item_cap``, ``cap:page_cap``, ``cap:portal_row_bound``,
 ``source_error:<ExceptionClass>[:<detail>]`` (detail from the guard's fixed
@@ -84,7 +84,7 @@ per unit (per folder for SharePoint); a run that dies leaves its run row
 ``status`` is counts-only (numbers, booleans, enum reasons and configured
 source ids): no subjects, names, ids, citations or cursor values.
 
-CLI (credentialed live checks; prints counts only)::
+CLI (credentialed live verifier; prints counts only)::
 
     python3 -m operating.ingestion run --state-dir D --sources F \\
         --live-audience A --mirror-audience M [--runs 2]
@@ -153,7 +153,7 @@ STALL_RECOVERY_ITEMS = 2500  # 50 pages x 50 messages, the reader's widest mail 
 MAIL_WINDOW_ANCHORS = ("now", "newest_message")
 FOLDER_FAILURE_LIMIT = 3  # consecutive failed runs before a queued subfolder is dropped
 _REASON = re.compile(r"^[a-z_]+(?::[A-Za-z0-9_.]+){0,2}$")
-REASON_MAX = 64  # verify.live_verify.ENUM_STRING: longer reasons are hidden there
+REASON_MAX = 64  # devloop.live_verify.ENUM_STRING: longer reasons are hidden there
 PEOPLE_BLOCK = "blocked:people_exclusion:"  # + people_exclusion.CODES entry
 _DETAIL = re.compile(r"^[a-z0-9_]+(?:\.[a-z0-9_]+)?$")
 
@@ -209,7 +209,7 @@ def _error_reason(exc: BaseException) -> str:
     ``http_429``, ``timeout``, ``nextlink_escaped``,
     ``retried.http_503`` ...), so an operator can tell a throttle from an
     outage; source text never reaches the reason. The whole reason stays
-    within ``REASON_MAX`` (the live checks' enum bound): a subclass whose
+    within ``REASON_MAX`` (the live verifier's enum bound): a subclass whose
     name would overflow it is reported by its base class ``SourceUnavailable``."""
     from integrations.live_source_guard import (NotVisible, ReadOnlyGuardError,
                                                 unavailable_detail)
@@ -1434,7 +1434,7 @@ def _summary(units: Sequence[Mapping[str, Any]]) -> dict[str, int]:
 
 def status(state_dir: str | Path, *, sources: Sequence[Mapping[str, Any]] = (),
            clock: Callable[[], datetime] | None = None) -> dict[str, Any]:
-    """Counts-only ingestion status for the console, MCP and the live checks.
+    """Counts-only ingestion status for the console, MCP and the live verifier.
 
     Per unit: last state, its exact reasons, counts, numeric lag, current and
     absent item counts and the age of its last complete run. Never row data:

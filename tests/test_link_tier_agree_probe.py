@@ -2,13 +2,19 @@
 plx.process read one tier for one link, and a tool that reads another fails the probe.
 
 Evidence label: isolated-fixture (the real compiled schema and stage graphs, synthetic
-records; the live run is verify/live-checks/ontology.link_tier_agree.json)."""
+records; the live run is devloop/live-checks/ontology.link_tier_agree.json)."""
 
 from __future__ import annotations
 
+import contextlib
+import io
+import json
+from pathlib import Path
 import unittest
 from unittest import mock
 
+from devloop import live_verify as lv
+from scripts import ontology_projection_probe as projection
 from operating import ontology_tools_aggregate as oa
 from operating import ontology_tools_traverse as tt
 from operating.tests import test_link_tier_rule as base
@@ -118,6 +124,56 @@ class LinkTierAgreeTests(unittest.TestCase):
                 self.assertEqual(report["orders_asked"], min(n, 20))
                 self.assertEqual(report["links_asked"], min(n, 20))
                 self.assertEqual(report["disagreements"], 0, report)
+
+
+class SessionConsumerTests(unittest.TestCase):
+    """The verifier run on main 1e2f02bd05 (checked 2026-10-22T03:16:05Z) read fail:
+    budget_exhausted in projection_build, because the probe projected a whole Portal sync
+    cold inside its 2600 s build budget. Every sibling L7 consumer opens the session
+    projection instead; this one must too, with the budget unchanged."""
+
+    SPEC_PATH = (Path(__file__).resolve().parents[1]
+                 / "devloop/live-checks/ontology.link_tier_agree.json")
+
+    def test_the_build_opens_the_session_projection_it_is_given(self):
+        seen = []
+
+        def build(argv, **_kw):
+            seen.append(list(argv))
+            print(json.dumps({"phase": "projection"}))
+            return projection.EXIT_BUDGET
+
+        out = io.StringIO()
+        with mock.patch.object(projection, "main", build), contextlib.redirect_stdout(out):
+            code = probe.main(["--db", "S/mirror.sqlite", "--store", "T/ontology.sqlite",
+                               "--session-projection", "S/projection", "--bc-capture",
+                               "--budget-seconds", "2600", "--previous-report=R.json"])
+        self.assertEqual(code, projection.EXIT_BUDGET)
+        self.assertEqual(json.loads(out.getvalue())["status"], "budget_exhausted")
+        argv = seen[0]
+        self.assertIn("--build-only", argv)
+        self.assertEqual(argv[argv.index("--session-projection") + 1], "S/projection")
+        self.assertEqual(argv[argv.index("--db") + 1], "S/mirror.sqlite")
+        self.assertEqual(argv[argv.index("--previous-report") + 1], "R.json")
+        self.assertIn("--bc-capture", argv)
+
+    def test_the_live_spec_is_a_session_consumer_within_its_budget(self):
+        spec = json.loads(self.SPEC_PATH.read_text("utf-8"))
+        lv.validate_spec(spec)
+        command = spec["command"]
+        self.assertEqual(command[command.index("--session-projection") + 1],
+                         "{session_state}/projection")
+        self.assertEqual(command[command.index("--db") + 1], "{session_state}/mirror.sqlite")
+        self.assertIn("ontology.session_projection", spec["requires"])
+        self.assertEqual(set(spec["session_reads"]), {"/mirror.sqlite", "/projection"})
+        # the build budget is the one it failed under: opening the session fits it
+        self.assertEqual(command[command.index("--budget-seconds") + 1], "2600")
+        # the same capture audience as the producer's, so the store is shared
+        producer = json.loads((self.SPEC_PATH.parent / "ontology.session_projection.json")
+                              .read_text("utf-8"))
+        for path in spec["session_reads"]:
+            self.assertEqual(spec["session_audience"][path],
+                             producer["session_audience"][path], path)
 
 
 if __name__ == "__main__":

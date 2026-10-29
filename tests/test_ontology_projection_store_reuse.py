@@ -1,7 +1,7 @@
 """The projection probe tops up a capture it shares (the verifier's ``{session_state}``).
 
 Live, every check that projected BC captured it cold inside its own budget and none
-finished (verify/live_verify.py, "Session state"). A probe pointed at a store a session
+finished (devloop/live_verify.py, "Session state"). A probe pointed at a store a session
 producer filled must carry that capture forward: resume what is paused, read what is
 missing and never read again what this session completed (a store from an earlier
 invocation is read again: integrations/tests/test_bc_read_topup.py). Injected transport

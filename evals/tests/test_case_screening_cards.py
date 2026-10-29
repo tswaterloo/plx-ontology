@@ -49,7 +49,7 @@ class ScreeningCardsTest(unittest.TestCase):
             "uncited": lambda c, g: card0(c).update(cites=["made-up"]),
             "exposure": lambda c, g: c["real_example"].update(split="held_out"),
             "keys": lambda c, g: card0(c).update(values=["1"]),
-            "open question": lambda c, g: g["gaps"][0].update(open_question="ask the owner"),
+            "Dot question": lambda c, g: g["gaps"][0].update(dot_question="ask the Dot"),
             "needed_by": lambda c, g: g["gaps"][0]["needed_by"].append("SC-99"),
         }
         for label, edit in cases.items():

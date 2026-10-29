@@ -4,13 +4,13 @@ one record holds in two systems) answers through the real investigation path.
 
 The live check timed out at 2,400 s on 2026-10-10 and left no record; on 2026-10-07 every
 answerability_mismatch (20 of 26) was an abstention on an item the oracle answers, each on a
-root plx.find could not settle (live-check results/daily/4ea6073508fc...: abstained
+root plx.find could not settle (claude/devloop-live results/daily/4ea6073508fc...: abstained
 20, abstain_ok 0, root_resolution 10 found of 30). A Sage-loaded sales order is one record
 held in Portal gold and in its Sage order header under the same number. On 2026-10-11 an F3
 item cited a relation three links from its root while the spec mirrors two, so its run pin
 found no capture (pin_drift no_capture_at_or_after_time): the sync now captures every
 relation the drawn items cite, for the run pins only: the run projects the schema's
-relations, never one the answer key alone cites. The
+relations, never one the answer key alone cites (architect-20261011T0821Z-kGaZpgjp). The
 spec's ``--run-id auto`` reads the run's wall clock, which the tests pin.
 Evidence: isolated-fixture / injected-transport, never live.
 """
@@ -21,6 +21,7 @@ import contextlib
 import io
 import json
 from pathlib import Path
+import sqlite3
 import tempfile
 import threading
 import time
@@ -32,7 +33,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PINNED_NOW = "2026-10-11T23:59:59+00:00"
 
 
-SPEC = json.loads((ROOT / "verify" / "live-checks" / "eval.dev_baseline.json").read_text())
+SPEC = json.loads((ROOT / "devloop" / "live-checks" / "eval.dev_baseline.json").read_text())
 
 
 def pinned_now():
@@ -100,7 +101,7 @@ class BudgetStopTests(unittest.TestCase):
         def mirror_clock():
             armed.set()
             return script.fixture_clock()
-        spec = json.loads((ROOT / "verify" / "live-checks" / "eval.dev_baseline.json")
+        spec = json.loads((ROOT / "devloop" / "live-checks" / "eval.dev_baseline.json")
                           .read_text())
         out = io.StringIO()
         # The injected hard_exit returns, so the closed state the watchdog's abandon
@@ -122,7 +123,7 @@ class BudgetStopTests(unittest.TestCase):
         return spec, code, exits, document
 
     def assert_partial_record(self, spec, code, document):
-        from verify import live_verify
+        from devloop import live_verify
         block = document["eval"]
         self.assertEqual(code, 3)
         self.assertEqual(block["stopped"], {"phase": "items", "reason": "run_budget_exhausted"})
@@ -147,7 +148,7 @@ class BudgetStopTests(unittest.TestCase):
     def assert_item_rows(self, spec, document):
         """One family/root/outcome/reason row per drawn item, in the verifier's capped
         record: the measured ones as scored, the rest not measured where the cut stopped."""
-        from verify import live_verify
+        from devloop import live_verify
         block, rows = document["eval"], document["item_rows"]
         self.assertEqual(len(rows), block["items_total"])
         self.assertEqual(sum(":not_measured:" not in row for row in rows), block["measured"])
@@ -168,9 +169,9 @@ class BudgetStopTests(unittest.TestCase):
         self.assert_partial_record(spec, code, document)
 
     def test_a_watchdog_cut_in_the_projection_still_counts_every_drawn_item(self):
-        """A cut before any item ran records the oracle's
+        """102342432f14 items 2 and 3: a cut before any item ran records the oracle's
         items (items_total, item_rows), none measured, and the phase it stopped in."""
-        from verify import live_verify
+        from devloop import live_verify
         spec, code, exits, document = self.run_spec(cut_by_watchdog=True, in_projection=True)
         block = document["eval"]
         self.assertEqual((code, exits), (3, [3]))
@@ -185,7 +186,7 @@ class BudgetStopTests(unittest.TestCase):
 
 
 class SessionProjectionTests(unittest.TestCase):
-    """With the verifier session's projection committed in this
+    """Directive 56ca42c8a936: with the verifier session's projection committed in this
     session, the spec's own argv neither syncs the whole plan, captures BC nor projects: it
     opens that generation read-only and every drawn item runs on it (isolated-fixture).
     Its one capture is a top-up of its own mirror copy for the relations the run pins read
@@ -199,7 +200,7 @@ class SessionProjectionTests(unittest.TestCase):
         import sqlite3
         from datetime import datetime, timedelta, timezone
 
-        from verify import live_verify
+        from devloop import live_verify
         from ontology import project
         from scripts import eval_dev_baseline as script
         from scripts import eval_oracle_dev as dev
@@ -259,7 +260,7 @@ class SessionProjectionTests(unittest.TestCase):
     def test_the_run_opens_the_session_projection_instead_of_projecting(self):
         """The ``auto`` run id is the pinned clock's date while the host clock has rolled
         past midnight: the drawn items never depend on the day the test runs."""
-        from verify import live_verify
+        from devloop import live_verify
         from scripts import eval_dev_baseline as script
 
         produced, code, document, builds, _, _ = self.run_session(script.fixture_clock)
@@ -276,7 +277,7 @@ class SessionProjectionTests(unittest.TestCase):
         self.assertGreater(block["items_total"], 0)
         self.assertEqual(len(document["item_rows"]), block["items_total"])
         failures = live_verify.check_expectations(SPEC, code, document)
-        # The deterministic baseline misses the accuracy bar on the fixture: red.
+        # The deterministic baseline misses ROADMAP B1's accuracy bar on the fixture: red.
         self.assertEqual(set(failures) - {"eval.items < 20"},
                          {"eval.answer.accuracy_rate < 0.8"}, failures)
 
@@ -289,7 +290,7 @@ class SessionProjectionTests(unittest.TestCase):
         is, with no root identifier in it."""
         from datetime import datetime, timezone
 
-        from verify import live_verify
+        from devloop import live_verify
 
         produced, code, document, builds, (before, after), roots = self.run_session(
             lambda: datetime(2026, 1, 1, tzinfo=timezone.utc))
@@ -456,6 +457,29 @@ class CapturedBcClaimGateTests(unittest.TestCase):
                                sources={})
         self.assertEqual(result["eval"]["items_over_time_budget"], 1)
 
+    def test_the_items_of_a_run_share_one_store_reader(self):
+        """Failing first on fb57f04: each item opened its own store reader, so every table
+        re-read the store-wide facts (about 25 s an item on the live projection, more than
+        the agent's share of a 30-item window: every item stopped before its search). One
+        reader is opened per run, kept across its items and closed when the run ends."""
+        from scripts import eval_dev_baseline as script
+        self.sources.portal.prefetch()
+        opened = []
+        real = self.product.open_store
+
+        def open_store():
+            opened.append(real())
+            return opened[-1]
+        with mock.patch.object(self.product, "open_store", open_store):
+            rows, incomplete = script.run_items([self.item, self.item], self.product,
+                                                self.sources.portal,
+                                                evidence_label="isolated-fixture")
+        self.assertEqual(incomplete, [])
+        self.assertEqual(len(opened), 1)
+        self.assertEqual(rows[1]["outcome"], rows[0]["outcome"])
+        with self.assertRaises(sqlite3.ProgrammingError):   # closed with the run
+            opened[0].conn.execute("SELECT 1")
+
     def test_the_time_share_follows_the_time_and_items_left(self):
         from scripts import eval_dev_baseline as script
         self.assertIsNone(script.item_window_seconds(None, 5))
@@ -471,6 +495,47 @@ class CapturedBcClaimGateTests(unittest.TestCase):
         self.assertEqual(script.item_window_seconds(1e9, 1), 600.0)   # the contract's cap
         self.assertEqual(script.item_window_seconds(10.0, 0),
                          script.item_window_seconds(10.0, 1))
+
+
+class MultiLineOrderTotalTests(unittest.TestCase):
+    """Failing first on fb57f04: an F3 order whose manufacturing order has FileMaker status
+    entries answered produced as the gold assembly order's final quantity, where the item
+    asks the Portal's qty manufactured (the sum of the FM status entries' qtymanuf of its
+    one FM assembly order when any is valued, else yield_actual): the answer failed
+    ``cited_other_row``. The plan reads the status entries and states produced as one sum
+    over the cited entries the scorer recomputes (fixture world of the frozen dev set)."""
+
+    @classmethod
+    def setUpClass(cls):
+        from evals import runner
+        from ontology.schema import load_schema
+        from scripts import eval_dev_baseline as script
+        from scripts import eval_oracle_dev as dev
+        cls.ids = ("dev-F3-0003-fixture", "dev-F3-0006-fixture")
+        items = {i["id"]: i for i in runner.load_items(script.DEV_DIR, split="dev")}
+        cls.tmp = tempfile.TemporaryDirectory(prefix="plx-eval-f3-total-")
+        relations = sorted(set(script.reachable_relations(
+            load_schema(), {"public.app_sales_order"}, script.DEFAULT_LINK_DEPTH))
+            | set(script.plan_relations(load_schema(), ["F3"]) or ()))
+        product = script.build_product(script.fixture_client(), Path(cls.tmp.name), relations,
+                                       budget_seconds=None, clock=script.fixture_clock)
+        sources = dev.build_fixture(dev.eval_world())[0]
+        sources.portal.prefetch()
+        rows, _ = script.run_items([items[i] for i in cls.ids], product, sources.portal,
+                                   evidence_label="isolated-fixture")
+        cls.rows = {row["item_id"]: row for row in rows}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_produced_is_the_status_entries_sum_of_the_manufacturing_order(self):
+        for item_id in self.ids:
+            row = self.rows[item_id]
+            values = {v["name"]: v for v in row["score"]["values"]}
+            self.assertIn("produced", values, (item_id, row["score"]))
+            self.assertTrue(values["produced"]["passed"], (item_id, values["produced"]))
+            self.assertEqual(row["outcome"], "pass", (item_id, row["reasons"]))
 
 
 class SageLoadedOrderRootTests(unittest.TestCase):
@@ -595,7 +660,7 @@ class CitedRelationCoverageTests(unittest.TestCase):
         self.assertTrue(all(pins[iid] == "pinned" for iid, rels in past.items() if rels), pins)
 
     def test_items_citing_relations_past_the_link_depth_pin_without_drift(self):
-        from verify import live_verify
+        from devloop import live_verify
         from ontology.schema import load_schema
         from scripts import eval_dev_baseline as script
         from scripts import eval_oracle_dev as dev
@@ -603,8 +668,15 @@ class CitedRelationCoverageTests(unittest.TestCase):
         def build(env, args, *, guard):
             sources, documents, configured, _ = dev.build_fixture(dev.eval_world())
             return sources, documents, configured
-        spec = json.loads((ROOT / "verify" / "live-checks" / "eval.dev_baseline.json")
+        spec = json.loads((ROOT / "devloop" / "live-checks" / "eval.dev_baseline.json")
                           .read_text())
+        # Every relation the sample cites is one an F1-F4 plan reads (F3 states produced
+        # from the FM status entries): the cited-only case drops that relation from the plans.
+        real, unplanned = script.plan_relations, "public.assembly_order_status"
+
+        def plan_relations(schema, families):
+            read = real(schema, families)
+            return None if read is None else [r for r in read if r != unplanned]
         for run_id in ("live-2026-10-09", "live-2026-10-11"):
             out = io.StringIO()
             with self.subTest(run_id=run_id), tempfile.TemporaryDirectory() as tmp:
@@ -614,7 +686,8 @@ class CitedRelationCoverageTests(unittest.TestCase):
                     argv[argv.index("--total-budget-seconds"):] + ["--state-dir", tmp + "/state"]
                 argv[argv.index("--run-id") + 1] = run_id
                 argv[argv.index("--link-depth") + 1] = "0"
-                with contextlib.redirect_stdout(out):
+                with contextlib.redirect_stdout(out), \
+                        mock.patch.object(script, "plan_relations", plan_relations):
                     script.main(argv, environ={}, live_build=build,
                                 live_client=script.fixture_client(),
                                 live_clock=script.fixture_clock)
@@ -629,7 +702,7 @@ class CitedRelationCoverageTests(unittest.TestCase):
                 outside = set(script.cited_relations(items)) - set(script.reachable_relations(
                     load_schema(), {i["root"]["relation"] for i in items}, 0))
                 self.assertTrue(outside)
-                plans = script.plan_relations(load_schema(), {i["family"] for i in items})
+                plans = plan_relations(load_schema(), {i["family"] for i in items})
                 self.assertTrue(outside - set(plans or ()))
                 self.assertEqual(block["mirror"]["cited_only"],
                                  sorted(outside - set(plans or ())))
@@ -694,12 +767,12 @@ class HeldOutProductTests(unittest.TestCase):
         return state
 
     def test_the_spec_scores_the_frozen_set_by_family_and_variant_without_a_value(self):
-        from verify import live_verify
+        from devloop import live_verify
         from evals.oracle.perturb import TRANSFORMS
         from scripts import eval_dev_baseline as script
         from scripts import eval_status
 
-        spec = json.loads((ROOT / "verify" / "live-checks" / "eval.heldout_product.json")
+        spec = json.loads((ROOT / "devloop" / "live-checks" / "eval.heldout_product.json")
                           .read_text())
         state = self.live_shaped("spec")
         argv = [arg.replace("{tmp}", str(self.root / "spec-tmp"))
@@ -894,13 +967,18 @@ class HeldOutProductTests(unittest.TestCase):
 
     def test_a_variant_group_is_a_delta_over_the_base_build_that_scores_as_a_full_one(self):
         """Each group's product copies the base mirror, replays only the relations its
-        perturbation changes and re-projects only their units over the base generation:
-        far fewer rows and units than the base, the same item outcomes as a product
-        replayed and projected whole (the build it replaces)."""
+        perturbation changes and is built over the base generation: far fewer rows than
+        the base, the same item outcomes as a product replayed and projected whole (the
+        build it replaces). The projection takes the mode that fits
+        (``ontology.project_incremental``, "Mode"): only its changed units when they are
+        at most ``COLD_SHARE`` of the base and the incremental estimate is not above the
+        cold one (a seed copied, not cloned, costs the base store), else cold; shifted
+        dates move every relation's dates, so most units change and it is cold."""
         from datetime import datetime
 
         from evals.oracle import perturb
         from integrations.workbench_read_api import WorkbenchReadApiClient
+        from ontology.project_incremental import COLD_SHARE
         from ontology.schema import load_schema
         from scripts import eval_dev_baseline as script
 
@@ -941,11 +1019,27 @@ class HeldOutProductTests(unittest.TestCase):
                                  if transform != "partial_source_failure")
                     self.assertEqual((info["relations_replayed"], info["rows_replayed"]),
                                      (len(touched), served))   # the perturbed rows only
-                    self.assertEqual(info["projection"], "incremental")
-                    if transform != "shifted_dates":   # it moves every relation's dates
+                    # Built over the base generation: its changed units have an
+                    # incremental estimate; no space guard here, so the preferred mode runs.
+                    need = variant.generation.need
+                    partial, cold = need["estimates"]["incremental"], need["estimates"]["cold"]
+                    self.assertEqual(info["projection"], need["preferred"])
+                    if transform == "shifted_dates":   # it moves every relation's dates
+                        self.assertGreater(partial["changed_share"], COLD_SHARE)
+                        self.assertEqual(info["projection"], "cold")
+                    else:
                         self.assertLess(info["rows_replayed"], base_rows)
-                        self.assertLess(info["units_rebuilt"] * 4, info["units"])
-                    self.assertLess(info["units_rebuilt"], info["units"])
+                        self.assertLessEqual(partial["changed_share"], COLD_SHARE)
+                    if info["projection"] == "incremental":
+                        self.assertLess(info["units_rebuilt"], info["units"])
+                        if transform != "shifted_dates":
+                            self.assertLess(info["units_rebuilt"] * 4, info["units"])
+                    else:   # cold only by the mode rule; every unit projected again
+                        self.assertEqual(info["projection"], "cold")
+                        self.assertTrue(partial["changed_share"] > COLD_SHARE
+                                        or (cold["needed_bytes"] is not None and
+                                            partial["needed_bytes"] > cold["needed_bytes"]))
+                        self.assertEqual(info["units_rebuilt"], info["units"])
                     moved = lambda: datetime.fromisoformat(perturb.replica_time(  # noqa: E731
                         script.fixture_clock().isoformat(), transform, params))
                     full = script.build_product(

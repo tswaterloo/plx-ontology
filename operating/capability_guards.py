@@ -976,7 +976,8 @@ def _document(runtime: Any, actor: Any, handle: str) -> Mapping[str, Any] | None
         if served is None:
             return None
         found = pinned_document_row(handle, served["l1_handle"], served["content"],
-                                    served["row"], served["text"])
+                                    served["row"], served["text"],
+                                    reading=served.get("reading"))
     except Exception:  # noqa: BLE001 - unreadable for this reader: the guard fails
         return None
     if not found.get("ok"):

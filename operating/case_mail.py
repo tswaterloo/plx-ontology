@@ -86,7 +86,7 @@ the order's alias, ``ontology.reviews.BuildAliases``) or its conversation: no fr
 keyword makes a relation. A number naming several orders is a lead to each
 (``resolution: ambiguous``), never a conflict decided here.
 
-CLI (credentialed live checks; counts only, never subjects, addresses, ids,
+CLI (credentialed live verifier; counts only, never subjects, addresses, ids,
 numbers or citations)::
 
     python3 -m operating.case_mail scan --state-dir D --mail-capture-scope S \\
@@ -878,7 +878,7 @@ def read_relations(runtime: Any, actor: Actor, *, max_staleness: float | None
 
 
 def blocked_upstream(sources: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """The relation reads the Portal failed (``source_unavailable``): the live checks'
+    """The relation reads the Portal failed (``source_unavailable``): the live verifier's
     ``blocked_upstream``. A relation withheld from the reader is not blocked."""
     return [{"part": part, "source": "portal-workbench-api", **entry["upstream"]}
             for part, entry in sources.items() if "upstream" in entry]

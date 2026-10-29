@@ -152,7 +152,8 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
         opened = make_workspace()
     closer, workspace = opened
     try:
-        question = pick_order(workspace, as_of or date.today())
+        from operating import po_status
+        question = pick_order(workspace, as_of or po_status.business_today())
         if question is None:
             return emit(_report("no_readable_order", None))
         return emit(_report(None, measure(workspace, question)))

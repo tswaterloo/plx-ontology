@@ -1,6 +1,6 @@
 {
  "_evidence_mode": "live-read",
- "_source": "Copy of results/5f234e31bb73a5094c0e71b034da2f6cb1ff67f1.purchase_catalog.json (live catalog read through the read-only Portal Workbench reporting API, run live-2026-10-01T03:29:17Z on main 5f234e3): catalog entries and key-only paged row counts for 22 purchase-side relations. Column names, keys and counts only; no row values.",
+ "_source": "Copy of origin/claude/devloop-live:results/5f234e31bb73a5094c0e71b034da2f6cb1ff67f1.purchase_catalog.json (auditor live catalog read through the read-only Portal Workbench reporting API, run live-2026-10-01T03:29:17Z on main 5f234e3): catalog entries and key-only paged row counts for 22 purchase-side relations. Column names, keys and counts only; no row values.",
  "relations": {
   "public.app_purchase_order": {
    "columns": [

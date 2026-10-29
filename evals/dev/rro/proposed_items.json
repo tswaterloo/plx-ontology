@@ -1,11 +1,11 @@
 {
  "format": "plx-eval-case-cards/v1",
- "status": "PROPOSED (14 comprehension, 12 arithmetic): an unexecuted proposal for lead triage, never gold. Draft 8 assertions are never ground truth; ERP-D-017/018 are proposals, not requirements.",
+ "status": "PROPOSED by the Dot (14 comprehension, 12 arithmetic): an unexecuted proposal for lead triage, never gold. Draft 8 assertions are never ground truth; ERP-D-017/018 are proposals, not requirements.",
  "source": {
   "advisory": {
-   "ref": "source-records@a0411f7913931205755a7e149fadeb8ffcfb27bc",
+   "ref": "origin/codex/advisory@a0411f7913931205755a7e149fadeb8ffcfb27bc",
    "path": "context/70ef949974058738b66574cdf9e77f459d2cf1920e76d263cc5295f07959720c.json",
-   "source_id": "related-release-orders-draft8-evaluation-contract",
+   "source_id": "dot:related-release-orders-draft8-evaluation-contract",
    "contract_sha256": "0863e4bc022254075ae91cd18ece80898e7752e0346a38680a9733dca7e1b49c",
    "created_at": "2026-10-06T21:59:38Z"
   },
@@ -325,6 +325,7 @@
    },
    {
     "id": "RRO-12",
+    "anchor": {"identifier": "REM000002495", "identifier_kind": "customer_po", "object_type": "SalesOrder", "source": "evals/dev/rro/proposed_items.json:106 (RRO-02: Production PO REM000002495, Draft 8 lines 1261-1308), the set's one production PO"},
     "layer": "comprehension",
     "question": "Can this production PO be closed?",
     "criterion": "Close-never-delete is stated. Actual closure is undetermined without shipped/short-closed quantities, complete invoices and cash allocation; final yield is insufficient and residual deposit disposition is unspecified.",

@@ -1,11 +1,11 @@
 {
  "format": "plx-eval-case-card-proposals/v1",
- "status": "PROPOSED dev cards for lead triage, never gold. Greg's Amazon FBA Replenishment Map (v5, 16 Oct 2026: nine stages, worked example A for shipment OR1000154027, twelve balance checks, seven ranked gaps and one dependency; cards FBA-*). The map is read only through its pinned source record and its watched original (item id and SHA-256 below; examples/case_originals.json watches /Ontology UseCases, so a case.originals_read run reads it as a discovered file and the registry crosswalk names it). Every claim a card attributes to the map is the map's: its author did not read the Portal or Business Central code, so its Portal and BC statements are expectations, and its proposed tables are hypotheses, never findings about deployed systems. The originals of OR1000154027 the map names were not read (missing_originals). Cards carry no prices, no message bodies, no addresses and no personal details.",
+ "status": "PROPOSED dev cards for lead triage, never gold. Greg's Amazon FBA Replenishment Map (v5, 16 Oct 2026: nine stages, worked example A for shipment OR1000154027, twelve balance checks, seven ranked gaps and one dependency; cards FBA-*). The map is read only through its pinned advisory record and its watched original (item id and SHA-256 below; examples/case_originals.json watches /Ontology UseCases, so a case.originals_read run reads it as a discovered file and the registry crosswalk names it). Every claim a card attributes to the map is the map's: its author did not read the Portal or Business Central code, so its Portal and BC statements are expectations, and its proposed tables are hypotheses, never findings about deployed systems. The originals of OR1000154027 the map names were not read (missing_originals). Cards carry no prices, no message bodies, no addresses and no personal details.",
  "case": "amazon-fba",
  "source": {
   "advisory": {
    "id": "advisory:45cd3b70238a",
-   "ref": "source-records@e58e8a98f3ef2d363e61ff75fc45f0418432d133",
+   "ref": "origin/codex/advisory@e58e8a98f3ef2d363e61ff75fc45f0418432d133",
    "path": "context/45cd3b70238a0ac8371ea62bb873b9e9ac36c5727504198dcd051ca1487f6ef1.json",
    "record_sha256": "530e32fd31c07cfdd7e885999c10c157fa36b0102665008be697944579a0d289",
    "source_revision": "1.0;sha256:0a78aa6aa7f4b0acf45d1642246a94366d67fddbb239c4899cb0dcc7d722115e",
@@ -13,7 +13,7 @@
   },
   "originals_registry": "examples/case_originals.json",
   "watched_originals": {
-   "note": "The map's own original, pinned from the source record (source_id item, source_revision sha256, source_bytes) and matching a single read-only Graph read of 18 Oct 2026. A read receipt of the watched file matches when its source.item_id and sha256 equal this pin. Name only, no contents.",
+   "note": "The map's own original, pinned from the advisory record (source_id item, source_revision sha256, source_bytes) and matching the lead's single read-only Graph read of 18 Oct 2026. A read receipt of the watched file matches when its source.item_id and sha256 equal this pin. Name only, no contents.",
    "folders": {
     "Ontology UseCases": "wf-a672d852ff20"
    },
@@ -41,14 +41,14 @@
   {"id": "MO-09", "kind": "tracking", "item": "Tracking", "shipment": "OR1000154027", "state": "to_come", "gap": "FBA-GAP-06"},
   {"id": "MO-10", "kind": "chat", "item": "Teams messages of the thread", "shipment": "OR1000154027", "state": "not_provided", "gap": "FBA-GAP-11"}
  ],
- "missing_originals_note": "Typed here because the registry generator (scripts.case_originals registry) makes gap rows only from the baseline and delta source-pin records, and the map's source record lists these originals in prose, not as gaps. link_pending: the map names a source-file folder whose SharePoint link is 'added after upload'; to_come: the map lists it under 'Still to come for this example'; not_provided: the map says it was not provided. None was read; a card never infers their content.",
+ "missing_originals_note": "Typed here because the registry generator (scripts.case_originals registry) makes gap rows only from the Dot's baseline and delta source-pin records, and the map's advisory record lists these originals in prose, not as gaps. link_pending: the map names a source-file folder whose SharePoint link is 'added after upload'; to_come: the map lists it under 'Still to come for this example'; not_provided: the map says it was not provided. None was read; a card never infers their content.",
  "live_sources": [
   {
    "id": "sage.oe_order_header",
    "system": "portal-reporting-api",
    "relation": "sage.oe_order_header (the Sage OR, e.g. OR1000154027; ponumber is the packing slip's PO Number); declared served, but the brief records four sage.oe_* relations unavailable on 2026-10-06",
    "reader": "served",
-   "evidence": "OntologyProject:ontology/schema/domains/orders.json@f635203cfe41:203-221"
+   "evidence": "OntologyProject:ontology/schema/domains/orders.json@f635203cfe41:203-221; OntologyProject:devloop/WORKING-BRIEF.md@f635203cfe41:27"
   },
   {
    "id": "sage.oe_shipment_header",
@@ -154,6 +154,7 @@
    },
    {
     "id": "FBA-03",
+    "own_document_audited": {"date": "2026-10-28", "quotes": ["4cb8b05d473411949703544ea5d23d50d19fdea03324112fda638c36173ef0a6"]},
     "layer": "tracing",
     "question": "Which identifier ties a replenishment shipment together across Amazon, the Sage OR, the Portal, Freightcom and Business Central?",
     "criterion": "Per the map, the only key that joins them is the Amazon shipment ID (issued by Amazon, unique within the seller account), and in the real case it is on none of the OR, the packing slip (PO Number blank) or the BOL. The OR number is issued by Sage, unique within the company, retires with Sage and is reused as the TSCA reference across shipments, so it is not a shipment identity; matching on it outside its scope crosses records. The map's target (a Portal shipment order with amazon_shipment_id, one per Amazon shipment, and a BC transfer order) is proposed, not built, and the 'one order per Amazon shipment' check could not be tested. An answer names the missing join as a gap and never matches OR, BOL and Amazon shipment by date, SKU or quantity.",
@@ -184,6 +185,7 @@
    },
    {
     "id": "FBA-05",
+    "own_document_audited": {"date": "2026-10-28", "quotes": ["a3db88361b8989385f3961eb66430f75b55dc5f4706068801916001dbbdf2c53", "3c53a7dbc262b211c1013bc7aefd8fb1d54c757920204cd05e2034252d0b2b12"]},
     "layer": "tracing",
     "question": "Is a PLX item the same thing as an Amazon seller SKU, FNSKU or ASIN?",
     "criterion": "Not established: the map lists the item to Amazon SKU mapping as unconfirmed ('unknown whether the Sage item number is the Amazon seller SKU') and proposes storing seller SKU and FNSKU on the item. The ontology has Product over sage.ic_item and no Amazon listing identity. An answer joins Amazon inventory or sales to a PLX item only through a cited mapping and otherwise reports the join as a gap; equal-looking codes are not a match.",

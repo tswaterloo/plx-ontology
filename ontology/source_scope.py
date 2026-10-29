@@ -1,5 +1,5 @@
 """``ontology/source_scope.json``: the registry entries and ``<system>.<kind>`` scopes the
-Workbench decided not to capture, each with its decided ``docs/decisions`` record. Read
+Workbench decided not to capture, each with its decided ``devloop/DECISIONS`` record. Read
 by the source registry (``scripts/source_registry.py``) and the MCP roles
 (``ontology/generator/mcp.py``). Here, not under ``scripts/``, so the ontology never imports
 scripts."""
@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCOPE_PATH = ROOT / "ontology" / "source_scope.json"
 SCOPE_FORMAT = "plx-source-scope/v1"
 SCOPE_KEY = re.compile(r"^[a-z0-9][a-z0-9-]*\.[a-z][a-z_]*(?::.+)?$")
-_DECISION_PATH = re.compile(r"^docs/decisions/[A-Za-z0-9][A-Za-z0-9._-]*\.md$")
+_DECISION_PATH = re.compile(r"^devloop/DECISIONS/[A-Za-z0-9][A-Za-z0-9._-]*\.md$")
 DECIDED = re.compile(r"^[-*\s]*status:\s*decided\b", re.M)
 
 
@@ -24,7 +24,7 @@ class RegistryError(Exception):
 
 def load_scope(root: Path = ROOT) -> dict[str, str]:
     """``ontology/source_scope.json`` under ``root``: scope (``<system>.<kind>`` or an entry
-    id) -> the decided ``docs/decisions`` record that puts it out of scope. An absent file
+    id) -> the decided ``devloop/DECISIONS`` record that puts it out of scope. An absent file
     is no scope; anything malformed, or a decision file that is missing under ``root`` or not
     ``status: decided``, is refused."""
     path = root / SCOPE_PATH.relative_to(ROOT)
@@ -42,7 +42,7 @@ def load_scope(root: Path = ROOT) -> dict[str, str]:
                                 "nor an entry id")
         if not isinstance(decision, str) or not _DECISION_PATH.match(decision):
             raise RegistryError(f"{SCOPE_PATH.name}: {scope}: {decision!r} is not a "
-                                "docs/decisions/*.md path")
+                                "devloop/DECISIONS/*.md path")
         record = root / decision
         if not record.is_file():
             raise RegistryError(f"{SCOPE_PATH.name}: {scope}: decision file {decision} missing")

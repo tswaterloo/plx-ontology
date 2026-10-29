@@ -1,6 +1,6 @@
 """Operator-supplied originals for cases: stored, fingerprinted, OCRed, citable.
 
-Implements ``plx.case_attach_original`` (docs/reference/case-runtime.md section 5).
+Implements ``plx.case_attach_original`` (devloop/CASE-RUNTIME.md section 5).
 An employee (the operator) places a document, for example Ricardo's AO scan,
 in the case runtime's originals inbox on the Workbench host, inside the
 directory named for the principal who may read it
@@ -71,6 +71,10 @@ Rules:
   never re-downloaded) is gated by its recorded permissions (``CaseRuntime``: a live
   re-read where the host has a reader for the drive, else the recorded ones only while
   the capture is recent).
+* Captured case originals (``captured``, ``operating.captured_originals``): the files
+  ``scripts.case_originals read`` holds in ``<state>/case-originals`` resolve here as
+  ``original://co-|nr-|rv-<12 hex>`` (and ``#page=<n>``), read in place (never copied) and
+  readable only for a reader the gate of their source item admits now.
 """
 
 from __future__ import annotations
@@ -183,9 +187,23 @@ def media_type_of(content: bytes) -> str | None:
     return TEXT_MEDIA_TYPE if text and not _CONTROL.search(text) else None
 
 
+_JSON_TWO = '"\\'                 # escaped as two characters (\" \\)
+_JSON_SHORT = "\n\r\t\b\f"           # escaped as backslash and one letter
+_JSON_UNICODE = re.compile(r"[\x00-\x07\x0b\x0e-\x1f]")   # escaped as \u00XX
+
+
 def _served_bytes(text: str) -> int:
-    once = json.dumps(text, ensure_ascii=False)
-    return len(once.encode("utf-8")) + len(json.dumps(once, ensure_ascii=False).encode("utf-8"))
+    """UTF-8 bytes of ``text`` as a JSON string plus that string as a JSON string again
+    (``json.dumps(..., ensure_ascii=False)`` twice), counted without building either:
+    each is 2 quotes plus every character, and only a quote, a backslash or a control
+    character is escaped (once: 2 or 6 characters; twice: 4, 3 or 7)."""
+    size = 8 + 2 * len(text.encode("utf-8"))
+    line = text[:-1] if text.endswith("\n") else text   # a text page's line, mostly
+    if line.isprintable():
+        return size + 4 * (line.count('"') + line.count("\\")) + 3 * (len(text) - len(line))
+    return (size + 4 * sum(text.count(c) for c in _JSON_TWO)
+            + 3 * sum(text.count(c) for c in _JSON_SHORT)
+            + 11 * len(_JSON_UNICODE.findall(text)))
 
 
 def _text_extraction(content: bytes) -> dict[str, Any]:
@@ -290,7 +308,8 @@ class OriginalStore:
     """Content-addressed originals with per-original audience, under one directory."""
 
     def __init__(self, root: str | Path, *, local_ocr: bool = False,
-                 extractor: Any = extract_document, source_gate: Any = None) -> None:
+                 extractor: Any = extract_document, source_gate: Any = None,
+                 captured: Any = None) -> None:
         self.root = Path(root)
         self.inbox = self.root / INBOX_DIR
         self.store = self.root / STORE_DIR
@@ -302,6 +321,10 @@ class OriginalStore:
         # (provenance, actor) -> bool for originals read from a live source;
         # None: no source original is readable (default deny).
         self._source_gate = source_gate
+        # The capture store's case originals (``operating.captured_originals``): their
+        # ``original://co-|nr-|rv-...`` citations are read there, behind their source's
+        # gate; None: none are served.
+        self.captured = captured
         with self._connect() as db:
             db.executescript(_DDL)
 
@@ -655,8 +678,22 @@ class OriginalStore:
                 "previous_extraction": _extraction_summary(latest["extraction"]),
                 "local_ocr_enabled": self.local_ocr, "duplicate": False}
 
+    def _captured(self, handle: Any) -> Any:
+        """The captured-originals reader serving ``handle``, or None (an inbox or source
+        original of this store). A captured citation on a host without one reads as
+        absent."""
+        from .captured_originals import CapturedOriginals
+        if not CapturedOriginals.handles(handle):
+            return None
+        if self.captured is None:
+            raise CitationUnresolvable("original_not_visible")
+        return self.captured
+
     def resolve(self, handle: Any, actor: Actor) -> dict[str, Any]:
         """Content-stable view of an original (or one page) for ``actor``, or raise."""
+        captured = self._captured(handle)
+        if captured is not None:
+            return captured.resolve(handle, actor)
         return self._resolve(handle, actor)[0]
 
     def read(self, handle: Any, actor: Actor) -> dict[str, Any]:
@@ -665,6 +702,9 @@ class OriginalStore:
         Kept separate from ``resolve`` so the content-stable view a case digests
         is unchanged; this is what a client reads to find the pages to cite.
         """
+        captured = self._captured(handle)
+        if captured is not None:
+            return captured.read(handle, actor)
         view, record = self._resolve(handle, actor)
         if "page" in view:
             return view  # page reads stay bounded by their text alone
@@ -699,6 +739,9 @@ class OriginalStore:
         into ``text``), ``ocr_pages``, ``warnings`` and ``text_sha256``; for a
         caller that needs whole-document spans (``operating.doc_metadata``).
         """
+        captured = self._captured(handle)
+        if captured is not None:
+            return captured.text_document(handle, actor)
         match = _HANDLE.fullmatch(handle) if isinstance(handle, str) else None
         if match is None or match.group(3) or match.group(4):
             raise CitationUnresolvable("original_file_citation_required")

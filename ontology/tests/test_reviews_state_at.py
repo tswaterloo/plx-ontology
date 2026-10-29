@@ -1,6 +1,6 @@
 """A person's link decision pins a cited purchase order's identity for every reader (ER-09).
 
-``ontology.reviews.state_at`` (what ``plx.review`` reads) and the
+Directive ecd78798fbbe: ``ontology.reviews.state_at`` (what ``plx.review`` reads) and the
 projection's reviewed link (``link_step``, what ``plx.around`` walks and ``case_mail``
 relates by) apply one rule, ``ontology.reviews.same_po_identity``: a status-only change of
 the PO row or an in-place Portal renumber to its BC number (number and supplier otherwise

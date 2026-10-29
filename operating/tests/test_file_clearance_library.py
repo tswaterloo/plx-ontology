@@ -12,7 +12,7 @@ import unittest
 from unittest import mock
 from urllib.parse import urlsplit
 
-from verify import live_verify as lv
+from devloop import live_verify as lv
 from integrations import graph_read
 from integrations.graph_read import SharePointReader
 from integrations.live_source_guard import (BoundedBackoff, LiveSourceAudience, NotVisible,
@@ -25,7 +25,7 @@ from operating.tests.test_employee_permissions import (column_reads, columns_dri
                                                        run_clearance_check)
 
 ROOT = Path(__file__).resolve().parents[2]
-SPEC = json.loads((ROOT / "verify/live-checks/sharepoint.restricted_class.json")
+SPEC = json.loads((ROOT / "devloop/live-checks/sharepoint.restricted_class.json")
                   .read_text(encoding="utf-8"))
 
 

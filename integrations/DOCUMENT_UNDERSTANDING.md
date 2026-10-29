@@ -3,7 +3,7 @@
 `extract_document(content, mime_type, original_url=...)` reads authorized bytes in
 memory. It supports RFC822 email (`.eml`), Outlook messages (`.msg`), UTF-8 text, `.xlsx`
 workbooks, text-layer PDFs (`pypdf`; MarkItDown when installed for a PDF pypdf cannot read), and `.docx`/`.pptx`
-(MarkItDown when installed, else the stdlib converter in MarkItDown's shape). Some Python runtimes include `pypdf`; the
+(MarkItDown when installed, else the stdlib converter in MarkItDown's shape). The bundled Codex Python runtime includes `pypdf`; the
 system Python used by the base application may not. The caller retains the
 original bytes and source URL in the authoritative system. Only extracted text,
 SHA-256, source spans, source claims, and review-grade line grouping enter the
@@ -157,7 +157,7 @@ Any other `message/*` entity
 is a text member, never that gap. A mail whose `multipart` body cannot be split (no
 boundary) has that body as its own text where it decodes; a body that does not decode
 is the warning (and member gap) `text_encoding_unsupported`. Mail attachment texts
-stored before 2026-10-07 inlined each attachment as an `[Attachment: ...]`
+stored before 2026-10-07 (48469ef) inlined each attachment as an `[Attachment: ...]`
 section; no reader reads them: every reader re-reads the pinned bytes
 (`integrations/captured_text.py`; only a paged file's pinned OCR text is read), and
 records of converted sections (`contains-*-sections`) are refused by
@@ -170,8 +170,8 @@ else compressed RTF) body; an RTF body that does not decode is the warning
 attachment is read offline from its captured text, under the reader's mailbox
 audience, through `plx.read` of its `graph-mail://` citation.
 
-Two limitations of carried messages are stated, not fixed (decided
-2026-10-08):
+Two limitations of carried messages are stated, not fixed (directive
+5a8d03900711, decided 2026-10-08):
 
 - A carried member's `sha256` is over those written-out (or decoded) bytes, not
   over a byte range of the container, so it is not a byte-for-byte witness of the
@@ -239,7 +239,7 @@ Run format and ingestion tests with bundled PDF support:
 
 ```sh
 cd work/operations-platform
-python3 \
+/Users/tanush/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
   -m unittest integrations.tests.test_document_understanding \
     integrations.tests.test_transaction_sync \
     integrations.tests.test_drive_content \
@@ -278,12 +278,13 @@ repository:
 
 ```sh
 PLX_TEST_PRIVATE_AO_PDF="$HOME/Downloads/AO-26005B.pdf" \
-  python3 \
+  /Users/tanush/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
   -m unittest integrations.tests.test_local_pdf_ocr.NativePdfOcrTest.test_operator_supplied_ao_scan_has_cited_review_only_claims -q
 ```
 
-On this host, macOS Vision failed inside a process sandbox but the
+On this host, macOS Vision failed inside the Codex process sandbox but the
 same helper succeeded when run with normal host access. This test is opt-in;
 it checks that an OCR AO identifier is cited and every OCR claim remains
 review-only. It does not confirm transcription accuracy, an MRP/ERP match, or
-production integration.
+production integration. The actual six-file offline import evidence is in
+`EVIDENCE/local-ao-ocr-current.json`.

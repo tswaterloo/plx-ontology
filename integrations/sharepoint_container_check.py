@@ -1,6 +1,6 @@
 """Live check: captured SharePoint containers are projected member by member.
 
-``verify/live-checks/capture.sharepoint_containers.json``.
+``devloop/live-checks/capture.sharepoint_containers.json`` (gap-e10f050d25a3, ING-17).
 One GET-only capture run of a narrow scope (``integrations.capture_sharepoint.run_cli``:
 the AGENTS site's use-case folder, ``examples/sharepoint_capture_scope.containers
 .live-check.json``) into the check's Workbench state, then the projection of that capture
@@ -29,7 +29,7 @@ directory, deleted after the counts. Then, offline:
 * ``leak_check``: members a no-grant actor and a folder-only actor (folder granted, item
   permissions required, no source identity) pass the tools' item gate for (must be 0).
 
-Convergence (a folder larger than one ``--budget-seconds`` never
+Convergence (gap-ea28540d0766: a folder larger than one ``--budget-seconds`` never
 completed while every run started from an empty store). Without ``--state-dir`` the
 capture store is the host's, kept across runs (``capture_mail.check_state_dir``:
 ``$PLX_WORKBENCH_STATE_DIR/sharepoint-containers-check``, else under ``$XDG_STATE_HOME``
@@ -71,8 +71,8 @@ pinned bytes re-hash) and its ``ok`` are read too: a plain file that fails them 
 ``capture_resolve_check.content_bytes_failed``), any other capture failure
 ``capture_failed``. Prints counts, booleans and enums only: never a name, path,
 identifier or text.
-Live-unverified until the live check records a result; the tests run it over an injected
-transport (``verify/tests/test_live_sharepoint_containers.py``).
+Live-unverified until the verifier records a result; the tests run it over an injected
+transport (``devloop/tests/test_live_sharepoint_containers.py``).
 """
 
 from __future__ import annotations
@@ -361,7 +361,7 @@ def run(args: argparse.Namespace, *, environ: Mapping[str, str] | None = None,
         principal=args.principal, withheld_principal=WITHHELD,
         folder_only_principal=FOLDER_ONLY, runs=1, max_store_bytes=None,
         budget_seconds=args.budget_seconds,
-        state_kept=state_base == "workbench_state_dir"), environ=environ, sender=sender, sleep=sleep,
+        state_kept=state_base == "workbench_state_dir" and carried), environ=environ, sender=sender, sleep=sleep,
         retry_first=_is_container, **({} if monotonic is None else {"monotonic": monotonic}))
     # A run killed mid-projection leaves its work directory: never carried.
     for stale in state.glob(WORK_PREFIX + "*"):

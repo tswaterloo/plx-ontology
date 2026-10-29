@@ -21,7 +21,7 @@ import unittest
 from unittest import mock
 from urllib.parse import quote
 
-from verify import live_verify as lv
+from devloop import live_verify as lv
 from integrations.http import SourceHttpError
 from operating import session_identity
 from operating import status_card as sc
@@ -146,6 +146,19 @@ class FixtureCardTest(unittest.TestCase):
         self.assertEqual(sc.internal_codes(card), [])
         self.assertIn({"family": "F14", "title": "Which purchase orders are late, by how much and why"},
                       card["questions"])
+        # the card's one lateness verdict: no expected date on any copy, so undecided and
+        # naming that field, cited by the blocker that says so
+        verdict = card["verdict"]
+        self.assertEqual((verdict["state"], verdict["missing"], verdict["days_late"]),
+                         ("undecided", ["expected_date"], None))
+        self.assertEqual(verdict["line"], card["blockers"][2]["why"])
+        self.assertEqual(verdict["citations"], card["blockers"][2]["citations"])
+        with self.world.view._request():
+            alone = sc.verdict(self.world.call, self.po, as_of=AS_OF)
+        self.assertEqual({k: alone[k] for k in verdict}, verdict)
+        nothing = sc.verdict(self.world.call, "not an id")
+        self.assertNotEqual(nothing["status"], "read")
+        self.assertNotIn("state", nothing)
 
     def test_a_late_stage_ranks_first_and_a_card_is_never_more_than_five_blockers(self):
         real = self.world.call
@@ -169,6 +182,8 @@ class FixtureCardTest(unittest.TestCase):
         self.assertEqual(card["blockers"][0]["why"],
                          "Receipt was due 2026-09-01, 49 days ago, and is not recorded yet.")
         self.assertEqual(card["blockers"][0]["next_step"]["who"], ["Warehouse"])
+        self.assertEqual((card["verdict"]["state"], card["verdict"]["days_late"],
+                          card["verdict"]["line"]), ("late", 49, card["blockers"][0]["why"]))
         self.assertIn("ordered 100 EA; received 90.5 EA", card["blockers"][1]["why"])
         self.assertLessEqual(len(card["blockers"]), sc.MAX_BLOCKERS)
         self.assertEqual(len(card["blockers"]) + card["more_blockers"], 5)
@@ -219,6 +234,75 @@ class FixtureCardTest(unittest.TestCase):
                          [{"handle": "api://x/4", "field": "row.received"}])
         self.assertNotIn("2026-09-01", json.dumps(shown))
         self.assertNotIn("49", json.dumps(late))
+        # the verdict follows the words: a days count only with the due date's citation
+        self.assertEqual((shown["verdict"]["state"], shown["verdict"]["days_late"]),
+                         ("late", None))
+        self.assertEqual(card_with(received)["verdict"]["days_late"], 12)
+        # decided not late, yet the expected date is empty on every copy: still undecided
+        self.assertEqual(card_with(on_time)["verdict"]["state"], "undecided")
+
+    def test_a_closed_or_draft_po_needs_no_need_date_but_an_open_one_still_does(self):
+        """Lateness is not applicable to a cancelled, completed-short or draft PO (nothing is
+        due), so its empty expected date is no blocker; an open PO's undecided verdict
+        keeps the ``no_need_date`` blocker (the 2026-10-20 live capture: Cancel 4221 of
+        5880 cards carried it)."""
+        real = self.world.call
+
+        def judged(entry):
+            def call(name, args):
+                answer = real(name, args)
+                if name == "plx.process" and args.get("process") == "po_delivery_window":
+                    answer = json.loads(json.dumps(answer))
+                    answer["lateness"] = [entry]
+                return answer
+            return call
+
+        def kinds(entry):
+            with self.world.view._request():
+                card = sc.card(judged(entry), self.po, as_of=AS_OF)
+            return [b["kind"] for b in card["blockers"]], card
+
+        closed = {"stage": "receipt", "root": self.po, "state": "not_applicable",
+                  "late": False, "at_risk": False, "reasons": ["not_issued_or_closed"]}
+        open_ = {"stage": "receipt", "root": self.po, "state": "undetermined", "late": None,
+                 "gap": {"reason": "no_requested_date"}}
+        closed_kinds, _ = kinds(closed)
+        self.assertNotIn("no_need_date", closed_kinds)
+        self.assertIn("no_need_date", kinds(open_)[0])
+
+    def test_a_draft_po_without_a_label_cites_its_status_only_to_a_reader_who_may(self):
+        """A draft PO with no number (no display) and nothing due has a verdict nothing
+        else decided: it cites the record's own status, so the late-PO portfolio never
+        withholds a record the reader may read as having nothing to cite; a reader who
+        may not open that status record gets no citation (and the row is withheld)."""
+        real = self.world.call
+        closed = {"stage": "receipt", "root": self.po, "state": "not_applicable",
+                  "late": False, "at_risk": False, "reasons": ["not_issued_or_closed"]}
+
+        def call(name, args):
+            answer = real(name, args)
+            if name == "plx.process" and args.get("process") == "po_delivery_window":
+                answer = json.loads(json.dumps(answer))
+                answer["lateness"] = [closed]
+            if name == "plx.object" and args.get("object_id") == self.po:
+                answer = json.loads(json.dumps(answer))
+                answer["object"]["display"] = None
+            return answer
+
+        def verdict(readable):
+            with self.world.view._request():
+                return sc.verdict(call, self.po, as_of=AS_OF, readable=readable)
+
+        with self.world.view._request():
+            root = real("plx.object", {"object_id": self.po, "response_format": "detailed"})
+        status = {(v["citation"]["l1_handle"], v["citation"]["field_path"])
+                  for v in root["values"] if v["property"] == "status" and v.get("value")}
+        self.assertTrue(status)
+        found = verdict(lambda handles: list(handles))
+        self.assertEqual((found["status"], found["label"]), ("read", None))
+        self.assertTrue(found["citations"], found)
+        self.assertLessEqual({(c["handle"], c["field"]) for c in found["citations"]}, status)
+        self.assertEqual(verdict(lambda handles: [])["citations"], [])
 
     def handles_of(self, answer):
         """Every source handle a plx.object answer cites outside its identity links."""
@@ -382,6 +466,9 @@ class FixtureCardTest(unittest.TestCase):
         self.assertEqual(card["blockers"][0]["title"], "Receipt is late on 1 purchase order")
         self.assertIn("PO5447", card["blockers"][0]["why"])
         self.assertEqual(card["blockers"][0]["next_step"]["who"], ["Warehouse"])
+        # a supplier's roll-up is late with no one order's days count
+        self.assertEqual((card["verdict"]["state"], card["verdict"]["days_late"],
+                          card["verdict"]["line"]), ("late", None, card["blockers"][0]["why"]))
         # only the late one is left for a reader who may read nothing but its due date
         with self.world.view._request():
             one = sc.card(late, self.supplier(), as_of=AS_OF,
@@ -678,7 +765,7 @@ class ReferenceAndRouteTest(unittest.TestCase):
 
 
 class LiveCheckTest(unittest.TestCase):
-    """``verify/live-checks/case.po_status.json`` over injected sources: its own command,
+    """``devloop/live-checks/case.po_status.json`` over injected sources: its own command,
     the order fixture's FakeWorkbench with ten purchase orders, the network refused.
     Evidence label: injected-transport."""
 
@@ -697,7 +784,7 @@ class LiveCheckTest(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.temp = Path(temp.name)
-        self.spec = json.loads((ROOT / "verify" / "live-checks" / f"{self.SPEC_ID}.json")
+        self.spec = json.loads((ROOT / "devloop" / "live-checks" / f"{self.SPEC_ID}.json")
                                .read_text("utf-8"))
 
     def run_spec(self, *, fetch=None):

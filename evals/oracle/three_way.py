@@ -1,6 +1,6 @@
 """The oracle's own reading of a purchase order's three-way state (stratum ``po_three_way``).
 
-The unfamiliar sample asks the product (``plx.process``, process
+Directive 541a4f06b2dd: the unfamiliar sample asks the product (``plx.process``, process
 ``purchase_to_invoice``) where a sampled purchase order stands and whether its sides agree,
 and scores the answer against this reading. It is computed from the raw source reads only
 (Portal rows and BC documents through the injected ports, joined on ``keys.EDGES`` and the

@@ -2,10 +2,10 @@
 Portal relation gets its own outcome under one total deadline, and the source registry
 credits a relation only by the outcome the spec's ``registry_names`` declares for it.
 
-One failing relation no longer aborts the
+Directives 45e322ffbdd8, 85b59fc54cca (1, 2): one failing relation no longer aborts the
 probe or fails the rest; a relation read empty is unexercised, never queryable; the
-deadline cuts the run and it reports incomplete. Decision
-(``docs/decisions/2026-10-07-portal-queryable-floor.md``): the
+deadline cuts the run and it reports incomplete. Decision e51ad849b488
+(``devloop/DECISIONS/2026-10-07-portal-queryable-floor.md``) and directive f568d4a5e68c: the
 check passes only when the run is complete and the queryable share of the bound relations
 reaches the floor the spec declares (the probe reads it there), and the recorded
 ``not_queryable`` ids survive the verifier's detail cap.
@@ -25,8 +25,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-from verify import live_verify as lv
-from verify.tests.test_live_wiring import argv_of, run_main, spec
+from devloop import live_verify as lv
+from devloop.tests.test_live_wiring import argv_of, run_main, spec
 from ontology.schema import load_schema
 from scripts import live_read_probes as probes
 from scripts import source_registry as sr
@@ -101,7 +101,7 @@ class SchemaQueryableProbeTests(unittest.TestCase):
 
     def run_spec(self, world):
         """The spec's own argv over ``world``, recorded as the verifier records it
-        (verify/live_verify.py run_spec: blocked parts, the full expectation's failures as
+        (devloop/live_verify.py run_spec: blocked parts, the full expectation's failures as
         unverified, the fields, completeness, failures) and capped with the spec, as the
         verifier caps it, so the cap sees the real size and keeps what the spec asserts."""
         code, document = run_main(probes.main, argv_of(self.spec, "/unused"), environ={},

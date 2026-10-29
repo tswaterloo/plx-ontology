@@ -232,6 +232,57 @@ class ProjectedTests(unittest.TestCase):
         _ok(self, result)
         return result
 
+    def test_a_plan_reads_a_primitive_past_the_response_bound_and_a_client_never_does(self):
+        """A primitive answer over ``max_result_bytes`` is refused to a client
+        (result_too_large) and read whole by a plan (``ot.plan_read``: up to
+        PLAN_READ_SCALE times the bound): every primitive a plan calls is such a read, its
+        own answer still bounded. A large order's lateness lines were a step_failed."""
+        table = self.table()
+        # a lateness read: the one primitive answer that is cut (completeness says so) or
+        # refused past the bound, never paged
+        ask = {"from": 'PurchaseOrder:portal.app_purchase_order:{"id":"fx-po-g"}',
+               "process": "po_delivery_window", "as_known_at": AT}
+        reader = ot.StoreReader.open(FixtureWorld.product.store)
+        self.addCleanup(reader.conn.close)
+        policy = ot.ReadPolicy(tenant=self.TENANT, audiences={
+            key: {self.PRINCIPAL} for key in reader.audience_keys()},
+            markings={m: {self.PRINCIPAL} for m in store_ddl.MARKINGS})
+        base = ot.OntologyTools(reader, policy, schema=ot.default_schema(),
+                                grammar=ot.default_grammar())
+        small: dict = {}
+        ot.register(small, base)
+        tt.register(small, tt.TraverseTools(base))
+        from operating import ontology_tools_process as op
+        op.register(small, op.ProcessTools(base))
+        whole = small["plx.process"]["handler"](dict(ask), self.actor)
+        self.assertNotIn("error", whole)
+        self.assertTrue(whole.get("lateness"))
+        size = ot._envelope_bytes(whole)
+
+        def answered(bound):
+            base.limits = dict(base.limits, max_result_bytes=bound)
+            client = small["plx.process"]["handler"](dict(ask), self.actor)
+            with ot.plan_read():
+                plan = small["plx.process"]["handler"](dict(ask), self.actor)
+            return client, plan
+        client, plan = answered(size - 1)
+        self.assertNotEqual(client, whole)   # cut to fit (said so) or refused
+        self.assertTrue(client.get("error") or client["completeness"]["complete"] is False)
+        self.assertEqual(plan, whole)
+        client, plan = answered(size // (ot.PLAN_READ_SCALE + 1))
+        self.assertNotEqual(plan, whole)     # a plan read is bounded too
+        # Every primitive call of a plan is a plan read; the plan's own answer is not.
+        seen = []
+        handler = table["plx.object"]["handler"]
+        table["plx.object"] = dict(table["plx.object"], handler=lambda arguments, actor: (
+            seen.append(ot.result_limit(CONTRACTS["limits"])), handler(arguments, actor))[1])
+        self.investigate("PO100901", table)
+        self.assertTrue(seen)
+        self.assertEqual(set(seen), {CONTRACTS["limits"]["max_result_bytes"]
+                                     * ot.PLAN_READ_SCALE})
+        self.assertEqual(ot.result_limit(CONTRACTS["limits"]),
+                         CONTRACTS["limits"]["max_result_bytes"])
+
     def test_golden_po_freight_is_the_portal_allocation_and_tariff_blocks_the_total(self):
         """Tariff treatment is split by what is missing: lines a and b carry a cited HS code
         but no duty-rate source is ingested; line c's item has no HS code at all."""
@@ -346,14 +397,15 @@ class ProjectedTests(unittest.TestCase):
                 if s.startswith("freight total")]
 
     def test_freight_is_never_allocated_over_a_partial_line_set(self):
-        """A step budget that stops the line reads must not spread the header
+        """Review lcp-1: a step budget that stops the line reads must not spread the header
         freight (300 over four lines of 10 x 1.5 = 7.5 USD/ea) over the lines read."""
         full = self.investigate_with("PO100905")
         self.assertNotIn("error", full)
         self.assertNotIn("po_lines_incomplete", full["answerability"]["reasons"])
         self.assertEqual(len(self.freight_steps(full)), 4)
         self.assertTrue(all("freight=7.5 USD/ea" in s for s in self.freight_steps(full)))
-        for budget in (7, 5):
+        # A cut that leaves part of the line set read (1 to 3 of 4 lines priced).
+        for budget in (8, 6):
             cut = self.investigate_with("PO100905", step_budget=budget)
             self.assertEqual(self.freight_steps(cut), [], budget)
             self.assertIn("po_lines_incomplete", cut["answerability"]["reasons"])
@@ -373,7 +425,10 @@ class ProjectedTests(unittest.TestCase):
             pages.append(result)
             if result["completeness"]["next_cursor"] is None:
                 return pages
-            self.assertLess(len(pages), 20)
+            # A runaway-paging guard, not a page budget: the supplier-row steps add two
+            # shared gaps and five trace rows to every page, so the 50-line order now takes
+            # 25 pages of two lines (17 of three before).
+            self.assertLess(len(pages), 30)
             arguments["cursor"] = result["completeness"]["next_cursor"]
 
     def test_a_large_po_is_answered_in_pages_that_never_read_as_complete(self):
@@ -406,7 +461,12 @@ class ProjectedTests(unittest.TestCase):
                 self.assertNotIn("step_budget_exhausted", page["answerability"]["reasons"])
                 names = {e["name"]: e for e in page["answer"]}
                 lines = [e for e in page["answer"] if e["name"].startswith("landed_cost_line_")]
-                self.assertTrue(lines)
+                if not lines:
+                    # Only the last page may carry no line: what is left of the purchase
+                    # order's own entries once the shared gaps fill the pages before it.
+                    self.assertEqual(index, len(pages), number)
+                    self.assertFalse([e for e in page["answer"]
+                                      if e.get("object_type") == "PurchaseOrderLine"])
                 for line in lines:
                     self.assertTrue(any(f"freight={freight} USD/ea" in s for s in line["steps"]),
                                     line["steps"])
@@ -439,10 +499,11 @@ class ProjectedTests(unittest.TestCase):
         self.assertEqual(stale["error"]["code"], "cursor_stale")
 
     def test_a_line_withheld_by_its_own_marking_is_never_allocated_over(self):
-        """A marking on one line object (l5) hides it from a reader without l5. That reader's
-        policy cannot prove the line set whole, so the header freight is not spread over the
-        three visible lines and no total is stated; the reader gets the same answer whether
-        or not a line is withheld (nothing tells it one exists)."""
+        """A marking on one line object (l5) hides it from a reader without l5. The scope
+        proof is per marking of the order's own lines: that reader cannot prove the line set
+        whole, so the header freight is not spread over the three visible lines, no total is
+        stated and the gap names how many lines are withheld. A reader without l5 on an order
+        none of whose lines carries l5 is not held back at all."""
         hidden = "fx-pol-b-0"
         with tempfile.TemporaryDirectory(prefix="plx-landed-marked-") as tmp:
             store = Path(tmp) / "marked.sqlite"
@@ -461,11 +522,13 @@ class ProjectedTests(unittest.TestCase):
         self.assertIsNone(_entries(marked, "computed")["landed_cost"]["value"])
         self.assertIn("po_lines_incomplete", marked["answerability"]["reasons"])
         lines = next(g for g in marked["gaps"] if g["reason"] == "po_lines_incomplete")
-        self.assertIn("read scope is not proven to show every line", lines["detail"])
+        self.assertIn("1 line(s) of the purchase order carry a marking this reader does not "
+                      "hold and are withheld", lines["detail"])
+        # No line carries l5 in the unmarked store: the reader without l5 holds every marking
+        # the order's lines carry, so its line set is proven whole and freight is allocated.
         unmarked = self.investigate("PO100905", self.table(markings=without_l5))
-        self.assertEqual(self.freight_steps(unmarked), [])
-        self.assertEqual(next(g for g in unmarked["gaps"] if g["reason"] == "po_lines_incomplete"),
-                         lines)
+        self.assertEqual(len(self.freight_steps(unmarked)), 4)
+        self.assertNotIn("po_lines_incomplete", unmarked["answerability"]["reasons"])
         # A reader holding l5 sees the line, and the freight is allocated over all four.
         self.assertIn(hidden, json.dumps(holder))
         self.assertEqual(len(self.freight_steps(holder)), 4)
@@ -1024,7 +1087,7 @@ def po(relation: str, key: dict, row: dict):
 
 class StaticPortal:
     """A Portal source serving fixed captured rows. Kept here rather than imported from a
-    test module: test-module imports widen the affected-test selector's reach (a dynamic import
+    test module: test-module imports widen the gate selector's reach (a dynamic import
     downstream selects this module for every change)."""
     source = "portal_api"
 

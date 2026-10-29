@@ -45,6 +45,14 @@ def tables(path):
         conn.close()
 
 
+def incremental_path(need):
+    """A ``space`` guard that refuses a cold build where an incremental one can run: a
+    world of a few rows changes most of its units at once, so the mode choice (its own
+    test) would build it cold and leave the incremental path these tests pin unexercised."""
+    if need["mode"] == "cold" and "incremental" in need["estimates"]:
+        raise OSError("incremental_path_pinned")
+
+
 class MirrorGenerationTests(unittest.TestCase):
     """The fixture Portal mirror (real ``SourceMirror``, injected transport) captured
     three times; a generation after each capture is compared with a cold build."""
@@ -69,7 +77,8 @@ class MirrorGenerationTests(unittest.TestCase):
     def generation(self, **options):
         with MirrorCaptures(self.root / "mirror.sqlite") as captures:
             return inc.build_generation(self.state, self.schema, {"portal_api": captures},
-                                        normalizer=normalizer, clock=lambda: T2, **options)
+                                        normalizer=normalizer, clock=lambda: T2,
+                                        **{"space": incremental_path, **options})
 
     def cold(self, name):
         with MirrorCaptures(self.root / "mirror.sqlite") as captures:
@@ -251,7 +260,8 @@ class MirrorGenerationTests(unittest.TestCase):
             with MirrorCaptures(self.root / "mirror.sqlite") as captures:
                 return inc.build_generation(self.root / name, self.schema,
                                             {"portal_api": captures}, previous=produced,
-                                            reuse=True, normalizer=normalizer)
+                                            reuse=True, normalizer=normalizer,
+                                            space=incremental_path)
         self.capture(T1)
         with mock.patch.object(Projector, "project_into", counted):
             with MirrorCaptures(self.root / "mirror.sqlite") as captures:
@@ -331,7 +341,7 @@ class SyntheticGenerationTests(unittest.TestCase):
 
     ROWS = 8
     RELATIONS = ("public.app_product", "public.app_purchase_order", "purchaseOrders",
-                 "messages")
+                 "messages", "sage.ap_pjd")   # the last: a packed binding (value_storage)
 
     @classmethod
     def setUpClass(cls):
@@ -363,8 +373,139 @@ class SyntheticGenerationTests(unittest.TestCase):
                     self.assertEqual(tables(built.store), tables(root / "cold.sqlite"))
                     self.assertEqual(built.content_digest, cold["content_digest"])
 
+    def test_an_incremental_build_clones_its_seed_when_it_can_and_checks_its_estimate(self):
+        """No byte copy of the served generation where the file system clones (the seed
+        shares its pages); a copy where it cannot, and then the estimate counts it; a
+        space guard that refuses leaves the committed generation and nothing else."""
+        def clone(source, target):   # a stand-in clone: no shutil.copyfile, same bytes
+            with open(source, "rb") as src, open(target, "wb") as dst:
+                while block := src.read(1 << 20):
+                    dst.write(block)
+            return True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "state"
+            first = inc.build_generation(state, self.schema, self.sources(), clock=lambda: T2)
+            measured = json.loads((first.store.parent / "units.json").read_text())["bytes"]
+            self.assertEqual(measured["store"], first.store.stat().st_size)
+            self.assertGreater(measured["work_peak"], 0)
+            cold = inc.space_need(state)
+            self.assertEqual((cold["mode"], cold["needed_bytes"]),
+                             ("cold", measured["store"] + measured["work_peak"]))
+            seen = []
+            with mock.patch("ontology.project_incremental.can_clone", return_value=True), \
+                    mock.patch("ontology.store.clone_file", side_effect=clone), \
+                    mock.patch("ontology.store.shutil.copyfile",
+                               side_effect=AssertionError("a full copy")):
+                cloned = inc.build_generation(state, self.schema, self.sources("sage.ap_pjd"),
+                                              clock=lambda: T2, space=seen.append)
+            self.assertEqual((cloned.mode, cloned.seed, cloned.need["seed"]),
+                             ("incremental", "clone", "clone"))
+            self.assertEqual(seen, [cloned.need])
+            base = first.store.stat().st_size
+            self.assertLess(cloned.need["needed_bytes"], base)   # no seed bytes
+            self.assertTrue(0 < cloned.need["changed_share"] < 1, cloned.need)
+            with mock.patch("ontology.project_incremental.can_clone", return_value=False):
+                copied = inc.build_generation(state, self.schema, self.sources("messages"),
+                                              clock=lambda: T2)
+            self.assertEqual((copied.mode, copied.seed), ("incremental", "copy"))
+            self.assertGreaterEqual(copied.need["needed_bytes"], cloned.store.stat().st_size)
+
+            def refuse(need):
+                raise OSError("disk_low")
+            with self.assertRaises(OSError):
+                inc.build_generation(state, self.schema, self.sources("purchaseOrders"),
+                                     clock=lambda: T2, space=refuse)
+            self.assertEqual(inc.current_generation(state).id, copied.id)
+            # Before it checked, the build dropped the generation before the committed one
+            # (room for the next attempt; a reader holding it keeps its file): the committed
+            # generation is all that is left, and nothing of the refused build.
+            self.assertEqual(sorted(d.name for d in (state / "generations").iterdir()),
+                             [copied.id])
+
+    def test_the_build_takes_the_mode_that_fits_and_fails_only_when_neither_does(self):
+        """Live 2026-10-27: 87% of the units changed and the incremental estimate (a copy
+        of the served store plus twice that share) was 16 GB where a cold build needs 8;
+        the guard skipped the build. A build where most units changed, or whose
+        incremental estimate exceeds the cold one, is cold beside the committed
+        generation; a guard that refuses that mode gets the other; only refusing both
+        fails, and the committed generation stays current with nothing else on disk."""
+        relations = sorted({b["relation"] for t in self.schema.object_types.values()
+                            for b in t.get("bindings", [])})
+
+        def changed(names):
+            return synthetic_captures.sources(self.schema, self.ROWS, names)
+        most = [r for r in relations if r != "messages"]
+        half = relations[:len(relations) // 2]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / "state"
+            first = inc.build_generation(state, self.schema, self.sources(), clock=lambda: T2)
+            served = []
+            refused = []
+
+            def note(need):   # the committed generation is current while the guard decides
+                served.append(inc.current_generation(state).id)
+
+            def refuse(*modes):
+                def guard(need):
+                    refused.append(need["mode"])
+                    if need["mode"] in modes:
+                        raise OSError("disk_low")
+                return guard
+            # Most units changed: cold, though a cloned seed would need less.
+            with mock.patch("ontology.project_incremental.can_clone", return_value=True):
+                built = inc.build_generation(state, self.schema, changed(most),
+                                             clock=lambda: T2, space=note)
+            estimates = built.need["estimates"]
+            self.assertGreater(estimates["incremental"]["changed_share"], inc.COLD_SHARE)
+            self.assertEqual((built.mode, built.need["mode"], built.need["preferred"],
+                              built.units_rebuilt, served),
+                             ("cold", "cold", "cold", built.units, [first.id]))
+            self.assertEqual(estimates["cold"]["needed_bytes"],
+                             first.store.stat().st_size + json.loads(
+                                 (first.store.parent / "units.json").read_text()
+                             )["bytes"]["work_peak"])
+            cold = build_store(root / "cold.sqlite", self.schema, changed(most),
+                               clock=lambda: T2)
+            self.assertEqual(built.content_digest, cold["content_digest"])
+            self.assertEqual(tables(built.store), tables(root / "cold.sqlite"))
+            # The cold working-file peak is carried through an incremental build (its own
+            # peak is only its share), so the cold estimate stays a cold build's.
+            work = json.loads((built.store.parent / "units.json").read_text())["bytes"]
+            self.assertEqual(work["cold_work_peak"], work["work_peak"])
+            with mock.patch("ontology.project_incremental.can_clone", return_value=True):
+                fallback = inc.build_generation(state, self.schema, self.sources(),
+                                                clock=lambda: T2, space=refuse("cold"))
+            self.assertEqual((fallback.mode, fallback.need["mode"], fallback.need["preferred"],
+                              refused), ("incremental", "incremental", "cold",
+                                         ["cold", "incremental"]))
+            self.assertEqual(json.loads((fallback.store.parent / "units.json").read_text())
+                             ["bytes"]["cold_work_peak"], work["cold_work_peak"])
+            # Under half changed, but a byte-copied seed needs more than a cold build.
+            refused.clear()
+            with mock.patch("ontology.project_incremental.can_clone", return_value=False):
+                smaller = inc.build_generation(state, self.schema, changed(half),
+                                               clock=lambda: T2, space=refuse())
+            estimates = smaller.need["estimates"]
+            self.assertLessEqual(estimates["incremental"]["changed_share"], inc.COLD_SHARE)
+            self.assertGreater(estimates["incremental"]["needed_bytes"],
+                               estimates["cold"]["needed_bytes"])
+            self.assertEqual((smaller.mode, refused), ("cold", ["cold"]))
+            # Neither fits: the guard's refusal, the committed generation as it was.
+            refused.clear()
+            with mock.patch("ontology.project_incremental.can_clone", return_value=False), \
+                    self.assertRaises(OSError):
+                inc.build_generation(state, self.schema, changed(most),
+                                     clock=lambda: T2, space=refuse("cold", "incremental"))
+            self.assertEqual(sorted(refused), ["cold", "incremental"])
+            self.assertEqual(inc.current_generation(state).id, smaller.id)
+            self.assertEqual(sorted(d.name for d in (state / "generations").iterdir()),
+                             [smaller.id])
+
     def test_build_time_stays_inside_a_generous_bound(self):
-        # Diagnostic, not a target: about 2,400 objects cold, and an unchanged rebuild that
+        # Diagnostic, not a target (EVIDENCE/perf/2026-10-04-proj-budget.md has the
+        # live-scale figures): about 2,400 objects cold, and an unchanged rebuild that
         # projects nothing again. A regression of an order of magnitude trips it.
         with tempfile.TemporaryDirectory() as tmp:
             started = time.monotonic()

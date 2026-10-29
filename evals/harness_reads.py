@@ -1,6 +1,7 @@
 """The live eval harness's reads on the persistent host, as the named reader.
 
-``python3 -m evals.harness_reads --state-dir S --config C --session-ticket-env VAR`` starts
+``python3 -m evals.harness_reads --state-dir S --config C --session-ticket-env VAR
+[--agent ID]`` starts
 the session ``operating.host mcp`` starts for the employee a fresh single-use agent ticket
 names (``operating.host.mcp_arguments``, its Entra directory provider and
 ``operating.mcp_server.session_server``: the same resolver, trimming and start-up refusals
@@ -167,13 +168,16 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     parser.add_argument("--eval-principal", action="store_true",
                         help="the ticket names the declared eval principal "
                              "(operating.eval_principal)")
+    parser.add_argument("--agent", default=None,
+                        help="the agent definition the agent's session runs "
+                             "(operating.host mcp --agent): this one lists its catalog")
     args = parser.parse_args(argv)
     try:
         host = plx_host.Host(args.state_dir, plx_host.HostConfig.from_file(args.config),
                              environ=environ, sender=sender)
         _host, server = mcp_server.session_server(
             plx_host.mcp_arguments(host, session_ticket_env=args.session_ticket_env,
-                                   eval_principal=args.eval_principal),
+                                   eval_principal=args.eval_principal, agent=args.agent),
             directory=None if args.eval_principal else plx_host.directory_provider(host))
     except plx_host.HostError as error:
         print(json.dumps({"error": error.code}), file=sys.stderr)

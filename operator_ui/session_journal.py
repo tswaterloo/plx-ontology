@@ -3,7 +3,7 @@ counts, routes and enums, kept in the host's state directory.
 
     python3 -m operator_ui.session_journal summary --state-dir DIR [--session REF]
 
-A recorded employee session (requirement WS-16)
+A recorded employee session (requirement WS-16, docs/runbooks/ws16-first-employee-session.md)
 needs a record of what the person opened and decided that does not depend on someone's
 notes. ``operator_ui.server`` gives every ``/api/*`` request to ``SessionJournal.record``
 after it answered: the session's reference (``SessionIdentity.session_ref``, the SHA-256 of

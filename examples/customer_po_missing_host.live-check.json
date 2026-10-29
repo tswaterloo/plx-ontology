@@ -1,6 +1,6 @@
 {
  "schema": "plx-host-config/v1",
- "note": "Host config of the case.customer_po_missing live check (verify/live-checks/case.customer_po_missing.json): one capture cycle of the Portal sales orders through the source mirror and of the PLXCUSTOMERS 'Customer Documents' folder (examples/sharepoint_capture_scope.customer_documents.live-check.json), so the projection holds the orders and the customer purchase orders filed for them (document-field links: leads) and plx.object can report a PO the document states and the order holds empty (missing_in_record). Configuration, never a grant: the audiences decide what the capture principal may read.",
+ "note": "Host config of the case.customer_po_missing live check (devloop/live-checks/case.customer_po_missing.json): one capture cycle of the Portal sales orders through the source mirror and of the PLXCUSTOMERS 'Customer Documents' folder (examples/sharepoint_capture_scope.customer_documents.live-check.json), so the projection holds the orders and the customer purchase orders filed for them (document-field links: leads) and plx.object can report a PO the document states and the order holds empty (missing_in_record). Configuration, never a grant: the audiences decide what the capture principal may read.",
  "tenant": "plx",
  "capture_audience": "customer_po_missing_live_audience.live-check.json",
  "live_audience": "customer_po_missing_live_audience.live-check.json",

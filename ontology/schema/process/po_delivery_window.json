@@ -30,7 +30,7 @@
     "property": "sage_is_complete"
    }
   ],
-  "note": "The status values the shared definition reads (docs/decisions/2026-10-21-po-open-sage-fm.md): the Portal header holds the FileMaker words (Cancel, Complete, DRAFT, Pending, B.Order, Revised, Generated) and openness is by its lines' quantities (plx-customer-portal@d39d91b open-po-lines/route.ts:38-46,302-312); an FM header alone has no received quantity and a Sage iscomplete value is not mapped, so both stay unknown; BC reads fullyReceived and status (Draft: not issued)."
+  "note": "The status values the shared definition reads (devloop/DECISIONS/2026-10-21-po-open-sage-fm.md): the Portal header holds the FileMaker words (Cancel, Complete, DRAFT, Pending, B.Order, Revised, Generated) and openness is by its lines' quantities (plx-customer-portal@d39d91b open-po-lines/route.ts:38-46,302-312); an FM header alone has no received quantity and a Sage iscomplete value is not mapped, so both stay unknown; BC reads fullyReceived and status (Draft: not issued)."
  },
  "stages": [
   {
@@ -243,7 +243,7 @@
      "PurchaseOrder.expected",
      "PurchaseOrder.bc_expected"
     ],
-    "note": "The PO's requested-by date (Vince: the lateness reference): FM datearrive, Sage exparrival, Portal expected_date and the BC header requestedReceiptDate (BC API v2.0 purchaseOrder), of the PO and its twins. A BC line's expectedReceiptDate follows the promised date when one is set, so it is never the due date; the lateness lines report it as the line's expected date. For overdue, different dates are reported, never chosen (the header-vs-copy ETA disagreement Ricardo's map names); lateness names the governing one by the declared precedence and cites it, or reports it missing.",
+    "note": "The PO's requested-by date (Vince: the lateness reference): FM datearrive, Sage exparrival, Portal expected_date and the BC header requestedReceiptDate (BC API v2.0 purchaseOrder), of the PO and its twins. A BC line's expectedReceiptDate follows the promised date when one is set, so it is the due date only when no header holds one (earliest open line); the lateness lines report it as the line's expected date. Different dates are reported, never chosen (Ricardo's header-vs-copy ETA disagreement); lateness names the governing one by precedence and cites it, or reports it missing.",
     "lateness": {
      "precedence": [
       [
@@ -350,7 +350,7 @@
   }
  ],
  "evidence": [
-  "docs/reference/cases-and-artifacts.md (1.3 map stages 11, 13, 14, 15, 16; 3.6 Ricardo's po-delivery-window map: planned arrival vs actual shipment vs actual receipt)",
+  "devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md (1.3 map stages 11, 13, 14, 15, 16; 3.6 Ricardo's po-delivery-window map: planned arrival vs actual shipment vs actual receipt)",
   "operating/po_status.py (the shared purchase-order status definition; plx-customer-portal portal/src/lib/mrp/po-fulfillment-status.ts derivePoFulfillmentCode and @d39d91b open-po-lines/route.ts:38-46,302-312: openness by quantity)",
   "plx-customer-portal:portal/src/lib/work-routing/runner.ts@c3ffda3 (po.sent_unconfirmed_3d: no vendor confirmation is recorded)",
   "ontology/schema/domains/purchasing.json (PurchaseOrder.expected, PurchaseOrder.bc_expected, PurchaseOrder.vendor_shipped)",

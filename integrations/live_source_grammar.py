@@ -43,6 +43,8 @@ from __future__ import annotations
 
 import base64
 from datetime import datetime
+import json
+from pathlib import Path
 import re
 from typing import Any, Callable, Mapping
 from urllib.parse import parse_qsl, quote, unquote, urlencode
@@ -166,6 +168,31 @@ def _share_id_ok(value: Any) -> bool:
             and not any(ord(c) <= 32 or ord(c) == 127 for c in url))
 
 
+# BC company *names* (ODataV4 web-service pages address a company by name, never by
+# GUID): only a name the pinned book map lists (``bc_company_books.json`` ``names``) and
+# only in a plain shape (no quote, parenthesis, slash, percent or control character), so
+# the ``Company('<name>')`` key literal never needs escaping. An unreadable map pins none.
+_BC_COMPANY_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9 ._&-]{0,62}[A-Za-z0-9.])?")
+_BOOKS_FILE = Path(__file__).with_name("bc_company_books.json")
+
+
+def _pinned_company_names() -> frozenset[str]:
+    try:
+        names = json.loads(_BOOKS_FILE.read_text(encoding="utf-8")).get("names", {})
+        return frozenset(name for pins in names.values() if isinstance(pins, dict)
+                         for name in pins.values() if isinstance(name, str))
+    except (OSError, ValueError, AttributeError):
+        return frozenset()
+
+
+BC_PINNED_COMPANY_NAMES = _pinned_company_names()
+
+
+def bc_company_name_ok(value: Any) -> bool:
+    return (isinstance(value, str) and _BC_COMPANY_NAME.fullmatch(value) is not None
+            and "  " not in value and value in BC_PINNED_COMPANY_NAMES)
+
+
 class ParamType:
     def __init__(self, name: str, valid: Callable[[Any], bool], group: str,
                  encode: Callable[[str], str]) -> None:
@@ -203,6 +230,8 @@ TYPES: dict[str, ParamType] = {t.name: t for t in (
     ParamType("tenant", _rx(_TENANT), _SEG, lambda v: v),
     ParamType("environment", _rx(_ENVIRONMENT), _SEG, lambda v: v),
     ParamType("guid", _rx(_GUID), r"[^/()]+", lambda v: v.lower()),
+    ParamType("bc_company_name", bc_company_name_ok, r"[^/()']+",
+              lambda v: quote(v, safe="")),
     ParamType("entity_set", lambda v: isinstance(v, str) and v in BC_ENTITY_SETS
               and v != "companies", r"[^/()]+", lambda v: v),
     ParamType("share_id", _share_id_ok, _SEG, lambda v: v),
@@ -227,6 +256,11 @@ TEMPLATES: dict[str, tuple[str, str]] = {
     "graph.messages": (GRAPH, "/v1.0/users/{user:user_id}/messages"),
     "graph.message": (GRAPH, "/v1.0/users/{user:user_id}/messages/{message:mail_id}"),
     "graph.mail_folder": (GRAPH, "/v1.0/users/{user:user_id}/mailFolders/{folder:mail_folder}"),
+    # A mailbox's top-level folders and one folder's child folders (ids and item counts):
+    # the mail capture's every-folder scope (integrations.capture_mail, folders "all").
+    "graph.mail_folders": (GRAPH, "/v1.0/users/{user:user_id}/mailFolders"),
+    "graph.mail_child_folders": (GRAPH, "/v1.0/users/{user:user_id}/mailFolders/"
+                                 "{folder:mail_id}/childFolders"),
     "graph.folder_messages": (GRAPH,
                               "/v1.0/users/{user:user_id}/mailFolders/{folder:mail_id}/messages"),
     "graph.site": (GRAPH, "/v1.0/sites/{site:site_id}"),
@@ -310,6 +344,9 @@ TEMPLATES: dict[str, tuple[str, str]] = {
     "graph.team_members": (GRAPH, "/v1.0/teams/{team:guid}/members"),
     "graph.channel_members": (GRAPH, _CHANNEL + "/members"),
     "graph.channel_messages_delta": (GRAPH, _CHANNEL + "/messages/delta"),
+    # One page of a channel's messages (``$top=1``), read only to tell an empty channel
+    # from a failure when Graph refuses its own delta nextLink (``capture_teams``).
+    "graph.channel_messages": (GRAPH, _CHANNEL + "/messages"),
     "graph.channel_message_replies": (GRAPH, _CHANNEL + "/messages/"
                                       "{message:teams_message_id}/replies"),
     "graph.chat_members": (GRAPH, "/v1.0/chats/{chat:teams_thread}/members"),
@@ -327,6 +364,13 @@ TEMPLATES: dict[str, tuple[str, str]] = {
     "bc.metadata": (BC, _BC + "/$metadata"),
     "bc.entities": (BC, _BC + "/companies({company:guid})/{entity:entity_set}"),
     "bc.entity": (BC, _BC + "/companies({company:guid})/{entity:entity_set}({record:guid})"),
+    # The one ODataV4 web-service read (devloop/live-checks/bc.purchase_reader.json, lane
+    # bc-portal-po-link-your-reference): Page 50 ``PurchaseOrder`` serves ``Your_Reference``
+    # (the FileMaker PO number), which API v2.0 ``purchaseOrders`` does not expose. Only
+    # this entity set, only by a pinned company name, only the query
+    # ``bc_odata_purchase_order_query`` builds; no key, navigation or action ever.
+    "bc.odata_purchase_orders": (BC, "/v2.0/{tenant:tenant}/{environment:environment}"
+                                 "/ODataV4/Company('{company:bc_company_name}')/PurchaseOrder"),
     **{f"bc.lines.{parent}": (BC, _BC + "/companies({company:guid})/" + parent
                               + "({record:guid})/" + lines)
        for parent, lines in BC_DOCUMENT_LINES.items()},
@@ -483,7 +527,7 @@ def segments_clean(path: str) -> bool:
 # ``$top`` is bounded; ``$select`` names come from the entity set's allowlist
 # (or are exactly ``id,lastModifiedDateTime`` on those sets). Entity sets without
 # a spec accept only ``$top`` and, if listed there, the modified-since forms. Field names marked unverified in
-# docs/reference/source-notes.md are confirmed by the probe's ``field_names``. ``$expand`` is exactly
+# devloop/SOURCE-NOTES.md are confirmed by the probe's ``field_names``. ``$expand`` is exactly
 # the line set of a document header set (``BC_DOCUMENT_LINES``: ``purchaseOrders`` expands
 # ``purchaseOrderLines`` and nothing else), never on a line set, never with ``$select``.
 
@@ -592,7 +636,7 @@ BC_QUERY_SPECS: dict[str, BcQuerySpec] = {
     # customer/vendorPayment): the fields the ontology bindings read
     # (ontology/schema/domains/bc_finance.json). The capture reads every field; the
     # allowlist is what ``probe --finance-entities`` checks BC accepts as ``$select``
-    # (verify/live-checks/bc.ledgers.json). UNVERIFIED live until that check passes.
+    # (devloop/live-checks/bc.ledgers.json). UNVERIFIED live until that check passes.
     "itemLedgerEntries": _spec({"documentNumber": "number", "itemNumber": "number"},
         "entryNumber itemNumber postingDate entryType sourceNumber sourceType documentNumber "
         "documentType description quantity salesAmountActual costAmountActual"),
@@ -628,7 +672,7 @@ BC_QUERY_SPECS: dict[str, BcQuerySpec] = {
 }
 
 
-# Modified-since reads (docs/decisions/2026-10-02-bc-capture-incremental.md). The one
+# Modified-since reads (devloop/DECISIONS/2026-10-02-bc-capture-incremental.md). The one
 # non-equality filter BC reads may carry is ``lastModifiedDateTime ge <instant>``, and
 # only on the entity sets below: BC API v2.0 documents a read-only
 # ``lastModifiedDateTime`` on document headers, parties, items and the item/general
@@ -647,7 +691,7 @@ BC_MODIFIED_SINCE_SETS = frozenset({
     "customers", "vendors", "contacts", "items", "itemLedgerEntries",
     "generalLedgerEntries"})
 BC_KEY_SELECT = "id," + BC_MODIFIED_FIELD
-# Posted-only reads: the capture asks BC for ``status ne 'Draft'`` on
+# Posted-only reads (directive 7fbdeee4a6f4): the capture asks BC for ``status ne 'Draft'`` on
 # these sets, so an unposted document is never read, stored or costed as posted. BC API v2.0
 # salesInvoice ``status`` is Draft / In Review / Open / Paid / Canceled / Corrective.
 # UNVERIFIED live: BC's acceptance of the filter on salesInvoices (bc.capture_full checks).
@@ -867,12 +911,79 @@ def bc_query_ok(entity_set: str, query: str) -> bool:
             and set(sent) - continuation == set(rebuilt))
 
 
+# ``bc.odata_purchase_orders`` (ODataV4 Page 50 ``PurchaseOrder``): exactly these three
+# fields, always (``No`` is the document number, ``Your_Reference`` the FileMaker PO
+# number, ``Buy_from_Vendor_No`` the vendor the capture cross-checks); at most one
+# ``No eq '<number>'`` equality built from a validated number; a bounded ``$top``; the
+# nextLink continuation. A web-service page's ``$skiptoken`` carries the page key (the
+# document number), so for this operation only it may also hold the number characters
+# ``bc_number_literal`` allows (space, ``.``, ``/``, ``#``). UNVERIFIED live: the
+# skiptoken shape; the field names are the lead's live probe of 2026-10-21.
+BC_ODATA_PO_SELECT = "No,Your_Reference,Buy_from_Vendor_No"
+BC_ODATA_PO_FIELDS = tuple(BC_ODATA_PO_SELECT.split(","))
+_ODATA_SKIPTOKEN_CHARS = _SKIPTOKEN_CHARS | frozenset(" ./#")
+
+
+def bc_odata_purchase_order_query(*, number: str | None = None,
+                                  top: int | None = None) -> dict[str, str]:
+    """The query of one ``bc.odata_purchase_orders`` read; ValueError on a bad value."""
+    query = {"$select": BC_ODATA_PO_SELECT}
+    if number is not None:
+        if not bc_number_ok(number):
+            raise ValueError("bc odata filter value invalid")
+        query["$filter"] = f"No eq '{number}'"
+    if top is not None:
+        if isinstance(top, bool) or not isinstance(top, int) or not 1 <= top <= BC_MAX_TOP:
+            raise ValueError(f"$top must be 1..{BC_MAX_TOP}")
+        query["$top"] = str(top)
+    return query
+
+
+def bc_odata_purchase_order_query_ok(query: str) -> bool:
+    """Whether a raw query is exactly one ``bc_odata_purchase_order_query`` builds, plus
+    the continuation parameters (guard side, incl. nextLinks)."""
+    if not isinstance(query, str) or not query:
+        return False
+    try:
+        pairs = parse_qsl(query, keep_blank_values=True, strict_parsing=True)
+    except ValueError:
+        return False
+    given = dict(pairs)
+    if len(given) != len(pairs) or set(given) - {"$select", "$filter", "$top"} - _BC_CONTINUATION:
+        return False
+    number = None
+    if "$filter" in given:
+        text = given["$filter"]
+        if not (text.startswith("No eq '") and text.endswith("'") and len(text) > 8):
+            return False
+        number = text[len("No eq '"):-1]
+    top = None
+    if "$top" in given:
+        text = given["$top"]
+        if not (1 <= len(text) <= 4 and text.isascii() and text.isdigit() and text[0] != "0"):
+            return False
+        top = int(text)
+    try:
+        rebuilt = bc_odata_purchase_order_query(number=number, top=top)
+    except ValueError:
+        return False
+    token, aid = given.get("$skiptoken"), given.get("aid")
+    if token is not None and not (1 <= len(token) <= 512 and all(
+            c in _ODATA_SKIPTOKEN_CHARS for c in token)):
+        return False
+    if aid is not None and not _continuation_values_ok({"aid": aid}):
+        return False
+    return (set(given) - _BC_CONTINUATION == set(rebuilt)
+            and all(given[k] == v for k, v in rebuilt.items()))
+
+
 def bc_request_query_ok(path: str, query: str) -> bool:
     """Guard-side check of one BC GET: the (encoded) path's operation decides
     which query it may carry. ``bc.entities`` / ``bc.lines.*``: exactly what
     ``bc_query`` builds for that entity set (plus the nextLink continuation
     parameters); ``bc.companies``: continuation parameters only; ``bc.entity``
-    (get by id) and ``bc.metadata``: no query at all."""
+    (get by id) and ``bc.metadata``: no query at all; ``bc.odata_purchase_orders``: exactly
+    what ``bc_odata_purchase_order_query`` builds (its ``$select`` is required)."""
     op = match(BC, path)
     if op is None or not isinstance(query, str):
         return False
@@ -885,6 +996,8 @@ def bc_request_query_ok(path: str, query: str) -> bool:
         return found is not None and bc_query_ok(unquote(found.group("entity")), query)
     if op.startswith("bc.lines."):
         return bc_query_ok(BC_DOCUMENT_LINES[op[len("bc.lines."):]], query)
+    if op == "bc.odata_purchase_orders":
+        return bc_odata_purchase_order_query_ok(query)
     return False
 
 
@@ -1022,7 +1135,9 @@ def external_query_ok(op: str | None, query: str) -> bool:
     return all(isinstance(v, str) and checks[k](v) for k, v in given.items())
 
 
-__all__ = ["BC_CALCULATED_FIELDS", "BC_DOCUMENT_LINES", "BC_ENTITY_SETS", "BC_LINE_PARENT_FIELD",
+__all__ = ["BC_ODATA_PO_FIELDS", "BC_ODATA_PO_SELECT", "BC_PINNED_COMPANY_NAMES",
+           "bc_company_name_ok", "bc_odata_purchase_order_query",
+           "bc_odata_purchase_order_query_ok", "BC_CALCULATED_FIELDS", "BC_DOCUMENT_LINES", "BC_ENTITY_SETS", "BC_LINE_PARENT_FIELD",
            "BC_RECORD_KEY_FIELD", "BC_INSTANT_FORMAT", "BC_KEY_SELECT",
            "BC_MAX_TOP", "BC_MODIFIED_FIELD", "BC_MODIFIED_SINCE_SETS", "BC_QUERY_SPECS",
            "DRIVE_DOWNLOAD_URL_KEY", "DRIVE_DOWNLOAD_URL_SELECT", "LIST_ITEM_FIELDS_QUERY",

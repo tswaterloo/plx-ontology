@@ -102,7 +102,7 @@ class TwinWorld(g2.Lifecycle):
         self.owner = IsolatedOwnerSystem(self.state_dir / "owner.db",
                                          readers=frozenset({"ops"}))
         # The Workbench's Portal session holds the routes' STAFF floor (assumed: no such
-        # Portal service identity exists yet).
+        # Portal service identity exists yet, devloop/GOAL2-ACTIONS.md section 8).
         self.portal = PortalTwin(readers=frozenset({"ops"}), clock=self.clock,
                                  session_role="STAFF")
         self.portal.seed_captures(load_captures())

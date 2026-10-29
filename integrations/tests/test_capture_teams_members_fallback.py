@@ -1,6 +1,6 @@
 """Teams capture when Graph refuses ``/teams/{id}/members`` (evidence: injected-transport).
 
-A team id is its Microsoft 365 group id, so a
+Owner policy e251073ef3c5 item 5: a team id is its Microsoft 365 group id, so a
 standard channel whose team members read answers 403 is captured under its group
 (``acl_source`` ``group_fallback``, identity ``group:<team-id>``); a private or shared
 channel has no fallback and stays blocked naming ``ChannelMember.Read.All``; the
@@ -16,7 +16,7 @@ import tempfile
 import unittest
 from urllib.parse import unquote, urlsplit
 
-from verify import live_verify as lv
+from devloop import live_verify as lv
 from integrations import graph_read
 from integrations.capture_store import CaptureError
 from integrations.capture_teams import TeamsCapture, open_store
@@ -163,10 +163,10 @@ class MembersFallbackTests(FallbackCase):
 
 class FallbackSpecTests(unittest.TestCase):
     """The live-check spec's own argv. Its census clears a team only on its members
-    (the people guard decides before any other request of it),
+    (directive 64fca27acc88: the people guard decides before any other request of it),
     so a refused team members read is no longer captured under the group on this path:
-    the team is refused before its name or channels are requested, nothing of it is
-    read though the owner confirmed it, and the run is blocked naming
+    the team is refused before its name or channels are requested, none of its channels
+    is due for content (none was cleared), and the run is blocked naming
     TeamMember.Read.All. (``TeamsCapture.run`` keeps the group fallback: above.)"""
 
     SPEC, run_spec, argv = base.ProbeTests.SPEC, base.ProbeTests.run_spec, base.ProbeTests.argv
@@ -188,7 +188,13 @@ class FallbackSpecTests(unittest.TestCase):
         paths = [unquote(urlsplit(u).path) for u in graph.gets()]
         self.assertFalse([p for p in paths if p.startswith(f"/v1.0/teams/{TEAM}")
                           and p != f"/v1.0/teams/{TEAM}/members"], paths)
-        self.assertEqual(report["content"]["confirmed_not_cleared"], 2)
+        # Owner decision 2026-10-26: content is due of what the census cleared, with no
+        # human confirmation (the stale one run_spec writes is not consulted). The refused
+        # team clears no channel, so none of its channels is due or read.
+        content = report["content"]
+        self.assertEqual((content["status"], content["confirmed_channels"],
+                          content["channels_due"], content["confirmed_not_cleared"]),
+                         ("census_cleared", 0, 0, 0), content)
         self.assertEqual(report["summary"]["conversations_group_fallback"], 0)
         self.assertEqual({c["kind"] for c in report["runs"][-1]["conversations"]}, {"chat"})
 

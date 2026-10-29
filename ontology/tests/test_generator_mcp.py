@@ -56,7 +56,7 @@ class RolesTests(unittest.TestCase):
             registry, compiled, scope, policy, moved, domain, decision)))
 
     def test_a_tools_list_serving_mc_upload_evidence_is_pinned_and_never_sent(self):
-        """MC e857f8c serves mc_upload_evidence: the pin holds its input
+        """MC e857f8c serves mc_upload_evidence (gap-38ff527f6339): the pin holds its input
         shape, the policy never sends it and the guard refuses it before I/O. A tool MC adds
         that no one classified stays unpinned, so the live check still fails on it."""
         registry, compiled, scope, policy, pin, domain, decision = self.inputs
@@ -127,7 +127,7 @@ class RolesTests(unittest.TestCase):
             ("plx-mc", "fixture_queryable", "no_live_results"),
             ("plx-brain", "fixture_queryable", "no_live_results")})
         # An action-typed write is terminal bound_action: verified per call by read-back,
-        # never captured (DECISIONS/2026-10-08-gen-mc-registry-mcp-coverage).
+        # never captured (gap-109c7c494f8a, DECISIONS/2026-10-08-gen-mc-registry-mcp-coverage).
         self.assertEqual({r["name"] for r in sr.coverage(registry, None, facts)
                           if r["system"] == "plx-mc" and r["status"] == "bound_action"},
                          {"mc_checkout_task", "mc_complete_task", "mc_create_task",
@@ -273,6 +273,41 @@ class PinReaderTests(unittest.TestCase):
                     read = mcp.read_registration(src, "src/server.ts", i + 1, f"tool{i}")
                     self.assertEqual(read["input"], {
                         f"value{i}": {"type": "string", "required": True}})
+
+    def test_repin_digest_carries_only_an_unmoved_pin_and_fails_closed_otherwise(self):
+        """Without an upstream checkout, the pin follows a registry change only when the
+        tool entries and upstream commits it was built from are unchanged."""
+        def stamped(registry):
+            registry["entries_digest"] = sr.entries_digest(registry["entries"])
+            return registry
+
+        current = json.loads(mcp.REGISTRY_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(mcp._entries_digest(current["entries"]), sr.entries_digest(current["entries"]))
+        pin = json.loads(mcp.PIN_PATH.read_text(encoding="utf-8"))
+        previous = copy.deepcopy(current)   # the registry the pin was built from ...
+        previous["entries"] = [e for e in previous["entries"] if e["kind"] == mcp.KIND] + [
+            e for e in previous["entries"] if e["kind"] != mcp.KIND][:3]   # ... other rows moved
+        stamped(previous)
+        built_from = dict(pin, registry_entries_digest=previous["entries_digest"])
+        carried = mcp.carry_pin_digest(built_from, previous, current)
+        self.assertEqual(carried, dict(pin, registry_entries_digest=current["entries_digest"]))
+        moved_tool = copy.deepcopy(current)
+        tool_id = mcp.tool_entries(current)[0]["id"]
+        next(e for e in moved_tool["entries"] if e["id"] == tool_id)["evidence"] = [
+            "PLX_MC:x@eeb7db796e8c:9"]
+        moved_commit = copy.deepcopy(current)
+        moved_commit["upstream"]["PLX_MC"]["commit"] = "0" * 40
+        forged = dict(copy.deepcopy(previous), entries_digest=current["entries_digest"])
+        for label, args, why in (
+                ("tool", (built_from, previous, stamped(moved_tool)), "MCP tool entries changed"),
+                ("commit", (built_from, previous, moved_commit), "upstream commits changed"),
+                ("other source", (pin, previous, current), "not the one the pin was built from"),
+                ("forged digest", (dict(pin, registry_entries_digest=current["entries_digest"]),
+                                   forged, current), "differ from its entries_digest")):
+            with self.subTest(label):
+                with self.assertRaises(mcp.McpGenError) as caught:
+                    mcp.carry_pin_digest(*args)
+                self.assertIn(why, str(caught.exception))
 
     def test_committed_pin_reproduces_from_the_pinned_upstream_commits(self):
         registry = json.loads(mcp.REGISTRY_PATH.read_text(encoding="utf-8"))

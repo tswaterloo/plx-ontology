@@ -13,7 +13,7 @@
   a lead), and the trace runs on through the served links to the Supplier, the
   PurchaseOrder and the Product. A supplier lot is never a PLX lab id or batch code: a
   lot written in a lab id's shape links no line by its lab id. Lot itself stays unserved
-  (``docs/decisions/2026-10-20-documents-lot-trace-supplier-lot.md``).
+  (``devloop/DECISIONS/2026-10-20-documents-lot-trace-supplier-lot.md``).
 * A hop the trace cannot reach is typed by its source cause, never lowered: an FM line
   whose ``idreceipt`` (or receipt whose ``idsupp``) is null reaches no Supplier for
   ``source_column_empty``, an FM line no Product for ``no_binding``; the PO's vendor reaches
@@ -371,8 +371,10 @@ class CertificateToReceiptTrace(unittest.TestCase):
     def test_the_property_filter_reports_the_candidates_it_drops(self):
         counts = self.report["post_project"]["document_fields"]["counts"]
         # The RP-shaped lot matches the line rl-2 and its receipt r-2 by their lab id (an
-        # alias kind): the filter drops both; the other two certificates drop nothing.
-        self.assertEqual(counts["dropped_count"], 2, counts)
+        # alias kind): the filter drops both. The other two certificates' supplier lots
+        # also find the Lot holding that number (another holder of the lot_number kind):
+        # the field names ReceiptLine.supplier_lot_number, so each drops that one Lot.
+        self.assertEqual(counts["dropped_count"], 4, counts)
         self.assertEqual(counts["links"], self.conn.execute(
             "SELECT COUNT(*) FROM links WHERE link_type LIKE 'CertificateOfAnalysis.%'"
         ).fetchone()[0])
@@ -411,7 +413,7 @@ class CertificateToReceiptTrace(unittest.TestCase):
                     for link in self.compiled.link_types.values()), spec["name"])
 
 
-LOT_TRACE_SPEC = Path(__file__).resolve().parents[2] / "verify" / "live-checks" / \
+LOT_TRACE_SPEC = Path(__file__).resolve().parents[2] / "devloop" / "live-checks" / \
     "ontology.lot_trace.json"
 
 
@@ -477,7 +479,7 @@ class LotTraceLiveCheckTests(unittest.TestCase):
             "public.generated_purchase_order": [{"id": 900, "ponumber": "PO100237"}]}
 
     def test_the_spec_passes_on_certificates_tracing_to_their_receipt(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         spec = json.loads(LOT_TRACE_SPEC.read_text("utf-8"))
         self.assertEqual(lv.validate_spec(spec, stem=spec["id"]), [])
         # GL-0001 and the FM lot trace; RP0000002 is a PLX lab id in a lot's place.
@@ -505,7 +507,7 @@ class LotTraceLiveCheckTests(unittest.TestCase):
             self.assertNotIn(secret.casefold(), text.casefold())
 
     def test_the_spec_fails_when_no_certificate_states_a_served_lot(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         spec = json.loads(LOT_TRACE_SPEC.read_text("utf-8"))
         report, code, text = self.run_trace(["NOT-RECEIVED"], self.rows(1))
         self.assertEqual((report["ok"], code, report["certificates_linked"]), (False, 1, 0),
@@ -531,7 +533,7 @@ class LotTraceLiveCheckTests(unittest.TestCase):
         self.assertEqual((report["leaks"], report["ok"], code), (4, False, 1), text[:2000])
 
     def test_without_the_portal_the_run_is_blocked_never_ok(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         spec = json.loads(LOT_TRACE_SPEC.read_text("utf-8"))
         report, code, text = self.run_trace(["GL-0001"], self.rows(1), portal=False)
         self.assertEqual((report["ok"], report.get("blocked"), report["certificates_linked"]),
@@ -565,7 +567,7 @@ class LotTraceLiveCheckTests(unittest.TestCase):
                                  "scripts.eval_lot_trace", fromlist=["HOPS"]).HOPS[hop]})
 
     def test_a_hop_the_source_leaves_empty_is_typed_by_its_cause(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         spec = json.loads(LOT_TRACE_SPEC.read_text("utf-8"))
         supplied = "for_receipt_line>line_of>supplied_by"
         via_po = "for_receipt_line>receives_line>line_of>ordered_from"

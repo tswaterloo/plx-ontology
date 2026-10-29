@@ -24,7 +24,7 @@ import unittest
 from unittest.mock import patch
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from verify import live_verify as lv
+from devloop import live_verify as lv
 from integrations import capture_sharepoint as cs
 from integrations import capture_teams
 from integrations.capture_sharepoint import CaptureScope
@@ -326,7 +326,7 @@ class CycleTests(HostCase):
         # The live config reads four of the five known sources (no Teams): status lists
         # those four, each complete after a full cycle, and names the fifth apart, so the
         # check's complete_when never waits on a source no configuration feeds.
-        spec = json.loads((ROOT / "verify/live-checks/host.cycles.json").read_text())
+        spec = json.loads((ROOT / "devloop/live-checks/host.cycles.json").read_text())
         self.config = self.write_config(teams=None)
         configured = set(host_module.HostConfig.from_file(self.config).sources)
         self.assertEqual(len(configured), 4)
@@ -396,7 +396,7 @@ class CycleTests(HostCase):
         self.assertEqual(self.status()["mail"]["generation"], 3)
 
     def test_host_cycles_check_meets_its_live_spec_and_blocks_only_on_an_outage(self):
-        spec = json.loads((ROOT / "verify/live-checks/host.cycles.json").read_text())
+        spec = json.loads((ROOT / "devloop/live-checks/host.cycles.json").read_text())
         lv.validate_spec(spec, stem="host.cycles")
         interrupt = ["--interrupt-after-seconds", "5"]
         self.assertEqual(spec["command"][-2], interrupt[0])
@@ -508,7 +508,7 @@ class CycleTests(HostCase):
         from operating.goal2_exec_owner import IsolatedOwnerSystem, dispatch_payload
         from operating.mcp_server import ACTION_PATH_DIR, ACTION_PATH_FILE
 
-        spec = json.loads((ROOT / "verify/live-checks/host.cycles.json").read_text())
+        spec = json.loads((ROOT / "devloop/live-checks/host.cycles.json").read_text())
         self.run_cycle()
         config = self.write_config(case_coworker=CASE_COWORKER)
         host = lambda state: host_module.Host(  # noqa: E731 - a new host per read: a restart
@@ -582,7 +582,7 @@ class CycleTests(HostCase):
         self.assertIsNone(host_module.HostConfig.from_file(self.write_config()).case_coworker)
 
     def test_an_interrupt_that_kills_no_running_cycle_fails_the_check(self):
-        spec = json.loads((ROOT / "verify/live-checks/host.cycles.json").read_text())
+        spec = json.loads((ROOT / "devloop/live-checks/host.cycles.json").read_text())
         for child, after, state in (
                 ((sys.executable, "-I", "-c", "pass"), "60", "finished_before_kill"),
                 ((sys.executable, "-I", "-c", "import time; time.sleep(60)"), "1",
@@ -605,7 +605,7 @@ class CycleTests(HostCase):
         self.assertEqual((code, json.loads(err)), (2, {"error": "host_check_interrupt_invalid"}))
 
     def test_a_killed_or_failed_cycle_child_leaves_no_ocr_grandchild(self):
-        """The killed ``run`` child takes the OCR children it
+        """Directive 31638266ab15: the killed ``run`` child takes the OCR children it
         started with it, and a wait that fails other than by the timeout still kills
         and reaps the child and its OCR children before the error propagates."""
         pidfile = self.root / "ocr.pid"
@@ -668,6 +668,112 @@ class CycleTests(HostCase):
         self.assertIn("host_cycle_running", err)
 
 
+class OneWriterTests(HostCase):
+    """The host's ingest mode and its own readers over one state directory: one cycle
+    lock, one ledger, one projection, one check (decision 2026-10-21-ingest-one-writer)."""
+
+    def test_ingest_and_host_cycles_exclude_each_other(self):
+        import threading
+        import uuid
+
+        from integrations.people_exclusion import ENV_IDS
+        from operating import ingest_forever as forever
+        from operating.tests.test_ingest_forever import FAKE, fake_table
+
+        script = self.root / "fake_capture.py"
+        script.write_text(FAKE, encoding="utf-8")
+        table = fake_table(script, "slow")
+        ingest = self.write("ingest.json", {
+            "schema": host_module.CONFIG_SCHEMA, "capture_principal": SVC,
+            "mirror_audience": "mirror-audience.json",
+            "ingest": {"mode": forever.MODE, "grace_seconds": 1},
+            "slow": {"mode": "slow"}})
+        env = {**ENV, ENV_IDS: str(uuid.uuid4())}
+        self.addCleanup(lambda: (self.state / "release").touch())
+
+        def ingest_host():
+            return host_module.Host(self.state, host_module.HostConfig.from_file(
+                ingest, capture_sources=table), environ=env, clock=self.clock)
+
+        # An ingest cycle holds the lock: host serve waits with a typed report, run refuses.
+        results = []
+        runner = threading.Thread(target=lambda: results.append(ingest_host().cycle()))
+        runner.start()
+        self.addCleanup(runner.join, 60)
+        started = self.state / "fake-slow" / "started"
+        for _ in range(600):
+            if started.exists():
+                break
+            runner.join(0.05)
+        self.assertTrue(started.exists())
+        code, text, err = self.main("serve", "--no-console", "--max-cycles", "1",
+                                    "--state-dir", str(self.state), "--config",
+                                    str(self.config))
+        self.assertEqual(code, 0, err)
+        waiting = json.loads(text)
+        self.assertEqual({k: waiting[k] for k in ("schema", "state", "reason", "cycle")},
+                         {"schema": host_module.CYCLE_SCHEMA, "state": "waiting",
+                          "reason": "host_cycle_running", "cycle": None})
+        code, text, err = self.main("run", "--state-dir", str(self.state), "--config",
+                                    str(self.config))
+        self.assertEqual((code, text, json.loads(err)), (2, "", {"error": "host_cycle_running"}))
+        (self.state / "release").touch()
+        runner.join(60)
+        self.assertEqual([(r["cycle"], r["runner"], r["state"]) for r in results],
+                         [(1, "ingest", "complete")])
+        (self.state / "release").unlink()
+        # A host cycle holds the lock (its Graph reads held): ingest serve waits, ingest
+        # run refuses, and no capture CLI starts.
+        entered, release = threading.Event(), threading.Event()
+
+        def held(*args):
+            entered.set()
+            release.wait(60)
+            return self.router(*args)
+
+        host_results = []
+        reader = threading.Thread(target=lambda: host_results.append(host_module.Host(
+            self.state, host_module.HostConfig.from_file(self.config), environ=ENV,
+            sender=held, workbench_fetch=self.portal, clock=self.clock,
+            sleep=lambda s: None,
+            portal_options={"clock": self.clock, "retry_delay_seconds": 0}).cycle()))
+        reader.start()
+        self.addCleanup(reader.join, 60)
+        self.addCleanup(release.set)
+        self.assertTrue(entered.wait(60))
+        code, text, err = self.main("run", "--state-dir", str(self.state), "--config",
+                                    str(ingest), environ=env, capture_sources=table)
+        self.assertEqual((code, text, json.loads(err)), (2, "", {"error": "host_cycle_running"}))
+        with patch.object(forever, "ephemeral", return_value=False):
+            code, text, err = self.main("serve", "--no-console", "--max-cycles", "1",
+                                        "--state-dir", str(self.state), "--config",
+                                        str(ingest), environ=env, capture_sources=table)
+        self.assertEqual(code, 0, err)
+        self.assertEqual((json.loads(text)["state"], json.loads(text)["reason"]),
+                         ("waiting", "host_cycle_running"))
+        self.assertEqual((self.state / "fake-slow" / "ran").read_text(), "1\n")
+        release.set()
+        reader.join(60)
+        self.assertEqual([(r["cycle"], r["runner"], r["state"]) for r in host_results],
+                         [(2, "host", "complete")])
+        # One ledger: the host's status and projection carry the ingest source beside its
+        # own, and the host's check over this directory counts both runners, none
+        # overlapping another.
+        status = self.status()
+        self.assertIn("slow", status)
+        self.assertEqual(status["_"]["projection"]["generation"], 2)
+        self.assertEqual(host_module.cycle_overlaps(host_module.Host(self.state)),
+                         {"cycles_recorded": 2, "cycles_overlapping": 0,
+                          "cycles_by_runner": {"host": 1, "ingest": 1}})
+        code, text, err = self.main("check", "--state-dir", str(self.state), "--config",
+                                    str(self.config))
+        self.assertEqual(code, 0, err)
+        checks = json.loads(text)["checks"]
+        self.assertEqual((checks["cycles_overlapping"], checks["cycles_by_runner"]),
+                         (0, {"host": 3, "ingest": 1}))
+        self.assertEqual(checks["mail_folders_restarted"], 0)
+
+
 class QcqaLibraryTests(HostCase):
     """The QCQA library as a served, incremental capture (``capture.qcqa_library``): the
     host config names a library-root scope, later cycles read only new and changed files,
@@ -702,7 +808,7 @@ class QcqaLibraryTests(HostCase):
         shipped = CaptureScope.from_file(
             ROOT / "examples/sharepoint_capture_scope.qcqa_library.json")
         self.assertEqual([t.folders for t in shipped.targets], [("/",)])   # the listing's
-        spec = json.loads((ROOT / "verify/live-checks/capture.qcqa_library.json").read_text())
+        spec = json.loads((ROOT / "devloop/live-checks/capture.qcqa_library.json").read_text())
         lv.validate_spec(spec, stem="capture.qcqa_library")
         # Three cycles, each bounded by the shipped config's capture budget, and the
         # coverage census, by its own, leave the timeout room for the projections and the
@@ -825,10 +931,11 @@ class QcqaLibraryTests(HostCase):
         self.assertEqual((coverage["census_complete"], coverage["reasons"]),
                          (False, ["folder_bound"]))
         self.assertEqual(lv.blocked_parts(document), [])
-        spec = json.loads((ROOT / "verify/live-checks/capture.qcqa_library.json").read_text())
-        self.assertNotIn("expect_blocked", spec)
+        spec = json.loads((ROOT / "devloop/live-checks/capture.qcqa_library.json").read_text())
         failures = lv.check_expectations(spec, 0, document)
         self.assertTrue([f for f in failures if "census_complete" in f], failures)
+        from devloop.tests.spec_verdict import verdict
+        self.assertEqual(verdict(spec, 0, document)[0], "fail")
 
     def test_a_census_claims_a_file_gone_only_where_it_listed_the_folder_whole(self):
         # A library of more files than one capture budget lists (QA-01: the census the
@@ -861,8 +968,10 @@ class QcqaLibraryTests(HostCase):
                           "files_current": 64, "files_not_captured": 0,
                           "files_current_not_seen": 0})
         # The census's budget spent after the root: complete false with the one file it
-        # listed, and the 63 in the folders it never reached are not claimed gone.
+        # listed, and the 63 in the folders it never reached are not claimed gone (no
+        # earlier census's verdict to keep: QcqaCensusVerdictTests).
         spent = [0, 0] + [host_module.CENSUS_BUDGET_SECONDS] * 10
+        (self.state / host_module.HOST_DIR / host_module.CENSUS_FILE).unlink()
         self.assertEqual(census(spent),
                          {"census_complete": False, "complete": False,
                           "reasons": ["time_budget"], "roots_listed": 0, "folders_listed": 1,
@@ -885,7 +994,7 @@ class QcqaLibraryTests(HostCase):
 
 
     def test_a_census_lists_a_folder_larger_than_one_listing_whole(self):
-        # The census listed a folder only up to LIST_MAX_ITEMS (5000)
+        # gap-375b698206de: the census listed a folder only up to LIST_MAX_ITEMS (5000)
         # and reported listing_truncated on every run. A folder of 12,000 children is
         # listed in three listings (5,000 + 5,000 + 2,000), each resuming at the page the
         # one before it stopped: every page read once, every file seen once, no gap.
@@ -906,7 +1015,7 @@ class QcqaLibraryTests(HostCase):
         self.assertEqual((len(pages), len(set(pages))), (60, 60))
 
     # ------------------------------------------- the census carried across calls
-    # decision 2026-10-21-sharepoint-census-across-runs
+    # decision 2026-10-21-sharepoint-census-across-runs (gap-c5979fc39dec)
 
     def census_library(self, folders: int, files: int = 3) -> int:
         """``folders`` more folders under the root, ``files`` files in each; the number
@@ -961,11 +1070,21 @@ class QcqaLibraryTests(HostCase):
         # No folder listed twice and none skipped: 15 listings, 15 distinct folders.
         firsts = [u for u in self.listings(mark) if "skiptoken" not in u]
         self.assertEqual((len(firsts), len(set(firsts))), (15, 15))
-        # A finished census is consumed: the next call lists afresh from the root.
+        # A finished census is consumed: the next call lists afresh from the root, and
+        # while that listing is cut by its own bound the finished census's verdict is
+        # kept inside its age window, with the cut named.
         again = host_module.sharepoint_coverage(
             self.census_host(scope="bound-scope.json", census_budget_seconds=60))
         self.assertEqual((again["census"]["carried"], again["census"]["calls"],
-                          again["reasons"]), (False, 1, ["folder_bound"]))
+                          again["reasons"], again["census"]["verdict"],
+                          again["census"]["refresh_reasons"], again["folders_listed"]),
+                         (False, 1, [], "ended_kept", ["folder_bound"], 4))
+        # Past the window the verdict is gone: the cut fails census_complete again.
+        self.clock.advance(25 * 3600)
+        later = host_module.sharepoint_coverage(
+            self.census_host(scope="bound-scope.json", census_budget_seconds=60))
+        self.assertEqual((later["census_complete"], later["reasons"],
+                          later["census"]["verdict"]), (False, ["folder_bound"], "this_census"))
 
     def test_a_census_cut_by_its_time_budget_resumes_inside_the_folder_it_was_in(self):
         # Pages of 5 children: a folder of 12 files is three listings; the budget (three
@@ -1093,6 +1212,118 @@ class QcqaLibraryTests(HostCase):
                                                        ["capture_folder_bound"]))
         self.assertGreater(cov["files_not_captured"], 0)
 
+    # ------------- one rule for a budget cut (lane capture-checks-complete-across-runs)
+
+    def census_cut_check(self, census_listings: int = 3) -> dict:
+        """``check`` of three cycles over this test's state, its coverage census cut by
+        its own time budget after ``census_listings`` folder listings (a fake clock: one
+        second a listing), the capture itself complete."""
+        self.census_library(10)
+        config = host_module.HostConfig.from_file(self.write_config(sharepoint={
+            "scope": "library-scope.json", "budget_seconds": 600,
+            "census_budget_seconds": census_listings})).only(["sharepoint"])
+        coverage = host_module.sharepoint_coverage
+        start = [0]
+
+        def census(host, **_kw):
+            start[0] = len(self.listings())
+            return coverage(host, monotonic=lambda: float(len(self.listings()) - start[0]))
+
+        with patch.object(host_module, "sharepoint_coverage", census):
+            return host_module.cycles_check(lambda: host_module.Host(
+                self.state, config, environ=ENV, sender=self.router, clock=self.clock),
+                cycles=3)
+
+    def test_cold_census_cut_is_blocked_later_ask(self):
+        from devloop.tests.spec_verdict import verdict
+        spec = json.loads((ROOT / "devloop/live-checks/capture.qcqa_library.json").read_text())
+        lv.validate_spec(spec, stem="capture.qcqa_library")
+        self.assertFalse(cs.store_exists(self.state))
+        cold = self.census_cut_check()
+        coverage = cold["sharepoint_coverage"]
+        self.assertEqual((coverage["census_complete"], coverage["reasons"],
+                          coverage["folders_listed"], coverage["census"]["carried"]),
+                         (False, ["time_budget"], 3, False), coverage)
+        # The capture is whole; only the census, cut on a state no run left, falls short:
+        # blocked on the human step that keeps the state, its progress shown.
+        self.assertEqual(cold["blocked_upstream"], [
+            {"part": "sharepoint.census", "source": "microsoft-graph", "cause": "later_ask",
+             "later_ask": "live-host-persistent-state-dir"}])
+        self.assertEqual(verdict(spec, 0, cold), ("blocked", []))
+        # A leak beside the cut is never hidden by it.
+        leaked = json.loads(json.dumps(cold))
+        leaked["trim"]["withheld_leaks"] = 1
+        self.assertEqual(verdict(spec, 0, leaked)[0], "fail")
+        # The same cut on the next run, which found the census and the store kept: the
+        # cut resumes by itself, so it is a typed fail until it finishes, never blocked.
+        carried = self.census_cut_check()
+        self.assertTrue(carried["sharepoint_coverage"]["census"]["carried"])
+        self.assertGreater(carried["sharepoint_coverage"]["census"]["folders_listed_before"], 0)
+        self.assertNotIn("blocked_upstream", carried)
+        result, failures = verdict(spec, 0, carried)
+        self.assertEqual(result, "fail")
+        self.assertTrue([f for f in failures if "census_complete" in f], failures)
+        # A cold cut beside a scope bound or a gap is a typed fail too (the one rule).
+        self.assertEqual(host_module.coverage_cut_block(
+            {"cycles": cold["cycles"], "sharepoint_coverage": {
+                **coverage, "reasons": ["folder_bound", "time_budget"]}}, carried=False), [])
+        self.assertEqual(host_module.coverage_cut_block(
+            {"cycles": cold["cycles"], "sharepoint_coverage": {
+                **coverage, "files_missed": 1}}, carried=False), [])
+        self.assertEqual(host_module.coverage_cut_block(
+            {"cycles": cold["cycles"], "sharepoint_coverage": {
+                "census_complete": False, "complete": False, "reasons": ["time_budget"]}},
+            carried=False), [])   # coverage not measured: never blocked
+
+    def test_ended_census_verdict_kept_within_window(self):
+        # A library larger than one call's census: once a census ended complete, a later
+        # call whose fresh census its own bound cuts keeps that verdict inside the age
+        # window, and judges what it re-listed; it never keeps it past a change or the
+        # window.
+        self.census_library(10)
+        self.capture_all()
+        scope = self.bounded_scope(4, census_max_age_hours=720)
+
+        def call():
+            return host_module.sharepoint_coverage(
+                self.census_host(scope=scope, census_budget_seconds=60))
+
+        runs = [call() for _ in range(4)]
+        self.assertEqual([r["census_complete"] for r in runs], [False] * 3 + [True])
+        self.assertEqual([r["census"]["verdict"] for r in runs], ["this_census"] * 4)
+        self.clock.advance(7 * 24 * 3600)
+        mark = len(self.listings())
+        kept = call()
+        self.assertEqual((kept["census_complete"], kept["complete"], kept["reasons"],
+                          kept["census"]["verdict"], kept["census"]["refresh_reasons"],
+                          kept["census"]["carried"], kept["folders_listed"]),
+                         (True, True, [], "ended_kept", ["folder_bound"], False, 4))
+        self.assertEqual(len(self.listings()) - mark, 4)   # it re-listed, never skipped it
+        # A file the change feed never reported, in a folder the fresh census lists on
+        # its next call: found, and the kept verdict is dropped (a missed file, the
+        # census cut): never a pass on the earlier listing.
+        sp_t.FakeDrive.file(self.drive, "01SILENT", "AO-9.pdf", "01CF001")
+        self.clock.advance(7 * 24 * 3600)
+        changed = call()
+        self.assertEqual((changed["census_complete"], changed["census"]["verdict"],
+                          changed["reasons"], changed["files_missed"]),
+                         (False, "this_census", ["folder_bound"], 1), changed)
+        # Once the file reaches the capture (here: the feed reports it), the fresh census
+        # ends complete, and its own verdict is kept no longer than the window.
+        self.drive._logged(sp_t.DRIVE, "01SILENT")
+        self.capture_all()
+        for _ in range(4):
+            ended = call()
+            if ended["census"]["verdict"] == "this_census" and ended["census_complete"]:
+                break
+        self.assertEqual((ended["census_complete"], ended["complete"],
+                          ended["census"]["verdict"]), (True, True, "this_census"), ended)
+        self.assertEqual(call()["census"]["verdict"], "ended_kept")
+        self.clock.advance(721 * 3600)
+        stale = call()
+        self.assertEqual((stale["census_complete"], stale["census"]["verdict"],
+                          stale["reasons"]), (False, "this_census", ["folder_bound"]))
+
     def test_an_invalid_census_window_is_refused(self):
         for bad in (0, -1, 721, True, "24", 1.5):
             with self.subTest(bad=bad), self.assertRaises(cs.CaptureError):
@@ -1159,7 +1390,7 @@ class QcqaLibraryTests(HostCase):
                                                 "max_folders": 8}]})
         self.config = self.write_config(sharepoint={
             "scope": "bound-scope.json", "budget_seconds": 600, "census_budget_seconds": 60})
-        spec = json.loads((ROOT / "verify/live-checks/capture.qcqa_library.json").read_text())
+        spec = json.loads((ROOT / "devloop/live-checks/capture.qcqa_library.json").read_text())
         name = spec["command"][spec["command"].index("--state-name") + 1]
         workbench = self.root / "workbench"
         env = {**ENV, "PLX_WORKBENCH_STATE_DIR": str(workbench)}
@@ -1318,7 +1549,7 @@ class TrimTests(HostCase):
             SVC, host_module.WITHHELD_PRINCIPAL]
         live.write_text(json.dumps(audience), "utf-8")
         self.assertGreater(self.served_objects(host_module.WITHHELD_PRINCIPAL), 0)
-        spec = json.loads((ROOT / "verify/live-checks/host.cycles.json").read_text())
+        spec = json.loads((ROOT / "devloop/live-checks/host.cycles.json").read_text())
         code, out, err = self.main("check", "--state-dir", str(self.root / "leaky"),
                                    "--config", str(self.config),
                                    "--interrupt-after-seconds", "5", child=HANGING_RUN)
@@ -1382,6 +1613,46 @@ INIT = [{"jsonrpc": "2.0", "id": 1, "method": "initialize",
 def call(request_id, name, arguments):
     return {"jsonrpc": "2.0", "id": request_id, "method": "tools/call",
             "params": {"name": name, "arguments": arguments}}
+
+
+class FreshnessBoundTests(HostCase):
+    """Supervisor decision 2026-10-27: each captured source's freshness bound comes from
+    the host config's capture cadence, and the MCP host is started with it."""
+
+    def test_bounds_follow_the_configured_cadence_in_both_modes(self):
+        from operating import ingest_forever as forever
+        from operating import mcp_server
+        cycle = self.write_config(interval_seconds=900,
+                                  portal={"base_url": BASE, "relations": sorted(CATALOG),
+                                          "budget_seconds": 500})
+        host = host_module.Host(self.state, host_module.HostConfig.from_file(cycle),
+                                environ=ENV, sender=self.router, clock=self.clock)
+        # 2 x (interval + one capture's budget, else the default timeout).
+        self.assertEqual(host_module.freshness_bounds(host.config), {
+            "portal_api": 2800.0, "bc": 3000.0, "graph_mail": 3000.0, "sharepoint": 3000.0,
+            "teams": 3000.0})
+        argv = host_module.mcp_arguments(host, session_ticket_env="T")
+        given = [argv[i + 1] for i, arg in enumerate(argv) if arg == "--freshness-bound"]
+        self.assertEqual(mcp_server.freshness_bounds(given),
+                         host_module.freshness_bounds(host.config))
+        ingest = self.write("ingest-bounds.json", {
+            "schema": host_module.CONFIG_SCHEMA, "capture_principal": SVC,
+            "capture_audience": "capture-audience.json",
+            "mirror_audience": "mirror-audience.json",
+            "ingest": {"mode": forever.MODE, "grace_seconds": 60},
+            "portal": {"relations": sorted(CATALOG), "budget_seconds": 1500,
+                       "min_interval_seconds": 300},
+            "sharepoint": {"scope": "sharepoint-scope.json", "budget_seconds": 100},
+            "sharepoint_lists": {"scope": "sharepoint-scope.json", "timeout_seconds": 900},
+            "teams": {"scope": "teams-scope.json"}})
+        # 2 x (min_interval (default 120) + budget, timeout or default 600 + grace); the
+        # family two captures write takes the larger.
+        self.assertEqual(host_module.freshness_bounds(host_module.HostConfig.from_file(
+            ingest)), {"portal_api": 3720.0, "sharepoint": 2160.0, "teams": 1560.0})
+        for refused in (["portal_api=0"], ["nowhere=60"], ["bc=60", "bc=70"], ["bc=x"],
+                        ["bc=nan"], ["bc=1e10"]):
+            with self.assertRaises(ValueError, msg=refused):
+                mcp_server.freshness_bounds(refused)
 
 
 class McpStartupTests(HostCase):
@@ -1464,7 +1735,7 @@ class McpStartupTests(HostCase):
         self.assertEqual(code, 0, err)
         self.assertNotIn("plx.act", {tool["name"] for tool in replies[2]["result"]["tools"]})
         stamp = replies[3]["result"]["_meta"]["plx/agent"]
-        self.assertEqual((stamp["id"], stamp["version"]), ("plx.agent.investigate", 1))
+        self.assertEqual((stamp["id"], stamp["version"]), ("plx.agent.investigate", 2))
         self.assertEqual(replies[4]["result"]["content"][0]["text"],
                          "tool_not_allowed_for_agent:plx.agent.investigate")
         with self.assertRaises(host_module.HostError):

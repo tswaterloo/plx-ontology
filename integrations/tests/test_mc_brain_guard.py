@@ -1,8 +1,8 @@
 """MC + brain read guards, retries, approvals, leads and the live probe.
 
 Evidence label: injected-transport. No network I/O: every test injects the
-sender. Contracts follow docs/reference/mission-control.md (PLX_MC @
-1fba0833) and docs/reference/vmc-brain-tools.md (agentic-swarm @ b1117811c).
+sender. Contracts follow devloop/CONTEXT/04-MISSION-CONTROL.md (PLX_MC @
+1fba0833) and 05-VMC-BRAIN-TOOLS.md (agentic-swarm @ b1117811c).
 """
 
 from __future__ import annotations
@@ -215,12 +215,12 @@ class McGuardTests(unittest.TestCase):
             ({**good, "status": "pending", "decidedBy": None, "decidedAt": None},
              False, "not_approved"),
             ({**good, "status": "rejected"}, False, "not_approved"),
-            # Someone else's gate approved by Vince.
+            # Reviewer repro: someone else's gate approved by Vince.
             ({**good, "requestedBy": "stephen@petrasoap.com", "reason": "Approve lunch order"},
              False, "foreign_requester"),
             ({**good, "reason": "Approve lunch order"}, False, "reason_mismatch"),
             ({**good, "reason": reason + " "}, False, "reason_mismatch"),
-            # A service principal as decider.
+            # Reviewer repro: a service principal as decider.
             ({**good, "decidedBy": "sp_mcp_cursor"}, False, "decider_not_human"),
             ({**good, "decidedBy": "agent:cos"}, False, "decider_not_human"),
             ({**good, "decidedBy": ""}, False, "decider_missing"),
@@ -510,8 +510,8 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(self.diagnosis(step), {
             "error": "upstream_error", "layer": "knowledge_status", "http_status": 200,
             "rpc_code": None, "upstream_code": None, "cause_class": None, "attempts": 3})
-        spec = json.loads((ROOT / "verify" / "live-checks" / "mc.brain_probe.json").read_text())
-        from verify import live_verify
+        spec = json.loads((ROOT / "devloop" / "live-checks" / "mc.brain_probe.json").read_text())
+        from devloop import live_verify
         recorded = live_verify._recorded(spec, report)
         # Failure keys exist on failed steps only, the same set on each, so the k-th
         # value of every steps[*].<key> list is the k-th failed step.
@@ -525,7 +525,7 @@ class ProbeTests(unittest.TestCase):
         self.assertNotEqual(live_verify.check_expectations(spec, 1, report), [])
 
         # The brain answers the same query directly: MC's relay is the outage, the
-        # knowledge is served by the fallback and the live check records blocked, not pass.
+        # knowledge is served by the fallback and the verifier records blocked, not pass.
         def brain_search(url, planted):
             self.assertIn("q=PLX+Agent+Workbench", url)
             return ok_json({"data": {"query": PROBE_QUERY, "source": "all", "results": [

@@ -4,8 +4,12 @@
 // the object's records with the reader's next legal step (/api/object-actions) and takes
 // one step per click (POST /api/object-action with the session's CSRF token): request
 // approval, check the decision, dispatch (once; a repeat replays and never re-sends) or
-// verify by read-back. Nothing here approves: a person other than whoever the action is
-// for approves the exact call, in Mission Control or on the call itself. An uncertain
+// verify by read-back. A person on the approver roster who is none of the action's subjects
+// approves the exact call here ("approve_call"): the panel first shows what is approved
+// (action type, target, each parameter with the source it was traced to, the expected
+// effect and the exact call) and the click names that view's digest (approves_sha256), so a
+// call changed since it was shown is refused; approving records the approval and sends
+// nothing. The gate itself is decided in Mission Control. An uncertain
 // outcome is shown as uncertain, never as done. A reader without the action role, or who
 // cannot see an intent's evidence, gets no control. A console that takes no steps answers
 // served:false and the panel is not shown; a failed load shows nothing either, never a
@@ -22,6 +26,7 @@
     not_dispatched: "Nothing has been sent."};
 
   function words(text) { return String(text || "").replace(/_/g, " "); }
+  function json(v) { try { return JSON.stringify(v); } catch (e) { return String(v); } }
   function list(v) { return Array.isArray(v) ? v : []; }
 
   function dom(doc) {
@@ -49,6 +54,12 @@
       row.appendChild(d.el("p", "ow-muted", `No step for you now: ${words(control.why || "none")}.`));
       return row;
     }
+    const approving = control.step === "approve_call";
+    if (approving && !(control.approves && control.approves_sha256)) {
+      row.appendChild(d.el("p", "ow-muted", "No step for you now: the call to approve is not shown."));
+      return row;
+    }
+    if (approving) row.appendChild(approvalView(d, control.approves));
     let task = null;
     if (control.needs_task_id) {
       task = d.el("input");
@@ -65,6 +76,7 @@
       said.textContent = "Working…";
       const body = {intent_id: intent.intent_id, step: control.step};
       if (task) body.task_id = String(task.value || "").trim();
+      if (approving) body.approves_sha256 = control.approves_sha256;
       try {
         const data = await take(body);
         said.textContent = `${words(data.state)}: ${OUTCOME_TEXT[data.outcome] || words(data.outcome)}`;
@@ -74,6 +86,33 @@
     });
     d.add(row, button, said);
     return row;
+  }
+
+  // Exactly what an approval approves, shown before the click (server text as textContent).
+  function approvalView(d, subject) {
+    const box = d.el("div", "ow-approves");
+    box.setAttribute("data-approves", subject.intent_id || "");
+    const target = subject.target || {};
+    const call = subject.call || {};
+    d.add(box, d.el("p", "", "You approve exactly this; nothing is sent by approving:"),
+      d.el("p", "", `Action: ${subject.action_type || "?"} in ${subject.owner_system || "?"}`),
+      d.el("p", "", `Target: ${target.relation || "?"} ${json(target.key)}`),
+      d.el("p", "", `Expected effect: ${json(subject.expected_effect)}`));
+    const params = d.el("ul", "ow-approves-parameters");
+    list(subject.parameters).forEach(p => {
+      const s = p.source || {};
+      const from = s.source === "citation" ? `${s.citation} field ${s.field}`
+        : s.source === "objective" ? `the question a person wrote` : "untraced";
+      params.appendChild(d.el("li", "", `${p.name}: from ${from}`));
+    });
+    if (!list(subject.parameters).length) params.appendChild(d.el("li", "ow-muted", "No traced parameters."));
+    d.add(box, d.el("p", "", "Parameters and their sources:"), params);
+    const cited = d.el("ul", "ow-approves-evidence");
+    list(subject.evidence).forEach(e => cited.appendChild(d.el("li", "", `${e.handle} (sha256 ${String(e.digest || "").slice(0, 12)})`)));
+    d.add(box, d.el("p", "", "Cited evidence:"), cited);
+    list(subject.human_preconditions).forEach(t => box.appendChild(d.el("p", "ow-muted", `Check first: ${t}`)));
+    box.appendChild(d.el("p", "", `Call: ${call.tool || "?"} ${json(call.arguments)}`));
+    return box;
   }
 
   // The /api/object-actions answer as one panel, or null when this console takes no steps
@@ -91,7 +130,7 @@
     }
     list(intents.intents).forEach(intent => box.appendChild(intentRow(d, intent, take)));
     if (!list(intents.intents).length) box.appendChild(d.el("p", "ow-muted", "No registered action you can see cites this object's records."));
-    box.appendChild(d.el("p", "ow-note", intents.note || data.note || "This console never approves."));
+    box.appendChild(d.el("p", "ow-note", intents.note || data.note || "Approving records a person's approval of the exact call; it sends nothing."));
     return box;
   }
 

@@ -1,6 +1,6 @@
 """The eval principal: the declared reader the answer evals run as when no employee is named.
 
-Decision (2026-10-19): when ``PLX_EVAL_READER`` is absent, the answer evals
+Owner directive (2026-10-19): when ``PLX_EVAL_READER`` is absent, the answer evals
 (``eval.case_cards_answers`` and the live parts of ``eval.ask_agent`` and
 ``eval.real_agent``) run as this principal instead of being blocked
 ``no_employee_identity``. It is never a person and never mistaken for one:
@@ -58,7 +58,8 @@ _GUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{1
 _EMAIL = re.compile(r"^[a-z0-9._-]{1,64}@[a-z0-9-]{1,63}\.invalid$")
 _UID = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 CLEARANCES = ("public", "internal", "confidential")   # never restricted
-REFUSED_MARKINGS = frozenset({"finance"})
+# Money: the eval principal reads no price, finance or purchase-order (purchasing_prices).
+REFUSED_MARKINGS = frozenset({"finance", "purchasing_prices"})
 
 
 @dataclass(frozen=True)
@@ -96,7 +97,8 @@ def load(path: Path = CONFIG) -> EvalPrincipal:
                                                  for m in markings):
         raise ValueError("eval_principal_markings_invalid")
     if REFUSED_MARKINGS & set(markings):
-        raise ValueError("eval_principal_marking_refused:finance")
+        raise ValueError("eval_principal_marking_refused:"
+                         + ",".join(sorted(REFUSED_MARKINGS & set(markings))))
     for key, shape in (("object_id", _GUID), ("email", _EMAIL), ("uid", _UID)):
         if not isinstance(doc[key], str) or not shape.fullmatch(doc[key]):
             raise ValueError(f"eval_principal_{key}_invalid")

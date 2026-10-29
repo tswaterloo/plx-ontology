@@ -1,9 +1,9 @@
 """Cross-system root sampling for the unfamiliar-transaction find eval (eval.unfamiliar_sample).
 
-Every run samples real transactions
+Directive 4190c1c690ce item 5 / 4e839fb7cabf (3): every run samples real transactions
 across kinds, seeded by the run id, and takes each question's identifier from a record of
 **another** system than the root's. The product is then asked to find the root from that
-identifier alone. This module is the sampling half and lives inside the oracle, so the
+identifier alone. This module is the sampling half and lives inside the oracle lane, so the
 import ban (``scripts/check_oracle_imports.py``) keeps it independent of the projection and
 resolver it grades: it reads only the injected oracle sources (Portal rows, BC documents,
 mail/SharePoint texts) and joins only on ``keys.EDGES``.
@@ -16,7 +16,7 @@ Kinds (``KINDS``):
   ``bc_native_roots``: a Portal row is optional, and the BC copy of a Portal order is that
   order, one root);
 * ``bc_invoice``: a posted BC sales or purchase invoice is the root;
-* ``po_three_way``: a Portal purchase order (``app_purchase_order``)
+* ``po_three_way`` (directive 541a4f06b2dd): a Portal purchase order (``app_purchase_order``)
   with a Portal receipt or a sampled BC purchase invoice carrying its number is the root;
   the question is its three-way state (``plx.process``), and the item carries the oracle's
   own reading (``three_way.reading``: stages and sides as enums) for the scorer;
@@ -128,7 +128,7 @@ FUNNEL = ("rows", "no_number", "native_staging", "portal_twin", "roots", "no_ref
 # sales-order-roots): a BC sales order is a sales_order root, Portal row or not.
 BC_NATIVE_ROOT_SETS = {"sales_order": ("salesOrders",)}
 # A kind stops drawing BC probes after this many consecutive probes that yielded no
-# reference naming the root (gap-51ebb6c78e90: a BC record found that
+# reference naming the root (decision 89aed11571b0; gap-51ebb6c78e90: a BC record found that
 # names no root, e.g. another database's order carrying a shared customer PO, is a miss
 # too): BC holds no copy of its roots, and its unspent share goes to the
 # later kinds instead of being refused root after root. Below the even share of the default
@@ -600,7 +600,7 @@ def carried_reference(sources: Sources, root: Root,
         # The yield rule, applied to every BC-rooted kind (bc_invoice, receipts and the
         # rest alike, not only sales orders): a probe whose lookup read completely and
         # named no root is a miss of the budget, whatever the lookup found
-        # (gap-51ebb6c78e90). The next live check result must confirm that the
+        # (gap-51ebb6c78e90). The next live verifier result must confirm that the
         # invoice/receipt-style kinds do not stop early on it (BC_MISS_STOP).
         if named is False:
             budget.found(False)

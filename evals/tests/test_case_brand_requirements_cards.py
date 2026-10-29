@@ -1,15 +1,15 @@
 """Brand requirements case: PROPOSED dev-exposed cards and the ontology gaps they need.
 
 ``evals/dev/brand-requirements/proposed_items.json`` holds the questions of Laura Abate's
-Customer Brand Requirements map (Draft 6): which requirements apply
+Customer Brand Requirements map (Draft 6, advisory 51cf697a454b): which requirements apply
 to a customer, brand and product, the compliance documents on supplier-specific R numbers,
 the supplier switch review, the batching gate, approved versions and claim-affecting
 changes. The map's 12 stages and 15 rules are stakeholder proposals; the Three Ships
 example is an attributed account; the map's failing checks are source assertions. The four
-originals of the ZIP are pinned by SHA-256 from the source record.
+originals of the ZIP are pinned by SHA-256 from the advisory record.
 
 The contract is ``evals.case_cards``; this check adds the four pins, the honest status of
-the draft, the typed missing originals, the questions and no prices, bodies or
+the draft, the typed missing originals, the Dot questions and no prices, bodies or
 e-mail addresses.
 """
 
@@ -69,13 +69,13 @@ def problems(cards: dict, gaps: dict, originals: dict) -> list[str]:
     # Every gap that needs a person asks Laura or Regulatory; each missing original has a gap.
     gap_ids = {g["id"] for g in gaps["gaps"]}
     for g in gaps["gaps"]:
-        q = g.get("open_question")
+        q = g.get("dot_question")
         if q is not None and not re.search(r"\b(Laura|Regulatory)\b", q):
             out.append(f"{g['id']}: question for Laura or Regulatory")
     for m in cards.get("missing_originals", []):
         if m.get("state") not in STATES or m.get("gap") not in gap_ids:
             out.append(f"missing original {m.get('id')}")
-    if not any(g.get("open_question") for g in gaps["gaps"]):
+    if not any(g.get("dot_question") for g in gaps["gaps"]):
         out.append("question for Laura or Regulatory")
     text = json.dumps([cards, gaps], ensure_ascii=False)
     if PRICE.search(text):
@@ -107,13 +107,13 @@ class BrandRequirementsCardsTest(unittest.TestCase):
 
     def test_pin_matches_the_advisory_record(self):
         """record_sha256 is the SHA-256 of the record at its commit; the four members and
-        the ZIP are the record's own."""
+        the ZIP are the record's own. Needs the advisory commit (git fetch it)."""
         pin = self.cards["source"]["advisory"]
         commit = pin["ref"].rsplit("@", 1)[1]
         run = subprocess.run(["git", "-C", str(ROOT), "show", f"{commit}:{pin['path']}"],
                              capture_output=True, check=False)
         if run.returncode != 0:
-            self.skipTest("commit 3d9269e8 is not in this clone")
+            self.skipTest("advisory commit 3d9269e8 is not in this clone")
         self.assertEqual(hashlib.sha256(run.stdout).hexdigest(), pin["record_sha256"])
         record = json.loads(run.stdout)
         archive = self.cards["source"]["original_archive"]
@@ -141,9 +141,9 @@ class BrandRequirementsCardsTest(unittest.TestCase):
                 status=c["status"].replace("stakeholder proposals", "decisions")),
             "map counts": lambda c, g: c["map_counts"].update(rules=14),
             "question for Laura or Regulatory": lambda c, g: gap(g, "BR-GAP-01")
-            .update(open_question="Who owns it?"),
-            "source unknown without an open question": lambda c, g: gap(g, "BR-GAP-11")
-            .pop("open_question"),
+            .update(dot_question="Who owns it?"),
+            "source unknown without a Dot question": lambda c, g: gap(g, "BR-GAP-11")
+            .pop("dot_question"),
             "missing original MO-01": lambda c, g: c["missing_originals"][0].pop("gap"),
             "price": lambda c, g: card(c, "BR-12").update(criterion="Costs USD 900."),
             "body": lambda c, g: c["source"]["original_archive"].update(body="x"),

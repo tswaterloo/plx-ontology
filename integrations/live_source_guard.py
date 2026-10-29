@@ -80,13 +80,13 @@ relation audience: exact or trailing-``*`` patterns, most specific wins,
 tenant + clearance + principal intersection) names who may read each resource
 (``mail:<mailbox>``, ``sharepoint:<drive-id>:<path>``,
 ``bc:<environment>:<company-id>:<entitySet>``, ``teams:channel:<team-id>:<channel-id>``,
-``teams:chat:<chat-id>``). Resources listed in ``source_acl_required`` (and every
+``teams:chat:<chat-id>``, ``repo:<owner>/<name>``: exact patterns only). Resources listed in ``source_acl_required`` (and every
 ``teams:`` resource, always) additionally need the actor's declared source
 identities to appear in the item's own source ACL (mailbox owner; SharePoint
 item permissions; Teams channel or chat membership). An unreadable ACL denies.
 
-Canonical identity before audience (changed diagnosis): each
-reader has one guarded entry point per target that first
+Canonical identity before audience (changed diagnosis after review of
+7c270ee): each reader has one guarded entry point per target that first
 resolves the caller's name to the server's canonical identity with a
 metadata-only GET (mail: ``/users/{x}?$select=id,userPrincipalName,mail,
 proxyAddresses``; SharePoint: the folder/item Graph resolves -> server-derived
@@ -227,7 +227,7 @@ MAX_ATTACHMENT_RESPONSE_BYTES = 28_000_000
 _LARGE_RESPONSE_OPERATIONS = frozenset({"graph.message_attachment"})
 # Bound of one credential-free pre-authenticated SharePoint download (one original,
 # held in memory once). Delivered use-case originals exceed 25 MB (a 31 MB zip of
-# case mails and PDFs, cases-and-artifacts.md 1.11); callers pass their own lower cap.
+# case mails and PDFs, 02-CASES-AND-ARTIFACTS 1.11); callers pass their own lower cap.
 MAX_CONTENT_BYTES = 100_000_000
 LIVE_AUDIENCE_SCHEMA = "plx-live-source-audience/v1"
 
@@ -407,7 +407,7 @@ def is_nextlink_refusal(error: BaseException) -> bool:
             and getattr(error, "nextlink_refused", False) is True)
 
 
-# Sanitised diagnosis of a ``SourceUnavailable``: a
+# Sanitised diagnosis of a ``SourceUnavailable`` (directive e402518f64be): a
 # token from a FIXED vocabulary, derived from the messages this module and the
 # readers raise. Never free text, URLs, ids, names or numbers from the source;
 # an unknown message reads ``unclassified``. Callers (``operating.ingestion``)
@@ -451,7 +451,7 @@ _GAVE_UP = re.compile(r"\(gave up after \d+ attempts\)")
 RETRIED_PREFIX = "retried."
 # Every token ``unavailable_detail`` can return (without ``RETRIED_PREFIX``).
 # Tokens stay <= 24 characters so ``source_error:<Class>:retried.<token>`` fits
-# the live checks' 64-character enum bound for every SourceUnavailable class
+# the live verifier's 64-character enum bound for every SourceUnavailable class
 # (asserted by integrations.tests.test_live_source_guard_diag).
 DETAIL_TOKENS = frozenset(
     {f"http_{code}" for code in HTTP_STATUS_DETAILS}
@@ -492,12 +492,12 @@ def unavailable_detail(exc: BaseException) -> str | None:
     return detail
 
 
-# Upstream error-code class: the ``error.code`` of a
+# Upstream error-code class (directive 8f867fce7ba1): the ``error.code`` of a
 # Graph/BC JSON error body, or the OAuth token endpoint's ``error`` string, as
 # one token of a FIXED vocabulary (camelCase -> snake_case). A code outside the
 # list reads ``other``: a code is source text and could carry a value. Never the
 # message, the description or any other part of the body. One family is admitted by
-# shape (the payment journals' 400 read ``other`` with every code
+# shape (gap-1b49174b629f, the payment journals' 400 read ``other`` with every code
 # below listed): BC's platform codes ``<Category>_<Name>`` (``_BC_CODE``), a category of
 # BC's own and a name of letters only, so no number, id, date, space or quote passes.
 _UPSTREAM_ERROR_CODES = (
@@ -570,13 +570,13 @@ def upstream_error_code(raw: Any) -> str | None:
     return token if _BC_CODE.fullmatch(code) and is_error_code_token(token) else "other"
 
 
-# Upstream message class: what a JSON error body's ``error.message``
+# Upstream message class (gap-1b49174b629f): what a JSON error body's ``error.message``
 # is about, as one token of a FIXED vocabulary matched by fixed patterns, never a copy:
 # the message is source text and carries names, numbers and filter values. First match
 # wins; ``unclassified`` is a message no pattern names. The class is diagnosis only, never
 # a verdict: the patterns are English guesses no live message has confirmed, so whether a
 # refusal is expected is spec data (``bc_read.expected_refusal``), never this class
-# ``_MESSAGE_CLASSES`` name the journal setup a payment journal
+# (architect-20261013T0921Z). ``_MESSAGE_CLASSES`` name the journal setup a payment journal
 # listing needs: its template, batch, number series or journal/payment setup (a setup
 # table of another subject, e.g. a currency's, is no such class). The subject is the thing
 # missing, not one named beside it ("The Gen. Journal Batch does not exist. ... Journal
@@ -683,6 +683,10 @@ class BoundedBackoff:
         self.budget_seconds = None if budget_seconds is None else float(budget_seconds)
         self.slept_seconds = 0.0
         self.retries = 0
+        # A Retry-After one thread was given holds the other threads sharing this backoff
+        # (``hold``): (monotonic end, the thread that waits it out itself).
+        self._hold_lock = threading.Lock()
+        self._hold: tuple[float, int] | None = None
 
     def __repr__(self) -> str:
         return f"BoundedBackoff(max_retries={self.max_retries}, retries={self.retries})"
@@ -723,14 +727,35 @@ class BoundedBackoff:
         return self.slept_seconds + self.delay(attempt, headers) <= self.budget_seconds
 
     def pause(self, attempt: int, headers: Mapping[str, str] | None = None) -> float:
-        """Sleep one bounded, jittered backoff step and return its length."""
+        """Sleep one bounded, jittered backoff step and return its length. A step the
+        source asked for (``Retry-After``) also holds every other thread sharing this
+        backoff until it ends (``hold``), so concurrent readers honour it together."""
         delay = self.delay(attempt, headers)
         if self.budget_seconds is not None:
             delay = min(delay, max(0.0, self.budget_seconds - self.slept_seconds))
+        lowered = {str(k).lower(): v for k, v in (headers or {}).items()}
+        if self.retry_after(lowered.get("retry-after")) is not None:
+            with self._hold_lock:
+                end = time.monotonic() + delay
+                if self._hold is None or self._hold[0] < end:
+                    self._hold = (end, threading.get_ident())
         self.slept_seconds += delay
         self.retries += 1
         self._sleep(delay)
         return delay
+
+    def hold(self) -> float:
+        """Before a request: wait out a ``Retry-After`` another thread was given (at most
+        ``BACKOFF_CAP_SECONDS``); the wait slept (0 when none is running)."""
+        with self._hold_lock:
+            held = self._hold
+        if held is None or held[1] == threading.get_ident():
+            return 0.0
+        left = min(BACKOFF_CAP_SECONDS, held[0] - time.monotonic())
+        if left <= 0:
+            return 0.0
+        self._sleep(left)
+        return left
 
 
 class Secret:
@@ -889,10 +914,10 @@ class _RefuseRedirect(HTTPRedirectHandler):
 # A connection that is not up (TCP connect, proxy CONNECT, TLS handshake) within this
 # fails at once; the request's own timeout still bounds each read of the answer. Live BC
 # GETs that failed before any status took about 16 s per attempt under the one 30 s
-# timeout (docs/decisions/2026-10-08-bc-three-way-connect-timeout.md).
+# timeout (devloop/DECISIONS/2026-10-08-bc-three-way-connect-timeout.md).
 CONNECT_TIMEOUT_SECONDS = 10.0
 
-# Keep-alive pool for GETs (a SharePoint capture spent about a third of
+# Keep-alive pool for GETs (gap-e7f87c40ec57: a SharePoint capture spent about a third of
 # its time on one TCP+TLS handshake per request). Small and bounded: idle connections per
 # (connect host, tunnel host, proxy credential) key and in total; an idle connection
 # older than KEEPALIVE_IDLE_SECONDS is closed instead of reused.
@@ -1250,6 +1275,7 @@ class GuardedTransport:
         self._timeout = float(timeout_seconds)
         self._secrets: list[Secret] = []
         # Every request sent, and the GETs among them (never the OAuth token POST).
+        self._count_lock = threading.Lock()
         self.requests_sent = 0
         self.gets_sent = 0
         # The grammar operations of the GETs a source answered (status < 400): what a
@@ -1292,9 +1318,10 @@ class GuardedTransport:
         timeout = _deadline_timeout(self._timeout)
         for observe in self.observers:
             observe(method, url)
-        self.requests_sent += 1
-        if method == "GET":
-            self.gets_sent += 1
+        with self._count_lock:   # concurrent readers share one transport
+            self.requests_sent += 1
+            if method == "GET":
+                self.gets_sent += 1
         try:
             status, response_headers, raw = self._sender(method, url, headers, body,
                                                          timeout, max_bytes)
@@ -1427,12 +1454,18 @@ class TokenProvider:
         self._clock = clock
         self._token: Secret | None = None
         self._expires_at = 0.0
+        # Concurrent readers share one provider: one token request at a time.
+        self._lock = threading.Lock()
         transport.register_secret(credentials.client_secret)
 
     def __repr__(self) -> str:
         return f"TokenProvider(scope={self._scope!r})"
 
     def bearer(self) -> str:
+        with self._lock:
+            return self._bearer()
+
+    def _bearer(self) -> str:
         now = self._clock()
         if self._token is not None and now < self._expires_at - 120:
             return self._token.reveal()
@@ -1525,6 +1558,7 @@ class SourceApi:
         is never resent by this loop. After the bound the original error is
         raised (or the last status returned) with the attempt count."""
         if self._retry is not None:
+            self._retry.hold()
             self._retry.request()
         attempt = 0
         while True:
@@ -1713,7 +1747,7 @@ class SourceApi:
 # OData addresses one entity by key either as a path segment (``/x/<id>``) or
 # in key syntax (``/x('<id>')``, BC ``/companies(<guid>)``); Graph answers a
 # listing requested as ``mailFolders/<id>/messages`` with a nextLink on
-# ``mailFolders('<id>')/messages`` (live repro).
+# ``mailFolders('<id>')/messages`` (live repro, directive 4f484b130e05).
 _KEY_SEGMENT = re.compile(r"^([A-Za-z][A-Za-z0-9._-]{0,63})\((?:'([^'()]+)'|([^'()]+))\)$")
 _GUID_SEGMENT = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
                            r"[0-9a-fA-F]{12}$")
@@ -1876,7 +1910,7 @@ def _same_plus_aligned(request_raw: str, link_raw: str) -> bool:
     either value refuses. So the raw ``+`` positions coincide and only the
     escaping of the other bytes may differ: Graph echoes a ``$filter`` sent as
     ``receivedDateTime+ge+2026-09-01T00%3A00%3A00Z`` as
-    ``receivedDateTime+ge+2026-09-01T00:00:00Z``.
+    ``receivedDateTime+ge+2026-09-01T00:00:00Z`` (live directive 4458d0e6d280).
 
     Why this cannot admit a different filter: a server decodes a value either
     as a form (``+`` -> space, then percent-decode) or percent-only (``+``
@@ -1996,8 +2030,25 @@ def _same_collection_next(url: str, continuation: Any, *,
 
 # Spaces are allowed (SharePoint folder names have them); control characters
 # and inner ``*`` are not.
-_RESOURCE = re.compile(r"^(mail|sharepoint|bc|teams|mc):[^\x00-\x1f\x7f*]{1,1024}$")
-_PATTERN = re.compile(r"^(mail|sharepoint|bc|teams|mc):[^\x00-\x1f\x7f*]{0,1024}\*?$")
+_RESOURCE = re.compile(r"^(mail|sharepoint|bc|teams|mc|repo):[^\x00-\x1f\x7f*]{1,1024}$")
+_PATTERN = re.compile(r"^(mail|sharepoint|bc|teams|mc|repo):[^\x00-\x1f\x7f*]{0,1024}\*?$")
+# A code repository a case original was committed to (``repo:<owner>/<name>``, GitHub's
+# name grammar; no reader fetches from it, ``operating.captured_originals`` serves the
+# bytes the local object store holds). Granted by exact pattern only: never ``*``, no
+# prefix, so each grant names one repository; matched case-insensitively as GitHub names.
+_REPOSITORY_RESOURCE = re.compile(r"repo:([A-Za-z0-9_.\-]{1,100})/([A-Za-z0-9_.\-]{1,100})")
+
+
+def _repository_resource_ok(value: str) -> bool:
+    found = _REPOSITORY_RESOURCE.fullmatch(value)
+    return found is not None and not any(set(part) == {"."} for part in found.groups())
+
+
+def _repository_key_bad(resource: str) -> bool:
+    """A ``repo:`` resource malformed as given, decided before any lowercasing (a
+    non-ASCII character that lowercases to ASCII, such as the Kelvin sign, never
+    reaches a grant)."""
+    return resource.startswith("repo:") and not _repository_resource_ok(resource)
 # A Teams conversation is visible only to its members and a SharePoint list item only to
 # those its own permissions name: every ``teams:`` and ``sharepoint:list:`` resource needs
 # the item's own source ACL (the membership or permissions captured with it), whatever the
@@ -2079,6 +2130,8 @@ class LiveSourceAudience:
     def _check_pattern(pattern: Any) -> None:
         if not isinstance(pattern, str) or _PATTERN.fullmatch(pattern) is None:
             raise ValueError("live_source_audience_pattern_invalid")
+        if pattern.lower().startswith("repo:") and not _repository_resource_ok(pattern):
+            raise ValueError("live_source_audience_pattern_invalid")
 
     @staticmethod
     def _principals(principals: Any) -> list[str]:
@@ -2111,28 +2164,41 @@ class LiveSourceAudience:
     def from_file(cls, path: str | Path) -> "LiveSourceAudience":
         return cls.from_json(_strict_json(Path(path).read_bytes()))
 
+    @staticmethod
+    def _lookup(table: Mapping[str, Any], key: str) -> Any:
+        """``_match``, except that a ``repo:`` resource matches its exact pattern only."""
+        if key.startswith("repo:"):
+            return table.get(key) if _repository_resource_ok(key) else None
+        return _match(table, key)
+
     def classification_for(self, resource: str) -> str:
-        return _match(self._classifications, resource.lower()) or self.default_classification
+        if _repository_key_bad(resource):
+            return "restricted"
+        return self._lookup(self._classifications, resource.lower()) \
+            or self.default_classification
 
     def allows(self, actor: Actor, resource: str) -> bool:
         if (not isinstance(actor, Actor) or not isinstance(resource, str)
-                or _RESOURCE.fullmatch(resource) is None or actor.tenant != self.tenant):
+                or _RESOURCE.fullmatch(resource) is None or actor.tenant != self.tenant
+                or _repository_key_bad(resource)):
             return False
         key = resource.lower()
         if LEVELS[self.classification_for(key)] > LEVELS[actor.clearance]:
             return False
-        return bool((_match(self._audiences, key) or frozenset()) & actor.principals)
+        return bool((self._lookup(self._audiences, key) or frozenset()) & actor.principals)
 
     def principals_for(self, resource: str) -> frozenset[str]:
         """The principals the most specific pattern grants ``resource`` (before the
         tenant and clearance checks of ``allows``); empty when none or malformed."""
-        if not isinstance(resource, str) or _RESOURCE.fullmatch(resource) is None:
+        if not isinstance(resource, str) or _RESOURCE.fullmatch(resource) is None \
+                or _repository_key_bad(resource):
             return frozenset()
-        return _match(self._audiences, resource.lower()) or frozenset()
+        return self._lookup(self._audiences, resource.lower()) or frozenset()
 
     def granted_sources(self) -> frozenset[str]:
-        """The source families (``mail``, ``sharepoint``, ``bc``, ``teams``, ``mc``) some
-        pattern grants to a principal: under this map nobody reads any other family."""
+        """The source families (``mail``, ``sharepoint``, ``bc``, ``teams``, ``mc``,
+        ``repo``) some pattern grants to a principal: under this map nobody reads any other
+        family."""
         return frozenset(pattern.split(":", 1)[0]
                          for pattern, principals in self._audiences.items() if principals)
 
@@ -2167,11 +2233,13 @@ class LiveSourceAudience:
         specific per key) must grant the actor, and the strictest
         classification of all keys must be within the actor's clearance.
         """
-        keys = [r.lower() for r in resources if isinstance(r, str)]
+        given = [r for r in resources if isinstance(r, str)]
+        keys = [r.lower() for r in given]
         if (not isinstance(actor, Actor) or actor.tenant != self.tenant or not keys
-                or any(_RESOURCE.fullmatch(k) is None for k in keys)):
+                or any(_RESOURCE.fullmatch(k) is None for k in keys)
+                or any(_repository_key_bad(r) for r in given)):
             return False
-        matched = [_match(self._audiences, key) for key in keys]
+        matched = [self._lookup(self._audiences, key) for key in keys]
         if all(m is None for m in matched):
             return False
         if any(m is not None and not (m & actor.principals) for m in matched):

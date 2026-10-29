@@ -1,6 +1,6 @@
 """Source-backed identifier candidates behind the ``plx.find`` contract.
 
-ONE resolver in
+Directives 4190c1c690ce item 3, 7f61c793591f 2a and 3feb26395fb3: ONE resolver in
 the ontology identity layer. ``plx.find`` (``operating/ontology_tools.py``) answers
 from the L2 projection store; until that store is populated live, the same tool
 asks this module when the store has no visible match for an identifier. Nothing
@@ -16,7 +16,7 @@ of every object type (``object_type`` narrows it) whose ``identifier_kind`` is o
 of the query's typed keys names its carriers (binding source, relation, path).
 No kind, type or case is named in this file.
 
-Permissions are decided before any read (permission filter before
+Permissions are decided before any read (directive: permission filter before
 ranking): a carrier is read only when ``may_read(audience_key)`` grants its L1
 audience unit (``api:<relation>``; ``bc:<company>/<entity set>`` per company),
 and the readers re-check their own audiences. The throw-away store is then read
@@ -31,7 +31,7 @@ No lookup is wired for Graph mail or SharePoint (their identifier bindings are a
 message's Message-ID and a file's digest, read from the captures): a carrier without a
 lookup is ``not_configured``.
 
-Transient failures (live evidence: BC ``SourceUnavailable`` is
+Transient failures (live evidence of 3feb26395fb3: BC ``SourceUnavailable`` is
 intermittent, and the shared ``RETRY_BUDGET_SECONDS`` can be spent by a burst):
 each read is retried once; a read that fails twice marks that carrier unit
 ``unreadable``, is counted, and the resolution continues with the other units.
@@ -76,7 +76,7 @@ tier ``lead``. ``SameNumberIndex`` finds same-number twins among values already 
 ``PO#7100-FM9``): rows in two systems storing one number are leads naming every row;
 orders, POs, AOs and invoices never merge (identity_rules.auto_merge).
 
-Reviewed aliases (``ReviewedAliases``): an identifier a person
+Reviewed aliases (``ReviewedAliases``, directive dd40ff1bf83f P3): an identifier a person
 confirmed as naming a record (``ontology.reviews``) is one more identifier-index row of
 that record for ``plx.find``, tier ``reviewed``, while the record versions the review cites
 are current and readable by the reader; nothing else in the resolution changes.
@@ -112,7 +112,14 @@ PROBE_STATES = ("read", "withheld", "unreadable", "not_searchable", "not_served"
                 "truncated", "unpinned", "not_configured")
 NOT_READ = frozenset(PROBE_STATES) - {"read"}
 # How a probed unit was served; a later probe of the same unit keeps the worst.
-SERVED_FROM = ("live", "cached_mirror", "persisted_capture", "none")
+# ``host_capture``: the host's own ingest capture, within its capture bound, read by a
+# host with no live client (``MirrorLookup(captured_bound=)``): not live, not stale.
+SERVED_FROM = ("live", "host_capture", "cached_mirror", "persisted_capture", "none")
+# The mirror's own refresh bound when the mirror is the host's capture: never refreshed
+# by the reader (``integrations.source_mirror`` accepts at most ten years).
+NEVER_REFRESH_SECONDS = 10 * 365 * 86400
+# The error code of a unit a host's own capture does not hold (``MirrorLookup``).
+NOT_CAPTURED = "not_captured"
 # Served from a past capture, never live: stale, labelled, as old as that capture.
 COPIED = frozenset({"cached_mirror", "persisted_capture"})
 _ERROR_CODE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
@@ -659,7 +666,7 @@ def _compare_key(value_type: str, value: CitedValue) -> tuple:
     return ("s", value.value.strip())
 
 
-# Lineages that are never authority for a value (gold native staging
+# Lineages that are never authority for a value (09-CRITIQUE R1: gold native staging
 # rows until a person confirms them): their values are never compared.
 NEVER_AUTHORITY = frozenset({"gold_native_staging"})
 
@@ -755,7 +762,7 @@ def compare_linked(check: Corroboration, counterpart: Sequence[CitedValue],
 
 
 def verdict(checks: Iterable[Check]) -> str:
-    """The identity verdict, on identifiers only (a shared value that
+    """The identity verdict, on identifiers only (10-DECISION 3; a shared value that
     differs is reported, never decides): any identifier conflict is a conflict; else
     any identifier agreement is an agreement; else nothing was proven (no counterpart,
     or no identifier could be compared): ``unverifiable``."""
@@ -1127,7 +1134,7 @@ class SourceResolver:
 class ReviewedAliases:
     """Reviewed aliases behind ``plx.find``: the identity layer's one alias lookup over
     the review store (``ontology.reviews``), so ``plx.find`` keeps one resolver and one
-    grammar for source and reviewed identifiers alike.
+    grammar (rule 4190c1c690ce) for source and reviewed identifiers alike.
 
     A person's ``alias`` decision says that an identifier (kind and normalized value of
     ``ontology/schema/identifiers.json``) names its subject record, read in a cited
@@ -1216,11 +1223,21 @@ class MirrorLookup:
                  clock: Callable[[], datetime] | None = None,
                  scan_cap: int = MIRROR_SCAN_CAP,
                  index_ttl_seconds: float = MIRROR_INDEX_TTL_SECONDS,
-                 monotonic: Callable[[], float] | None = None) -> None:
+                 monotonic: Callable[[], float] | None = None,
+                 captured_bound: float | None = None,
+                 freshness_clock: Callable[[], datetime] | None = None) -> None:
+        """``captured_bound`` (seconds): the mirror is the host's own ingest capture and
+        this reader has no live client. It never asks the mirror to refresh; a page is
+        ``host_capture`` (labelled with its captured time and age) while its last
+        refresh is within the bound and ``cached_mirror`` (stale) past it."""
         import time
         self.mirror = mirror
         self.index_ttl = index_ttl_seconds
         self.monotonic = monotonic or time.monotonic
+        self.captured_bound = captured_bound
+        self.freshness_clock = freshness_clock  # the captured page's age is judged at
+        if captured_bound is not None:
+            max_staleness = NEVER_REFRESH_SECONDS
         self.max_staleness = max_staleness
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.scan_cap = scan_cap
@@ -1282,6 +1299,13 @@ class MirrorLookup:
                       served)]
 
     def _refused(self, relation: str, path: str, exc: Any) -> Probe:
+        if self.captured_bound is not None and exc.code in _MIRROR_TRANSIENT:
+            # The host's capture holds no copy of the relation and this reader asks no
+            # live source: not ingested here, and the source is unavailable to this host
+            # (``not_captured``), never "live source unavailable".
+            return Probe(self.source, relation, path, "not_served",
+                         freshness=scope_entry(relation, "none", None,
+                                               error_code=NOT_CAPTURED))
         transient = exc.code in _MIRROR_TRANSIENT
         state = ("withheld" if exc.code == "not_visible" else
                  "not_served" if exc.code in ("unknown_relation", "relation_unavailable",
@@ -1313,19 +1337,42 @@ class MirrorLookup:
             arguments["max_staleness"] = self.max_staleness
         return self.mirror.rows(actor, relation, **arguments)
 
-    @staticmethod
-    def _stale(page: Mapping[str, Any]) -> bool:
+    def _capture_age(self, freshness: Mapping[str, Any]) -> float | None:
+        """Seconds since the page's last refresh (None: unknown or unparseable)."""
+        try:
+            at = datetime.fromisoformat(str(freshness.get("last_refresh_at"))
+                                        .replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        return ((self.freshness_clock or self.clock)() - at).total_seconds()
+
+    def _stale(self, page: Mapping[str, Any]) -> bool:
         freshness = page.get("freshness") or {}
+        if self.captured_bound is not None and not freshness.get("source_freshness"):
+            age = self._capture_age(freshness)
+            return age is None or age > self.captured_bound
         return bool(freshness.get("stale") or freshness.get("refresh_error"))
 
-    @staticmethod
-    def _served(relation: str, page: Mapping[str, Any]) -> dict[str, Any]:
+    def _served(self, relation: str, page: Mapping[str, Any]) -> dict[str, Any]:
         """How the mirror served a page: from a persisted capture (its
         ``source_freshness``), from the capture it held when its refresh failed or the
-        page is stale (``cached_mirror``, as of ``last_refresh_at``), or live."""
-        from integrations.mirror_capture import stale_label
+        page is stale (``cached_mirror``, as of ``last_refresh_at``), or live. With a
+        ``captured_bound`` the page is the host's capture: ``host_capture`` within the
+        bound, ``cached_mirror`` past it, labelled with its captured time and age."""
+        from integrations.mirror_capture import capture_label, stale_label
         freshness = page.get("freshness") or {}
         copied = freshness.get("source_freshness")
+        if self.captured_bound is not None and not copied:
+            as_of = freshness.get("last_refresh_at")
+            age = self._capture_age(freshness)
+            label = (capture_label(as_of, age, self.captured_bound)
+                     if as_of and age is not None else None)
+            if age is not None and age <= self.captured_bound:
+                return scope_entry(relation, "host_capture", as_of, label=label)
+            return scope_entry(relation, "cached_mirror", as_of, label=label,
+                               error_code="capture_bound_exceeded")
         if copied:
             return scope_entry(relation, "persisted_capture", copied.get("captures_as_of"),
                                label=copied.get("label"),

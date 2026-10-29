@@ -25,13 +25,22 @@ from integrations.document_understanding import (extract_document, line_item_tex
                                                   local_image_text)
 from integrations.tests.test_doc_convert import make_msg, msg_tree
 from ontology.core import ValidationError
+from ontology.tests.test_container_members import zipped
 from operating.use_case_parts import members
 
 
+OCR_TOOLS = all(shutil.which(tool) for tool in ("pdfinfo", "pdftotext", "pdftoppm", "tesseract"))
 POPPLER = all(shutil.which(tool) for tool in ("pdfinfo", "pdftotext"))
+# Whole and with a content stream, so a tool refusal is pdf_unreadable, not a pdf_stub.
+WHOLE_PDF = b"%PDF-1.4\n1 0 obj\n<< /Length 0 >>\nstream\nendstream\nendobj\n%%EOF\n"
 
 
 URL = "https://tenant.example.com/sites/purchasing/po-200.pdf"
+
+
+def read_text_of(content: bytes, name: str) -> str:
+    return extract_document(content, "application/octet-stream", original_url=URL,
+                            filename=name).text
 CONTENT = ("Petra PO: PPO-200\nSupplier: Acme Packaging\n"
            "Item: BTL-100 | Qty: 100,000 bottles | Unit Price: USD 0.12\n"
            "Requested delivery: 2026-11-15\nTotal Amount: USD 12000\n")
@@ -60,6 +69,154 @@ class DocumentUnderstandingTest(unittest.TestCase):
         self.assertEqual(bare.evidence_attributes(URL)["costs"], [])
         self.assertEqual(bare.evidence_attributes(URL)["quantities"], [])
         self.assertEqual(len(bare.claims), 2)
+
+    def test_a_csv_file_is_read_as_text_whatever_type_the_host_declares(self):
+        """A ``.csv`` file is text, as a container's ``.csv`` member is: SharePoint
+        declares it ``application/vnd.ms-excel`` (or ``text/csv``); read as UTF-8 text,
+        never ``unsupported``. Another file of the spreadsheet type is still unread."""
+        rows = b"PO Number,Qty\r\n4500000002,500\r\n"
+        for mime in ("application/vnd.ms-excel", "text/csv", "application/octet-stream"):
+            with self.subTest(mime=mime):
+                document = extract_document(rows, mime, original_url=URL, filename="po.CSV")
+                self.assertEqual((document.status, document.method, document.text),
+                                 ("extracted", "utf8-text", rows.decode()))
+        self.assertEqual(extract_document(rows, "application/vnd.ms-excel", original_url=URL,
+                                          filename="po.xls").status, "unsupported")
+
+    def test_a_markdown_file_is_read_as_text(self):
+        """A process map saved as Markdown (SharePoint declares ``text/markdown``) is
+        text as written, never ``unsupported``; one captured before this was read (its
+        stored status ``unsupported``) reads from its pinned bytes the same way."""
+        import tempfile
+        from hashlib import sha256
+        from pathlib import Path
+        from integrations.captured_text import captured_text
+
+        body = "# Replenishment Map\n\n| Step | Owner |\n|---|---|\n| Ship | Ops |\n"
+        for mime, name in (("text/markdown", "Map.md"), ("text/x-markdown", "map.markdown"),
+                           ("application/octet-stream", "Map.MD")):
+            with self.subTest(mime=mime):
+                document = extract_document(body.encode(), mime, original_url=URL,
+                                            filename=name)
+                self.assertEqual((document.status, document.text), ("extracted", body))
+        # Declared HTML, it is read as HTML (its visible text: no tags here, so the same).
+        as_html = extract_document(body.encode(), "text/html", original_url=URL,
+                                   filename="map.html")
+        self.assertEqual((as_html.status, as_html.method), ("extracted", "html-text"))
+        undecodable = extract_document(b"\xff\xfe\x00bad", "text/markdown", original_url=URL)
+        self.assertEqual(undecodable.status, "unsupported")
+        with tempfile.TemporaryDirectory() as tmp:
+            digest = sha256(body.encode()).hexdigest()
+            blob = Path(tmp) / digest[:2] / digest
+            blob.parent.mkdir(parents=True)
+            blob.write_bytes(body.encode())
+            found = captured_text(tmp, {"content_sha256": digest, "mime_type": "text/markdown",
+                                        "name": "Map.md", "text_status": "unsupported"})
+        self.assertEqual(found.text, body)
+
+    def test_html_and_json_files_and_members_are_read_as_text(self):
+        """The process maps were captured ``unsupported`` (an HTML map standalone, an HTML
+        map and its JSON spec in a zip), so a read of the right file saw nothing. HTML is
+        its visible text (no script or style), JSON its text as written (never parsed
+        and re-written: ``1.10`` stays ``1.10``); a file captured before this reads from
+        its pinned bytes, whole even past the plain-text bound."""
+        import tempfile
+
+        from integrations import document_understanding as du
+        from integrations.captured_text import capture_text, captured_text
+
+        page = ("<html><head><style>.x{color:red}</style><script>var hidden='SCRIPTONLY'"
+                "</script></head><body><h1>Expired Material Map</h1><p>A 30-day extension "
+                "applies only if all six conditions hold &amp; QA signs.</p><table><tr>"
+                "<td>Look-ahead</td><td>14 days</td></tr></table></body></html>")
+        spec = '{"rule": "look-ahead window", "rate": 1.10, "name": "Caf\u00e9 \u2013 map"}'
+        archive = zipped([("Map/Map.html", page.encode()),
+                          ("Map/data/map-spec.json", spec.encode()),
+                          ("Map/label.bin", b"\x00\x01\x02")])
+        found = read_container(archive, "Map.zip", "application/zip")
+        by_path = {m.path: m for m in found.members}
+        html = by_path["Map/Map.html"]
+        self.assertEqual((html.mime_type, html.text_status, html.reading.method),
+                         ("text/html", "extracted", "html-text"))
+        self.assertIn("A 30-day extension applies only if all six conditions hold & QA signs.",
+                      html.reading.text)
+        self.assertIn("Look-ahead\t14 days", html.reading.text)
+        self.assertNotIn("SCRIPTONLY", html.reading.text)
+        self.assertNotIn("color:red", html.reading.text)
+        member = by_path["Map/data/map-spec.json"]
+        self.assertEqual((member.mime_type, member.text_status, member.reading.text),
+                         ("application/json", "extracted", spec))
+        self.assertEqual(by_path["Map/label.bin"].text_status, "unsupported")
+        # Standalone, captured before HTML was read (stored ``unsupported``): read now.
+        long_page = ("<html><body>" + "<p>Worked example C: good bottles returned.</p>"
+                     * (du.MAX_TEXT // 40) + "</body></html>").encode()
+        with tempfile.TemporaryDirectory() as tmp:
+            for content, mime, name in ((page.encode(), "text/html", "Map.html"),
+                                        (long_page, "application/octet-stream", "Long.HTM"),
+                                        (spec.encode(), "application/octet-stream",
+                                         "map-spec.json")):
+                digest = sha256(content).hexdigest()
+                blob = Path(tmp) / digest[:2] / digest
+                blob.parent.mkdir(parents=True, exist_ok=True)
+                blob.write_bytes(content)
+                with self.subTest(name=name):
+                    read = captured_text(tmp, {"content_sha256": digest, "mime_type": mime,
+                                               "name": name, "text_status": "unsupported"})
+                    self.assertEqual(read.status, "extracted")
+                    self.assertEqual(read.text, du.extract_document(
+                        content, mime, original_url=URL, filename=name).text)
+                    # A new capture stores the same text.
+                    self.assertEqual(capture_text(content, {"mime_type": mime, "name": name}),
+                                     ("extracted", read.text))
+        self.assertGreater(len(read_text_of(long_page, "Long.HTM")), du.MAX_TEXT)
+        # Over the HTML byte bound, or not UTF-8: unsupported with its reason, never parsed.
+        over = b"<p>" + b"x" * du.MAX_HTML_BYTES + b"</p>"
+        big = extract_document(over, "text/html", original_url=URL)
+        self.assertEqual((big.status, big.text, big.warnings),
+                         ("unsupported", "", (f"html_exceeds_bound:{du.MAX_HTML_BYTES}",)))
+        latin = extract_document("<p>Caf\u00e9</p>".encode("latin-1"), "text/html",
+                                 original_url=URL)
+        self.assertEqual((latin.status, latin.warnings),
+                         ("unsupported", ("text_encoding_unsupported",)))
+        blank = extract_document(b"<html><script>x()</script></html>", "text/html",
+                                 original_url=URL)
+        self.assertEqual((blank.status, blank.text), ("no_text", ""))
+
+    def test_html_sibling_elements_never_glue_words_and_inline_runs_stay_one_word(self):
+        """Reproduced (2026-10-29): process maps style <span>/<b> as blocks, so adjacent
+        elements read "still to approve.Owner", "methodBusiness Central", "2026Left out"
+        and the answer gate refused correct verbatim quotes. Sibling elements with no
+        text between are separated; a word split across inline elements is not."""
+        from integrations.document_understanding import html_text
+
+        def read(page):
+            found = extract_document(page.encode(), "text/html", original_url=URL,
+                                     filename="map.html")
+            self.assertEqual(found.text, html_text(page))
+            return found.text
+
+        glued = read("<div><b>A screening clearing account still to approve.</b><span>Owner, "
+                     "14 Oct 2026: every cost.</span></div><p><span>Costing method</span>"
+                     "<span>Business Central items stay Average.</span></p><dl><dt>Updated "
+                     "14 Oct 2026</dt><dd>Left out: freight</dd></dl><span>Step 4</span><b>"
+                     "Release</b><span>A</span><span>B</span>")
+        for quote in ("still to approve. Owner, 14 Oct", "Costing method Business Central",
+                      "14 Oct 2026\n\nLeft out", "Step 4 Release", "A B"):
+            self.assertIn(quote, glued)
+        for joined in ("approve.Owner", "methodBusiness", "2026Left", "4Release"):
+            self.assertNotIn(joined, glued)
+        # A word split across inline elements stays one word: text after an end tag,
+        # a lowercase continuation, a digit run, and punctuation after an element.
+        kept = read("<p><b>Re</b>lease the <b>Re</b><i>lease</i> lot <span>12</span><span>"
+                    "34</span> on <b>Mon</b><span>, then</span> <a>QA</a>-signed "
+                    "<span>PLX</span><span>s</span>.</p>")
+        self.assertEqual(kept, "Release the Release lot 1234 on Mon, then QA-signed PLXs.")
+        # Whitespace already between elements is kept as written, nothing doubled.
+        self.assertEqual(read("<p><span>one</span> <span>two</span>\n<span>three</span></p>"),
+                         "one two\nthree")
+        # Script and style content between elements never decides a separator.
+        self.assertEqual(read("<p><b>end.</b><script>x()</script><span>Next</span></p>"),
+                         "end. Next")
 
     def test_amounts_read_their_decimal_mark_only_when_unambiguous(self):
         """Owner-found bug: "USD 0.04125" read as 0 and "EUR 0,85" as 85. A decimal
@@ -107,12 +264,12 @@ class DocumentUnderstandingTest(unittest.TestCase):
         self.assertEqual(document.line_items, ())
 
     def test_a_mail_is_read_once_and_nested_mail_is_one_rule_in_both_formats(self):
-        """An attachment was read into its mail's text and
+        """Direction finding 11e322b9: an attachment was read into its mail's text and
         again as a container member, one identifier under two handles, and the two
         walks disagreed on nested mail. Now a mail's text is its own; every attachment
         is a member read once; a nested mail is the same in .eml and .msg, attached as a
         file or carried (a forward-as-attachment message/rfc822 entity, an embedded .msg
-        item): a member with its own text, its attachments its members
+        item; gap-0d37a104a3db): a member with its own text, its attachments its members
         (a carried message with no file name is shown as <Subject>.eml, here "Fwd.eml").
         A carried message whose bytes cannot be had stays a visible gap."""
         def eml(body, attachments, html=False):
@@ -184,7 +341,7 @@ class DocumentUnderstandingTest(unittest.TestCase):
         self.assertEqual([m.reading.text for m in found.members], ["Petra PO: PPO-206"])
 
     def test_a_transfer_encoded_forwarded_message_is_decoded_before_its_headers(self):
-        """Python's parser parses a message/rfc822 part
+        """Directive 5a8d03900711 (1, 5): Python's parser parses a message/rfc822 part
         without decoding it, so a forward written base64 or quoted-printable was read
         as its own encoding (no headers, unsupported ``email_headers_missing``, and its
         own attachments were not members). The stated encoding is now removed from the
@@ -232,7 +389,7 @@ class DocumentUnderstandingTest(unittest.TestCase):
         self.assertEqual(found.members, ())
 
     def test_a_bounce_report_and_an_unsplit_multipart_are_read_without_false_gaps(self):
-        """A delivery-failure report's status blocks were carried
+        """gap-3804403b13bf: a delivery-failure report's status blocks were carried
         messages (spurious carried_message_not_read gaps), and a mail whose multipart
         body has no boundary had no text. A status block is report text, a member; the
         returned message is a carried message; an unsplit body is the mail's own text
@@ -616,7 +773,7 @@ class PdfDocumentUnderstandingTest(unittest.TestCase):
         self.assertEqual(result.claims, ())
 
     def test_an_unreadable_pdf_reports_method_none_and_a_typed_failure(self):
-        """Nothing read is method ``none`` with the reason in
+        """Directive 440211923d3f (4): nothing read is method ``none`` with the reason in
         ``failure``, also when pypdf opened the PDF but could not read a page."""
         from unittest.mock import patch
         from pypdf import PageObject
@@ -635,9 +792,64 @@ class PdfDocumentUnderstandingTest(unittest.TestCase):
         self.assertIsNone(extract_document(self.pdf(["x"]), "application/pdf",
                                            original_url=URL).failure)
 
+    @unittest.skipUnless(OCR_TOOLS, "poppler and tesseract not installed")
+    def test_pdf_unreadable_typed_by_bytes(self):
+        """A PDF poppler refuses (pdfinfo exit 1) and pypdf cannot read either is a typed
+        OCR failure named by the bytes' shape, never one undifferentiated cause."""
+        from integrations import document_understanding as du
+        good = self.pdf(["Petra PO: PPO-200"])
+        cases = (
+            ("not_a_pdf", b""),
+            ("pdf_truncated", b"%PDF-1.4\n"),
+            ("not_a_pdf", b"<html><body>" + b"login " * 40 + b"</body></html>"),
+            ("not_a_pdf", b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 2),
+            ("pdf_truncated", good[:len(good) // 2]),
+            # A header and an end but no stream anywhere: no page can hold a mark.
+            ("pdf_stub", b"%PDF-1.4\n" + b"1 0 obj\n<<>>\nendobj\n" * 8 + b"%%EOF\n"),
+            ("pdf_stub", b"%PDF-1.4\n%%EOF\n"),
+            ("pdf_stub", b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+                         b"2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\n%%EOF\n"),
+            # A stream is content that a repair might read: never a stub.
+            ("pdf_unreadable", b"%PDF-1.4\n" + b"1 0 obj\n<<>>\nendobj\n" * 8 +
+             b"9 0 obj\n<< /Length 9 >>\nstream\nBT (x) Tj\nendstream\nendobj\n%%EOF\n"),
+        )
+        for cause, content in cases:
+            with self.subTest(cause=cause, size=len(content)):
+                with self.assertRaises(du.OcrFailed) as raised:
+                    du.read_pages(content, "pdf", ocr=True)
+                self.assertEqual(raised.exception.cause, cause)
+                from integrations.captured_text import capture_text
+                status, text = capture_text(content, {"name": "po.pdf",
+                                                      "mime_type": "application/pdf"})
+                self.assertEqual((status, text), (f"ocr_failed:{cause}", None))
+
+    @unittest.skipUnless(OCR_TOOLS, "poppler and tesseract not installed")
+    def test_pypdf_fallback_when_pdfinfo_refuses(self):
+        """poppler's pdfinfo refuses (exit 1) a PDF that pypdf reads: the text layer is
+        read by pypdf (its method kept), not a failed OCR run."""
+        from integrations import document_understanding as du
+        content = self.pdf(["Petra PO: PPO-200", "Supplier: Acme Packaging"])
+        real = du.child_process.run
+
+        def refuse_pdfinfo(command, **kwargs):
+            if os.path.basename(command[0]) == "pdfinfo":
+                return subprocess.CompletedProcess(command, 1, b"",
+                                                   b"Syntax Error: Couldn't find trailer\n")
+            return real(command, **kwargs)
+
+        with unittest.mock.patch.object(du.child_process, "run", refuse_pdfinfo):
+            reading = du.read_pages(content, "pdf", ocr=True)
+            found = extract_document(content, "application/pdf", original_url=URL,
+                                     local_pdf_ocr=True)
+        for got in (reading, found):
+            self.assertEqual(got.method, "pypdf-text")
+            self.assertIn("PPO-200", got.text)
+        self.assertEqual(found.status, "extracted")
+        self.assertIn("pdf_read_by_pypdf_after_poppler_refused", reading.warnings)
+
     @unittest.skipUnless(POPPLER, "poppler not installed")
     def test_an_owner_password_never_blocks_a_read_and_a_user_password_does(self):
-        """DECIDED: an owner password restricts editing and
+        """DECIDED (architect-20261008T1122Z): an owner password restricts editing and
         printing, not reading. Every reader reads such a PDF, poppler's text layer
         included; only a PDF that needs its user password is ``encrypted``."""
         import sys
@@ -711,7 +923,7 @@ class BrokenPdfParserTest(unittest.TestCase):
             quote = next(c for c in read.claims if c["field"] == "quote_number")
             self.assertEqual(quote["page"], 2)
             # The method names the reader that read it, and why pypdf did not stays
-            # visible; the same without pypdf installed.
+            # visible (directive 440211923d3f (4)); the same without pypdf installed.
             self.assertIn("pdf_parser_broken_reinstall_pypdf", read.warnings)
             with patch.dict(sys.modules, {"pypdf": None}), \
                     patch("integrations.doc_convert.installed_backend", return_value=None):
@@ -721,7 +933,7 @@ class BrokenPdfParserTest(unittest.TestCase):
             self.assertIn("pdf_parser_unavailable_install_pypdf", uninstalled.warnings)
 
     def test_poppler_user_password_refusal_is_keyed_on_exit_status_and_word(self):
-        """Poppler's refusal to open a PDF without its
+        """Directive f6515fd2bede (3)(4): poppler's refusal to open a PDF without its
         user password is known by exit status 1 and the word "password" in any case, not
         one release's message; the capture's OCR path then says ``unsupported`` (OCR
         never ran), and only an OCR run that failed ``ocr_failed``."""
@@ -760,11 +972,11 @@ class BrokenPdfParserTest(unittest.TestCase):
                         with self.assertRaisesRegex(ValidationError, f"^{layer}$"):
                             du.local_pdf_text_layer(b"%PDF-1.4\n")
                     if captured is not None:
-                        self.assertEqual(capture_text(b"%PDF-1.4\n", record), (captured, None))
+                        self.assertEqual(capture_text(WHOLE_PDF, record), (captured, None))
 
 
 class OnePdfReaderTest(unittest.TestCase):
-    """One function chooses how a PDF/DOCX/PPTX is read."""
+    """gap-105e75f678ed: one function chooses how a PDF/DOCX/PPTX is read."""
 
     # The calls that read a PDF or Office file, and the functions allowed to make them.
     READ_CALLS = {"PdfReader", "extract_text", "local_pdf_text_layer", "doc_convert.convert",
@@ -825,7 +1037,7 @@ class OnePdfReaderTest(unittest.TestCase):
     def test_read_pages_is_the_only_place_that_chooses_the_reader(self):
         from pathlib import Path
 
-        # An alias or getattr does not hide a reader.
+        # An alias or getattr does not hide a reader (directive 440211923d3f (2)).
         self.assertEqual(self.references(
             "import integrations.doc_convert as dc\n"
             "from pypdf import PdfReader as Reader\n"
@@ -875,7 +1087,7 @@ class OnePdfReaderTest(unittest.TestCase):
 
     @unittest.skipUnless(_importable("pypdf"), "the page bound is pypdf's page count")
     def test_first_pages_reads_a_bounded_prefix_and_fails_closed_otherwise(self):
-        """``first_pages`` reads a PDF over the page bound on
+        """Directive 23c4347efa25 (1): ``first_pages`` reads a PDF over the page bound on
         its first pages and names the rest; without it such a PDF is still refused
         whole, and a reading it cannot bound fails closed."""
         from unittest.mock import patch
@@ -896,9 +1108,9 @@ class OnePdfReaderTest(unittest.TestCase):
 
 
 class OcrPageCapTest(unittest.TestCase):
-    """The OCR path reads pages 1-``MAX_PAGES`` of a longer PDF
+    """Directive 5ba82b6040ec: the OCR path reads pages 1-``MAX_PAGES`` of a longer PDF
     and records the rest skipped by the page cap, the rule the use-case intake keeps;
-    So do the path without OCR and the capture's text."""
+    directive d82b7c38fc7b: so do the path without OCR and the capture's text."""
 
     @unittest.skipUnless(_importable("pypdf") or POPPLER, "no PDF text reader installed")
     def test_without_ocr_a_long_pdf_is_read_on_its_first_pages_everywhere(self):
@@ -1060,7 +1272,7 @@ def wait_for_pid(path: Path, wait: float = 20.0) -> int:
 
 
 class AbandonedOcrTest(unittest.TestCase):
-    """An OCR read its caller abandons (the oracle's
+    """Directive ccc4760bc112 item 2: an OCR read its caller abandons (the oracle's
     240 s text budget) leaves no OCR child running and no ``plx-pdf-ocr-*`` folder of
     customer page images, whether it is abandoned while this process runs or the
     process exits with the read still on a daemon thread."""
@@ -1204,8 +1416,10 @@ class OcrFailureCauseTest(unittest.TestCase):
                  ("ocr_output_invalid", tools(tsv=b"level\tbroken\n"), 1))
         # ``text_layer_exit`` (a text layer alone, or one OCR cannot read around) and the
         # macOS helper's ``tool_exit`` are reached through other entry points:
-        # test_document_understanding_ocr_exit.
-        self.assertEqual({cause for cause, _, _ in cases} | {"text_layer_exit", "tool_exit"},
+        # test_document_understanding_ocr_exit; the byte-shape causes of a PDF poppler
+        # refuses through test_pdf_unreadable_typed_by_bytes.
+        self.assertEqual({cause for cause, _, _ in cases} | {
+            "text_layer_exit", "tool_exit", "not_a_pdf", "pdf_truncated", "pdf_stub"},
                          set(du.OCR_FAILURE_CAUSES))
         record = {"name": "scan.pdf", "mime_type": "application/pdf"}
         with unittest.mock.patch.object(du.platform, "system", return_value="Linux"), \
@@ -1221,7 +1435,7 @@ class OcrFailureCauseTest(unittest.TestCase):
                     with self.assertRaisesRegex(ValidationError, "^local_pdf_ocr_failed$") as raised:
                         du._portable_pdf_text(b"%PDF-1.4\n")
                     self.assertEqual(raised.exception.cause, cause)
-                    self.assertEqual(capture_text(b"%PDF-1.4\n", record),
+                    self.assertEqual(capture_text(WHOLE_PDF, record),
                                      (f"ocr_failed:{cause}", None))
         with self.assertRaisesRegex(ValueError, "^ocr_failure_cause_unknown$"):
             du.OcrFailed("slow")   # no fault leaves untyped

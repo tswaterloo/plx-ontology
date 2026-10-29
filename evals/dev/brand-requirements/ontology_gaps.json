@@ -1,7 +1,7 @@
 {
  "format": "plx-case-ontology-gaps/v1",
  "case": "brand-requirements",
- "status": "What the ontology lacks to answer evals/dev/brand-requirements/proposed_items.json: one entry per stage area or rule group of Laura Abate's Draft 6 as the source record states it. The 12 stages and 15 rules themselves are stakeholder proposals; the map body is not read here, so a gap names an area, not a numbered stage. Each gap names the existing types and bindings it can reuse. A gap that needs a person names a question for Laura or Regulatory.",
+ "status": "What the ontology lacks to answer evals/dev/brand-requirements/proposed_items.json: one entry per stage area or rule group of Laura Abate's Draft 6 as the advisory record states it. The 12 stages and 15 rules themselves are stakeholder proposals; the map body is not read here, so a gap names an area, not a numbered stage. Each gap names the existing types and bindings it can reuse. A gap that needs a person names a Dot question for Laura or Regulatory.",
  "advisory": "advisory:51cf697a454b",
  "gaps": [
   {
@@ -33,7 +33,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Laura or Regulatory: do the Portal's customer and project requirement rows hold the map's scope, category, source document, date and contact, and who owns a requirement's currentness?"
+   "dot_question": "Laura or Regulatory: do the Portal's customer and project requirement rows hold the map's scope, category, source document, date and contact, and who owns a requirement's currentness?"
   },
   {
    "id": "BR-GAP-02",
@@ -83,7 +83,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Laura or Regulatory: where are compliance documents (organic, kosher, RSPO and similar) filed today and which fields identify the R number and supplier?"
+   "dot_question": "Laura or Regulatory: where are compliance documents (organic, kosher, RSPO and similar) filed today and which fields identify the R number and supplier?"
   },
   {
    "id": "BR-GAP-04",
@@ -109,7 +109,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Laura or Regulatory: how is a claim named and recorded against a product today, and is there a list of claims?"
+   "dot_question": "Laura or Regulatory: how is a claim named and recorded against a product today, and is there a list of claims?"
   },
   {
    "id": "BR-GAP-05",
@@ -136,7 +136,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Regulatory: where is a Regulatory review recorded today, and where is Quality's notification kept?"
+   "dot_question": "Regulatory: where is a Regulatory review recorded today, and where is Quality's notification kept?"
   },
   {
    "id": "BR-GAP-06",
@@ -186,7 +186,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Laura: what does 'reviewed' mean for a document before batching, and does a restricted lot class also gate batching?"
+   "dot_question": "Laura: what does 'reviewed' mean for a document before batching, and does a restricted lot class also gate batching?"
   },
   {
    "id": "BR-GAP-08",
@@ -250,7 +250,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Regulatory: which material changes affect a claim, and is the pre-production review a gate or a notice?"
+   "dot_question": "Regulatory: which material changes affect a claim, and is the pre-production review a gate or a notice?"
   },
   {
    "id": "BR-GAP-11",
@@ -258,20 +258,20 @@
    "name": "The map's own body: 12 stages, 15 rules, 17 records, 11 relations, 8 identifiers and 5 checks (four marked fail, one open)",
    "map_says": "the draft's data model is the companion JSON and CSVs",
    "implementation": "the draft states no portal code audit; any Portal statement is unverified",
-   "ontology_today": "Only the source record's summary is read here; no read receipt of the four members exists, so no numbered stage or rule is quoted.",
+   "ontology_today": "Only the advisory record's summary is read here; no read receipt of the four members exists, so no numbered stage or rule is quoted.",
    "needed_by": [
     "BR-01",
     "BR-08"
    ],
    "sources": [
     {
-     "system": "source-record",
-     "relation": "the map's source record (the claim, not a reader)",
+     "system": "dot",
+     "relation": "the map's advisory record (the claim, not a reader)",
      "ref": "OntologyProject:context/51cf697a454be593964566fa4ad4b43be95c8d8583775fd1444cee1aed9066fe.json@3d9269e8012b"
     }
    ],
    "source": "source unknown",
-   "open_question": "Laura: may a read-only reader read the four members of regulatory-process-flow-mapper.zip so each stage and rule can be cited?"
+   "dot_question": "Laura: may a read-only reader read the four members of regulatory-process-flow-mapper.zip so each stage and rule can be cited?"
   },
   {
    "id": "BR-GAP-12",
@@ -286,13 +286,13 @@
    ],
    "sources": [
     {
-     "system": "source-record",
-     "relation": "the map's source record (the claim, not a reader)",
+     "system": "dot",
+     "relation": "the map's advisory record (the claim, not a reader)",
      "ref": "OntologyProject:context/51cf697a454be593964566fa4ad4b43be95c8d8583775fd1444cee1aed9066fe.json@3d9269e8012b"
     }
    ],
    "source": "source unknown",
-   "open_question": "Regulatory: where are the Three Ships purchase, the supplier change and the RSPO-document request recorded, and may they be read?"
+   "dot_question": "Regulatory: where are the Three Ships purchase, the supplier change and the RSPO-document request recorded, and may they be read?"
   }
  ]
 }

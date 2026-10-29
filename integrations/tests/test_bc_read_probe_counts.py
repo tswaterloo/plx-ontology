@@ -1,4 +1,5 @@
-"""What the BC probe and capture count, through an injected transport, never a live read.
+"""What the BC probe and capture count (gap-f9f416d1bf47, gap-e23880bb5c0f,
+gap-bacfb399a8ae), through an injected transport, never a live read.
 
 ``probe --finance-entities``: an entity set BC serves empty (200, empty ``value``) is no
 finance error; a set BC refuses for one company while another serves it is a
@@ -10,10 +11,10 @@ probe's pauses before it counts (``ProbeBackoff``), within a sleep budget and th
 wall cap.
 ``capture``: ``units_total`` is every planned unit, ``units_reached`` the ones a call
 reached before a budget stop, and ``bc.capture_full`` fails a call that did not reach them
-all. Reach: a document header page carries its lines
+all. Reach (gap-72038ee9c5f1, gap-8fa0d1a5d28c): a document header page carries its lines
 (``$expand``), one GET for N headers instead of N + 1, and falls back to the per-header
 read wherever the expansion is refused or not whole. A unit a run completed that began
-before the session's ``fresh_since`` is stale, never ``all_complete``."""
+before the session's ``fresh_since`` is stale, never ``all_complete`` (gap-af113eb26234)."""
 
 from __future__ import annotations
 
@@ -29,7 +30,7 @@ from unittest import mock
 from urllib.error import URLError
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from verify import live_verify
+from devloop import live_verify
 from integrations import bc_read
 from integrations.capture_store import CaptureStore, bc_unit
 from integrations.live_source_grammar import BC_LINE_PARENT_FIELD
@@ -39,7 +40,7 @@ from integrations.tests.test_bc_capture import (ALL_UNITS, BOOKS, CO, ENV, SERVI
 from ontology.core import Actor
 from scripts import ontology_projection_probe as projection
 
-SPECS = Path(__file__).resolve().parents[2] / "verify" / "live-checks"
+SPECS = Path(__file__).resolve().parents[2] / "devloop" / "live-checks"
 BAD_REQUEST = (400, {}, b'{"error":{"code":"BadRequest"}}')
 DENIED = (403, {}, b'{"error":{"code":"Authorization_RequestDenied"}}')
 JOURNALS = ("customerPaymentJournals", "vendorPaymentJournals")
@@ -159,11 +160,11 @@ class FinanceErrorCountTests(unittest.TestCase):
 
     def test_an_expected_refusal_is_reported_and_an_unexpected_one_fails_at_once(self):
         """The 2026-10-07..10 dailies' four errors: payment journals of companies 1 and 2
-        refused (capture: source_refused) while company 0 served them. Decided:
-        such a refusal is named by entity set, company and BC
+        refused (capture: source_refused) while company 0 served them. Decided
+        (architect-20261011T0021Z): such a refusal is named by entity set, company and BC
         code; the spec lists the ones it expects (as data), which are reported and not
         counted; any other fails the check at once, never a blocked window. Scoped by
-        company: one company's listed refusal never excuses
+        company (architect-20261011T1421Z): one company's listed refusal never excuses
         another company's refusal of the same set with the same code."""
         refusals = [(CO[1], JOURNALS[0]), (CO[2], JOURNALS[0]), (CO[2], JOURNALS[1])]
 
@@ -235,10 +236,10 @@ class FinanceErrorCountTests(unittest.TestCase):
                               live_verify.check_expectations(ledgers, 0, report))
 
     def test_a_400_names_its_message_class_and_only_a_spec_entry_makes_it_expected(self):
-        """The dailies of 2026-10-11 recorded the payment journals of
+        """gap-1b49174b629f: the dailies of 2026-10-11 recorded the payment journals of
         companies 1 and 2 as HTTP 400, code ``other``, nothing more. The probe records the
         BC code and the class of the BC message (never its text, which carries names and
-        filter values) on every refusal row, as diagnosis only:
+        filter values) on every refusal row, as diagnosis only (architect-20261013T0921Z):
         the classes are English patterns no live message confirmed, so a 400 naming a
         missing journal template or batch is expected only for the company a spec
         ``--expected-refusal`` entry lists (book, set, BC code), never for its message."""
@@ -330,7 +331,7 @@ class FinanceErrorCountTests(unittest.TestCase):
 
     def test_a_journal_400_names_bc_code_and_request_and_an_unsupported_read_is_never_sent(
             self):
-        """Every bc.ledgers record named the payment
+        """gap-1b49174b629f, directive 45164d782902: every bc.ledgers record named the payment
         journals of consol and distribution refused 400 with code ``other`` (BC's code was
         outside the vocabulary), so no ``--expected-refusal`` entry could cite one. The probe
         records BC's own platform code ``<Category>_<Name>`` as its token, never a code that
@@ -421,7 +422,7 @@ class FinanceErrorCountTests(unittest.TestCase):
                                           retry=bc_read.ProbeBackoff(sleep=clock.unit_sleep,
                                                                      timer=clock)), 0)
         self.assertEqual(json.loads(out.getvalue())["finance_errors"], 0)
-        # The company-less form scoped nothing: refused too.
+        # The company-less form scoped nothing (architect-20261011T1421Z): refused too.
         for bad in (f"{JOURNALS[0]}:bad_request", f"unpinned:{JOURNALS[0]}:bad_request",
                     "consol:purchaseOrders:bad_request", f"consol:{JOURNALS[0]}:other",
                     f"consol:{JOURNALS[0]}:NotACode", f"consol:{JOURNALS[0]}:bad_request:x",
@@ -621,7 +622,7 @@ def rows(h: Harness, company: str, entity_set: str) -> list:
 
 class ExpandedLinesTests(unittest.TestCase):
     def test_a_header_page_of_n_headers_is_one_get_with_its_lines(self):
-        """Every daily bc.capture_full stopped on budget (8 to 41 of 108
+        """gap-72038ee9c5f1: every daily bc.capture_full stopped on budget (8 to 41 of 108
         units) spending one GET per document on its lines. N headers on one page are one
         GET with ``$expand``, not N + 1, and store exactly what the per-header read does."""
         sets = ("purchaseOrders", "vendors")
@@ -718,7 +719,7 @@ class ExpandedLinesTests(unittest.TestCase):
 
 class StaleResumeTests(unittest.TestCase):
     def test_a_run_resumed_after_fresh_since_reports_its_earlier_pages_stale(self):
-        """A unit paused in an earlier invocation and finished in this
+        """gap-af113eb26234: a unit paused in an earlier invocation and finished in this
         session was reported complete, so the call could be all_complete on pages read
         before the session began."""
         fake = FakeBc({"vendors": 9}, companies=CO)
@@ -763,9 +764,126 @@ class StaleResumeTests(unittest.TestCase):
                              (block["units_total"], len(CO) * ALL_UNITS))
 
 
+class PassResumeTests(unittest.TestCase):
+    """Gap-d4538d178d26 / gap-2dcd8bbeb0c9 (bc-capture-incomplete-units): ``--passes 2``
+    after a budget-cut first pass started a fresh run for every unit pass 1 had finished,
+    so pass 2 spent its own budget re-reading them and stopped at the same place: the
+    units pass 1 never reached were never read and the call could not be all_complete.
+    A pass after an unfinished pass continues where it stopped (injected transport)."""
+
+    SETS = ("vendors", "customers", "items")
+
+    def probe(self, fake: FakeBc, db: Path, clock: Clock, *, budget, passes: int,
+              fresh_since=None) -> dict:
+        return bc_read.capture_probe(ENV, sender=Slow(fake, clock, 1.0), db=db,
+                                     budget_seconds=budget, entity_sets=self.SETS,
+                                     page_size=2, resolve_sample=0, books=BOOKS,
+                                     monotonic=clock, mode="full", passes=passes,
+                                     fresh_since=fresh_since)
+
+    def test_a_pass_after_a_budget_stop_continues_where_it_stopped(self):
+        check = spec("bc.capture_full")
+        for n in (1, 10, 60):  # records per set: one page, a few, many
+            with self.subTest(records=n), tempfile.TemporaryDirectory() as scratch:
+                fake = FakeBc({name: n for name in self.SETS}, companies=CO)
+                pages = -(-n // 2) if n else 1
+                # Pass 1 reads about 60% of the set pages (one second per GET) and stops.
+                budget = max(3, (len(CO) * len(self.SETS) * pages) * 6 // 10 + 2)
+                report = self.probe(fake, Path(scratch) / "c.sqlite", Clock(),
+                                    budget=budget, passes=2)
+                self.assertEqual(report["stopped_reason"], None, n)
+                self.assertTrue(report["all_complete"], n)
+                self.assertEqual(report["units_reached"], report["units_total"])
+                self.assertNotIn("units_reached != units_total",
+                                 live_verify.check_expectations(check, 0, report))
+                self.assertEqual(live_verify.completeness(check, report), {"complete": True})
+                self.assertEqual(report["resumed_per_pass"], [False, True])
+                # Every set page was read once: pass 2 resumed the cursors and reused
+                # what pass 1 finished, it did not read those records again.
+                for company in CO:
+                    for name in self.SETS:
+                        first = [u for u in fake.bc_gets(rf"{company}\)/{name}(\?|$)")
+                                 if "$skiptoken" not in unquote(u)]
+                        self.assertEqual(len(first), 1, (n, name))
+                units = [u for c in report["companies"] for u in c["units"]]
+                self.assertFalse([u for u in units if u.get("stale")])
+                self.assertEqual(sum(1 for u in units if u.get("reused")),
+                                 report["units_reused"])
+                self.assertGreater(report["units_reused"], 0)
+
+    def test_document_lines_cut_by_the_budget_resume_in_the_next_pass(self):
+        # The live shape: root invoice sets first, then the document headers with their
+        # lines and the other sets. Pass 1 stops inside the documents (10 of 18 units
+        # reached); pass 2 finishes them and every unit (headers, lines, company record)
+        # ends complete.
+        sets = ("purchaseInvoices", "purchaseOrders", "vendors")
+        with tempfile.TemporaryDirectory() as scratch:
+            fake = FakeBc({name: 10 for name in sets}, companies=CO)
+            clock = Clock()
+            report = bc_read.capture_probe(
+                ENV, sender=Slow(fake, clock, 1.0), db=Path(scratch) / "c.sqlite",
+                budget_seconds=60, entity_sets=sets, page_size=2, resolve_sample=0,
+                books=BOOKS, monotonic=clock, mode="full", passes=2)
+            self.assertEqual(report["resumed_per_pass"], [False, True])
+            self.assertTrue(report["all_complete"], report["stopped_reason"])
+            states = {(c["company_index"], u["entity_set"]): u["state"]
+                      for c in report["companies"] for u in c["units"]}
+            self.assertEqual(set(states.values()), {"complete"})
+            self.assertEqual(len(states), report["units_total"])
+            for company in CO:
+                for name in sets:
+                    first = [u for u in fake.bc_gets(rf"{company}\)/{name}(\?|$)")
+                             if "$skiptoken" not in unquote(u)]
+                    self.assertEqual(len(first), 1, name)
+
+    def test_a_finished_first_pass_is_still_read_again_in_full(self):
+        # No stop in pass 1: pass 2 is the idempotence pass (reads every unit, adds no
+        # version for an unchanged record), exactly as before.
+        with tempfile.TemporaryDirectory() as scratch:
+            fake = FakeBc({name: 3 for name in self.SETS}, companies=CO)
+            report = self.probe(fake, Path(scratch) / "c.sqlite", Clock(), budget=None,
+                                passes=2)
+            self.assertTrue(report["all_complete"])
+            self.assertEqual(report["resumed_per_pass"], [False, False])
+            self.assertEqual(report["units_reused"], 0)
+            self.assertEqual(report["requests_per_pass"][0], report["requests_per_pass"][1])
+            self.assertEqual(report["new_versions_per_pass"][1], 0)
+
+    def test_a_session_fresh_since_is_kept_for_every_pass(self):
+        # A consumer's session start is earlier than the call: units the session already
+        # completed are reused in pass 1 too, and pass 2 never narrows to the call start.
+        with tempfile.TemporaryDirectory() as scratch:
+            db = Path(scratch) / "c.sqlite"
+            fresh = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            fake = FakeBc({name: 3 for name in self.SETS}, companies=CO)
+            self.probe(fake, db, Clock(), budget=None, passes=1, fresh_since=fresh)
+            sets = r"\)/(vendors|customers|items)\b"
+            sent = len(fake.bc_gets(sets))
+            again = self.probe(fake, db, Clock(), budget=None, passes=2, fresh_since=fresh)
+            self.assertEqual(len(fake.bc_gets(sets)), sent)  # every unit reused, none read
+            self.assertTrue(again["all_complete"])
+            # every set unit (the company record is read from the listing, never reused)
+            self.assertEqual(again["units_reused"], len(CO) * len(self.SETS))
+
+    def test_three_passes_reach_the_units_two_budget_cuts_left(self):
+        # 45 set pages, 18 seconds a pass: pass 1 and pass 2 each stop on budget, pass 3
+        # finishes; every first page is read once over the three passes.
+        with tempfile.TemporaryDirectory() as scratch:
+            fake = FakeBc({name: 10 for name in self.SETS}, companies=CO)
+            report = self.probe(fake, Path(scratch) / "c.sqlite", Clock(), budget=18,
+                                passes=3)
+            self.assertEqual(report["resumed_per_pass"], [False, True, True])
+            self.assertTrue(all(r > 0 for r in report["requests_per_pass"]))
+            self.assertTrue(report["all_complete"])
+            for company in CO:
+                for name in self.SETS:
+                    first = [u for u in fake.bc_gets(rf"{company}\)/{name}(\?|$)")
+                             if "$skiptoken" not in unquote(u)]
+                    self.assertEqual(len(first), 1, name)
+
 class UnservedEntityTests(unittest.TestCase):
     def test_a_company_that_does_not_serve_a_set_is_a_blocked_part_not_a_finance_error(self):
-        """The payment journals of companies 1 and 2
+        """Directive 4b59246fac05, daily d298b51: the payment journals of companies 1 and 2
         answered 400 with BC code internal_data_not_found_filter to a plain $top=1 read that
         company 0 serves. The request is not at fault, so the company does not serve the
         set: a blocked part (relation_unavailable) named by book and set, classified by the
@@ -839,7 +957,7 @@ def template_gaps(fake: FakeBc, companies=(CO[1], CO[2])) -> FakeBc:
 
 
 class MyCompanyRequiredTests(unittest.TestCase):
-    """My Company is
+    """gap-ca2e54f9c357, gap-1b49174b629f, gap-2dcd8bbeb0c9, gap-9d8a3ef716f9: My Company is
     bc.ledgers' required book; its payment journals served with lines count toward the
     pass, and the two other companies' journal_template_missing 400 are named expected
     gaps (company, set, owner, cause), never errors and never served."""

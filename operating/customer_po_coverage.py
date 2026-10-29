@@ -12,11 +12,11 @@ mirror's relation-family audience (default deny) runs before any fill, read or
 count: an actor without a grant gets the mirror's ``not_visible`` denial and no
 rows, no counts. Nothing here writes Portal, any other system or a case.
 
-Rules (deterministic, documented in docs/reference/case-runtime.md section 4):
+Rules (deterministic, documented in devloop/CASE-RUNTIME.md section 4):
 
 * Origin, from ``custom_fields`` of the cited row only, mirroring the Portal
   (petralabx/plx-customer-portal staging@8da33e4, the cited files unchanged
-  since 6c9415973; ``docs/reference/portal-code-map.md`` sections 3.2-3.4 and 9):
+  since 6c9415973; ``devloop/CONTEXT/03-PORTAL.md`` sections 3.2-3.4 and 9):
   Sage-backed as in the JS predicate
   ``lib/wms/sage-ship-queue.ts:isSageBackedSalesOrder`` (not Portal's SQL
   helpers, which differ): ``sageOrdUniq`` or ``sageSourceOrdUniq`` non-empty
@@ -83,7 +83,7 @@ Rules (deterministic, documented in docs/reference/case-runtime.md section 4):
   can measure why normalization rejects them; ``python3 -m
   operating.customer_po_coverage`` prints these counts (plus combined shape
   signatures) and nothing else.
-* FM order PO: for an order with ``custom_fields.fmId`` the
+* FM order PO (c9e0ba19e1): for an order with ``custom_fields.fmId`` the
   linked FM ``public.order_entry`` row is read through the mirror (same
   audience) and its ``custpocode`` reported in ``fm_order_entry`` with its own
   citation. On Portal-created FM rows (id >= 900000) the bridge wrote
@@ -316,7 +316,7 @@ _ORIGIN_SOURCES = {"sage_import": ("sage.oe_order_header.ponumber",),
                    "unknown": ("sage.oe_order_header.ponumber",
                                "public.order_entry.custpocode")}
 
-REPLICA_LABEL = "staging primary replica (FM/Sage/gold ETL)"
+REPLICA_LABEL = "staging primary replica (FM/Sage/gold ETL)"  # 03-PORTAL.md section 9 row 8
 EVIDENCE_MODE = (
     "source mirror of the Portal reporting API (advisory): " + REPLICA_LABEL +
     ", not the UAT DB the staging Portal UI writes")
@@ -525,7 +525,7 @@ def classify_origin(row: Mapping[str, Any], columns: Sequence[str]) -> dict[str,
     # Trimmed, as Portal's JS predicate compares it.
     source = raw_source.strip() if isinstance(raw_source, str) else raw_source
     # Mirrors the JS predicate lib/wms/sage-ship-queue.ts:isSageBackedSalesOrder
-    # (not Portal's SQL helpers, which differ): a
+    # (not Portal's SQL helpers, which the context pack notes differ): a
     # non-empty trimmed sageOrdUniq or sageSourceOrdUniq first, then the trimmed
     # source marker. So a valid Sage key wins even next to another source value.
     sage_markers = [f"custom_fields.{key}" for key in SAGE_KEYS
@@ -581,7 +581,7 @@ def _field_value(row: Mapping[str, Any], columns: Sequence[str], column: str,
 
 
 # Who may have written each PO field, inferred from the order's lineage (Portal
-# facts). This is an inference, not
+# facts via the context pack 03-PORTAL.md section 3.3). This is an inference, not
 # audited last-writer provenance: the replica keeps no per-field write history.
 # A po_reference is not free text in Portal: resolveOrderByNumber
 # (staging@40f7802 lib/orders/order-identity.ts:98-152) matches it as an order identity
@@ -1427,7 +1427,7 @@ def _sage_cross_check(sales: Sequence[Mapping[str, Any]], columns: Sequence[str]
 
 def shape_report(mirror: Any, actor: Actor, *, max_staleness: float | None = None,
                  cross_check: bool = True) -> dict[str, Any]:
-    """Counts-only coverage report for the live checks: no values, keys or citations.
+    """Counts-only coverage report for the live auditor: no values, keys or citations.
 
     With ``cross_check`` it also reads ``public.order_entry`` and
     ``sage.oe_order_header`` through the mirror (the actor's audience applies;

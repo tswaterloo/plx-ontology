@@ -1,6 +1,6 @@
 """A customer-PO proposal whose evidence is a byte-pinned document field, on the action path.
 
-The missing-in-record draft (operating/attested_conflicts.py) cites
+Directive 10c0a3786831: the missing-in-record draft (operating/attested_conflicts.py) cites
 the PO number a captured customer PO states (``fields.po_number.value``) in a SharePoint
 file version (``sharepoint://...#sha256=``) or a mail attachment
 (``graph-mail://...#attachment=..&sha256=``) next to the Portal order that holds no PO.
@@ -11,7 +11,7 @@ bytes through the case runtime's capture gate, re-extracted by
 ``ontology.document_fields.pinned_document_row``): the proposal registers and scores clean
 for a reader of the document and for nobody else, and bytes other than the pinned ones, or
 a read of them the capture gate now refuses, refuse it. The approver's gate reason names the
-file. Decision ``docs/decisions/2026-10-10-act-document-field-provenance.md``.
+file. Decision ``devloop/DECISIONS/2026-10-10-act-document-field-provenance.md``.
 
 Evidence label: injected-transport (Workbench API: ``FakeWorkbench``; Graph mail and
 SharePoint captures over the capture tests' in-process fakes) / isolated-fixture. No
@@ -325,6 +325,48 @@ class DocumentCitedProposalTests(unittest.TestCase):
                         self.assertEqual(self.findings(READER, case_id)[0], [
                             (finding, "withheld", ["citation_unavailable"])])
                 self.assertEqual(self.path.list_for_case(reader, case_id)["total"], 0)
+
+    def test_a_mail_attachment_whose_original_was_dropped_still_reads_as_cited(self):
+        """Compact mail storage (``integrations.capture_mail``): the capture dropped the
+        attachment original once its text was read and kept the reading it made of the
+        bytes. The claim and the proposal read the same field from that reading, for its
+        reader only (``plx.act`` reads it through ``capability_guards.current_reader``);
+        an altered record is refused like other bytes, never guessed."""
+        from integrations import capture_mail, captured_text as ct
+        from integrations.capture_mail import MailCaptureStore
+
+        digest = self.mail_handle.rsplit("sha256=", 1)[1]
+        store = MailCaptureStore(self.h.root / "mail")
+        try:
+            with mock.patch.object(capture_mail, "DROP_ORIGINALS_ABOVE", 1):
+                self.assertEqual(store.settle_original(digest), "dropped")
+        finally:
+            store.close()
+        self.assertFalse(self.blob[self.mail_handle].exists())
+        def fresh():
+            """The readings made again from the store (no process memo)."""
+            self.runtime.captures._rows.clear()
+            stack = contextlib.ExitStack()
+            stack.enter_context(mock.patch.object(ct, "_CACHE", ct._CACHE.empty()))
+            stack.enter_context(mock.patch.object(document_fields, "_FIELDS",
+                                                  document_fields._FIELDS.empty()))
+            return stack
+
+        with fresh():
+            case_id, proposal_id = self.propose(self.mail_handle)
+            self.assertIn("action_refused:proposal_withheld",
+                          self.refusal(self.act(NO_DOCUMENTS, case_id, proposal_id)))
+            registered = self.act(READER, case_id, proposal_id)
+            self.assertFalse(registered["isError"], registered)
+            self.assertIn(self.file[self.mail_handle],
+                          registered["structuredContent"]["intent"]["gate_reason"])
+        with fresh():
+            case_id, proposal_id = self.propose(self.mail_handle)
+        record = self.blob[self.mail_handle].with_name(digest + ct.DROPPED_SUFFIX)
+        record.write_bytes(record.read_bytes()[:-4])
+        with fresh():
+            self.assertIn("capability_guard_failed:value_in_cited_evidence",
+                          self.refusal(self.act(READER, case_id, proposal_id)))
 
     def test_a_follow_up_citing_the_document_registers_for_its_reader_only(self):
         for document in (self.sp_handle, self.mail_handle):

@@ -1,4 +1,4 @@
-"""Hardcoded-case check (`no-hardcoded-cases` CI check).
+"""Hardcoded-case gate (`no-hardcoded-cases` in devloop/gate-checks.json).
 
 Real evaluation cases (AO-26005B, PO5447, SoapBox, ...) are evaluation data: they
 belong in live-checks, tests, EVIDENCE and docs, never in product code paths. This
@@ -23,7 +23,7 @@ Rules:
                 (a constant built from one, a function whose defaults name one), so
                 ``X = ROOT / "evals" / ...`` flags every module that imports ``X``.
                 Scanned: the Python and ``operator_ui`` JS of the scanned trees, not
-                verify/, tests or the eval tooling.
+                devloop/, tests or the eval tooling.
 
 Identifiers are the hand-listed ``identifiers`` (names and curated values) plus every
 identifier the evaluation data names (``eval_identifiers``): each ``plx-eval-item/v1``
@@ -43,7 +43,7 @@ identifier id or the normalized reference) and ``occurrence`` (its 0-based index
 that file's findings of the same rule and match, in line order). Lines are not part of
 it, so moving code passes; only a new or changed finding fails. It may only shrink.
 
-The candidate cannot loosen the check that admits it. The base (``--base``, default
+The candidate cannot loosen the gate that admits it. The base (``--base``, default
 ``origin/main``) is authoritative:
   * scanner data is the union of the base's and the candidate's identifiers and
     name patterns (a candidate can add a real case, never drop one);
@@ -88,18 +88,19 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-DENYLIST = "verify/hardcoded-case-denylist.json"
+DENYLIST = "devloop/hardcoded-case-denylist.json"
 SCHEMA = "plx-hardcoded-case-denylist/v1"
 SCANNED = ("ontology", "integrations", "operating", "operator_ui", "ops_plane",
            "reasoning", "engineering", "scripts", "twin")
-EXCLUDED_PREFIXES = ("examples/", "EVIDENCE/", "docs/", "verify/live-checks/")
+EXCLUDED_PREFIXES = ("examples/", "EVIDENCE/", "docs/", "devloop/CONTEXT/",
+                     "devloop/live-checks/")
 PROVENANCE_KEYS = {"evidence", "verification", "source", "sources", "citation",
                    "citations", "note", "notes", "comment", "provenance", "why"}
 RULES = ("identifier", "module_name")
 EVAL_REFERENCE = "eval_reference"
 RATCHET_RULES = ("identifier", EVAL_REFERENCE)
 # The evaluation side outside evals/: harness entry points that run the evals and the
-# check scripts that read evals/ or name tests/ files by design. Product code may not
+# gate checkers that read evals/ or name tests/ files by design. Product code may not
 # import them. Listed by name: a check_* script that touches neither (upstream drift,
 # HTTP egress) is a shared helper and stays product code, scanned and importable.
 EVAL_TOOLING = ("scripts/eval_*.py", "scripts/check_no_hardcoded_cases.py",
@@ -435,7 +436,7 @@ def candidate_files(root: Path) -> list[Path]:
     files = [path for top in SCANNED for path in (root / top).rglob("*")
              if path.suffix in (".py", ".json")]
     files += (root / "operator_ui").glob("*.js")
-    files += (root / "verify").glob("*.py")
+    files += (root / "devloop").glob("*.py")
     keep = []
     for path in sorted(set(files)):
         relative = path.relative_to(root).as_posix()
@@ -601,10 +602,10 @@ class _Module:
 
 def eval_reference_files(root: Path) -> list[Path]:
     """Product code for the ``eval_reference`` rule: Python and operator_ui JS of the
-    scanned trees, without tests, verify/ or the eval tooling."""
+    scanned trees, without tests, devloop/ or the eval tooling."""
     return [path for path in candidate_files(root)
             if path.suffix in (".py", ".js")
-            and path.relative_to(root).parts[0] != "verify"
+            and path.relative_to(root).parts[0] != "devloop"
             and not any(fnmatch.fnmatch(path.relative_to(root).as_posix(), glob)
                         for glob in EVAL_TOOLING)]
 

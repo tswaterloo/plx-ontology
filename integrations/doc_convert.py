@@ -133,7 +133,7 @@ def installed_backend() -> Backend | None:
 
 
 # The extra modules each format's MarkItDown converter imports (markitdown[docx]
-# needs mammoth and lxml, and so on); the list in verify/cloud_setup.sh's
+# needs mammoth and lxml, and so on); the list in devloop/cloud_setup.sh's
 # markitdown_pinned. Without them MarkItDown raises "pip install markitdown[docx]".
 _REQUIRES: dict[str, tuple[str, ...]] = {"docx": ("mammoth", "lxml"), "pptx": ("pptx",),
                                          "pdf": ("pdfminer",)}

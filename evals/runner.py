@@ -17,7 +17,11 @@ the host that lists only the allowed tools and answers any other ``tools/call`` 
 or MC write such as ``plx.act``, a case-store writer, an unknown name) with a tool error
 without forwarding it. Each run records ``usage.refused_tool_calls`` (calls to a tool
 outside the allowed set, however refused) and ``agent.gate_refused`` (calls the gate
-stopped). ``--max-turns`` bounds a session. The environment is an allowlist
+stopped). Each ``tool_call`` event of a session also carries the gate's wall-clock
+times (``started_at``, ``ended_at``: UTC ISO-8601; ``elapsed_ms``): when the gate passed
+the call to the host (or refused it) and when the answer came back. A call still waiting
+when the session timed out has ``ended_at`` None. Timing only: no score reads it.
+``--max-turns`` bounds a session. The environment is an allowlist
 (``operating.agent_environment``): no credential, DSN, ``ANTHROPIC_API_KEY`` or
 paid-provider switch (no paid API: the session uses the operator's Claude Code login).
 
@@ -35,8 +39,12 @@ reaches it as ``PRESUBMIT_TOOL`` (an ``answer_check`` event, never a tool call);
 Claude Code agent does not (its tools are the host's MCP catalog only; the prompt states
 the rules).
 
-**Final-answer gate.** The harness never rewrites an answer: the final message is scored
-as the agent wrote it (measure what ships). The Claude Code agent reaches the
+**Final-answer gate.** The harness never rewrites an answer's content: the final reply
+is what the Workbench's answer gate passed (``gate_final_reply``, applied by ``record``
+for an agent that ``gates_final_reply``): a value the gate refused or never checked is
+withheld and named, a reply stating more is replaced by the passed values and the
+withheld list; the agent's own message stays in ``agent.final_reply`` (measure what
+ships, ROADMAP B1). The Claude Code agent reaches the
 Workbench's own final-answer gate the way an employee's MCP session does
 (``ANSWER_GATE_RULE``: ``plx.case_get`` answer mode, ``operating.answer_gate.gate_answer``,
 the function the console's Ask runs: a refused claim is dropped, repaired once).
@@ -78,8 +86,8 @@ printed summary (held out: reason counts only), never silently scored or dropped
 **Eval directories** hold items and declared files only (``EVAL_FILE_FORMATS``,
 ``UNDECLARED_EVAL_FILES``); an unreadable or unknown JSON file is refused, never skipped.
 
-**Partitions.** Exposed real cases (``evals/exposed``: AO, PO and F7-F9 cases
-already seen) are dev items labelled ``dev/exposed``: their id ends in ``-exposed``, their
+**Partitions.** Exposed real cases (``evals/exposed``: AO, PO and F7-F9 cases a builder has
+seen) are dev items labelled ``dev/exposed``: their id ends in ``-exposed``, their
 directory's exposed manifest lists exactly them, a run never mixes them with synthetic dev
 items and they are never held out. Results report correct / wrong / blocked (read gap
 apart from the rest) / justified-abstention with coverage beside accuracy
@@ -96,7 +104,7 @@ run pin::
         --principal <employee principal> --out <dir outside the repo> \\
         --evidence-label live-captures
 
-**Run pin** (docs/decisions/2026-10-02-oracle-pinning.md). Oracle items pin the
+**Run pin** (devloop/DECISIONS/2026-10-02-oracle-pinning.md). Oracle items pin the
 oracle's own read digests, which no tool returns. Before the agent runs, ``make_run_pin``
 pins, for each relation the item's expected citations name, the first completed mirror
 capture at or after ``as_known_at.time``; the prompt states the mirror generation and the
@@ -125,7 +133,7 @@ environment::
 Evidence label of a run (``--evidence-label``, required, recorded in each transcript):
 ``live-captures`` only when the host's state holds live L1 captures and the agent is a
 real Claude session; a ``ScriptedAgent`` or fixture host run is ``isolated-fixture``.
-Neither is ``live-verified``, which only the live checks grant.
+Neither is ``live-verified``, which only the live verifier grants.
 """
 
 from __future__ import annotations
@@ -150,6 +158,7 @@ from evals import measure as measuring
 from evals import partition as partitions
 from evals.admission import admissible
 from operating.agent_environment import agent_environment
+from operating.answer_gate import ANSWER_BACKING, DOCUMENT_READ_RULE
 from evals import score as scoring
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -176,7 +185,7 @@ EVAL_FILE_FORMATS = {
     "plx-eval-case-card-proposals/v1": "proposed case cards awaiting conversion to items "
                                        "(evals/dev/asset-tracker)",
     "plx-case-ontology-gaps/v1": "missing objects/links/readers a case recorded, each with "
-                                 "its source or question",
+                                 "its source or Dot question",
     "plx-source-extraction-eval-draft/v1": "page/span gold of converted extraction items",
     "plx-use-case-answer-review/v1": "per-card failure classes of a live use-case answers "
                                      "run (evals/dev/rro); lists no items",
@@ -284,7 +293,7 @@ def load_items(directory: Path, *, split: str, check_unseen: bool = True, admit:
 
     Admission (``evals.admission.admissible``) runs after every check below; a refused item
     is listed in ``refused`` with its reason codes, never returned for scoring.
-    ``admit=False`` returns every valid item (what has been seen, refused or not).
+    ``admit=False`` returns every valid item (what a builder has seen, refused or not).
 
     Every other JSON file must be a declared eval file (``EVAL_FILE_FORMATS``,
     ``UNDECLARED_EVAL_FILES``): an unreadable or unknown file is refused, never skipped.
@@ -369,7 +378,7 @@ def refused_summary(refused: Sequence[Mapping[str, Any]], split: str) -> Any:
 
 def visible_cards() -> list[dict[str, Any]]:
     """Every case card of a committed eval directory (``plx-eval-case-cards/v1``), as an
-    item-shaped question for ``evals.partition``: an exposed card is visible whether
+    item-shaped question for ``evals.partition``: an exposed card is builder-visible whether
     or not it was converted to an item (DEV-005 was excluded, not unseen)."""
     cards = []
     for root in VISIBLE_ITEM_DIRS:
@@ -386,9 +395,27 @@ def visible_cards() -> list[dict[str, Any]]:
 
 # --------------------------------------------------------------------------- prompt
 
+# ``as_known_at.l1_generations`` keys that pin no capture time (decision
+# devloop/DECISIONS/2026-10-27-card-time-pin.md): a case card set's digest
+# (``case_cards``) and one original's bytes (``pinned_original``). Any other key is a
+# capture generation, and the item's time is stated as its pin.
+UNTIMED_GENERATIONS = frozenset({"case_cards", "pinned_original"})
+
+
+def time_pinned(item: Mapping[str, Any]) -> bool:
+    """Whether the item's ``as_known_at.time`` is a time the question is asked at: true
+    unless every generation it pins is one of ``UNTIMED_GENERATIONS`` (an item with no
+    generation, or an unreadable pin, stays time-pinned)."""
+    pin = item.get("as_known_at")
+    generations = pin.get("l1_generations") if isinstance(pin, Mapping) else None
+    return not (isinstance(generations, Mapping) and generations
+                and set(generations) <= UNTIMED_GENERATIONS)
+
+
 def build_prompt(item: Mapping[str, Any], question: str,
                  run_pin: Mapping[str, Any] | None = None) -> str:
-    """The agent's whole task: the question, the as-known-at pin and the answer contract.
+    """The agent's whole task: the question, the as-known-at pin (none for an item that
+    is not time-pinned, ``time_pinned``) and the answer contract.
     It carries no known outcome, oracle, label, family or root key. With a run pin
     (``make_run_pin``) the pin is the mirror's: its generation and the time by which the
     first captures at or after the item's time had completed (never the pinned relations,
@@ -401,6 +428,12 @@ def build_prompt(item: Mapping[str, Any], question: str,
         pinned = (f"Answer as known at {when} (capture generations: "
                   f"portal_api={run_pin['mirror_generation']}); cite rows of those "
                   "generations.")
+    elif not time_pinned(item):
+        # Pinned only by a card set's digest or one original's bytes: the item's time is
+        # when its card was written, not a time the question asks about, so stating it
+        # would send the agent to captures older than any held.
+        pinned = ("This question carries no time pin: answer from the sources as they "
+                  "stand now.")
     else:
         pin = item["as_known_at"]
         generations = ", ".join(f"{source}={generation}" for source, generation in
@@ -414,42 +447,63 @@ def build_prompt(item: Mapping[str, Any], question: str,
         pinned,
         "Cite every value with the citation handle a tool returned (api://, bc://, "
         "graph-mail://, sharepoint://, original://) and the field path in that record "
-        "(row.<column>; a value read on an original's page cites original://<id>#page=<n> "
-        "with field path text). A citation of a text value may add \"quote\": the passage as "
-        "written in the cited text that holds the value, at least two words or eight "
-        "characters (a short value such as a currency code is verified only through one); "
-        "the value must occur in it as written. A quote counts only on an original's text "
-        "(field path text, or row.text, row.content_text or row.body_text of a document, "
-        "message or chat record); any other field must equal the value exactly, quote or "
-        "not. A number is checked as a number, never through a quote. A value you cannot "
-        "cite is not an answer. If a value is absent, inaccessible, stale or not ingested, "
-        "give it as null and add a gap; never guess. "
+        "(row.<column>; a value read on one page, original://<id>#page=<n> or a document's "
+        "citation ending &page=<n>, cites that page with field path text, never a row "
+        "field, even where a mention's origin names row.content_text). Any citation may "
+        "add \"quote\": the passage as written in the cited text field, at least two words "
+        "or eight characters, that contains the value. A quote is an extra check and never "
+        "replaces the value check: the value must still pass on its own, and a quote the "
+        "cited field does not hold, or that misses the value, fails it. A value you cannot "
+        "cite is not an answer. If a value is absent, inaccessible or not ingested, give it "
+        "as null and add a gap; never guess. A value a cited record holds is stated even "
+        "when its source is stale: the stale source is its own gap and does not make the "
+        "value null. "
         "Every number in prose is a value claim: each number written in \"text\" must be "
         "the value of one of your \"values\" entries, cited or calculated, or the answer "
         "fails (claim_uncited_number). That is every number in digits at its written scale "
-        "(10k is 10000), digits after a letter prefix (SKU-7342 states 7342), numbers in "
-        "words from ten up, a percent (25% needs a value of 25 with a percent unit) and an "
-        "ISO date or timestamp (needs a date value of that day). Not numbers: record "
-        "identifiers (SO-61873Q, PO7700318264), citation handles, clock times and "
-        "month-name dates; an identifier of capitals then digits alone under another "
-        "prefix (QRX-082, QRX100048) states its digits, so cite it as a text value of the "
-        "field that holds it or leave it out. State each such number as a value or leave "
-        "it out of the text.",
+        "(10k is 10000), digits glued to letters (Q3, NET30 and x7342 state 3, 30 and "
+        "7342), digits after a quantity, unit or currency word (QTY-12, USD-7342), "
+        "numbers in words from ten up, a percent (25% needs a value of 25 with a percent "
+        "unit) and an ISO date or timestamp (needs a date value of that day). Not numbers: "
+        "record identifiers (SO-61873Q, PO7700318264), labels hyphenated after another "
+        "word (SKU-7342, QRX-082), citation handles, clock times and month-name dates; a "
+        "label still states which record it is, so the reply keeps one only when the "
+        "question names it or a cited text value holds it. State each number as a value "
+        "or leave it out of the text.",
+        ANSWER_BACKING,
+        "answerability: \"answerable\" when every value the question asks for is stated "
+        "with its citation; \"partial\" when cited records answer part of it (a value, or "
+        "what a record says about the question) and the rest is null with a gap; "
+        "\"blocked\" only when nothing you read bears on the question. An answer that "
+        "states a cited value is never blocked. Something the question does not ask for is "
+        "never an unknown and never makes the answer partial.",
+        "One value, one gap: a null value gets the one gap that says why it is null, in one "
+        "state, with \"concerns\" naming it. A gap about a whole source or the projection "
+        "(a stale or unavailable source, a schema drift, a freshness note) concerns no "
+        "value: give it once, without \"concerns\", however many tool results repeat it.",
         "Where two cited source statements contradict each other, do not pick one silently: "
         "cite both and add a gap with state \"unknown\" and reason \"" + measuring.CONFLICT_REASON + "\".",
-        "A computed value (a total, a count, whether quantities agree) states its inputs "
-        "instead of citations: \"calculation\": {\"op\": \"sum|count|equal\", "
-        "\"inputs\": [{\"l1_handle\": \"<handle>\", \"field_path\": \"row.<column>\", "
-        "\"unit\": \"<unit>\", \"currency\": \"<ISO 4217>\"}]} (count: the records "
-        "counted; equal: value true or false). It is recomputed from those inputs. A "
+        DOCUMENT_READ_RULE + " Then cite both lines and add a gap with state \"unknown\", "
+        "reason \"" + measuring.CONFLICT_REASON + "\" and a subject that names both.",
+        "A count or a sum you compute over cited records states its inputs instead of "
+        "citations: \"calculation\": {\"op\": \"sum|count\", \"inputs\": [{\"l1_handle\": "
+        "\"<handle>\", \"field_path\": \"row.<column>\"}]} (count: the records counted). "
+        "It is recomputed from those inputs. Arithmetic over figures printed on cited "
+        "pages (a difference, a product, a share of a total) states them the same way: "
+        "\"calculation\": {\"op\": \"expression\", \"expression\": \"x0 - x1\", "
+        "\"inputs\": [{\"l1_handle\": \"<page handle>\", \"field_path\": \"text\", "
+        "\"value\": \"<the figure as printed: 18,901.08 or 15%>\", \"quote\": \"<the passage "
+        "holding it>\"}, ...]}: x0 is the first input; every input carries its quote, the "
+        "one its value claim gave the gate; + - * / and parentheses; round_to_cents(...) "
+        "around the whole rounds to 0.01; no number of its own; each input named once (a "
+        "figure printed twice is two inputs, each with its own quote). A "
         "value with \"calculation\" has no \"citations\" (citations_beside_calculation "
-        "drops the whole answer): its inputs are its evidence.",
-        "A value computed from figures printed on cited pages uses \"calculation\": "
-        "{\"op\": \"expression\", \"expression\": \"<x0, x1, ... with + - * / and "
-        "parentheses; round_to_cents(...) around the whole rounds to 0.01>\", \"inputs\": "
-        "[{\"l1_handle\": \"original://<id>#page=<n>\", \"field_path\": \"text\", "
-        "\"value\": \"<the figure as printed>\", \"unit\": \"<unit>\"}]}: x<i> is the "
-        "i-th input; the expression holds no other number. A percent is given as printed \"12.5%\" (it is 0.125); a currency is \"currency\" or an ISO 4217 \"unit\" (\"CAD\"), and a bare \"$\" names none (calculation_currency_ambiguous); an unreadable unit is calculation_unit_unknown.",
+        "drops the whole answer): its inputs are its evidence. Compute nothing else (no "
+        "comparison): the gate checks only a count or a sum over cited records or such an "
+        "expression, so any other result is null with a gap.",
+        "State a unit only when the cited text prints it beside the figure or the cited "
+        "field's record states it, and a currency only when it is printed or recorded "
+        "there; otherwise leave it out (a bare \"$\" names no currency).",
         "A plan answers its question family (plx.investigate; its description lists the "
         "families). When one fits the question, its result is your answer: state each "
         "entry of its \"answer\" as a value under the entry's name, a property entry with "
@@ -475,27 +529,46 @@ def build_prompt(item: Mapping[str, Any], question: str,
         "\"gaps\": [{\"state\": \"<state>\", \"subject\": \"<object type or field>\", "
         "\"reason\": \"<snake_case>\", \"concerns\": \"<name of the value it leaves "
         "null, if any>\"}]}",
-        f"quantity_role is one of: {roles} (omit it for non-quantities; unit, currency "
-        "optional where they do not apply).",
+        f"quantity_role is one of: {roles} (omit it for non-quantities and for a figure on a "
+        "page or in free text; unit, currency optional where they do not apply).",
         f"gap state is one of: {gaps}.",
     ])
 
 
 # The Workbench's final-answer gate as an MCP client reaches it (plx.case_get answer mode,
 # operating.answer_gate, the gate the console's Ask runs): the agent submits its claims and
-# states only those the gate returns. The harness never rewrites the answer
-# (``answer_gate_record`` records what the gate returned in the session).
+# states only those the gate returns (``answer_gate_record`` records what the gate
+# returned in the session; ``gate_final_reply`` withholds the rest from the reply).
 ANSWER_GATE_RULE = (
     "Before the json block, submit your answer's claims to the Workbench's answer gate: call "
     "plx.case_get with only {\"answer\": {\"claims\": [{\"text\": \"<one sentence>\", "
     "\"citations\": [\"<handle a tool returned>\"], \"value_claims\": [{\"value\": "
     "<the value>, \"citation\": \"<one of its citations>\", \"field\": "
-    "\"row.<column>\"}]}], \"unknowns\": [\"<what no record holds>\"], \"text\": "
-    "\"<your answer text>\"}}. State only the claims it returns (each value it refused is "
-    "null with a gap); outcome \"repair\" lists the refused ones once: fix them and submit "
-    "again. text_check.uncovered lists numbers of your text no passing claim states (or "
-    "a value it writes negated): add each as a cited claim and value, or drop it from the "
-    "text; text_check.unchecked lists words no claim of their sentence states.")
+    "\"row.<column>\", \"quote\": \"<its quote>\", \"role\": \"<its quantity_role>\", "
+    "\"unit\": \"<its unit>\"}]}], \"unknowns\": [\"<a value the question asks for that no record "
+    "holds>\"], \"text\": \"<your answer text>\"}}. A count or sum you computed over cited "
+    "records is one value claim, never a bare value: {\"value\": <the result>, \"op\": "
+    "\"count\" or \"sum\", \"of\": [{\"citation\": <each record's handle>, \"field\": "
+    "\"row.<column>\" (sum only)}]}, the claim citing those handles. An expression over "
+    "figures printed in cited texts is one value claim too: {\"value\": <the result>, "
+    "\"op\": \"expression\", \"expression\": \"x0 - x1\", \"of\": [{\"citation\": "
+    "<handle>, \"field\": \"text\", \"value\": \"<the figure as printed>\", \"quote\": "
+    "\"<the passage holding it>\"}, ...]}, a quote on every input, and the expression, "
+    "inputs and quotes your answer value's calculation states: the gate checks each "
+    "figure on its text and recomputes the result. The gate checks no other computation: your reply withholds such a result, so "
+    "give it null with a gap. Your reply keeps each value with only the quote, unit and "
+    "currency the gate checked, and withholds a value whose role the gate did not check: "
+    "submit the quote your answer value carries; a role only on a record's field (a "
+    "figure on a page or in free text has none: the gate refuses one there, so leave it "
+    "out of the claim and the answer value); a unit or currency only where the cited "
+    "text prints it beside the figure. Add an unknown only for a value the question asks for: any other makes the "
+    "answer partial. State only the claims it returns: a claim it refused stays as an "
+    "unknown and its value is null with a gap, never dropped. Outcome \"repair\" lists "
+    "the refused ones once: fix them and submit again. text_check.uncovered lists numbers "
+    "of your text no passing claim states (or a value it writes negated): add each as a "
+    "cited claim and value, or drop it from the text; text_check.unchecked lists words no "
+    "claim of their sentence states. The final decision's reply.text is your answer text "
+    "without what no passed claim backs: use it.")
 ANSWER_GATE_TOOL = "plx.case_get"
 
 
@@ -532,6 +605,238 @@ def answer_gate_record(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             "refused_claims": refused, "final": outcomes[-1] if outcomes else None,
             "repaired": first_repair is not None
             and "answered" in outcomes[first_repair + 1:]}
+
+
+FINAL_REPLY_FORMAT = "plx-final-reply-gate/v1"
+WITHHELD_REASON = "withheld_by_answer_gate"
+# Answerability labels from most to least certain: the final reply keeps the less certain
+# of the gate's decision and the answer's own (``gate_final_reply``).
+CERTAINTY = ("answerable", "partial", "blocked")
+# The keys of a ``plx-eval-answer/v1`` answer (``evals.score.answer_problems``): the final
+# reply drops any other (RM-05: a ``gaps_note`` beside them made the answer malformed and
+# its json block was cut as prose), so nothing the gate never read is stated.
+ANSWER_KEYS = ("format", "answerability", "text", "values", "gaps")
+# A dropped key's note, kept as an unknown gap: at most this many, each this long.
+NOTE_REASON, NOTE_CHARS, MAX_NOTES = "answer_note", 300, 5
+
+
+def _gate_results(events: Sequence[Mapping[str, Any]]) -> tuple[Mapping[str, Any] | None,
+                                                                 list[Any]]:
+    """(the gate's last decision in the session, ``plx.case_get`` answer mode, or None:
+    never submitted, a failed call or a result it cannot read (truncated); the refused
+    claims of every submission)."""
+    last, refused = None, []
+    for event in events:
+        arguments = event.get("arguments")
+        if event.get("type") == "tool_call" and event.get("name") == ANSWER_GATE_TOOL \
+                and isinstance(arguments, Mapping) and "answer" in arguments:
+            result = event.get("result")
+            readable = not event.get("is_error") and isinstance(result, Mapping) \
+                and isinstance(result.get("claims"), list)
+            last = result if readable else None
+            if readable:
+                refused += list(result.get("unsupported_claims") or [])
+    return last, refused
+
+
+def _said(text: str) -> bool:
+    """Whether a final reply's text says anything beyond its withheld list."""
+    return any(line.strip() and not line.startswith("Withheld: ")
+               for line in text.splitlines())
+
+
+def one_gap_per_value(gaps: Sequence[Any]) -> list[Any]:
+    """``gaps`` with "one value, one gap": the first gap that ``concerns`` a value keeps
+    it, and each later gap concerning that value loses its ``concerns`` (it stays, as a
+    gap about its subject). AG-05 gave one null value two gaps in two states, which the
+    scorer reads as contradictory; no gap is dropped."""
+    seen: set[str] = set()
+    out = []
+    for gap in gaps:
+        concerns = gap.get("concerns") if isinstance(gap, Mapping) else None
+        if isinstance(concerns, str) and concerns in seen:
+            gap = {key: item for key, item in gap.items() if key != "concerns"}
+        elif isinstance(concerns, str):
+            seen.add(concerns)
+        out.append(gap)
+    return out
+
+
+def gate_final_reply(final_text: str, events: Sequence[Mapping[str, Any]],
+                     question: str = "") -> tuple[str, dict[str, Any]]:
+    """The agent's final message as the product's final reply
+    (``operating.answer_gate.final_reply``, the function every answer path runs), over
+    the session's own gate decisions: the scorer grades what a reader of that session
+    gets. Deterministic, no read: the gate already decided every claim.
+
+    * A stated value is kept when it states a claim the session's last decision passed,
+      on the same cell, and kept as the gate checked it (``answer_gate.kept_value``): the
+      claim's quote on each citation, and a unit or currency only when the claim
+      carried it as verified; one the gate did not verify (a unit the page does not print
+      beside the figure) is dropped, never the value, and so is that unit word beside
+      the value in the texts; a currency the texts write beside it other than the one
+      the gate checked refuses that sentence (``answer_gate.final_reply``). Any other value (refused, reworded
+      after its refusal, never submitted, or stating a quantity role the gate never
+      checked: the reply's quantity words ride on it) is withheld: null, uncited, a gap
+      (``unknown``, ``WITHHELD_REASON``) unless a gap already concerns it.
+    * The reply states the less certain (``CERTAINTY``) of the gate's answerability (its
+      final decision's ``answerability.state``, when the decision passed a claim and
+      gives one; a decision that passed nothing is ``blocked`` for that alone) and the
+      answer's own: the gate never makes an agent's ``partial`` or ``blocked``
+      ``answerable``; an agent's ``blocked`` beside a claim the gate passed is
+      ``partial`` (never blocked, never answerable). A withheld value makes an ``answerable`` one ``partial``, and
+      nothing backed surviving makes it ``blocked``.
+    * Its gaps are the answer's own, none dropped (the gate refutes no gap), with one gap
+      per value (``one_gap_per_value``): a later gap concerning a value an earlier gap
+      concerns stays without ``concerns``.
+    * A kept value in a percent unit the gate checked is written with ``%`` on its
+      claim's line (``name: 100%``), the printed percent the gate's and the scorer's
+      prose screens read at percent scale.
+    * The answer's text and the message around the answer block lose each sentence that
+      carries an unbacked statement; the rest stays; the answer text ends with the
+      withheld list (``final_reply``).
+    * An answer key the scorer does not read (``ANSWER_KEYS``: a ``gaps_note``) is dropped
+      and named in ``report["dropped_keys"]``; a non-empty text under it becomes an unknown
+      gap (``NOTE_REASON``) when the reply screen passes it whole, so the reader still sees
+      it; the rest is gated as any answer. One still
+      malformed without it is no answer (the message is screened as prose).
+    * Fail closed: no answer block, no decision, a decision that is not ``answered`` or
+      a result the session could not read: nothing passed.
+
+    ``(text, report)``: ``report`` (``FINAL_REPLY_FORMAT``): ``rewritten``, the values
+    withheld (names), the claims the gate refused, sentences seen and removed, the
+    unbacked statements."""
+    from operating import answer_gate, claim_checks
+
+    gate, refused = _gate_results(events)
+    passed = answer_gate.passed_cells(gate)
+    claims = list(gate.get("claims") or []) if passed else []
+    report: dict[str, Any] = {"format": FINAL_REPLY_FORMAT, "gate": (gate or {}).get("outcome"),
+                              "rewritten": False, "withheld": [],
+                              "refused_by_gate": len(refused), "sentences": 0,
+                              "removed_sentences": 0, "unbacked": []}
+
+    def screen(text: Any, withheld: Sequence[str] = ()) -> dict[str, Any]:
+        reply = answer_gate.final_reply(text, claims, unsupported=refused, question=question,
+                                        withheld=withheld)
+        report["sentences"] += reply["sentences"]
+        report["removed_sentences"] += reply["removed_sentences"]
+        report["unbacked"] = list(dict.fromkeys(report["unbacked"] + reply["unbacked"]))[
+            :answer_gate.MAX_SHOWN_UNBACKED]
+        return reply
+
+    answer, error = scoring.parse_answer(final_text)
+    dropped, notes = [], []
+    if answer is None and error == "answer_malformed:unknown_keys":
+        candidate = scoring.answer_candidate(final_text) or {}
+        trimmed = {key: candidate[key] for key in ANSWER_KEYS if key in candidate}
+        if not scoring.answer_problems(trimmed):
+            answer, dropped = trimmed, sorted(str(key)[:40] for key in candidate
+                                              if key not in ANSWER_KEYS)
+            report["dropped_keys"] = dropped[:20]
+            # A note the answer gave under its own key (RM-05's gaps_note) stays visible as
+            # an unknown gap, screened as the reply's text is; any other value drops.
+            notes = [" ".join(candidate[key].split())[:NOTE_CHARS] for key in candidate
+                     if key not in ANSWER_KEYS and isinstance(candidate[key], str)
+                     and candidate[key].strip()][:MAX_NOTES]
+    if answer is None:
+        reply = screen(final_text)
+        if reply["modified"]:
+            report.update(rewritten=True, answer_error=error)
+        return reply["text"], report
+    values, gaps = [], one_gap_per_value(answer.get("gaps") or [])
+    concerned = {gap.get("concerns") for gap in gaps}
+    said: list[str] = []
+    unchecked: dict[int, Any] = {}   # by place in values: a unit the gate did not verify
+    for value in answer.get("values") or []:
+        if value.get("value") is None:
+            values.append(value)
+            continue
+        kept = answer_gate.kept_value(value, passed)
+        if kept is not None and value.get("quantity_role") is not None \
+                and "quantity_role" not in kept:
+            # A role the gate never checked is withheld with its value, never dropped: the
+            # reply's quantity words ride on it (``ordered 2400``), and without the role
+            # they would state what nothing checked.
+            kept = None
+        if kept is not None:
+            if value.get("unit") and not kept.get("unit"):
+                unchecked[len(values)] = value["unit"]
+            values.append(kept)
+            continue
+        report["withheld"].append(value["name"])
+        said += [str(value["value"])] + [cite["quote"] for cite in value.get("citations") or ()
+                                         if isinstance(cite, Mapping)
+                                         and isinstance(cite.get("quote"), str)]
+        values.append({key: item for key, item in value.items()
+                       if key in ("name", "unit", "quantity_role", "currency")} | {"value": None})
+        if value["name"] not in concerned:
+            gaps.append({"state": "unknown", "subject": value["name"],
+                         "reason": WITHHELD_REASON, "concerns": value["name"]})
+    # A withheld value's own words are refused material too: its rewording is found.
+    refused = refused + [{"text": said_text} for said_text in said]
+    # The answer's text may state what its kept values state, each cited there (a value
+    # the gate passed that the answer does not keep has no citation in it).
+    # A kept value's unit and currency are the ones the gate checked (``kept_value``): the
+    # texts keep them; a unit it dropped from the value goes from the texts too, for that
+    # value (``final_reply``), and a currency beside it other than its own refuses the
+    # sentence.
+    # A value in a percent unit the gate checked is written as the percent it is
+    # (``100%``), as the gate and the scorer read a printed percent (the line of the
+    # claim the reply falls back to).
+    claims = [{"text": f"{value['name']}: {value['value']}" + (
+                   "%" if value.get("unit") and claim_checks._page_unit(str(value["unit"]))
+                   == "percent" and not str(value["value"]).endswith("%") else ""),
+               "value_claims": [{"value": value["value"],
+                                 **({"unit": value["unit"]} if value.get("unit") else
+                                    {"unit": unchecked[at]} if at in unchecked else {}),
+                                 **({"currency": value["currency"]}
+                                    if value.get("currency") else {})}],
+               "check": {"status": "passed",
+                         **({"unit_basis": "gate_verified"} if value.get("unit") else
+                            {"unit_basis": "unverified"} if at in unchecked else {})}}
+              for at, value in enumerate(values)
+              if value.get("value") is not None and not isinstance(value["value"], bool)]
+    for note in notes:
+        if not answer_gate.final_reply(note, claims, unsupported=refused,
+                                       question=question)["modified"]:
+            gaps.append({"state": "unknown", "subject": note, "reason": NOTE_REASON})
+    text = screen(answer.get("text") or "", report["withheld"])
+    fence = scoring._JSON_FENCE
+    outside = screen(fence.sub(" ", final_text))
+    stated = (gate or {}).get("answerability")
+    stated = stated.get("state") if isinstance(stated, Mapping) else None
+    # A decision that passed nothing says only that (``blocked``): the reply's own
+    # answerability stands, and withholding below decides what it becomes.
+    stated = stated if stated in scoring.ANSWERABILITY and passed else None
+    # The less certain of the gate's decision and the answer's own label: the gate never
+    # makes an agent's partial or blocked answerable (its own gaps, kept above, say what
+    # it could not establish), and makes an answerable one partial. An agent's blocked
+    # beside a claim the gate passed is partial: a passed claim is a cited answer, never
+    # blocked (supervisor decision 2026-10-29). A withheld value still makes it partial
+    # (the gate never saw a value never submitted).
+    own = answer.get("answerability")
+    answerability = max((label for label in (stated, own) if label in CERTAINTY),
+                        key=CERTAINTY.index, default=own)
+    if answerability == "blocked" and stated is not None:
+        answerability = "partial"
+    if not (text["modified"] or outside["modified"] or report["withheld"] or dropped
+            or values != list(answer.get("values") or [])
+            or gaps != list(answer.get("gaps") or [])
+            or answerability != own):
+        return final_text, report
+    if report["withheld"] and not any(v.get("value") is not None for v in values) \
+            and not passed and not _said(text["text"]):
+        answerability = "blocked"   # nothing backed survives: values withheld, no text
+    elif report["withheld"] and answerability == "answerable":
+        answerability = "partial"
+    gated = {**answer, "answerability": answerability, "text": text["text"],
+             "values": values, "gaps": gaps}
+    report["rewritten"] = True
+    prose = outside["text"].strip() if outside["modified"] else fence.sub(
+        "", final_text).strip()
+    block = "```json\n" + json.dumps(gated, ensure_ascii=False) + "\n```"
+    return (prose + "\n\n" + block) if prose else block, report
 
 
 # --------------------------------------------------------------------------- hosts
@@ -672,6 +977,16 @@ class CaseHost:
         """One tool call by the harness itself (Workbench code, never the agent): the
         result as the tool built it (``MCPServer.handle(host_code=True)``)."""
         return self.call(name, arguments, host_code=True)
+
+    def original_refusal(self, citation: str) -> str | None:
+        """Why this host's reader is not served the captured original ``citation`` now
+        (``CaseRuntime.original_refusal_kind``): ``refused`` (decided), ``failed`` or
+        None (served). Harness code only (``_reader_opens``); never a tool, never shown
+        to the agent."""
+        from ontology.types import Actor
+        self._session()
+        return self._runtime.original_refusal_kind(
+            citation, Actor(self.tenant, frozenset(self.principals)))
 
     def mcp_server(self) -> dict[str, Any]:
         args = ["-m", "operating.mcp_server", "--state-dir", str(self.state_dir),
@@ -894,7 +1209,7 @@ OracleField = Callable[[str, Mapping[str, Any], str], "tuple[bool, Any]"]
 
 def make_run_pin(item: Mapping[str, Any], reader: MirrorPinReader, *,
                  oracle_field: OracleField | None = None) -> dict[str, Any]:
-    """The run pin of one item (docs/decisions/2026-10-02-oracle-pinning.md).
+    """The run pin of one item (devloop/DECISIONS/2026-10-02-oracle-pinning.md).
 
     For each relation the item's expected ``api://`` citations name: the first completed
     mirror capture at or after ``as_known_at.time``. Drift check: each expected citation's
@@ -1143,22 +1458,36 @@ GATE_REFUSAL = "tool_not_allowed"
 
 
 def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
-               stdin: Any = None, stdout: Any = None) -> int:
+               stdin: Any = None, stdout: Any = None, timing: Path | None = None) -> int:
     """The tool gate: relay MCP stdio between a client (the agent) and ``server`` (the case
     host), listing only ``allowed`` tools and refusing a ``tools/call`` of any other name
     with a tool error, never forwarded; each refusal appends its tool name to ``log``. A
-    message that is not one JSON object (a batch, garbage) is dropped, never forwarded."""
+    message that is not one JSON object (a batch, garbage) is dropped, never forwarded.
+    ``timing``: each ``tools/call`` appends a ``start`` line (request id, tool name,
+    arguments, wall-clock seconds) when it is forwarded or refused and an ``end`` line when
+    its answer leaves the gate, each written at once, so a killed session keeps the
+    starts of the calls it was still waiting on (``attach_call_timing``)."""
     import threading
     allowed, inbound = frozenset(allowed), stdin or sys.stdin
     outbound = stdout or sys.stdout
     child = subprocess.Popen(list(server), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                              text=True, bufsize=1)
-    lock, listing = threading.Lock(), set()
+    lock, listing, calls = threading.Lock(), set(), set()
+
+    def note(entry: Mapping[str, Any]) -> None:
+        if timing is None:
+            return
+        with lock, timing.open("a", encoding="utf-8") as out:
+            out.write(json.dumps({**entry, "at": time.time()}) + "\n")
 
     def emit(message: Mapping[str, Any]) -> None:
         with lock:
             outbound.write(json.dumps(message) + "\n")
             outbound.flush()
+        key = json.dumps(message.get("id"))
+        if "id" in message and key in calls:
+            calls.discard(key)
+            note({"event": "end", "id": message.get("id")})
 
     def pump() -> None:
         for line in child.stdout:
@@ -1184,6 +1513,10 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
         if not isinstance(message, dict):
             continue
         params = message.get("params") if isinstance(message.get("params"), Mapping) else {}
+        if message.get("method") == "tools/call" and "id" in message:
+            calls.add(json.dumps(message["id"]))
+            note({"event": "start", "id": message["id"], "name": params.get("name"),
+                  "arguments": params.get("arguments")})
         if message.get("method") == "tools/call" and params.get("name") not in allowed:
             with log.open("a", encoding="utf-8") as refused:
                 refused.write(json.dumps(str(params.get("name"))) + "\n")
@@ -1204,15 +1537,101 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
 Spawn = Callable[[list[str], str, dict[str, str], int], "tuple[int, str]"]
 
 
+# How long Claude Code waits for the gated host's MCP server to answer at start-up (its
+# ``MCP_TIMEOUT``, ms). The host opens the projection before it answers (a large store
+# takes tens of seconds on a loaded machine); past Claude Code's default the session
+# runs with no plx tool at all and can only abstain.
+MCP_STARTUP_MS = 120_000
+# How long a timed-out session's killed process group may take to hand back its output.
+_KILLED_DRAIN_SECONDS = 10
+
+
 def _spawn(argv: list[str], cwd: str, env: dict[str, str], timeout: int) -> tuple[int, str]:
-    done = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True,
-                          timeout=timeout, check=False)
-    return done.returncode, done.stdout
+    """Run one session in its own process group. On ``timeout`` the whole group (the
+    session, its gate and the host's MCP server) is killed, so no orphaned server keeps
+    a query running into the next session's time, and ``subprocess.TimeoutExpired``
+    carries the stream read so far (``stdout``) for the transcript."""
+    child = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                             start_new_session=True)
+    try:
+        stdout, _ = child.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_group(child)
+        try:
+            stdout, _ = child.communicate(timeout=_KILLED_DRAIN_SECONDS)
+        except subprocess.TimeoutExpired:
+            stdout = ""
+        raise subprocess.TimeoutExpired(argv, timeout, output=stdout) from None
+    finally:
+        if child.poll() is None:
+            _kill_group(child)
+            child.wait()
+    return child.returncode, stdout
+
+
+def _kill_group(child: subprocess.Popen) -> None:
+    import signal
+    try:
+        os.killpg(child.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        child.kill()
+
+
+def _wall(seconds: Any) -> str | None:
+    from datetime import datetime, timezone
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+        return None
+    moment = datetime.fromtimestamp(seconds, tz=timezone.utc)
+    return moment.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def attach_call_timing(events: Sequence[dict[str, Any]], lines: Iterable[str]) -> None:
+    """Give each ``tool_call`` event the gate's wall-clock times of its call (``serve_gate``
+    ``timing`` lines): ``started_at``, ``ended_at`` (None: no answer came back, as for a
+    call still waiting when the session was killed) and ``elapsed_ms``. Calls are paired
+    in order by tool name and arguments (parallel calls of one turn may reach the gate in
+    any order); an event the gate never saw (a built-in tool) gets no times. Harness
+    timing only: nothing scores it."""
+    starts: list[dict[str, Any]] = []
+    ends: dict[str, float] = {}
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(entry, dict) or not isinstance(entry.get("at"), (int, float)):
+            continue
+        if entry.get("event") == "start":
+            starts.append(entry)
+        elif entry.get("event") == "end":
+            ends.setdefault(json.dumps(entry.get("id")), entry["at"])
+
+    def key(name: Any, arguments: Any) -> str:
+        return json.dumps([name, arguments or {}], sort_keys=True, default=str)
+    for event in events:
+        if event.get("type") != "tool_call":
+            continue
+        wanted = key(event.get("name"), event.get("arguments"))
+        found = next((n for n, s in enumerate(starts)
+                      if key(s.get("name"), s.get("arguments")) == wanted), None)
+        if found is None:
+            continue
+        start = starts.pop(found)
+        ended = ends.get(json.dumps(start.get("id")))
+        event["started_at"] = _wall(start["at"])
+        event["ended_at"] = _wall(ended)
+        event["elapsed_ms"] = None if ended is None else max(
+            0, round((ended - start["at"]) * 1000))
 
 
 class ClaudeCodeAgent:
     """One headless Claude Code session per run, with only the case host's MCP tools,
-    served through the tool gate. ``spawn`` (tests): the agent transport."""
+    served through the tool gate. ``spawn`` (tests): the agent transport. Its final
+    message leaves through ``gate_final_reply`` (``record``): the reply holds only what
+    the session's answer gate passed."""
+
+    gates_final_reply = True
 
     def __init__(self, *, binary: str = "claude", model: str | None = None,
                  timeout: int = 900, extra_args: Sequence[str] = (),
@@ -1248,25 +1667,39 @@ class ClaudeCodeAgent:
         with tempfile.TemporaryDirectory(prefix="plx-eval-") as work:
             config = Path(work) / "mcp.json"
             log = Path(work) / "gate-refused.jsonl"
+            timing = Path(work) / "gate-timing.jsonl"
             server = host.mcp_server()
             gated = {**server, "command": sys.executable, "args": [
-                "-m", "evals.runner", "gate", "--log", str(log),
+                "-m", "evals.runner", "gate", "--log", str(log), "--timing", str(timing),
                 *[arg for name in allowed for arg in ("--allow", name)],
                 "--", server["command"], *server.get("args", [])]}
             gated.setdefault("env", {}).setdefault("PYTHONPATH", str(REPO_ROOT))
             config.write_text(json.dumps({"mcpServers": {"plx": gated}}), encoding="utf-8")
             session = Path(work) / "session"
             session.mkdir()
+            timed_out = False
             try:
                 code, stdout = self.spawn(self.argv(prompt, str(config), allowed, refused),
-                                          str(session), agent_environment(os.environ),
+                                          str(session), {**agent_environment(os.environ),
+                                                         "MCP_TIMEOUT": str(MCP_STARTUP_MS)},
                                           self.timeout)
-            except subprocess.TimeoutExpired:
-                return AgentRun([], "", {"tool_calls": 0, "is_error": True,
-                                         "subtype": "timeout"}, {"kind": "claude-code"})
+            except subprocess.TimeoutExpired as expired:
+                # The stream read before the timeout stays in the transcript (the calls
+                # made and their results), so a timed-out session says where it spent
+                # its time. It has no final reply: no answer is taken from it.
+                partial = expired.stdout or expired.output or ""
+                code, stdout = None, (partial.decode("utf-8", "replace")
+                                      if isinstance(partial, bytes) else str(partial))
+                timed_out = True
             gate_refused = (len(log.read_text(encoding="utf-8").splitlines())
                             if log.is_file() else 0)
+            timed = timing.read_text(encoding="utf-8").splitlines() if timing.is_file() \
+                else []
         run = parse_stream_json(stdout.splitlines(), catalog)
+        attach_call_timing(run.events, timed)
+        if timed_out:
+            run = AgentRun(run.events, "", {**run.usage, "is_error": True,
+                                            "subtype": "timeout"}, run.agent)
         run.usage["exit_code"] = code
         run.usage["refused_tool_calls"] = sum(1 for event in run.events
                                               if event["name"] not in allowed)
@@ -1274,8 +1707,8 @@ class ClaudeCodeAgent:
         run.agent["gate_refused"] = gate_refused
         if self.model:
             run.agent.setdefault("model", self.model)
-        # The final answer is scored as the agent wrote it: the gate it ran is the
-        # Workbench's own, in its session (``answer_gate_record``), never a rewrite here.
+        # The gate it ran is the Workbench's own, in its session (``answer_gate_record``);
+        # ``record`` holds the final reply to what that gate passed (``gate_final_reply``).
         run.agent["answer_gate"] = answer_gate_record(run.events)
         return run
 
@@ -1498,33 +1931,190 @@ def seal(transcript: Mapping[str, Any]) -> dict[str, Any]:
     return {**body, "transcript_sha256": scoring.sha256(body)}
 
 
-def originals_held(item: Mapping[str, Any], state_dir: Any) -> dict[str, int] | None:
-    """How many pinned originals the item's expected values cite (``pinned``) and how many
-    of them the host's state directory does not hold (``missing``: no stored original with
-    those bytes or that SharePoint drive item version, ``scoring.resolves_to_pin``). None
-    when the item cites no pinned original or the host has no state directory."""
-    pins = sorted({str(cite.get("l1_handle")) for value in (item.get("known_outcome") or {})
-                   .get("values") or [] for cite in value.get("citations") or []
-                   if scoring.PINNED_ORIGINAL.match(str(cite.get("l1_handle")))})
-    if not pins or state_dir is None:
-        return None
+# A line anchor on a pinned original in ``oracle.derived_from`` (a proposed card's cited
+# lines, ``scripts/eval_use_case_items.py``: ``original://sha256/<hex>#L<a>-L<b>``): the
+# original is the part before it.
+_LINE_ANCHOR = re.compile(r"#L[0-9]+-L[0-9]+$")
+
+
+def item_pins(item: Mapping[str, Any]) -> list[str]:
+    """The pinned originals (``scoring.PINNED_ORIGINAL``) an item rests on: those its
+    expected values cite and those its oracle names in ``derived_from`` (a proposal or
+    comprehension card has no expected value but names the originals it is about), a line
+    anchor dropped; sorted, each once."""
+    cited = [str(cite.get("l1_handle")) for value in (item.get("known_outcome") or {})
+             .get("values") or [] for cite in value.get("citations") or []
+             if isinstance(cite, Mapping)]
+    derived = [_LINE_ANCHOR.sub("", str(ref))
+               for ref in (item.get("oracle") or {}).get("derived_from") or []]
+    return sorted({pin for pin in cited + derived if scoring.PINNED_ORIGINAL.match(pin)})
+
+
+def _held_reads(state_dir: Path) -> tuple[list[dict[str, Any]], list[str]]:
+    """Every original the host's state holds, as ``scoring.resolves_to_pin`` reads them
+    (``{ok, sha256, provenance}``), and the stores that exist but could not be read.
+
+    Held means bytes the host can serve: the case runtime's originals; captured case
+    originals (``operating.captured_originals``) read in full with a known source unit
+    (one with none is served to nobody); SharePoint drive item versions and mail
+    attachments whose bytes the captures hold. A captured original's read names its
+    ``entry_id``: whether the scoring reader may open it is decided by ``_reader_opens``."""
     from operating.case_originals import DB_FILE
     from operating.case_runtime import CASE_RUNTIME_DIR
-    path = Path(state_dir) / CASE_RUNTIME_DIR / DB_FILE
-    stored: list[dict[str, Any]] = []
-    if path.is_file():
-        db = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    reads: list[dict[str, Any]] = []
+    unreadable: list[str] = []
+
+    def rows(path: Path, sql: str, name: str) -> list[tuple]:
+        if not path.is_file():
+            return []
         try:
-            stored = [{"ok": True, "sha256": sha,
-                       "provenance": json.loads(source) if source else None}
-                      for sha, source in db.execute(
-                          "SELECT o.sha256, s.provenance_json FROM original o "
-                          "LEFT JOIN original_source s USING (original_id)")]
-        finally:
-            db.close()
-    missing = sum(1 for pin in pins
-                  if not any(scoring.resolves_to_pin(read, pin) for read in stored))
-    return {"pinned": len(pins), "missing": missing}
+            db = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+            try:
+                return list(db.execute(sql))
+            finally:
+                db.close()
+        except sqlite3.Error:
+            unreadable.append(name)
+            return []
+
+    for sha, source in rows(state_dir / CASE_RUNTIME_DIR / DB_FILE,
+                            "SELECT o.sha256, s.provenance_json FROM original o "
+                            "LEFT JOIN original_source s USING (original_id)",
+                            "case_runtime_originals"):
+        try:
+            provenance = json.loads(source) if source else None
+        except ValueError:
+            unreadable.append("case_runtime_originals")
+            provenance = None
+        reads.append({"ok": True, "sha256": sha, "provenance": provenance})
+    from operating import captured_originals as captured
+    receipts = state_dir / captured.STORE_DIR / "receipts"
+    if not (state_dir / CASE_RUNTIME_DIR / DB_FILE).is_file() and not receipts.is_dir():
+        # No originals store at all: what the host holds is unknown, never "not held".
+        unreadable.append("originals_store_missing")
+    if receipts.is_dir():
+        # ``entries()`` skips a receipt it cannot read; that receipt may be the one held,
+        # so any unreadable receipt makes the store unknown.
+        try:
+            for path in sorted(receipts.glob("*/*.json")):
+                if not isinstance(json.loads(path.read_text(encoding="utf-8")), Mapping):
+                    unreadable.append("captured_originals")
+        except (OSError, ValueError):
+            unreadable.append("captured_originals")
+        try:
+            entries = captured.CapturedOriginals(
+                state_dir, gate=lambda *_: False).entries().values()
+            reads += [{"ok": True, "sha256": entry.receipt["sha256"], "provenance": None,
+                       "entry_id": entry.id}
+                      for entry in entries if entry.reason is None and entry.unit
+                      and (state_dir / entry.receipt["stored"]).is_file()]
+        except (OSError, ValueError, KeyError, TypeError):
+            unreadable.append("captured_originals")
+    from integrations import capture_mail, capture_sharepoint
+    for sha, drive, item, etag in rows(
+            state_dir / capture_sharepoint.STORE_DIR / capture_sharepoint.DB_FILE,
+            "SELECT content_sha256, drive_id, item_id, etag FROM items WHERE "
+            f"content_sha256 IS NOT NULL AND content_status = '{capture_sharepoint.CAPTURED}'",
+            "sharepoint_capture"):
+        reads.append({"ok": True, "sha256": sha,
+                      "provenance": {"source": "sharepoint-drive", "drive_id": drive,
+                                     "item_id": item, "etag": etag}})
+    for (sha,) in rows(state_dir / capture_mail.STORE_DIR / capture_mail.DB_FILE,
+                       "SELECT content_sha256 FROM attachments WHERE content_sha256 IS NOT "
+                       "NULL AND content_status = 'captured'",
+                       "mail_capture"):
+        reads.append({"ok": True, "sha256": sha, "provenance": None})
+    return reads, sorted(set(unreadable))
+
+
+# The answer a reader gets for a captured original the host does not serve it
+# (``operating.captured_originals``). It reads alike for a decided refusal and for a
+# failure inside the gate, so it alone never says "not openable".
+ORIGINAL_REFUSED = "original_not_visible"
+# The refusal kind (``operating.captured_originals.REFUSED``) that alone counts: the
+# source ACL denies this reader, the original has no known source ACL (served to nobody
+# by policy), or the people exclusion decided it is excluded.
+REFUSAL_DECIDED = "refused"
+
+
+def _reader_opens(reader: Any, entry_id: str) -> bool | None:
+    """May the scoring reader open the captured original ``entry_id`` now? Its harness
+    read (``plx.source_citation`` as host code, the item's actor, through the host's own
+    gate): True when it reads. False only when that read answers ``ORIGINAL_REFUSED``
+    and the host's gate says the refusal was decided (``original_refusal``:
+    ``REFUSAL_DECIDED``). None (unknown) for anything else: a failing read, a timeout,
+    a refused tool, another error, a gate failure (``failed``: an exception, a people
+    exclusion that cannot decide, a source not configured, an unreadable store), or a
+    host that cannot say why."""
+    citation = f"original://{entry_id}"
+    try:
+        read = reader.read("plx.source_citation", {"citation": citation})
+    except Exception:  # noqa: BLE001 - a failed check is unknown, never "not held"
+        return None
+    if not isinstance(read, Mapping):
+        return None
+    if read.get("ok") is True:
+        return True
+    if read.get("ok") is not False or read.get("error") != ORIGINAL_REFUSED:
+        return None
+    why = getattr(reader, "original_refusal", None)
+    if not callable(why):
+        return None
+    try:
+        kind = why(citation)
+    except Exception:  # noqa: BLE001 - a failed check is unknown, never "not held"
+        return None
+    return False if kind == REFUSAL_DECIDED else None
+
+
+def originals_held(item: Mapping[str, Any], state_dir: Any, reader: Any = None
+                   ) -> dict[str, Any] | None:
+    """How many pinned originals the item rests on (``pinned``: ``item_pins``) and how
+    many of them the host does not hold for the scoring reader (``missing``). Held means
+    bytes the host serves to this reader (devloop/DECISIONS/2026-10-27-card-time-pin.md):
+    bytes with that SHA-256 or that SharePoint drive item version (``_held_reads`` and
+    ``scoring.resolves_to_pin``) and, when they are held only as captured case originals,
+    one of them the reader opens (``_reader_opens`` on ``reader``, the item's host). A pin
+    whose every captured original the reader's source gate refuses, each refusal decided
+    (not a failure inside the gate), is missing and counted in ``not_openable`` too.
+    Without a ``reader`` captured originals are not checked (held, as before).
+
+    None when the item names no pinned original or the host has no state directory.
+    Unknown leaves nothing missing (``unreadable`` names why): a state directory that is
+    missing or unreadable, a state with no originals store at all (neither the case
+    runtime's originals nor captured case originals), a store that exists but cannot be
+    read, a receipt that cannot be read, or a reader check that failed
+    (``reader_check_failed``). An unknown never excuses an abstention. The scorer
+    blocks an abstention when one or more pins are missing."""
+    pins = item_pins(item)
+    if not pins or state_dir is None:
+        return None
+    if not Path(state_dir).is_dir():
+        return {"pinned": len(pins), "missing": 0, "unreadable": ["state_dir"]}
+    try:
+        reads, unreadable = _held_reads(Path(state_dir))
+    except OSError:
+        return {"pinned": len(pins), "missing": 0, "unreadable": ["state_dir"]}
+    if unreadable:
+        return {"pinned": len(pins), "missing": 0, "unreadable": unreadable}
+    missing = not_openable = 0
+    for pin in pins:
+        found = [read for read in reads if scoring.resolves_to_pin(read, pin)]
+        if not found:
+            missing += 1
+            continue
+        if reader is None or any("entry_id" not in read for read in found):
+            continue   # held where no captured original's gate decides
+        opens = [_reader_opens(reader, read["entry_id"])
+                 for read in sorted(found, key=lambda r: r["entry_id"])]
+        if True in opens:
+            continue
+        if None in opens:
+            return {"pinned": len(pins), "missing": 0, "unreadable": ["reader_check_failed"]}
+        missing += 1
+        not_openable += 1
+    return {"pinned": len(pins), "missing": missing,
+            **({"not_openable": not_openable} if not_openable else {})}
 
 
 def record(item: Mapping[str, Any], agent: Agent, host: Host, *, phrasing_index: int = 0,
@@ -1546,11 +2136,21 @@ def record(item: Mapping[str, Any], agent: Agent, host: Host, *, phrasing_index:
     run = agent.run(prompt, host)
     # Wall time from the prompt to the final message (evals.measure time_to_answer_ms).
     timing = {"clock": "monotonic", "answer_ms": round((time.monotonic() - started) * 1000)}
+    if getattr(agent, "gates_final_reply", False):
+        # The reply a reader sees and the scorer grades: only the claims the session's
+        # answer gate passed, the rest withheld and named (``gate_final_reply``). The
+        # agent's own message stays in the transcript beside it.
+        agent_text = run.final_text
+        run.final_text, reply = gate_final_reply(agent_text, run.events,
+                                                 texts[phrasing_index])
+        run.agent["final_reply"] = {**reply, **({"agent_final_text": agent_text}
+                                                if reply["rewritten"] else {})}
     answer, error = scoring.parse_answer(run.final_text)
     extra = {"run_pin": json.loads(json.dumps(run_pin))} if run_pin else {}
-    # What the host held when the agent answered: an abstention over originals the state
-    # lacks says nothing about the agent (evals.score: blocked, originals_not_held).
-    held = originals_held(item, getattr(host, "state_dir", None))
+    # What the host held for this reader when the agent answered: an abstention over
+    # originals the state lacks, or that the reader's source gate refuses, says nothing
+    # about the agent (evals.score: blocked, originals_not_held).
+    held = originals_held(item, getattr(host, "state_dir", None), reader=host)
     if held is not None:
         extra["originals"] = held
     return seal({**extra,
@@ -1681,7 +2281,7 @@ def public_summary(scores: Sequence[Mapping[str, Any]], split: str,
     unheld = sum("originals_not_held" in s["codes"] for s in scores)
     if unheld:
         # Runs blocked because the host's state lacked pinned originals: a capture gap the
-        # live checks record as blocked (cause capture_gap, capture tier, red after 24 h).
+        # live verifier records as blocked (cause capture_gap, capture tier, red after 24 h).
         summary["originals_not_held"] = unheld
         summary["blocked_upstream"] = [{"part": "pinned_originals", "source": "case-originals",
                                         "cause": "capture_gap"}]
@@ -1723,6 +2323,8 @@ def main(argv: list[str] | None = None) -> int:
     gate = sub.add_parser("gate", help="serve the tool gate in front of an MCP stdio host")
     gate.add_argument("--allow", action="append", default=[])
     gate.add_argument("--log", type=Path, required=True)
+    gate.add_argument("--timing", type=Path, help="append each tool call's wall-clock "
+                      "start and end here (serve_gate)")
     gate.add_argument("server", nargs=argparse.REMAINDER)
     for command in (run, replay_cmd, prompt):
         command.add_argument("--items", type=Path, required=True)
@@ -1753,7 +2355,7 @@ def main(argv: list[str] | None = None) -> int:
         server = args.server[1:] if args.server[:1] == ["--"] else args.server
         if not server:
             parser.error("gate needs the host command after --")
-        return serve_gate(args.allow, server, args.log)
+        return serve_gate(args.allow, server, args.log, timing=args.timing)
     try:
         items = load_items(args.items, split=args.split)
         if args.command == "prompt":

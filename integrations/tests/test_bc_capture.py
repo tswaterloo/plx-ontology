@@ -5,7 +5,7 @@ below, which serves three companies x the capture entity sets with server-driven
 paging (``@odata.nextLink`` + ``$skiptoken``), document lines by the nested
 navigation, scripted throttles/failures, and records every call. Evidence label:
 ``injected-transport``. Live behaviour is checked by
-``verify/live-checks/bc.capture_full.json`` on reviewed main (live-unverified).
+``devloop/live-checks/bc.capture_full.json`` on reviewed main (live-unverified).
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from unittest import mock
 import uuid
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
-from verify import live_verify
+from devloop import live_verify
 
 from integrations import bc_read, capture_store
 from integrations import live_source_grammar as grammar
@@ -36,6 +36,7 @@ from operating import claim_checks
 
 HOST = "https://api.businesscentral.dynamics.com"
 BASE = f"/v2.0/{TENANT_ID}/Production/api/v2.0"
+ODATA = f"/v2.0/{TENANT_ID}/Production/ODataV4"
 T0 = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
 
 # Three pinned companies (test GUIDs; the real pins live in bc_company_books.json) and one
@@ -103,6 +104,9 @@ class FakeBc:
                 self.data[(company, entity_set)] = rows
         self.calls: list[tuple[str, str, dict]] = []
         self.script: list[tuple[re.Pattern, tuple]] = []
+        # ODataV4 Page 50 ``PurchaseOrder`` rows per company (None: one per purchase order,
+        # ``No`` its number, a synthetic ``Your_Reference``, the order's vendor number).
+        self.references: dict[str, list[dict]] = {}
 
     def fail(self, pattern: str, *responses: tuple) -> None:
         for response in responses:
@@ -135,6 +139,9 @@ class FakeBc:
             return 200, {}, self.body({"value": [
                 {"id": c, "name": self.names.get(c, "X"), "displayName": self.names.get(c, "X"),
                  "@odata.etag": 'W/"c"'} for c in self.companies]})
+        odata = re.fullmatch(re.escape(ODATA) + r"/Company\('([^']+)'\)/(\w+)", path)
+        if odata is not None:
+            return self.odata(odata.group(1), odata.group(2), parts, headers)
         found = re.fullmatch(re.escape(BASE) + r"/companies\(([^)]+)\)/(\w+)"
                              r"(?:\(([^)]+)\)(?:/(\w+))?)?", path)
         if found is None:
@@ -186,6 +193,41 @@ class FakeBc:
             extra = "".join(f"&{k}={quote(v, safe=',:')}" for k, v in sorted(kept.items()))
             page["@odata.nextLink"] = (f"{HOST}{parts.path}?aid=FINANCE{extra}&$skiptoken="
                                        f"{self.token(parts.path, offset + size)}")
+        return 200, {}, self.body(page)
+
+    def reference_rows(self, company: str) -> list[dict]:
+        if company in self.references:
+            return self.references[company]
+        return [{"@odata.etag": f'W/"R{r["number"]}"', "No": r["number"],
+                 "Your_Reference": f"FM-{r['number']}",
+                 "Buy_from_Vendor_No": r.get("vendorNumber", "")}
+                for r in self.data.get((company, "purchaseOrders"), [])]
+
+    def odata(self, name: str, entity: str, parts, headers):
+        """ODataV4 ``Company('<name>')/PurchaseOrder``: the page's key (``No``) pages it,
+        as ``$skiptoken='<last No>'`` (UNVERIFIED live: the token shape)."""
+        company = next((c for c in self.companies if self.names.get(c) == name), None)
+        if company is None or entity != "PurchaseOrder":
+            return 404, {}, b'{"error":{"code":"BadRequest_NotFound"}}'
+        query = parse_qs(parts.query)
+        assert query.get("$select") == [grammar.BC_ODATA_PO_SELECT], query
+        rows = self.reference_rows(company)
+        token = query.get("$skiptoken", [None])[0]
+        offset = 0
+        if token is not None:
+            numbers = [r.get("No") for r in rows]
+            last = token.strip("'")
+            if last not in numbers:
+                return 400, {}, b'{"error":{"code":"BadRequest"}}'
+            offset = numbers.index(last) + 1
+        size = int(re.search(r"maxpagesize=(\d+)", headers.get("Prefer", "maxpagesize=100"))[1])
+        names = [*grammar.BC_ODATA_PO_FIELDS, "@odata.etag"]
+        page = {"value": [{k: r[k] for k in names if k in r}
+                          for r in rows[offset:offset + size]]}
+        if offset + size < len(rows):
+            page["@odata.nextLink"] = (
+                f"{HOST}{parts.path}?$select={quote(grammar.BC_ODATA_PO_SELECT, safe=',')}"
+                f"&$skiptoken={quote(repr(rows[offset + size - 1]['No']), safe='')}")
         return 200, {}, self.body(page)
 
     def offset(self, path: str, token: str | None) -> int | None:
@@ -263,7 +305,7 @@ PRODUCTION_NAMES = {OTHERS[0]: "CRONUS Test", OTHERS[1]: "PLX Consol",
 
 
 class MyCompanyScopeTests(unittest.TestCase):
-    """Production reads only My Company: a listing with CRONUS,
+    """Production reads only My Company (directive 7fbdeee4a6f4): a listing with CRONUS,
     PLX Consol, PLX Distribution and My Company captures only the pinned GUID."""
 
     def listing(self, **kwargs) -> FakeBc:
@@ -311,7 +353,7 @@ class MyCompanyScopeTests(unittest.TestCase):
             "environment": "Production", "company_name": "My Company", "po_count": None})
 
     def test_the_record_of_the_probe_summary_passes_the_live_check_spec(self):
-        spec = json.loads((Path(__file__).resolve().parents[2] / "verify" / "live-checks"
+        spec = json.loads((Path(__file__).resolve().parents[2] / "devloop" / "live-checks"
                            / "bc.capture_full.json").read_text(encoding="utf-8"))
         scratch = tempfile.TemporaryDirectory()
         self.addCleanup(scratch.cleanup)
@@ -485,8 +527,9 @@ class FullCaptureTests(unittest.TestCase):
             resolve_sample=3, passes=2, monotonic=Clock().monotonic,
             retry=BoundedBackoff(sleep=lambda s: None))
         self.assertEqual((report["units_total"], report["units_not_exposed"],
-                          report["all_complete"]), (ALL_UNITS, 1, False))
-        spec = json.loads((Path(__file__).resolve().parents[2] / "verify" / "live-checks"
+                          report["all_complete"]), (ALL_UNITS + 1, 1, False))
+        # + 1: the Page 50 purchaseOrderReferences unit of the pinned company.
+        spec = json.loads((Path(__file__).resolve().parents[2] / "devloop" / "live-checks"
                            / "bc.capture_full.json").read_text(encoding="utf-8"))
         # Only the fixture's own mark fails it: injected transport.
         self.assertEqual(live_verify.check_expectations(spec, 0, report),
@@ -498,7 +541,7 @@ class FullCaptureTests(unittest.TestCase):
         # accounted, any other incomplete unit still holds the check at incomplete.
         unserved = (400, {}, b'{"error":{"code":"Internal_DataNotFoundFilter"}}')
         for name, passes in (("bc.capture_full", 2), ("bc.capture_incremental", 3)):
-            spec = json.loads((Path(__file__).resolve().parents[2] / "verify" / "live-checks"
+            spec = json.loads((Path(__file__).resolve().parents[2] / "devloop" / "live-checks"
                                / f"{name}.json").read_text(encoding="utf-8"))
             for refusing, complete in (((CO[1], CO[2]), True), (CO, False)):
                 fake = FakeBc({}, companies=CO)
@@ -771,7 +814,7 @@ class ResumeAndThrottleTests(unittest.TestCase):
                          ["purchaseInvoices"])
 
     def test_a_throttled_company_listing_is_a_throttle_stop_with_its_status(self):
-        """A 429 on the companies listing raised SourceUnavailable
+        """Review 4eb0f8535a28 (b): a 429 on the companies listing raised SourceUnavailable
         (failed, upstream_outage) with no throttle block. It stops the call before any
         company with the throttle block every throttle gives, its HTTP status and every
         set left unread; nothing else is requested, and the next call reads it all."""
@@ -839,7 +882,7 @@ class ResumeAndThrottleTests(unittest.TestCase):
         self.assertEqual((unit["state"], unit["records_current"]), ("complete", 5))
 
     def test_a_header_added_below_a_resumed_lines_run_is_read_before_complete(self):
-        # A resumed lines run skipped headers whose id sorted
+        # Review 948726f (material): a resumed lines run skipped headers whose id sorted
         # before its cursor and still finished complete.
         fake = FakeBc({"purchaseOrders": 5})
         h = Harness(self, fake)
@@ -897,7 +940,7 @@ class ResumeAndThrottleTests(unittest.TestCase):
                          ("complete", 10, 0))
 
     def test_a_document_that_always_fails_does_not_freeze_the_lines_unit(self):
-        # An unbounded retry kept the run in_progress forever, so a
+        # Review of 28562573: an unbounded retry kept the run in_progress forever, so a
         # line changed in BC under another, unchanged header was never captured again.
         fake = FakeBc({"purchaseOrders": 5})
         bad, other = gid(0, 0, 1), gid(0, 0, 3)
@@ -1191,7 +1234,7 @@ class RefusedContinuationTests(unittest.TestCase):
         self.assertFalse(fake.bc_gets(r"\$expand"))  # the refused link was never sent
 
     def test_a_nextlink_cycle_fails_the_unit_after_bounded_gets_and_is_not_resumed(self):
-        # Only a nextLink equal to the current page was refused, so
+        # Review of 49302608: only a nextLink equal to the current page was refused, so
         # a 2 -> 4 -> 2 cycle over empty pages was followed forever (>400 GETs, no budget).
         fake = CyclingBc({"vendors": 5})
         fake.cycle.add((CO[0], "vendors"))
@@ -1241,7 +1284,7 @@ class RefusedContinuationTests(unittest.TestCase):
                 self.assertFalse(fake.bc_gets("B1C2D3E4"))
 
     def test_a_raw_space_nextlink_fails_the_unit_typed_and_fails_the_live_check(self):
-        # The delta read's nextLink repeated $filter with RAW spaces;
+        # Repair of 61a29755: the delta read's nextLink repeated $filter with RAW spaces;
         # it matched the request's decoded value, was stored as the cursor and refused by
         # check_request when followed (ReadOnlyGuardError, uncaught: stalled for good).
         fake = OpaqueSkiptokenBc({"salesShipments": 5})
@@ -1255,7 +1298,7 @@ class RefusedContinuationTests(unittest.TestCase):
                 resolve_sample=0, passes=passes, books=BOOKS, monotonic=Clock().monotonic,
                 retry=BoundedBackoff(sleep=lambda s: None), entity_sets=("salesShipments",))
 
-        spec = json.loads((Path(__file__).resolve().parents[2] / "verify" / "live-checks"
+        spec = json.loads((Path(__file__).resolve().parents[2] / "devloop" / "live-checks"
                            / "bc.capture_incremental.json").read_text(encoding="utf-8"))
         failure = "nextlink_refused_per_pass[*] != expected"
         report = probe(2)  # pass 1: full read; pass 2: the delta read with the raw link
@@ -1511,7 +1554,7 @@ class CliTests(unittest.TestCase):
 
 
 class CompanyListingCompletenessTests(unittest.TestCase):
-    """all_complete ignored an
+    """Review dd380a4 (capture-bc-company-completeness): all_complete ignored an
     incomplete company listing, so a run that never saw a pinned company said complete."""
 
     class PagedCompanies(FakeBc):
@@ -1930,7 +1973,7 @@ class IncrementalCaptureTests(unittest.TestCase):
 
 
 class ReviewRepairTests(unittest.TestCase):
-    """Calculated fields, clean-only line skips,
+    """Review 91614bf (changes_required): calculated fields, clean-only line skips,
     the incremental_disabled reset and per-key failures. Injected transport."""
 
     def current_row(self, h: Harness, company: str, entity_set: str, record_id: str):

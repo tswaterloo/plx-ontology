@@ -36,7 +36,7 @@ from integrations.live_source_guard import (LiveSourceAudience, NotVisible,
 from integrations.tests.test_live_source_adapters import (DRIVE, DRIVE_BASE, ENV, CUSTOMERS,
                                                           SITE_ID, FakeSender, drive_item,
                                                           graph_api, j, live_drive_item)
-from verify import live_verify as lv
+from devloop import live_verify as lv
 from ontology.core import Actor
 from operating import doc_metadata, doc_metadata_taxonomy as taxonomy
 from operating.doc_metadata import CURRENT_COLUMN_FIELDS
@@ -316,7 +316,7 @@ class ProbeTest(unittest.TestCase):
 LIST_BASE = f"/v1.0/sites/{SITE_ID}/lists/{LIST_GUID}"
 ITEMS = f"{DRIVE_BASE}/list/items"
 DOC_TYPE, FOLDER_TYPE = "0x0101009D1CB255DA76424F860D91F20E6C4118", "0x012000AB"
-SPECS = Path(__file__).resolve().parents[2] / "verify" / "live-checks"
+SPECS = Path(__file__).resolve().parents[2] / "devloop" / "live-checks"
 SPEC_ID = "graph.sharepoint_library_columns"
 SPEC = json.loads((SPECS / f"{SPEC_ID}.json").read_text(encoding="utf-8"))
 AO_SPEC = json.loads((SPECS / "graph.sharepoint_listitem.json").read_text(encoding="utf-8"))
@@ -499,7 +499,7 @@ class LibraryColumnsTest(unittest.TestCase):
                           out["columns"][name]["filled"]), (60, 20, 30, True, 20))
 
     def test_seven_digit_fractions_are_dated_on_python_3_10(self):
-        # Graph writes up to seven fraction digits, which
+        # Directive 91ca13761494 (3): Graph writes up to seven fraction digits, which
         # datetime.fromisoformat refuses before Python 3.11 (emulated here), so such a
         # document read as undated and sorted after every dated one.
         class Py310(dt.datetime):
@@ -654,7 +654,7 @@ class LibraryColumnsProbeTest(unittest.TestCase):
         self.assertEqual(live.naming("sharepoint", {a, "read", "STANDARD"}), [])
 
     def test_an_unknown_column_has_no_fill_count(self):
-        # A column whose state is unknown showed 0 in
+        # Directive 91ca13761494 (2): a column whose state is unknown showed 0 in
         # fill_counts, which a reader of fill_counts alone takes for empty.
         lib = Library([])
         filled, unread = lib.named[0], lib.named[1:] + [lib.display["name"]]

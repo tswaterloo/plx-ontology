@@ -1,6 +1,6 @@
 """Real-agent eval: Claude Code at k=1 on the product's MCP case host (tier ``real_agent``).
 
-Measure the
+Directive dd40ff1bf83f P10 and amendment bb664f58910f section 2 (metric tiers): measure the
 real agent against the deterministic baseline, small and at most daily (it spends the
 operator's Claude Code plan; no paid API).
 
@@ -35,13 +35,13 @@ and stop rules (``evals.runner.build_prompt``: cite or give a gap, never act). I
   way, and every result says so (``eval.live.reader`` ``eval_principal`` with
   ``eval.live.principal``; ``eval.tiers.access``): never a fixture, never an employee, and
   never the A6 permission proof (``denied_leaks`` with a real identity), which still
-  requires ``PLX_EVAL_READER``. The live-check runner provisions the host settings a run lacks
+  requires ``PLX_EVAL_READER``. The live verifier provisions the host settings a run lacks
   (a fresh session secret, a state directory, its example host config); the part reads
   them as any other setting, and ``eval.live.host_provisioned`` names the ones it was
   given (``PLX_WORKBENCH_HOST_PROVISIONED``; names only, never a value; ``[]`` when none).
   An identity that is set but invalid is ``blocked:
   reader_identity_invalid``, never the eval principal (the ticket source is decided in
-  ``docs/decisions/2026-10-07-live-agent-metric-reader-ticket.md``).
+  ``devloop/DECISIONS/2026-10-07-live-agent-metric-reader-ticket.md``).
   Before any source is read the host must accept the reader: one harness session lists
   the tools; a reader the host's resolver refuses as an employee (``READER_REFUSALS``:
   inactive, unverified, not in the Portal snapshot, refused by Entra) is ``blocked:
@@ -69,7 +69,7 @@ with its reader count. The harness never picks
 or adds a reader: a second reader (a cross-reader trim comparison) runs only when the
 operator names one, and this harness has no setting for it yet.
 
-**Tiers kept apart** (metric tiers): ``eval.tiers`` states each tier on
+**Tiers kept apart** (amendment bb664f58910f section 2): ``eval.tiers`` states each tier on
 its own, so one tier's gap never reads as another's failure: ``access`` (the reader identity
 and reader count, the oracle strata an outage blocked and the citation read gaps),
 ``capture`` (per source, the persistent host's own ledger: generation, completeness, how
@@ -104,7 +104,7 @@ accuracy (``evals.score.outcome_summary``: abstaining everywhere is coverage 0, 
 score), ``confident_unsupported`` (stated answers the claim gate refused), ``wrong_cited``
 (stated answers every claim check passed whose value still does not match the oracle: cited
 and wrong, never counted as unsupported) and the unsupported share of
-the answered runs (``confident_unsupported_rate``, the number the answer-rate bar bounds; the three
+the answered runs (``confident_unsupported_rate``, the number ROADMAP B1 bounds; the three
 rates are ``evals.score.answer_rates``, the dev baseline's too), refused tool
 calls, action calls and the citations the harness could not re-read as the reader, by scheme
 (``unreadable_citations``; a run failing only on unreadable ``bc://`` citations is a
@@ -116,7 +116,7 @@ Claude Code binary, or no session that produced an answer, is a ``blocked_upstre
 answered is blocked whole and every other run is judged on the parts that ran). Output:
 counts, rates, enums only.
 
-**Ask** (``ask``, its own daily check ``verify/live-checks/eval.ask_agent.json``): the same
+**Ask** (``ask``, its own daily check ``devloop/live-checks/eval.ask_agent.json``): the same
 admitted items, the same named reader and the same scorer, answered by the object
 workspace's Ask instead of a Claude Code MCP client, through the workspace's own path
 (``operator_ui.object_workspace.ObjectWorkspace.ask_run``, the one ``ask`` shows: its question
@@ -169,7 +169,7 @@ Evidence: the fixture parts' data is ``isolated-fixture``, the live part's ``liv
 (the product side; the oracle reads live); ``agent_evidence`` says whether a real
 Claude Code session answered (``real-claude-session``) or an injected transport
 (``injected-transport``, tests; for the Ask a scripted planner). Live-unverified until the
-live-check runner records ``verify/live-checks/eval.real_agent.json`` (the Ask:
+live verifier records ``devloop/live-checks/eval.real_agent.json`` (the Ask:
 ``eval.ask_agent.json``); no Ask answer from a model is recorded here.
 
 Usage::
@@ -221,8 +221,12 @@ READER_ENV = "PLX_EVAL_READER"  # the named reader's identity, JSON claims
 STATE_ENV = "PLX_WORKBENCH_STATE_DIR"  # the persistent host's state directory
 HOST_CONFIG_ENV = "PLX_WORKBENCH_HOST_CONFIG"  # its plx-host-config/v1 file
 TICKET_ENV = "PLX_EVAL_SESSION_TICKET"  # the variable a live session's ticket travels in
-# The live-check runner's list of the host settings it provisioned for this run (names,
-# comma-separated, never a value: verify/live_verify.py AGENT_PROVISIONED_ENV).
+# The people-exclusion guard's settings (``integrations.people_exclusion``): object ids and a
+# file path, no credential. The host subprocess reads them as the product host does; without
+# them the guard does not load and the host withholds every mailbox.
+EXCLUSION_ENV = ("PLX_EXCLUDED_PEOPLE_OIDS", "PLX_EXCLUDED_PEOPLE_FILE")
+# The live verifier's list of the host settings it provisioned for this run (names,
+# comma-separated, never a value: devloop/live_verify.py AGENT_PROVISIONED_ENV).
 PROVISIONED_ENV = "PLX_WORKBENCH_HOST_PROVISIONED"
 HOST_SETTINGS = ("PLX_WORKBENCH_SESSION_SECRET", STATE_ENV, HOST_CONFIG_ENV)
 READER_CLAIMS = ("uid", "email", "entraTenantId", "entraObjectId")
@@ -252,6 +256,11 @@ PLANNER_ACTIONS = ("call", "answer", "abstain", "escalate")  # operating.agent_l
 # The host's refusal of the session identity (``operating.mcp_server`` start-up) and its
 # reason code.
 IDENTITY_REFUSED = re.compile(rb"session identity refused: ([A-Za-z0-9_.:-]+)")
+# The host's start-up refusal as ``evals.harness_reads`` prints it: ``{"error": "<code>"}``
+# (a ``HostError`` code, e.g. ``employee_entitlements_not_configured``): a code, never text.
+HOST_ERROR_CODE = re.compile(
+    rb'^(?:\{"error": ?"([A-Za-z0-9_.:-]{1,80})"\}|[\w.]+: error: [a-z][a-z ]{0,40} is invalid: '
+    rb'([a-z][a-z0-9]*(?:_[a-z0-9]+)+(?::[a-z0-9_]{1,40})?))\s*$', re.MULTILINE)
 # ``case_console.checked_store_status``'s refusal and the store state it names.
 STORE_REFUSED = re.compile(r"ontology store refused \((foreign|unknown)\)")
 # Resolver reasons that are about the reader as an employee (not in the Portal snapshot,
@@ -444,7 +453,7 @@ def verdict(report: Mapping[str, Any], *, min_scored: int,
     """0 when the run completed with at least ``min_scored`` scored (non-blocked) runs and,
     when the live oracle sampled, at least ``min_live_items`` live items; or when the agent
     session itself is blocked (no binary, no session answered). Rates are printed, not
-    asserted here (the live-check spec asserts the answer-rate bar on them), but read-gap runs above the tripwire, in the whole run or in any one part (its
+    asserted here (the live-check spec asserts ROADMAP B1's bar on them), but read-gap runs above the tripwire, in the whole run or in any one part (its
     ``blocked_tripwire``), fail the run (``evals.score.fail_reasons``, the dev baseline's
     rule: a part's capture lag is never diluted by another part). Blocked parts
     (``blocked_upstream``, e.g. too few roots the reader resolves) did not run and are not
@@ -581,7 +590,7 @@ def reader_or_eval(environ: Mapping[str, str], name: str, *,
 
 
 def host_provisioned(environ: Mapping[str, str]) -> dict[str, Any]:
-    """Which host settings the live-check runner provisioned for this run (``PROVISIONED_ENV``):
+    """Which host settings the live verifier provisioned for this run (``PROVISIONED_ENV``):
     ``{"host_provisioned": [names]}``, names only, never a value; ``[]`` when it provisioned
     none (or the run is not the verifier's). Fail closed: a list naming anything but one of
     ``HOST_SETTINGS``, or a setting this run does not hold, claims nothing
@@ -612,13 +621,16 @@ class LiveHost:
     resolves the employee and trims every read for them, as for an employee's own Claude.
     No ``--fixture``, no ``--principal``. ``eval_principal``: ``identity`` is the declared
     eval principal's (``operating.eval_principal.ticket_claims``) and both servers start
-    with ``--eval-principal``, so the host resolves it from its declaration alone."""
+    with ``--eval-principal``, so the host resolves it from its declaration alone.
+    ``agent``: the agent definition both sessions run instead of the host config's
+    (``operating.host mcp --agent``), so the harness's catalog is the agent's."""
 
     def __init__(self, state_dir: Path, config: Path, identity: Mapping[str, str],
                  secret: str, *, tenant: str, extra_env: Mapping[str, str] | None = None,
-                 read_timeout: float = HOST_READ_SECONDS, eval_principal: bool = False
-                 ) -> None:
+                 read_timeout: float = HOST_READ_SECONDS, eval_principal: bool = False,
+                 agent: str | None = None) -> None:
         self.state_dir, self.config = Path(state_dir), Path(config)
+        self.agent = agent
         self._identity, self._secret = dict(identity), secret
         self._extra_env = dict(extra_env or {})
         self.eval_principal = eval_principal
@@ -643,10 +655,14 @@ class LiveHost:
         return {"command": sys.executable,
                 "args": ["-m", module, *command, "--state-dir", str(self.state_dir),
                          "--config", str(self.config), "--session-ticket-env", TICKET_ENV,
-                         *(["--eval-principal"] if self.eval_principal else [])],
+                         *(["--eval-principal"] if self.eval_principal else []),
+                         *(["--agent", self.agent] if self.agent else [])],
                 "cwd": str(ROOT),
                 "env": {"PYTHONPATH": str(ROOT), TICKET_ENV: self.ticket(),
-                        si.SESSION_TICKET_SECRET_ENV: self._secret, **self._extra_env}}
+                        si.SESSION_TICKET_SECRET_ENV: self._secret,
+                        **{name: os.environ[name] for name in EXCLUSION_ENV
+                           if os.environ.get(name)},
+                        **self._extra_env}}
 
     def mcp_server(self) -> dict[str, Any]:
         return self._command("operating.host", "mcp")
@@ -666,7 +682,8 @@ class LiveHost:
             host = plx_host.Host(self.state_dir, plx_host.HostConfig.from_file(self.config),
                                  environ={**os.environ, **self._extra_env})
             argv = plx_host.mcp_arguments(host, session_ticket_env=TICKET_ENV,
-                                          eval_principal=self.eval_principal)
+                                          eval_principal=self.eval_principal,
+                                          agent=self.agent)
             directory = None if self.eval_principal else plx_host.directory_provider(host)
         except plx_host.HostError as error:
             raise runner.RunnerError(f"live_host_config_refused:{error.code}") from None
@@ -692,7 +709,8 @@ class LiveHost:
     def _ended(self) -> str:
         """Why the host closed the session: ``live_host_identity_refused:<reason>`` when it
         refused the session identity at start-up (the host's reason code), else
-        ``live_host_session_ended``. Its stderr is read for that code only, never
+        ``live_host_start_refused:<code>`` when it exited with a ``HostError`` code, else
+        ``live_host_session_ended``. Its stderr is read for those codes only, never
         reported."""
         import subprocess
         try:
@@ -700,8 +718,13 @@ class LiveHost:
         except subprocess.TimeoutExpired:
             return "live_host_session_ended"
         self._stderr.seek(0)
-        refused = IDENTITY_REFUSED.search(self._stderr.read())
-        return (f"live_host_identity_refused:{refused.group(1).decode()}" if refused
+        text = self._stderr.read()
+        refused = IDENTITY_REFUSED.search(text)
+        if refused:
+            return f"live_host_identity_refused:{refused.group(1).decode()}"
+        started = HOST_ERROR_CODE.search(text)
+        return (f"live_host_start_refused:{(started.group(1) or started.group(2)).decode()}"
+                if started
                 else "live_host_session_ended")
 
     def _request(self, method: str, params: Mapping[str, Any]) -> dict[str, Any]:

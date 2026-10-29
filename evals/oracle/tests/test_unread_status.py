@@ -1,10 +1,10 @@
 """The cross-system sample's documents are searched one way: ``generator.document_candidates``.
 
-Gap-f713876847b6: the unfamiliar sample listed mail and
+Gap-f713876847b6 (directive f6427307e9b0 item 5): the unfamiliar sample listed mail and
 SharePoint on its own path (capped listings in time windows, its own token index) while the
 dev set's document strata searched root first; it now takes its document references through
 ``generator.document_candidates`` and says why a kind has none the way the dev set does
-(``generator.search_status``): unreadable is not empty, a failed root
+(``generator.search_status``): unreadable is not empty (CONTEXT/01 §6 #3), a failed root
 lookup leaves no clean sample, and a budget stop is ``blocked: budget``. Injected ports over
 the live-shaped fixture world; not live.
 """

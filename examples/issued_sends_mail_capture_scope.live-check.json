@@ -1,6 +1,6 @@
 {
  "schema": "plx-mail-capture-scope/v1",
- "note": "Live-check scope for operating.issued_sends (verify/live-checks/case.po_sent_chain.json): the Sent Items and inbox (supplier replies) of purchase-order@, the mailbox the Portal email hub sends purchase orders from (plx-customer-portal portal/src/lib/email-hub/types/purchase-order-sent.ts, saveToSentItems in graph-transport.ts), and of vince@ (POs sent by hand). Both are allowlisted in operating/case_mail_scope.json. Configuration, never a grant: the capture principal still needs the live-source audience. Read-only.",
+ "note": "Live-check scope for operating.issued_sends (devloop/live-checks/case.po_sent_chain.json): the Sent Items and inbox (supplier replies) of purchase-order@, the mailbox the Portal email hub sends purchase orders from (plx-customer-portal portal/src/lib/email-hub/types/purchase-order-sent.ts, saveToSentItems in graph-transport.ts), and of vince@ (POs sent by hand). Both are allowlisted in operating/case_mail_scope.json (owner decision 5be438765457). Configuration, never a grant: the capture principal still needs the live-source audience. Read-only.",
  "window_days": 90,
  "internal_domains": [
   "petrasoap.com",

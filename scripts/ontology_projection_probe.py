@@ -1,4 +1,4 @@
-"""Live check of the ontology projection: counts, booleans and timings only.
+"""Live check of the ontology projection (lane L7): counts, booleans and timings only.
 
     python3 -m scripts.ontology_projection_probe --db DIR/mirror.sqlite \
         --store DIR/ontology.sqlite [--budget-seconds N] [--claim-sample N] [--max-rss-mb N]
@@ -14,7 +14,7 @@ GET only. Fills a throwaway Portal source mirror through
 ``scripts.mirror_measure.ordered_full_coverage`` (bound relations first; key from
 ``PLX_WORKBENCH_API_KEY``, never printed), projects it under the curated schema
 (``ontology.schema.load_schema``) twice into a throwaway store, then measures the
-projection acceptance on real data. Its ``completeness`` block is the one figure
+09-CRITIQUE L7 acceptance on real data. Its ``completeness`` block is the one figure
 (``scripts.mirror_measure.completeness``): ``complete_bound_relation_count /
 bound_total``, and ``mirror_complete`` is its ``all_bound_complete``. Relations the last daily report (``--previous-report``) names unstable are
 not staged at all, leave ``bound_total`` and put the gap ``capture_unstable_ids`` on each
@@ -154,7 +154,7 @@ budget stop a consumer passes on ``budget_partial`` of the partial report: only 
 ``PARTIAL_FIELDS`` counts, flags and codes, so a key the build adds later never reaches
 the consumer's record unreviewed.
 
-**Session projection** (``ontology.session_projection``): one
+**Session projection** (``ontology.session_projection``, directive 56ca42c8a936): one
 projection per verifier session, which every consumer opens instead of projecting the
 session's mirror cold. ``--produce-session`` (the producer) never reads the Portal and
 never copies the session mirror (``--db``, filled by ``mirror.full_coverage``; none there is
@@ -293,7 +293,7 @@ MAIL_WITHHELD_PRINCIPAL = "probe:mail-withheld-reader"
 SHAREPOINT_FOLDER_PRINCIPAL = "probe:sharepoint-folder-only-reader"
 NOT_CHECKED = "not_checked"   # a leak count whose check did not run: never reported as 0
 PORTAL, BC, GRAPH = "portal-workbench-api", "business-central", "microsoft-graph"
-# verify.live_verify.MAX_BLOCKED_PARTS: the verifier keeps no more parts than this.
+# devloop.live_verify.MAX_BLOCKED_PARTS: the verifier keeps no more parts than this.
 MAX_BLOCKED_PARTS = 20
 EXIT_BUDGET = 4
 EXIT_RSS = 5   # the watchdog stopped the probe over --max-rss-mb
@@ -344,7 +344,7 @@ NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_.:\-]{0,63}")
 # The file systems an error line's ``disk`` measures (``disk_space``).
 DISK_DIRS = ("store_dir", "sqlite_temp_dir")
 # A report's ``disk.peak`` (module text, "Disk"); the verifier records these
-# (verify/live_verify.py ENVELOPE_DISK).
+# (devloop/live_verify.py ENVELOPE_DISK).
 PEAK_KEYS = ("build_bytes", "store_bytes", "mirror_bytes", "scratch_bytes", "work_bytes",
              "free_bytes", "objects", "layout")
 # A report's ``disk.stages``: per projector stage (``ontology.project.STAGES``), the most its
@@ -369,7 +369,7 @@ COLD_SINGLE_BUILD = "cold_path_single_build"
 # (``forecast_floor``), until a daily records a layout-2 peak.
 BUILD_BYTES_PER_SOURCE_BYTE = 2
 # Forecast: a layout-2 build's peak over a layout-1 build's on the same captures (offline,
-# stride-4 sample of the session mirror; docs/decisions/2026-10-18-projection-store-v6.md):
+# stride-4 sample of the session mirror; devloop/DECISIONS/2026-10-18-projection-store-v6.md):
 # 1.83 GB under layout 2 + store v6 against 3.35 GB under layout 1 + store v5 (0.55),
 # rounded up so the floor errs toward refusing.
 LAYOUT_PEAK_SCALE = 0.6
@@ -1020,6 +1020,9 @@ def sample_values(conn: sqlite3.Connection, claim_sample: int, tick: Callable[[]
 
     Deterministic for a store; with dense rowids written in key order it is the key-order
     stride of every ``values_total // claim_sample``-th value. ``tick``: per seek."""
+    # Value rows, packed records too (store layout v10): a count without a filter is the
+    # table's own (no scan); the seek below reads the cells only (a record's values have
+    # no row number), so the rows a record takes are stepped over, never sampled.
     total = conn.execute("SELECT COUNT(*) FROM value_cells").fetchone()[0]
     low, high = conn.execute("SELECT (SELECT MIN(rowid) FROM value_cells), "
                              "(SELECT MAX(rowid) FROM value_cells)").fetchone()
@@ -2175,7 +2178,7 @@ def _run_probe(budget: _Budget, partial: dict[str, Any], client: Any, db: str, s
         from ontology.project import _default_normalizer
         normalizer = _default_normalizer()
     if schema is None:
-        from ontology.schema import load_schema
+        from ontology.schema import load_schema   # lane L4
         schema = load_schema()
     session_bc = manifest is not None and "bc" in manifest["sources"]
     budget.at("served", "served_state", served_state_path(store))
@@ -2458,7 +2461,7 @@ def _run_probe(budget: _Budget, partial: dict[str, Any], client: Any, db: str, s
                                        ("graph_mail", mail_state is not None),
                                        ("portal_api", portal_held),
                                        ("sharepoint", sharepoint_state is not None)) if held]
-    # The completeness block's figure, as mirror.full_coverage
+    # owner rule 1b5e555dce17: the completeness block's figure, as mirror.full_coverage
     # gates it, never the 93-relation catalog count; over the bound relations available.
     # A --build-only build (the probes that build through this one) keeps the strict
     # figure and adds no part: an unavailable relation is this check's finding.

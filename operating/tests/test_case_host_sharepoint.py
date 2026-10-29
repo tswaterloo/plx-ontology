@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime as dt
+import gc
 import json
 import os
 from pathlib import Path
@@ -25,8 +26,11 @@ import sqlite3
 import tempfile
 import unittest
 from unittest import mock
+from urllib.parse import quote
+import warnings
 
 from integrations import capture_sharepoint as cs
+from integrations import capture_store
 from integrations import capture_teams
 from integrations import document_understanding, graph_read
 from integrations.capture_sharepoint import SharePointCapture, SharePointCaptureStore
@@ -353,13 +357,19 @@ class PermissionTests(SharePointHostCase):
     def test_a_live_re_read_applies_a_revocation_at_once_and_labels_the_basis(self):
         scan = self.handle(SCAN)
         server = self.server(EMPLOYEE, live_drive=True)
+        # A search is decided on the capture and never re-read live; it says so.
+        requests = self.transport.requests_sent
         answer = self.ok(server, "plx.documents", {"query": SCAN_PO, "sources": ["sharepoint"]})
-        self.assertIn("re-read live now", self.labels(answer)[scan]["detail"])
+        self.assertIn("a search result is not re-read live", self.labels(answer)[scan]["detail"])
+        self.assertEqual(self.transport.requests_sent, requests)
+        # plx.read of the cited file re-reads it live.
+        read = self.ok(server, "plx.read", {"citation": scan})
+        self.assertIn("re-read live now", self.labels(read)[scan]["detail"])
         requests = self.transport.requests_sent
         self.drive.items[f"{DRIVE}:{SCAN}"]["acl"] = [RICARDO]   # sales removed upstream
-        revoked = self.ok(server, "plx.documents", {"query": SCAN_PO,
-                                                    "sources": ["sharepoint"]})
-        self.assertNotIn(scan, json.dumps(revoked))
+        revoked = self.ok(server, "plx.read", {"citation": scan})
+        self.assertNotEqual(revoked["status"], "resolved")
+        self.assertNotIn(SCAN_PO, json.dumps(revoked))
         self.assertGreater(self.transport.requests_sent, requests)  # read again, not cached
         self.assertTrue(all(method == "GET" for method, _url in self.drive.calls))
         # Without a live reader for the drive the capture's recorded permissions decide,
@@ -446,7 +456,8 @@ class RevokedHistoryTests(SharePointHostCase):
 
 
 class CaseCitationGateTests(SharePointHostCase):
-    """A case tool call resolves its captured citations through one gate: one live re-read and GET bound per call however many citations, and
+    """A case tool call resolves its captured citations through one gate (directive
+    7509edfeab71): one live re-read and GET bound per call however many citations, and
     the projection plx.read reads (``capture_stale``)."""
 
     scanned = False
@@ -482,6 +493,59 @@ class CaseCitationGateTests(SharePointHostCase):
             self.assertEqual(len(self.items_read(mark)), 2, (call, self.items_read(mark)))
             self.assertLessEqual(self.transport.requests_sent - sent, 2 * REREAD_GETS)
         self.assertTrue(all(method == "GET" for method, _url in self.drive.calls))
+
+    def test_resolves_outside_a_call_check_moves_on_one_projection_reader(self):
+        # The captured-originals gate resolves file after file outside any case tool call
+        # (a gate per resolve). A moved file is refused as plx.read refuses it and an
+        # unmoved one is served, each time; no resolve opens the projection again (a tool
+        # table per gate read every audience key and BC unit of the store: 1.3 GB and
+        # about 2 s per file on the served projection).
+        from operating import ontology_tools as ot
+        from operating.cases import CitationUnresolvable
+        release, note = self.handle("01FILEB"), self.handle("01NOTE00")
+        self.drive.move("01FILEB", "01AOS")           # same eTag, another captured folder
+        self.capture.run(scope())
+        server = self.server(QUALITY)
+        self.assertEqual(HostBoundTests.refusal(self.ok(server, "plx.read",
+                                                        {"citation": release})),
+                         ("unresolvable", "capture_stale"))
+        captures, actor = server.case_runtime.captures, server.actor
+        opened, open_store = [], ot.StoreReader.open
+        with mock.patch.object(ot.StoreReader, "open",
+                               side_effect=lambda path: opened.append(path) or open_store(path)):
+            for _ in range(3):
+                with self.assertRaises(CitationUnresolvable):
+                    captures(release, actor)
+                self.assertEqual(captures(note, actor)["status"], "current")
+            self.assertLessEqual(len(opened), 1, opened)
+            # A newer generation published over the path: the host's generation check of
+            # the next request closes the older file's reader at once, and the next
+            # resolve reads the newer one.
+            older = captures.projection()
+            published = self.projection.with_name("next.sqlite")
+            shutil.copyfile(self.projection, published)
+            os.replace(published, self.projection)
+            with self.tools.request():
+                pass
+            with self.assertRaises(sqlite3.ProgrammingError):
+                older.conn.execute("SELECT 1")
+            seen = len(opened)
+            with self.assertRaises(CitationUnresolvable):
+                captures(release, actor)
+            self.assertEqual(len(opened), seen + 1)
+        # Shutdown (the runtime's close) leaves no capture reader's database open.
+        current = captures.projection()
+        del captures, server, older
+        gc.collect()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", ResourceWarning)
+            self.doCleanups()
+            self.tools = None
+            gc.collect()
+        with self.assertRaises(sqlite3.ProgrammingError):
+            current.conn.execute("SELECT 1")
+        self.assertEqual([str(w.message) for w in caught
+                          if "unclosed database" in str(w.message)], [])
 
     def test_a_file_moved_since_the_projection_is_refused_for_a_case_as_for_plx_read(self):
         release = self.handle("01FILEB")
@@ -556,9 +620,80 @@ class HostCaseCaptureTests(HostCase):
                               host_module.projection_path(self.state)), command)
         self.assertIn("--host-captures-portal", host_module.console_arguments(host, 0))
 
+    def test_every_host_mode_parses_the_argv_the_host_starts_it_with(self):
+        """Each process the host starts parses its argv with no unknown argument and
+        reads the freshness bounds the host passes (a console that refused
+        ``--freshness-bound`` left ``host serve`` unable to start)."""
+        import argparse
+        from operator_ui import case_console
+        from operating import mcp_http_host, mcp_server
+        host = host_module.Host(self.state, host_module.HostConfig.from_file(self.config),
+                                environ=ENV_HOST)
+        bounds = host_module.freshness_bounds(host.config)
+        self.assertTrue(bounds)
+        real = argparse.ArgumentParser.parse_args
+
+        class Parsed(Exception):
+            pass
+
+        def parsed(parser, args=None, namespace=None):
+            raise Parsed(real(parser, args, namespace))
+
+        modes = {
+            "serve": (case_console.main, host_module.console_arguments(host, 0)),
+            "mcp": (mcp_server.main,
+                    host_module.mcp_arguments(host, session_ticket_env="T")),
+            "mcp-http": (mcp_http_host.main,
+                         host_module.mcp_arguments(host, session_ticket_env=None)
+                         + ["--entra-resource", str(self.state / "entra.json"),
+                            "--bind", "127.0.0.1", "--port", "0"])}
+        for mode, (main, argv) in modes.items():
+            with mock.patch.object(argparse.ArgumentParser, "parse_args", parsed), \
+                    contextlib.redirect_stderr(open(os.devnull, "w")) as quiet, \
+                    self.assertRaises(Parsed, msg=mode) as caught:
+                self.addCleanup(quiet.close)
+                main(argv)
+            (args,) = caught.exception.args
+            self.assertEqual(mcp_server.freshness_bounds(args.freshness_bound), bounds, mode)
+
+    def test_host_serve_console_applies_the_freshness_bounds_and_refuses_bad_ones(self):
+        from operator_ui import case_console
+        host = host_module.Host(self.state, host_module.HostConfig.from_file(self.config),
+                                environ=ENV_HOST)
+        tickets, built = [], []
+        real = case_console.TicketSessions
+
+        def sessions(*args, **kwargs):
+            tickets.append(kwargs["build_objects"])
+            return real(*args, **kwargs)
+
+        with mock.patch.object(case_console, "TicketSessions", sessions), \
+                mock.patch.object(case_console, "serve", lambda **kw: None), \
+                mock.patch.dict(os.environ, ENV_HOST):
+            code, _out, err = self.main("serve", "--state-dir", str(self.state), "--config",
+                                        str(self.config), "--port", "0",
+                                        "--interval-seconds", "3600")
+        self.assertEqual((code, len(tickets)), (0, 1), err)
+        self.assertIsNotNone(tickets[0])
+        reader = mock.Mock(actor=Actor("plx", frozenset({"employee:" + OID})))
+        with mock.patch.object(case_console, "object_workspace_for",
+                               lambda *a, **kw: built.append(kw)):
+            tickets[0](reader)
+        self.assertEqual(built[0]["freshness_bounds"], host_module.freshness_bounds(
+            host.config))
+        # An unknown family or a bad bound fails closed: the console does not start.
+        argv = host_module.console_arguments(host, 0)
+        for bad in ("nowhere=60", "bc=0"):
+            with contextlib.redirect_stderr(open(os.devnull, "w")) as quiet, \
+                    self.assertRaises(SystemExit, msg=bad) as caught:
+                self.addCleanup(quiet.close)
+                case_console.main(argv + ["--freshness-bound", bad])
+            self.assertEqual(caught.exception.code, 2, bad)
+
 
 class SessionEvidenceItemPermissionTests(SharePointHostCase):
-    """Session evidence and the captures' item permissions: the claim gate of the MCPServer's case paths binds evidence item by
+    """Session evidence and the captures' item permissions (directives 05282fd4ab50,
+    4a4cb9c9c360): the claim gate of the MCPServer's case paths binds evidence item by
     item, not per capture root."""
 
     scanned = False
@@ -631,6 +766,14 @@ class SessionEvidenceItemPermissionTests(SharePointHostCase):
         self.assertEqual(failures(), ["claim_value_mismatch"])
         count()
         self.assertEqual(failures(), [])
+        # A membership kept past the store's serving bound (a transient members read
+        # failure keeps it, unrefreshed) no longer decides: it moves like a change.
+        self.assertEqual(capture_store.UNIT_ACL_MAX_AGE, dt.timedelta(hours=48))
+        aged = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=48, minutes=1)
+                ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        with contextlib.closing(sqlite3.connect(teams.path)) as conn, conn:
+            conn.execute("UPDATE unit_acl SET recorded_at = ?", (aged,))
+        self.assertEqual(failures(), ["claim_value_mismatch"])
         # A SharePoint permission re-read revokes the third file for the reader; the
         # projection and the grant stay the same. What the third file gates goes (the
         # count listing it, its money cell); the first two files' evidence stays.
@@ -704,6 +847,79 @@ class ContainerMemberHostTests(SharePointHostCase):
         self.assertEqual(hidden["error"]["code"], "object_not_found")
 
 
+MAP_HTML = (b"<html><head><script>var x='SCRIPTONLY'</script></head><body><h1>Screening "
+            b"Map</h1><p>Cost per bottle: blank + landed cost, divided by good bottles "
+            b"returned.</p></body></html>")
+MAP_SPEC = b'{"step": "Testing priority uses a look-ahead window", "rate": 1.10}'
+
+
+class MarkupFileHostTests(SharePointHostCase):
+    """``plx.read`` of the process maps as the agent reads them: an HTML file captured
+    ``unsupported`` before HTML was read, and an HTML map and its JSON spec inside a zip,
+    read from their pinned bytes now; a file with no extracted text is a
+    ``text_not_extracted`` gap, never a complete read with nothing in it."""
+
+    scanned = False
+
+    def seed(self):
+        drive = seeded_drive()
+        drive.file("01HTML", "Quote Map.html", "01AOS", MAP_HTML, mime="text/html",
+                   acl=(RICARDO, SALES))
+        drive.file("01MAPZ", "Screening Map.zip", "01AOS",
+                   zipped([("Map/Screening Map.html", MAP_HTML),
+                           ("Map/data/map-spec.json", MAP_SPEC)]),
+                   mime="application/zip", acl=(RICARDO, SALES))
+        drive.file("01BLOB", "label.bin", "01AOS", b"\x00\x01binary",
+                   mime="application/octet-stream", acl=(RICARDO, SALES))
+        return drive
+
+    def member(self, name: str) -> str:
+        conn = sqlite3.connect(self.projection)
+        self.addCleanup(conn.close)
+        handles = [h for (h,) in conn.execute(
+            "SELECT v.l1_handle FROM objects o JOIN object_versions v USING (object_id) "
+            "WHERE o.object_type = 'ContainerMember'")]
+        return next(h for h in handles if quote(name, safe="") in h)
+
+    def test_html_and_json_read_with_their_text_and_a_textless_file_says_so(self):
+        # As captured before this change: no stored text, status unsupported.
+        self.store.db.execute("UPDATE items SET text_status = 'unsupported', text_sha256 = "
+                              "NULL WHERE item_id = '01HTML'")
+        self.store.db.commit()
+        server = self.server(EMPLOYEE, portal_granted=False)
+        for citation, phrase in ((self.handle("01HTML"), "divided by good bottles returned"),
+                                 (self.member("Screening Map.html"), "good bottles returned"),
+                                 (self.member("map-spec.json"), MAP_SPEC.decode())):
+            with self.subTest(citation=citation):
+                read = self.ok(server, "plx.read", {"citation": citation})
+                self.assertEqual(read["status"], "resolved")
+                self.assertIn(phrase, read["content"]["untrusted_text"])
+                self.assertNotIn("SCRIPTONLY", json.dumps(read))
+                self.assertTrue(read["completeness"]["complete"])
+                self.assertNotIn("text_not_extracted", [g["reason"] for g in read["gaps"]])
+        blob = self.handle("01BLOB")
+        read = self.ok(server, "plx.read", {"citation": blob})
+        self.assertEqual(read["status"], "resolved")
+        self.assertNotIn("content", read)
+        gap = self.labels(read, "text_not_extracted")[blob]
+        self.assertEqual(gap["state"], "not_ingested")
+        self.assertIn("unsupported", gap["detail"])
+        self.assertEqual((read["completeness"]["complete"], read["completeness"]["reason"]),
+                         (False, "text_not_extracted"))
+        self.assertIn(blob, self.labels(read))   # still labelled as of capture
+        # A metadata field asked for alone is no text read: no gap, complete.
+        name = self.ok(server, "plx.read", {"citation": blob, "field_path": "row.name"})
+        self.assertEqual(self.labels(name, "text_not_extracted"), {})
+        self.assertTrue(name["completeness"]["complete"])
+        # A reader without the files' permission is refused and told nothing of them.
+        hidden = self.server(OUTSIDER, portal_granted=False)
+        for citation in (self.handle("01HTML"), self.member("Screening Map.html"), blob):
+            denied = self.ok(hidden, "plx.read", {"citation": citation})
+            self.assertNotEqual(denied["status"], "resolved")
+            self.assertNotIn("good bottles", json.dumps(denied))
+            self.assertNotIn("text_not_extracted", json.dumps(denied))
+
+
 class HostBoundTests(SharePointHostCase):
     """The host's bounds on capture-time permissions and on live re-reads."""
 
@@ -713,21 +929,41 @@ class HostBoundTests(SharePointHostCase):
     def test_capture_time_permissions_past_the_max_age_need_a_live_re_read(self):
         scan = self.handle(SCAN)
         old = self.server(EMPLOYEE, clock=LATER)
-        answer = self.ok(old, "plx.documents", {"query": SCAN_PO, "sources": ["sharepoint"]})
-        self.assertNotIn(scan, json.dumps(answer))
         self.assertNotEqual(self.ok(old, "plx.read", {"citation": scan})["status"], "resolved")
-        # A live re-read that succeeds serves it, labelled with that basis.
+        # A search serves the stored row at any capture age on its recorded
+        # permissions, labelled with its capture time, the oldest named in the
+        # freshness note: no gap, not incomplete for age alone, and no request sent.
+        for server in (old, self.server(EMPLOYEE, live_drive=True, clock=LATER)):
+            requests = self.transport.requests_sent
+            answer = self.ok(server, "plx.documents",
+                             {"query": SCAN_PO, "sources": ["sharepoint"]})
+            self.assertIn(scan, [d["citation"] for d in answer["documents"]])
+            label = self.labels(answer)[scan]["detail"]
+            self.assertTrue(label.startswith("as of capture 2026-10-01T12:00:"), label)
+            self.assertIn("as recorded at that capture", label)
+            (fresh,) = [f for f in answer["meta"]["freshness"] if f["source"] == "sharepoint"]
+            self.assertTrue(fresh["captured_at"].startswith("2026-10-01T12:00:"))
+            self.assertIn("permissions as of capture; plx.read re-checks live",
+                          fresh["label"])
+            self.assertNotIn("capture_too_old", json.dumps(answer))
+            self.assertNotEqual(answer["completeness"].get("reason"), "partial_scope")
+            self.assertEqual(self.transport.requests_sent, requests)
         live = self.server(EMPLOYEE, live_drive=True, clock=LATER)
-        answer = self.ok(live, "plx.documents", {"query": SCAN_PO, "sources": ["sharepoint"]})
-        self.assertIn("re-read live now", self.labels(answer)[scan]["detail"])
+        # plx.read of the file re-reads it live and serves it, labelled with that basis.
+        read = self.ok(live, "plx.read", {"citation": scan})
+        self.assertEqual(read["status"], "resolved")
+        self.assertIn("re-read live now", self.labels(read)[scan]["detail"])
         # No re-read allowed in the call: the old capture alone decides nothing.
         spent = self.server(EMPLOYEE, live_drive=True, clock=LATER, max_live_rereads=0)
-        answer = self.ok(spent, "plx.documents", {"query": SCAN_PO, "sources": ["sharepoint"]})
-        self.assertNotIn(scan, json.dumps(answer))
-        # A young capture is served on its recorded permissions, and says so.
+        self.assertNotEqual(self.ok(spent, "plx.read", {"citation": scan})["status"],
+                            "resolved")
+        # A young capture is served on its recorded permissions, and says so; within
+        # the age bound the freshness entry carries no age note.
         young = self.ok(self.server(EMPLOYEE, clock=SOON), "plx.documents",
                         {"query": SCAN_PO, "sources": ["sharepoint"]})
         self.assertIn("as recorded at that capture", self.labels(young)[scan]["detail"])
+        self.assertFalse([f for f in young["meta"]["freshness"]
+                          if "re-checks live" in f.get("label", "")])
         # A capture dated after the host's clock decides nothing either (skew or a
         # forged stamp never extends the bound).
         early = self.server(EMPLOYEE, clock=CAPTURED - dt.timedelta(hours=1))
@@ -766,33 +1002,68 @@ class HostBoundTests(SharePointHostCase):
         page = self.ok(server, "plx.read", {"citation": self.handle("01FILEB")})
         self.assertIn("re-read live now", self.labels(page)[self.handle("01FILEB")]["detail"])
 
-    def test_a_documents_question_re_reads_only_matching_files_within_its_get_bound(self):
+    def test_every_gate_built_inside_one_call_draws_from_the_calls_one_re_read_bound(self):
+        # A captured original gated inside a tool call (CaseCaptures.gate_decision, as
+        # CapturedOriginals.search and original_text gate it) got a gate of its own with
+        # a fresh bound: one plx.documents call built 92 gates and started 127 re-reads
+        # against a per-call bound of 50.
+        from operating.captured_originals import FAILED
+        server = self.server(QUALITY, live_drive=True, max_live_rereads=1, clock=LATER)
+        tools, captures = self.tools, server.case_runtime.captures
+        items = (SCAN, "01FILEB", "01FILEC")
+        decided = []
+
+        def gate_all(arguments, session_actor):
+            decided.append(captures.gate_decision(self.handle(items[0]), QUALITY))
+            with captures.call():   # a case tool's own gate, nested in the call
+                decided.extend(captures.gate_decision(self.handle(item), QUALITY)
+                               for item in items[1:])
+            decided.append(captures.gate_decision(self.handle(items[0]), QUALITY))
+            return {"ok": True}
+
+        tools.register_tool("test.gate_all", gate_all)
+        mark = len(self.drive.calls)
+        tools.call("test.gate_all", {}, QUALITY)
+        self.assertEqual([self.item_gets(item, mark) > 0 for item in items],
+                         [True, False, False])
+        # Past the bound a capture past the age bound decides nothing (failed, not a
+        # refusal by the reader's permissions); the re-read answer is reused.
+        self.assertEqual(decided, [True, FAILED, FAILED, True])
+        # The next call has its own bound again; outside a call a resolve still gets
+        # a gate and a bound of its own.
+        mark = len(self.drive.calls)
+        tools.call("test.gate_all", {}, QUALITY)
+        self.assertEqual(decided[4:], [True, FAILED, FAILED, True])
+        self.assertIs(captures.gate_decision(self.handle("01FILEB"), QUALITY), True)
+        self.assertGreater(self.item_gets("01FILEB", mark), 0)
+
+    def test_a_documents_question_sends_no_live_request_and_reports_unsearched_files(self):
         scan = self.handle(SCAN)
         # Captured text alone (no projection): only the file naming the identifier is
-        # gated and re-read.
+        # listed, and the files the capture stored no text for (two PDFs it could not
+        # read), reported unsearched, which the reader must be allowed before they are
+        # counted. A search is decided on the capture: no live request at all.
+        unread = ("01FILEA", "01FILEC")
+        for item in unread:
+            self.assertIsNone(self.store.current(DRIVE, item)["text_sha256"], item)
         server = self.server(QUALITY, live_drive=True, projection=False)
         mark, sent = len(self.drive.calls), self.transport.requests_sent
         answer = self.ok(server, "plx.documents", {"query": SCAN_PO, "sources": ["sharepoint"]})
         self.assertEqual([d["citation"] for d in answer["documents"]], [scan])
-        self.assertIn("re-read live now", self.labels(answer)[scan]["detail"])
-        self.assertLessEqual(self.transport.requests_sent - sent, REREAD_GETS)
-        for other in ("01FILEA", "01FILEB", "01FILEC"):   # their text names no SCAN_PO
-            self.assertEqual(self.item_gets(other, mark), 0, other)
-        # Through the projection every candidate file is gated; the call's Graph GETs
-        # stay within its bound and the files past it are decided on the young capture.
-        for budget in (REREAD_GETS, 2 * REREAD_GETS):
+        self.assertIn("a search result is not re-read live", self.labels(answer)[scan]["detail"])
+        self.assertEqual(self.transport.requests_sent, sent)
+        self.assertTrue(self.labels(answer, "text_not_read")["capture:sharepoint"][
+            "detail"].startswith(f"{len(unread)} captured SharePoint file"))
+        self.assertEqual(self.item_gets("01FILEB", mark), 0)   # its text names no SCAN_PO
+        # Through the projection every candidate file is gated on the young capture,
+        # whatever the call's bound: no GET is sent.
+        for budget in (REREAD_GETS - 1, REREAD_GETS, 2 * REREAD_GETS):
             sent = self.transport.requests_sent
             bounded = self.ok(self.server(QUALITY, live_drive=True, max_live_gets=budget),
                               "plx.documents", {"query": SCAN_PO, "sources": ["sharepoint"]})
-            self.assertLessEqual(self.transport.requests_sent - sent, budget)
+            self.assertEqual(self.transport.requests_sent, sent)
             self.assertIn(scan, [d["citation"] for d in bounded["documents"]])
-            self.assertIn(scan, self.labels(bounded))
-        # A bound too small for one re-read sends no GET at all.
-        sent = self.transport.requests_sent
-        tight = self.ok(self.server(QUALITY, live_drive=True, max_live_gets=REREAD_GETS - 1),
-                        "plx.documents", {"query": SCAN_PO, "sources": ["sharepoint"]})
-        self.assertEqual(self.transport.requests_sent, sent)
-        self.assertIn("live re-read bound is reached", self.labels(tight)[scan]["detail"])
+            self.assertIn("as recorded at that capture", self.labels(bounded)[scan]["detail"])
 
     def test_a_transient_source_failure_serves_the_capture_labelled_with_the_failure(self):
         scan = self.handle(SCAN)
@@ -809,23 +1080,23 @@ class HostBoundTests(SharePointHostCase):
         server = self.server(QUALITY, live_drive=True, live_api=down)
         answer = self.ok(server, "plx.documents", {"query": SCAN_PO, "sources": ["sharepoint"]})
         self.assertIn(scan, [d["citation"] for d in answer["documents"]])
-        self.assertIn(scan, self.labels(answer, "live_reread_failed"))
+        self.assertEqual(failing_calls, [])   # a search never re-reads live
+        history = self.ok(server, "plx.read", {"citation": scan})
+        self.assertTrue(failing_calls)
         self.assertTrue(all(method == "GET" for method, _url in failing_calls))
         # The failure stops further re-reads in the call: one item's retries at most.
         self.assertEqual(len({url.split("/items/")[1].split("/")[0].split("?")[0]
                               for _m, url in failing_calls}), 1)
-        history = self.ok(server, "plx.read", {"citation": scan})
         self.assertEqual(history["status"], "resolved")
         self.assertIn(scan, self.labels(history, "live_reread_failed"))
         # Past the capture age a failed re-read serves nothing.
         old = self.server(QUALITY, live_drive=True, live_api=down, clock=LATER)
-        self.assertNotIn(scan, json.dumps(self.ok(old, "plx.documents", {
-            "query": SCAN_PO, "sources": ["sharepoint"]})))
+        self.assertNotEqual(self.ok(old, "plx.read", {"citation": scan})["status"], "resolved")
         # A deletion is a refusal, not a transient failure.
         self.drive.delete(SCAN)
-        gone = self.ok(self.server(QUALITY, live_drive=True), "plx.documents",
-                       {"query": SCAN_PO, "sources": ["sharepoint"]})
-        self.assertNotIn(scan, json.dumps(gone))
+        gone = self.ok(self.server(QUALITY, live_drive=True), "plx.read", {"citation": scan})
+        self.assertEqual(self.refusal(gone), ("withheld", "sharepoint_item_refused"))
+        self.assertNotIn(SCAN_PO, json.dumps(gone))
 
     @staticmethod
     def refusal(read: dict) -> tuple[str, str | None]:
@@ -855,19 +1126,21 @@ class HostBoundTests(SharePointHostCase):
         self.assertNotIn("content", read)
         self.assertEqual(self.transport.requests_sent, sent)
         self.assertEqual(self.drive.calls[mark:], [])
-        # Too old and the re-read fails: refused with the failure, and the call sends no
-        # more than that one failed re-read (measured on a documents call that gates it).
+        # Too old and the re-read fails: refused with the failure, and each read sends
+        # no more than its one failed re-read (a search sends none).
         calls: list = []
         down = self.server(QUALITY, live_drive=True, clock=LATER,
                            live_api=self.failing_api(503, calls))
-        self.assertNotIn(scan, json.dumps(self.ok(down, "plx.documents", {
-            "query": SCAN_PO, "sources": ["sharepoint"]})))
+        self.assertIn(scan, json.dumps(self.ok(down, "plx.documents", {
+            "query": SCAN_PO, "sources": ["sharepoint"]})))   # served on the capture
+        self.assertEqual(calls, [])
+        read = self.ok(down, "plx.read", {"citation": scan})
         one_reread = len(calls)
         self.assertGreater(one_reread, 0)
-        read = self.ok(down, "plx.read", {"citation": scan})
         self.assertEqual(self.refusal(read), ("unresolvable", "capture_too_old"))
         self.assertIn("retried.http_503",
                       self.labels(read, "capture_too_old")["sharepoint"]["detail"])
+        self.ok(down, "plx.read", {"citation": scan})
         self.assertEqual(len(calls), 2 * one_reread)
         self.assertTrue(all(method == "GET" for method, _url in calls))
         # A live re-read that refuses (revoked upstream): a refusal, not read again live.
@@ -961,10 +1234,13 @@ class HostBoundTests(SharePointHostCase):
         scan = self.handle(SCAN)
         calls: list = []
         server = self.server(QUALITY, live_drive=True, live_api=self.failing_api(410, calls))
+        # A search lists the file on its young capture and sends nothing; the read of it
+        # re-reads it live and the 410 refuses it.
         answer = self.ok(server, "plx.documents", {"query": SCAN_PO, "sources": ["sharepoint"]})
-        self.assertNotIn(scan, json.dumps(answer))
-        self.assertNotIn("live_reread_failed", json.dumps(answer))
+        self.assertIn(scan, [d["citation"] for d in answer["documents"]])
+        self.assertEqual(calls, [])
         read = self.ok(server, "plx.read", {"citation": scan})
+        self.assertNotIn("live_reread_failed", json.dumps(read))
         self.assertEqual(self.refusal(read), ("withheld", "sharepoint_item_refused"))
         self.assertNotIn("content", read)
         self.assertTrue(calls)
@@ -1030,6 +1306,62 @@ class HostBoundTests(SharePointHostCase):
         self.assertNotIn("content", denied)
 
 
+class LiveRefusalKindTests(SharePointHostCase):
+    """The refusal kind a live re-read leaves for the scorer
+    (``CaseCaptures.gate_decision``): only the reader's permissions decide a refusal. A
+    deletion (404, 410) or a transient failure of the permission read (429, 5xx,
+    timeout) is ``failed``. Every one answers the agent the same bytes."""
+
+    scanned = False
+    FILE = "01FILEB"
+
+    def permissions_api(self, answer):
+        """A Graph API over the fake drive whose item permission GETs ``answer`` (a status,
+        or an exception raised in transit); every other request is the drive's."""
+        def sender(method, url, headers, body, timeout, max_bytes):
+            if method == "GET" and url.split("?")[0].endswith("/permissions"):
+                if isinstance(answer, BaseException):
+                    raise answer
+                return answer, {}, b""
+            return self.drive(method, url, headers, body, timeout, max_bytes)
+        return graph_read.build_graph(ENV, sender=sender, retry=BoundedBackoff(
+            sleep=lambda s: None, jitter=lambda: 0.0))
+
+    def decided(self, live_api=None):
+        """(gate kind, the agent's plx.read answer bytes) for the employee now."""
+        handle = self.handle(self.FILE)
+        server = self.server(EMPLOYEE, live_drive=True, live_api=live_api)
+        kind = server.case_runtime.captures.gate_decision(handle, EMPLOYEE)
+        read = self.ok(self.server(EMPLOYEE, live_drive=True, live_api=live_api),
+                       "plx.read", {"citation": handle})
+        read.get("meta", {}).pop("as_known_at", None)
+        return kind, json.dumps(read, sort_keys=True)
+
+    def test_only_a_permission_decision_is_a_refusal_and_every_answer_reads_alike(self):
+        from operating.captured_originals import FAILED, REFUSED
+        self.assertIs(self.decided()[0], True)
+        item = self.drive.items[f"{DRIVE}:{self.FILE}"]
+        # A transient failure of the live permission read: failed, not refused.
+        transient = {name: self.decided(self.permissions_api(answer)) for name, answer in (
+            ("429", 429), ("503", 503), ("500", 500), ("timeout", TimeoutError("timed out")),
+            ("reset", ConnectionResetError("connection reset")))}
+        item["acl"] = [RICARDO]   # revoked upstream: decided by the reader's permissions
+        refused_kind, refused = self.decided()
+        self.assertEqual(refused_kind, REFUSED)
+        self.assertIn("sharepoint_item_refused", refused)
+        self.assertNotIn(TEXT_SECRET, refused)
+        for name, decided in transient.items():
+            with self.subTest(transient=name):   # the agent's answer: byte-identical
+                self.assertEqual(decided, (FAILED, refused))
+        item["acl"] = [RICARDO, SALES]
+        # Deleted at the source: a live 404 (itemNotFound) or 410 is failed.
+        calls: list = []
+        self.assertEqual(self.decided(HostBoundTests.failing_api(self, 410, calls)),
+                         (FAILED, refused))
+        self.drive.delete(self.FILE)
+        self.assertEqual(self.decided(), (FAILED, refused))
+
+
 class OverCapTests(SharePointHostCase):
     """The capture's content cap below the scanned packet: the packet is a recorded
     cap-exceeded outcome, read as such through the documents tools."""
@@ -1078,7 +1410,7 @@ class OverBoundTests(SharePointHostCase):
         super().setUp()
 
     def test_a_file_over_the_extractor_bound_is_an_exceeds_bound_gap_never_silence(self):
-        # Such a file yielded no gap, so a search reported
+        # Directive 515540eaf702 (3): such a file yielded no gap, so a search reported
         # nothing in it without saying it was never read.
         release = self.handle("01FILEB")
         current = self.store.current(DRIVE, "01FILEB")
@@ -1098,6 +1430,202 @@ class OverBoundTests(SharePointHostCase):
         hidden = self.ok(self.server(OUTSIDER, portal_granted=False), "plx.documents",
                          {"query": "PO100234", "sources": ["sharepoint"]})
         self.assertNotIn("exceeds_bound", json.dumps(hidden))
+
+
+NOTE = "01NOTE"
+NOTE_PO = "PO100236"
+
+
+class StoredTextLookupTests(SharePointHostCase):
+    """devloop/DECISIONS/2026-10-28-identifier-lookup.md: an identifier question reads
+    the text the capture stored, through an index kept beside the store, and never
+    extracts or OCR-reads at query time. Each card session was a new process that
+    re-extracted every captured file (263 s cold on 2,220 files, 175 s of it on 46
+    ``ocr_pending`` scans)."""
+
+    def seed(self):
+        drive = seeded_drive()
+        drive.file(NOTE, "note.txt", "01LOTS", f"Purchase order {NOTE_PO}".encode(),
+                   mime="text/plain", acl=(RICARDO, SALES))
+        return drive
+
+    @contextlib.contextmanager
+    def new_process(self):
+        """A process that has read nothing yet (empty reading memo and index copy), in
+        which every extractor run is counted."""
+        from integrations import captured_text
+        from operating import case_tools_host
+        counted = mock.patch.object(document_understanding, "extract_document",
+                                    side_effect=document_understanding.extract_document)
+        with mock.patch.object(captured_text, "_CACHE", captured_text._CACHE.empty()), \
+                mock.patch.dict(case_tools_host._INDEXES, clear=True), counted as extract:
+            yield extract
+
+    def ask(self, actor, query):
+        return self.ok(self.server(actor, portal_granted=False), "plx.documents",
+                       {"query": query, "sources": ["sharepoint"]})
+
+    def kept_index(self) -> Path:
+        from operating.case_tools_host import identifier_index_path
+        return identifier_index_path(self.store.root)
+
+    def test_no_question_extracts_and_a_new_process_reads_the_kept_index(self):
+        with self.new_process() as extract:
+            empty = self.ask(EMPLOYEE, "PO999999")   # no file names it
+        self.assertEqual(empty["documents"], [])
+        self.assertEqual(extract.call_count, 0)
+        self.assertEqual(self.kept_index().stat().st_mode & 0o777, 0o600)
+        # A new process takes the index kept beside the store: no stored text is read.
+        from integrations import captured_text
+        unread = mock.patch.object(captured_text, "stored_text",
+                                   side_effect=AssertionError("stored text read again"))
+        with self.new_process() as extract, unread:
+            again = self.ask(EMPLOYEE, "PO999999")
+            found = self.ask(EMPLOYEE, SCAN_PO)
+        for answer in (empty, again):
+            answer.get("meta", {}).pop("as_known_at", None)
+        self.assertEqual(again, empty)
+        # The matching scan is read as plx.read serves it: from its pinned OCR text.
+        self.assertEqual([d["citation"] for d in found["documents"]], [self.handle(SCAN)])
+        self.assertEqual(found["documents"][0]["mentions"][0]["span"]["origin"]["citation"],
+                         self.handle(SCAN) + "#page=2")
+        self.assertEqual(extract.call_count, 0)
+
+    def test_the_index_names_what_a_fresh_reading_of_every_captured_file_names(self):
+        # Equivalence: per current file, the identifiers by page and the unsearched
+        # reason the stored text gives are those a fresh reading of the bytes gives.
+        from integrations import captured_text
+        from operating.case_tools_host import file_index
+        store = SharePointCaptureStore.open_read_only(self.state)
+        self.addCleanup(store.close)
+        with self.new_process():
+            index = file_index(store)
+        statuses = set()
+        for row in store.db.execute("SELECT * FROM items WHERE superseded_at IS NULL"):
+            handle = row["l1_handle"]
+            file = {**json.loads(row["record"]), **{k: row[k] for k in (
+                "content_status", "content_sha256", "text_status", "text_sha256")}}
+            statuses.add(row["text_status"])
+            reading = captured_text.captured_text(store.blobs, file)
+            text = None if reading is None else reading.text
+            named = None
+            if text is not None:
+                paged = mentions.is_paged_file(file)
+                named = [list(key) for key in dict.fromkeys(
+                    (m["identifier_kind"], m["normalized"],
+                     mentions.cited_page(f.citation)[1] if paged else None)
+                    for f in mentions.file_text_fields(handle, "row.content_text", text,
+                                                       paged=paged)
+                    for m in mentions.extract(f.text) if m["normalized"])]
+            entry = index[handle]
+            self.assertEqual(entry["named"] or [], named or [], handle)
+            if named is None:
+                self.assertIsNotNone(entry["why"], handle)   # unsearched is never silent
+        self.assertTrue({"extracted", "extracted_ocr"} <= statuses, statuses)
+
+    def test_a_file_without_stored_text_is_a_text_not_read_gap_never_read_now(self):
+        note = self.handle(NOTE)
+        stored = self.store.current(DRIVE, NOTE)["text_sha256"]
+        self.store.fill_text(note, "unsupported", None)   # the capture stored no text
+        with self.new_process() as extract:
+            answer = self.ask(EMPLOYEE, NOTE_PO)
+        self.assertEqual(extract.call_count, 0)
+        self.assertNotIn(note, [d["citation"] for d in answer["documents"]])
+        gap = self.labels(answer, "text_not_read")["capture:sharepoint"]
+        self.assertEqual(gap["state"], "not_ingested")
+        self.assertTrue(gap["detail"].startswith("1 captured SharePoint file"), gap)
+        self.assertFalse(answer["completeness"]["complete"])
+        # A reader without the file's permission is told nothing about it.
+        hidden = self.ask(OUTSIDER, NOTE_PO)
+        self.assertNotIn("text_not_read", json.dumps(hidden))
+        self.assertNotIn(note, json.dumps(hidden))
+        # Scanned pages left for a later OCR pass: the stored text layer is searched,
+        # and a question it does not answer names the file unsearched.
+        self.store.fill_text(note, "ocr_pending", stored)
+        with self.new_process() as extract:
+            layer = self.ask(EMPLOYEE, NOTE_PO)
+            other = self.ask(EMPLOYEE, "PO999999")
+        self.assertIn(note, [d["citation"] for d in layer["documents"]])
+        self.assertIn("capture:sharepoint", self.labels(other, "text_not_read"))
+        self.assertEqual(other["documents"], [])
+
+    def test_a_kept_index_that_is_foreign_or_forged_never_serves_a_mention(self):
+        with self.new_process():
+            self.ask(EMPLOYEE, "PO999999")
+        path = self.kept_index()
+        kept = json.loads(path.read_text(encoding="utf-8"))
+        # A forged entry claims the note names PO999999: the file's own text is read
+        # before anything is served, so nothing is.
+        for entry in kept["files"].values():
+            if entry["named"] and [n for n in entry["named"] if n[1] == NOTE_PO]:
+                entry["named"].append(["petra_po", "PO999999", None])
+        path.write_text(json.dumps(kept), encoding="utf-8")
+        with self.new_process():
+            forged = self.ask(EMPLOYEE, "PO999999")
+        self.assertEqual(forged["documents"], [])
+        # Another code's index or a broken file is not used: the stored text answers.
+        for text in (json.dumps({**kept, "code": "0" * 64}), "{not json"):
+            path.write_text(text, encoding="utf-8")
+            with self.new_process():
+                answer = self.ask(EMPLOYEE, NOTE_PO)
+            self.assertEqual([d["citation"] for d in answer["documents"]],
+                             [self.handle(NOTE)])
+
+    def test_every_one_of_sixty_new_files_is_indexed_once(self):
+        # Cardinality: N=1, 10 and 60 files captured since the index was kept are each
+        # added once, and each identifier finds exactly its own file.
+        from operating.case_tools_host import file_index
+        with self.new_process():
+            self.ask(EMPLOYEE, "PO999999")
+        added = 0
+        for count in (1, 10, 60):
+            for number in range(added, added + count):
+                self.drive.file(f"01N{number:03d}", f"n{number}.txt", "01LOTS",
+                                f"Purchase order PO2{number:05d}".encode(),
+                                mime="text/plain", acl=(RICARDO, SALES))
+            added += count
+            self.capture.run(scope())
+            store = SharePointCaptureStore.open_read_only(self.state)
+            try:
+                index = file_index(store)
+            finally:
+                store.close()
+            for number in range(added):
+                named = index[self.handle(f"01N{number:03d}")]["named"]
+                self.assertEqual(named, [["petra_po", f"PO2{number:05d}", None]])
+            answer = self.ask(EMPLOYEE, f"PO2{added - 1:05d}")
+            self.assertEqual([d["citation"] for d in answer["documents"]],
+                             [self.handle(f"01N{added - 1:03d}")])
+
+
+class IndexCodeTests(unittest.TestCase):
+    """The kept identifier index is keyed by a digest of every input its entries are made
+    from: a change to any of them rebuilds it, never reuses entries made by other code."""
+
+    def code(self):
+        from operating import case_tools_host
+        case_tools_host._index_code.cache_clear()
+        self.addCleanup(case_tools_host._index_code.cache_clear)
+        return case_tools_host._index_code()
+
+    def test_a_change_to_any_input_of_the_index_changes_its_digest(self):
+        from integrations import captured_text
+        base = self.code()
+        self.assertIsNotNone(base)
+
+        def other(*_args, **_kwargs):   # any other code in an input's place
+            return None
+
+        for target, name, value in (
+                (mentions, "text_pages", other),
+                (captured_text, "read_dropped", other),
+                (captured_text, "decode_reading", other),
+                (document_understanding, "pdf_page_count", other),
+                (document_understanding, "MAX_PAGES", document_understanding.MAX_PAGES + 1),
+                (mentions, "PAGE_BREAK", "\x0c\x0c")):
+            with self.subTest(input=name), mock.patch.object(target, name, value):
+                self.assertNotEqual(self.code(), base)
+        self.assertEqual(self.code(), base)   # the same inputs: the same digest
 
 
 class MetadataOnlyStoreTests(SharePointHostCase):
@@ -1132,7 +1660,8 @@ class MetadataOnlyStoreTests(SharePointHostCase):
 
 
 class PageCapTests(SharePointHostCase):
-    """``docs/decisions/pdf-cap-readers-contract.md``: a captured PDF over the page bound is read on pages
+    """Directives 754ef76ea79b and 0bfff43dc217 (devloop/DECISIONS/
+    pdf-cap-readers-contract.md): a captured PDF over the page bound is read on pages
     1-200; plx.read and plx.documents carry a typed ``skipped_by_cap`` naming the file and
     the pages not read, so a page past the bound or a search with no match on the pages
     read is never taken for absence. A PDF within the bound with no match is the control;
@@ -1212,6 +1741,17 @@ class PageCapTests(SharePointHostCase):
         self.assertNotIn(self.CAPPED, json.dumps(hidden[0]))   # the read echoes its citation
         self.assertNotIn("pages 201", json.dumps(hidden))
 
+    def test_a_capped_pdf_waiting_for_ocr_is_counted_in_one_gap(self):
+        # Page-capped and its scanned pages left for OCR: named once, by its pages not
+        # read (the more specific gap), never also counted as text not read.
+        capped = self.handle(self.CAPPED)
+        stored = self.store.current(DRIVE, self.CAPPED)["text_sha256"]
+        self.store.fill_text(capped, "ocr_pending", stored)
+        answer = self.ok(self.server(EMPLOYEE, portal_granted=False), "plx.documents",
+                         {"query": SCAN_PO, "sources": ["sharepoint"]})
+        self.assertIn("pages 201-250", self.labels(answer, "skipped_by_cap")[capped]["detail"])
+        self.assertEqual(self.labels(answer, "text_not_read"), {})
+
     def test_an_identifier_only_on_the_page_past_the_bound_is_no_absence(self):
         """A 201-page PDF: its identifier on page 201 (not read) answers no match with
         the file's ``skipped_by_cap`` gap and complete false; its identifier on page 1
@@ -1234,7 +1774,7 @@ class PageCapTests(SharePointHostCase):
 
 
     def test_a_finding_citing_a_page_not_read_is_refused_page_not_read(self):
-        """A case finding cites a page of a captured PDF only
+        """Directive bf3d8e57cd44 (1): a case finding cites a page of a captured PDF only
         as its reading read it; page 230 of the capped file (past the cap) and a page past
         a file's last page are refused ``page_not_read``, a page read is recorded, and a
         reader without the file is refused without that reason. A cap recorded without
@@ -1271,29 +1811,50 @@ class PageCapTests(SharePointHostCase):
         self.assertIn("pages past the page cap",
                       self.labels(past, "skipped_by_cap")[capped + "#page=230"]["detail"])
 
-    def test_a_capped_file_the_re_read_bound_drops_is_a_typed_gap(self):
-        """On a capture past the age bound the matching file
-        is gated first, and a file the call's re-read bound then drops is counted in one
-        ``live_read_budget`` gap (complete false), never dropped silently."""
+    def test_a_search_withholds_a_stored_row_without_a_recorded_permission_list(self):
+        handle = self.handle("01FILEB")
+        query = {"query": "PO100234", "sources": ["sharepoint"]}
+        # Folder grants alone (no item permission required by the audience): only the
+        # search's own rule keeps a row with no recorded permission list out.
+        folders = LiveSourceAudience(
+            {f"sharepoint:{DRIVE}:{QUALITY_FOLDER}": ["staff:quality"],
+             f"sharepoint:{DRIVE}:{QUALITY_FOLDER}/*": ["staff:quality"]},
+            tenant="plx", identities={"staff:quality": [RICARDO]})
+        before = self.ok(self.server(QUALITY, clock=LATER, audience=folders),
+                         "plx.documents", query)
+        self.assertIn(handle, [d["citation"] for d in before["documents"]])
+        for acl in ({}, {"status": "unavailable", "identities": [], "grants": []},
+                    {"status": "read", "identities": [], "grants": []},
+                    {"status": "derived", "identities": [], "grants": []}):
+            with self.subTest(acl=acl):
+                self.store.db.execute("UPDATE items SET source_acl=? WHERE item_id=?",
+                                      (json.dumps(acl), "01FILEB"))
+                self.store.db.commit()
+                answer = self.ok(self.server(QUALITY, clock=LATER, audience=folders),
+                                 "plx.documents", query)
+                self.assertNotIn(handle, json.dumps(answer))
+                self.assertNotIn(TEXT_SECRET, json.dumps(answer))
+
+    def test_an_old_capture_answers_a_search_and_a_read_re_reads_it(self):
+        """Directive bf3d8e57cd44 (3), under the search policy: on a capture past the
+        age bound a search serves the matching file on its recorded permissions (no
+        request, no age gap), and plx.read of it re-reads it live; a reader the
+        recorded permissions refuse gets nothing."""
         boundary = self.handle(self.BOUNDARY)
         query = {"query": self.FIRST_PO, "sources": ["sharepoint"]}
-        one = self.ok(self.server(EMPLOYEE, portal_granted=False, live_drive=True,
-                                  clock=LATER, max_live_rereads=1), "plx.documents", query)
-        self.assertEqual([doc["citation"] for doc in one["documents"]], [boundary])
-        self.assertEqual([(subject, gap["detail"].split(" ", 1)[0]) for subject, gap
-                          in self.labels(one, "live_read_budget").items()],
-                         [("capture:sharepoint", "1")])   # the capped file, unmatched
-        none = self.ok(self.server(EMPLOYEE, portal_granted=False, live_drive=True,
-                                   clock=LATER, max_live_rereads=0), "plx.documents", query)
-        self.assertEqual(none["documents"], [])
-        self.assertEqual(self.labels(none, "live_read_budget")["capture:sharepoint"]
-                         ["detail"].split(" ", 1)[0], "2")
-        self.assertEqual(self.labels(none, "skipped_by_cap"), {})
-        self.assertEqual((none["completeness"]["complete"], none["completeness"]["reason"]),
-                         (False, "partial_scope"))
+        server = self.server(EMPLOYEE, portal_granted=False, live_drive=True, clock=LATER)
+        sent = self.transport.requests_sent
+        found = self.ok(server, "plx.documents", query)
+        self.assertEqual([doc["citation"] for doc in found["documents"]], [boundary])
+        self.assertEqual(self.transport.requests_sent, sent)
+        self.assertEqual(self.labels(found, "capture_too_old"), {})
+        self.assertIn(boundary, self.labels(found))
+        self.assertEqual(self.ok(server, "plx.read", {"citation": boundary})["status"],
+                         "resolved")
+        self.assertGreater(self.transport.requests_sent, sent)
         hidden = self.ok(self.server(OUTSIDER, portal_granted=False, live_drive=True,
-                                     clock=LATER, max_live_rereads=0), "plx.documents", query)
-        self.assertEqual(self.labels(hidden, "live_read_budget"), {})
+                                     clock=LATER), "plx.documents", query)
+        self.assertEqual(hidden["documents"], [])
 
 class FileClearanceTests(SharePointHostCase):
     """The Portal's file clearance (portal/src/lib/auth/file-clearance.ts@790256c) on
@@ -1532,7 +2093,7 @@ class LiveCheckModuleTests(unittest.TestCase):
                 environ=ENV, sender=drive, sleep=lambda s: None)
 
     def _check_answers_by_page(self, name: str, ahead: int = 0):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         report = self._run_check(name, ahead)
         drive = self.drive
         self.assertTrue(report["ok"], report)
@@ -1557,7 +2118,7 @@ class LiveCheckModuleTests(unittest.TestCase):
                        "/Quality", "s3cr3t", "TOKEN"):
             self.assertNotIn(secret, text)
         root = Path(__file__).resolve().parents[2]
-        spec = json.loads((root / "verify/live-checks/case.sharepoint_documents.json")
+        spec = json.loads((root / "devloop/live-checks/case.sharepoint_documents.json")
                           .read_text(encoding="utf-8"))
         lv.validate_spec(spec, stem="case.sharepoint_documents")
         self.assertEqual(lv.check_expectations(spec, 0, report), [])

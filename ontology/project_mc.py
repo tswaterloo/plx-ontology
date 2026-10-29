@@ -16,7 +16,7 @@ for the collections MC scopes per project, so a reader needs that project's gran
 and the store's version times. A version without a valid project key (captured before
 per-project keys) is not projected, nor is any unit of a collection outside
 ``COLLECTIONS`` (``brain_items``, retired for ``integrations.knowledge_source``:
-docs/decisions/2026-10-08-gov13-one-brain-capture.md).
+devloop/DECISIONS/2026-10-08-gov13-one-brain-capture.md).
 
 Completeness is explicit, as for BC: :meth:`capture_gap` is ``source_not_captured`` when
 no scope's unit of a collection was ever captured and ``source_capture_incomplete`` when

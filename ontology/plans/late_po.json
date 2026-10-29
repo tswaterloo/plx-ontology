@@ -6,7 +6,7 @@
   "F14"
  ],
  "title": "Which purchase orders are late, by how much and why",
- "description": "For one PO, or every PO of one supplier, plx.process po_delivery_window's own lateness verdict on the receipt stage (ontology/schema/process/po_delivery_window.json due.lateness): the governing planned arrival by the declared precedence (FM datearrive and Sage exparrival, then Portal expected_date, then BC dates), the supplier's promised and revised dates, the received date, days late and the reason chain, each with the cited dates it rests on. The plan never compares dates itself; a verdict the process leaves undecided stays null with its gap. A PO root also reads the chain behind it, each link optional and cited: the PO's same-record twins in FileMaker, Sage or BC, the order lines (a BC line's own expected receipt date), the supplier's confirmations, freight bills and forwarder quotes, receipts and the mail naming the PO; a document reached only through a machine-read reference is a lead (lead_basis). A Supplier root keeps the per-PO summary.",
+ "description": "For one PO, or every PO of one supplier, plx.process po_delivery_window's own lateness verdict on the receipt stage (ontology/schema/process/po_delivery_window.json due.lateness): the governing planned arrival by the declared precedence (FM datearrive and Sage exparrival, then Portal expected_date, then BC dates), the supplier's promised and revised dates, the received date, days late and the reason chain, each with the cited dates it rests on. The plan never compares dates itself; a verdict the process leaves undecided stays null with its gap. A PO root also reads the chain behind it, each link optional and cited: the PO's same-record twins in FileMaker, Sage or BC, the order lines (a BC line's own expected receipt date), the supplier's confirmations, freight bills and forwarder quotes, receipts, and the mail, mail attachments, SharePoint files and Teams messages naming the PO or a firmly joined twin (the entity map or a corroborated same-record link; a document reached only through a lead twin is not followed); a document reached only through a machine-read reference is a lead (lead_basis). A Supplier root keeps the per-PO summary.",
  "root": {
   "object_types": [
    "PurchaseOrder",
@@ -304,14 +304,64 @@
    "bind": "object_id"
   },
   {
+   "id": "firm_twin",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "description": "The PO's same-record twins at a firm tier (verified or corroborated; no lead retry): the records whose numbers a document may name for this order. A document reached through a lead twin is never this order's.",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrder.same_record_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   }
+  },
+  {
+   "id": "firm_twin_of",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "description": "The records the PO is a same-record twin of at a firm tier (a BC root's Portal order by a firm Your Reference; no lead retry): the records whose numbers a document may name for this order. A document reached through a lead twin is never this order's.",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrder.same_record_as",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   }
+  },
+  {
+   "id": "posted_from",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "description": "The Portal order a BC root was posted from (the entity map, verified): the records whose numbers a document may name for this order. A document reached through a lead twin is never this order's.",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrder.bc_posted_as",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   }
+  },
+  {
    "id": "mail",
    "tool": "plx.around",
    "from": [
     "root",
-    "twin"
+    "firm_twin",
+    "firm_twin_of",
+    "posted_from"
    ],
    "bind": "from",
-   "description": "Messages that mention the PO's number (a text mention: a lead).",
+   "description": "Messages that name the PO's number or a firmly joined twin's (a BC root's Portal and FileMaker order is reached through posted_from or firm_twin_of, never through a lead twin). A text mention is a lead unless its features corroborate it (ontology/mentions.py).",
    "args": {
     "path": [
      {
@@ -336,6 +386,117 @@
    "tool": "plx.object",
    "from": "mail",
    "bind": "object_id"
+  },
+  {
+   "id": "attachments",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "firm_twin",
+    "firm_twin_of",
+    "posted_from"
+   ],
+   "bind": "from",
+   "description": "Mail attachments (name or extracted text) that name the PO's number or a firmly joined twin's (a text mention: a lead).",
+   "args": {
+    "path": [
+     {
+      "link_type": "Attachment.mentions_purchase_order",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "attachments_read",
+   "tool": "plx.object",
+   "from": "attachments",
+   "bind": "object_id",
+   "max_each": 5
+  },
+  {
+   "id": "files",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "firm_twin",
+    "firm_twin_of",
+    "posted_from"
+   ],
+   "bind": "from",
+   "description": "SharePoint files (name or extracted text) that name the PO's number or a firmly joined twin's (a text mention: a lead).",
+   "args": {
+    "path": [
+     {
+      "link_type": "SharePointFile.mentions_purchase_order",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "files_read",
+   "tool": "plx.object",
+   "from": "files",
+   "bind": "object_id",
+   "max_each": 5
+  },
+  {
+   "id": "chat",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "firm_twin",
+    "firm_twin_of",
+    "posted_from"
+   ],
+   "bind": "from",
+   "description": "Teams chat messages that name the PO's number or a firmly joined twin's (a text mention: a lead).",
+   "args": {
+    "path": [
+     {
+      "link_type": "TeamsChatMessage.mentions_purchase_order",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "chat_read",
+   "tool": "plx.object",
+   "from": "chat",
+   "bind": "object_id",
+   "max_each": 5
   }
  ],
  "evidence": [
@@ -400,14 +561,49 @@
    "description": "The PO's planned arrival as each system holding it records it, the PO and its same-record twins (Portal expected_date, FileMaker datearrive, Sage exparrival, BC requestedReceiptDate); lateness itself is plx.process's verdict above."
   },
   {
-   "name": "line_expected_date",
-   "kind": "property",
-   "object_type": "PurchaseOrderLine",
-   "properties": [
+   "name": "open_line",
+   "kind": "select",
+   "omit_empty": true,
+   "description": "One entry per open line (not received or partly received, plx.process's own line state) that holds its own expected receipt date: the value is that date (BC expectedReceiptDate, the supplier side; never the PO's requested-by date, which the verdict above uses). Its cells cite the line's record: state the date from the cell of bc_expected_receipt_date, one claim per line, and the quantities only when asked.",
+   "step": "lateness",
+   "cells_only": [
     "bc_expected_receipt_date"
    ],
+   "path": "lateness.lines.*.expected_date",
+   "reduce": "first",
+   "per": "line",
+   "where_any": [
+    {
+     "state": "not_received"
+    },
+    {
+     "state": "partial"
+    }
+   ]
+  },
+  {
+   "name": "open_line_undated",
+   "kind": "select",
    "omit_empty": true,
-   "description": "A BC line's own expected receipt date (the supplier side; never the PO's requested-by date)."
+   "description": "One entry per open line of any system that holds no expected date (a Portal line of the PO or its twin): the value is the line's state and its cells cite its record and quantities.",
+   "step": "lateness",
+   "cells_only": [
+    "ordered_quantity",
+    "received_quantity"
+   ],
+   "path": "lateness.lines.*.state",
+   "reduce": "first",
+   "per": "line",
+   "where_any": [
+    {
+     "state": "not_received",
+     "expected_date": null
+    },
+    {
+     "state": "partial",
+     "expected_date": null
+    }
+   ]
   },
   {
    "name": "confirmed_delivery_date",
@@ -473,6 +669,35 @@
    "properties": [
     "received_at",
     "sent_at"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "mail_attachment",
+   "kind": "property",
+   "object_type": "Attachment",
+   "properties": [
+    "name"
+   ],
+   "omit_empty": true,
+   "description": "A mail attachment that names the PO (its file name, cited to the attachment)."
+  },
+  {
+   "name": "file_named",
+   "kind": "property",
+   "object_type": "SharePointFile",
+   "properties": [
+    "name"
+   ],
+   "omit_empty": true,
+   "description": "A SharePoint file that names the PO (its file name, cited to the file)."
+  },
+  {
+   "name": "chat_message_at",
+   "kind": "property",
+   "object_type": "TeamsChatMessage",
+   "properties": [
+    "created_at"
    ],
    "omit_empty": true
   }

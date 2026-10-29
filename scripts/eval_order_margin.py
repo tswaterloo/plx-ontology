@@ -20,7 +20,7 @@ Both modes read Business Central only, so they run while the Portal reporting AP
   label ``live-read``. The oracle takes a read as whole per company and entity set, from
   that unit of the capture report (``unit_completeness``), so an incomplete unit of one
   company never blocks another's orders; the adapter is
-  ``live-unverified`` until the verifier records a pass of ``verify/live-checks/
+  ``live-unverified`` until the verifier records a pass of ``devloop/live-checks/
   eval.order_margin.json``.
 * ``fixture``: the synthetic world of ``evals.oracle.order_margin.fixture_world`` (not PLX
   data) as in-memory BC captures. Evidence label ``isolated-fixture``.

@@ -3,7 +3,7 @@
 Why: the ``plxwb_`` reporting key is one shared DB login with column grants
 only, and the Graph/BC app token sees every mailbox, site and company, so no
 upstream source trims per employee. The Workbench decides per employee
-**before** retrieval, ranking and caching (GOV-09).
+**before** retrieval, ranking and caching (WORKING-BRIEF, GOV-09, pack 03 §5).
 
 For one employee principal (Entra ``tid``/``oid``) the resolver derives the
 Workbench audience principals (the vocabulary ``source_mirror.AudienceMap``,
@@ -22,7 +22,7 @@ clearance, from three sources that are **intersected, never unioned**:
     A group can only *restrict*: a principal that declares ``entra_groups``
     additionally needs a completely read membership in one of them. When the
     membership could not be read for the recorded consent blocker (today:
-    ``GroupMember.Read.All`` is not consented) the note
+    ``GroupMember.Read.All`` is not consented, pack 06) the note
     ``group_membership_unavailable`` is recorded, group-gated principals are
     withheld and the rest is decided by the Portal role alone. Any other unread
     membership (a provider failure, no read, another reason) is an outage: the
@@ -54,7 +54,12 @@ clearance, from three sources that are **intersected, never unioned**:
     provider cache's expiry) the complete transitive membership is used and
     nothing is derived. A principal may also declare ``entra_departments``
     (the user's Entra ``department``, compared case-insensitively); like a
-    group it only restricts. The directory's UPN and mail join the employee's
+    group it only restricts. A principal may declare ``entra_job_title_keywords``:
+    then an Entra ``jobTitle`` with a word starting with one of them stands in for
+    membership of the rule's Portal departments (``job_title_matches``; the role,
+    access level, scopes and denies still decide), only while the people exclusion
+    the resolver is given is usable, and a person it names holds the principal by
+    neither path. The decision records an enum (``entra_job_title``), never the title. The directory's UPN and mail join the employee's
     source identities, so a SharePoint grant to that UPN matches.
 (c) **SharePoint item permissions** -- read GET-only by the reader for each
     item; ``item_acl_allows`` lets an employee read an original only when the
@@ -99,7 +104,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import functools
 from hashlib import sha256
 import inspect
@@ -117,7 +122,7 @@ from .entitlements import _AGENT_PREFIXES, ACL_BEARING_PATTERNS, EntitlementDeni
 POLICY_SCHEMA = "plx-employee-permission-policy/v1"
 EMPLOYEE_PREFIX = "employee:"
 GROUP_MEMBERSHIP_UNAVAILABLE = "group_membership_unavailable"
-# Recorded blocker (docs/reference/permissions.md): the shared Entra app has no
+# Recorded blocker (devloop/PERMISSIONS.md): the shared Entra app has no
 # GroupMember.Read.All / Group.Read.All / Directory.Read.All consent.
 GROUP_READ_BLOCKER = "graph_permission_missing:GroupMember.Read.All"
 # A mailbox the employee does not own (shared, or another user's with delegated
@@ -158,6 +163,17 @@ def clearance_from_department_codes(codes: Iterable[str]) -> frozenset[str]:
 
 _GUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _PRINCIPAL = re.compile(r"^[a-z][a-z0-9_-]{0,31}:[^\s*]{1,160}$")
+_KEYWORD = re.compile(r"[a-z]{3,32}")
+
+
+def job_title_matches(title: Any, keywords: Iterable[str]) -> bool:
+    """True when the Entra job title has a word that starts with one of ``keywords``
+    (case-insensitive): 'Purchasing Manager' and 'Senior Buyer' match purchas and buyer,
+    'Outsourcing Lead' does not match sourcing. No title, or not text: False."""
+    if not isinstance(title, str):
+        return False
+    words = re.findall(r"[a-z]+", title.casefold())
+    return any(word.startswith(k) for word in words for k in keywords)
 _EMAIL = re.compile(r"^[^\s@*]{1,128}@[a-z0-9.-]{1,190}\.[a-z]{2,}$")
 
 
@@ -214,8 +230,8 @@ class PortalAccessRead:
     ``UserDepartmentMembership``, ``UserAccessScope`` and ``AccessPolicyGrant``
     (portal/prisma/schema.prisma at the commit in ``portal.PORTAL_SOURCE``).
     ``source`` cites where it was read; ``read_at`` when. The reporting API
-    does not serve these tables today, so the provider is a
-    blocker input; see docs/reference/permissions.md.
+    does not serve these tables today (pack 03 §6), so the provider is a
+    blocker input; see devloop/PERMISSIONS.md.
     """
 
     user_id: str
@@ -324,6 +340,7 @@ class EntraDirectoryRead:
     department: str = ""
     group_ids: frozenset[str] = frozenset()
     source: str = ""
+    job_title: str = ""
     read_at: str = ""
     group_basis: str = GROUP_BASIS_TRANSITIVE
     membership_reason: str = ""
@@ -337,7 +354,7 @@ class EntraDirectoryRead:
             object.__setattr__(self, "object_id", _guid(self.object_id, "directory_object_id"))
         object.__setattr__(self, "group_ids", frozenset(
             _guid(g, "group_id") for g in self.group_ids))
-        for name in ("user_principal_name", "mail", "department"):
+        for name in ("user_principal_name", "mail", "department", "job_title"):
             if not isinstance(getattr(self, name), str):
                 raise ValueError(f"directory_{name}_invalid")
         if self.status == "read":
@@ -353,7 +370,7 @@ class EntraDirectoryRead:
         else:
             _text(self.reason, "directory_read_reason")
             if (self.group_ids or self.user_principal_name or self.mail or self.department
-                    or self.source or self.membership_reason
+                    or self.job_title or self.source or self.membership_reason
                     or self.group_basis != GROUP_BASIS_TRANSITIVE):
                 raise ValueError("unavailable_directory_read_carries_facts")
 
@@ -394,7 +411,7 @@ class PortalAccessSnapshot:
     Entra tenant **and** object id; two rows for one identity or no row return
     ``None`` (``portal_access_unavailable``: deny, a refusal). This is the
     Portal input until the reporting API serves the user/RBAC tables
-    (docs/reference/permissions.md blocker 3); it is configuration an operator
+    (devloop/PERMISSIONS.md blocker 3); it is configuration an operator
     exports from the Portal, never a grant by itself (the policy and the
     item ACLs still intersect).
     """
@@ -510,6 +527,9 @@ class PrincipalRule:
     entra_groups: frozenset[str]
     entra_departments: frozenset[str] = frozenset()   # casefolded
     portal_roles: frozenset[str] = frozenset()        # empty: any employee role
+    # A second way to hold the principal (``job_title_matches``): an Entra job title naming
+    # one of these words stands in for the Portal department scope; never for the role.
+    entra_job_title_keywords: frozenset[str] = frozenset()
 
 
 def _strict_json(raw: bytes) -> Any:
@@ -542,7 +562,8 @@ class EmployeePermissionPolicy:
                          "service_principal_object_ids", "library_security_classes"})
     _RULE_FIELDS = frozenset({"capability", "resource_type", "department_ids", "company_key",
                               "data_key", "mrp_modules", "entra_groups",
-                              "entra_departments", "portal_roles", "note"})
+                              "entra_departments", "entra_job_title_keywords",
+                              "portal_roles", "note"})
     # A rule without a capability names no Portal resource.
     _RESOURCE_FIELDS = frozenset({"resource_type", "department_ids", "company_key",
                                   "data_key", "mrp_modules"})
@@ -594,9 +615,14 @@ class EmployeePermissionPolicy:
             modules = rule.get("mrp_modules", [])
             groups = rule.get("entra_groups", [])
             entra_departments = rule.get("entra_departments", [])
-            for value in (departments, modules, groups, entra_departments):
+            keywords = rule.get("entra_job_title_keywords", [])
+            for value in (departments, modules, groups, entra_departments, keywords):
                 if not isinstance(value, list):
                     raise ValueError("employee_policy_rule_invalid")
+            if any(not isinstance(k, str) or _KEYWORD.fullmatch(k) is None for k in keywords) \
+                    or (keywords and (capability is None or not departments)):
+                # Lower-case letters only; a title only stands in for a department scope.
+                raise ValueError("employee_policy_job_title_keywords_invalid")
             if set(modules) - set(portal.MRP_MODULES):
                 raise ValueError("employee_policy_mrp_module_unknown")
             company = rule.get("company_key")
@@ -610,7 +636,7 @@ class EmployeePermissionPolicy:
                 name, capability, resource, frozenset(modules),
                 frozenset(_guid(g, "entra_group") for g in groups),
                 frozenset(_text(d, "entra_department").casefold() for d in entra_departments),
-                frozenset(roles or ()))
+                frozenset(roles or ()), frozenset(keywords))
         services = doc.get("service_principal_object_ids", [])
         if not isinstance(services, list):
             raise ValueError("employee_policy_service_principals_invalid")
@@ -641,6 +667,9 @@ class PrincipalDecision:
     portal_canonical: str       # effective-access decisive rule
     entra_group: str            # not_required | member | not_member | unavailable
     entra_department: str = "not_required"   # same vocabulary
+    # not_required | member (title names a keyword) | not_member | unavailable (no title
+    # read) | excluded (a person the exclusion names) | exclusion_unavailable
+    entra_job_title: str = "not_required"
 
 
 @dataclass(frozen=True)
@@ -759,7 +788,8 @@ class EmployeePermissionResolver:
 
     def __init__(self, policy: EmployeePermissionPolicy, portal_access: PortalAccessProvider,
                  groups: GroupProvider = groups_unavailable, *,
-                 directory: DirectoryProvider | None = None) -> None:
+                 directory: DirectoryProvider | None = None,
+                 people_exclusion: Any = None) -> None:
         if not isinstance(policy, EmployeePermissionPolicy):
             raise TypeError("employee permission policy required")
         if not callable(portal_access) or not callable(groups) or not (
@@ -772,6 +802,20 @@ class EmployeePermissionResolver:
         self._portal = portal_access
         self._groups = groups
         self._directory = directory
+        # integrations.people_exclusion.PeopleExclusion: a person it names never holds a
+        # principal whose rule declares entra_job_title_keywords; without a usable one no
+        # job title grants anything (the Portal department path still decides).
+        self._exclusion = people_exclusion
+
+    def _title_exclusion(self, principal: EmployeePrincipal) -> str:
+        """``excluded``, ``exclusion_unavailable`` or ``clear`` for this employee."""
+        guard = self._exclusion
+        try:
+            if guard is None or guard.unavailable:
+                return "exclusion_unavailable"
+            return "excluded" if guard.is_excluded(principal.object_id) else "clear"
+        except Exception:  # noqa: BLE001 - an undecidable guard grants nothing
+            return "exclusion_unavailable"
 
     def resolve(self, principal: EmployeePrincipal) -> EmployeeEntitlement:
         if not isinstance(principal, EmployeePrincipal):
@@ -818,6 +862,7 @@ class EmployeePermissionResolver:
 
         notes: list[str] = []
         department: str | None = None
+        job_title: str | None = None
         identities = {principal.object_id, access.email}
         derived: frozenset[str] = frozenset()     # positive evidence only
         if self._directory is not None:
@@ -846,6 +891,7 @@ class EmployeePermissionResolver:
                 notes += [f"{GROUP_MEMBERSHIP_DERIVED}:{GROUP_BASIS_JOINED_TEAMS}",
                           f"{GROUP_MEMBERSHIP_UNAVAILABLE}:{directory.membership_reason}"]
             department = directory.department.casefold()
+            job_title = directory.job_title
             identities |= {v for v in (directory.user_principal_name, directory.mail) if v}
         else:
             try:
@@ -884,10 +930,31 @@ class EmployeePermissionResolver:
             else:
                 in_department = ("member" if department in rule.entra_departments
                                  else "not_member")
-            allowed = (legacy and canonical.allowed and group in ("not_required", "member")
-                       and in_department in ("not_required", "member"))
+            entra_ok = (group in ("not_required", "member")
+                        and in_department in ("not_required", "member"))
+            allowed = legacy and canonical.allowed and entra_ok
+            title = "not_required"
+            if rule.entra_job_title_keywords:
+                # Second path: the Entra job title stands in for membership of the rule's
+                # Portal departments; the role, access level, scopes and denies still decide.
+                title = self._title_exclusion(principal)
+                if title == "clear":
+                    title = ("unavailable" if job_title is None else
+                             "member" if job_title_matches(job_title,
+                                                           rule.entra_job_title_keywords)
+                             else "not_member")
+                if title == "member" and not allowed:
+                    as_member = replace(state, department_ids=frozenset(state.department_ids)
+                                        | set(rule.resource.department_ids))
+                    t_legacy, t_canonical = _portal_decision(rule, access, as_member)
+                    allowed = t_legacy and t_canonical.allowed and entra_ok
+                    if allowed:
+                        legacy, canonical = t_legacy, t_canonical
+                if title == "excluded":
+                    allowed = False
+                notes.append(f"entra_job_title:{name}:{title}")   # an enum, never the title
             decisions.append(PrincipalDecision(name, allowed, legacy, canonical.rule, group,
-                                               in_department))
+                                               in_department, title))
 
         # The Portal's membership decides; the Entra department only narrows it. An
         # unconfirmed membership, no directory read or an unknown department: nothing.

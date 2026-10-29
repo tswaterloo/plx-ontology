@@ -68,12 +68,15 @@ class PromptPresubmitTests(unittest.TestCase):
         """Each example the prompt names is judged by the check as the prompt says."""
         prompt = self.prompt()
         base = "Ordered 2400 units and planned 2350; shipment is not ingested. "
-        for written, flagged in (("SKU-7342", True), ("10k", True), ("twelve", True),
-                                 ("25%", True), ("2026-01-07", True), ("nine", False),
+        for written, flagged in (("x7342", True), ("NET30", True), ("Q3", True),
+                                 ("QTY-12", True), ("USD-7342", True), ("10k", True),
+                                 ("twelve", True), ("25%", True), ("2026-01-07", True),
+                                 ("nine", False), ("SKU-7342", False), ("QRX-082", False),
                                  ("SO-61873Q", False), ("PO7700318264", False),
                                  ("10:30", False), ("January 7, 2026", False)):
             with self.subTest(written=written):
-                if written in ("SKU-7342", "10k", "25%", "SO-61873Q", "PO7700318264"):
+                if written in ("x7342", "NET30", "Q3", "QTY-12", "USD-7342", "SKU-7342",
+                               "QRX-082", "10k", "25%", "SO-61873Q", "PO7700318264"):
                     self.assertIn(written, prompt)
                 checked = runner.presubmit_check(fx.good_answer(text=base + written + "."),
                                                  fx.FakeHost())
@@ -308,6 +311,32 @@ def gate_call(outcome, *, passed=0, refused=0, is_error=False, result=None):
     return (runner.ANSWER_GATE_TOOL, {"answer": answer}, result, is_error)
 
 
+def gate_event(call):
+    """A recorded tool-call event of one ``gate_call``/``passing_gate_call`` tuple."""
+    name, arguments, result, is_error = call
+    return {"type": "tool_call", "name": name, "arguments": arguments, "result": result,
+            "is_error": is_error}
+
+
+def passing_gate_call(answer, *, roles=False):
+    """A ``plx.case_get`` answer-mode call whose gate decision passed every stated value of
+    ``answer`` on the cell it cites (the shape the output boundary returns); ``roles``:
+    each value claim carries the value's ``quantity_role`` (the gate checked it)."""
+    def wrap(value):
+        return {"origin": {"citation": "workbench://plx.case_get"}, "untrusted_text": value}
+    claims = [{"id": f"m{n + 1}", "check": {"status": "passed", "failures": []},
+               "citations": [wrap(cite["l1_handle"])], "text": wrap(str(value["value"])),
+               "value_claims": [{"citation": cite["l1_handle"], "field": cite["field_path"],
+                                 "kind": "number", "value": wrap(value["value"]),
+                                 **({"role": value["quantity_role"]}
+                                    if roles and value.get("quantity_role") else {})}]}
+              for n, value in enumerate(answer["values"]) if value.get("value") is not None
+              for cite in value["citations"]]
+    return (runner.ANSWER_GATE_TOOL, {"answer": {"claims": []}},
+            {"outcome": "answered", "reason": None, "claims": claims,
+             "unsupported_claims": []}, False)
+
+
 class GateHost(fx.FakeHost):
     """The fixture host listing the tool the gate is reached through."""
 
@@ -318,8 +347,9 @@ class GateHost(fx.FakeHost):
 
 class AnswerGateTests(unittest.TestCase):
     """The harness and the Workbench's one final-answer gate (``operating.answer_gate``,
-    reached in the session as ``plx.case_get`` answer mode): the runner never rewrites the
-    final answer, it records what the gate returned to the agent."""
+    reached in the session as ``plx.case_get`` answer mode): the runner records what the
+    gate returned to the agent, and the final reply holds only what it passed
+    (``gate_final_reply``)."""
 
     def submitted(self, given, calls=()):
         item = fx.item()
@@ -328,29 +358,140 @@ class AnswerGateTests(unittest.TestCase):
         transcript = runner.record(item, agent, GateHost())
         return transcript, sc.score(item, transcript)
 
-    def test_the_final_answer_is_scored_as_written_never_rewritten(self):
+    def test_the_scored_reply_holds_only_what_the_gate_passed(self):
+        # The final reply leaves through ``gate_final_reply``: a value no gate decision of
+        # the session passed is withheld (null, a gap), never scored as stated; a reply
+        # the gate passed whole is scored exactly as written.
         wrong = fx.good_answer(text="Ordered 2500 units and planned 2350; shipment is not "
                                     "ingested.")
         wrong["values"][0]["value"] = "2500"
-        for given, passed, code in ((fx.final_text(wrong), False, "unsupported_assertion"),
-                                    (fx.final_text(fx.good_answer()), True, None),
-                                    ("no answer here", False, "no_answer"),
-                                    (fx.final_text(fx.good_answer(answerability="maybe")),
-                                     False, "no_answer")):
-            with self.subTest(given=given[:40]):
-                transcript, result = self.submitted(given)
-                self.assertEqual(transcript["final_text"], given)
-                self.assertEqual(result["passed"], passed)
+        # The gate checked each value with its role: the reply is kept as written. A
+        # gate that passed the values without their roles never checked the role the
+        # reply adds: the value is withheld (below).
+        passed = passing_gate_call(fx.good_answer(), roles=True)
+        unchecked = passing_gate_call(fx.good_answer())
+        for given, calls, kept, code in (
+                (fx.final_text(wrong), (), False, None),
+                (fx.final_text(fx.good_answer()), (), False, None),
+                (fx.final_text(wrong), (passed,), False, None),
+                (fx.final_text(fx.good_answer()), (passed,), True, None),
+                ("no answer here", (), True, "no_answer"),
+                (fx.final_text(fx.good_answer(answerability="maybe")), (), False,
+                 "no_answer")):
+            with self.subTest(given=given[:40], gated=bool(calls)):
+                transcript, result = self.submitted(given, calls)
+                reply = transcript["agent"]["final_reply"]
+                self.assertEqual(transcript["final_text"] == given, kept)
+                self.assertEqual(reply["rewritten"], not kept)
+                if not kept:
+                    self.assertEqual(reply["agent_final_text"], given)
+                    # Neither the refused value nor one stated without its passed claim.
+                    self.assertNotIn("2500", transcript["final_text"])
+                    self.assertNotIn("2400", transcript["final_text"])
+                self.assertEqual(result["passed"], kept and code is None)
+                # Never a confident unsupported answer: what was not passed is withheld.
+                self.assertNotIn("unsupported_assertion", result["codes"])
+                self.assertFalse(sc.confident_unsupported(result))
                 if code:
                     self.assertIn(code, result["codes"])
-                self.assertEqual(transcript["agent"]["answer_gate"], {
-                    "submissions": 0, "outcomes": [], "passed_claims": [],
-                    "refused_claims": [], "final": None, "repaired": False})
+                if not calls:
+                    self.assertEqual(transcript["agent"]["answer_gate"], {
+                        "submissions": 0, "outcomes": [], "passed_claims": [],
+                        "refused_claims": [], "final": None, "repaired": False})
                 self.assertFalse([e for e in transcript["events"]
                                   if e["type"] == runner.PRESUBMIT_EVENT])
+        # a role the gate never checked is withheld with its value, never dropped alone:
+        # the reply's "Ordered 2400" would then state a role nothing checked
+        transcript, result = self.submitted(fx.final_text(fx.good_answer()), (unchecked,))
+        self.assertEqual(transcript["agent"]["final_reply"]["withheld"],
+                         ["ordered_qty", "planned_qty"])
+        self.assertNotIn("2400", transcript["final_text"])
+        self.assertFalse(sc.confident_unsupported(result))
         self.assertFalse(hasattr(runner, "gate_answer"))
         with self.assertRaises(TypeError):
             runner.ClaudeCodeAgent(spawn=session("x"), answer_gate=True)
+
+    def test_the_reply_states_the_gates_answerability_and_the_checked_quote(self):
+        """A reply states what the gate decided: the less certain of its answerability
+        and the answer's own (GP-05: the gate never makes an agent's partial or blocked
+        answerable; a blocked beside a passed claim is partial), and each kept value as
+        the gate checked it (the claim's quote on its citation)."""
+        good = fx.good_answer()
+        call = passing_gate_call(good, roles=True)
+        name, arguments, result, error = call
+        quoted = {**result, "claims": [
+            {**claim, "value_claims": [{**vc, "quote": {
+                "origin": {"citation": "workbench://plx.case_get"},
+                "untrusted_text": f"qty {vc['value']['untrusted_text']}"}}
+                for vc in claim["value_claims"]]} for claim in result["claims"]]}
+        for state, given, want in (("partial", "answerable", "partial"),
+                                   ("answerable", "partial", "partial"),
+                                   ("answerable", "blocked", "partial"),
+                                   ("partial", "blocked", "partial"),
+                                   ("answerable", "answerable", "answerable"),
+                                   ("maybe", "answerable", "answerable")):
+            with self.subTest(state=state):
+                gate = (name, arguments, {**quoted, "answerability": {"state": state}}, error)
+                text, report = runner.gate_final_reply(
+                    fx.final_text({**good, "answerability": given}), [gate_event(gate)])
+                reply, _ = sc.parse_answer(text)
+                self.assertEqual(reply["answerability"], want)
+                # the answer's own gaps stay: the gate refuted none of them
+                self.assertEqual(reply["gaps"], good["gaps"])
+                stated = [v for v in reply["values"] if v.get("value") is not None]
+                self.assertEqual([c.get("quote") for v in stated for c in v["citations"]],
+                                 ["qty 2400", "qty 2350"])
+                self.assertEqual(report["withheld"], [])
+        # a value the gate never passed is withheld: an answerable decision is partial
+        gate = (name, arguments, {**quoted, "claims": quoted["claims"][:1],
+                                  "answerability": {"state": "answerable"}}, error)
+        text, report = runner.gate_final_reply(fx.final_text(good), [gate_event(gate)])
+        self.assertEqual((sc.parse_answer(text)[0]["answerability"], report["withheld"]),
+                         ("partial", ["planned_qty"]))
+
+    def test_a_unit_or_currency_the_gate_did_not_verify_is_dropped_never_the_value(self):
+        """Review of c6ce3d44b6 (A02, v7): 68160 "units" on a page that prints no unit
+        beside the figure came back null. The gate passes the figure with the unit
+        ``unverified``: the reply keeps the value, with its checked quote, and drops only
+        the unit (a currency the same)."""
+        page, quote = "original://co-526103c21a4e#page=11", "| Total | 68,304 | 68,160 | 144 |"
+
+        def wrap(text, origin="workbench://plx.case_get"):
+            return {"origin": {"citation": origin}, "untrusted_text": text}
+        for key, given in (("unit", "units"), ("currency", "CAD")):
+            with self.subTest(key=key):
+                value = {"name": "final_units_sum", "value": "68160", key: given,
+                         "citations": [{"l1_handle": page, "field_path": "text",
+                                        "quote": quote}]}
+                answer = fx.good_answer(answerability="answerable", gaps=[],
+                                        text="The final units sum to 68160.",
+                                        values=[value])
+                result = {"outcome": "answered", "reason": None, "unsupported_claims": [],
+                          "answerability": {"state": "answerable"},
+                          "claims": [{"id": "m1", "check": {"status": "passed",
+                                                            "failures": [],
+                                                            "unit_basis": "unverified"},
+                                      "citations": [wrap(page)],
+                                      "value_claims": [{"citation": page, "field": "text",
+                                                        "kind": "number",
+                                                        "value": wrap("68160", page),
+                                                        "quote": wrap(quote),
+                                                        # the gate records a unit it
+                                                        # could not verify; a currency
+                                                        # it cannot verify fails the
+                                                        # claim, so a passed one has none
+                                                        **({key: wrap(given)}
+                                                           if key == "unit" else {})}]}]}
+                gate = gate_event((runner.ANSWER_GATE_TOOL, {"answer": {"claims": []}},
+                                   result, False))
+                text, report = runner.gate_final_reply(fx.final_text(answer), [gate])
+                reply, _ = sc.parse_answer(text)
+                self.assertEqual(report["withheld"], [])
+                kept = reply["values"][0]
+                self.assertEqual((kept["value"], kept["citations"][0]["quote"]),
+                                 ("68160", quote))
+                self.assertNotIn(key, kept)
+                self.assertEqual(reply["answerability"], "answerable")
 
     def test_the_record_counts_each_gate_result_at_1_10_and_60_submissions(self):
         kinds = [gate_call("repair", refused=1), gate_call("answered", passed=2),

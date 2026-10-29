@@ -1,6 +1,7 @@
-"""Identifier mentions projected from cited document captures.
+"""Identifier mentions projected from cited document captures (lane L16).
 
-A *mention* is a span of captured
+10-DECISION 3 and 7, 09-CRITIQUE R3 and R6, 07-ONTOLOGY-DESIGN C principle 5 and
+C.2 (``Document mentions any object``). A *mention* is a span of captured
 document text that names an identifier. It is machine-extracted, never a fact,
 and it reaches an object only as a candidate of the identity layer.
 
@@ -37,7 +38,7 @@ What it decides
   (external or unknown sender, or quoted history) is an ``external_assertion``. A
   sender is internal only with DMARC pass for its internal domain (:func:`sender_class`).
   By itself it can never confirm a payment, receipt or quantity fact, and no
-  lead-tier mention confirms one either (:func:`confirmation_support`).
+  lead-tier mention confirms one either (:func:`confirmation_support`; R6 #4).
 * **Copies** (``Document.copy_key``, from ``ontology.identifiers.copy_key``): one message
   delivered to several mailboxes (one ``internet_message_id`` with equal headers and
   body preview: a forged or reused Message-ID on another message groups nothing) and one file
@@ -57,7 +58,7 @@ What it decides
 * **Corroboration** (:data:`MENTION_FEATURES`, :func:`corroborate_links`): a stored
   link of a link type whose schema binding allows ``corroborated``
   (``ontology/schema.py`` ``MENTION_LINK_RULE``: ``Email.mentions_<type>``) rises to
-  ``corroborated`` only when two or more independent features agree and no
+  ``corroborated`` only when two or more independent features agree (07 C.2) and no
   veto holds: the mention itself, the sender's domain at a distinctive domain of a party
   the target links to (``party_domain``), and an internal sender's own mention of the
   same target in the same conversation (``petra_thread``); vetoes are quoted history, a
@@ -107,11 +108,11 @@ BINDING_KIND = "mention"
 TIER = "lead"
 SENDER_CLASSES = ("internal", "external", "unknown")
 DOCUMENT_KINDS = ("email", "attachment", "sharepoint_file", "container_member", "original",
-                  "mc_task", "mc_approval", "knowledge_entry")
+                  "mc_task", "mc_approval", "knowledge_entry", "teams_message")
 # Why a producer withheld a document's text (``Document.text_withheld``): one known form,
 # ``pdf_pages_skipped_by_cap:<first>-<last>``.
 WITHHELD_PAGES_SKIPPED = "pdf_pages_skipped_by_cap"
-# Facts an external assertion can never confirm by itself.
+# Facts an external assertion can never confirm by itself (09-CRITIQUE R6 #4).
 EXTERNAL_UNCONFIRMABLE = ("payment", "receipt", "quantity")
 # Tiers at which internal evidence may confirm a payment/receipt/quantity fact.
 CONFIRMING_TIERS = ("verified", "reviewed", "corroborated")
@@ -320,7 +321,7 @@ class Document:
     copy_key: tuple[str, ...] | None = None
     # Why the file's text is not among ``fields`` although it was read (a producer with
     # no gap channel withholds a partial reading: ``pdf_pages_skipped_by_cap:<first>-
-    # <last>``, docs/decisions/pdf-cap-readers-contract.md); None otherwise.
+    # <last>``, devloop/DECISIONS/pdf-cap-readers-contract.md); None otherwise.
     text_withheld: str | None = None
 
     def __post_init__(self) -> None:
@@ -1101,7 +1102,7 @@ def _store_link(document: Document, mention: Mapping[str, Any], source: Any, cit
 # --------------------------------------------------------------------------- corroboration
 
 CORROBORATED = "corroborated"
-CORROBORATION_MIN = 2   # independent agreeing features
+CORROBORATION_MIN = 2   # independent agreeing features (07 C.2)
 UNCORROBORATED = ("fewer than two independent features agree, or a veto holds "
                   "(ontology/mentions.py MENTION_FEATURES)")
 # The mention features. ``agrees``: counts towards corroboration; ``veto``: keeps the link a
@@ -1372,6 +1373,24 @@ def _covers(row: Any, start: str, end: str | None) -> bool:
     return row["superseded_at"] is None or (end is not None and row["superseded_at"] >= end)
 
 
+def _held(rows: Iterable[Any], start: str, end: str | None) -> bool:
+    """Whether ``rows``, the stored rows of one fact (one link between two objects, or one
+    value of one property), cover [start, end) together. An incremental build records an
+    unchanged fact again as a new row from the time the previous one is superseded: those
+    rows join without a gap and hold the fact over their whole span. A gap (the fact was
+    absent for a while) breaks it."""
+    reach = start
+    for row in sorted(rows, key=lambda r: r["recorded_at"]):
+        if row["superseded_at"] is not None and row["superseded_at"] <= reach:
+            continue
+        if row["recorded_at"] > reach:
+            return False
+        if row["superseded_at"] is None:
+            return True
+        reach = row["superseded_at"]
+    return end is not None and reach >= end
+
+
 def _value_cite(row: Any) -> dict[str, Any]:
     return {"l1_handle": row["l1_handle"], "field_path": row["field_path"],
             "digest": row["digest"], "lineage": row["lineage"]}
@@ -1569,13 +1588,18 @@ def _twin_basis(conn: Any, first: Sequence[Any], second: Sequence[Any], start: s
     """Why two targets of one document version are one record over [start, end), from
     their links ``first`` and ``second``: (basis, cited handles, markings), else None."""
     a, b = first[0]["to_object"], second[0]["to_object"]
+    joins: dict[tuple[str, str, str], list[Any]] = {}
     for link in _query(conn, "SELECT * FROM links WHERE ((from_object = ? AND to_object = ?) "
                        "OR (from_object = ? AND to_object = ?)) AND binding_kind = "
                        "'same_record' AND tier IN ('verified', 'reviewed') ORDER BY link_id",
                        (a, b, b, a)):
-        if _covers(link, start, end):
+        joins.setdefault((link["link_type"], link["from_object"], link["to_object"]),
+                         []).append(link)
+    for _key, links in sorted(joins.items()):
+        if _held(links, start, end):
+            link = max(links, key=lambda r: r["recorded_at"])
             return ({"basis": "same_record_link"}, json.loads(link["evidence_handles"]),
-                    [link["markings"]])
+                    [r["markings"] for r in links])
     pairs = _verified_field_pairs()
     for left in first:
         lc = _candidate(json.loads(left["reason"]))
@@ -1626,26 +1650,34 @@ def _party_domain(conn: Any, row: Any, sender: str, held: Callable[[str], set[st
                   ) -> tuple[dict[str, Any], list[str], list[str]] | None:
     start, end = row["recorded_at"], row["superseded_at"]
     prop = MENTION_FEATURES["party_domain"]["property"]
-    for link in _query(conn, "SELECT link_id, to_object, evidence_handles, markings, "
-                       "recorded_at, superseded_at FROM links WHERE from_object = ? AND "
-                       "tier = 'verified' AND binding_kind <> ? ORDER BY link_id",
+    parties: dict[tuple[str, str], list[Any]] = {}
+    for link in _query(conn, "SELECT link_id, link_type, to_object, evidence_handles, "
+                       "markings, recorded_at, superseded_at FROM links WHERE from_object = ? "
+                       "AND tier = 'verified' AND binding_kind <> ? ORDER BY link_id",
                        (row["to_object"], BINDING_KIND)):
-        if not _covers(link, start, end):
+        parties.setdefault((link["link_type"], link["to_object"]), []).append(link)
+    for (_type, party), links in sorted(parties.items()):
+        if not _held(links, start, end):
             continue
+        domains: dict[str, list[Any]] = {}
         for value in _query(conn, "SELECT * FROM object_values WHERE object_id = ? AND "
-                            "property = ? ORDER BY recorded_at, l1_handle",
-                            (link["to_object"], prop)):
+                            "property = ? ORDER BY recorded_at, l1_handle", (party, prop)):
             domain = website_domain(value["value"])
-            if domain is None or not _covers(value, start, end):
+            if domain is not None:
+                domains.setdefault(domain, []).append(value)
+        for domain, values in domains.items():
+            if not _held(values, start, end):
                 continue
-            found = party_domain([(prop, domain)], [sender], held, link["to_object"])
+            found = party_domain([(prop, domain)], [sender], held, party)
             if found is not None and found["status"] == "match":
                 # Citations only (a reader is shown those it may read): no party id,
-                # domain or link id in the feature itself.
+                # domain or link id in the feature itself. The newest row of each fact
+                # is cited; every row's markings are carried.
+                value, link = values[-1], max(links, key=lambda r: r["recorded_at"])
                 feature = {"feature": "party_domain", "agrees": True,
                            "citations": [_value_cite(value)]}
                 return (feature, [value["l1_handle"], *json.loads(link["evidence_handles"])],
-                        [link["markings"], value["markings"]])
+                        [*(r["markings"] for r in links), *(v["markings"] for v in values)])
     return None
 
 
@@ -1659,6 +1691,7 @@ def _petra_thread(conn: Any, row: Any, conversation: str
                           "WHERE property = ? AND value = ? AND object_id <> ? "
                           "ORDER BY object_id, l1_handle",
                           (prop, conversation, row["from_object"])).fetchall():
+        named: list[Any] = []
         for link in _query(conn, "SELECT * FROM links WHERE from_object = ? AND to_object = ? "
                            "AND binding_kind = ? ORDER BY link_id",
                            (sibling["object_id"], row["to_object"], BINDING_KIND)):
@@ -1667,11 +1700,12 @@ def _petra_thread(conn: Any, row: Any, conversation: str
                             if f.get("feature") == "identifier_mention"), {})
             vetoed = {f.get("feature") for f in json.loads(link["why_not"])} \
                 & {"quoted_history", "label_kind_conflict"}
-            if handles[0] != sibling["l1_handle"] or mention.get("sender_class") != "internal" \
-                    or vetoed or not _covers(link, start, end):
-                continue
-            threads.setdefault(conversation, set()).add(link["to_object"])
-            found.append(link)
+            if handles[0] == sibling["l1_handle"] and mention.get("sender_class") == "internal" \
+                    and not vetoed:
+                named.append(link)
+        if named and _held(named, start, end):
+            threads.setdefault(conversation, set()).add(row["to_object"])
+            found.append(named[0])
     if not petra_thread(conversation, row["to_object"], threads):
         return None
     first = found[0]
@@ -1700,7 +1734,7 @@ def _reference_mention(mention: Mapping[str, Any], cited: Any) -> dict[str, Any]
 
 def propose_reference_aliases(conn: Any, unanswered: Mapping[str, Sequence[Mapping[str, Any]]],
                               aliases: Any = None) -> dict[str, Any]:
-    """Alias leads (decision 2026-10-19-reference-alias-leads): a document
+    """Alias leads (ROADMAP A10; decision 2026-10-19-reference-alias-leads): a document
     version (``unanswered``: version handle -> its mentions of a ``reference_alias``
     kind no index row or reviewed alias answers now) whose current mention links reach
     exactly one object of a type the kind's ``reference_alias`` names, at tier

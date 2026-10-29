@@ -1,4 +1,4 @@
-"""Microsoft Graph families generated from a pinned Graph v1.0 CSDL subset.
+"""Microsoft Graph families generated from a pinned Graph v1.0 CSDL subset (lane gen-graph).
 
 Every ``microsoft-graph`` ``endpoint`` of the source registry (``ontology/source_registry.
 json``, request templates folded to ``{}`` by ``scripts/source_registry.graph_template``) is
@@ -14,7 +14,7 @@ types the path went through) is then classified by the declarative rules of
   list item reached from a drive item is that file's columns, captured with the file); a
   relation no capture reads yet carries ``blocked`` (the exact reason and the decision
   record it waits on: Teams chats, list items), which the source registry reports;
-* a resource that is not business data -> the reason and the ``docs/decisions`` record
+* a resource that is not business data -> the reason and the ``devloop/DECISIONS`` record
   behind it (containers, directory, subscriptions, presentation, calendar, tasks); every
   action and ``$ref`` is a write operation, never data;
 * the HTTP methods upstream code requests the template with (the registry entry's
@@ -108,7 +108,7 @@ _EDM = {"Edm.String": ("text", "as_is"), "Edm.Guid": ("text", "as_is"),
         "Edm.Boolean": ("boolean", "boolean_text"), "Edm.Int16": ("integer", "integer_text"),
         "Edm.Int32": ("integer", "integer_text"), "Edm.Int64": ("integer", "integer_text"),
         "Edm.Decimal": ("decimal", "decimal_text"), "Edm.Double": ("decimal", "decimal_text")}
-_DECISION = re.compile(r"^docs/decisions/[A-Za-z0-9][A-Za-z0-9._-]*\.md$")
+_DECISION = re.compile(r"^devloop/DECISIONS/[A-Za-z0-9][A-Za-z0-9._-]*\.md$")
 _NAME = re.compile(r"^[A-Za-z][A-Za-z0-9]{0,63}$")
 
 
@@ -360,7 +360,7 @@ def resource(model: Csdl, template: str, resolved: Mapping[str, Any]
 
 def load_families(path: Path = FAMILIES_PATH, root: Path = ROOT) -> dict[str, Any]:
     """The rules, strictly checked: an unknown key, a decision path that is not a
-    ``docs/decisions`` file under ``root``, an unknown source family or a generate spec
+    ``devloop/DECISIONS`` file under ``root``, an unknown source family or a generate spec
     that does not name its rule's relation fails the load."""
     doc = json.loads(Path(path).read_text(encoding="utf-8"))
     sources = set(json.loads((root / "ontology" / "schema" / "_format.schema.json").read_text(
@@ -375,7 +375,7 @@ def load_families(path: Path = FAMILIES_PATH, root: Path = ROOT) -> dict[str, An
         if not isinstance(path_text, str) or not _DECISION.match(path_text) \
                 or not (root / path_text).is_file():
             raise GraphError(f"graph_families.json {where}: decision {path_text!r} is not a "
-                             "docs/decisions file")
+                             "devloop/DECISIONS file")
 
     def decision(item: Mapping[str, Any], where: str) -> None:
         record(item, where)
@@ -428,13 +428,17 @@ def load_families(path: Path = FAMILIES_PATH, root: Path = ROOT) -> dict[str, An
     for domain, spec in doc["generate"].items():
         where = f"generate.{domain}"
         _keys(spec, {"source", "description", "lineage", "capture", "csdl_type", "fields",
-                     "types"}, where, {"source", "description", "lineage", "capture",
+                     "types", "evidence_catalog"}, where, {"source", "description", "lineage", "capture",
                                        "csdl_type", "fields", "types"})
         if not domain.startswith(FILE_PREFIX):
             raise GraphError(f"graph_families.json {where}: domain must start {FILE_PREFIX}")
         for type_id, t in spec["types"].items():
-            _keys(t, {"relation", "binding", "key", "description", "fields"},
+            _keys(t, {"relation", "binding", "key", "description", "fields", "links"},
                   f"{where}.{type_id}", {"relation", "binding", "key", "description"})
+            for n, link in enumerate(t.get("links", ())):
+                _keys(link, {"name", "to", "to_binding", "reverse_name", "pairs",
+                             "description"}, f"{where}.{type_id}.links[{n}]",
+                      {"name", "to", "to_binding", "reverse_name", "pairs", "description"})
             if (spec["source"], t["relation"]) not in relations:
                 raise GraphError(f"graph_families.json {where}.{type_id}: no rule binds "
                                  f"{spec['source']}.{t['relation']}")
@@ -625,12 +629,30 @@ def _domain(model: Csdl, domain: str, spec: Mapping[str, Any], pin: str) -> dict
                  "note": f"Graph v1.0 entity type {csdl_type} ({pin}, {CSDL_FILE})."}
     capture_cite = {"kind": "workbench_code", "path": spec["capture"],
                     "note": "The capture whose rows these bindings read."}
-    object_types = []
+    object_types, link_types = [], []
     for type_id, t in sorted(spec["types"].items()):
         object_types.append(_type(model, domain, spec, type_id, t, pin, csdl_cite, capture_cite))
-    return {"format": ontology_schema.FORMAT, "domain": domain, "origin": "generated",
-            "description": spec["description"], "object_types": object_types,
-            "link_types": []}
+        names = {source["path"]: p["name"] for p in object_types[-1]["properties"]
+                 for source in p["sources"]}
+        for link in t.get("links", ()):
+            # A structural link from a generated type to the curated type its capture
+            # record names (a message's conversation): verified, on the Graph ids.
+            link_types.append({
+                "id": f"{type_id}.{link['name']}", "from": type_id, "to": link["to"],
+                "name": link["name"], "reverse_name": link["reverse_name"],
+                "cardinality": "N:1", "description": link["description"],
+                "bindings": [{"kind": "fk", "tier_ceiling": "verified",
+                              "from_binding": t["binding"], "to_binding": link["to_binding"],
+                              "pairs": [{"from": names[a], "to": b, "compare": "text_id"}
+                                        for a, b in link["pairs"].items()],
+                              "evidence": [capture_cite]}]})
+    doc = {"format": ontology_schema.FORMAT, "domain": domain, "origin": "generated",
+           "description": spec["description"], "object_types": object_types,
+           "link_types": link_types}
+    if spec.get("evidence_catalog"):
+        # The refs a schema rule on these types names (ontology.schema MENTION_LINK_RULES).
+        doc["evidence_catalog"] = dict(sorted(spec["evidence_catalog"].items()))
+    return doc
 
 
 def _type(model: Csdl, domain: str, spec: Mapping[str, Any], type_id: str,

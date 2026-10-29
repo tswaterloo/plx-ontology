@@ -31,6 +31,8 @@ from pathlib import Path
 import re
 from typing import Any, Iterable, Mapping
 
+from integrations.people_exclusion import is_object_id
+
 SCHEMA = "plx-case-mail-scope/v1"
 BUILTIN_FILE = Path(__file__).with_name("case_mail_scope.json")
 IN_SCOPE_STATUS = "reported_allowlisted"
@@ -52,7 +54,8 @@ class MailScope:
     """The in-scope mailbox addresses plus the internal domains of the business."""
 
     def __init__(self, addresses: Iterable[str], *, internal_domains: Iterable[str] = (),
-                 excluded: Iterable[str] = (), source: str | None = None) -> None:
+                 excluded: Iterable[str] = (), source: str | None = None,
+                 all_directory: bool = False) -> None:
         allowed = set()
         for address in addresses:
             if not isinstance(address, str) or _ADDRESS.fullmatch(address.strip().lower()) is None:
@@ -66,6 +69,9 @@ class MailScope:
                 raise MailScopeError("mail_scope_domain_invalid")
             domains.add(domain.strip().lower())
         self.is_unrestricted = False
+        # Owner decision 2026-10-26: every directory user but the excluded people.
+        self.all_directory = bool(all_directory)
+        self.people: Any = None
         self.addresses = frozenset(allowed)
         self.excluded = frozenset(a.strip().lower() for a in excluded if isinstance(a, str))
         self.internal_domains = frozenset(domains)
@@ -82,6 +88,8 @@ class MailScope:
         tests and fixtures over synthetic mailboxes; never a host default."""
         scope = cls.__new__(cls)
         scope.is_unrestricted = True
+        scope.all_directory = False
+        scope.people = None
         scope.addresses = frozenset()
         scope.excluded = frozenset()
         scope.internal_domains = frozenset()
@@ -92,7 +100,7 @@ class MailScope:
     def from_json(cls, document: Any) -> "MailScope":
         if (not isinstance(document, Mapping) or document.get("schema") != SCHEMA
                 or set(document) - {"schema", "note", "source", "mailboxes",
-                                    "internal_domains"}):
+                                    "internal_domains", "all_directory"}):
             raise MailScopeError("mail_scope_document_invalid")
         entries = document.get("mailboxes")
         if not isinstance(entries, list) or not entries:
@@ -107,8 +115,12 @@ class MailScope:
         domains = document.get("internal_domains", [])
         if not isinstance(domains, list):
             raise MailScopeError("mail_scope_domain_invalid")
+        every = document.get("all_directory", {"enabled": False})
+        if (not isinstance(every, Mapping) or set(every) - {"enabled", "note"}
+                or not isinstance(every.get("enabled"), bool)):
+            raise MailScopeError("mail_scope_all_directory_invalid")
         return cls(allowed, internal_domains=domains, excluded=excluded,
-                   source=document.get("source") if isinstance(document.get("source"), str)
+                   all_directory=every["enabled"], source=document.get("source") if isinstance(document.get("source"), str)
                    else None)
 
     @classmethod
@@ -123,6 +135,27 @@ class MailScope:
     def builtin(cls) -> "MailScope":
         return cls.from_file(BUILTIN_FILE)
 
+    def attach_people(self, people: Any) -> None:
+        """The people-exclusion guard (``integrations.people_exclusion``) that decides
+        who an ``all_directory`` scope leaves out. Without a usable one nobody is in
+        scope through ``all_directory`` (fail closed)."""
+        self.people = people
+
+    def _directory_allows(self, found: set[str]) -> bool:
+        """``all_directory``: a directory user (an object id among the identities) the
+        people guard does not exclude. Addresses are checked once the guard is bound;
+        the object id alone decides before that."""
+        people = self.people
+        if people is None or getattr(people, "unavailable", "no guard"):
+            return False
+        ids = {i for i in found if is_object_id(i)}
+        if not ids:
+            return False
+        try:
+            return not people.excluded(sorted(found) if people.bound else sorted(ids))
+        except Exception:  # noqa: BLE001 - a guard that cannot decide excludes
+            return False
+
     def allows(self, identities: Any) -> bool:
         """Whether a mailbox with these directory identities is in scope."""
         if self.is_unrestricted:
@@ -130,7 +163,10 @@ class MailScope:
         if isinstance(identities, str) or not isinstance(identities, Iterable):
             return False
         found = {str(item).strip().lower() for item in identities if isinstance(item, str)}
-        return bool(found & self.addresses)
+        # The named mailboxes stay in scope; all_directory adds every other directory user
+        # the people guard leaves in.
+        return bool(found & self.addresses) or (
+            self.all_directory and self._directory_allows(found))
 
     def allows_record(self, record: Any) -> bool:
         """A ``GraphMailReader`` record: its mailbox owner identities (the full
@@ -146,6 +182,7 @@ class MailScope:
         """Counts and domains only (the addresses are configuration, not secrets,
         but they are not needed to read a report)."""
         return {"schema": SCHEMA, "unrestricted": self.is_unrestricted,
+                "all_directory": self.all_directory,
                 "mailboxes_in_scope": len(self.addresses),
                 "mailboxes_excluded": len(self.excluded),
                 "internal_domains": sorted(self.internal_domains)}

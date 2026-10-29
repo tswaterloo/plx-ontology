@@ -731,7 +731,7 @@ class ClassStageTests(unittest.TestCase):
                                        "Purchase Order", *self.TERMS]),
             # A document naming a PLX-issued PO on a line of its own: no title, no class.
             (None, ["Purchase Order No: PO100771", "Please confirm the ship date."]),
-            # So is "Purchase Order: N" or "#N" in a note, a delivery
+            # Review e94efa72: so is "Purchase Order: N" or "#N" in a note, a delivery
             # note, an advance ship notice or a remittance advice.
             (None, ["Purchase Order: PO100771", "Please confirm the ship date."]),
             (None, ["Purchase Order #4500000009", "Please confirm the ship date."]),
@@ -765,7 +765,7 @@ class ClassStageTests(unittest.TestCase):
                                   if g["field"] == "class"], ["classes_disagree"])
 
     def test_a_title_line_is_weighed_against_the_documents_own_number(self):
-        """Beside a title of a class whose own number the document
+        """c5c50e8b58e6 items 4-5: beside a title of a class whose own number the document
         states, a title line of a class whose number it never states is a heading of that
         document; 'Purchase Order: N' is a title stating its number, and it yields to
         another class's title line wherever that stands."""
@@ -815,7 +815,7 @@ class ClassStageTests(unittest.TestCase):
                   # Its customer number at the supplier is a number, never an issuer.
                   ["PETRA HYGIENIC SYSTEMS INT'L LTD.", "PURCHASE ORDER",
                    "P.O. NUMBER: PO100773", "CUSTOMER #  C-12345"],
-                  # A labelled line above the name, or the whole
+                  # c5c50e8b58e6 item 1: a labelled line above the name, or the whole
                   # header on one line, is still the letterhead.
                   ["Tel: 905-555-0100", "PLX Manufacturing", "90 Moyal Court",
                    "PURCHASE ORDER", "PO Number: PO100774"],
@@ -823,8 +823,8 @@ class ClassStageTests(unittest.TestCase):
                    "PO Number: PO100775"],
                   ["PLX Manufacturing, Tel: 905-555-0100", "PURCHASE ORDER",
                    "PO Number: PO100776"],
-                  # The block ends at a party-role line below PLX's name;
-                  # A word running on with a hyphen is none.
+                  # 8989645f4f44: the block ends at a party-role line below PLX's name;
+                  # 0b1162ad9510 item 3: a word running on with a hyphen is none.
                   ["PLX Manufacturing", "Tel", "Vendor", "Acme Supplies Ltd",
                    "PURCHASE ORDER", "PO Number: PO100777"],
                   ["To-Go Foods Division", "PLX Manufacturing", "90 Moyal Court",
@@ -850,7 +850,7 @@ class ClassStageTests(unittest.TestCase):
                       ["Northwind Retail Ltd", "To: PLX Manufacturing", "PURCHASE ORDER",
                        "PO Number: 4500000005", "Bill to: Northwind Retail Ltd"]):
             self.assertEqual(self.read(lines)["profile"], "customer_po")
-        # A recipient line names the addressee, never the issuer, and an
+        # Dot 3c18207b: a recipient line names the addressee, never the issuer, and an
         # explicit buyer that is no own party is the issuer, whatever block names PLX
         # above the title. Only the file's provenance makes such a PO the own party's.
         for number, lines in (
@@ -870,7 +870,7 @@ class ClassStageTests(unittest.TestCase):
                 ("4500000012", ["Northwind Retail Ltd", "Date: 2026-10-01", "Ship to:",
                                 "PLX Manufacturing", "PURCHASE ORDER",
                                 "PO Number: 4500000012"]),
-                # The customer's own Tel/Email lines, then a party box
+                # Review c1c55f2a: the customer's own Tel/Email lines, then a party box
                 # headed by a field label without a colon.
                 ("4500000016", ["Northwind Retail Ltd", "Tel: 416-555-0100",
                                 "Email: buying@northwind.example", "Vendor",
@@ -879,7 +879,7 @@ class ClassStageTests(unittest.TestCase):
                 ("4500000017", ["Northwind Retail Ltd", "Date: 2026-10-01", "Ship To",
                                 "PLX Manufacturing", "PURCHASE ORDER",
                                 "PO Number: 4500000017"]),
-                # A line or column starting with a
+                # Review 4cab45a9 (rule 8989645f4f44): a line or column starting with a
                 # party-role word ends the block, whatever follows it.
                 *((f"45000000{n}", ["Northwind Retail Ltd", "Tel: 555-0100", *box,
                                     "PURCHASE ORDER", f"PO Number: 45000000{n}"])
@@ -887,7 +887,7 @@ class ClassStageTests(unittest.TestCase):
                                  (19, ["Vendor  PLX Manufacturing"]),
                                  (20, ["Vendor\tPLX Manufacturing"]),
                                  (21, ["Supplier Name", "PLX Manufacturing"]))),
-                # A vendor read after '#' still names PLX as the
+                # 0b1162ad9510: a vendor read after '#' still names PLX as the
                 # recipient; a buyer naming no party leaves the issuer unknown.
                 ("4500000013", ["PLX Manufacturing", "90 Moyal Court", "PURCHASE ORDER",
                                 "PO Number: 4500000013", "Vendor #: PLX Manufacturing"]),
@@ -976,7 +976,7 @@ class ClassStageTests(unittest.TestCase):
             self.assertEqual(found["signals"], {"customer_po": {"issued_category": 1}})
 
     def test_a_forward_keeps_its_direction_and_ambiguity_is_counted_by_cause(self):
-        """In the stage funnel: the mailbox's send of bytes a captured mailbox
+        """c5c50e8b58e6 in the stage funnel: the mailbox's send of bytes a captured mailbox
         received from outside before the send is a forward, so the PO stays the customer's;
         a colleague's copy of the mailbox's own send, an outside copy received after it (a
         supplier returning the PO), or another mailbox's received copy, leaves that send
@@ -1065,7 +1065,7 @@ class MailDirectionTests(unittest.TestCase):
     def test_an_attachment_the_mailbox_sent_itself_projects_no_customer_po(self):
         issued = pdf([["PURCHASE ORDER", "PO Number: PO100771", "Date: 2026-09-02"]])
         received = pdf([["PURCHASE ORDER", "PO Number: 4500000002", "Date: 2026-09-02"]])
-        # A customer's PO addressed to PLX above its title, with its buyer.
+        # Dot 3c18207b: a customer's PO addressed to PLX above its title, with its buyer.
         addressed = pdf([["To", "PLX Manufacturing", "PURCHASE ORDER",
                           "PO Number: 4500000009", "Buyer: Northwind Retail Ltd"]])
         graph = tm.FakeGraph()
@@ -1077,7 +1077,7 @@ class MailDirectionTests(unittest.TestCase):
                   attachments=[tm.file_attachment("ATT-I", received, "po in.pdf")])
         graph.put(tm.BOX_A, "MSG-TO", "CK-3", subject="PO", body="attached",
                   attachments=[tm.file_attachment("ATT-T", addressed, "po to.pdf")])
-        # A customer's PO the mailbox received and then forwarded keeps its
+        # c5c50e8b58e6: a customer's PO the mailbox received and then forwarded keeps its
         # direction; the forward's copy is still the customer's.
         forwarded = pdf([["PURCHASE ORDER", "PO Number: 4500000013", "Date: 2026-09-03"]])
         graph.put(tm.BOX_A, "MSG-CUST", "CK-4", subject="PO", body="attached",
@@ -1135,7 +1135,7 @@ class MailDirectionTests(unittest.TestCase):
 @unittest.skipUnless(importlib.util.find_spec("pypdf") and importlib.util.find_spec("reportlab"),
                      "document fields are read from PDFs: needs pypdf and reportlab")
 class PageCapReadersTests(unittest.TestCase):
-    """The readers contract (docs/decisions/
+    """Directive d82b7c38fc7b, readers contract (devloop/DECISIONS/
     pdf-cap-readers-contract.md): a captured PDF over the page bound is read on pages
     1-200 and no reader is silent about the rest. A reader with gaps keeps the pages and
     a typed ``skipped_by_cap`` (documentFields: the ``pages`` gap and never
@@ -1278,7 +1278,7 @@ class PageCapReadersTests(unittest.TestCase):
 @unittest.skipUnless(importlib.util.find_spec("pypdf") and importlib.util.find_spec("reportlab"),
                      "certificates are PDFs: needs pypdf and reportlab")
 class CoaLiveCheckTests(unittest.TestCase):
-    """``verify/live-checks/ontology.document_fields_coa.json`` over the in-process
+    """``devloop/live-checks/ontology.document_fields_coa.json`` over the in-process
     FakeDrive: its expectations hold on the check's own output when a certificate is
     captured, and fail when none is (never a pass over no document)."""
 
@@ -1305,8 +1305,8 @@ class CoaLiveCheckTests(unittest.TestCase):
 
     @staticmethod
     def spec():
-        from verify import live_verify as lv
-        spec = json.loads((ROOT / "verify/live-checks/ontology.document_fields_coa.json")
+        from devloop import live_verify as lv
+        spec = json.loads((ROOT / "devloop/live-checks/ontology.document_fields_coa.json")
                           .read_text("utf-8"))
         lv.validate_spec(spec, stem="ontology.document_fields_coa")
         return spec
@@ -1324,7 +1324,7 @@ class CoaLiveCheckTests(unittest.TestCase):
         return [line for line in COA[0] if not line.startswith(labels)]
 
     def test_the_coa_check_meets_its_spec_and_fails_on_none(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         spec = self.spec()
         drive = self.certificates([COA[0], COA[0]])
         report = self.run_check(drive)
@@ -1342,13 +1342,23 @@ class CoaLiveCheckTests(unittest.TestCase):
         self.assertEqual((none["ok"], none["documents"]), (False, 0))
         self.assertNotEqual(lv.check_expectations(spec, 1, none), [])
 
+    def test_spec_floors_block_insufficient_stated(self):
+        """The spec passes --floor for each wanted field, so a field stated on too few
+        certificates ends blocked (insufficient_stated), typed source_gap, never fail."""
+        spec = self.spec()
+        command = spec["command"]
+        floors = [command[i + 1] for i, a in enumerate(command) if a == "--floor"]
+        self.assertEqual(sorted(floors), sorted(f"{n}=0.6666" for n in self.WANTED))
+        self.assertEqual(spec["blocked_when"], "blocked")
+        self.assertEqual(spec["blocked_causes"], {"insufficient_stated": "source_gap"})
+
     def test_a_field_share_counts_only_the_certificates_stating_its_label(self):
         """The floor is 2 of 3 of the certificates whose source states the label: one that
         never names it is a typed label_absent gap outside the share (never a miss, never
         inferred: a retest date is no expiry), a conflict or a blank stays in it as a miss,
         and a field stated on fewer than 2 certificates has no share (insufficient_stated:
         no minimum passes it, and a floored run is blocked, never passed)."""
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         spec = self.spec()
         for name in self.WANTED:
             self.assertEqual(spec["expect"]["json_min"][f"field_shares.{name}"], 0.6666, name)
@@ -1555,9 +1565,16 @@ class ProfileTypeDerivationTests(unittest.TestCase):
         self.assertEqual((ship["value_type"], ship.get("markings", [])), ("date", []))
         self.assertEqual(compiled.object_types["PackingSlip"].get("markings", []), [])
         self.assertIn("finance", prop("PackingSlip", "evidence")["markings"])
-        for price in ("unit_price", "amount"):
+        # The supplier's quoted price is a PO price: purchasing_prices replaces finance on
+        # exactly the scoped properties (overrides/markings.json scoped_markings); a
+        # supplier invoice's amount stays finance-only.
+        for price in ("unit_price", "amount", "evidence"):
             found = prop("SupplierConfirmation", price)
-            self.assertEqual((found["value_type"], found["markings"]), ("money", ["finance"]))
+            self.assertEqual(found["markings"], ["purchasing_prices"])
+        for price in ("unit_price", "amount"):
+            self.assertEqual(prop("SupplierConfirmation", price)["value_type"], "money")
+        invoiced = prop("SupplierInvoice", "amount")
+        self.assertEqual((invoiced["value_type"], invoiced["markings"]), ("money", ["finance"]))
 
     @staticmethod
     def _edited(data, profile_id, field=None, attests=None):
@@ -1597,6 +1614,74 @@ class RaisedFieldsNotRememberedTests(unittest.TestCase):
                                side_effect=AssertionError("parsed again")) as again:
             self.assertEqual(document_fields._fields_of(key, lambda: empty), first)
             again.assert_not_called()
+
+
+class DroppedOriginalFieldsTests(unittest.TestCase):
+    """A captured original the store dropped (only its ``.dropped`` form on disk) reads
+    as the readings it kept: its fields are parsed from the stored OCR reading and
+    remembered, never an unexpected failure re-read by every caller; a dropped original
+    that kept no reading for the row is missing bytes (None, not remembered, no
+    warning). Reproduces the serve host's repeated ``unexpected AttributeError reading
+    memo key ...``: a word-box OCR page whose glued label follows a line where a bare
+    label read its value up to a column gap."""
+
+    def setUp(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.blobs = Path(temp.name) / "blobs"
+        self.blobs.mkdir()
+
+    def dropped(self, lines: list[str], tag: str, *, kept: bool = True) -> dict:
+        from integrations import captured_text as ct, document_understanding as du
+        content = f"%PDF-1.4 scanned {tag}\n".encode()   # never on disk: dropped
+        digest = hashlib.sha256(content).hexdigest()
+        text = "\n".join(lines) + "\n" + du.LAYOUT_MARK
+        text_digest = hashlib.sha256(text.encode()).hexdigest()
+        name = f"AO {tag}.pdf"
+        reading = ct.CapturedText(digest, "application/pdf", "extracted", "captured_ocr_text",
+                                  ((1, text),), frozenset({1}), True, text_digest)
+        readings = {ct.reading_key("application/pdf", name, text_digest):
+                    ct.encode_reading(reading)} if kept else {}
+        ct.write_dropped(self.blobs, digest, 300 * 1024, readings, "qx")
+        return {"content_sha256": digest, "mime_type": "application/pdf", "name": name,
+                "text_status": ct.TEXT_OCR, "text_sha256": text_digest}
+
+    def test_a_dropped_ocr_original_gives_its_stored_fields_once(self):
+        from integrations import captured_text as ct
+        tag = os.urandom(8).hex()
+        # A bare label read up to a column gap, then a label with handwriting glued to it.
+        row = self.dropped(["ASSEMBLY ORDER - SHOP FLOOR", "Total QTY 1502    Notes",
+                            "Samples (EA)lvi 264"], tag)
+        self.assertFalse(ct.blob_path(self.blobs, row["content_sha256"]).exists())
+        before = document_fields._FIELDS.unexpected
+        with self.assertNoLogs("integrations.captured_text", "WARNING"):
+            [(member, found, _, _)] = document_fields._documents(row, self.blobs)
+        self.assertIsNone(member)
+        self.assertEqual(document_fields._FIELDS.unexpected, before)
+        self.assertEqual((found["status"], found["profile"]), ("classified", "ao_packet"))
+        fields = found["fields"]
+        self.assertEqual([c["text"] for c in fields["produced_quantity"]["citations"]],
+                         ["1502"])
+        self.assertEqual(fields["retained_samples"]["gap"], "unreadable")
+        self.assertEqual([c["text"] for c in fields["retained_samples"]["citations"]],
+                         ["lvi 264"])
+        with mock.patch.object(document_fields, "_fields",
+                               side_effect=AssertionError("parsed again")):
+            [(_, again, _, _)] = document_fields._documents(row, self.blobs)
+        self.assertEqual(again, found)
+
+    def test_a_dropped_original_without_its_reading_is_missing_bytes(self):
+        tag = os.urandom(8).hex()
+        row = self.dropped(["ASSEMBLY ORDER - SHOP FLOOR"], tag, kept=False)
+        before = document_fields._FIELDS.unexpected
+        with self.assertNoLogs("integrations.captured_text", "WARNING"):
+            for _ in range(2):
+                [(_, found, _, _)] = document_fields._documents(row, self.blobs)
+                self.assertIsNone(found)
+        self.assertEqual(document_fields._FIELDS.unexpected, before)
+        key = (row["content_sha256"], "application/pdf", row["name"], row["text_sha256"],
+               None, False)
+        self.assertNotIn(key, document_fields._FIELDS)   # a later capture may hold it
 
 
 if __name__ == "__main__":

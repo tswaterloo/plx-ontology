@@ -1,4 +1,4 @@
-"""The traverse probe (``verify/live-checks/ontology.traverse.json``) calls plx.around and
+"""The traverse probe (``devloop/live-checks/ontology.traverse.json``) calls plx.around and
 plx.timeline through the served host (``operating.host.Host.served_tools``) as the
 projection probe's reader, so a narrowed audience narrows what it reaches and the
 withheld roots and objects are measured, and a served answer naming what the reader's
@@ -86,8 +86,8 @@ def slow_builds(*, before: float = 0.0, after: float = 0.0, stray: bool = False,
 def consumer_run(main, tmp, *extra, before=0.0, after=0.0, budget=1000.0, stray=False,
                  raises=None):
     """``main`` (a consumer of the projection build) over the fixture world (Portal and BC
-    injected, ``verify/tests/test_live_wiring.py``) under ``slow_builds``."""
-    from verify.tests import test_live_wiring as wiring
+    injected, ``devloop/tests/test_live_wiring.py``) under ``slow_builds``."""
+    from devloop.tests import test_live_wiring as wiring
     fake, books = wiring.fixture_bc()
     with wiring.fixture_portal(), slow_builds(before=before, after=after, stray=stray,
                                                  raises=raises) as built:

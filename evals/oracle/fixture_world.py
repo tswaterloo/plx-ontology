@@ -42,7 +42,7 @@ COMPANIES = (("11111111-1111-1111-1111-111111111111", "FX Company One"),
 KEYS = {"sage.oe_order_header": ["orduniq"], "sage.po_header": ["porhseq"]}
 SINCE = {"public.order_entry_item_assembly": None}
 # Columns the served catalog has even where this world holds no row or no value (the
-# replica serves them): the client only reads catalog
+# replica serves them; profiles on claude/devloop-live): the client only reads catalog
 # columns, so an undeclared one would fail the whole relation.
 DECLARED_COLUMNS = {
     "public.assembly_order_status": ("audittimestampmodified", "id", "idassembly", "qtymanuf"),
@@ -560,8 +560,8 @@ def build_world(sales: int = 24, purchases: int = 16) -> World:
 def drain_purchase_orders_to_bc(world: World, po_ids: Sequence[str]) -> World:
     """``world`` with each named Portal purchase order also in BC as the Portal's BC drain
     leaves it: a ``purchaseOrders`` record whose No. is the Portal ``po_number`` (BC
-    Purchase Header No. = po_number in the PO series,
-    docs/reference/cases-and-artifacts.md), with one line per PO line. Each is the BC twin of its PO,
+    Purchase Header No. = po_number in the PO series, devloop/CONTEXT/
+    02-CASES-AND-ARTIFACTS.md), with one line per PO line. Each is the BC twin of its PO,
     never a second PO: the same number on the identifier's primary carrier (Portal) and an
     alias carrier (BC). Changes ``world`` in place and returns it."""
     products = {p["id"]: p["code"] for p in world.relations["public.app_product"]}
@@ -590,8 +590,8 @@ LIVE_SHAPED_SIZE = 48
 
 
 def build_live_shaped_world(size: int = LIVE_SHAPED_SIZE, *, documents: bool = True) -> World:
-    """A synthetic world shaped like the served replica (data profiles,
-    2026-10-02), not like the oracle's first assumptions. Every value is
+    """A synthetic world shaped like the served replica (data profiles on
+    claude/devloop-live, 2026-10-02), not like the oracle's first assumptions. Every value is
     invented (FX...). The shapes that left five strata empty on the first live run:
 
     * legacy FileMaker sales orders: id ``fm-so-{n}``, order number ``SO-FM-{n}``, no

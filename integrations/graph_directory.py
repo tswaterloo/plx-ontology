@@ -11,7 +11,7 @@ same-collection ``@odata.nextLink`` rule, page and item caps).
 Reads (``integrations/live_source_grammar.py`` operations):
 
 * ``graph.user`` ``GET /users/{oid|upn}?$select=id,accountEnabled,
-  userPrincipalName,mail,department`` (``User.Read.All``).
+  userPrincipalName,mail,department,jobTitle`` (``User.Read.All``).
 * ``graph.user_transitive_groups`` ``GET /users/{oid}/transitiveMemberOf/
   microsoft.graph.group?$select=id&$top=999`` (``GroupMember.Read.All``),
   every page or nothing.
@@ -27,7 +27,7 @@ another non-2xx, a nextLink that leaves the collection, a page or item cap, a
 malformed item, a disabled account) is ``unavailable`` with one reason from
 ``REASONS`` and no facts at all, so a caller can never mistake a partial list
 for the whole one. One exception: 403 on the membership read is the consent
-blocker (``GroupMember.Read.All``, docs/reference/permissions.md), not an unknown
+blocker (``GroupMember.Read.All``, devloop/PERMISSIONS.md), not an unknown
 user, so the user facts are kept and the groups are derived from the user's
 joined Teams (``group_basis`` ``joined_teams``: a team's id is its Microsoft
 365 group's id, and an M365 group has no nested groups). Those are positive
@@ -67,7 +67,7 @@ stays refused. The summary is counts, reasons and a status
 only, never an id or address.
 
 Evidence: injected-transport tests only; **live-unverified**
-(verify/live-checks/graph.directory_entitlements.json).
+(devloop/live-checks/graph.directory_entitlements.json).
 """
 
 from __future__ import annotations
@@ -111,7 +111,7 @@ APPROVER_OID_MAX_AGE = timedelta(hours=24)
 APPROVER_ROSTER_SCHEMA = "plx-approver-roster/v1"
 DEFAULT_APPROVER_ROSTER = Path(__file__).resolve().parents[1] / "operating" / \
     "approver_roster.json"
-_USER_SELECT = "id,accountEnabled,userPrincipalName,mail,department"
+_USER_SELECT = "id,accountEnabled,userPrincipalName,mail,department,jobTitle"
 _GROUP_TYPE = "#microsoft.graph.group"
 _TEAM_TYPE = "#microsoft.graph.team"
 _GUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -211,9 +211,11 @@ class GraphDirectoryReader:
             groups, basis, why = self._joined_teams(found)
         department = user.get("department")
         department = department.strip()[:128] if isinstance(department, str) else ""
+        title = user.get("jobTitle")
+        title = title.strip()[:128] if isinstance(title, str) else ""
         return EntraDirectoryRead(
             "read", found, user_principal_name=_address(user.get("userPrincipalName")),
-            mail=_address(user.get("mail")), department=department,
+            mail=_address(user.get("mail")), department=department, job_title=title,
             group_ids=groups, source=f"{DIRECTORY_SOURCE}/users/{found}",
             read_at=_stamp(self._clock), group_basis=basis, membership_reason=why)
 
@@ -277,6 +279,26 @@ class GraphDirectoryReader:
 
 # ------------------------------------------------------------------ approver identities
 
+def count_job_titles(api: SourceApi, keywords: Sequence[str], exclusion: Any
+                     ) -> dict[str, int]:
+    """Counts only: enabled users, those whose Entra job title matches ``keywords``
+    (``employee_permissions.job_title_matches``) and those of them the people exclusion
+    names, from one complete ``GET /users`` listing (every page). An incomplete listing
+    raises ``SourceUnavailable``; an unusable exclusion raises its ``ExclusionUnavailable``."""
+    from operating.employee_permissions import job_title_matches
+    exclusion.require()
+    url = grammar.url("graph.users", {"$select": "id,accountEnabled,jobTitle", "$top": "999"})
+    users, completeness = api.get_pages(url, max_pages=50, max_items=5000)
+    if not completeness.get("complete"):
+        raise SourceUnavailable("directory user listing incomplete")
+    enabled = [u for u in users if isinstance(u, Mapping) and u.get("accountEnabled") is True
+               and _guid(u.get("id"))]
+    matched = [u for u in enabled if job_title_matches(u.get("jobTitle"), keywords)]
+    excluded = sum(1 for u in matched if exclusion.is_excluded(_guid(u.get("id"))))
+    return {"enabled_users": len(enabled), "job_title_matches": len(matched),
+            "job_title_excluded": excluded, "job_title_members": len(matched) - excluded}
+
+
 def roster_upns(roster: str | Path | None = None) -> list[str]:
     """The UPN keys of the approver roster (default: the committed one)."""
     document = json.loads(Path(roster or DEFAULT_APPROVER_ROSTER).read_text("utf-8"))
@@ -304,7 +326,7 @@ def approver_oid_fresh(read_at: Any, now: datetime) -> bool:
 def _transient(reason: str) -> bool:
     """A failure that says nothing about the user (5xx, throttling, transport). Every
     ``unreadable:*`` but ``record_invalid`` counts, a 401 from a broken credential too
-    (not tightened): the earlier id it keeps still expires
+    (owner policy e251073ef3c5: not tightened): the earlier id it keeps still expires
     ``APPROVER_OID_MAX_AGE`` after its original read."""
     return reason.partition(":")[0] == "unreadable" and reason != "unreadable:record_invalid"
 

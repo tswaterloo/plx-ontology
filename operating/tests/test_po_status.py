@@ -10,7 +10,7 @@ injected-transport), never presented as live.
 from __future__ import annotations
 
 import contextlib
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import io
 import itertools
@@ -20,7 +20,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from verify import live_verify as lv
+from devloop import live_verify as lv
 from integrations.http import SourceHttpError
 from operating import po_status as ps
 
@@ -54,18 +54,65 @@ class VocabularyTest(unittest.TestCase):
             self.assertEqual(ps.classify(raw, D(10), D(0)),
                              ps.PoStatus(ps.UNKNOWN, reason="status_missing"), raw)
 
-    def test_fm_complete_with_an_outstanding_quantity_is_open(self):
-        # FileMaker's Complete means issued; only the quantities close a PO.
-        self.assertEqual(ps.classify("Complete", D(10), D(4)), ps.PoStatus(ps.OPEN, "PARTIAL"))
+    def test_complete_with_an_outstanding_quantity_is_closed_and_counted_canceled_remainder(self):
+        # Ross (advisory 15bb4af8): a Portal/FM Complete header is closed whatever was
+        # received; what is still outstanding is a cancelled remainder, never open.
+        self.assertEqual(ps.classify("Complete", D(10), D(4)),
+                         ps.PoStatus(ps.CLOSED, ps.COMPLETE, canceled_remainder=D(6)))
         self.assertEqual(ps.classify("Complete", D(10), D(0)),
-                         ps.PoStatus(ps.OPEN, "SUBMITTED"))
+                         ps.PoStatus(ps.CLOSED, ps.COMPLETE, canceled_remainder=D(10)))
         # within EPS of the ordered quantity is received in full, as the Portal reads it
-        self.assertEqual(ps.classify("Complete", D(10), D("9.99995")).cls, ps.CLOSED)
-        self.assertEqual(ps.classify("Complete", D(10), D("9.999")).cls, ps.OPEN)
-        # the FM twin, whose header carries no received quantity, decides nothing
+        self.assertEqual(ps.classify("Complete", D(10), D("9.99995")),
+                         ps.PoStatus(ps.CLOSED, ps.RECEIVED))
+        self.assertEqual(ps.classify("Complete", D(10), D("9.999")).canceled_remainder,
+                         D("0.001"))
+        # the FM header, which carries no received quantity, closes too (remainder unknown)
         fm = ps.classify("Complete", None, None)
-        self.assertEqual(fm, ps.PoStatus(ps.UNKNOWN, reason="quantities_unknown"))
-        self.assertEqual(ps.combine([ps.classify("Complete", D(10), D(4)), fm]).cls, ps.OPEN)
+        self.assertEqual(fm, ps.PoStatus(ps.CLOSED, ps.COMPLETE))
+        self.assertEqual(ps.record({"fm_status": ["Complete"]}, None), fm)
+        both = ps.combine([ps.classify("Complete", D(10), D(4)), fm])
+        self.assertEqual((both.cls, both.code), (ps.CLOSED, ps.COMPLETE))
+        self.assertEqual(ps.combine([fm, ps.bc("Released", True)]),
+                         ps.PoStatus(ps.CLOSED, ps.RECEIVED))   # a twin received in full
+        # never late, never at risk: closed
+        self.assertEqual(ps.lateness_verdict(both, date(2026, 1, 1), None, date(2026, 10, 1)),
+                         (ps.NEITHER, None))
+
+    def test_a_closed_header_is_cancelled(self):
+        # upstream open-po-lines/route.ts:46 @5afa0a20 CANCELLED_STATUSES holds "closed"
+        for raw in ("closed", "Closed", " CLOSED "):
+            self.assertEqual(ps.classify(raw, D(10), D(0)), ps.PoStatus(ps.CLOSED, "CANCELLED"),
+                             raw)
+            self.assertEqual(ps.header_class(raw), ps.IGNORED, raw)
+            self.assertEqual(ps.record({"fm_status": [raw]}, None).code, "CANCELLED", raw)
+
+    def test_an_fm_mirrored_line_with_gold_zero_is_received_by_its_qc_receipts(self):
+        # The gold quantity_received is ETL-seeded 0 for FM-mirrored POs (upstream
+        # open-po-lines/route.ts:117-120, po-queries.ts:529-533,572-574 @5afa0a20): the FM
+        # QC receiving log (receipt sumqty by idpogenitem) is the received quantity.
+        gold = [("10", "0", "ea")]
+        self.assertEqual(ps.record({"status": ["Pending"]}, gold, [("10", "10", None)]),
+                         ps.PoStatus(ps.CLOSED, ps.RECEIVED))
+        self.assertEqual(ps.record({"status": ["Pending"]}, gold, [("10", "4", None)]),
+                         ps.PoStatus(ps.OPEN, ps.PARTIAL))
+        self.assertEqual(ps.record({"status": ["Complete"]}, gold, [("6", "3", None),
+                                                                  ("4", None, None)]),
+                         ps.PoStatus(ps.CLOSED, ps.COMPLETE, canceled_remainder=D(7)))
+        # no QC row: the gold quantity stands; no FM twin: it stands too
+        self.assertEqual(ps.record({"status": ["Pending"]}, gold, [("10", None, None)]),
+                         ps.PoStatus(ps.OPEN, ps.SUBMITTED))
+        self.assertEqual(ps.record({"status": ["Pending"]}, gold, None),
+                         ps.PoStatus(ps.OPEN, ps.SUBMITTED))
+        # a gold received quantity above 0 is not the seeded 0: the QC log is not read
+        self.assertEqual(ps.record({"status": ["Pending"]}, [("10", "2", "ea")],
+                                   [("10", "10", None)]), ps.PoStatus(ps.OPEN, ps.PARTIAL))
+        # fail closed: the QC log unread, an FM ordered total that is not the gold one (the
+        # only proof the unit-less QC quantity is in the gold unit) or an unreadable FM line
+        for fm in (ps.UNREAD, [("12", "10", None)], [(ps.UNREAD, "1", None)],
+                   [(None, "4", None)], [("10", "x", None)]):
+            with self.subTest(fm=fm):
+                self.assertEqual(ps.record({"status": ["Pending"]}, gold, fm),
+                                 ps.PoStatus(ps.UNKNOWN, reason="quantities_unknown"))
 
     def test_a_sage_only_po_is_unknown_never_open(self):
         for value in (None, 0, 1, "1", "5"):
@@ -108,15 +155,18 @@ class VocabularyTest(unittest.TestCase):
 
     def test_one_record_by_its_source(self):
         partial = [("10", "4", "ea")]
+        # Complete closes whatever was received; the outstanding quantity is cancelled
         self.assertEqual(ps.record({"status": ["Complete"]}, partial),
-                         ps.PoStatus(ps.OPEN, "PARTIAL"))
-        self.assertEqual(ps.record({"status": ["Complete"]}, [("10", "10", "ea")]).cls,
-                         ps.CLOSED)
-        self.assertEqual(ps.record({"status": ["Complete"]}, None).reason,
-                         "quantities_unknown")             # its lines not read
-        self.assertEqual(ps.record({"status": ["Complete"]}, []).reason, "nothing_ordered")
-        # the FM header alone: issued words unknown, even with lines (no received there)
-        self.assertEqual(ps.record({"fm_status": ["Complete"]}, partial).reason,
+                         ps.PoStatus(ps.CLOSED, ps.COMPLETE, canceled_remainder=D(6)))
+        self.assertEqual(ps.record({"status": ["Complete"]}, [("10", "10", "ea")]),
+                         ps.PoStatus(ps.CLOSED, ps.RECEIVED))
+        for lines in (None, []):   # its lines not read, nothing ordered: closed, no remainder
+            self.assertEqual(ps.record({"status": ["Complete"]}, lines),
+                             ps.PoStatus(ps.CLOSED, ps.COMPLETE), lines)
+        # the FM header alone: Complete closes too; its other issued words stay unknown
+        self.assertEqual(ps.record({"fm_status": ["Complete"]}, partial),
+                         ps.PoStatus(ps.CLOSED, ps.COMPLETE))
+        self.assertEqual(ps.record({"fm_status": ["B.Order"]}, partial).reason,
                          "quantities_unknown")
         self.assertEqual(ps.record({"fm_status": ["Cancel"]}, None).cls, ps.CLOSED)
         self.assertEqual(ps.record({"sage_is_complete": ["1"]}, [("5", "5", "ea")]).reason,
@@ -141,7 +191,10 @@ class OracleCrossCheckTest(unittest.TestCase):
 
         self.assertEqual(ps.CANCELLED_WORDS, keys.PO_HEADER_CANCELLED)
         self.assertEqual(ps.EPS, keys.PO_FULFILLMENT_EPS)
-        words = sorted(ps.CANCELLED_WORDS | ps.DRAFT_WORDS | ps.ISSUED_WORDS)
+        # Complete is the one deliberate deviation (Ross, advisory 15bb4af8): closed
+        # whatever was received, asserted below
+        words = sorted((ps.CANCELLED_WORDS | ps.DRAFT_WORDS | ps.ISSUED_WORDS)
+                       - ps.COMPLETE_WORDS)
         cases = 0
         for raw, ordered, received in itertools.product(
                 [w for word in words for w in (word, word.lower(), word.title())],
@@ -154,6 +207,13 @@ class OracleCrossCheckTest(unittest.TestCase):
                                               "RECEIVED": ps.CLOSED}.get(status.code, ps.OPEN))
                 cases += 1
         self.assertEqual(cases, len(words) * 3 * 4 * 8)
+        self.assertEqual(keys.po_fulfillment_code("Complete", D(10), D(4)), "PARTIAL")
+        self.assertEqual(ps.classify("Complete", D(10), D(4)),
+                         ps.PoStatus(ps.CLOSED, ps.COMPLETE, canceled_remainder=D(6)))
+        self.assertEqual(ps.classify("Complete", D(10), D(10)),
+                         ps.PoStatus(ps.CLOSED, ps.RECEIVED))
+        # closed mirrors upstream open-po-lines/route.ts:46 CANCELLED_STATUSES @5afa0a20
+        self.assertEqual(ps.classify("closed", D(10), D(0)).cls, ps.CLOSED)
 
     def test_stricter_where_the_portal_would_guess(self):
         from evals.oracle import keys
@@ -205,6 +265,28 @@ class OneDefinitionTest(unittest.TestCase):
         for rule in window["open_when"]["rules"]:
             self.assertEqual(set(rule), {"binding", "property"})
 
+    CALLERS = ("operating/process_lateness.py", "operating/proactive_engine.py",
+               "scripts/eval_packaging_oracle_check.py")
+
+    def test_no_caller_keeps_a_twin_line_or_promise_collector(self):
+        import re
+
+        links = re.compile(r"""["'](PurchaseOrder\.same_record_as|PurchaseOrderLine\.line_of|"""
+                           r"""SupplierConfirmation\.confirms)["']""")
+        collectors = re.compile(r"^\s*(?:def|class)\s+(_twins|_po_lines|_line_quantities|"
+                                r"_one_quantity|_po_state|_po_clusters|_po_read|_record_read|"
+                                r"_read|_Read|_lines|_lines_spec|_values)\b"
+                                r"|^(PO_LINE_LINK|LINE_PAGES)\s*=", re.M)
+        for name in self.CALLERS:
+            text = (ROOT / name).read_text("utf-8")
+            self.assertEqual(links.findall(text), [], name)
+            self.assertEqual(collectors.findall(text), [], name)
+            self.assertIn("po_status.read(" if "scripts/" in name or "engine" in name
+                          else "ps.read(", text, name)
+        own = (ROOT / "operating/po_status.py").read_text("utf-8")
+        self.assertEqual(len(links.findall(own)), 3)
+        self.assertEqual(len(re.findall(r"^def read\(", own, re.M)), 1)
+
 
 class LatenessVerdictTest(unittest.TestCase):
     """Vince's rule: late once the requested-by date has passed; at risk while it has not
@@ -215,7 +297,7 @@ class LatenessVerdictTest(unittest.TestCase):
 
     def test_late_at_risk_and_neither(self):
         open_ = ps.classify("Pending", D(10), D(0))
-        partial = ps.classify("Complete", D(10), D(4))
+        partial = ps.classify("B.Order", D(10), D(4))
         received = ps.classify("Complete", D(10), D(10))
         before, after = date(2026, 10, 20), date(2026, 10, 25)
         verdict = ps.lateness_verdict
@@ -235,6 +317,227 @@ class LatenessVerdictTest(unittest.TestCase):
                          (ps.UNKNOWN, "status_unknown"))
         self.assertEqual(verdict(ps.sage(), before, None, self.TODAY),
                          (ps.UNKNOWN, "status_unknown"))
+
+
+class BusinessDayAgreementTest(unittest.TestCase):
+    """The Workbench's lateness day (po_status.business_today) and the oracle's own
+    (evals/oracle/po_lateness.business_today, written apart) agree at every half hour
+    across both 2026 daylight-saving changes, and neither is the UTC day in the ET
+    evening."""
+
+    def test_product_and_oracle_name_the_same_et_day(self):
+        from evals.oracle import po_lateness as oracle
+
+        utc = timezone.utc
+        evenings = 0
+        for start in (datetime(2026, 3, 7, tzinfo=utc), datetime(2026, 10, 31, tzinfo=utc)):
+            for step in range(4 * 48):   # four days, every half hour
+                moment = start + timedelta(minutes=30 * step)
+                with self.subTest(moment=moment.isoformat()):
+                    self.assertEqual(ps.business_today(moment), oracle.business_today(moment))
+                    evenings += ps.business_today(moment) != moment.date()
+        # ET is behind UTC by 5 h (EST) or 4 h (EDT): 10 or 8 half hours a UTC day differ.
+        # Mar 7, 8 EST (the change is at 07:00Z), Mar 9, 10 EDT: 36; Oct 31, Nov 1 EDT
+        # (the change is at 06:00Z), Nov 2, 3 EST: 36
+        self.assertEqual(evenings, 72)
+        # the oracle's hand-written US rule against zoneinfo, every hour of five years
+        hour = datetime(2026, 1, 1, tzinfo=utc)
+        while hour.year < 2031:
+            if ps.business_today(hour) != oracle.business_today(hour):
+                self.fail(f"the two ET days differ at {hour.isoformat()}")
+            hour += timedelta(hours=1)
+        self.assertEqual(ps.business_today(datetime(2026, 3, 8, 4, 59, tzinfo=utc)),
+                         date(2026, 3, 7))
+        self.assertEqual(ps.business_today(datetime(2026, 11, 1, 3, 59, tzinfo=utc)),
+                         date(2026, 10, 31))
+
+
+class NeedDateSourceTest(unittest.TestCase):
+    """Which date is the requested-by date (decision 2026-10-26-po-need-date-source):
+    FM datearrive / Sage exparrival govern, then Portal expected_date, then the BC header
+    requestedReceiptDate; a supplier promise or a lower tier never replaces a higher one;
+    a blank date is no date. Synthetic ranks and days; the live fill counts are in the
+    decision, not here."""
+
+    TODAY = date(2026, 10, 26)
+
+    def test_the_highest_tier_holding_a_date_governs_and_cites_its_item(self):
+        need = ps.need_date([(2, date(2026, 10, 1), "bc"), (1, date(2026, 11, 30), "portal"),
+                             (0, date(2026, 10, 20), "sage")])
+        self.assertEqual((need.lo, need.hi, need.governing), (date(2026, 10, 20),) * 2
+                         + (("sage",),))
+        self.assertEqual(need.others, ("portal", "bc"))
+        open_ = ps.classify("Pending", D(10), D(0))
+        # late on the governing (Sage/FM) date although Portal's later date has not passed
+        self.assertEqual(ps.verdict(open_, need, None, self.TODAY), (ps.LATE, None))
+
+    def test_a_lower_tier_decides_only_when_the_higher_tiers_hold_no_date(self):
+        open_ = ps.classify("B.Order", D(10), D(2))
+        need = ps.need_date([(0, None, "sage_blank"), (2, date(2026, 10, 1), "bc")])
+        self.assertEqual((need.lo, need.governing, need.unparseable),
+                         (date(2026, 10, 1), ("bc",), ("sage_blank",)))
+        self.assertEqual(ps.verdict(open_, need, None, self.TODAY)[0], ps.LATE)
+
+    def test_no_requested_date_is_unknown_and_the_promise_never_stands_in(self):
+        open_ = ps.classify("Pending", D(10), D(0))
+        for blank in (ps.need_date([]), ps.need_date([(0, None, "zero"), (1, None, "x")])):
+            self.assertEqual(ps.verdict(open_, blank, date(2026, 12, 1), self.TODAY),
+                             (ps.UNKNOWN, "no_requested_date"))
+        self.assertIsNone(ps.day_of("0"))
+        self.assertIsNone(ps.day_of("00000000"))
+
+    def test_at_risk_needs_a_requested_date_and_a_later_promise(self):
+        open_ = ps.classify("Pending", D(10), D(0))
+        need = ps.need_date([(0, date(2026, 11, 3), "fm")])
+        for promised, expected in ((date(2026, 11, 20), ps.AT_RISK),
+                                   (date(2026, 11, 3), ps.NEITHER),
+                                   (None, ps.NEITHER)):
+            self.assertEqual(ps.verdict(open_, need, promised, self.TODAY)[0], expected)
+        # the day itself has not passed: not late
+        today = ps.need_date([(0, self.TODAY, "fm")])
+        self.assertEqual(ps.verdict(open_, today, None, self.TODAY)[0], ps.NEITHER)
+
+    def test_disagreeing_top_tier_dates_straddling_today_are_disputed(self):
+        open_ = ps.classify("Pending", D(10), D(0))
+        need = ps.need_date([(0, date(2026, 10, 20), "fm"), (0, date(2026, 11, 20), "sage")])
+        self.assertEqual(ps.verdict(open_, need, None, self.TODAY),
+                         (ps.UNKNOWN, "need_date_disputed"))
+
+
+class _FakeSource:
+    """A duck-typed purchase-order source: one Portal 'Pending' record with the given
+    lines, header need dates and open-line dates."""
+
+    def __init__(self, lines, header=(), line_dates=(), promised=()):
+        self._lines, self._header = lines, list(header)
+        self._line_dates, self._promised = list(line_dates), list(promised)
+
+    def twins(self, oid):
+        return [oid], False, []
+
+    def values(self, oid):
+        return {"status": ["Pending"]}, [], False
+
+    def lines(self, oid):
+        return self._lines, [], False, []
+
+    def fm_lines(self, oid):
+        return [], [], False, []
+
+    def need_dates(self, oid, members):
+        return self._header
+
+    def line_dates(self, members):
+        return self._line_dates
+
+    def promises(self, oid, members):
+        return self._promised
+
+
+class ToolSourceFirmTwinTest(unittest.TestCase):
+    """The plx tools as one principal calls them read a firm twin's open line date too (the
+    packaging eval's reader): through ``plx.around`` at the ``corroborated`` floor, never
+    its status; a listing the principal cannot read in full lends nothing."""
+
+    TODAY = date(2026, 10, 26)
+
+    def source(self, readable=True):
+        seen = []
+
+        def call(name, args):
+            seen.append((name, args))
+            if name == "plx.around":
+                link, direction = args["path"][0]["link_type"], args["path"][0]["direction"]
+                obj, floor = args["from"], args.get("tier_floor")
+                ids = {("PurchaseOrder.same_record_as", "forward", "PurchaseOrder:p", "corroborated"):
+                       ["PurchaseOrder:bc"],
+                       ("PurchaseOrderLine.line_of", "reverse", "PurchaseOrder:p", None):
+                       ["PurchaseOrderLine:pl"],
+                       ("PurchaseOrderLine.line_of", "reverse", "PurchaseOrder:bc", None):
+                       ["PurchaseOrderLine:bl"]}.get((link, direction, obj, floor), [])
+                if not readable and link == "PurchaseOrder.same_record_as":
+                    return {"objects": [], "gaps": [], "withheld": {"objects": 1}}
+                return {"objects": [{"object_id": i} for i in ids],
+                        "completeness": {"complete": True}}
+            values = {"PurchaseOrder:p": {"status": "Pending"},
+                      "PurchaseOrderLine:pl": {"ordered_quantity": ("10", "ea"),
+                                               "received_quantity": ("0", "ea")},
+                      "PurchaseOrderLine:bl": {"bc_expected_receipt_date": "2026-10-01",
+                                               "ordered_quantity": ("10", "ea"),
+                                               "received_quantity": ("0", "ea")}
+                      }.get(args["object_id"], {})
+            return {"values": [
+                {"property": k, "value": v[0] if isinstance(v, tuple) else v,
+                 "value_type": "quantity" if isinstance(v, tuple) else "text",
+                 **({"unit": v[1]} if isinstance(v, tuple) else {})}
+                for k, v in values.items() if k in args.get("properties", values)]}
+        return ps.ToolSource(call)
+
+    def test_the_twins_line_date_makes_the_portal_order_late_and_is_cited(self):
+        po = ps.read(self.source(), "PurchaseOrder:p", self.TODAY)
+        self.assertEqual(po.verdict, (ps.LATE, None))
+        self.assertEqual(po.date_twins, ["PurchaseOrder:bc"])
+        self.assertEqual(po.need.governing[0][0], "PurchaseOrderLine:bl")
+
+    def test_a_listing_the_principal_cannot_read_lends_no_date(self):
+        po = ps.read(self.source(readable=False), "PurchaseOrder:p", self.TODAY)
+        self.assertEqual(po.verdict, (ps.UNKNOWN, "no_requested_date"))
+        self.assertEqual(po.date_twins, [])
+
+
+class LineNeedDateTest(unittest.TestCase):
+    """The open lines' own expected date (BC expectedReceiptDate) is the lowest requested-by
+    tier, as the lateness oracle (evals/oracle/po_lateness.py) reads it: used only where no
+    header holds a date; an order is late once any open line is. Live shape 2026-10-26: 23
+    open BC POs, 67 open lines, every one dated, the header requestedReceiptDate blank."""
+
+    TODAY = date(2026, 10, 26)
+
+    def read(self, **kw):
+        lines = kw.pop("lines", [(D(10), D(0), "EA")])
+        return ps.read(_FakeSource(lines, **kw), "PO", self.TODAY)
+
+    def test_an_open_order_with_a_past_line_date_is_late_and_cites_that_line(self):
+        po = self.read(line_dates=[(date(2026, 10, 1), "line-a"), (date(2026, 12, 1), "line-b")])
+        self.assertEqual(po.verdict, (ps.LATE, None))
+        self.assertEqual((po.need.lo, po.need.governing, po.need.others),
+                         (date(2026, 10, 1), ("line-a",), ("line-b",)))
+
+    def test_a_header_date_governs_before_any_line_date(self):
+        po = self.read(header=[(0, date(2026, 12, 1), "hdr")],
+                       line_dates=[(date(2026, 10, 1), "line-a")])
+        self.assertEqual((po.verdict, po.need.governing), ((ps.NEITHER, None), ("hdr",)))
+
+    def test_at_risk_when_the_promise_is_after_the_line_date(self):
+        po = self.read(line_dates=[(date(2026, 11, 5), "line-a")],
+                       promised=[(None, date(2026, 11, 20), "conf")])
+        self.assertEqual(po.verdict, (ps.AT_RISK, None))
+        on_time = self.read(line_dates=[(date(2026, 11, 5), "line-a")])
+        self.assertEqual(on_time.verdict, (ps.NEITHER, None))
+
+    def test_an_undated_open_line_blocks_not_late_but_not_a_past_date(self):
+        undated_future = self.read(line_dates=[(date(2026, 12, 1), "a"), (None, "b")])
+        self.assertEqual(undated_future.verdict, (ps.UNKNOWN, "no_requested_date"))
+        self.assertEqual(undated_future.need.undated, ("b",))
+        past = self.read(line_dates=[(date(2026, 10, 1), "a"), (None, "b")])
+        self.assertEqual(past.verdict, (ps.LATE, None))
+        none = self.read(line_dates=[])
+        self.assertEqual(none.verdict, (ps.UNKNOWN, "no_requested_date"))
+
+    def test_a_closed_status_ignores_line_dates(self):
+        class Done(_FakeSource):
+            def values(self, oid):
+                return {"status": ["Cancel"]}, [], False
+        po = ps.read(Done([(D(10), D(0), "EA")], line_dates=[(date(2026, 1, 1), "a")]),
+                     "PO", self.TODAY)
+        self.assertEqual(po.verdict, (ps.NEITHER, None))
+
+    def test_line_open_is_by_quantity_and_fails_open_on_unreadable(self):
+        self.assertTrue(ps.line_open("10", None))
+        self.assertTrue(ps.line_open("10", "9.5"))
+        self.assertFalse(ps.line_open("10", "10"))
+        self.assertFalse(ps.line_open("0", None))
+        self.assertTrue(ps.line_open("x", None))
 
 
 def _scan(rows, complete=True):
@@ -273,9 +576,12 @@ class VocabularySummaryTest(unittest.TestCase):
             "B.Order": {"open": 1}, "Cancel": {"closed": 1}, "Complete": {"closed": 1},
             "DRAFT": {"draft": 1}, "Generated": {"unknown": 1}, "Pending": {
                 "open": 1, "unknown": 2}, "Revised": {"unknown": 1}, "_null_": {"unknown": 1},
-            "complete": {"open": 1}})
+            "complete": {"closed": 1}})
         self.assertEqual(out["classes"]["portal_po"],
-                         {"open": 3, "closed": 2, "draft": 1, "unknown": 5})
+                         {"open": 2, "closed": 3, "draft": 1, "unknown": 5})
+        # the Complete 10/4 is closed with its remainder cancelled; no Complete is open
+        self.assertEqual((out["complete_open"], out["canceled_remainder"]),
+                         (0, {"portal_po": 1}))
         self.assertEqual(out["unknown_words"]["portal_po"],
                          {"Generated": 1, "Pending": 2, "Revised": 1, "_null_": 1})
         self.assertEqual(out["unknown_reasons"]["portal_po"], {
@@ -285,9 +591,9 @@ class VocabularySummaryTest(unittest.TestCase):
         self.assertEqual(out["before_engine_rule"]["portal_po"],
                          {"open": 0, "closed": 0, "neither": 11})
         self.assertEqual(out["classes"]["fm_po"],
-                         {"open": 0, "closed": 1, "draft": 1, "unknown": 3})
+                         {"open": 0, "closed": 2, "draft": 1, "unknown": 2})
         self.assertEqual(out["unknown_reasons"]["fm_po"],
-                         {"quantities_unknown": 1, "status_missing": 1, "status_unmapped": 1})
+                         {"status_missing": 1, "status_unmapped": 1})
         self.assertEqual((out["unmapped_rows"], out["open_plus_closed"]), (0, 5))
         self.assertEqual(out["sage_iscomplete"], {
             "0": {"lines_open": 1}, "1": {"lines_complete": 1, "lines_open": 1},
@@ -297,7 +603,7 @@ class VocabularySummaryTest(unittest.TestCase):
         heads, lines = self.world()
         out = ps.vocabulary({"portal_po": _scan(heads), "portal_line": _scan(lines, False)})
         classes = out["classes"]["portal_po"]
-        self.assertEqual((classes["open"], classes["closed"]), (0, 1))   # Cancel only
+        self.assertEqual((classes["open"], classes["closed"]), (0, 3))   # Cancel, Completes
         self.assertEqual(out["relations"]["portal_line"]["complete"], False)
         self.assertEqual(out["relations"]["sage_po"]["status"], "not_scanned")
 
@@ -307,9 +613,48 @@ class VocabularySummaryTest(unittest.TestCase):
             out = ps.vocabulary({"portal_po": _scan(heads), "portal_line": _scan(lines)})
             self.assertEqual(sum(out["classes"]["portal_po"].values()), 11 * copies)
             self.assertEqual(out["classes"]["portal_po"],
-                             {"open": 3 * copies, "closed": 2 * copies, "draft": copies,
+                             {"open": 2 * copies, "closed": 3 * copies, "draft": copies,
                               "unknown": 5 * copies})
             self.assertEqual(out["unmapped_rows"], 0)
+
+    def test_an_fm_mirrored_po_takes_received_from_the_qc_log_or_fails_closed(self):
+        # gold quantity_received is ETL-seeded 0 for FM-mirrored POs (upstream
+        # open-po-lines/route.ts:117-120, po-queries.ts:529-533,572-574 @5afa0a20): the FM
+        # QC receiving log (sumqty, the noitemsqc stand-in) is the received quantity
+        def run(receipts_raw, receipts_pack=(), items=None, complete=True, fields=None):
+            heads = [{"id": "po-m", "status": "Pending",
+                      "custom_fields": fields if fields is not None
+                      else json.dumps({"fmGeneratedPoId": 77})}]
+            lines = [{"purchase_order_id": "po-m", "quantity": "10", "quantity_received": "0",
+                      "uom": "ea"}]
+            scans = {"portal_po": _scan(heads), "portal_line": _scan(lines),
+                     "fm_po": _scan([{"id": 77, "status": "Pending"}]),
+                     "fm_item": _scan(items if items is not None
+                                      else [{"id": 701, "idpogen": 77, "qty": "10"}], complete),
+                     "fm_receipt_raw": _scan(list(receipts_raw)),
+                     "fm_receipt_pack": _scan(list(receipts_pack))}
+            out = ps.vocabulary(scans)
+            return out["classes"]["portal_po"], out["fm_qc"], out["classes_before_fm_qc"]
+
+        received = [{"idpogenitem": 701, "sumqty": "6"}, {"idpogenitem": 701, "sumqty": "4"}]
+        classes, qc, before = run(received)
+        self.assertEqual((classes["closed"], classes["open"]), (1, 0))
+        self.assertEqual((before["open"], before["closed"]), (1, 0))   # the gold 0 alone
+        self.assertEqual(qc, {"mirrored_zero_received": 1, "qc_received": 1, "qc_none": 0,
+                              "unread": 0})
+        self.assertEqual(run(received[:1])[0]["open"], 1)               # 6 of 10: partial
+        self.assertEqual(run([])[0]["open"], 1)                         # no QC: the 0 stands
+        self.assertEqual(run([], fields={})[1]["mirrored_zero_received"], 0)   # not mirrored
+        # fail closed: unknown, never open or closed, on any part not proven
+        for case, args in {
+                "packaging row without sumqty": ([], [{"idpogenitem": 701}]),
+                "null sumqty": ([{"idpogenitem": 701, "sumqty": None}],),
+                "garbage sumqty": ([{"idpogenitem": 701, "sumqty": "ten"}],),
+                "FM ordered differs": (received, (), [{"id": 701, "idpogen": 77, "qty": "9"}]),
+                "FM qty column missing": (received, (), [{"id": 701, "idpogen": 77}]),
+                "item scan incomplete": (received, (), None, False)}.items():
+            classes, qc, _ = run(*args)
+            self.assertEqual((classes["unknown"], qc["unread"]), (1, 1), case)
 
     def test_shown_words_are_enums_the_record_may_copy(self):
         self.assertEqual(ps._shown("On  Hold"), "On_Hold")
@@ -320,7 +665,7 @@ class VocabularySummaryTest(unittest.TestCase):
 
 
 class LiveCheckTest(unittest.TestCase):
-    """``verify/live-checks/po_status.vocabulary.json`` over injected sources: its own
+    """``devloop/live-checks/po_status.vocabulary.json`` over injected sources: its own
     command over a FakeWorkbench holding the real words on synthetic POs, the network
     refused. Evidence label: injected-transport, never live."""
 
@@ -339,7 +684,7 @@ class LiveCheckTest(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.temp = Path(temp.name)
-        self.spec = json.loads((ROOT / "verify" / "live-checks" / f"{self.SPEC_ID}.json")
+        self.spec = json.loads((ROOT / "devloop" / "live-checks" / f"{self.SPEC_ID}.json")
                                .read_text("utf-8"))
 
     def fake(self):
@@ -400,11 +745,12 @@ class LiveCheckTest(unittest.TestCase):
         code, summary, text = self.run_spec()
         self.assertEqual(lv.check_expectations(self.spec, code, summary), [], summary)
         self.assertEqual(summary["classes"]["portal_po"],
-                         {"open": 3, "closed": 2, "draft": 1, "unknown": 3})
+                         {"open": 2, "closed": 3, "draft": 1, "unknown": 3})
+        self.assertEqual(summary["complete_open"], 0)
         self.assertEqual(summary["unknown_words"]["portal_po"],
                          {"Generated": 1, "Revised": 1, "_null_": 1})
         self.assertEqual(summary["classes"]["fm_po"],
-                         {"open": 0, "closed": 1, "draft": 1, "unknown": 7})
+                         {"open": 0, "closed": 3, "draft": 1, "unknown": 5})
         self.assertEqual(summary["sage_iscomplete"],
                          {"0": {"lines_open": 1}, "1": {"lines_complete": 1}})
         self.assertNotIn("PO30000", text)   # counts and enums only
@@ -423,6 +769,36 @@ class LiveCheckTest(unittest.TestCase):
             self.assertEqual(lv.check_expectations(
                 self.spec, code, summary, self.spec["expect_blocked"]), [], (state, summary))
         self.assertNotEqual(lv.check_expectations(self.spec, code, summary), [])
+
+    def test_an_fm_mirrored_po_received_in_the_qc_log_is_closed_live_shaped(self):
+        from operating.tests import order_fixture as fixture
+
+        fake = self.fake()
+        fake.catalog["public.generated_purchase_order_item"]["columns"].insert(2, "qty")
+        fake.tables["public.app_purchase_order"].append(fixture._po(
+            "po-m", "PO300099", "sup-1", "Pending", "20", {"fmGeneratedPoId": 3399}))
+        fake.tables["public.app_purchase_order_line"].append(fixture._row(
+            "pol-m", purchase_order_id="po-m", product_id="p-1", quantity="10",
+            quantity_received="0", uom="ea"))
+        fake.tables["public.generated_purchase_order"].append(
+            fixture._fm(3399, ponumber="PO300099", status="Pending"))
+        fake.tables["public.generated_purchase_order_item"] = [
+            fixture._fm(3499, idpogen=3399, qty="10")]
+        fake.tables["public.receipt_packaging"] = []
+        fake.tables["public.receipt_raw_material"] = [
+            fixture._fm(3599, idpogenitem=3499, idreceipt=78, sumqty="10")]
+        code, summary, _text = self.run_spec(fetch=fake)
+        self.assertEqual(lv.check_expectations(self.spec, code, summary), [], summary)
+        self.assertEqual(summary["fm_qc"]["qc_received"], 1, summary["fm_qc"])
+        self.assertEqual(summary["classes"]["portal_po"]["closed"], 4)
+        self.assertEqual(summary["classes_before_fm_qc"]["closed"], 3)
+        self.assertEqual(summary["complete_open"], 0)
+        # a packaging receipt against the item: the served catalog lacks sumqty, unread
+        fake.tables["public.receipt_packaging"] = [
+            fixture._fm(3598, idpogenitem=3499, idreceipt=79)]
+        code, summary, _text = self.run_spec(fetch=fake, state="pack")
+        self.assertEqual(summary["fm_qc"]["unread"], 1, summary["fm_qc"])
+        self.assertEqual(summary["classes"]["portal_po"]["unknown"], 4)
 
     def test_a_new_word_is_counted_by_name_and_the_check_still_passes(self):
         fake = self.fake()

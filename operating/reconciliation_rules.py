@@ -1,6 +1,6 @@
 """Reconciliation rule REC-10: BC "External Document No." against the customer PO.
 
-Why this rule exists (REC-10, ``operating/process_stage_map.json``
+Why this rule exists (devloop/CONTEXT/01 REC-10, ``operating/process_stage_map.json``
 weak links, 02 section 1.7 #6). Portal sends the customer PO (``po_reference``) to the
 BC sales order as ``externalDocumentNumber`` at creation, but the ship-only bridge then
 writes the Portal shipment number into the same Sales Header field, and the entity-map
@@ -109,7 +109,7 @@ as evidence with ``finding["citations"]`` so permission checks apply at read tim
 
 Bounded run (``reconcile_recent_orders``) samples BC first. The reporting API serves a
 replica of ``plx-postgres-staging`` while the staging Portal app drains BC Production from
-``plx-postgres-uat`` (``docs/reference/portal-code-map.md`` "BC drain, UAT prefix"), and the
+``plx-postgres-uat`` (``devloop/CONTEXT/03-PORTAL.md`` "BC drain, UAT prefix"), and the
 producer sends only the newest orders (``outbox-producer.ts@4243499:442-480``; since TASK-2396
 never a closed-out order, ``BC_LINE_SYNC_FROZEN_SQL``), so the most
 recent replica orders are, as a rule, orders BC never received: sampling them found no BC
@@ -127,7 +127,7 @@ the documents per BC-only class, ``portal_dependent`` and ``unknown``. Only the
 External Document No. under test. A BC document with no order number is ``unknown`` /
 ``bc_document_without_order_number``, one whose number fails the BC literal grammar
 ``order_number_invalid``. A BC order number the replica does not hold is ``unknown`` /
-``not_in_served_replica``. For a held one, which companies hold the number comes
+``not_in_served_replica``. For a held one, which companies hold the number (R10-2) comes
 from one bounded listing of the order-number field per company (``_number_index``), not
 from one lookup per order and company; a company whose listing is incomplete never proves
 absence and gets the per-number lookup. The one holder then gets the lookup that
@@ -152,7 +152,7 @@ and nothing withheld), ``no_portal_dependent_document`` is true and the CLI repo
 neither passes nor fails. A run with Portal-dependent documents that compares none, and not
 because the replica lacks them all, still fails.
 
-CLI (counts only, for ``verify/live-checks/case.rec10_external_doc.json``)::
+CLI (counts only, for ``devloop/live-checks/case.rec10_external_doc.json``)::
 
     python3 -m operating.reconciliation_rules --state-dir D --audience A --principal P
 
@@ -638,7 +638,7 @@ def _read_shipments(mirror: Any, actor: Actor, ids: Sequence[str],
 def _one_company(order_number: str, per_company: Sequence[list[dict[str, Any]] | None],
                  subject: Mapping[str, Any], label: str,
                  citations: Sequence[str]) -> list[dict[str, Any]]:
-    """Classify only when exactly one BC company holds the number. ``None``: the
+    """Classify only when exactly one BC company holds the number (R10-2). ``None``: the
     company's complete number index does not hold it (no lookup was sent)."""
     def kind(found: list[dict[str, Any]] | None) -> str:
         if found is None:

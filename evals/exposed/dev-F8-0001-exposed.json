@@ -152,7 +152,7 @@
   "derived_from": [
    "context/006786de5454dcb66a83cfdd2fad4974b2545e5f61a24a75aad1b74bc288b23e.json#/evaluation_batch/cases/2",
    "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/case_acceptance/2",
-   "docs/reference/cases-and-artifacts.md#3.6",
+   "devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md#3.6",
    "evals/exposed/sources.json#trc-arrival-mail",
    "evals/exposed/sources.json#trc-po-pdf"
   ],
@@ -160,7 +160,7 @@
  },
  "label": {
   "status": "oracle_only",
-  "note": "Exposed real case (source batch existing-packets-development-batch-01 unit DEV-003, cluster po5455-trc): dev/regression only, never held-out. Expected values are the source-backed claims of the source records (oracle.derived_from), not a Workbench oracle run and not a human audit; every claim the records do not establish is a gap with state unknown. Pending human label: a person checks known_outcome against the originals in evals/exposed/sources.json, then sets human_audited (audited_by, audited_at) or disputed."
+  "note": "Exposed real case (advisory batch existing-packets-development-batch-01 unit DEV-003, cluster po5455-trc): dev/regression only, never held-out. Expected values are the source-backed claims of the Dot's advisory curation (oracle.derived_from), not a Workbench oracle run and not a human audit; every claim the records do not establish is a gap with state unknown. Pending human label (09 Q9): a person checks known_outcome against the originals in evals/exposed/sources.json, then sets human_audited (audited_by, audited_at) or disputed."
  },
  "scoring": {
   "exact_values": true,

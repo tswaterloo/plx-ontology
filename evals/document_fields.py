@@ -1,7 +1,7 @@
 """Runtime scoring of document-extraction eval items against the deterministic reader (P2/P8).
 
-The exposed extraction items (``evals/exposed``: the P2/P8 bundle, imported from
-``EVIDENCE/evals/p2p8-20261004``) expect field values a curator read on one pinned
+The exposed extraction items (``evals/exposed``: the Dot's P2/P8 bundle, imported from
+``EVIDENCE/evals/dot-p2p8-20261004``) expect field values a curator read on one pinned
 original (``as_known_at.l1_generations.curated_original_bytes``: the byte SHA-256). This
 module scores what the Workbench's own reader extracts from those same bytes
 (``ontology.document_fields.extract_fields``, the projection's extractor; a scan is read

@@ -20,15 +20,17 @@ import io
 import json
 from pathlib import Path
 import re
+import sqlite3
 import tempfile
 import unittest
 from urllib.parse import parse_qs, unquote, urlencode, urlsplit
 
-from verify import live_verify as lv
+from devloop import live_verify as lv
 from integrations import capture_teams, graph_read
 from integrations import live_source_grammar as grammar
 from integrations.capture_teams import Conversation, TeamsCapture, TeamsScope, open_store
-from integrations.live_source_guard import (LiveSourceAudience, ReadOnlyGuardError,
+from integrations.live_source_guard import (BoundedBackoff, LiveSourceAudience,
+                                            ReadOnlyGuardError, RequestDeadline,
                                             check_request)
 from ontology.project_graph import TeamsCaptures
 from ontology.types import Actor
@@ -83,6 +85,11 @@ class FakeTeamsGraph:
         self.failing: dict[str, int] = {}       # path pattern -> HTTP status answered
         self.expired: set[str] = set()          # continuation URLs answering 410
         self.channel_types = {GENERAL: "standard", PRIVATE: "private"}
+        # The tenant hosting CHAT (ENV's own by default; a cross-tenant chat otherwise).
+        self.chat_tenant = ENV["MICROSOFT_GRAPH_TENANT_ID"]
+        # Channels whose delta, while they hold no message, answers an empty page and a
+        # nextLink Graph then refuses with 400 (live 2026-10-27).
+        self.refused_empty_delta: set[str] = set()
         # The census's reads: the tenant's teams, names, and the 30-day activity report.
         self.team_names = {TEAM: "Operations"}
         self.channel_names = {GENERAL: "General", PRIVATE: "QA hand-offs"}
@@ -175,7 +182,7 @@ class FakeTeamsGraph:
             return j(200, {"id": found[1], "membershipType": self.channel_types[found[1]],
                            "displayName": self.channel_names.get(found[1], "Thread")})
         if path == f"/v1.0/chats/{CHAT}":
-            return j(200, {"id": CHAT, "chatType": "oneOnOne",
+            return j(200, {"id": CHAT, "chatType": "oneOnOne", "tenantId": self.chat_tenant,
                            "topic": self.chat_topics.get(CHAT)})
         if path == "/v1.0/reports/getTeamsTeamActivityDetail(period='D30')":
             return j(200, {"value": self.activity})
@@ -192,11 +199,20 @@ class FakeTeamsGraph:
             members = self.channel_members[found[1]]
         if members is not None:
             return j(200, {"value": [
-                {"userId": u, "email": e, "roles": [],
+                {"userId": u, "email": e, "roles": [], "displayName": e.split("@")[0].title(),
                  **({} if self.history.get(u, FULL_HISTORY) is None else
                     {"visibleHistoryStartDateTime": self.history.get(u, FULL_HISTORY)})}
                 for u, e in members]})
+        found = re.fullmatch(rf"/v1\.0/teams/{TEAM}/channels/([^/]+)/messages", path)
+        if found:   # the plain listing: newest roots first
+            items = sorted(self.roots[found[1]].values(),
+                           key=lambda m: m["lastModifiedDateTime"], reverse=True)
+            return self._page(base, items, query, end={})
         found = re.fullmatch(rf"/v1\.0/teams/{TEAM}/channels/([^/]+)/messages/delta", path)
+        if found and found[1] in self.refused_empty_delta and not self.roots[found[1]]:
+            if "$skiptoken" in query:
+                return j(400, {"error": {"code": "BadRequest"}})
+            return j(200, {"value": [], "@odata.nextLink": f"{base}?$skiptoken=empty"})
         if found:
             channel = found[1]
             since = int(query.get("$deltatoken", ["0"])[0])
@@ -240,7 +256,7 @@ def scope(allowlist: tuple[str, ...] = (COS, VINCE), **caps) -> TeamsScope:
 
 
 def confirm(state_home: str | dict, channels: list[str], chats: list[str] = (CHAT,)) -> Path:
-    """Write the owner's content confirmation (as the operator would, beside the census) into
+    """Write the owner's content confirmation (as Tanush would, beside the census) into
     the injected check state of ``state_home`` ($XDG_STATE_HOME, or the whole environment):
     ``channels`` of TEAM and ``chats``. The directories it makes are 0700, as the CLI's."""
     env = state_home if isinstance(state_home, dict) else {**ENV, "XDG_STATE_HOME": state_home}
@@ -286,7 +302,14 @@ class CaptureCase(unittest.TestCase):
         return "teams_channel", Conversation("channel", thread, TEAM).unit
 
     def visible(self, actor: Actor, thread: str) -> list[dict]:
-        return self.store.records(actor, *self.unit(thread))["items"]
+        """The messages of a conversation the actor sees (not its own record)."""
+        return [r for r in self.store.records(actor, *self.unit(thread))["items"]
+                if f"/{capture_teams.CONVERSATION}@" not in r["citation"]]
+
+    def conversation(self, actor: Actor, thread: str) -> list[dict]:
+        """The conversation's own record as the actor sees it (none, or one)."""
+        return [r for r in self.store.records(actor, *self.unit(thread))["items"]
+                if f"/{capture_teams.CONVERSATION}@" in r["citation"]]
 
     def by_kind(self, run: dict) -> dict[str, dict]:
         return {f"{c['kind']}:{c['membership']}": c for c in run["conversations"]}
@@ -309,8 +332,7 @@ class GetOnlyTests(CaptureCase):
         for method in ("POST", "PATCH", "DELETE"):
             with self.assertRaises(ReadOnlyGuardError):
                 check_request(method, messages.replace("/delta", ""), environ={})
-        for path in (f"/v1.0/teams/{TEAM}/channels/{GENERAL}/messages",          # no listing
-                     f"/v1.0/teams/{TEAM}/channels/{GENERAL}/messages/1001/replies/post",
+        for path in (f"/v1.0/teams/{TEAM}/channels/{GENERAL}/messages/1001/replies/post",
                      f"/v1.0/chats/{CHAT}/sendActivityNotification"):
             with self.assertRaises(ReadOnlyGuardError, msg=path):
                 check_request("GET", "https://graph.microsoft.com" + path, environ={})
@@ -597,17 +619,22 @@ class AudienceTests(CaptureCase):
             self.assertTrue(self.store.resolve(handle, COS_ONLY)["ok"])
         past = {a: self.store.records(a, *self.unit(CHAT), as_known_at=known)["items"]
                 for a in (VINCE_ONLY, COS_ONLY)}
-        self.assertEqual((len(past[VINCE_ONLY]), len(past[COS_ONLY])), (0, 2))
+        # Nor the chat's own record (its latest message is outside his history).
+        self.assertEqual((len(past[VINCE_ONLY]), len(past[COS_ONLY])), (0, 3))
+        self.assertEqual(sum(f"/{capture_teams.CONVERSATION}@" in r["citation"]
+                             for r in past[COS_ONLY]), 1)
 
     def gap(self, relation: str) -> str | None:
         with TeamsCaptures(self.store.path) as captured:
             return captured.capture_gap(relation)
 
-    def test_a_chat_whose_members_read_fails_is_excluded_and_never_complete(self):
+    def test_a_chat_whose_members_read_is_refused_is_excluded_and_never_complete(self):
+        # A definitive answer (403 refused, 404 not a member any more or gone) drops the
+        # membership read before; a transient one keeps it (TransientMembersReadTests).
         self.capture.run(scope())
         handles = [r["citation"] for r in self.visible(COS_ONLY, CHAT)]
         self.assertEqual(len(handles), 2)
-        for status, state in ((503, "incomplete"), (403, "blocked")):
+        for status, state in ((404, "incomplete"), (403, "blocked")):
             with self.subTest(status):
                 self.graph.failing = {rf"/chats/{re.escape(CHAT)}/members": status}
                 run = self.capture.run(scope())
@@ -630,7 +657,78 @@ class AudienceTests(CaptureCase):
         self.assertEqual(len(self.visible(COS_ONLY, CHAT)), 2)
         self.assertIsNone(self.gap("chatMessages"))
 
-    def test_a_channel_whose_members_read_fails_loses_its_membership(self):
+    def test_a_chat_hosted_in_another_tenant_is_not_readable_never_a_blocked_part(self):
+        """Live 2026-10-27: Graph refuses (403) the messages of exactly the chats hosted
+        in another tenant, though the app holds Chat.Read.All. Such a chat is settled as
+        ``not_readable:other_tenant`` (nothing claimed captured, no blocked part); a 403
+        on a chat of this tenant, or with the home tenant unknown, stays blocked."""
+        api, _transport = graph_read.build_graph(ENV, sender=self.graph)
+        home = TeamsCapture(self.store, api, self.audience, CAPTURE,
+                            home_tenant=ENV["MICROSOFT_GRAPH_TENANT_ID"].upper())
+        self.graph.forbidden = [rf"/chats/{re.escape(CHAT)}/messages$"]
+        self.graph.chat_tenant = "99999999-8888-7777-6666-555555555555"
+        run = home.run(scope())
+        chat = self.by_kind(run)["chat:oneOnOne"]
+        self.assertEqual((chat["status"], chat["reasons"]),
+                         ("not_readable", ["not_readable:other_tenant"]))
+        self.assertEqual(run["blocked_upstream"], [])
+        self.assertTrue(run["complete"], run)   # the channels read, the chat settled
+        self.assertEqual(self.visible(COS_ONLY, CHAT), [])   # nothing claimed captured
+        self.assertFalse(self.store.operator_completeness(
+            CAPTURE, *self.unit(CHAT))["complete"])
+        # Fail closed: the same refusal of a chat this tenant hosts, or with no home
+        # tenant known, or with the chat's own record unread, is a blocked part.
+        for case, capture, tenant, record in (
+                ("hosted here", home, ENV["MICROSOFT_GRAPH_TENANT_ID"], True),
+                ("home unknown", self.capture, "99999999-8888-7777-6666-555555555555", True),
+                ("record unread", home, "99999999-8888-7777-6666-555555555555", False)):
+            with self.subTest(case):
+                self.graph.chat_tenant = tenant
+                self.graph.failing = {} if record else {rf"/chats/{re.escape(CHAT)}$": 503}
+                run = capture.run(scope())
+                chat = self.by_kind(run)["chat:oneOnOne"]
+                self.assertEqual((chat["status"], chat["reasons"]),
+                                 ("blocked", ["blocked:missing_permission:Chat.Read.All"]))
+                self.assertFalse(run["complete"])
+                self.assertEqual({b["part"] for b in run["blocked_upstream"]},
+                                 {"teams.chat_messages"})
+        self.graph.failing = {}
+
+    def test_an_empty_channel_whose_delta_link_graph_refuses_is_read_complete(self):
+        """Live 2026-10-27: a channel with no message answers its delta with an empty
+        page and a nextLink Graph refuses (HTTP 400). One page of its plain listing
+        ($top=1) proves it empty: the round ends complete; a channel that does hold a
+        message keeps the 400 as a source error."""
+        empty = "19:empty0003@thread.tacv2"
+        self.graph.channel_types[empty] = "standard"
+        self.graph.roots[empty], self.graph.changed[empty] = {}, {}
+        self.graph.refused_empty_delta.add(empty)
+        for _ in range(2):   # and again: no delta link kept, a full round each run
+            run = self.capture.run(scope())
+            channel = next(c for c in run["conversations"]
+                           if c["unit"] == Conversation("channel", empty, TEAM).unit)
+            self.assertEqual((channel["status"], channel["reasons"], channel["round"]),
+                             ("complete", [], "full"))
+            self.assertTrue(run["complete"], run)
+        listings = [u for u in self.graph.gets()
+                    if grammar.match("graph.microsoft.com", urlsplit(u).path)
+                    == "graph.channel_messages"]
+        self.assertEqual(len(listings), 2)
+        self.assertTrue(all(parse_qs(urlsplit(u).query) == {"$top": ["1"]} for u in listings))
+        # A refused delta link of a channel the listing shows a message in: not empty.
+        self.graph.roots[empty]["9001"] = self.graph.message("9001", "x", channel=empty)
+        self.graph.refused_empty_delta.discard(empty)
+        delta = Conversation("channel", empty, TEAM).url("graph.channel_messages_delta")
+        self.graph.failing = {re.escape(urlsplit(delta).path) + "$": 400}
+        run = self.capture.run(scope())
+        channel = next(c for c in run["conversations"]
+                       if c["unit"] == Conversation("channel", empty, TEAM).unit)
+        self.assertEqual(channel["status"], "incomplete")
+        self.assertTrue(any(r.startswith("source_error:") for r in channel["reasons"]))
+        self.assertFalse(run["complete"])
+        self.graph.failing = {}
+
+    def test_a_channel_whose_members_read_is_refused_loses_its_membership(self):
         private_members = rf"/channels/{re.escape(PRIVATE)}/members"
         # Never read: the channel beside a settled one keeps its relation incomplete.
         self.graph.failing = {private_members: 503}
@@ -642,8 +740,8 @@ class AudienceTests(CaptureCase):
         self.capture.run(scope())
         handles = [r["citation"] for r in self.visible(VINCE_ONLY, PRIVATE)]
         self.assertEqual(len(handles), 1)
-        # Read before, then failing: the former member loses it through the item gate.
-        self.graph.failing = {private_members: 503}
+        # Read before, then gone (404): the former member loses it through the item gate.
+        self.graph.failing = {private_members: 404}
         run = self.capture.run(scope())
         private = self.by_kind(run)["channel:private"]
         self.assertEqual((private["status"], private["reasons"][0]),
@@ -688,6 +786,178 @@ class AudienceTests(CaptureCase):
         self.capture.run(scope())
         self.assertEqual(self.visible(COS_ONLY, PRIVATE), [])
         self.assertEqual(len(self.visible(MEMBER, PRIVATE)), 1)
+
+
+class TransientMembersReadTests(CaptureCase):
+    """A members read that fails transiently (429 after the bounded Retry-After retries,
+    5xx, a timeout, a request deadline) keeps the membership recorded before and its
+    recorded_at, leaves the run open (members_unread) and is read again next run; a
+    definitive answer (403/404, an excluded person, a cut list, a changed membership)
+    still drops or replaces it. A kept membership is served only within the store's
+    capture-age bound (``capture_store.UNIT_ACL_MAX_AGE``)."""
+
+    CHAT_MEMBERS = rf"/chats/{re.escape(CHAT)}/members"
+
+    def recorded(self, thread: str) -> tuple | None:
+        kind, unit = self.unit(thread)
+        conn = sqlite3.connect(f"file:{self.store.path}?mode=ro", uri=True)
+        try:
+            return conn.execute("SELECT acl, recorded_at FROM unit_acl WHERE kind = ? "
+                                "AND unit = ?", (kind, unit)).fetchone()
+        finally:
+            conn.close()
+
+    def capture_with(self, sender, **kwargs) -> TeamsCapture:
+        api, _transport = graph_read.build_graph(ENV, sender=sender, **kwargs)
+        return TeamsCapture(self.store, api, self.audience, CAPTURE)
+
+    def assert_kept(self, chat: dict, before: tuple, handles: list[str]) -> None:
+        self.assertEqual(chat["status"], "incomplete")
+        self.assertIn("members_unread", chat["reasons"])
+        self.assertEqual(self.recorded(CHAT), before)       # the ACL and its recorded_at
+        self.assertEqual(len(self.visible(COS_ONLY, CHAT)), 2)
+        for handle in handles:
+            self.assertTrue(self.store.resolve(handle, COS_ONLY)["ok"])
+            self.assertEqual(self.store.resolve(handle, VINCE_ONLY)["error"], "not_visible")
+        self.assertEqual(self.visible(VINCE_ONLY, CHAT), [])
+        self.assertFalse(self.store.operator_completeness(
+            CAPTURE, *self.unit(CHAT))["complete"])
+        with TeamsCaptures(self.store.path) as captured:   # projected, never complete
+            self.assertEqual(captured.capture_gap("chatMessages"), "source_capture_incomplete")
+
+    def test_a_transient_members_failure_keeps_the_membership_and_the_run_open(self):
+        self.capture.run(scope())
+        before = self.recorded(CHAT)
+        handles = [r["citation"] for r in self.visible(COS_ONLY, CHAT)]
+        self.assertEqual(len(handles), 2)
+
+        def timing_out(method, url, *rest):
+            if re.search(self.CHAT_MEMBERS, unquote(urlsplit(url).path)):
+                raise TimeoutError("timed out")
+            return self.graph(method, url, *rest)
+
+        for case in ("429", "500", "502", "503", "504", "timeout"):
+            with self.subTest(case):
+                self.graph.failing = ({} if case == "timeout"
+                                      else {self.CHAT_MEMBERS: int(case)})
+                capture = self.capture_with(timing_out) if case == "timeout" else self.capture
+                run = capture.run(scope())
+                chat = self.by_kind(run)["chat:oneOnOne"]
+                self.assert_kept(chat, before, handles)
+                self.assertFalse(run["complete"])
+                self.assertEqual(run["blocked_upstream"], [])
+                # Read again next run: its run left open, unvisited by the pass.
+                self.assertEqual(self.store.run(*self.unit(CHAT))["state"], "in_progress")
+        # A request deadline that refuses the read before any I/O is transient too.
+        self.graph.failing = {}
+        deadline = RequestDeadline(0)
+        with deadline.active():
+            chat = self.capture.capture(Conversation("chat", CHAT, membership="oneOnOne"),
+                                        scope(), [])
+        self.assertEqual(deadline.refused, 1)
+        self.assert_kept(chat, before, handles)
+        # The next successful read records it again and completes the chat.
+        chat = self.by_kind(self.capture.run(scope()))["chat:oneOnOne"]
+        self.assertEqual(chat["status"], "complete")
+        self.assertGreater(self.recorded(CHAT)[1], before[1])
+
+    def test_a_throttled_members_read_is_retried_after_retry_after_within_the_budget(self):
+        self.capture.run(scope())
+        before = self.recorded(CHAT)
+        throttled = {"left": 1}
+        slept: list[float] = []
+
+        def throttling(method, url, *rest):
+            if re.search(self.CHAT_MEMBERS, unquote(urlsplit(url).path)) and throttled["left"]:
+                throttled["left"] -= 1
+                return 429, {"Retry-After": "3"}, b'{"error": {"code": "TooManyRequests"}}'
+            return self.graph(method, url, *rest)
+
+        retry = BoundedBackoff(sleep=slept.append, jitter=lambda: 0.0, budget_seconds=60)
+        chat = self.by_kind(self.capture_with(throttling, retry=retry).run(scope()))[
+            "chat:oneOnOne"]
+        self.assertEqual(chat["status"], "complete")
+        self.assertEqual(slept, [3.0])                   # the source's own wait, honoured
+        self.assertGreater(self.recorded(CHAT)[1], before[1])
+        # Throttled past every retry: transient, the membership kept, the run open.
+        throttled["left"], slept[:] = 99, []
+        before = self.recorded(CHAT)
+        chat = self.by_kind(self.capture_with(throttling, retry=BoundedBackoff(
+            sleep=slept.append, jitter=lambda: 0.0, budget_seconds=60)).run(scope()))[
+            "chat:oneOnOne"]
+        self.assertEqual(len(slept), 2)                  # MAX_RETRIES, then given up
+        self.assertEqual((chat["status"], self.recorded(CHAT)), ("incomplete", before))
+        self.assertIn("members_unread", chat["reasons"])
+
+    def test_definitive_answers_still_drop_or_replace_the_membership(self):
+        self.capture.run(scope())
+        handles = [r["citation"] for r in self.visible(COS_ONLY, CHAT)]
+        for status in (403, 404, 400, 401):
+            with self.subTest(status):
+                self.graph.failing = {self.CHAT_MEMBERS: status}
+                chat = self.by_kind(self.capture.run(scope()))["chat:oneOnOne"]
+                self.assertIn("members_unread", chat["reasons"])
+                self.assertIsNone(self.recorded(CHAT))
+                for handle in handles:
+                    self.assertEqual(self.store.resolve(handle, COS_ONLY)["error"],
+                                     "not_visible")
+                self.graph.failing = {}
+                self.capture.run(scope())
+                self.assertIsNotNone(self.recorded(CHAT))
+        # A cut member list may hide an excluded person: dropped, never kept.
+        chat = self.by_kind(self.capture.run(scope(max_members=1)))["chat:oneOnOne"]
+        self.assertEqual(chat["reasons"], ["cap:member_item_cap"])
+        self.assertIsNone(self.recorded(CHAT))
+        self.assertEqual(self.store.resolve(handles[0], COS_ONLY)["error"], "not_visible")
+
+    def test_a_reader_removed_from_a_chat_loses_it_once_a_read_records_the_change(self):
+        self.graph.chat_members.append((U_VINCE, VINCE))
+        self.capture.run(scope())
+        handles = [r["citation"] for r in self.visible(VINCE_ONLY, CHAT)]
+        self.assertEqual(len(handles), 2)
+        # Removed upstream, but the read fails transiently: the membership read before
+        # still decides (within its bound) until a read records the change.
+        self.graph.chat_members.remove((U_VINCE, VINCE))
+        self.graph.failing = {self.CHAT_MEMBERS: 503}
+        self.capture.run(scope())
+        self.assertEqual(len(self.visible(VINCE_ONLY, CHAT)), 2)
+        self.graph.failing = {}
+        chat = self.by_kind(self.capture.run(scope()))["chat:oneOnOne"]
+        self.assertEqual(chat["status"], "complete")
+        self.assertEqual(self.visible(VINCE_ONLY, CHAT), [])
+        for handle in handles:
+            self.assertEqual(self.store.resolve(handle, VINCE_ONLY)["error"], "not_visible")
+            self.assertIsNone(self.store.claim_rows(VINCE_ONLY)(handle))
+            self.assertTrue(self.store.resolve(handle, COS_ONLY)["ok"])
+
+    def test_a_kept_membership_older_than_the_serving_bound_is_not_served(self):
+        from integrations.capture_store import UNIT_ACL_MAX_AGE, CaptureStore
+        self.assertEqual(UNIT_ACL_MAX_AGE, timedelta(hours=48))
+        self.capture.run(scope())
+        self.graph.failing = {self.CHAT_MEMBERS: 429}
+        self.capture.run(scope())                        # kept, not refreshed
+        recorded = datetime.fromisoformat(self.recorded(CHAT)[1].replace("Z", "+00:00"))
+        handles = [r["citation"] for r in self.visible(COS_ONLY, CHAT)]
+        self.assertEqual(len(handles), 2)
+        channel = [r["citation"] for r in self.visible(COS_ONLY, GENERAL)]
+        for offset, served in ((timedelta(hours=47), True),
+                               (UNIT_ACL_MAX_AGE, True),
+                               (UNIT_ACL_MAX_AGE + timedelta(seconds=1), False),
+                               (timedelta(days=30), False),
+                               (-timedelta(hours=1), False)):   # dated after now
+            with self.subTest(offset), CaptureStore(
+                    self.store.path, self.audience,
+                    clock=lambda o=offset: recorded + o) as later:
+                rows = [r for r in later.records(COS_ONLY, *self.unit(CHAT))["items"]
+                        if f"/{capture_teams.CONVERSATION}@" not in r["citation"]]
+                self.assertEqual(len(rows), 2 if served else 0)
+                for handle in handles:
+                    self.assertEqual(later.resolve(handle, COS_ONLY).get("ok", False), served)
+                    self.assertEqual(later.claim_rows(COS_ONLY)(handle) is not None, served)
+                # A channel's membership is bounded alike.
+                self.assertEqual(len([h for h in channel
+                                      if later.resolve(h, COS_ONLY).get("ok")]),
+                                 4 if served else 0)
 
 
 class ProbeTests(unittest.TestCase):
@@ -738,7 +1008,7 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(lv.blocked_parts(report), [])
         self.assertEqual(lv.completeness(self.SPEC, report)["complete"], True)
         self.assertGreater(report["leak_check"]["outsider_actor_withheld"], 0)
-        # The live check records the ontology relations the run holds (2 roots, 2 replies;
+        # The verifier records the ontology relations the run holds (2 roots, 2 replies;
         # 1 chat message), so a pass names them for the source registry.
         self.assertEqual(lv._recorded(self.SPEC, report)["relations"],
                          {"channelMessages": 4, "chatMessages": 1})
@@ -758,7 +1028,7 @@ class ProbeTests(unittest.TestCase):
              "channels_named": 2, "chats_named": 1})
         self.assertEqual(report["census"]["message_counts"]["teams_counted"], 1)
         self.assertEqual((report["content"]["status"], report["content"]["channels_due"],
-                          report["content"]["chats_due"]), ("confirmed", 2, 1))
+                          report["content"]["chats_due"]), ("census_cleared", 2, 1))
         # The live-check scope lists the chats of every allowlisted account, no other.
         self.assertEqual(chat_listings(graph), {graph.users[a] for a in
                                                 MailScope.builtin().addresses})
@@ -832,7 +1102,7 @@ class ProbeTests(unittest.TestCase):
         unvisited = report["pass"]["unvisited"]
         self.assertEqual(unvisited, [27, 12, 0])                       # never rose
         self.assertEqual(report["pass"]["unvisited_first_run"], unvisited)
-        self.assertEqual(report["content"]["confirmed_not_cleared"], 20)
+        self.assertEqual(report["content"]["confirmed_not_cleared"], 0)   # no confirmation
         self.assertFalse([u for _m, u in graph.calls if "new0" in unquote(u)])
         self.assertEqual(lv.check_expectations(self.SPEC, code, report), [], report)
         self.assertEqual(report["summary"]["units_captured"], 43)
@@ -919,6 +1189,16 @@ class ProbeTests(unittest.TestCase):
                           ("workbench_state_dir", True, True)])
 
     def test_a_spent_time_budget_reports_incomplete_and_the_next_run_carries_on(self):
+        # One conversation at a time: the deadline stops the very next read.
+        self.spent_budget_case(workers=1, overshoot=0)
+
+    def test_concurrent_conversations_overshoot_a_spent_budget_by_at_most_one_read_each(self):
+        # Eight at a time: a conversation that started before the deadline was seen may
+        # send the one read it had begun (its members read); none starts after it.
+        self.spent_budget_case(workers=capture_teams.WORKERS,
+                               overshoot=capture_teams.WORKERS - 1)
+
+    def spent_budget_case(self, *, workers: int, overshoot: int) -> None:
         graph = self.fixture()
         self.many(graph, [f"19:many{n:03d}@thread.tacv2" for n in range(40)])
         parser = argparse.ArgumentParser()
@@ -926,7 +1206,7 @@ class ProbeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as host:
             env = {**ENV, "XDG_STATE_HOME": host}
             confirm(host, list(graph.channel_types))
-            args = parser.parse_args(self.argv(host)[1:])
+            args = parser.parse_args(self.argv(host)[1:] + ["--workers", str(workers)])
             # Each conversation read (members or messages) after the census's last read
             # (the activity report) takes 315 s: the 6300 s budget is spent after 20 (a
             # conversation's members read, before its messages), inside run 1.
@@ -942,11 +1222,15 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual((spent["status"], spent["pass"]["stop"], spent["budget"]),
                          ("incomplete", "budget", {"seconds": 6300.0, "exhausted": True}))
         self.assertEqual(spent["pass"]["runs"], 1)   # no run starts after it, --runs or not
-        self.assertEqual(len(captured), 20)          # no page read past the deadline
+        self.assertGreaterEqual(len(captured), 20)   # no page read past the deadline
+        self.assertLessEqual(len(captured), 20 + overshoot)
         # The read under way pauses on its cursor; the conversations due after it wait.
         run = spent["runs"][0]
         self.assertIn(capture_teams.TIME_BUDGET, run["discovery"]["reasons"])
-        self.assertEqual(run["conversations"][-1]["reasons"], [capture_teams.TIME_BUDGET])
+        cut = [c for c in run["conversations"] if c["reasons"] == [capture_teams.TIME_BUDGET]]
+        if workers == 1:   # the last one taken is the one the deadline paused
+            self.assertEqual(run["conversations"][-1]["reasons"], [capture_teams.TIME_BUDGET])
+        self.assertTrue(cut)
         self.assertLess(len(run["conversations"]), run["discovery"]["conversations"])
         self.assertTrue(spent["ok"], spent)          # incomplete, not failed: no leak, no error
         self.assertNotEqual(lv.check_expectations(self.SPEC, 0, spent), [])

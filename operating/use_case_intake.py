@@ -49,8 +49,8 @@ text span, the questions found (lines ending in ``?``) and the case's
 evaluation split (``dev`` or ``held_out``, ``split_for``: from the case id only).
 A stub is labelled ``draft`` ``outcome_stated`` or ``no_stated_outcome`` (never an
 invented outcome) and carries ``artifact_complete``; stubs are placeholders for
-a person to confirm and never evaluation truth by themselves. Their file format is the documented input to the evaluation
-tooling (``operating/use_case_eval_stub.schema.json``); held-out stubs stay in the
+a person to confirm and never evaluation truth by themselves. Their file format is the documented hand-off to the evaluation
+lane (``operating/use_case_eval_stub.schema.json``); held-out stubs stay in the
 live state directory and are never committed. The eval tooling's entry point
 (``scripts.eval_use_case_items``, the live check's command) runs this scan and
 then rebuilds the evaluation items of the delivered cases (one
@@ -66,7 +66,7 @@ CLI::
     python3 -m operating.use_case_intake scan --state-dir D \\
         [--sources examples/ingestion_sources.live-check.json \\
          --live-audience examples/ingestion_live_audience.live-check.json] \\
-        [--detail --reader-audience R --principal P [--clearance C]] [--note] [--peek]
+        [--detail --reader-audience R --principal P [--clearance C]] [--dot-note] [--peek]
 
 With ``--sources``/``--live-audience`` the scan first advances the ingestion
 unit and intakes its new/changed files (credentialed environment only; GET
@@ -99,10 +99,11 @@ every scan up to ``FAILURE_RETRY_CAP`` attempts per eTag, and it stays counted
 is the commit point of a record/stub pair; sequence numbers are spent before
 any write, so a half-written pair never shares its ``intake_seq``. The
 intake runs when this CLI is invoked (cron or operator); the ingest worker
-only lists the unit. ``--note`` prints a counts-only note text; this module posts nothing. ``--peek`` does not advance the scan marker.
+only lists the unit. ``--dot-note`` prints a counts-only note text the controller may
+post; this module posts nothing. ``--peek`` does not advance the scan marker.
 
 Evidence: tests use an injected transport; the live path is live-unverified
-until ``verify/live-checks/ingest.use_cases.json`` has a verifier result.
+until ``devloop/live-checks/ingest.use_cases.json`` has a verifier result.
 """
 
 from __future__ import annotations
@@ -144,7 +145,7 @@ MAX_QUESTIONS = 50
 MAX_STATEMENT_CHARS = 500
 TYPES = ("docx", "xlsx", "pptx", "pdf", "vsdx", "png", "jpg", "md", "txt", "eml", "html",
          "msg", "zip", "other")
-# Held-out share of delivered use cases (60 dev / 120 held-out).
+# Held-out share of delivered use cases (10-DECISION #8: 60 dev / 120 held-out).
 SPLIT_RULE = "plx-use-case-split/v1"
 HELD_OUT_PER_DEV = 2
 _UTC = timezone.utc
@@ -842,8 +843,8 @@ def scan_report(state_dir: str | Path, *, advance: bool = True,
     return report
 
 
-def note(report: Mapping[str, Any], *, evidence: str) -> str:
-    """Counts-only note text (nothing is posted here)."""
+def dot_note(report: Mapping[str, Any], *, evidence: str) -> str:
+    """Counts-only note text the controller may post to the Dot (nothing is posted here)."""
     s = report.get("summary") or {}
     parts = s.get("parts") or {}
     types = ", ".join(f"{k} {v}" for k, v in sorted((s.get("by_type") or {}).items())) or "none"
@@ -999,7 +1000,7 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     scan.add_argument("--reader-audience", type=Path)
     scan.add_argument("--principal", action="append", default=[])
     scan.add_argument("--clearance", default="internal")
-    scan.add_argument("--note", action="store_true")
+    scan.add_argument("--dot-note", action="store_true")
     scan.add_argument("--peek", action="store_true", help="do not advance the scan marker")
     args = parser.parse_args(argv)
     try:
@@ -1027,8 +1028,8 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
         report["reader"] = "environment" if live else "stored_state"
         if "intake" in report:
             report["pending_total"] += report["intake"]["counts"]["pending"]
-        if args.note:
-            report["note"] = note(report, evidence=(
+        if args.dot_note:
+            report["dot_note"] = dot_note(report, evidence=(
                 "live read, live-unverified until the verifier records "
                 "ingest.use_cases" if live else "stored intake state"))
         if detail_for is None:
@@ -1051,7 +1052,7 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
 
 
 __all__ = ["DEFAULT_SOURCE_ID", "IntakeError", "IntakeState", "UseCaseIntake", "case_id_for",
-           "detect_type", "known_outcome", "main", "note", "outcome_statements",
+           "detect_type", "dot_note", "known_outcome", "main", "outcome_statements",
            "questions_in", "row_data_check", "scan_report", "split_for"]
 
 

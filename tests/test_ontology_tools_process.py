@@ -1,4 +1,4 @@
-"""plx.process over a fixture projection store.
+"""Lane plx-process: plx.process over a fixture projection store.
 
 The store is created with the frozen DDL (ontology/store_ddl.py) and filled by
 hand with synthetic records; the schema is the real compiled ontology schema and
@@ -1087,7 +1087,7 @@ class PurchaseTests(Mixin, unittest.TestCase):
         self.assertEqual(len(conflict["values"]), 2)
 
     def test_hidden_own_lines_never_fall_back_to_the_twin(self):
-        # Repro: a reader without the gold receipt-line unit must
+        # Repro (review of e8d312a): a reader without the gold receipt-line unit must
         # not get the twin's 90 in place of the gold 100; staff and the restricted
         # reader may differ only in agree=null, never in a decided answer.
         po = self._gold_po_mirrored_in_bc(bc_received="90")
@@ -1296,10 +1296,13 @@ class ManufacturingTests(Mixin, unittest.TestCase):
                          ("filling", "assembly_realized"))
         due = {d["stage"]: d for d in result["due"]}
         self.assertEqual((due["filling"]["overdue"], due["filling"]["days_overdue"]), (True, 27))
-        # a due day has passed only once it has ended everywhere: 2099-01-20 is not yet
-        # past at 2099-01-21T06:00Z (still Jan 20 in the Americas)
-        self.assertEqual(op._business_date(dt.datetime(2099, 1, 21, 6, tzinfo=dt.timezone.utc)),
+        # a due day has passed once it has ended in ET (decided 2026-10-28), not UTC:
+        # 2099-01-21T04:59Z is still Jan 20 in ET (EST), 05:00Z is Jan 21
+        self.assertEqual(op._business_date(dt.datetime(2099, 1, 21, 4, 59,
+                                                       tzinfo=dt.timezone.utc)),
                          dt.date(2099, 1, 20))
+        self.assertEqual(op._business_date(dt.datetime(2099, 1, 21, 5, tzinfo=dt.timezone.utc)),
+                         dt.date(2099, 1, 21))
 
     def test_a_date_a_document_contradicts_or_could_contradict_is_never_overdue(self):
         # The shipment stage as a proven absence (no SHIPPING row), so only the due date
@@ -1453,7 +1456,7 @@ class DependencyTests(Mixin, unittest.TestCase):
         self.assertNotIn(ids["pos"][0], json.dumps(stage))
 
     def test_a_po_shared_by_item_never_blocks_unrelated_assembly_orders(self):
-        # Two AOs use one packaging item; one PO is received, one is
+        # review of fba1d43b: two AOs use one packaging item; one PO is received, one is
         # open. Neither AO is proven to wait on the open PO.
         store = Store()
         ids = material_fixture(store, pos=("received", "open"))
@@ -1470,7 +1473,7 @@ class DependencyTests(Mixin, unittest.TestCase):
                              [(None, "unknown"), (ids["pos"][1], "unknown")], root)
 
     def test_a_withheld_or_unproven_prerequisite_is_a_gap_never_clear(self):
-        # Every PO reached by item received is no proof the
+        # direction review of 924cd826: every PO reached by item received is no proof the
         # AO's materials are in (a PO no path reaches, stock not read): undecided, with
         # the coverage entry, never clear
         for world in ({"pos": ("received",)}, {"pos": (), "bc_pos": ("received",)}):
@@ -1621,7 +1624,7 @@ class DependencyTests(Mixin, unittest.TestCase):
         self.assertEqual(stage["blockers"][-1]["via"], f"loop_a.looped {ids['mo']}")
 
     def test_twins_are_one_candidate_and_a_draft_is_said_never_a_candidate(self):
-        # A Portal PO and its BC twin are one business record,
+        # directive 40cbdb929c97 (1): a Portal PO and its BC twin are one business record,
         # one candidate naming both handles in one record-cap slot (no prerequisite_cap)
         with unittest.mock.patch.object(op, "MAX_PREREQUISITE_RECORDS", 1):
             result, ids = self.dependency_answer("ao", pos=("open",), bc_pos=("open",), twins=1)
@@ -1732,7 +1735,7 @@ def every_portal_relation(**fact):
 
 
 class PortalRelationCompletenessTests(Mixin, unittest.TestCase):
-    """docs/decisions/2026-10-17-answer-correctness-relation-completeness.md: a
+    """devloop/DECISIONS/2026-10-17-answer-correctness-relation-completeness.md: a
     Portal comparison is decided on the completeness of the relations it reads, never
     on the family's alone, and never on row counts."""
 
@@ -1838,7 +1841,7 @@ class RegisterTests(unittest.TestCase):
 # --------------------------------------------------------------------------- monotonicity
 
 class PermissionMonotonicityTests(unittest.TestCase):
-    """Contract: for any reader, every stage,
+    """Contract (lead decision, review of b26efdb): for any reader, every stage,
     condition, check, current-stage and variants answer equals the full-grant
     reader's answer or is undecided (null / unknown with a gap); never a different
     decided value. Stage and condition event lists may only be subsets of the
@@ -1849,8 +1852,8 @@ class PermissionMonotonicityTests(unittest.TestCase):
     today (a value marking the schema does not declare, a confirmed ship-release
     lineage); they keep the guards honest for data the schema may produce later.
     Removing requirement_unproven, the variant-specific requirements, the identity
-    link completeness or the every() proof makes this property fail.
-    A line whose item link the reader cannot see is ungrouped,
+    link completeness or the every() proof makes this property fail (mutation runs
+    in the lane report). A line whose item link the reader cannot see is ungrouped,
     and an ungrouped line on either side leaves every per-item comparison (sums
     and prices) undecided; removing that refusal fails the property on the
     hidden_item_link world. The item-hop completeness flag is defence in depth
@@ -1888,7 +1891,7 @@ class PermissionMonotonicityTests(unittest.TestCase):
         P = PermissionMonotonicityTests
         return {"sales": sales(), "sales_soft_delete": sales(True), "purchase": purchase(),
                 "mirrored_90": mirrored("90"), "mirrored_100": mirrored("100"),
-                # reviewer worlds, synthetic value markings
+                # reviewer worlds (review of 93da7ae), synthetic value markings
                 "po_draft_status_marked": P.po_world("DRAFT"),
                 "po_ordered_status_marked": P.po_world("ORDERED"),
                 "bc_invoice_draft_marked_gl": P.bc_invoice_world("Draft"),
@@ -1942,7 +1945,7 @@ class PermissionMonotonicityTests(unittest.TestCase):
 
     @staticmethod
     def hidden_item_link_world():
-        """Reviewer world, synthetic link marking: PO-A's invoice
+        """Reviewer world (review of da3cbf0), synthetic link marking: PO-A's invoice
         gets a second line for the same item at another price whose item link the
         reader may not see (l5). A full-grant reader sees the price disagree; a reader
         without l5 must not see it agree."""
@@ -2162,7 +2165,7 @@ class PermissionMonotonicityTests(unittest.TestCase):
         self.assertGreater(decided, 1000)
 
     def test_holds_for_a_graph_with_a_variant_specific_requirement_on_a_reachable_stage(self):
-        # With the variant unreadable, a variant-only requirement
+        # Review of 93da7ae: with the variant unreadable, a variant-only requirement
         # must make a reached stage undecided, never be dropped.
         graphs = copy.deepcopy(GRAPHS)
         stage = next(s for s in graphs["sales_order_lifecycle"]["stages"]

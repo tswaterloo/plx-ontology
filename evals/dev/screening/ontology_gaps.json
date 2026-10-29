@@ -1,7 +1,7 @@
 {
  "format": "plx-case-ontology-gaps/v1",
  "case": "vince-screening",
- "status": "What the ontology lacks to answer evals/dev/screening/proposed_items.json. Conditioned on the source descriptor only; no source is cited because the map's own code references are unverified. 'source unknown' carries the question that would find one.",
+ "status": "What the ontology lacks to answer evals/dev/screening/proposed_items.json. Conditioned on the advisory descriptor only; no source is cited because the map's own code references are unverified. 'source unknown' carries the Dot question that would find one.",
  "advisory": "advisory:4f8c497adb40",
  "gaps": [
   {
@@ -15,7 +15,7 @@
     "SC-07"
    ],
    "source": "source unknown",
-   "open_question": "Which Portal or Business Central tables, if any, hold a screening job or its parts, and at what commit?"
+   "dot_question": "Which Portal or Business Central tables, if any, hold a screening job or its parts, and at what commit?"
   },
   {
    "id": "SC-GAP-02",
@@ -28,7 +28,7 @@
     "SC-05"
    ],
    "source": "source unknown",
-   "open_question": "How does option (a) record which blank SKU was converted into which screened SKU, and where is that link stored?"
+   "dot_question": "How does option (a) record which blank SKU was converted into which screened SKU, and where is that link stored?"
   },
   {
    "id": "SC-GAP-03",
@@ -40,7 +40,7 @@
     "SC-06"
    ],
    "source": "source unknown",
-   "open_question": "Where are good units and the final unit cost per screening job recorded, and who confirms them?"
+   "dot_question": "Where are good units and the final unit cost per screening job recorded, and who confirms them?"
   },
   {
    "id": "SC-GAP-04",
@@ -52,7 +52,7 @@
     "SC-08"
    ],
    "source": "source unknown",
-   "open_question": "Has the ERP-D-015 exception for screening blanks and the screening clearing account been approved, by whom, and in which record?"
+   "dot_question": "Has the ERP-D-015 exception for screening blanks and the screening clearing account been approved, by whom, and in which record?"
   },
   {
    "id": "SC-GAP-05",
@@ -64,7 +64,7 @@
     "SC-07"
    ],
    "source": "source unknown",
-   "open_question": "Which DPO and receipt records does the BC sync exclude, and can a GET-only read serve them with the screening quantities?"
+   "dot_question": "Which DPO and receipt records does the BC sync exclude, and can a GET-only read serve them with the screening quantities?"
   }
  ]
 }

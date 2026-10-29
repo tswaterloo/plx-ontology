@@ -1,6 +1,7 @@
 """Dev-set baseline: the oracle's dev items run end to end on the product's generic tools.
 
-Dev-set pass rates in ``state.status`` and the daily report. Harness: ``evals/baseline.py`` (agent surface, the deterministic
+Directive f6643c209267 (dev-set pass rates in ``state.status`` and the daily report);
+10-DECISION decision 8. Harness: ``evals/baseline.py`` (agent surface, the deterministic
 investigation path, the ``eval`` block); run pin: ``evals/runner.py`` ``make_run_pin``; scoring: ``evals/score.py`` (the
 claim gate). No model is called: questions the deterministic path has no plan for are
 counted ``needs_agent``, never as passes.
@@ -16,7 +17,7 @@ Per run:
    state directory; one projection (``ontology.project.build_store``) of the schema's
    relations in that mirror (the link neighbourhood and, live, the plans'), never of a
    relation mirrored only because the answer key cites it: the key never chooses what the
-   product can search, so an item whose evidence lies
+   product can search (architect-20261011T0821Z-kGaZpgjp), so an item whose evidence lies
    past the link depth is a product gap, measured as one. ``eval.mirror.cited_only`` names
    those relations. A live run mirrors the relations the items' families' plans read first
    (``plan_relations``), then the cited ones; only the plans' decide ``eval.complete``,
@@ -49,7 +50,7 @@ row value, identifier or citation), with ``measure`` and ``vs_manual`` as diagno
 pass rule (``evals.measure``), and ``item_rows``: one ``family-number:root:outcome:reason`` code per
 item the oracle drew (``item_row``), unmeasured and blocked ones included, so each
 ``not_found`` root and ``wrong`` answer can be followed up. ``fixture --write-baseline`` writes
-``evals/baseline/dev-fixture.json`` (without wall times) and ``--write-report`` a Markdown report.
+``evals/baseline/dev-fixture.json`` (without wall times) and ``--write-report`` ``devloop/EVAL-BASELINE.md``.
 ``--transcripts DIR`` (outside the repository) keeps the sealed transcripts and scores.
 
 **A Portal outage blocks parts, not the run** (the landed portal-indep pattern, as in
@@ -76,13 +77,13 @@ it prints the record of what the run measured so far and exits 3, so the verifie
 partial run instead of a timeout. Every live record carries ``eval.phases`` (seconds per
 phase) and ``eval.stopped`` (null, or the phase the budget stopped and why).
 
-**Live partition** (metric tiers): a live run drops every dev item whose group
+**Live partition** (bb664f58910f section 2): a live run drops every dev item whose group
 (shared document, root or identifier, ``evals/partition.py``) touches a frozen held-out
 set's key digests (``eval.partition.moved_to_heldout``) and leaves its own digest manifest
 in the host state directory (``--state-dir``, default the held-out state directory), which
 the held-out check reads to keep its set disjoint from every live dev run.
 
-**Held-out split** (``heldout``; decision 2026-10-01-tools-shape item 7,
+**Held-out split** (``heldout``; 10-DECISION 8, decision 2026-10-01-tools-shape item 7,
 ENG-12): the same scorer on the frozen held-out set ``scripts.eval_oracle_dev heldout``
 froze (``--run-id``, default ``heldout-v2``; ``--source live`` or ``fixture``). Its items load
 only through the runner's held-out load (``evals.runner.load_items`` split ``held_out``:
@@ -108,9 +109,9 @@ item id, a value, a label or a per-item row. Transcripts (``--transcripts``) go 
 variant group the budget does not reach is counted (``variant_products``), never run.
 
 Evidence: ``fixture`` is ``isolated-fixture``; ``live`` is ``live-read`` and stays
-``live-unverified`` until the live checks record a pass of
-``verify/live-checks/eval.dev_baseline.json`` (daily cadence); ``heldout --source live``
-likewise of ``verify/live-checks/eval.heldout_product.json``.
+``live-unverified`` until the live verifier records a pass of
+``devloop/live-checks/eval.dev_baseline.json`` (daily cadence); ``heldout --source live``
+likewise of ``devloop/live-checks/eval.heldout_product.json``.
 
 Usage::
 
@@ -148,7 +149,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = "plx-eval-dev-baseline-run/v1"
 DEV_DIR = ROOT / "evals" / "dev"
 BASELINE_JSON = ROOT / "evals" / "baseline" / "dev-fixture.json"
-REPORT_MD = ROOT / "evals" / "baseline" / "dev-fixture.md"
+REPORT_MD = ROOT / "devloop" / "EVAL-BASELINE.md"
 TENANT = "plx"
 PRINCIPAL = "eval:dev-baseline"
 FIXTURE_RUN_ID = "fixture-dev-2026-10-01"
@@ -309,9 +310,27 @@ class Product:
         from integrations.source_mirror import SourceMirror
         return SourceMirror(self.mirror_path, None, self.audience, tenant=TENANT)
 
-    def host(self, principals: Sequence[str]) -> Any:
-        from evals.capture_evidence import CaptureEvidenceHost
+    def open_store(self) -> Any:
+        """A read-only reader of the projection store, for ``host(..., store=)``, primed:
+        the store-wide facts every item's table reads (``TraverseTools.prime``, reader- and
+        policy-independent) are read now, before any item's window opens."""
         from operating import ontology_tools as ot
+        from operating import ontology_tools_traverse as tt
+        reader = ot.StoreReader.open(self.store)
+        try:
+            tt.TraverseTools(ot.OntologyTools(reader, ot.ReadPolicy(tenant=TENANT,
+                                                                    audiences={}))).prime()
+        except BaseException:
+            reader.conn.close()
+            raise
+        return reader
+
+    def host(self, principals: Sequence[str], *, store: Any = None) -> Any:
+        """A host for one item as ``principals``. ``store``: an open reader (``open_store``)
+        the caller keeps and closes, shared by every item of a run so the store-wide facts
+        each table reads are read once per run (``TraverseTools._store_cached``), not once
+        per item; None opens one this host closes."""
+        from evals.capture_evidence import CaptureEvidenceHost
         # The run's mirror is linked, never copied per item: offline hosts fetch nothing.
         case_host = runner.CaseHost(self.state_dir, self.audience, TENANT, principals,
                                     link_mirror=True)
@@ -321,17 +340,19 @@ class Product:
         # case host resolves it live with metadata only: every captured value would be
         # claim_uncited).
         cited = case_host if read is None else CaptureEvidenceHost(case_host, read)
-        reader = None
+        reader = store
         try:
-            reader = ot.StoreReader.open(self.store)
+            if reader is None:
+                reader = self.open_store()
             table = bl.ontology_tool_table(reader, tenant=TENANT, principals=principals,
                                            runtime=bl.HostCitations(cited))
         except BaseException:
             case_host.close()
-            if reader is not None:
+            if store is None and reader is not None:
                 reader.conn.close()
             raise
-        host = bl.ToolHost(case_host, table, TENANT, principals, closing=(reader.conn,))
+        host = bl.ToolHost(case_host, table, TENANT, principals,
+                           closing=() if store is not None else (reader.conn,))
         return host if read is None else CaptureEvidenceHost(host, read)
 
 
@@ -702,7 +723,11 @@ def run_items(items: Sequence[Mapping[str, Any]], product: Product, portal: Any,
     split = "held_out" if any(item["split"] == "held_out" for item in items) else "dev"
     out = runner._out_dir(transcripts, split) if transcripts is not None else None
     read = oracle_field(portal) if portal is not None else None
-    with runner.MirrorPinReader(product.mirror_path) as reader:
+    with runner.MirrorPinReader(product.mirror_path) as reader, ExitStack() as stack:
+        store = None
+        if items:
+            store = product.open_store()
+            stack.callback(store.conn.close)
         for index, item in enumerate(items):
             if deadline is not None and clock() > deadline:
                 incomplete.append(BUDGET_EXHAUSTED)
@@ -715,7 +740,7 @@ def run_items(items: Sequence[Mapping[str, Any]], product: Product, portal: Any,
                 else item_deadline - window * ITEM_EVIDENCE_RESERVE, clock=clock)
             principals = (item.get("actor") or {}).get("principals") or [PRINCIPAL]
             pin = runner.make_run_pin(item, reader, oracle_field=read)
-            row = bl.run_item(item, agent, product.host(principals), run_pin=pin,
+            row = bl.run_item(item, agent, product.host(principals, store=store), run_pin=pin,
                               evidence_label=evidence_label,
                               parent=by_id.get(item.get("parent_id") or ""))
             row["over_time_budget"] = item_deadline is not None and clock() > item_deadline
@@ -778,10 +803,10 @@ ANSWER_COUNTS = ("sampled", "blocked_upstream", "not_held", "unscored_other",
 
 
 def answer_block(rows: Sequence[Mapping[str, Any]], blocked: int) -> dict[str, Any]:
-    """The verifier's answer counts (``verify/live_verify.py`` ``ANSWER_COUNTS``): blocked
+    """The verifier's answer counts (``devloop/live_verify.py`` ``ANSWER_COUNTS``): blocked
     upstream, unscored (no plan, pin drift), wrong, abstained and correct kept apart
     (``scored`` is every labelled outcome, ``abstain_ok`` the justified abstentions), with
-    the numbers the answer-rate bar judges from ``evals.score.answer_rates``, the one computation
+    the numbers ROADMAP B1 judges from ``evals.score.answer_rates``, the one computation
     the agent tiers report (decision 2026-10-19-b1-one-answer-rate): ``answered`` is correct
     plus wrong (an abstention, justified or not, is not covered), ``coverage_rate`` answered
     over the items that ran (sampled less blocked upstream, so a blocked run judges the part
@@ -832,19 +857,27 @@ def verdict(result: Mapping[str, Any], *, min_items: int) -> int:
 # The last hand diagnosis of the fixture run; render_markdown prints it only while the run
 # still matches it (so a regenerated report never carries a stale diagnosis).
 DIAGNOSED = {
-    "date": "2026-10-21",
-    "run": {"items_digest": "f03852a80198817b", "dev_set": "17/30",
-            "by_reason": {"answerability_mismatch": 7, "gap_missing": 2,
-                          "value:absence_not_reported": 2, "value:cited_other_row": 2,
-                          "value:reported_absent": 5, "value:value_missing": 9}},
+    "date": "2026-10-22",
+    "run": {"items_digest": "f03852a80198817b", "dev_set": "19/30",
+            "by_reason": {"answerability_mismatch": 6, "gap_missing": 2,
+                          "value:absence_not_reported": 2, "value:reported_absent": 5,
+                          "value:value_missing": 9}},
     "notes": [
-        "Counts only. Before -> after: dev_set 16/30 "
-        "-> 17/30 (F1 9/12 -> 10/12; F2 3/6, F3 4/6, F4 0/6 unchanged): the chain plan "
-        "reaches a receipt's purchase invoices from the receipt and keeps one only when its "
-        "vendor matches the order's (`party_check`), so another vendor's invoice sharing "
-        "the receipt's number is no longer stated as this order's. 13 fail, by class:",
+        "Lane b1-dev-baseline-correct. Before -> after: dev_set 17/30 -> 19/30 (F3 4/6 -> "
+        "6/6; F1 10/12, F2 3/6, F4 0/6 unchanged), answerability_mismatch 7 -> 6. The "
+        "order_quantities plan states produced as the Portal's qty manufactured (the valued "
+        "FM status entries of the one FM assembly order, else the MO's yield_actual: "
+        "`prefer`) and an order's total over its cited lines as one `sum` the scorer "
+        "recomputes (`total`), so both F3 `cited_other_row` items pass; a whole-record "
+        "read's `not_served` property the plan never asks for no longer leaves the answer "
+        "partial; the plan root is the typed identifier plx.find bound, never a free-text "
+        "lead ranked above it. Run pins 30/30 `pinned`: the live "
+        "`no_capture_at_or_after_time` class (all 12 F3/F4 items on 2026-10-20) is the "
+        "session product's `pin_sync` top-up (f898a85b2f) and main's Portal catalog bound "
+        "(raised 200 to 1000 in f04889ee90), which already covers the 246-relation allowlist. 11 fail, "
+        "by class:",
         "Proof of completeness (7 items, the largest class): with relation-level "
-        "completeness on main (decision record docs/decisions/2026-10-17-answer-correctness-relation-"
+        "completeness on main (devloop/DECISIONS/2026-10-17-answer-correctness-relation-"
         "completeness.md) every F4 side still reads undecided: ordered "
         "`evidence_unproven`, received and invoiced `evidence_not_fully_visible` "
         "(ontology_tools_process.py `_carrier_problem`: a hop from a Portal record into BC "
@@ -852,13 +885,15 @@ DIAGNOSED = {
         "host, grants each BC unit it holds), so F4 match_n and three_way_match "
         "`value_missing` / `reported_absent` / `answerability_mismatch` on 5, an unproven "
         "absence (`absence_not_reported`, `gap_missing`) on 1; F1 `gap_not_ingested` "
-        "partial on 1. Owned by ontology_tools_process.py, outside this eval.",
-        "Counts of zero (2, F2 `sage_order_count`): a count with nothing reached is never "
-        "stated (no proof of absence) and, not required, leaves no gap either.",
-        "Wrong or unread rows (3): F1 assembly-order root resolves to the FM twin "
-        "(`root_twins_not_roots`, counts not reached) 1; F3 `cited_other_row` 2 (the plan "
-        "cites the MO's yield where the oracle sums FM status entries; needs an engine).",
-        "Gaps not stated (1): F2 an order with no shipment whose absence is unproven.",
+        "partial on 1. Owned by ontology_tools_process.py.",
+        "Counts of zero (2, F2 `sage_order_count`): the plan proves the zero by a complete "
+        "search, but the answer format has no citation of a complete search, so it is not "
+        "stated (devloop/DECISIONS/2026-10-28-plan-party-twins-proven-zero-zero-citation.md).",
+        "Wrong root (1): F1 an assembly-order number plx.find resolves to its FM twin "
+        "(`root_twins_not_roots`), so the plan's five counts are not reached "
+        "(`value_missing`).",
+        "Gaps not stated (1): F2 an order with no shipment whose absence is unproven "
+        "(`no_object_reached`: partial, never stated absent).",
         "Not taken: the three_way_match plan could reach the invoice lines through a "
         "receipt's vendor invoice number (PurchaseInvoice.invoices_receipt, +2 invoiced "
         "values, 0 items) but that text-match lead carries no vendor check, so another "
@@ -880,7 +915,7 @@ def render_markdown(result: Mapping[str, Any]) -> str:
         "synthetic fixture world (`evals/oracle/fixture_world.py`), not PLX data, and the "
         "agent is the deterministic investigation path (`evals/baseline.py`), not a model "
         f"({block['llm_calls']} LLM calls). This is not a live measurement and not "
-        "`live-verified`; the live run is `verify/live-checks/eval.dev_baseline.json` "
+        "`live-verified`; the live run is `devloop/live-checks/eval.dev_baseline.json` "
         "(daily).",
         "",
         "## Result",
@@ -951,7 +986,7 @@ def render_markdown(result: Mapping[str, Any]) -> str:
               "- Citations: items pin the oracle's read digests, which no tool returns. The "
               "runner pins, per relation the expected citations name, the first completed "
               "mirror capture at or after the item's time (run pin, "
-              "docs/decisions/2026-10-02-oracle-pinning.md); a cited field whose pinned "
+              "devloop/DECISIONS/2026-10-02-oracle-pinning.md); a cited field whose pinned "
               "mirror version differs from the oracle's read makes the item `pin_drift`, "
               "excluded from every rate and counted.",
               "- Time: under a run deadline each item gets a window (`ITEM_SHARE` of its "
@@ -964,9 +999,10 @@ def render_markdown(result: Mapping[str, Any]) -> str:
               "- Answer gate (`operating/answer_gate.py` `gate_answer`, one function): the "
               "Ask loop and the real agent's MCP session (`plx.case_get` answer mode) gate "
               "the final claims through it, a refused claim is dropped and repaired once. "
-              "The harness never rewrites an answer: it scores the final text as written "
-              "and records what the gate returned (`answer_gate` in the eval summary, "
-              "counts only).",
+              "The real agent's final reply holds only what that gate passed "
+              "(`evals.runner.gate_final_reply`: a value it refused or never checked is "
+              "withheld and named) and the runner records what the gate returned "
+              "(`answer_gate` in the eval summary, counts only).",
               ""]
     lines += ["## Diagnosis", ""]
     if all(block.get(k) == v for k, v in DIAGNOSED["run"].items()):

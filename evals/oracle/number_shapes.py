@@ -27,7 +27,7 @@ from .source import ReadFailed, canonical, field_value, key_text, sql_trim
 PORTAL_FIELDS = ("order_number", "po_reference", "custom_fields.fmOeNumber",
                  "custom_fields.erpCode", "custom_fields.sageOrdNumber",
                  "custom_fields.custPoCode", "custom_fields.renumberedTo")
-# BC fields the Portal's BC sync writes or reads back (03 §3.2/3.3), beside the
+# BC fields the Portal's BC sync writes or reads back (03-PORTAL.md 3.2/3.3), beside the
 # fields the declared edges name.
 BC_FIELDS = (("salesOrders", "number"), ("salesOrders", "externalDocumentNumber"),
              ("salesInvoices", "externalDocumentNumber"), ("salesInvoices", "orderNumber"))

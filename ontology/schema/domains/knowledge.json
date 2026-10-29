@@ -229,7 +229,7 @@
   },
   "ctx.brain": {
    "kind": "context_pack",
-   "ref": "docs/reference/vmc-brain-tools.md#7.1",
+   "ref": "devloop/CONTEXT/05-VMC-BRAIN-TOOLS.md#7.1",
    "note": "Brain hits are leads (derived_knowledge/T3), never cited facts about business records; trim before showing."
   }
  }

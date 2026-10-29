@@ -662,7 +662,7 @@ class RegistryContractTests(unittest.TestCase):
 
     def test_link_contract_citations_name_the_pinned_upstream_commit(self):
         pins: dict[str, set[str]] = {}
-        for pin in json.loads((ROOT / "verify/upstream-pins.json").read_text())["pins"]:
+        for pin in json.loads((ROOT / "devloop/upstream-pins.json").read_text())["pins"]:
             if pin["repo"] == "plx-customer-portal" and pin.get("status") == "resolved":
                 pins.setdefault(pin["path"], set()).add(pin["commit"])
         contracts = json.loads((ROOT / "operating/link_contracts.json").read_text())

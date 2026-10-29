@@ -661,7 +661,7 @@ class DecisionEvidenceTests(unittest.TestCase):
                 [g for g in out["gaps"] if g["reason"] == "decision_order_unknown"])
 
     def test_a_bare_date_is_its_day_in_any_time_zone_never_a_utc_day(self):
-        """23:30 at -04:00 on the 1st is the 2nd in UTC, so read as a
+        """e356dc4031b9 item 5: 23:30 at -04:00 on the 1st is the 2nd in UTC, so read as a
         UTC day the bare date was ordered before it with no gap."""
         def run_with(times):
             return sorted(g["subject"] for g in self.ordered(times)[1])

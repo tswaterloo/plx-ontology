@@ -1,4 +1,4 @@
-"""Goal 2 authorized actions, end to end (EXE-04/EXE-10/EXE-11).
+"""Goal 2 authorized actions, end to end (devloop/GOAL2-ACTIONS.md, EXE-04/EXE-10/EXE-11).
 
 One test per outcome (``OutcomeTests``): approve -> dispatch -> verified, agents are
 never principals, changed evidence is refused, an approval is single use, a process
@@ -428,7 +428,7 @@ class OutcomeTests(Goal2World):
                              ("dispatch_outcome_unknown", "no_outcome_recorded"))
 
         self.setUp()
-        with self.subTest("MC wrote the gate, the process died before recording"):
+        with self.subTest("review 96750e1: MC wrote the gate, the process died before recording"):
             iid = self.ready()
             log = self.dir / "sent.jsonl"
             child = textwrap.dedent(f"""
@@ -573,7 +573,7 @@ class OutcomeTests(Goal2World):
                                                  "reason": intent["gate_reason"]})
         self.assertEqual(prepared["evidence"], [dict(e) for e in intent["evidence"]])
         self.assertTrue(all(r["holds"] for r in prepared["checked_preconditions"]))
-        # Preparing reads MC and sends nothing.
+        # Preparing reads MC (R3 step 1) and sends nothing.
         self.assertEqual(self.mc.tools_called(), ["mc_self_check", "mc_get_task"])
         self.assertEqual((prepared["mc_task"]["stage"], prepared["mc_task"]["data_source"],
                           prepared["mc_task"]["untracked_gates_with_this_reason"]),
@@ -594,7 +594,7 @@ class OutcomeTests(Goal2World):
         gate_id = "apg_1"
         for number, (decider, code) in enumerate(forged):
             if number:
-                gate_id = self.request(iid, f"source record forged #{number} (test)")
+                gate_id = self.request(iid, f"advisory record forged #{number} (test)")
             self.mc.decide(gate_id, decided_by=decider)
             self.path.record_decision(OPS, iid, self.mc.client, session=SESSION)
             view = self.path.get(OPS, iid)
@@ -606,7 +606,7 @@ class OutcomeTests(Goal2World):
         self.assertNotIn("dispatch.started", self.kinds(iid))
 
         # A valid decision: a human MC owner, not the operator, after the request.
-        gate_id = self.request(iid, "source record valid (test)")
+        gate_id = self.request(iid, "advisory record valid (test)")
         self.mc.decide(gate_id, decided_by=VINCE)
         self.path.record_decision(OPS, iid, self.mc.client, session=SESSION)
         decision = self.path.get(OPS, iid)["decisions"][-1]
@@ -1159,7 +1159,7 @@ class ApprovalWithdrawnTests(Goal2World):
                  "approval_withdrawn:mc_task_closed"),
                 ("task no longer visible", lambda task: self.world.mc.restrict(task), None,
                  "approval_withdrawn:mc_task_not_found"),
-                # A cancel then a reopen after the
+                # Decided (plan d2eca493ebe3 item 2): a cancel then a reopen after the
                 # approval changes what it was granted on; the reopened task needs a new one.
                 ("task cancelled and reopened", self.cancel_and_reopen, None,
                  "approval_withdrawn:task_reopened_after_cancel"),
@@ -1669,7 +1669,7 @@ class McFollowUpTests(Goal2World):
                 self.iso.view(actor, iid)["prepared_request"]["arguments"]["description"])
 
     def test_the_follow_up_task_carries_its_cited_source_text_and_citation(self):
-        """Approvers see the sources in the MC task when
+        """Owner policy e251073ef3c5 item 1: approvers see the sources in the MC task when
         every member of the bucket's audience reads them; a case reader who cannot resolve
         the cited record sees none of it."""
         opener = Actor("plx", frozenset({"ops", "finance"}))
@@ -1706,7 +1706,7 @@ class McFollowUpTests(Goal2World):
             self.iso.register(ACTOR, other, uncited, session=gx.SESSION)
 
     def test_source_text_is_withheld_unless_every_audience_member_reads_it(self):
-        """Item 1 authorizes no disclosure beyond read rights.
+        """Owner decision 44adf4de553a: item 1 authorizes no disclosure beyond read rights.
         One member the citation read refuses, or an audience (or a member's rights) the
         host cannot resolve, sends the citation alone with the reason; fail closed."""
         finance = Actor("plx", frozenset({"finance"}))   # reads the case, not the record
@@ -1909,8 +1909,9 @@ class McFollowUpTests(Goal2World):
 
 
 class DefaultApproverRosterTests(Goal2World):
-    """The committed default roster names Vince Alton and Tanush Shah as approvers of
-    every catalog action type; their Entra oids stay null until read, Tanush's MC role stays null while
+    """Owner policy e251073ef3c5 item 3 and owner decision ab1b0f5d9fa8 item 1: the
+    committed default roster names Vince Alton and Tanush Shah as approvers of every catalog
+    action type; their Entra oids stay null until read, Tanush's MC role stays null while
     no source states it (he approves per call and decides no gate), and an approver without
     an oid is refused."""
 
@@ -2119,7 +2120,7 @@ class ActionToolVisibilityTests(ActionToolsTestCase):
             "schema": ap.CALL_APPROVAL_SCHEMA, "tool": "mc_request_approval",
             "arguments": {"taskId": "TASK-9", "reason": intent["gate_reason"]},
             "approved_by": VINCE, "approved_at": "2026-10-01T11:00:00Z",
-            "expires_at": "2026-10-02T11:00:00Z", "evidence_ref": "source record (test)"},
+            "expires_at": "2026-10-02T11:00:00Z", "evidence_ref": "advisory record (test)"},
             session=session)
         self.path.request_gate(actor, iid, self.mc.client, session=session)
         self.mc.decide("apg_1", decided_by=VINCE)
@@ -2151,9 +2152,9 @@ class ActionToolVisibilityTests(ActionToolsTestCase):
         self.assertEqual(EFFECT["relation"], REL)
 
 
-# ---- the approver roster is every dispatching host's one source (WS-11):
-# each host builds its ActionPath from load_approver_roster, a null oid stays refused
-# at the host, no product module builds approvers by hand, and WS-11 runs in test
+# ---- the approver roster is every dispatching host's one source (owner policy e251073ef3c5
+# item 3; WS-11): each host builds its ActionPath from load_approver_roster, a null oid stays
+# refused at the host, no product module builds approvers by hand, and WS-11 runs in test
 # mode (workspace follow-up -> another roster approver -> MC twin -> read-back verified).
 
 DEFAULT_APPROVER = "vince@petrasoap.com"
@@ -2287,7 +2288,7 @@ class HostRosterTest(unittest.TestCase):
             self.assert_served_roster(path)
 
     def test_every_host_reads_the_oid_resolved_at_host_start_through_one_reader(self):
-        # The console, the MCP host and the live workspace
+        # Directive 46bd612e8000 item 4: the console, the MCP host and the live workspace
         # all take a host-resolved oid from the state directory, with its provenance.
         from integrations.graph_directory import (APPROVER_OIDS_DIR, GraphDirectoryReader,
                                                   resolve_roster)

@@ -1,4 +1,4 @@
-"""Goal-2 action path on fixtures.
+"""Goal-2 action path on fixtures (devloop/GOAL2-ACTIONS.md).
 
 Evidence label: ``isolated-fixture`` for dispatch and read-back,
 ``injected-transport`` for MC: the real ``MissionControlMcpClient`` reads and
@@ -226,7 +226,7 @@ class ActionPathTestCase(unittest.TestCase):
                   "approved_by": VINCE,
                   "approved_at": f"2026-10-01T11:00:{self.approvals_made:02d}Z",
                   "expires_at": "2026-10-02T11:00:00Z",
-                  "evidence_ref": "source record 2026-10-01 (test)"}
+                  "evidence_ref": "advisory record 2026-10-01 (test)"}
         record.update(overrides)
         return record
 
@@ -428,7 +428,7 @@ class LifecycleTests(ActionPathTestCase):
         self.assertEqual(self.path.get(OPS, iid)["state"], "gate_rejected")
         # A gate someone else raised with our reason is not ours (a fresh approval).
         self.approve(iid, self.call_record(
-            intent, evidence_ref="source record 2026-10-01 #2 (test)"))
+            intent, evidence_ref="advisory record 2026-10-01 #2 (test)"))
         self.path.request_gate(OPS, iid, self.mc.client, session=SESSION)
         self.mc.tasks["TASK-9"]["approvalGates"][-1]["requestedBy"] = "stephen@petrasoap.com"
         self.mc.decide("apg_2")
@@ -462,7 +462,7 @@ class LifecycleTests(ActionPathTestCase):
 
 
 class ApprovalScopeTests(ActionPathTestCase):
-    """Single use, expiry at send time, decision age, typed MC."""
+    """Review 790c10e: single use, expiry at send time, decision age, typed MC."""
 
     def test_a_call_approval_is_used_once_even_after_a_rejected_gate(self):
         intent = self.path.register(OPS, self.case_id, self.propose(), session=SESSION)
@@ -521,7 +521,7 @@ class ApprovalScopeTests(ActionPathTestCase):
         intent = self.path.get(OPS, iid)["intent"]
         self.approve(iid, self.call_record(
             intent, approved_at="2026-10-02T12:00:00Z", expires_at="2026-10-03T12:00:00Z",
-            evidence_ref="source record 2026-10-02 (test)"))
+            evidence_ref="advisory record 2026-10-02 (test)"))
         self.path.request_gate(OPS, iid, self.mc.client, session=SESSION)
         self.mc.decide("apg_2", decided_at="2026-10-02T13:00:00Z")
         self.path.record_decision(OPS, iid, self.mc.client, session=SESSION)
@@ -571,7 +571,7 @@ class ApprovalScopeTests(ActionPathTestCase):
             self.assertEqual((last["authorizes"], last["reason_code"]), (False, code))
             self.assertEqual(self.path.get(OPS, iid)["state"], "gate_not_authorizing")
             self.approve(iid, self.call_record(
-                intent, evidence_ref=f"source record for {code} {decided_by} (test)"))
+                intent, evidence_ref=f"advisory record for {code} {decided_by} (test)"))
             self.path.request_gate(OPS, iid, self.mc.client, session=SESSION)
         other_operator = MissionControlMcpClient(
             McConfig(MC, Secret(MC_KEY), "ops@petrasoap.com"), hub=hub(self.mc.sender)[0])
@@ -839,7 +839,7 @@ class RealSystemsAreClosedTests(ActionPathTestCase):
         self.assertIn("never re-send", unknown["next_step"])
 
         # Answered "unknown" (a timeout): MC may still be writing, so right away an
-        # absent gate is no evidence and nothing is recorded.
+        # absent gate is no evidence and nothing is recorded (review of ef97a62).
         result = self.path.reconcile_gate(OPS, iid, self.mc.client, session=SESSION)
         self.assertEqual((result["state"], result["matching_gates"], result["reason"],
                           result["send_in_flight"]),
@@ -1285,7 +1285,7 @@ class RealSystemAdapterTests(ActionPathTestCase):
                 self.assertEqual(caught.exception.code, "adapter_key_unmapped:id")
         self.assertEqual(self.portal.requests, [])
 
-    # The proposal's only checkable precondition is on
+    # Review c6e87271 (material): the proposal's only checkable precondition is on
     # another field, so the type's own no-overwrite guard must hold at the owner.
     ORDER_NUMBER_ONLY = [{"check": "field_equals", "citation": API_ORDER,
                           "field": "order_number", "value": "SO-3"}]
@@ -1389,7 +1389,7 @@ class RealSystemAdapterTests(ActionPathTestCase):
 
 
 class McGroundingTests(ActionPathTestCase):
-    """Every gate request is grounded in a fresh MC read."""
+    """Slice: every gate request is grounded in a fresh MC read (pack 04 section 8 R3 step 1)."""
 
     def test_prepare_gate_refuses_unless_mc_is_live_and_the_task_open(self):
         cases = [({"health": {"dataSource": "seed"}}, "mc_data_not_live"),
@@ -1446,7 +1446,7 @@ class McGroundingTests(ActionPathTestCase):
 
 
 class GateDuplicateTests(ActionPathTestCase):
-    """No path creates a duplicate gate silently."""
+    """Review of ef97a62: no path creates a duplicate gate silently."""
 
     def started(self):
         intent = self.path.register(OPS, self.case_id, self.propose(), session=SESSION)
@@ -1550,7 +1550,7 @@ class GateDuplicateTests(ActionPathTestCase):
                                session=SESSION)  # a new round may start
 
     def test_an_older_rejected_gate_is_not_adopted_while_this_send_may_land(self):
-        """Only rejected gates, one older than this send, send in flight."""
+        """Review 62d6eab: only rejected gates, one older than this send, send in flight."""
         intent, iid = self.started()
         self.mc.tasks["TASK-9"]["approvalGates"].append({
             "id": "apg_old", "status": "rejected", "requestedBy": OPERATOR,
@@ -1774,7 +1774,7 @@ class CaseListingTests(ActionPathTestCase):
 
 
 class CurrencyTests(ActionPathTestCase):
-    """A closed case or changed cited evidence ends the path; the next
+    """Review 1a3beeb: a closed case or changed cited evidence ends the path; the next
     safe step says so instead of naming a step that would only be refused."""
 
     def change_cited_row(self):
@@ -2350,7 +2350,7 @@ class DeciderSubjectTests(SubjectTestCase):
 
 
 class IdentityModelTests(SubjectTestCase):
-    """Decision goal2-identity (docs/decisions/2026-10-04-goal2-identity.md): ``act``
+    """Decision goal2-identity (devloop/DECISIONS/2026-10-04-goal2-identity.md): ``act``
     on every step from the host's session, one separation-of-duties check on each
     committing write, matched by Entra oid as well as email, and ``act`` never a
     principal."""
@@ -2485,7 +2485,7 @@ class IdentityModelTests(SubjectTestCase):
         expected = {"taskId": "TASK-9", "reason": intent["gate_reason"]}
         approval = {key: value for key, value in asdict(ap.CallApproval(
             "mc_request_approval", expected, ap._sha(expected), VINCE, "2026-10-01T11:00:00Z",
-            "2026-10-02T11:00:00Z", "source record (legacy)", "0" * 64)).items()
+            "2026-10-02T11:00:00Z", "advisory record (legacy)", "0" * 64)).items()
             if key != "approver_oid"}
         self.legacy_event(iid, "call.approved", approval)
         self.path = self.new_path(approver_roster=ApproverRoster())
@@ -2695,7 +2695,7 @@ class IdentityModelTests(SubjectTestCase):
 
     def host_start(self, age, oids=None):
         """The ``ActionPath`` options of a host that resolved the roster's null oids from
-        Graph /users by UPN ``age`` before now (an
+        Graph /users by UPN ``age`` before now (decided item 1 of directive 46bd612e8000;
         injected transport, never the network). ``oids``: what Graph answers per UPN. A
         later call is a later host start: it rewrites the one host state every host reads."""
         from integrations.graph_directory import GraphDirectoryReader, resolve_roster
@@ -2754,7 +2754,7 @@ class IdentityModelTests(SubjectTestCase):
         self.assert_parked(self.drive(SESSION), "decider_oid_unverified")
 
     def test_a_recorded_graph_oid_stands_at_request_and_dispatch_only_while_fresh(self):
-        # One age rule: the Graph oid an approval or decision
+        # One age rule (architect-20261011T0821Z): the Graph oid an approval or decision
         # recorded at age 23 h is re-checked when acted on at 25 h, through the roster's
         # current copy (the long-running host re-reads it: still the same stale read).
         self.path = self.new_path(**self.host_start(timedelta(hours=23)))
@@ -2820,7 +2820,7 @@ class IdentityModelTests(SubjectTestCase):
         self.assertEqual(self.fx.calls, 1)   # only the same-oid re-read dispatched
 
     def test_a_provenance_less_oid_not_the_committed_one_stands_24_h_from_its_decision(self):
-        # A decision recorded with an oid but no provenance (a
+        # architect-20261011T1621Z: a decision recorded with an oid but no provenance (a
         # build between the Graph resolution and its provenance) whose oid is not the
         # roster's committed one was read from Graph: 24 h from its decided_at, like any
         # Graph oid. The decision itself may stand longer (72 h here), so only the oid's
@@ -2858,13 +2858,13 @@ class IdentityModelTests(SubjectTestCase):
         stamp = "%Y-%m-%dT%H:%M:%SZ"
         approval = asdict(ap.CallApproval(
             tool, arguments, ap._sha(arguments), approver, approved_at.strftime(stamp),
-            (approved_at + timedelta(hours=24)).strftime(stamp), "source record (legacy)",
+            (approved_at + timedelta(hours=24)).strftime(stamp), "advisory record (legacy)",
             ap._sha([approver, approved_at.isoformat()]), oid))
         del approval["approver_oid_provenance"]
         self.legacy_event(iid, "call.approved", approval, path)
 
     def test_a_provenance_less_call_approver_oid_stands_24_h_from_its_approval(self):
-        # The age rule of a decider's provenance-less oid
+        # Overseer ad235a569e34 item 2: the age rule of a decider's provenance-less oid
         # (above) holds for the call approver's where a call is sent, request_gate and
         # send_call: an oid that is not the committed one stands 24 h from approved_at.
         graph_read = "0000b000-0000-4000-8000-0000000000f1"   # not the committed VINCE_OID

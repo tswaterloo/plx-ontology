@@ -13,8 +13,11 @@ sees withheld markers, never the rows.
 
 **Opening a case (the general path, no per-kind code).** The captures the state
 directory holds (the Portal mirror, and BC, mail and SharePoint captures when present)
-are projected once per run into ``case-workspace-live/ontology.sqlite`` (the one
-projector, ``ontology.project.build_store``; a BC-only directory answers BC-only). In one
+are read through one projection per run (``run_projection``): the persistent host's
+served generation (``<DIR>/projection``), read-only and pinned for the run, when the
+directory has one; else projected into ``case-workspace-live/ontology-<tenant digest>.sqlite``
+(the one projector, ``ontology.project.build_store``; refused below 4 GiB free; a BC-only
+directory answers BC-only). In one
 in-process MCP session over that projection, for the investigator:
 
 * the root: ``plx.find`` for ``KIND=IDENTIFIER`` (``KIND`` names the object type to look
@@ -81,7 +84,9 @@ read was refused or not answered on (``host.blocked_parts``: e.g. Graph refusing
 mailbox lookup without User.Read.All); the run lists them in ``blocked_upstream`` beside
 the Portal's, and a pick that finds nothing while a source of its linked (or picked) type
 was refused is ``blocked`` with ``blocked_upstream:<source>`` (``host_refusals``), never a
-failure: what the source refused is no evidence of none.
+failure: what the source refused is no evidence of none. A source the host's budget cut
+(``host_capture_gaps``: ``source_state.complete = 0``) that a pick needed is blocked the
+same way, its part ``cause: capture_gap`` (``error_code: capture_budget_cut``).
 
 Case audience: the case store shows a case's question and roots to its whole audience,
 and they hold the requested identifier (or, for a pick, the root's display value read
@@ -96,7 +101,8 @@ is reused (``case-workspace-live/opened.json``) unless ``--reinvestigate``: a ca
 before a person accepted or rejected an identity link is investigated again after it
 (``_decisions``; a store that cannot be read reuses nothing). Picks are never reused.
 Cases are written only to this state directory's own case store; no business system is
-written. The projection the cases are opened over is one file per tenant
+written. The projection the cases are opened over is the host's served generation when
+it can stand for the tenant's (``served_generation``), else one file per tenant
 (``projection_file``), built read-only from the captures and the tenant's decisions
 (``project_state``).
 
@@ -112,7 +118,7 @@ link such as ``SupplierConfirmation.confirms``), beside the readable objects
 Evidence: what the workspace shows is ``MIRROR_EVIDENCE`` (captures the ingestion runner
 wrote; paged, non-atomic, possibly older than the source). Whether that runner read live
 sources is recorded by its own run, never asserted here; ``live-verified`` comes only
-from a ``verify/live_verify.py`` result (spec ``verify/live-checks/case.workspace_live.json``).
+from a ``devloop/live_verify.py`` result (spec ``devloop/live-checks/case.workspace_live.json``).
 
 CLI (prints counts, booleans and enums only: no identifier, value, name or citation)::
 
@@ -581,9 +587,43 @@ def host_refusals(state_dir: str | Path) -> dict[str, list[dict[str, Any]]]:
     return refused
 
 
+def host_capture_gaps(state_dir: str | Path) -> dict[str, dict[str, Any]]:
+    """Per projection source (``host.PROJECTED_SOURCE``) the host configures and whose
+    latest capture its own budget cut (``source_state.complete = 0`` and the latest cycle's
+    outcome for it partial with a ``*_budget`` reason: ``time_budget``, ``page_budget``),
+    the typed ``capture_gap`` part a case that needed that source is blocked on, read-only
+    from the host ledger; none when no host ran. A source that finished, was never
+    configured, has no row or is incomplete for another reason (a unit that failed) is no
+    budget gap."""
+    from .host import _UPSTREAM, HOST_DIR, LEDGER_FILE, PROJECTED_SOURCE
+
+    host = Path(state_dir) / HOST_DIR / LEDGER_FILE
+    if not host.is_file():
+        return {}
+    cut = {source for (source,) in _read_only(host, (
+        "SELECT source FROM source_state WHERE configured = 1 AND complete = 0")) or ()}
+    latest = _read_only(host, "SELECT report FROM cycle ORDER BY cycle_id DESC LIMIT 1")
+    try:
+        sources = json.loads(latest[0][0]).get("sources") if latest else None
+    except (TypeError, ValueError, AttributeError):
+        sources = None
+    gaps = {}
+    for source in sorted(cut):
+        outcome = sources.get(source) if isinstance(sources, dict) else None
+        reasons = outcome.get("reasons") if isinstance(outcome, dict) else None
+        if source in PROJECTED_SOURCE and source != "portal" \
+                and isinstance(outcome, dict) and outcome.get("state") == "partial" \
+                and any(isinstance(r, str) and r.endswith("_budget")
+                        for r in reasons or ()):
+            gaps[PROJECTED_SOURCE[source]] = {
+                "part": source, "source": _UPSTREAM[source],
+                "error_code": "capture_budget_cut", "cause": "capture_gap"}
+    return gaps
+
+
 def upstream_parts(reasons: Sequence[str] | None) -> list[dict[str, str]]:
-    """``portal_upstream`` reasons as the live checks' ``blocked_upstream`` parts
-    (``verify/live_verify.py``: the check is then blocked, never a pass)."""
+    """``portal_upstream`` reasons as the live verifier's ``blocked_upstream`` parts
+    (``devloop/live_verify.py``: the check is then blocked, never a pass)."""
     parts = {("host:portal" if reason.startswith("host_error:") else
               "ingestion:portal_relation", reason.split(":", 1)[1][:79])
              for reason in reasons or ()}
@@ -629,7 +669,8 @@ def offline_runtime(state_dir: str | Path, mirror_audience: Any, tenant: str, *,
 
 
 def project_state(state_dir: str | Path, path: str | Path, *, tenant: str,
-                  internal_domains: Sequence[str] = ()) -> dict[str, Any]:
+                  internal_domains: Sequence[str] = (),
+                  checkpoint: Callable[[], None] | None = None) -> dict[str, Any]:
     """Project every capture the state directory holds (the Portal mirror; BC, mail and
     SharePoint captures) into ``path``, offline: no source system is contacted. The new
     store replaces the old one by rename, so a reader never opens a half-built file.
@@ -665,9 +706,238 @@ def project_state(state_dir: str | Path, path: str | Path, *, tenant: str,
             captures = stack.enter_context(project.MirrorCaptures(mirror))
             sources[captures.source] = captures
         steps = build_steps.post_project(state_dir, tenant, scratch=path.parent)
-        report = project.build_store(temp, load_schema(), sources, post_project=steps)
+        try:
+            report = project.build_store(temp, load_schema(), sources, post_project=steps,
+                                         checkpoint=checkpoint)
+        except BaseException:
+            temp.unlink(missing_ok=True)
+            raise
     os.replace(temp, path)
     return report
+
+
+# ------------------------------------------------------------------ the run's projection
+#
+# A state directory a persistent host serves (``operating.host``: ``<DIR>/projection``,
+# generations committed by ``ontology.project_incremental``) already holds the projection
+# of every capture: a run reads that generation, read-only, and never builds its own copy
+# (a cold private build of a full state directory needs as much disk again as the served
+# one). A private build happens only when the directory has no served generation, or when
+# the served one cannot be shown to carry this tenant's decisions, and only with room.
+
+SERVED_DIR = "projection"  # ``operating.host.PROJECTION_DIR`` (not imported: host is heavy)
+PIN_PREFIX = ".served-"
+# A private build starts only with this much free beyond its estimate (the host's own
+# floor, ``operating.host.MIN_FREE_BYTES``), and stops when free space falls below it.
+PRIVATE_FREE_FLOOR = 4 * 1024 ** 3
+
+
+class ProjectionDiskLow(OpenError):
+    """A private projection build refused or stopped: too little free disk."""
+
+    def __init__(self, free: int | None, needed: int) -> None:
+        super().__init__("projection_disk_low")
+        self.free, self.needed = free, needed
+
+
+class RunProjection:
+    """The projection one run reads: ``path``, ``source`` (``served``: the host's
+    committed generation; ``private``: built for this run), ``reason`` (why that one) and,
+    when served, the ``generation`` and ``content_digest``. A served generation is
+    pinned (``pinned``): a hard link to its store in ``case-workspace-live`` keeps the
+    whole generation readable for the run while the host commits and prunes newer ones;
+    :meth:`close` drops the link. A committed generation is never written again, so every
+    read of the run sees one consistent projection."""
+
+    def __init__(self, path: Path, source: str, reason: str, *,
+                 generation: str | None = None, content_digest: str | None = None,
+                 pin: Path | None = None) -> None:
+        self.path, self.source, self.reason = Path(path), source, reason
+        self.generation, self.content_digest, self.pin = generation, content_digest, pin
+
+    @property
+    def pinned(self) -> bool:
+        return self.pin is not None
+
+    def summary(self) -> dict[str, Any]:
+        """Counts and enums only (no path)."""
+        return {"source": self.source, "reason": self.reason,
+                "generation": self.generation, "pinned": self.pinned}
+
+    def close(self) -> None:
+        if self.pin is not None:
+            self.pin.unlink(missing_ok=True)
+            self.pin = None
+
+
+def _foreign_or_unproven(state_dir: Path, tenant: str, generation: Any) -> str | None:
+    """Why the served ``generation`` cannot stand for ``tenant``'s projection, or None.
+    The host records no tenant with a generation; its ``post_project`` rows are its own
+    tenant's decisions as they were when the build started. So it is reused only when the
+    decision stores hold no other tenant's rows; when ``tenant`` has decisions, the build
+    read some (the host's tenant is then ``tenant``) and started after the newest of them.
+    A store or time that cannot be read is unproven."""
+    from ontology import reviews
+    from ontology.store import instant
+
+    from . import kind_confirmation
+
+    own, newest = 0, []
+    for path, table, at in (
+            (reviews.store_path(state_dir), "reviews", "recorded_at"),
+            (kind_confirmation.store_path(state_dir), "confirmation",
+             "json_extract(record_json, '$.confirmed_at')")):
+        if not path.is_file():
+            continue
+        try:
+            with contextlib.closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro",
+                                                    uri=True, timeout=5)) as db:
+                if db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND "
+                              "name = ?", (table,)).fetchone() is None:
+                    continue
+                other, mine = db.execute(
+                    f"SELECT COALESCE(SUM(tenant != ?), 0), COALESCE(SUM(tenant = ?), 0) "
+                    f"FROM {table}", (tenant, tenant)).fetchone()
+                if mine:
+                    newest.append(db.execute(f"SELECT MAX({at}) FROM {table} "
+                                             "WHERE tenant = ?", (tenant,)).fetchone()[0])
+        except sqlite3.Error:
+            return "decision_store_unreadable"
+        if other:
+            return "served_tenant_unproven"
+        own += mine
+    if not own:
+        return None
+    steps = generation.report.get("post_project") or {}
+    read = sum(int(((steps.get(name) or {}).get("counts") or {}).get(key) or 0)
+               for name, key in (("reviews", "decisions"), ("confirmations", "confirmations")))
+    if not read:
+        return "served_tenant_unproven"
+    try:
+        with contextlib.closing(sqlite3.connect(
+                generation.store.resolve().as_uri() + "?mode=ro", uri=True)) as db:
+            built = instant(db.execute("SELECT value FROM store_meta WHERE key = 'built_at'"
+                                       ).fetchone()[0])
+        if any(instant(at) >= built for at in newest):
+            return "served_older_than_decisions"
+    except (sqlite3.Error, TypeError, ValueError):
+        return "served_tenant_unproven"
+    return None
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _sweep_pins(directory: Path) -> None:
+    """Drop the pins of runs no longer running (a killed run leaves its hard link)."""
+    for pin in directory.glob(f"{PIN_PREFIX}*.sqlite"):
+        match = re.fullmatch(re.escape(PIN_PREFIX) + r"[0-9A-Za-z]+-(\d+)-[0-9a-f]+\.sqlite",
+                             pin.name)
+        if match and not _pid_alive(int(match.group(1))):
+            pin.unlink(missing_ok=True)
+
+
+def _pin(state_dir: Path, generation: Any) -> Path | None:
+    """A hard link to ``generation``'s store in ``case-workspace-live`` (no bytes copied),
+    checked to be that generation (its content digest); None when the file system cannot
+    link it (another device, no permission) or the generation was pruned meanwhile."""
+    import secrets
+
+    directory = state_dir / INDEX_DIR
+    directory.mkdir(parents=True, exist_ok=True)
+    _sweep_pins(directory)
+    pin = directory / f"{PIN_PREFIX}{generation.id}-{os.getpid()}-{secrets.token_hex(4)}.sqlite"
+    try:
+        os.link(generation.store, pin)
+    except OSError:
+        return None
+    try:
+        with contextlib.closing(sqlite3.connect(pin.resolve().as_uri() + "?mode=ro",
+                                                uri=True)) as db:
+            row = db.execute("SELECT value FROM store_meta WHERE key = 'content_digest'"
+                             ).fetchone()
+    except sqlite3.Error:
+        row = None
+    if row is None or row[0] != generation.content_digest:
+        pin.unlink(missing_ok=True)
+        return None
+    return pin
+
+
+def served_generation(state_dir: str | Path, tenant: str) -> tuple[Any, str]:
+    """(the host's committed generation this run may read for ``tenant``, or None; the
+    reason code). Read-only: ``CURRENT`` and the generation's store are only read."""
+    from ontology.project_incremental import current_generation
+
+    generation = current_generation(Path(state_dir) / SERVED_DIR)
+    if generation is None:
+        return None, "no_served_generation"
+    refused = _foreign_or_unproven(Path(state_dir), tenant, generation)
+    if refused:
+        return None, refused
+    return generation, "served_generation"
+
+
+def run_projection(state_dir: str | Path, tenant: str, *,
+                   internal_domains: Sequence[str] = (),
+                   disk_free: Callable[[Path], int] | None = None) -> RunProjection:
+    """The projection a run reads (:class:`RunProjection`; the caller closes it). The
+    host's served generation when there is one this tenant may use (opened read-only,
+    pinned; ``internal_domains`` is then the host's own mail scope); else a private build
+    at :func:`projection_file` (:func:`project_state`), refused before it starts when free
+    space is below ``PRIVATE_FREE_FLOOR`` plus the last private file's size, and stopped
+    (:class:`ProjectionDiskLow`, partial files removed) when free space falls below the
+    floor while it runs."""
+    import shutil
+
+    state = Path(state_dir)
+    free_of = disk_free or (lambda path: shutil.disk_usage(path).free)
+    generation, reason = served_generation(state, tenant)
+    for _attempt in range(2):   # a generation pruned between reading CURRENT and linking
+        if generation is None:
+            break
+        pin = _pin(state, generation)
+        if pin is not None:
+            return RunProjection(pin, "served", reason, generation=generation.id,
+                                 content_digest=generation.content_digest, pin=pin)
+        again, why = served_generation(state, tenant)
+        if again is not None and again.id == generation.id:
+            # Linking is not possible here: read the generation in place, unpinned (the
+            # host keeps the previous generation on disk after one commit, ``KEEP``).
+            return RunProjection(generation.store, "served", "served_generation_unpinned",
+                                 generation=generation.id,
+                                 content_digest=generation.content_digest)
+        generation, reason = again, why
+    path = projection_file(state, tenant)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    previous = path.stat().st_size if path.is_file() else 0
+
+    def free() -> int | None:
+        try:
+            return int(free_of(path.parent))
+        except OSError:
+            return None
+
+    needed = PRIVATE_FREE_FLOOR + previous
+    before = free()
+    if before is None or before < needed:
+        raise ProjectionDiskLow(before, needed)
+
+    def checkpoint() -> None:
+        now = free()
+        if now is None or now < PRIVATE_FREE_FLOOR:
+            raise ProjectionDiskLow(now, PRIVATE_FREE_FLOOR)
+
+    project_state(state, path, tenant=tenant, internal_domains=internal_domains,
+                  checkpoint=checkpoint)
+    return RunProjection(path, "private", reason)
 
 
 _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9#._/-]*")
@@ -1113,7 +1383,11 @@ class _Recorder:
             statement = (f"{title}: {entry['object_type']}.{entry['property']} = {text} "
                          f"(answer {entry.get('name')}, property{caveat}).")
         else:
-            statement = f"{title}: {entry.get('name')} = {text} ({entry.get('kind')}{caveat})."
+            # A computed quantity (a total over one unit's lines) is stated in its unit.
+            extra = "".join(f" {x}" for x in (entry.get("unit"), entry.get("currency"))
+                            if isinstance(x, str))
+            statement = (f"{title}: {entry.get('name')} = {text}{extra} "
+                         f"({entry.get('kind')}{caveat}).")
         if entry.get("kind") == "property":
             cite = entry.get("citation") if isinstance(entry.get("citation"), Mapping) else {}
             field = cite.get("field_path")
@@ -1419,7 +1693,9 @@ class _Recorder:
                 self.interpretation(title, entry, self.scoped(own) if own else None)
         for conflict in answer.get("conflicts") or []:
             self.conflict(conflict)
-        self.tool_gaps(answer.get("gaps"), "plx.investigate")
+        # The family's verdict (truncated, partial, blocked) is recorded before its own
+        # detail gaps, so a family with many detail gaps never loses its verdict to the
+        # case's gap cap (the cap then cuts details, and names the cut).
         completeness = answer.get("completeness") or {}
         if completeness.get("truncated"):
             # The family answered a page of what it reached: the cut is named.
@@ -1431,6 +1707,7 @@ class _Recorder:
                                 .get("reasons") or [])
             self.gap("unknown", f"plan_{state}", f"{title}: the answer is {state}",
                      detail=reasons or None)
+        self.tool_gaps(answer.get("gaps"), "plx.investigate")
 
     def finish(self) -> None:
         if self.upstream:
@@ -1816,7 +2093,12 @@ class CaseOpener:
         self.projection_path = projection_file(state_dir, actor.tenant)
         self.upstream = portal_upstream(state_dir)
         self.refused = host_refusals(state_dir)
+        # Sources whose latest capture the host's budget cut (``host_capture_gaps``) and
+        # those of them a case was blocked on (the summary names only these).
+        self.capture_gaps = host_capture_gaps(state_dir)
+        self.gap_blocked: dict[str, dict[str, Any]] = {}
         self._projected = False
+        self.run_projection: RunProjection | None = None
         self._pick_stats: dict[str, Any] | None = None
         # The objects a ``lead_tier`` pick reached through its lead-tier link (never
         # printed: the case's pick_rests_on_lead gap cites them).
@@ -1880,12 +2162,20 @@ class CaseOpener:
         return f"{actor_label(self.actor)}|{kind}={identifier.strip().upper()}|{options}"
 
     def projection(self) -> Path:
-        """The projection of this state directory's captures, built once per opener."""
+        """The projection of this state directory's captures, chosen once per opener
+        (:func:`run_projection`: the host's served generation, pinned, when there is one
+        this tenant may use; else built privately). :meth:`close` releases it."""
         if not self._projected:
-            project_state(self.state_dir, self.projection_path, tenant=self.actor.tenant,
-                          internal_domains=self.internal_domains)
+            self.run_projection = run_projection(self.state_dir, self.actor.tenant,
+                                                 internal_domains=self.internal_domains)
+            self.projection_path = self.run_projection.path
             self._projected = True
         return self.projection_path
+
+    def close(self) -> None:
+        """Release the pinned served generation, if any (idempotent)."""
+        if self.run_projection is not None:
+            self.run_projection.close()
 
     def open_case(self, kind: str, identifier: str, *, reinvestigate: bool = False
                   ) -> dict[str, Any]:
@@ -2050,6 +2340,13 @@ class CaseOpener:
                                                                             object_type)
         if blocked:
             raise OpenError(blocked)
+        # A linked source the host's budget cut is a typed capture gap: the record it did
+        # not read may be the one, so the case is blocked on it, not rooted without it.
+        missing = cause.partition(":")[2] if cause.startswith(
+            "pick_source_not_captured:") else None
+        if missing in getattr(self, "capture_gaps", {}):
+            self.__dict__.setdefault("gap_blocked", {})[missing] = self.capture_gaps[missing]
+            raise OpenError(f"blocked_upstream:{missing}")
         for object_id in fallback[:PICK_SCAN]:
             card = call("plx.object", {"object_id": object_id})
             if "error" in card:
@@ -3390,7 +3687,7 @@ def _host_cycle(args: argparse.Namespace, environ: Mapping[str, str],
 
 
 def _reference_alias(projection: Mapping[str, Any] | None) -> dict[str, Any]:
-    """The supplier-number alias join of the build: its typed outcome
+    """The supplier-number alias join of the build (ROADMAP A10): its typed outcome
     (``ontology.mentions.reference_alias_outcome``: ``alias_joined``, a pending lead, or
     why no candidate was found) and counts only, from the mention step's counts."""
     from ontology.mentions import reference_alias_outcome
@@ -3435,7 +3732,7 @@ class _StderrCauses(contextlib.AbstractContextManager):
     {"log:<logger, two name parts>:<LEVEL>" | "warning:<Category>": n}}``), never a
     message, which may carry a document's text. At most ``STDERR_CAUSES_MAX`` causes are
     named; the rest count as ``other``. Any other logging record, a traceback logged with
-    ``exc_info`` included, reaches stderr unchanged (``verify/live_verify.py`` reads its
+    ``exc_info`` included, reaches stderr unchanged (``devloop/live_verify.py`` reads its
     exception class), as does an exception escaping the run. Warnings are caught
     process-wide (``warnings.catch_warnings``: not thread-safe), so it wraps the CLI only."""
 
@@ -3618,6 +3915,7 @@ def _main(argv: Sequence[str] | None, *, environ: Mapping[str, str] | None,
     cases: list[dict[str, Any]] = []
     views: list[Mapping[str, Any] | None] = []
     mapped: _ReaderTools | None = None
+    opener: CaseOpener | None = None
     try:
         if actions_file.exists():
             from .action_path import ActionPath
@@ -3645,6 +3943,7 @@ def _main(argv: Sequence[str] | None, *, environ: Mapping[str, str] | None,
         opened = [opener.open_case(kind, identifier, reinvestigate=args.reinvestigate)
                   for kind, identifier in requests]
         seconds["open"] = round(time.monotonic() - started, 1)
+        summary["blocked_upstream"] += list(opener.gap_blocked.values())
         started = time.monotonic()
         opened += [{"request": "case_id", "status": "existing", "case_id": case_id}
                    for case_id in args.case_id]
@@ -3711,12 +4010,16 @@ def _main(argv: Sequence[str] | None, *, environ: Mapping[str, str] | None,
             pick_date_months=months,
             **({"pick_blocked": gap} if gap else {}),
             **panel_totals(cases), cases=cases)
+        if opener.run_projection is not None:   # which projection the cases were read on
+            summary["projection"] = opener.run_projection.summary()
         causes.flush()
         text = json.dumps(summary, indent=1, sort_keys=True)
         check = summary_check(runtime, investigator, views, text)
     finally:
         if mapped is not None:
             mapped.close()
+        if opener is not None:
+            opener.close()
         runtime.close()
     if ingested(args.state_dir):
         from .ingestion import row_data_check
@@ -3728,7 +4031,7 @@ def _main(argv: Sequence[str] | None, *, environ: Mapping[str, str] | None,
     print(json.dumps(summary, indent=1, sort_keys=True))
     wanted = len(cases) if args.min_rendered is None else args.min_rendered
     # A request blocked by a Portal outage is not owed a render; the run then reports
-    # blocked_upstream, which the live checks record as blocked, never as a pass.
+    # blocked_upstream, which the live verifier records as blocked, never as a pass.
     wanted = min(wanted, len(cases) - summary["blocked"])
     ok = (summary["cases_rendered"] >= wanted and not summary["failed_unnamed"]
           and not summary["row_leaks"] and not summary["withheld_relation_refs"]
@@ -3865,8 +4168,9 @@ def _write(directory: Path, index: int, reader: Any, view: Mapping[str, Any]) ->
 
 __all__ = ["CaseOpener", "JOIN_REASONS", "KIND_TYPES", "MIRROR_EVIDENCE", "MissingData",
            "OPEN_KINDS", "OpenError", "carrier_key", "case_tokens", "checkable", "cited_rows",
-           "host_refusals", "ingested", "join_carriers", "leak_check", "main",
+           "host_capture_gaps", "host_refusals", "ingested", "join_carriers", "leak_check", "main",
            "offline_runtime", "parse_open", "parse_pick", "portal_upstream", "project_state",
+           "ProjectionDiskLow", "RunProjection", "run_projection", "served_generation",
            "projection_file", "scope_links", "structure", "summary_check", "upstream_parts", "workspace"]
 
 

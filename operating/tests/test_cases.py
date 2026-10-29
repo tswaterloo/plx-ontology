@@ -368,7 +368,7 @@ class Compute(CaseTestBase):
                 self.store.compute(ENG_OPS, case_id, {"a": {"literal": text, "unit": "EA"}}, "a", "EA")
 
     def test_cited_json_fraction_is_read_with_a_recorded_rule(self):
-        # A JSON number with a fraction arrives as a float, so a
+        # Review c7b48b2: a JSON number with a fraction arrives as a float, so a
         # cited price or weight could not be computed at all.
         case_id = self.open_case()
         self.resolver.add("api://f@c", {"row": {"qty": 1.5, "price": 35.099999999999994,

@@ -679,7 +679,7 @@ class CompletenessTests(IngestionTestCase):
         self.assertEqual((unit["counts"]["pages"], unit["counts"]["items_read"]), (1, 2))
 
     def test_source_errors_carry_a_fixed_vocabulary_diagnosis(self):
-        """Throttling, outage and retry exhaustion are told
+        """Directive e402518f64be: throttling, outage and retry exhaustion are told
         apart; nothing from the source text reaches the reason."""
         self.fake.fail_on = (re.compile(rf"/{INBOX}/messages$"), 429)
         unit = self.units(self.ingestor().run(only=["mail.purchase-order"]))[
@@ -861,7 +861,7 @@ class StatusTests(IngestionTestCase):
 
 
 class FrontierRepairTests(IngestionTestCase):
-    """A queued folder that moved or vanished never stalls the source."""
+    """A queued folder that moved or vanished never stalls the source (review 52f6c8e)."""
 
     def budget_one(self) -> Ingestor:
         return self.ingestor(sources_document(**{"sp.qcqa.aos": {"max_folders_per_run": 1}}))
@@ -989,7 +989,7 @@ class WithheldAndMailCaveatTests(IngestionTestCase):
 
 
 class MailWindowAnchorTests(IngestionTestCase):
-    """case.mail_evidence failed live: the inbox's newest
+    """case.mail_evidence failed live (directive 9f804f59e9b4): the inbox's newest
     message was ~29 days old, so a 14-day window anchored on the clock read
     nothing. The live-check sources file anchors the first window on the
     folder's newest message instead."""
@@ -1034,7 +1034,7 @@ class MailWindowAnchorTests(IngestionTestCase):
                             for c in self.fake.calls))
 
     def test_clock_anchored_window_reads_nothing_from_the_same_quiet_inbox(self):
-        # The failure the live checks saw, kept as the contrast: same file with
+        # The failure the live verifier saw, kept as the contrast: same file with
         # the default anchor reads zero messages (honest, but proves no reading).
         self.quiet_inbox()
         document = self.live_sources()
@@ -1079,7 +1079,7 @@ class MailWindowAnchorTests(IngestionTestCase):
 
 
 class SiteSourceConfigTests(unittest.TestCase):
-    """A sharepoint_folder may name a site instead of a drive."""
+    """A sharepoint_folder may name a site instead of a drive (directive e2d2f62b791d)."""
 
     @staticmethod
     def spec(environ=ENV, **fields):

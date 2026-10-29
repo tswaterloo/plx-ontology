@@ -1,4 +1,4 @@
-"""The write twin in test mode (EXE-02/03/04/05/09/10/11, G-01).
+"""The write twin in test mode (owner directive 746d96497341; EXE-02/03/04/05/09/10/11, G-01).
 
 Every action type of the catalog runs its lifecycle on the twin (``twin.world``): the
 Portal type through the reviewed Portal adapter over ``TwinTransport`` to the Portal twin,
@@ -353,6 +353,65 @@ class ApprovalBindingTests(TwinTestCase):
         self.assertEqual((world.portal.writes, world.transport.requests), (0, []))
 
 
+class ConsolePathTests(TwinTestCase):
+    def test_people_at_the_console_take_the_portal_action_to_read_back_on_the_twin(self):
+        """The whole path reached by people at the console (``WorkspaceActions``), test
+        mode: the employee requests approval, the roster's call approver approves exactly
+        the shown call at their own session (nothing sent), the request goes to the MC
+        twin once, its admin decides, the employee dispatches once and verifies."""
+        from operating.session_identity import CHANNEL_CONSOLE, fixture_session
+        from operator_ui.object_workspace import WorkspaceActions
+
+        world = self.world()
+        _case, iid = world.portal_intent(1, "PO7001")
+        world.mc.add_task("TASK-TWIN-CONSOLE", "Twin gate")
+        dispatcher = world.registry.for_capability(PORTAL_CAPABILITY)
+
+        def at_console(session):
+            return WorkspaceActions(world.path, session, actors=ACTOR.principals,
+                                    mc=world.mc_client, registry=world.registry,
+                                    read_back=dispatcher.read_back)
+        employee = at_console(SESSION)
+        approver = at_console(fixture_session("plx", ACTOR.principals, channel=CHANNEL_CONSOLE,
+                                              subject_email=g2.CALL_APPROVER,
+                                              subject_oid=g2.CALL_APPROVER_OID))
+        with NetworkGuard() as guard:
+            prepared = employee.take(ACTOR, {"intent_id": iid, "step": "prepare_gate",
+                                             "task_id": "TASK-TWIN-CONSOLE"})
+            self.assertEqual((prepared["state"], prepared["control"]["step"]),
+                             ("gate_prepared", "approve_call"))
+            shown = approver.control(ACTOR, world.path.view(ACTOR, iid))
+            self.assertEqual((shown["available"], shown["approves"]["action_type"]),
+                             (True, PORTAL_CAPABILITY))
+            # The employee it is for never approves it: their session names no oid, and
+            # with one they are its subject.
+            subject = at_console(fixture_session(
+                "plx", ACTOR.principals, channel=CHANNEL_CONSOLE, subject_email=g2.SUBJECT,
+                subject_oid="0000a000-0000-4000-8000-00000000ee01"))
+            for actions, code in ((employee, "call_approver_oid_unknown"),
+                                  (subject, "call_approver_is_subject")):
+                mine = actions.take(ACTOR, {"intent_id": iid, "step": "approve_call",
+                                            "approves_sha256": shown["approves_sha256"]})
+                self.assertEqual((mine["refusal"], mine["state"]), (code, "gate_prepared"))
+            approved = approver.take(ACTOR, {"intent_id": iid, "step": "approve_call",
+                                             "approves_sha256": shown["approves_sha256"]})
+            self.assertEqual((approved["refusal"], approved["state"]), (None, "call_approved"))
+            self.assertNotIn("mc_request_approval", world.mc.tool_calls)
+            requested = employee.take(ACTOR, {"intent_id": iid, "step": "request_gate"})
+            self.assertEqual(requested["state"], "gate_requested")
+            gate = world.path.get(ACTOR, iid)["gate"]["gate_id"]
+            world.mc.decide("TASK-TWIN-CONSOLE", gate, "approved", session_label=g2.MC_ADMIN,
+                            session_kind="human")
+            steps = [employee.take(ACTOR, {"intent_id": iid, "step": name})
+                     for name in ("record_decision", "dispatch", "read_back")]
+        self.assertEqual(guard.attempts, [])
+        self.assertEqual([(item["refusal"], item["state"]) for item in steps],
+                         [(None, "gate_authorized"), (None, "dispatched"),
+                          (None, "verified")])
+        self.assertEqual((steps[-1]["done"], world.portal.writes,
+                          world.mc.tool_calls.count("mc_request_approval")), (True, 1, 1))
+
+
 class PortalRouteTests(TwinTestCase):
     """The Portal twin answers as the route it mirrors (plx-customer-portal@728a995
     portal/src/app/api/mrp/sales-orders/[id]/route.ts, lib/sales-order/service.ts)."""
@@ -405,7 +464,7 @@ class PortalRouteTests(TwinTestCase):
 
 
 class CustomerPoReuseTests(TwinTestCase):
-    """The proposal flags a PO the same customer already used, as the Portal
+    """c208bfff0a95: the proposal flags a PO the same customer already used, as the Portal
     warns on reuse (plx-customer-portal@728a995 portal/src/lib/orders/customer-po.ts)."""
 
     def patch(self, world, order, body):

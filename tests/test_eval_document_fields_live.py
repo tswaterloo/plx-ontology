@@ -40,8 +40,8 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
-SPEC = ROOT / "verify/live-checks/ontology.document_fields_customer_po.json"
-LINKS_SPEC = ROOT / "verify/live-checks/ontology.document_links.json"
+SPEC = ROOT / "devloop/live-checks/ontology.document_fields_customer_po.json"
+LINKS_SPEC = ROOT / "devloop/live-checks/ontology.document_links.json"
 # A customer's PO whose terms start lines with other classes' title words.
 TEXT_PO = [["PURCHASE ORDER", "PO Number: 4500000002", "Date: 2026-09-02",
             "Ship to: Northwind DC, Dock 4", "Required date: 2026-10-20",
@@ -49,6 +49,11 @@ TEXT_PO = [["PURCHASE ORDER", "PO Number: 4500000002", "Date: 2026-09-02",
             "packing slip showing our PO number.",
             "Order acknowledgement is required within 48 hours."]]
 PDFS = importlib.util.find_spec("pypdf") and importlib.util.find_spec("reportlab")
+# One blank page, 253 bytes: whole, with a content stream that draws nothing.
+BLANK_PAGE = (b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+              b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+              b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R>>endobj\n"
+              b"4 0 obj<</Length 0>>stream\n\nendstream\nendobj\ntrailer<</Root 1 0 R>>\n%%EOF\n")
 
 
 def one_run_process():
@@ -74,7 +79,7 @@ def one_run_process():
 @unittest.skipUnless(PDFS and shutil.which("pdftoppm"),
                      "purchase orders are PDFs and scans: needs pypdf, reportlab, pdftoppm")
 class StageFunnelTests(unittest.TestCase):
-    def run_check(self, files, categories=None, after=None, ocr_fails=None):
+    def run_check(self, files, categories=None, after=None, ocr_fails=None, ocr=False):
         from integrations import capture_sharepoint as cs
         from integrations.tests import test_capture_sharepoint as tsp
         from operating import sharepoint_host_check as check
@@ -88,9 +93,10 @@ class StageFunnelTests(unittest.TestCase):
         for item_id, name, content in files:
             drive.file(item_id, name, "01AOS", content)
         from integrations import document_understanding as du
-        ocr = contextlib.ExitStack()
-        ocr.enter_context(mock.patch.object(du, "local_ocr_available",
-                                            return_value=ocr_fails is not None))
+        engine, ocr = ocr, contextlib.ExitStack()
+        if not engine:   # ocr: this host's own engine (the OCR tools), unpatched
+            ocr.enter_context(mock.patch.object(du, "local_ocr_available",
+                                                return_value=ocr_fails is not None))
         if ocr_fails is not None:   # an OCR engine whose every run fails with this cause
             ocr.enter_context(mock.patch.object(du, "_ocr_reading",
                                                 side_effect=du.OcrFailed(ocr_fails)))
@@ -119,7 +125,7 @@ class StageFunnelTests(unittest.TestCase):
                          funnel["evaluated"] + sum(funnel["excluded"].values()), funnel)
 
     def test_a_scan_without_ocr_is_a_counted_gap_and_blocks_only_when_nothing_was_read(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from integrations.tests import test_capture_sharepoint as tsp
         from operating.tests.test_attested_missing import pdf
         spec = json.loads(SPEC.read_text("utf-8"))
@@ -163,7 +169,7 @@ class StageFunnelTests(unittest.TestCase):
         self.assertIsNone(recorded.get("blocked"))
 
     def test_a_failed_ocr_run_is_counted_by_its_typed_cause(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from integrations.tests import test_capture_sharepoint as tsp
         from operating.tests.test_attested_missing import pdf
         spec = json.loads(SPEC.read_text("utf-8"))
@@ -195,11 +201,42 @@ class StageFunnelTests(unittest.TestCase):
         self.assertEqual((read["ocr_failed_by"], read["text"]),
                          ({"untyped": 1, "unknown": 1, "tool_exit": 1}, {"ocr_failed": 3}))
 
+    def test_funnel_crosstabs_ocr_failed_by_portal_metadata(self):
+        """Each failed OCR run is also counted by cause against what the Portal states on
+        the file (portal_stated / portal_empty / portal_unread), counts only, so the files
+        the Portal uploaded can be told from the rest; the cells sum to ocr_failed_by."""
+        from devloop import live_verify as lv
+        from integrations.tests import test_capture_sharepoint as tsp
+        from operating.tests.test_attested_missing import pdf
+        spec = json.loads(SPEC.read_text("utf-8"))
+        scan = tsp.scanned_pdf(["PURCHASE ORDER", "PO Number: 4500000003"])
+        report, code = self.run_check([("01SCAN", "PO scan.pdf", scan),
+                                       ("01TEXT", "PO text.pdf", pdf(TEXT_PO))],
+                                      categories={"01SCAN": "CUSTOMER_PO"},
+                                      ocr_fails="deadline")
+        funnel = report["funnel"]
+        self.assertEqual(funnel["ocr_failed_by"], {"deadline": 2})
+        self.assertEqual(funnel["ocr_failed_by_portal"],
+                         {"deadline": {"portal_empty": 1, "portal_stated": 1}})
+        self.assertTrue(funnel["ocr_failed_by_portal_sums"])
+        self.assertNotIn("CUSTOMER_PO", json.dumps(funnel))
+        self.assertIn("funnel", spec["record_keys"])   # the whole funnel is recorded
+        self.assertEqual(lv.check_expectations(spec, code, report), [])
+        # No OCR failure, no cells; a store with no Portal columns read is portal_unread.
+        none, _ = self.run_check([("01TEXT", "PO text.pdf", pdf(TEXT_PO))])
+        self.assertEqual((none["funnel"]["ocr_failed_by_portal"],
+                          none["funnel"]["ocr_failed_by_portal_sums"]), ({}, True))
+        report, _ = self.run_check([("01SCAN", "PO scan.pdf", scan)], ocr_fails="deadline")
+        self.assertEqual(report["funnel"]["ocr_failed_by_portal"],
+                         {"deadline": {"portal_unread":
+                                       report["funnel"]["ocr_failed_by"]["deadline"]}})
+        self.assertTrue(report["funnel"]["ocr_failed_by_portal_sums"])
+
     def test_an_issued_purchase_order_is_excluded_and_the_others_issuer_is_unknown(self):
         """The provenance reaches the live check: the file whose confirmed category is an
         issued purchase order is no customer PO, and the one without a signal is evaluated
         with the issuer recorded unknown."""
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from operating.tests.test_attested_missing import pdf
         spec = json.loads(SPEC.read_text("utf-8"))
         issued = pdf([["PURCHASE ORDER", "PO Number: 4500000006", "Date: 2026-09-02"]])
@@ -214,7 +251,7 @@ class StageFunnelTests(unittest.TestCase):
         self.assertEqual(funnel["excluded"]["own_issued"], 1)
         self.assertEqual(funnel["signals"]["customer_po"], {"issued_category": 1})
         self.assertEqual(report["gaps"]["issuer_unknown"], report["documents"])
-        # The prose-title share of the documents whose class was read.
+        # c5c50e8b58e6 item 2: the prose-title share of the documents whose class was read.
         self.assertEqual(funnel["ambiguous_class"], {
             "prose_title": 1, "title_lines": 0, "class_read": 3, "prose_title_rate": 0.3333})
         self.assertEqual(funnel["excluded"]["ambiguous_class"], 1)
@@ -226,7 +263,7 @@ class StageFunnelTests(unittest.TestCase):
     def test_the_funnel_lists_through_the_bounded_store_reader(self):
         """The stages are the store reader's current files: a cut list is truncated
         (never ok), and a reader without a grant is listed nothing."""
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from integrations import capture_sharepoint as cs
         from integrations.live_source_guard import LiveSourceAudience
         from operating import sharepoint_host_check as check
@@ -292,7 +329,7 @@ class StageFunnelTests(unittest.TestCase):
 
         # QA-06: documents of another class only, beside documents left unread before
         # their class was read: documents 0 is recorded with the stage and why, typed.
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         spec = json.loads(SPEC.read_text("utf-8"))
         slip = pdf([["PACKING SLIP", "Ship to: Dock 4", "Qty 10"]])
         report, code = self.run_check([("01SLIP", "slip.pdf", slip),
@@ -300,6 +337,7 @@ class StageFunnelTests(unittest.TestCase):
         funnel = report["funnel"]
         self.assertEqual((report["documents"], report["ok"], funnel["dropped_at"], code),
                          (0, False, "class", 1), funnel)
+        self.assertIsNone(report.get("blocked"), funnel)   # broken.pdf may hold one
         unread = funnel["excluded"]["unsupported"]
         self.assertGreaterEqual(unread, 1)
         self.assertEqual(funnel["no_candidate"], {
@@ -311,6 +349,53 @@ class StageFunnelTests(unittest.TestCase):
         # Read through, nothing of this class is left: no candidate is named.
         report, _code = self.run_check([("01TEXT", "PO text.pdf", pdf(TEXT_PO))])
         self.assertIsNone(report["funnel"]["no_candidate"])
+
+    @unittest.skipUnless(shutil.which("tesseract"), "the block needs this host's OCR engine")
+    def test_a_source_of_empty_stubs_and_other_classes_blocks_as_no_class_document(self):
+        # The live drive's customer POs are stub files: a PDF with no page content (OCR
+        # fails, pdf_stub), a tiny blank page (OCR reads no text), beside documents of
+        # other classes. Every one was read and none is of the class: a source gap, typed,
+        # never a fail. A file that may hold a page (a larger blank, a truncated PDF) or
+        # a document of no class keeps the fail.
+        from devloop import live_verify as lv
+        from operating.tests.test_attested_missing import pdf
+        spec = json.loads(SPEC.read_text("utf-8"))
+        slip = ("01SLIP", "slip.pdf", pdf([["PACKING SLIP", "Ship to: Dock 4", "Qty 10"]]))
+        stub = ("01STUB", "po.pdf", b"%PDF-1.4\n%%EOF\n")
+        blank = ("01BLANK", "po2.pdf", BLANK_PAGE)
+        report, code = self.run_check([slip, stub, blank], categories={}, ocr=True)
+        funnel = report["funnel"]
+        self.assertEqual((report["documents"], report.get("blocked"), code),
+                         (0, "no_class_document", 0), funnel)
+        self.assertEqual(funnel["ocr_failed_by"], {"pdf_stub": 1}, funnel)
+        self.assertEqual(funnel["excluded"].get("ocr_no_text"), 1, funnel)
+        self.assert_sums(funnel)
+        # The verifier's blocked: the exit expected and a typed string at blocked_when.
+        self.assertEqual(code, spec["expect"]["exit_code"])
+        self.assertEqual(lv.resolve(report, spec["blocked_when"]), ["no_class_document"])
+        self.assertTrue(lv.ENUM_STRING.fullmatch(report["blocked"]))
+        lv.validate_spec(spec, stem=spec["id"])
+        self.assertEqual(spec["blocked_causes"]["no_class_document"], "source_gap")
+        larger = ("01BIG", "po3.pdf", BLANK_PAGE.replace(
+            b"\n", b"\n%" + b"x" * 1100 + b"\n", 1))
+        truncated = ("01CUT", "po4.pdf", slip[2][:len(slip[2]) // 2])
+        for other in (larger, truncated):
+            with self.subTest(other[1]):
+                report, code = self.run_check([slip, stub, other], categories={}, ocr=True)
+                self.assertEqual((report["documents"], report.get("blocked"), code),
+                                 (0, None, 1), report["funnel"])
+        # A capture the budget cut may hold one in a root never read: the fail stays.
+        from integrations import capture_sharepoint as cs
+        whole = cs.run_cli
+
+        def cut(*args, **kwargs):
+            out = whole(*args, **kwargs)
+            out["summary"]["roots_complete"] = 0
+            return out
+        with mock.patch.object(cs, "run_cli", cut):
+            report, code = self.run_check([slip, stub, blank], categories={}, ocr=True)
+        self.assertEqual((report["capture_complete"], report.get("blocked"), code),
+                         (False, None, 1), report["funnel"])
 
     def test_a_read_that_failed_in_an_earlier_run_does_not_change_the_next_funnel(self):
         # The funnel of a run is its own reading of the drive: a read that raised in an
@@ -387,6 +472,75 @@ def portal(purchase_orders=(), generated=(), urls=None):
             urls.append(url)
         return served(url, *args, **kwargs)
     return WorkbenchReadApiClient(FIXTURE_URL, FIXTURE_KEY, fetch=fetch)
+
+
+class NoClassDocumentTests(unittest.TestCase):
+    """The rule alone: a funnel of documents all read as empty of the class blocks; any
+    document that may hide one keeps the fail."""
+    def funnel(self, **changes):
+        out = {"evaluated": 0, "truncated": False, "ocr_unavailable": 0,
+               "excluded": {"other_class": 5, "unclassified": 12, "ocr_failed": 11,
+                            "ocr_no_text": 7, "unsupported": 1},
+               "ocr_failed_by": {"pdf_stub": 11},
+               "no_candidate": {"stage": "class", "title_signals": 0}}
+        out.update(changes)
+        return out
+
+    STUBS = {"ocr_no_text": (7, 7), "unsupported": (1, 1)}
+
+    def test_documents_all_read_empty_of_the_class_block(self):
+        from scripts import eval_document_fields_live as live
+        self.assertTrue(live.no_class_document(self.funnel(), self.STUBS))
+        why = {"stage": "classification", "title_signals": 0}
+        self.assertTrue(live.no_class_document(self.funnel(no_candidate=why), self.STUBS))
+
+    def test_any_document_that_may_hide_one_keeps_the_fail(self):
+        from scripts import eval_document_fields_live as live
+        base = self.funnel()
+        for name, out, stubs in (
+                ("evaluated", self.funnel(evaluated=1), self.STUBS),
+                ("truncated", self.funnel(truncated=True), self.STUBS),
+                ("no candidate named", self.funnel(no_candidate=None), self.STUBS),
+                ("a title signal", self.funnel(no_candidate={
+                    "stage": "class", "title_signals": 1}), self.STUBS),
+                ("dropped later", self.funnel(no_candidate={
+                    "stage": "fields", "title_signals": 0}), self.STUBS),
+                ("ocr unavailable", self.funnel(ocr_unavailable=1), self.STUBS),
+                ("another OCR cause", self.funnel(ocr_failed_by={
+                    "pdf_stub": 10, "pdf_unreadable": 1}), self.STUBS),
+                ("ambiguous class", self.funnel(excluded={
+                    **base["excluded"], "ambiguous_class": 1}), self.STUBS),
+                ("unreadable", self.funnel(excluded={
+                    **base["excluded"], "unreadable": 1}), self.STUBS),
+                ("a larger no-text file", base, {"ocr_no_text": (7, 6),
+                                                  "unsupported": (1, 1)}),
+                ("an unsupported file not a tiny image", base, {"ocr_no_text": (7, 7),
+                                                                "unsupported": (1, 0)}),
+                ("a member not in the items", base, {"ocr_no_text": (6, 6),
+                                                     "unsupported": (1, 1)})):
+            with self.subTest(name):
+                self.assertFalse(live.no_class_document(out, stubs))
+
+    def test_stub_files_counts_current_files_and_the_tiny_ones(self):
+        import sqlite3
+        from scripts import eval_document_fields_live as live
+        db = sqlite3.connect(":memory:")
+        db.row_factory = sqlite3.Row
+        db.execute("CREATE TABLE items (text_status TEXT, record TEXT, superseded_at TEXT)")
+        rows = [("ocr_no_text", {"size": 191}, None),
+                ("ocr_no_text", {"size": 4096}, None),
+                ("ocr_no_text", {"size": True}, None),        # never a size
+                ("ocr_no_text", {"size": 10}, "2026-10-01"),  # superseded
+                ("unsupported", {"size": 70, "mime_type": "image/png"}, None),
+                ("unsupported", {"size": 70, "mime_type": "application/zip"}, None),
+                ("unsupported_kind", {"size": 50, "mime_type": "image/x"}, None),  # another
+                ("ocr_failed:pdf_stub", {"size": 45}, None),
+                ("text", {"size": 10}, None)]
+        db.executemany("INSERT INTO items VALUES (?, ?, ?)",
+                       [(status, json.dumps(record), gone) for status, record, gone in rows])
+        store = mock.Mock(db=db)
+        self.assertEqual(live.stub_files(store),
+                         {"ocr_no_text": (3, 1), "unsupported": (2, 1)})
 
 
 class IdentityTiersTests(unittest.TestCase):
@@ -645,7 +799,7 @@ class DocumentLinksTests(unittest.TestCase):
         return json.loads(out.getvalue()), code, out.getvalue()
 
     def test_each_reference_gets_one_outcome_and_a_withheld_reader_is_shown_nothing(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from integrations.tests import test_bc_capture as tb
         from operating.tests.test_attested_missing import pdf
         from scripts import eval_document_fields_live as live
@@ -799,7 +953,7 @@ class DocumentLinksTests(unittest.TestCase):
         self.assertEqual((report["ok"], code), (False, 1))
 
     def test_a_record_and_its_twin_are_one_candidate_and_two_records_stay_ambiguous(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from operating.tests.test_attested_missing import pdf
         # PO-5001: a Portal PO and the FileMaker PO it was made from (joined by the
         # verified PurchaseOrder.same_record_as), named on the slip's two pages; PO-6001:
@@ -822,7 +976,7 @@ class DocumentLinksTests(unittest.TestCase):
         self.assertEqual(lv._recorded(spec, report)["ambiguous_candidates"], {"2": 1})
 
     def test_one_candidate_of_a_partial_capture_is_never_linked_one(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from integrations.tests import test_bc_capture as tb
         from operating.tests.test_attested_missing import pdf
         # The second company's purchase orders fail: the one PO the first company holds
@@ -844,7 +998,7 @@ class DocumentLinksTests(unittest.TestCase):
         self.assertIn("links_measured", " ".join(lv.check_expectations(spec, code, report)))
 
     def test_no_record_source_blocks_and_never_reads_as_no_record(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from integrations.tests import test_bc_capture as tb
         from operating.tests.test_attested_missing import pdf
         spec = json.loads(LINKS_SPEC.read_text("utf-8"))
@@ -869,7 +1023,7 @@ class DocumentLinksTests(unittest.TestCase):
                          (0, "no_relation_needed", 0), text[:3000])
 
     def test_a_total_budget_stops_reading_and_is_a_typed_incomplete_never_a_pass(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from ontology import project
         from operating.host import projection_path
         from operating.tests.test_attested_missing import pdf
@@ -932,7 +1086,7 @@ class DocumentLinksTests(unittest.TestCase):
         measured within the budget; a tighter budget still measures the first."""
         import sqlite3
 
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from ontology import project
         from operating.tests.test_attested_missing import pdf
         from scripts import eval_document_fields_live as live
@@ -1048,7 +1202,7 @@ class DocumentLinksTests(unittest.TestCase):
         the kept rows add; scaled by the stride it over-reserved the Portal's rows and cut
         BC. Here each row a projection reads costs time: the estimate stays near the
         projection and BC reads within the spec's budget."""
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from ontology import project, project_bc
         from operating.tests.test_attested_missing import pdf
         spec = json.loads(LINKS_SPEC.read_text("utf-8"))
@@ -1085,7 +1239,7 @@ class DocumentLinksTests(unittest.TestCase):
         measurement reserve was 0 s while each document took about 22 s; measure cut): the
         reserve is the documents the capture holds times this run's measured cost of one,
         so the reads are cut, never the measurement."""
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from operating.tests.test_attested_missing import pdf
         from scripts import eval_document_fields_live as live
         spec = json.loads(LINKS_SPEC.read_text("utf-8"))
@@ -1108,11 +1262,11 @@ class DocumentLinksTests(unittest.TestCase):
         self.assertEqual(not lv.check_expectations(spec, code, report), report["ok"])
 
     def test_the_reserve_is_the_documents_at_the_mean_cost_measured_over_their_records(self):
-        """QA-04: the measurement reserve counts the documents the
+        """QA-04 (review of 2026-10-13): the measurement reserve counts the documents the
         run measures (not every captured file), at the mean of a sample of them, each
         measured over the records it links (never one document's cost scaled by the
         stride); every estimate is held with the margin."""
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from operating.tests.test_attested_missing import pdf
         from scripts import eval_document_fields_live as live
         spec = json.loads(LINKS_SPEC.read_text("utf-8"))
@@ -1206,7 +1360,7 @@ class DocumentLinksTests(unittest.TestCase):
             self.assertFalse((state / live.RESERVE_DIR).exists())
 
     def test_a_sample_projection_that_raises_is_a_typed_incomplete_report(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from ontology import project
         from operating.tests.test_attested_missing import pdf
         spec = json.loads(LINKS_SPEC.read_text("utf-8"))

@@ -3,7 +3,7 @@
  "format": "plx-ontology-domain/v1",
  "domain": "people_lots",
  "origin": "curated",
- "description": "PENDING (not loaded by default; ontology.schema load_schema(include_pending=True)). Person (app_user) and Lot (app_inventory_lot) bindings, declared ahead of the upstream ask Q3 so they are reviewed and tested; when the reporting API serves a relation, move its type into domains/ (replacing the not_served placeholder in people.json or items.json) and its links next to it. Links from served relations to Person or Lot are not declared here: ontology/schema.py pending_links derives them from the generator's foreign keys to an unserved relation (generated/meta/coverage.json prisma_relations_not_bound); they apply to pending files only, so moving a type to domains/ declares them by hand.",
+ "description": "PENDING (not loaded by default; ontology.schema load_schema(include_pending=True)). Person (app_user) and InventoryLot (app_inventory_lot) bindings, declared ahead of the upstream ask Q3 so they are reviewed and tested; when the reporting API serves a relation, move its type into domains/ (replacing the not_served placeholder in people.json or items.json) and its links next to it. Links from served relations to Person or InventoryLot are not declared here: ontology/schema.py pending_links derives them from the generator's foreign keys to an unserved relation (generated/meta/coverage.json prisma_relations_not_bound); they apply to pending files only, so moving a type to domains/ declares them by hand.",
  "upstream_pins": {
   "plx-customer-portal": "790256ca43"
  },
@@ -13,7 +13,7 @@
    "description": "A Portal user: an employee (ADMIN .. ACCOUNTING roles) or a customer/supplier portal login (CUSTOMER, SUPPLIER). Secrets (password, 2FA, reset tokens) and phone are never bound.",
    "availability": {
     "state": "partial",
-    "reason": "Pending: the reporting-API allowlist (services/workbench-api/manifest/allowlist.json@790256ca43) does not serve public.app_user (nor app_person/people): Portal users are not readable, so a person appears only as an id or a name typed in another record.",
+    "reason": "Pending: the live reporting API serves public.app_user since the 2026-10-26 GET /v1/relations read with roles and flags only (no name, email, phone or job title), so a person's name stays readable only as a name typed in another record; promotion is open (devloop/DECISIONS/2026-10-28-portal-all-relations-person-promotion.md).",
     "upstream_ask": "Q3"
    },
    "markings": [
@@ -39,58 +39,6 @@
     }
    ],
    "properties": [
-    {
-     "name": "name",
-     "value_type": "text",
-     "sources": [
-      {
-       "binding": "portal.app_user",
-       "path": "name",
-       "parser": "trim"
-      }
-     ],
-     "evidence": [
-      {
-       "kind": "ref",
-       "id": "prisma.user"
-      }
-     ]
-    },
-    {
-     "name": "email",
-     "value_type": "text",
-     "description": "Login email (unique); compare with a mail sender only after the same trim and case fold.",
-     "sources": [
-      {
-       "binding": "portal.app_user",
-       "path": "email",
-       "parser": "trim"
-      }
-     ],
-     "evidence": [
-      {
-       "kind": "ref",
-       "id": "prisma.user"
-      }
-     ]
-    },
-    {
-     "name": "job_title",
-     "value_type": "text",
-     "sources": [
-      {
-       "binding": "portal.app_user",
-       "path": "job_title",
-       "parser": "trim"
-      }
-     ],
-     "evidence": [
-      {
-       "kind": "ref",
-       "id": "prisma.user"
-      }
-     ]
-    },
     {
      "name": "user_role",
      "value_type": "enum",
@@ -156,7 +104,7 @@
     }
    ],
    "display": [
-    "name"
+    "user_role"
    ],
    "evidence": [
     {
@@ -166,11 +114,11 @@
    ]
   },
   {
-   "id": "Lot",
+   "id": "InventoryLot",
    "description": "An inventory lot of one product (lot number BASE@BINCODE) with on-hand, reserved and available quantities, QC status, ownership and expiry.",
    "availability": {
     "state": "partial",
-    "reason": "Pending: the reporting-API allowlist (services/workbench-api/manifest/allowlist.json@790256ca43) does not serve public.app_inventory_lot (portal-code-map.md 3.9: no lot or inventory relation is served); lot numbers appear only as text on AO, MO, batch and receipt rows.",
+    "reason": "Pending: the reporting-API allowlist (services/workbench-api/manifest/allowlist.json@790256ca43) does not serve public.app_inventory_lot (03-PORTAL 3.9: no lot or inventory relation is served); lot numbers appear only as text on AO, MO, batch and receipt rows.",
     "upstream_ask": "Q3"
    },
    "bindings": [
@@ -459,8 +407,8 @@
  ],
  "link_types": [
   {
-   "id": "Lot.of_item",
-   "from": "Lot",
+   "id": "InventoryLot.of_item",
+   "from": "InventoryLot",
    "to": "Product",
    "name": "of_item",
    "reverse_name": "lots",
@@ -489,8 +437,8 @@
    ]
   },
   {
-   "id": "Lot.from_batch",
-   "from": "Lot",
+   "id": "InventoryLot.from_batch",
+   "from": "InventoryLot",
    "to": "Batch",
    "name": "from_batch",
    "reverse_name": "lots",
@@ -520,8 +468,8 @@
    ]
   },
   {
-   "id": "Lot.from_assembly_order",
-   "from": "Lot",
+   "id": "InventoryLot.from_assembly_order",
+   "from": "InventoryLot",
    "to": "AssemblyOrder",
    "name": "from_assembly_order",
    "reverse_name": "lots",
@@ -550,8 +498,8 @@
    ]
   },
   {
-   "id": "Lot.received_in",
-   "from": "Lot",
+   "id": "InventoryLot.received_in",
+   "from": "InventoryLot",
    "to": "Receipt",
    "name": "received_in",
    "reverse_name": "lots",
@@ -580,8 +528,8 @@
    ]
   },
   {
-   "id": "Lot.owned_by",
-   "from": "Lot",
+   "id": "InventoryLot.owned_by",
+   "from": "InventoryLot",
    "to": "Customer",
    "name": "owned_by",
    "reverse_name": "owned_lots",
@@ -612,9 +560,9 @@
  ],
  "event_types": [
   {
-   "id": "Lot.expires",
-   "object_type": "Lot",
-   "description": "Lot expiry date.",
+   "id": "InventoryLot.expires",
+   "object_type": "InventoryLot",
+   "description": "Inventory lot expiry date.",
    "time_basis": "planned",
    "time": {
     "binding": "portal.app_inventory_lot",
@@ -624,13 +572,13 @@
    "qualifiers": [
     {
      "qualifier": "lot",
-     "object_type": "Lot",
+     "object_type": "InventoryLot",
      "via": "self"
     },
     {
      "qualifier": "item",
      "object_type": "Product",
-     "via": "Lot.of_item"
+     "via": "InventoryLot.of_item"
     }
    ],
    "evidence": [
@@ -705,7 +653,7 @@
   },
   "context.portal.3.9": {
    "kind": "context_pack",
-   "ref": "docs/reference/portal-code-map.md#3.9",
+   "ref": "devloop/CONTEXT/03-PORTAL.md#3.9",
    "note": "Lot ledger app_inventory_lot; not served by the reporting API."
   }
  }

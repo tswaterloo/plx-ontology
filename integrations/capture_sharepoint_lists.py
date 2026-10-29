@@ -1,6 +1,6 @@
 """Versioned SharePoint list-item capture (L1): the items of the lists a scope names.
 
-Decision ``docs/decisions/2026-10-10-gen-graph-residual-list-items.md`` (option b, decided in
+Decision ``devloop/DECISIONS/2026-10-10-gen-graph-residual-list-items.md`` (option b, decided in
 decide-open-1010 item 4): a generic capture of the items of SharePoint lists that are not
 document libraries, its scope data (``integrations/sharepoint_list_capture_scope.json``,
 ``plx-sharepoint-list-capture-scope/v1``), naming first only lists whose data exists nowhere
@@ -57,7 +57,7 @@ finished ``partial``, ``acl_unreadable`` or the blocked part's reason);
 ``missing_from_source_since``).
 
 Storage: ``<state-dir>/sharepoint-list-capture/capture.db`` (private modes), outside every
-git work tree. Live-unverified until ``verify/live-checks/capture.sharepoint_list_items.json``
+git work tree. Live-unverified until ``devloop/live-checks/capture.sharepoint_list_items.json``
 passes: whether the application's grant reads the personal site the list lives on and
 answers listItem permissions app-only.
 

@@ -1,4 +1,4 @@
-"""One admission rule for proposed eval units (docs/decisions/2026-10-07-proposed-eval-units-admission.md).
+"""One admission rule for proposed eval units (devloop/DECISIONS/2026-10-07-proposed-eval-units-admission.md).
 
 A proposed unit enters a scored set only through the existing partitions (evals/dev,
 evals/exposed) and only when ``admissible`` returns no reasons."""
@@ -17,7 +17,7 @@ from evals.score import PINNED_SOURCES, partition_of, uncited_expected
 GENERATED_ORACLE_IDS = ORACLE_ID_PREFIXES
 SYNTHETIC_LINEAGE_PREFIXES = LINEAGE_PREFIXES
 # A derivation naming a source system or record (``bc:production``, ``api://...``), not a
-# rule cite (``docs/reference/portal-code-map.md#3.4 ...``).
+# rule cite (``devloop/CONTEXT/03-PORTAL.md#3.4 ...``).
 _SOURCE_REF = re.compile(r"^[a-z][a-z0-9+.-]*:")
 
 

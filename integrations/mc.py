@@ -1,17 +1,17 @@
 """Mission Control clients: guarded REST reads and a guarded MCP tool client.
 
 The deployed MC service remains the task, checkout and approval authority
-(``docs/reference/mission-control.md`` §0-§4, PLX_MC @ ``1fba0833``). The
+(``devloop/CONTEXT/04-MISSION-CONTROL.md`` §0-§4, PLX_MC @ ``1fba0833``). The
 key does not keep us read-only (every MCP principal but ``sp_mcp_portal``
 carries MC's write bundle and every MC write is mirrored to production
 SharePoint lists), so every request passes ``plx_hub_guard`` before I/O:
 
 * ``MissionControlReadClient``: REST ``GET /api/cursor/*`` read routes only.
 * ``MissionControlMcpClient``: JSON-RPC ``POST /api/cursor/mcp`` with the read
-  tools of mission-control.md §3 rows 1-12 (``call_tool``), read-only by default. Writes go
+  tools of pack §3 rows 1-12 (``call_tool``), read-only by default. Writes go
   only through ``call_write_tool``/``checkout_task`` and need all of: the
   client was built with that tool in ``write_tools`` (explicit opt-in; only
-  the reference's W-A rows can be opted in, never the NO rows), a
+  the pack's W-A rows can be opted in, never the NO rows), a
   ``plx_hub_guard.McWriteAuthorization`` (a recorded human approval naming
   that exact call and a configured ``write_approvers`` human who is not our
   MC operator, ``+tag`` aliases normalized; its origin is not
@@ -341,7 +341,7 @@ class MissionControlReadClient:
             raise ValueError("Mission Control repo must be owner/repository")
         check_https_base(base_url)
         if (urlsplit(base_url).hostname or "").lower() not in MC_HOSTS:
-            raise ValueError("Mission Control base URL host is not a pinned host")
+            raise ValueError("Mission Control base URL host is not one the pack names")
         self._key = Secret(api_key)
         self._operator = operator_email
         self._repo = repo
@@ -447,7 +447,7 @@ class MissionControlReadClient:
 
 
 class MissionControlMcpClient:
-    """Guarded MCP tool client for ``POST /api/cursor/mcp`` (mission-control.md §8 R2).
+    """Guarded MCP tool client for ``POST /api/cursor/mcp`` (pack 04 §8 R2).
 
     Stateless Streamable HTTP: each POST stands alone. Read tools are retried
     on 429/502/503/504. Writes are refused unless opted in (see the module
@@ -465,7 +465,7 @@ class MissionControlMcpClient:
             raise TypeError("write_tools and write_approvers must be collections")
         tools = frozenset(write_tools)
         if tools - frozenset(MC_APPROVABLE_WRITE_TOOLS):
-            raise ValueError("only the reference's W-A write tools can be opted in: "
+            raise ValueError("only the pack's W-A write tools can be opted in: "
                              + ", ".join(sorted(tools - frozenset(MC_APPROVABLE_WRITE_TOOLS))))
         approvers = list(write_approvers)
         if any(not is_human_email(a) for a in approvers):
@@ -630,7 +630,7 @@ class MissionControlMcpClient:
             raise McAnswerRefused("tool_result_not_object", "MC tool result is not an object")
         return payload
 
-    # -- read tools (mission-control.md §3 rows 1-12) --------------------------------
+    # -- read tools (pack 04 §3 rows 1-12) --------------------------------
 
     def self_check(self) -> Mapping[str, Any]:
         payload = self.call_tool("mc_self_check")
@@ -687,7 +687,7 @@ class MissionControlMcpClient:
 
     def search_knowledge(self, query: str, *, limit: int = 8) -> Mapping[str, Any]:
         """``mc_search_knowledge``. A non-``ok`` status is unavailable, never
-        empty (mission-control.md §5); cold-start ``upstream_error`` is retried with the
+        empty (pack 04 §5); cold-start ``upstream_error`` is retried with the
         same bounded backoff. Hits are untrusted leads (T3), never business
         facts."""
         if not isinstance(query, str) or not 1 <= len(query.strip()) <= 200:
@@ -717,7 +717,7 @@ class MissionControlMcpClient:
 
     def checkout_task(self, task_id: str, repo: str, *,
                       authorization: McWriteAuthorization) -> CheckoutResult:
-        """``mc_checkout_task{taskId, repo:"petralabx/<name>"}`` (mission-control.md §4).
+        """``mc_checkout_task{taskId, repo:"petralabx/<name>"}`` (pack 04 §4).
 
         ``repo`` may be ``<name>`` or ``petralabx/<name>``; the call always
         carries the full slug (and the authorization must name it). A 409

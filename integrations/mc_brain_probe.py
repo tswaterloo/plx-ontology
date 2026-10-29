@@ -1,6 +1,6 @@
 """Read-only live probe for Mission Control and the brain (counts/shapes only).
 
-Run by the credentialed live check::
+Run by the credentialed live verifier on reviewed ``main``::
 
     python3 -m integrations.mc_brain_probe --output EVIDENCE/live/mc-brain-probe.json
 
@@ -13,8 +13,8 @@ Calls, all through the guards in ``plx_hub_guard`` (read tools / GET only):
 ``mc_self_check``, ``mc_get_context{depth:compact}``,
 ``mc_search_knowledge{q:<fixed harmless query>, limit:3}`` and brain
 ``GET agent/status``. Each MC call appends an ``mcp.tool.invoked`` audit row
-in MC (reads are free but audited; those rows are accepted for the live
-check). The probe's own allowlist ``PROBE_TOOLS``
+in MC (reads are free but audited; the owner accepted those rows for the live
+verifier, directive cabf9f51df67). The probe's own allowlist ``PROBE_TOOLS``
 holds only those three read tools: ``_ProbeMcClient`` refuses any other tool
 name and every write before I/O, on top of the ``plx_hub_guard`` grammar, and
 an import-time check fails if the allowlist ever names a non-read tool. Output holds only status codes, error
@@ -39,7 +39,7 @@ what happened: ``not_needed`` (MC answered or failed otherwise), ``answered``,
 outage (``UpstreamError.blocks``: HTTP 5xx, 408, 429, transport, timeout),
 ``served_by`` stays null and the MC step, the fallback and a brain
 ``agent/status`` that failed the same way are all listed there with their HTTP
-status and code: the brain itself is out. Either way the live check records the
+status and code: the brain itself is out. Either way the verifier records the
 check ``blocked``, never a pass, red after 24 h. A brain step refused with 401/403
 (``auth_refused``: the key is refused) is not an outage: it is never listed as
 blocked, so the check fails (decision 2026-10-07-brain-fallback-refused-key), while
@@ -69,7 +69,7 @@ from .vmc import BrainReadClient
 
 
 PROBE_QUERY = "PLX Agent Workbench"
-# The only MC tools this probe may call: read tools (mission-control.md, section 3, R rows).
+# The only MC tools this probe may call: read tools (pack 04, section 3, R rows).
 PROBE_TOOLS = frozenset({"mc_self_check", "mc_get_context", "mc_search_knowledge"})
 if (not PROBE_TOOLS <= frozenset(MC_READ_TOOLS) or PROBE_TOOLS & MC_WRITE_TOOLS
         or PROBE_TOOLS & frozenset(MC_APPROVABLE_WRITE_TOOLS)):
@@ -109,7 +109,7 @@ def _counts(data: Any) -> dict[str, int]:
 
 def _failure(name: str, error: BaseException, code: str, **extra: Any) -> dict:
     """A failed step: the same keys for every failure, so the k-th failed step's
-    diagnosis lines up across the live check's ``steps[*].<key>`` lists."""
+    diagnosis lines up across the verifier's ``steps[*].<key>`` lists."""
     up = error if isinstance(error, UpstreamError) else None
     return {"call": name, "ok": False, "error": code, "error_class": type(error).__name__,
             "layer": up.layer if up else None, "http_status": up.status if up else None,

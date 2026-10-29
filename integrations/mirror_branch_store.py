@@ -1,13 +1,16 @@
 """The last complete Portal source-mirror copy, kept compressed on a private git ref.
 
-Until an always-on host exists, the credentialed
-live-check runner has no state directory that survives between runs, so ``integrations/mirror_capture.py``'s copy is
+Owner policy e251073ef3c5 item 6 (later_asks durable-capture-store, host-24x7-location):
+until the owner's always-on host exists, the credentialed live verifier has no state
+directory that survives between runs, so ``integrations/mirror_capture.py``'s copy is
 lost with each container. This module keeps the newest complete copy on the ref
-``refs/verify/mirror`` of the private repository and reads it back as the outage
-fallback when the configured ``PLX_WORKBENCH_STATE_DIR`` holds none. Business data
-is accepted in the private repo (this supersedes "captures never go to Git" for
-this one ref only); secrets never. The ref is not a branch, so a default ``git fetch`` in a clone never downloads it;
-every read names it.
+``refs/devloop/mirror`` of the private repository and reads it back as the outage
+fallback when the configured ``PLX_WORKBENCH_STATE_DIR`` holds none. The owner accepts
+business data in the private repo (this supersedes "captures never go to Git", owner
+rule 5be438765457, for this one ref only); secrets never. The ref is not a branch
+(directive 013e99e52e50), so a default ``git fetch`` in a clone never downloads it;
+every read names it. The earlier branch ``claude/devloop-mirror`` is left for the
+owner to delete: the loop deletes no remote ref.
 
 Ref layout: exactly one parentless commit per published copy (older ones are not
 ancestors, so they are squashed away), its tree flat::
@@ -21,7 +24,7 @@ Remote: every fetch and push URL of the remote (``remote get-url --all`` and
 github.com, scheme, host and path matched exactly, or a local path; checked before a
 publish, a fetch and a restore.
 
-Write (``MirrorBranch.publish``, the live-check runner's ``publish`` command): only a copy the
+Write (``MirrorBranch.publish``, the verifier's ``publish`` command): only a copy the
 store itself verifies as complete (``MirrorCaptureStore.load``: manifest complete,
 digest, every scope relation captured) is published; an incomplete one never is. The
 manifest, every decoded column value of every table of the copy (a value split across
@@ -29,21 +32,22 @@ SQLite overflow pages is whole here) and the raw file bytes (freed pages) are sc
 first: the value of every credential-shaped environment variable and the shapes of
 well-known tokens refuse the write (``secret_shaped_value``). The bytes compressed are
 hashed again and must be the verified copy (``copy_changed``). The push is a
-compare-and-swap (``--force-with-lease`` against the head that was read, hooks
-disabled):
+compare-and-swap like the controller's state branch (``devloop/controller.py``
+``_push_cas``: ``--force-with-lease`` against the head that was read, hooks disabled):
 a writer that loses the race re-reads the head and retries, and never replaces a copy
 captured later than its own. A head whose manifest does not verify is replaced, its
-reason returned (``replaced_invalid_head``).
+reason returned (``replaced_invalid_head``). The controller's helpers are not imported
+(they drive one global remote and the loop's error types); the pattern is the same.
 
 Attestation: ``publish --attest FILE`` writes ``plx-mirror-attestation/v1`` (the ref,
-the commit and the copy's sha256) for the copy now on the ref; the live-check runner commits it
-as ``results/mirror-attestation.json`` on its results branch.
+the commit and the copy's sha256) for the copy now on the ref; the verifier commits it
+as ``results/mirror-attestation.json`` on ``claude/devloop-live``, its results branch.
 
 Read (``MirrorBranch.restore_into``): the head from the remote (``ls-remote``, fetched
 by SHA), or, when the remote cannot be read without credentials, the local
-``refs/verify/remotes/<remote>/...`` the live-check runner fetched (``fetch`` command). A copy
+``refs/devloop/remotes/<remote>/...`` the verifier fetched (``fetch`` command). A copy
 is installed only when that head is the commit, and its copy the sha256, the
-live-check runner's attestation on the fetched results branch names (else ``refused``
+verifier's attestation on the fetched ``claude/devloop-live`` names (else ``refused``
 ``unattested``: a self-consistent commit any pusher planted is never served), and only
 for a scope the store holds no copy of, each part and the whole file checked against
 the manifest's sha256 and the output capped at the copy's size; the store then
@@ -54,7 +58,7 @@ Every return value is counts, booleans, enums and commit/digest hex; never a row
 key or citation.
 Evidence: module tests run over a local bare repository (``integrations/tests/
 test_mirror_branch_store.py``, injected Workbench transport); the live behaviour is
-``live-unverified`` until ``verify/live-checks/mirror.persisted_fallback.json`` records
+``live-unverified`` until ``devloop/live-checks/mirror.persisted_fallback.json`` records
 a result read from the ref.
 """
 
@@ -80,9 +84,9 @@ from urllib.parse import quote, urlsplit
 from . import mirror_capture as mc
 from .source_mirror import MirrorError
 
-REF = "refs/verify/mirror"
-REF_SHAPE = re.compile(r"refs/verify/[a-z0-9][a-z0-9-]*")
-LIVE_BRANCH = "claude/verify-live"
+REF = "refs/devloop/mirror"
+REF_SHAPE = re.compile(r"refs/devloop/[a-z0-9][a-z0-9-]*")
+LIVE_BRANCH = "claude/devloop-live"
 ATTESTATION_PATH = "results/mirror-attestation.json"
 ATTESTATION_SCHEMA = "plx-mirror-attestation/v1"
 SCHEMA = "plx-mirror-branch/v1"
@@ -204,12 +208,12 @@ class MirrorBranch:
                  live_ref: str | None = None,
                  clock: Callable[[], datetime] | None = None) -> None:
         if not REF_SHAPE.fullmatch(ref):
-            raise BranchStoreError("ref_invalid", "the copy lives under refs/verify/ only")
+            raise BranchStoreError("ref_invalid", "the copy lives under refs/devloop/ only")
         self.repo = Path(repo)
         self.remote = remote
         self.ref = ref
         # Fetched here, not under refs/remotes/: ``fetch --prune`` would delete it there.
-        self.local_ref = f"refs/verify-remotes/{remote}/{ref[len('refs/verify/'):]}"
+        self.local_ref = f"refs/devloop-remotes/{remote}/{ref[len('refs/devloop/'):]}"
         self.live_ref = live_ref or f"refs/remotes/{remote}/{LIVE_BRANCH}"
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
@@ -219,7 +223,7 @@ class MirrorBranch:
              env: Mapping[str, str] | None = None, stdout: Any = subprocess.PIPE
              ) -> subprocess.CompletedProcess:
         merged = {**os.environ, "GIT_TERMINAL_PROMPT": "0", **(env or {})}
-        # Never run hooks: a push here carries the live-check runner's credentials.
+        # Never run hooks: a push here carries the verifier's credentials.
         result = subprocess.run(["git", "-c", "core.hooksPath=/dev/null", *args],
                                 cwd=self.repo, input=input, stdout=stdout,
                                 stderr=subprocess.PIPE, env=merged,
@@ -262,7 +266,7 @@ class MirrorBranch:
 
     def head(self) -> tuple[str | None, str]:
         """``(commit, source)``: the remote's head (``remote``), else the local ref the
-        live-check runner fetched (``local_ref``); ``(None, "unavailable")`` when neither can be
+        verifier fetched (``local_ref``); ``(None, "unavailable")`` when neither can be
         read, ``(None, "remote")`` when the remote has no such ref."""
         try:
             return self._remote_head(), "remote"
@@ -293,7 +297,7 @@ class MirrorBranch:
                 for name in [line.split("\t", 1)[1]] if name != "manifest.json"}
 
     def fetch(self) -> dict[str, Any]:
-        """Refresh the local copy of the ref (the live-check runner, with credentials, before the
+        """Refresh the local copy of the ref (the verifier, with credentials, before the
         checks: a check may not be able to read the remote itself). The ref is named:
         no default refspec carries it."""
         self._assert_private_remote()
@@ -302,8 +306,8 @@ class MirrorBranch:
         return {"fetched": result.returncode == 0}
 
     def attestation(self) -> dict[str, Any] | None:
-        """The live-check runner's ``plx-mirror-attestation/v1`` record for this ref on the
-        fetched results branch (``results_commit``: the results commit it was
+        """The verifier's ``plx-mirror-attestation/v1`` record for this ref on the
+        fetched ``claude/devloop-live`` (``results_commit``: the results commit it was
         read from); None when absent or malformed."""
         live = self._git("rev-parse", "--verify", "--quiet", f"{self.live_ref}^{{commit}}",
                          check=False)
@@ -335,7 +339,9 @@ class MirrorBranch:
                 manifest = store.load(found["relations"], tenant=found["tenant"])
             except (OSError, ValueError, KeyError, TypeError, MirrorError):
                 continue
-            if Path(manifest["path"]).parent != path.parent:
+            if (mc.scope_id(manifest["relations"]) != path.parent.name
+                    if manifest.get("schema") == mc.PIN_SCHEMA
+                    else Path(manifest["path"]).parent != path.parent):
                 continue  # verified, but another scope's copy: it is visited on its own
             key = (str(manifest["captures_as_of"]), str(manifest["persisted_at"]))
             if best is None or key > best[0]:
@@ -354,13 +360,12 @@ class MirrorBranch:
         manifest = self.newest_copy(store)
         if manifest is None:
             return {"written": False, "reason": "no_complete_copy", "attempts": 0}
-        copy = {k: v for k, v in manifest.items() if k != "path"}
-        source = Path(manifest["path"])
-        scan = _SecretScan(secret_values(environ))
-        scan.feed(json.dumps(copy, sort_keys=True).encode())
-        scan.tail = b""
-        _scan_values(source, scan)
         with tempfile.TemporaryDirectory(prefix="plx-mirror-branch-") as work:
+            copy, source = scope_copy(manifest, Path(work))
+            scan = _SecretScan(secret_values(environ))
+            scan.feed(json.dumps(copy, sort_keys=True).encode())
+            scan.tail = b""
+            _scan_values(source, scan)
             parts, digest, size = self._compress(source, Path(work), scan)
             if scan.found:
                 raise BranchStoreError("secret_shaped_value",
@@ -489,12 +494,12 @@ class MirrorBranch:
 
     def restore_into(self, store: mc.MirrorCaptureStore, relations: Sequence[str], *,
                      tenant: str = "plx") -> dict[str, Any]:
-        """Install the ref's copy into ``store`` when the live-check runner attested it, it covers
+        """Install the ref's copy into ``store`` when the verifier attested it, it covers
         ``relations`` for ``tenant`` and the store holds no copy of its scope.
         ``status``: ``restored``, ``present`` (the store has its own), ``absent`` (no
         ref, or a copy of another scope), ``unavailable`` (neither the remote nor a local
         ref could be read) or ``refused`` with ``reason`` (``remote_not_private_repo``,
-        ``unattested``: not the commit and copy the live-check runner's attestation names, or a
+        ``unattested``: not the commit and copy the verifier's attestation names, or a
         manifest, digest, size or stream that does not verify)."""
         try:
             self._assert_private_remote()
@@ -589,6 +594,23 @@ class MirrorBranch:
             raise BranchStoreError("branch_copy_digest_mismatch")
 
 
+def scope_copy(manifest: Mapping[str, Any], work: Path) -> tuple[dict[str, Any], Path]:
+    """The copy manifest and file a ``load``ed manifest publishes: a file copy as it is; a
+    pin (a scope of the shared mirror) exported, the scope alone and never the whole
+    mirror, into ``work`` and described as a copy."""
+    copy = {k: v for k, v in manifest.items() if k != "path"}
+    if manifest.get("schema") != mc.PIN_SCHEMA:
+        return copy, Path(manifest["path"])
+    source = work / "scope.sqlite"
+    meta = mc.MirrorCaptureStore.export(manifest, source)
+    digest = _file_sha(source)
+    copy = {k: v for k, v in copy.items() if k not in ("mirror", "pins")}
+    copy.update(schema=mc.MANIFEST_SCHEMA, file=f"mirror-{digest[:16]}.sqlite", sha256=digest,
+                bytes=source.stat().st_size, captures_as_of=meta["captures_as_of"],
+                row_count=meta["row_count"])
+    return copy, source
+
+
 def _file_sha(path: Path) -> str:
     digest = sha256()
     with path.open("rb") as handle:
@@ -599,8 +621,8 @@ def _file_sha(path: Path) -> str:
 
 def main(argv: Sequence[str] | None = None, *,
          environ: Mapping[str, str] | None = None) -> int:
-    """``publish``: the live-check runner, after the daily checks, with its credentials and its
-    ``PLX_WORKBENCH_STATE_DIR``, ``--attest`` into its results-branch checkout;
+    """``publish``: the verifier, after the daily checks, with its credentials and its
+    ``PLX_WORKBENCH_STATE_DIR``, ``--attest`` into its claude/devloop-live checkout;
     ``fetch``: before them. Prints counts, enums and commit/digest hex only."""
     parser = argparse.ArgumentParser(prog="python3 -m integrations.mirror_branch_store",
                                      description=__doc__.splitlines()[0])
@@ -611,7 +633,7 @@ def main(argv: Sequence[str] | None = None, *,
     parser.add_argument("--state-dir", default=None,
                         help="publish: used when PLX_WORKBENCH_STATE_DIR is not set")
     parser.add_argument("--attest", default=None,
-                        help=f"publish: write the attestation record here (the live-check runner "
+                        help=f"publish: write the attestation record here (the verifier "
                              f"commits it as {ATTESTATION_PATH} on {LIVE_BRANCH})")
     args = parser.parse_args(argv)
     if args.attest is not None and args.command != "publish":

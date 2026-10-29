@@ -1,8 +1,8 @@
-"""mc.brain_probe live scope: MC read tools only, and the
-knowledge outcome the live check records: served by MC, by the brain fallback (blocked)
-or by neither while the brain is out (blocked); a refused brain
+"""mc.brain_probe live scope: MC read tools only (directive cabf9f51df67), and the
+knowledge outcome the verifier records: served by MC, by the brain fallback (blocked)
+or by neither while the brain is out (blocked, directive 2b144eeee563); a refused brain
 key is a fail whose headline names it next to MC's outage, and a malformed answer is a
-failed step, never a crash.
+failed step, never a crash (directive ead19be6a7e1).
 
 Evidence label: injected-transport. No network I/O: the sender is in-process.
 """
@@ -115,9 +115,9 @@ def outage(seen, *, relay_down=True, search_status=200, status_status=200, brain
 
 
 class KnowledgeOutcomeTests(unittest.TestCase):
-    """Each outcome through the probe and the live check's own expectation logic."""
+    """Each outcome through the probe and the verifier's own expectation logic."""
 
-    spec = json.loads((ROOT / "verify/live-checks/mc.brain_probe.json").read_text())
+    spec = json.loads((ROOT / "devloop/live-checks/mc.brain_probe.json").read_text())
 
     def probe(self, environ=None, **kwargs):
         seen: list = []
@@ -127,7 +127,7 @@ class KnowledgeOutcomeTests(unittest.TestCase):
 
     def verdict(self, report):
         """``pass``, ``blocked`` or ``fail`` exactly as live_verify's runner decides."""
-        from verify import live_verify
+        from devloop import live_verify
         code = 0 if report["ok"] else 1
         failures = live_verify.check_expectations(self.spec, code, report)
         parts = live_verify.blocked_parts(report)
@@ -177,7 +177,7 @@ class KnowledgeOutcomeTests(unittest.TestCase):
         self.assertEqual((report["blocked_upstream"], self.verdict(report)[0]), ([], "fail"))
 
     def test_refused_brain_key_is_a_fail_named_next_to_the_mc_outage(self):
-        from verify import live_verify
+        from devloop import live_verify
         for search, status, causes in (
                 (403, 200, [("brain:agent/search", "credential_refused")]),
                 (401, 401, [("brain:agent/status", "credential_refused"),
@@ -194,7 +194,7 @@ class KnowledgeOutcomeTests(unittest.TestCase):
                                  [p["cause"] for p in live_verify.blocked_parts(report)])
                 refused = [s for s in report["steps"] if s.get("error") == "auth_refused"]
                 self.assertTrue(refused and all(not s["ok"] for s in refused), report)
-                # The live check records the headline, both causes side by side.
+                # The verifier records the headline, both causes side by side.
                 fields = live_verify._recorded(self.spec, report)
                 self.assertEqual(fields["causes[*].cause"], [c for _p, c in headline])
 
@@ -228,17 +228,17 @@ class KnowledgeOutcomeTests(unittest.TestCase):
 
 class SpecEnabledTests(unittest.TestCase):
     def test_spec_is_enabled_allowed_and_valid_in_dry_run(self):
-        spec = json.loads((ROOT / "verify/live-checks/mc.brain_probe.json").read_text())
+        spec = json.loads((ROOT / "devloop/live-checks/mc.brain_probe.json").read_text())
         self.assertNotIn("disabled", spec)
         self.assertNotIn("MC_OPERATOR_EMAIL", spec["requires_env"])
         self.assertEqual(spec["command"][-2:], ["--operator-email-default", OPERATOR])
-        sys.path.insert(0, str(ROOT / "verify"))
+        sys.path.insert(0, str(ROOT / "devloop"))
         try:
             import live_verify
         finally:
-            sys.path.remove(str(ROOT / "verify"))
+            sys.path.remove(str(ROOT / "devloop"))
         self.assertIn("integrations.mc_brain_probe", live_verify.ALLOWED_MODULES)
-        dry = subprocess.run([sys.executable, "verify/live_verify.py", "--dry-run", "--only",
+        dry = subprocess.run([sys.executable, "devloop/live_verify.py", "--dry-run", "--only",
                               "mc.brain_probe"], cwd=ROOT, capture_output=True, text=True,
                              timeout=120)
         self.assertEqual(dry.returncode, 0, dry.stdout + dry.stderr)

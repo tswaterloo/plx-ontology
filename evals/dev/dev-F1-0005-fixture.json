@@ -123,16 +123,16 @@
   "invent_absent_value"
  ],
  "oracle": {
-  "id": "oracle:f1_chain@1c117db7f628",
+  "id": "oracle:f1_chain@305211c73a11",
   "interface": "plx-eval-oracle/v1",
   "derived_from": [
-   "docs/reference/portal-code-map.md#3.5 app_receipt.receipt_number (unique), else the FM lab id receipt_raw_material.idlabid it is written from (P@c3ffda3:src/lib/mrp/upsert-gold-receipt.ts:161)",
-   "docs/reference/portal-code-map.md#3.5 app_receipt.purchase_order_id -> app_purchase_order.id (P:prisma/schema.prisma:3565)",
-   "docs/reference/portal-code-map.md#3.5 app_receipt_line.receipt_id -> app_receipt.id (P:prisma/schema.prisma:3620)",
-   "docs/reference/portal-code-map.md#3.5 app_purchase_order.supplier_id -> app_supplier.id (P:prisma/schema.prisma:3394)",
-   "docs/reference/portal-code-map.md#3.5 app_purchase_order_line.purchase_order_id -> app_purchase_order.id (P:prisma/schema.prisma:3449)",
-   "docs/reference/portal-code-map.md#3.5 app_purchase_order.custom_fields.fmPoNumber = FM generated_purchase_order.ponumber",
-   "docs/reference/portal-code-map.md#3.5 app_purchase_order.custom_fields.fmGeneratedPoId = FM generated_purchase_order.id (Portal script etl-silver-to-gold.ts:776-780 @c3ffda3)",
+   "devloop/CONTEXT/03-PORTAL.md#3.5 app_receipt.receipt_number (unique), else the FM lab id receipt_raw_material.idlabid it is written from (P@c3ffda3:src/lib/mrp/upsert-gold-receipt.ts:161)",
+   "devloop/CONTEXT/03-PORTAL.md#3.5 app_receipt.purchase_order_id -> app_purchase_order.id (P:prisma/schema.prisma:3565)",
+   "devloop/CONTEXT/03-PORTAL.md#3.5 app_receipt_line.receipt_id -> app_receipt.id (P:prisma/schema.prisma:3620)",
+   "devloop/CONTEXT/03-PORTAL.md#3.5 app_purchase_order.supplier_id -> app_supplier.id (P:prisma/schema.prisma:3394)",
+   "devloop/CONTEXT/03-PORTAL.md#3.5 app_purchase_order_line.purchase_order_id -> app_purchase_order.id (P:prisma/schema.prisma:3449)",
+   "devloop/CONTEXT/03-PORTAL.md#3.5 app_purchase_order.custom_fields.fmPoNumber = FM generated_purchase_order.ponumber",
+   "devloop/CONTEXT/03-PORTAL.md#3.5 app_purchase_order.custom_fields.fmGeneratedPoId = FM generated_purchase_order.id (Portal script etl-silver-to-gold.ts:776-780 @c3ffda3)",
    "P@c3ffda3:src/lib/mrp/upsert-gold-receipt.ts:57 mapGoldReceiptStatus RELEASED/REJECTED"
   ],
   "computed_at": "2099-01-02T04:00:00Z",

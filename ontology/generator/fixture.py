@@ -3,8 +3,10 @@
 Not business data and never a live result: for each served binding, ``rows`` records are
 generated lazily (nothing is held): record ``i`` of every relation carries the same
 synthetic id in every key and link pair path, so declared links pair record ``i`` with
-record ``i`` across bindings, and each property path gets a value its declared parser
-accepts (unit and currency columns a value names hold a unit or currency). Every fifth
+record ``i`` across bindings (a text-compared pair of two like-parsed properties, a name
+matched by name, keeps the property value record ``i`` holds on both sides), and each
+property path gets a value its declared parser accepts (unit and currency columns a value
+names hold a unit or currency). Every fifth
 record has a second, later capture whose property values differ (versions, capture
 events). Where-predicates are satisfied when the operator allows it. A binding that
 ``stands_for`` another names a key of its own (``S<n>X<id>``, n its place among the type's
@@ -34,7 +36,8 @@ FAMILY_SCHEMES = {"portal_api": ("api://", "api"), "bc": ("bc://", "bc"),
                   "mission_control": ("mc://", "mc"), "brain": ("brain://", "brain"),
                   "teams": ("teams-channel://", "teams")}
 # A relation its family cites under another scheme (Teams chats: ``teams-chat://``).
-RELATION_SCHEMES = {("teams", "chatMessages"): "teams-chat://"}
+RELATION_SCHEMES = {("teams", "chatMessages"): "teams-chat://",
+                    ("teams", "chats"): "teams-chat://"}
 SYNTHETIC_PATH = "synthetic/"
 _PARSED = {"decimal_text": "12.50", "integer_text": "7", "iso_date": "2026-01-02",
            "yyyymmdd_date": "20260102", "iso_timestamp": "2026-01-02T03:04:05Z",
@@ -77,8 +80,20 @@ def _paths(schema: Any) -> dict[str, dict[str, Any]]:
             for binding, side, pairs in sides:
                 if binding in out:
                     for pair in pairs:
-                        out[binding]["links"].setdefault(pair[side], pair["compare"])
+                        if not _keeps_property(out, lb, pair):
+                            out[binding]["links"].setdefault(pair[side], pair["compare"])
     return out
+
+
+def _keeps_property(out: Mapping[str, dict[str, Any]], lb: Mapping[str, Any],
+                    pair: Mapping[str, Any]) -> bool:
+    """A text-compared pair whose both columns are properties (a name matched by name):
+    each keeps its property value, which record ``i`` holds on both sides alike, so a
+    stored-key link elsewhere on that record never conflicts over an id-shaped name."""
+    ends = [out.get(lb.get("from_binding")), out.get(lb.get("to_binding"))]
+    return (pair["compare"] == "text" and not lb.get("via") and None not in ends
+            and pair["from"] in ends[0]["props"] and pair["to"] in ends[1]["props"]
+            and ends[0]["props"][pair["from"]] == ends[1]["props"][pair["to"]])
 
 
 def _put(row: dict[str, Any], path: str, value: Any) -> None:

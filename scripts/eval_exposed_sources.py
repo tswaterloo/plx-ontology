@@ -27,8 +27,8 @@ found and matches.
     python3 -m scripts.eval_exposed_sources documents [--sources PATH]
     python3 -m scripts.eval_exposed_sources mail [--sources PATH]
 
-Evidence label: live-unverified until the live-check runner runs
-``verify/live-checks/case.exposed_originals.json`` / ``case.exposed_mail.json``; tests
+Evidence label: live-unverified until the live verifier runs
+``devloop/live-checks/case.exposed_originals.json`` / ``case.exposed_mail.json``; tests
 use an injected transport (``tests/test_eval_exposed_cases.py``).
 """
 
@@ -303,7 +303,7 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
         print(json.dumps({"error": "read_only_guard", "rule": "get_only"}), file=sys.stderr)
         return 2
     except (SourceUnavailable, NotVisible, ValueError) as error:
-        # The live-check runner publishes error, http_status and error_code from this line.
+        # The live verifier publishes error, http_status and error_code from this line.
         diagnosis = {key: value for key, value in failure_diagnostics(error).items()
                      if value is not None and key != "error_class"}
         print(json.dumps({"error": type(error).__name__, **diagnosis}), file=sys.stderr)

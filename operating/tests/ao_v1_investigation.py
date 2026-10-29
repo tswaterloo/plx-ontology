@@ -4,7 +4,7 @@
 This is ``operating/ao_case_script.investigate`` as of 6fecb6e, kept verbatim so the
 evaluator tests (``test_playbook_eval``) keep
 exercising v1's mechanics (repeat sums over damage rows, row completeness, perturbed
-arithmetic, gap attribution) and so adoption ledgers that bind the v1 definition stay
+arithmetic, gap attribution) and so M3 adoption ledgers that bind the v1 definition stay
 reproducible. Its business reading is superseded: it sums boxes, jugs and caps into one
 "pack" total, reads planned/manufactured from a hardcoded component row and records
 lateness as a fact. The reference investigation is ``operating/tests/ao_reference_investigation.py``, scored

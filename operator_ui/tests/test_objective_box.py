@@ -288,7 +288,7 @@ class ObjectiveBoxLiveCheckTest(unittest.TestCase):
     without a reader before any read, and a pass on the fixture world (injected
     transport, a scripted planner: never live evidence)."""
 
-    SPEC = json.loads((ROOT / "verify/live-checks/workspace.objective_box.json")
+    SPEC = json.loads((ROOT / "devloop/live-checks/workspace.objective_box.json")
                       .read_text("utf-8"))
 
     def run_probe(self, **kwargs):
@@ -300,7 +300,7 @@ class ObjectiveBoxLiveCheckTest(unittest.TestCase):
         return code, json.loads(out.getvalue())
 
     def test_the_probe_blocks_without_a_reader_and_passes_on_the_fixture_world(self):
-        from verify import live_verify
+        from devloop import live_verify
         self.assertEqual(live_verify.validate_spec(self.SPEC), [])
         code, document = self.run_probe(environ={})
         self.assertEqual((code, document["blocked"]), (0, "no_employee_identity"))

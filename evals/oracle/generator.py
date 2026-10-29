@@ -1,6 +1,7 @@
 """Dev-set item generator: sample closed transactions by seed, answer them with the oracle.
 
-Sampling is stratified by where the root identifier comes from: ``sales_order``, ``purchase_order``, ``assembly_order``, ``receipt`` (Portal
+Sampling is stratified by where the root identifier comes from (directive 4190c1c690ce
+item 5): ``sales_order``, ``purchase_order``, ``assembly_order``, ``receipt`` (Portal
 records; receipts also FM raw receipts by lab id), ``bc_invoice`` (posted BC sales/purchase
 invoices) and ``mail`` / ``sharepoint``, root first: the documents are searched (GET
 only, ``DocumentPort.search``) for the numbers of the closed records of the split, round
@@ -12,7 +13,7 @@ generator is seeded by the run id, candidates are sorted before shuffling, so on
 and one source state give the same items. Candidates are ranked by a digest of the run id
 and the candidate (not shuffled), so a fixed run id keeps its items while the source grows.
 
-Splits: every root record belongs to one split by a salted hash of its
+Splits (10-DECISION 8): every root record belongs to one split by a salted hash of its
 relation and key (``split_of``), so dev and held-out never share a root, whatever run
 ids are used. The dev split asks F1-F4 (30 by default); the held-out split (120) adds F5
 and F6, which have no plan on the Workbench side. Held-out items are written only where a
@@ -24,12 +25,12 @@ Every stratum reports its status, a reason whenever it yields no candidate (``em
 family and a funnel of where rows dropped out (``unexplained_strata`` must stay empty).
 
 Every candidate must be closed, in every split (decision
-``docs/decisions/2026-10-07-oracle-strata-closed-roots-only.md``), must resolve back through the oracle's own root lookup
+``devloop/DECISIONS/2026-10-07-oracle-strata-closed-roots-only.md``), must resolve back through the oracle's own root lookup
 to exactly the sampled record (so the question has one root), and must not be a
-Portal-native staging row (``gold_native_staging`` stays out until a
+Portal-native staging row (09-CRITIQUE R1: ``gold_native_staging`` stays out until a
 person confirms it). Items follow ``evals/item.schema.json`` (plx-eval-item/v1); the
 caller validates them. ``audit`` marks the requested number of labels for human audit
-without claiming an audit happened.
+(09 Q9) without claiming an audit happened.
 """
 
 from __future__ import annotations
@@ -102,7 +103,7 @@ MAX_SEARCH_HITS = 5
 MAX_LISTED_DOCUMENTS = 600
 # Each stratum's dated roots, newest first, fall into windows of RECENT_WINDOW; a run
 # searches a window's roots in a sample seeded by its run id (``search_roots``), so hourly
-# runs draw different recent roots. One source's searches take about
+# runs draw different recent roots (directive a108c9b752a2). One source's searches take about
 # MAX_ROOT_SEARCHES / 5 roots of a stratum, a fifth of its first window.
 RECENT_WINDOW = MAX_ROOT_SEARCHES
 _PREFIX = dict(K.DOCUMENT_VARIANTS)["prefix"]
@@ -128,7 +129,7 @@ FAMILY_ROOTS = {
 }
 # Families rooted at one record of one identifier kind (F1 takes any kind, F2 customer POs).
 FAMILY_KIND = {"F3": "so_number", "F4": "po_number", "F5": "po_number", "F6": "so_number"}
-# Per-split quotas: the dev set asks F1-F4; the held-out set adds two
+# Per-split quotas (10-DECISION 8): the dev set asks F1-F4; the held-out set adds two
 # families that have no plan on the Workbench side (F5, F6) and is never committed.
 QUOTAS = {
     "dev": {"F1": 12, "F2": 6, "F3": 6, "F4": 6},
@@ -153,7 +154,7 @@ QUESTION = {
           "any of its receipts?",
     "F6": "Did {label} {identifier} ship short of what was ordered, and on which items?",
 }
-AUDIT_NOTE = ("audit_requested: a person checks known_outcome against the sources, "
+AUDIT_NOTE = ("audit_requested (09 Q9): a person checks known_outcome against the sources, "
               "then sets status human_audited (audited_by, audited_at) or disputed.")
 # Document texts: an identifier counts only as a whole run of word characters and the
 # separators identifiers carry ("PO#1234", "AO-26005B", "25001-1"), cut at separators, so
@@ -246,7 +247,7 @@ def _custom(row: Mapping[str, Any], name: str) -> Any:
 
 
 def lineage(relation: str, row: Mapping[str, Any], portal: Any) -> str:
-    """Where a row came from (rules cited in keys.LINEAGE_CITE and
+    """Where a row came from (09 R1 strata; rules cited in keys.LINEAGE_CITE and
     keys.PO_LINEAGE_CITE). Rows of the replica's own tables are bronze (FM ``public.*``,
     ``sage.*``) or ``silver_view``."""
     schema, _, name = relation.partition(".")
@@ -310,7 +311,7 @@ def fm_po_lineage(relation: str, row: Mapping[str, Any], portal: Any) -> str:
 
 
 def closed(relation: str, row: Mapping[str, Any], portal: Any) -> bool:
-    """A transaction whose answer should not move, read the way the Portal reads
+    """A transaction whose answer should not move (09 R7 d), read the way the Portal reads
     its status: sales orders by ``keys.so_finished`` (gold vocabulary or FM status text) or,
     Sage-backed, by their Sage header's complete flag (``keys.SAGE_COMPLETE``); purchase
     orders by their fulfillment code over their lines (``keys.PO_STATUS_CITE``); assembly
@@ -519,7 +520,7 @@ def twins(sources: Sources, pool: Sequence[Candidate],
     documents of ``pool`` whose No. is in ``numbers`` (the spans the documents found wrote,
     so only a number a document names costs a BC read): one transaction the Portal
     drained to BC under its own number is one root for the documents, the Portal record
-    (a span naming a Portal PO and its
+    (decision of directive 8574b3a82d8f item 1: a span naming a Portal PO and its
     same-numbered BC order named neither and lost the PO). A BC document is a twin when
     its No. is the Portal record's field on a declared identity edge (``_TWIN_EDGES``) and
     the oracle's own walk of that edge from the record (``families.walk``'s rule: the PO's
@@ -971,7 +972,7 @@ def names_in(spans: Collection[str], index: Mapping[str, Candidate],
     return leads
 
 
-_CAUSE = re.compile(r"[a-z_]{1,24}")
+_CAUSE = re.compile(r"[a-z_]{1,40}")
 # A scope-blocked mail unit (its scope id, never an address) and the later_ask it waits on.
 _CAUSE_UNIT = re.compile(r"mailbox-[1-9][0-9]{0,2}")
 _CODE = re.compile(r"[a-z][a-z0-9-]{0,47}")
@@ -1220,7 +1221,7 @@ def document_candidates(sources: Sources, documents: DocumentPort | None, kind: 
     # A result for a query never asked credits none. A root is searched when one of its
     # searches (its numbers and their fallbacks) was answered, refused when none was and
     # one was refused, or none failed and a refusal names no query asked (it may be the
-    # root's: a root whose search failed is unavailable,
+    # root's: directive f6427307e9b0, a root whose search failed is unavailable,
     # ``search_failed``, never refused by a refusal it may not have had).
     answered = outcome["answered"] & sent
     refused_queries = outcome["refused_queries"] & sent
@@ -1321,7 +1322,7 @@ def search_status(read: Mapping[str, Any], funnel: Mapping[str, int]) -> tuple[s
     the roots: ``no_candidate_in_sample`` with ``no_single_root`` (a named root failed its
     single-root check) or ``no_document_names_root``, beside the funnel's
     ``roots_searched``. Searches mostly refused are no sample either, judged per root
-    (more of the roots asked were refused, ``roots_refused``, than
+    (directive d0125cbdcdf6: more of the roots asked were refused, ``roots_refused``, than
     not, so a root with several numbers weighs as one): ``search_refused``,
     ``unavailable`` when nothing was found, else ``incomplete``."""
     if read.get("not_configured"):
@@ -1350,9 +1351,22 @@ def search_status(read: Mapping[str, Any], funnel: Mapping[str, int]) -> tuple[s
     return "no_candidate_in_sample", "no_document_names_root"
 
 
+def document_cause(funnel: Mapping[str, int]) -> str:
+    """The measured cause of a document stratum that read documents and none named a root
+    (``no_document_names_root``); its counts are the funnel's ``texts_*``: ``text_budget``
+    (documents past the text budget stayed unread, at least as many as OCR left), ``ocr``
+    (the OCR left as many documents unread as were read) or ``no_root_in_sample`` (what
+    could be read was read and names none)."""
+    budget = funnel.get("texts_unread_text_budget", 0)
+    ocr = sum(n for name, n in funnel.items() if name.startswith("texts_unread_ocr_")) \
+        + funnel.get("texts_unread_unread_scanned_pages", 0)
+    return ("text_budget" if budget and budget >= ocr else
+            "ocr" if ocr and ocr >= funnel.get("texts_read", 0) else "no_root_in_sample")
+
+
 def unread_status(read: Mapping[str, Any] | None, records: int) -> tuple[str, str] | None:
     """(status, reason) of a sample read that yielded no candidate but may not be called
-    empty (unreadable is not empty): a kind its port has no reader for is
+    empty (unreadable is not empty, CONTEXT/01 §6 #3): a kind its port has no reader for is
     ``not_configured``; one the run budget stopped (``blocked: budget``) is ``unavailable``. A read whose readable remainder was read to its end or cut only by the
     sampler's own limits (``capped``) is a sample of what the reader can read:
     ``no_candidate_in_sample`` (``sample_cap``, or ``withheld`` with the withheld count
@@ -1506,6 +1520,10 @@ def generate(sources: Sources, *, run_id: str, now: str, count: int = 30,
             funnel = funnels[stratum]
             if stratum in DOCUMENT_STRATA:
                 entry["status"], entry["reason"] = search_status(read or {}, funnel)
+                if entry["reason"] == "no_document_names_root":
+                    cause = document_cause(funnel)   # its counts are the funnel's texts_*
+                    if cause != "no_root_in_sample":   # else the reason itself says it
+                        entry["blocked"] = cause
                 block_refused_upstream(entry, refused_all)
                 block_refused_scope(entry, scope_all)
                 continue

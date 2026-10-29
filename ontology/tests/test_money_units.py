@@ -25,7 +25,7 @@ from ontology.project import CapturedRecord, build_store, object_id_of
 from ontology.schema import load_schema
 from ontology.units import (CURRENCY_SIGN_FORMS, ISO_4217, currency_code, currency_shape,
                             js_trim)
-from verify import live_verify
+from devloop import live_verify
 from scripts import money_units_probe
 from scripts.money_units_probe import summarize
 
@@ -35,7 +35,7 @@ T = "2026-10-01T00:00:00.000000Z"
 NOW = datetime(2026, 10, 2, tzinfo=timezone.utc)
 SUPPLIER = "portal.app_supplier_product"
 SAGE = "portal.sage_oe_invoice_detail"
-SPEC = json.loads((ROOT / "verify/live-checks/ontology.money_units.json").read_text(
+SPEC = json.loads((ROOT / "devloop/live-checks/ontology.money_units.json").read_text(
     encoding="utf-8"))
 
 # app_supplier_product: id, FM source column, system_cost, currency cell.
@@ -407,7 +407,7 @@ class PerUnitRulesSchemaTests(unittest.TestCase):
 
 
 class OneCurrencyTableTests(unittest.TestCase):
-    """A record cell (``currency_code``), a document field
+    """Lane currency-one-table: a record cell (``currency_code``), a document field
     (``ontology/document_fields.py``) and a document price
     (``integrations/document_understanding.py``) read one written currency the same way,
     from the one table in ``ontology/units.py``, and never emit a code outside ISO 4217."""

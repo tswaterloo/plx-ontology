@@ -1,8 +1,8 @@
-"""Print the evaluation summary line for the ``state.status.eval`` field.
+"""Print the evaluation summary line the controller saves into ``state.status.eval``.
 
-Reads a live-check report (``results/latest.json``, schema
+Reads a live-verifier report (``results/latest.json`` on ``claude/devloop-live``, schema
 ``plx-live-verify/v1``), whose top-level ``eval`` map holds each ``eval.*`` check's lifted
-``eval`` block keyed by check id (``verify/live_verify.py`` ``eval_blocks``), and prints
+``eval`` block keyed by check id (``devloop/live_verify.py`` ``eval_blocks``), and prints
 one line, e.g.::
 
     eval.dev_baseline: dev_set 3/30 (F1 0/12 F2 1/6 F3 2/6 F4 0/6) attempted 2/6 \

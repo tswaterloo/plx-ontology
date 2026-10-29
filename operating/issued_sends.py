@@ -4,7 +4,7 @@ The Portal keeps the exact bytes of every PO PDF it issues, and the Workbench mu
 *which* render left PLX, *when*, whether the supplier answered and whether the served
 record moved on, and say so only from what this reader may see now. Mirrored upstream
 rules (plx-customer-portal@4af6957 unless a line names a later commit, each pinned in
-verify/upstream-pins.json):
+devloop/upstream-pins.json):
 
 * ``portal/src/lib/mrp/purchase-order-document.ts@4af6957:94-96`` names a PO PDF
   ``{poNumber}.pdf`` or ``{poNumber} - Customs.pdf``; ``buildPurchaseOrderPdf`` returns
@@ -283,8 +283,6 @@ def read_sends(store: Any, actor: Actor, audience: Any, internal_domains: Iterab
                limit: int = 5000) -> dict[str, Any]:
     """Messages this reader may see in the mail capture: sends (with their PO PDF
     attachments) and the other messages a reply may be (conversation, sender domain)."""
-    from integrations.graph_read import quick_xor_hash
-
     index = store.index(actor, audience, limit=limit)
     internal = frozenset(d.strip().lower() for d in internal_domains
                          if isinstance(d, str) and d.strip())
@@ -323,11 +321,12 @@ def read_sends(store: Any, actor: Actor, audience: Any, internal_domains: Iterab
             if parsed is None:
                 continue
             entry: dict[str, Any] = {"citation": att.get("l1_handle"), **parsed}
-            if kind == "vendor":   # bytes only where they can link a render
-                content = (store.attachment_content(att["l1_handle"], actor, audience)
-                           if att.get("l1_handle") and att.get("content_sha256") else None)
-                entry["sha256"] = att.get("content_sha256") if content is not None else None
-                entry["quick_xor"] = quick_xor_hash(content) if content is not None else None
+            if kind == "vendor":   # hashes only where they can link a render
+                # From the bytes, or the record a dropped original left (capture_mail).
+                hashes = (store.attachment_hashes(att["l1_handle"], actor, audience)
+                          if att.get("l1_handle") and att.get("content_sha256") else None)
+                entry["sha256"] = hashes["sha256"] if hashes is not None else None
+                entry["quick_xor"] = hashes["quick_xor"] if hashes is not None else None
             attachments.append(entry)
         sends.append({"citation": item["l1_handle"], "kind": kind,
                       "conversation_id": item.get("conversation_id"),
@@ -672,7 +671,7 @@ def issued_sends(actor: Actor, *, mail: Any = None, sharepoint: Any = None, audi
 
 
 def blocked_upstream(report: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """The Portal relation read the Portal failed: the live checks' ``blocked_upstream``."""
+    """The Portal relation read the Portal failed: the live verifier's ``blocked_upstream``."""
     po = report["sources"]["po"]
     return ([{"part": "po_source", "source": "portal-workbench-api", **po["upstream"]}]
             if "upstream" in po else [])
@@ -688,7 +687,7 @@ def counts_only(report: Mapping[str, Any], *, evidence_label: str) -> dict[str, 
 def evidence_label(report: Mapping[str, Any], injected: bool) -> str:
     """``no-source-read`` unless mail or SharePoint was read for the reader; else
     ``injected-transport`` or ``live-read`` (never ``live-verified``: that label comes
-    only from a verify/live_verify result)."""
+    only from a devloop/live_verify result)."""
     counts = report["counts"]
     if counts["messages_scanned"] <= 0 and counts["renders"] <= 0:
         return "no-source-read"

@@ -34,7 +34,7 @@
   },
   "tier_floor": {
    "$ref": "#/$defs/tier",
-   "description": "Weakest link tier that counts as evidence (default stored_by_text_join, as plx.around). A link touching a gold_native_staging version counts as lead."
+   "description": "Weakest link tier that counts as evidence (default stored_by_text_join, as plx.around). A link touching a gold_native_staging version counts as lead (R1)."
   },
   "implicit": {
    "type": "boolean",
@@ -47,7 +47,7 @@
     "definition",
     "rules"
    ],
-   "description": "When a root is open (issued, not closed): the shared purchase-order status definition (`operating.po_status`, docs/decisions/2026-10-21-po-open-sage-fm.md) over the root's own status values the rules name and its own lines' ordered and received quantities, never a word list here. A root is open only when the definition says open; a withheld, unreadable, unmapped or disputed status, or unread lines, is unknown and decides nothing. A graph with implicit false and open_when is the one plx.process uses for an unnamed call when every root is open (else the implicit graph); lateness reads the same class (draft or cancelled: not applicable; received; partial).",
+   "description": "When a root is open (issued, not closed): the shared purchase-order status definition (`operating.po_status`, devloop/DECISIONS/2026-10-21-po-open-sage-fm.md) over the root's own status values the rules name and its own lines' ordered and received quantities, never a word list here. A root is open only when the definition says open; a withheld, unreadable, unmapped or disputed status, or unread lines, is unknown and decides nothing. A graph with implicit false and open_when is the one plx.process uses for an unnamed call when every root is open (else the implicit graph); lateness reads the same class (draft or cancelled: not applicable; received; partial).",
    "properties": {
     "definition": {
      "const": "po_status"
@@ -465,7 +465,7 @@
           "quantity",
           "evidence"
          ],
-         "description": "Proof of this side's absence for a BC-rooted record (absent_in_bc, docs/decisions/2026-10-14-three-way-absence-proven.md): BC records this side's quantity on another side's lines. The side's stage is proven absent, with the read time, only when the root's own BC records hold no such record, every line of the other side was read completely and records the figure, and every figure is zero; then the side sums to zero in its quantity comparisons. A read not complete, a line without the figure, a non-zero or unreadable figure leaves the stage undecided.",
+         "description": "Proof of this side's absence for a BC-rooted record (absent_in_bc, devloop/DECISIONS/2026-10-14-three-way-absence-proven.md): BC records this side's quantity on another side's lines. The side's stage is proven absent, with the read time, only when the root's own BC records hold no such record, every line of the other side was read completely and records the figure, and every figure is zero; then the side sums to zero in its quantity comparisons. A read not complete, a line without the figure, a non-zero or unreadable figure leaves the stage undecided.",
          "properties": {
           "role": {
            "$ref": "#/$defs/quantity_role"

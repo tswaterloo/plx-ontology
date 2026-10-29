@@ -332,7 +332,7 @@ class EstateDiscoveryTests(EstateCase):
         self.assertEqual(last["source_acl"]["status"], "read")   # served by its own grant
 
     def test_a_site_is_captured_only_when_every_library_of_it_is_walked(self):
-        # A site was credited captured when one library was
+        # Directive a8acd47fe58c: a site was credited captured when one library was
         # walked although another was cut by the time budget.
         self.drive = estate_drive(sites=(Q_SITE, ts.SITE_ID, PERSONAL_SITE), libraries={
             Q_SITE: [(ts.DRIVE, "Documents"), (ts.SITE_DRIVE, "Records")], ts.SITE_ID: [],
@@ -390,7 +390,7 @@ class EstateDiscoveryTests(EstateCase):
         self.assertIsNone(self.store.walk_position(cut[0], "/"))
 
     def test_a_cut_refresh_resumes_before_a_pending_root_and_applies_its_revocation(self):
-        # A budget-cut refresh of a
+        # Decision 28e628682928 (ING-16 gap-d5365c514b2a): a budget-cut refresh of a
         # complete root stood after every root no walk had reached, so on a growing
         # estate a permission revoked or a file deleted under it waited behind new roots.
         self.capture().run(estate_scope())
@@ -515,7 +515,7 @@ class EstateDiscoveryTests(EstateCase):
                                  and f"drive={ts.DRIVE}&" in unquote(u)), 1, iid)
 
     def test_a_slice_cuts_inside_a_long_listing_and_never_before_its_first_child(self):
-        # Live (2026-10-18T10:41Z) the slice cut only between folders and one
+        # Live at b38701bd1 (2026-10-18T10:41Z) the slice cut only between folders and one
         # listing's 152 files ran 224 s past it. A slice cuts inside the listing once it
         # read a child; it never cuts before (a slice shorter than one listing would cut
         # the walk where the last one did, every pass and every run).
@@ -558,7 +558,7 @@ class EstateDiscoveryTests(EstateCase):
             self.assertIsNotNone(self.store.current(ts.DRIVE, iid), iid)
 
     def test_a_slice_shares_the_budget_over_the_walks_after_it_not_the_followed_roots(self):
-        # Dividing by every root left, complete ones included, gave
+        # Review of 5df207a2d: dividing by every root left, complete ones included, gave
         # each walk of a 224-root estate the 20 s floor though most roots only follow
         # their change feed. A complete root's follow is no walk and takes no share.
         self.capture().run(estate_scope())
@@ -597,7 +597,7 @@ class EstateDiscoveryTests(EstateCase):
         self.assertEqual(dict(shares)[ts.DRIVE], len(order) - order.index(ts.DRIVE))
 
     def test_a_slice_floor_never_leaves_small_roots_after_large_ones_unreached(self):
-        # Live 2026-10-18T09:46Z (224 roots, 1500 s): a 20 s least slice gave
+        # Live 2026-10-18T09:46Z at dabe69ce3 (224 roots, 1500 s): a 20 s least slice gave
         # each of 52 large roots more than its fair share (about 6 s); none completed and
         # 78 roots after them were never reached. The slice is the fair share alone: what
         # a small root leaves rolls to the walks after it, every root is visited and the
@@ -691,7 +691,7 @@ class EstateDiscoveryTests(EstateCase):
                          len(cut))
 
     def test_a_refresh_is_never_sliced_and_a_budget_without_room_defers(self):
-        # A due refresh of a complete root runs on the run's
+        # Decision 28e628682928: a due refresh of a complete root runs on the run's
         # budget, not a slice; roots the budget does not reach are deferred, unvisited.
         self.capture().run(estate_scope())
         self.store._clock.now += dt.timedelta(hours=25)
@@ -754,7 +754,7 @@ class EstateDiscoveryTests(EstateCase):
 
 class EstateStoreTests(EstateCase):
     def test_the_store_is_bounded_by_default_and_keeps_only_the_last_complete_capture(self):
-        # The estate store had no bound unless one was passed, and
+        # Decision 28e628682928: the estate store had no bound unless one was passed, and
         # kept the bytes of every version ever captured.
         with tempfile.TemporaryDirectory() as tmp:
             store = cs.SharePointCaptureStore(Path(tmp) / "state")
@@ -959,6 +959,12 @@ REGISTRY_SITES = [{"id": f"sharepoint.site:{name}", "system": "sharepoint", "kin
                   for name in ("Quality", "AGENTS", "Elsewhere")]
 
 
+# The estate the shipped scope's CLI tests read: one walkable library per site (the
+# shipped scope excludes no library, owner rule everything, 2026-10-27).
+SHIPPED_LIBRARIES = {**LIBRARIES, Q_SITE: [(ts.DRIVE, "Documents")],
+                     ts.SITE_ID: [(ts.SITE_DRIVE, "Documents")]}
+
+
 class EstateCliTests(unittest.TestCase):
     def run_cli(self, drive, registry_sites=REGISTRY_SITES, *, home=None, budget_seconds=None,
                 monotonic=None, environ=None):
@@ -983,14 +989,14 @@ class EstateCliTests(unittest.TestCase):
                               **({"monotonic": monotonic} if monotonic else {}))
 
     def test_cli_reports_the_estate_by_counts_and_a_gap_fails_the_live_check(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         os.environ.pop("PLX_WORKBENCH_API_KEY", None)
-        spec = json.loads((Path(cs.REPO_ROOT) / "verify/live-checks/"
+        spec = json.loads((Path(cs.REPO_ROOT) / "devloop/live-checks/"
                            "capture.sharepoint_estate.json").read_text(encoding="utf-8"))
         lv.validate_spec(spec, stem="capture.sharepoint_estate")
         drive = estate_drive(
             sites=(Q_SITE, ts.SITE_ID, PERSONAL_SITE, OTHER_SITE),
-            libraries={**LIBRARIES, ts.SITE_ID: [(ts.SITE_DRIVE, "Documents")]})
+            libraries=SHIPPED_LIBRARIES)
         # The source refuses one file's bytes (live 2026-10-07: content_incomplete): its
         # root is walked to the end, a named incomplete-source gap, never a failure.
         drive.fail_download["01USE"] = 403
@@ -1000,11 +1006,11 @@ class EstateCliTests(unittest.TestCase):
         self.assertTrue(report["ok"], json.dumps(report)[:1500])
         self.assertEqual(report["evidence_label"], "injected-transport")
         estate = report["estate"]
-        # Site Assets is left out by the shipped exclusion list (data, not code).
+        # The shipped scope leaves no library out (owner rule everything, 2026-10-27).
         self.assertEqual((estate["libraries_planned"], estate["libraries_excluded"],
                           estate["sites_other_host"], estate["sites_personal"],
                           estate["libraries_personal_planned"],
-                          estate["roots_other_gaps"]), (3, 1, 1, 1, 1, 0))
+                          estate["roots_other_gaps"]), (3, 0, 1, 1, 1, 0))
         self.assertEqual((estate["roots_incomplete_source"], estate["root_gaps"],
                           estate["contents_unavailable"]),
                          (1, {"content_incomplete": 1}, {"http_403": 1}))
@@ -1028,7 +1034,7 @@ class EstateCliTests(unittest.TestCase):
         # No personal drive planned (one Graph types otherwise): the live check fails on it.
         drive = estate_drive(
             sites=(Q_SITE, ts.SITE_ID, PERSONAL_SITE, OTHER_SITE),
-            libraries={**LIBRARIES, ts.SITE_ID: [(ts.SITE_DRIVE, "Documents")]})
+            libraries=SHIPPED_LIBRARIES)
         drive.drive_types = {PERSONAL_DRIVE: "personal"}
         unplanned = self.run_cli(drive)
         self.assertEqual((unplanned["estate"]["sites_personal"],
@@ -1049,7 +1055,7 @@ class EstateCliTests(unittest.TestCase):
                     for row in sr.coverage(registry, live, facts)}
         recorded = lv._recorded(spec, report)
         self.assertEqual(recorded["registry_sites.reasons"], {"Elsewhere": "not_listed"})
-        # Every registry site is named by the check: none is left
+        # Every registry site is named by the check (gap-91998eed9724): none is left
         # unnamed (no_live_check).
         self.assertEqual(status("pass", recorded), {
             "Quality": ("evaluated", None), "AGENTS": ("evaluated", None),
@@ -1057,15 +1063,15 @@ class EstateCliTests(unittest.TestCase):
         failing = self.run_cli(estate_drive())
         self.assertFalse(failing["ok"])
         self.assertEqual(failing["runs"][0]["discovery"]["gaps"], ["library_listing:http_403"])
-        # The forbidden library and an unreadable one (HR, not excluded by the shipped
-        # list), each named.
+        # The forbidden library and the unreadable ones (HR and Site Assets: the shipped
+        # list excludes nothing), each named.
         self.assertEqual((failing["estate"]["roots_other_gaps"], failing["estate"]["root_gaps"]),
-                         (2, {"not_visible": 1, "source_error:http_403": 1}))
+                         (3, {"not_visible": 2, "source_error:http_403": 1}))
         self.assertEqual({k: v for k, v in failing["registry_sites"].items() if k != "readback"},
-                         {"captured": ["Quality"], "partial": [], "unexercised": [],
-                          "failed": ["AGENTS", "Elsewhere"],
+                         {"captured": [], "partial": [], "unexercised": [],
+                          "failed": ["AGENTS", "Elsewhere", "Quality"],
                           "reasons": {"AGENTS": "source_error:http_403",
-                                      "Elsewhere": "not_listed"}})
+                                      "Elsewhere": "not_listed", "Quality": "not_visible"}})
         self.assertTrue(lv.check_expectations(spec, 1, failing))
         self.assertEqual(status("fail", lv._recorded(spec, failing))["AGENTS"],
                          ("fixture_queryable", "live_not_passing"))
@@ -1073,14 +1079,14 @@ class EstateCliTests(unittest.TestCase):
     def test_estate_progress_carries_across_invocations_in_the_host_state(self):
         # Two daily invocations with no --state-dir: the second resumes the first's walk
         # from its stored position, so roots no walk reached fall and complete roots
-        # never do.
-        from verify import live_verify as lv
+        # never do (gap-e70bce853a2f).
+        from devloop import live_verify as lv
         os.environ.pop("PLX_WORKBENCH_API_KEY", None)
-        spec = json.loads((Path(cs.REPO_ROOT) / "verify/live-checks/"
+        spec = json.loads((Path(cs.REPO_ROOT) / "devloop/live-checks/"
                            "capture.sharepoint_estate.json").read_text(encoding="utf-8"))
         lv.validate_spec(spec, stem="capture.sharepoint_estate")
         drive = estate_drive(sites=(Q_SITE, ts.SITE_ID, PERSONAL_SITE, OTHER_SITE),
-                             libraries={**LIBRARIES, ts.SITE_ID: [(ts.SITE_DRIVE, "Documents")]})
+                             libraries=SHIPPED_LIBRARIES)
 
         def listed():
             return [u.split("?")[0] for _m, u in drive.calls
@@ -1154,11 +1160,11 @@ class EstateCliTests(unittest.TestCase):
                 self.assertTrue(lv.check_expectations(spec, 0, fell), field)
 
     def test_the_carried_estate_fails_on_one_unvisited_stale_or_incomplete_root(self):
-        # the estate is complete when every planned root is complete
+        # gap-92884c654a7a: the estate is complete when every planned root is complete
         # within the full-walk freshness window; one root short of that fails it.
         os.environ.pop("PLX_WORKBENCH_API_KEY", None)
         drive = estate_drive(sites=(Q_SITE, ts.SITE_ID, PERSONAL_SITE, OTHER_SITE),
-                             libraries={**LIBRARIES, ts.SITE_ID: [(ts.SITE_DRIVE, "Documents")]})
+                             libraries=SHIPPED_LIBRARIES)
         with tempfile.TemporaryDirectory() as home:
             report = self.run_cli(drive, home=home)
             self.assertTrue(report["estate"]["carried"]["complete"])
@@ -1203,7 +1209,7 @@ class EstateCliTests(unittest.TestCase):
             self.assertEqual((part["roots_incomplete"], part["complete"]), (1, False))
 
     def test_the_host_state_follows_a_set_workbench_state_dir(self):
-        # The live check's dailies keep only PLX_WORKBENCH_STATE_DIR (XDG state is not
+        # The verifier's dailies keep only PLX_WORKBENCH_STATE_DIR (XDG state is not
         # carried there): when set, the check's store lives under it and carries across.
         os.environ.pop("PLX_WORKBENCH_API_KEY", None)
         with tempfile.TemporaryDirectory() as workbench, \
@@ -1240,3 +1246,71 @@ class EstateCliTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EstateKeptStateTests(unittest.TestCase):
+    """A run cut by the time budget alone is blocked (later_ask
+    live-host-persistent-state-dir, the progress shown) only over a store this
+    invocation did not find kept: observed, never inferred from the state base."""
+
+    run_cli = EstateCliTests.run_cli
+
+    def setUp(self) -> None:
+        os.environ.pop("PLX_WORKBENCH_API_KEY", None)
+        self.drive = estate_drive(
+            sites=(Q_SITE, ts.SITE_ID, PERSONAL_SITE, OTHER_SITE),
+            libraries=SHIPPED_LIBRARIES)
+
+    def listed(self) -> int:
+        return sum(1 for _m, u in self.drive.calls if u.split("?")[0].endswith("/children"))
+
+    def cut(self, **kwargs) -> dict:
+        return self.run_cli(self.drive, budget_seconds=1, monotonic=self.listed, **kwargs)
+
+    def assert_blocked(self, report) -> None:
+        from devloop.tests.spec_verdict import spec_of, verdict
+        self.assertEqual(report["storage"]["carried"], False)
+        self.assertFalse(report["ok"])
+        named = report["incomplete_scope"]
+        self.assertTrue(named)
+        self.assertEqual({(e["persisted"], e["later_ask"]) for e in named},
+                         {(False, "live-host-persistent-state-dir")})
+        self.assertEqual(sorted(p["part"] for p in report["blocked_upstream"]),
+                         sorted(f"{e['target']}.root{e['root']}" for e in named))
+        self.assertEqual({(p["cause"], p["later_ask"]) for p in report["blocked_upstream"]},
+                         {("later_ask", "live-host-persistent-state-dir")})
+        self.assertEqual(verdict(spec_of("capture.sharepoint_estate"), 0, report),
+                         ("blocked", []))
+
+    def test_cold_estate_budget_cut_is_blocked(self):
+        # The spec's own command (host state, no --state-dir) on its first day: the
+        # discovered libraries are cut by the budget over a store nothing carried.
+        with tempfile.TemporaryDirectory() as home:
+            cold = self.cut(home=home)
+            self.assertGreater(cold["estate"]["roots_budget_cut"], 0)
+            self.assert_blocked(cold)
+            self.assertTrue(all(e["target"].startswith("library")
+                                for e in cold["incomplete_scope"]))
+            # The next day carries it: the same cut is a typed fail, never blocked.
+            again = self.cut(home=home)
+            self.assertEqual((again["storage"]["carried"], again["blocked_upstream"]),
+                             (True, []))
+            self.assertTrue(again["incomplete_scope"])
+            self.assertTrue(all(e["persisted"] and e["later_ask"] is None
+                                for e in again["incomplete_scope"]))
+
+    def test_state_dir_set_but_store_new_is_not_persisted(self):
+        # PLX_WORKBENCH_STATE_DIR set (the kept base) is no proof the store is kept: a
+        # store this run created is not persisted, its cut blocked; only a store found
+        # there is.
+        with tempfile.TemporaryDirectory() as workbench:
+            env = {**ts.ENV, "PLX_WORKBENCH_STATE_DIR": workbench}
+            first = self.cut(environ=env)
+            self.assertEqual(first["storage"]["state_base"], "workbench_state_dir")
+            self.assert_blocked(first)
+            second = self.cut(environ=env)
+            self.assertEqual((second["storage"]["carried"], second["blocked_upstream"]),
+                             (True, []))
+            self.assertTrue(second["incomplete_scope"])
+            self.assertTrue(all(e["persisted"] for e in second["incomplete_scope"]))
+

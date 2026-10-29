@@ -2,8 +2,8 @@
  "format": "plx-eval-exposed-manifest/v1",
  "split": "dev",
  "exposure": "exposed",
- "rule": "Exposed real cases: visible, so dev/regression only and never held-out (docs/reference/cases-and-artifacts.md 1.1 assessment; source batch classification). They are evaluation data only: product code must not name them (gate no-hardcoded-cases, verify/hardcoded-case-denylist.json). The leakage unit is the whole cluster: the four soapbox-po5447 items are one transaction.",
- "evidence_label": "source-curated (expected values copied from the source records; no live read, no host run, no human audit)",
+ "rule": "Exposed real cases: builder-visible, so dev/regression only and never held-out (devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md 1.1 assessment; advisory batch classification). They are evaluation data only: product code must not name them (gate no-hardcoded-cases, devloop/hardcoded-case-denylist.json). The leakage unit is the whole cluster: the four soapbox-po5447 items are one transaction.",
+ "evidence_label": "advisory-curated (expected values copied from the Dot's records; no live read, no host run, no human audit)",
  "run": "python3 -m evals.runner run --items evals/exposed --split dev ... (kept apart from evals/dev so the fixture baseline over the synthetic dev set is unchanged)",
  "families": {
   "F7": "A communication or document exists (a confirmation resent, an assessment recorded, a PO PDF, a deposit sent): does it establish the business outcome (inventory fixed, approval, ERP state, settlement)?",
@@ -15,20 +15,20 @@
   "B": {
    "path": "context/006786de5454dcb66a83cfdd2fad4974b2545e5f61a24a75aad1b74bc288b23e.json",
    "git_blob_sha": "1ac1867277013217864e369eb797e9240dc365fe",
-   "branch": "source-records",
+   "branch": "codex/advisory",
    "source_revision": "sha256:f2438ec3002e3917c5634a9d4e6a93e6e95dc129d648319fdff33fac61547996"
   },
   "coverage_map": {
    "path": "context/47de419dd1f9759b01da2095ceb41cf08ac760fdffd999f5dbb52e2576aad522.json",
    "git_blob_sha": "0a876983706f99be2bd9e0b276db53043595045b",
-   "branch": "source-records"
+   "branch": "codex/advisory"
   },
   "sources": "evals/exposed/sources.json evidence_records (R, S)",
   "P2P8": {
-   "branch": "source-records",
+   "branch": "claude/devloop-task-dot-p2p8-eval-data-01",
    "commit": "858f5fc888d591cab3cd7fabb4c4374f16e27e64",
-   "path": "EVIDENCE/evals/p2p8-20261004",
-   "imported": "evals/exposed/p2p8-field-evidence.json (copy)",
+   "path": "EVIDENCE/evals/dot-p2p8-20261004",
+   "imported": "evals/exposed/p2p8-field-evidence.json (byte-identical copy)",
    "not_imported": "runtime-bindings.json (a draft whose runtime handles are all null; the import binds each value to its pinned original instead) and the four draft items (converted here)"
   }
  },
@@ -41,7 +41,7 @@
   {
    "batch_unit": "DEV-P2-PACKING-MIDAS-01",
    "cluster": "po00349-midas",
-   "reason": "It is marked blocked_original_page_verification and excluded_from_scoring: no original bytes or verified mailbox route, so no page gold."
+   "reason": "The Dot marks it blocked_original_page_verification and excluded_from_scoring: no original bytes or verified mailbox route, so no page gold."
   }
  ],
  "counts": {
@@ -83,7 +83,7 @@
    "evidence": [
     "context/006786de5454dcb66a83cfdd2fad4974b2545e5f61a24a75aad1b74bc288b23e.json#/evaluation_batch/cases/1",
     "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/case_acceptance/1",
-    "docs/reference/cases-and-artifacts.md#3.6"
+    "devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md#3.6"
    ]
   },
   {
@@ -109,7 +109,7 @@
    "evidence": [
     "context/006786de5454dcb66a83cfdd2fad4974b2545e5f61a24a75aad1b74bc288b23e.json#/evaluation_batch/cases/0",
     "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/case_acceptance/0",
-    "docs/reference/cases-and-artifacts.md#3.6"
+    "devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md#3.6"
    ]
   },
   {
@@ -131,7 +131,7 @@
    ],
    "evidence": [
     "context/006786de5454dcb66a83cfdd2fad4974b2545e5f61a24a75aad1b74bc288b23e.json#/evaluation_batch/cases/5",
-    "docs/reference/cases-and-artifacts.md#1.11 F03"
+    "devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md#1.11 F03"
    ]
   },
   {
@@ -157,7 +157,7 @@
    ],
    "evidence": [
     "context/006786de5454dcb66a83cfdd2fad4974b2545e5f61a24a75aad1b74bc288b23e.json#/evaluation_batch/cases/7",
-    "docs/reference/cases-and-artifacts.md#1.11 F01"
+    "devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md#1.11 F01"
    ]
   },
   {
@@ -181,7 +181,7 @@
    "evidence": [
     "context/006786de5454dcb66a83cfdd2fad4974b2545e5f61a24a75aad1b74bc288b23e.json#/evaluation_batch/cases/2",
     "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/case_acceptance/2",
-    "docs/reference/cases-and-artifacts.md#3.6"
+    "devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md#3.6"
    ]
   },
   {
@@ -205,7 +205,7 @@
    ],
    "evidence": [
     "context/006786de5454dcb66a83cfdd2fad4974b2545e5f61a24a75aad1b74bc288b23e.json#/evaluation_batch/cases/6",
-    "docs/reference/cases-and-artifacts.md#1.11 F02"
+    "devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md#1.11 F02"
    ]
   },
   {
@@ -229,7 +229,7 @@
    "evidence": [
     "context/006786de5454dcb66a83cfdd2fad4974b2545e5f61a24a75aad1b74bc288b23e.json#/evaluation_batch/cases/3",
     "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json#/case_acceptance/3",
-    "docs/reference/cases-and-artifacts.md#3.6"
+    "devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md#3.6"
    ]
   },
   {
@@ -254,7 +254,7 @@
    ],
    "evidence": [
     "context/006786de5454dcb66a83cfdd2fad4974b2545e5f61a24a75aad1b74bc288b23e.json#/evaluation_batch/cases/8",
-    "docs/reference/cases-and-artifacts.md#1.11 F05"
+    "devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md#1.11 F05"
    ]
   },
   {
@@ -281,9 +281,9 @@
    ],
    "evidence": [
     "context/006786de5454dcb66a83cfdd2fad4974b2545e5f61a24a75aad1b74bc288b23e.json#/evaluation_batch/cases/9",
-    "docs/reference/cases-and-artifacts.md#1.11 F04",
-    "docs/reference/cases-and-artifacts.md#1.11 F06",
-    "docs/reference/cases-and-artifacts.md#1.11 F07"
+    "devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md#1.11 F04",
+    "devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md#1.11 F06",
+    "devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md#1.11 F07"
    ]
   },
   {
@@ -306,7 +306,7 @@
    "pinned_by": "evals/exposed/sources.json#soap-pi-pdf",
    "evidence": [
     "evals/exposed/p2p8-field-evidence.json#/items/0",
-    "EVIDENCE/evals/p2p8-20261004/runtime-bindings.json#/items/dev-F7-1001-exposed (@858f5fc8)"
+    "EVIDENCE/evals/dot-p2p8-20261004/runtime-bindings.json#/items/dev-F7-1001-exposed (branch claude/devloop-task-dot-p2p8-eval-data-01 @858f5fc8)"
    ]
   },
   {
@@ -327,7 +327,7 @@
    "pinned_by": "evals/dev/cases/ao_originals_expected.json#/files/0",
    "evidence": [
     "evals/exposed/p2p8-field-evidence.json#/items/3",
-    "EVIDENCE/evals/p2p8-20261004/runtime-bindings.json#/items/dev-F7-1002-exposed (@858f5fc8)"
+    "EVIDENCE/evals/dot-p2p8-20261004/runtime-bindings.json#/items/dev-F7-1002-exposed (branch claude/devloop-task-dot-p2p8-eval-data-01 @858f5fc8)"
    ]
   },
   {
@@ -350,7 +350,7 @@
    "pinned_by": "evals/exposed/sources.json#soap-fcl-quote",
    "evidence": [
     "evals/exposed/p2p8-field-evidence.json#/items/1",
-    "EVIDENCE/evals/p2p8-20261004/runtime-bindings.json#/items/dev-F9-1001-exposed (@858f5fc8)"
+    "EVIDENCE/evals/dot-p2p8-20261004/runtime-bindings.json#/items/dev-F9-1001-exposed (branch claude/devloop-task-dot-p2p8-eval-data-01 @858f5fc8)"
    ]
   },
   {
@@ -373,7 +373,7 @@
    "pinned_by": "evals/exposed/sources.json#soap-air-quote",
    "evidence": [
     "evals/exposed/p2p8-field-evidence.json#/items/2",
-    "EVIDENCE/evals/p2p8-20261004/runtime-bindings.json#/items/dev-F9-1002-exposed (@858f5fc8)"
+    "EVIDENCE/evals/dot-p2p8-20261004/runtime-bindings.json#/items/dev-F9-1002-exposed (branch claude/devloop-task-dot-p2p8-eval-data-01 @858f5fc8)"
    ]
   },
   {
@@ -394,7 +394,7 @@
    "pinned_by": "evals/dev/cases/ao_originals_expected.json#/files/0",
    "evidence": [
     "EVIDENCE/live/2026-09-30-ao-26005b-live-trace.json",
-    "docs/reference/cases-and-artifacts.md#3.4"
+    "devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md#3.4"
    ]
   }
  ]

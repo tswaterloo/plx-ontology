@@ -35,7 +35,7 @@ open, so every request runs wholly on one generation and the next one on the new
 are reachable through ``CaseHostTools.call`` and ``CaseHostTools.register`` under the same
 per-call policy; ``plx.read`` and the operator originals of ``plx.documents`` read through
 the runtime's own audience-checked readers (``RuntimeCitations``). The MCP listing of these
-three tools is the host budget's (case-host 22-tool budget).
+three tools is the host-budget lane's (lead decision, case-host 22-tool budget).
 
 ``plx.object`` and ``plx.around``/``plx.timeline`` read the projection store only. An
 object id that ``plx.find`` found live is not in it (its throw-away store is discarded
@@ -52,13 +52,13 @@ for an operator's check (``scripts/object_workspace_probe.py``), never for a rea
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import dataclasses
 import os
 from pathlib import Path
 import re
 import tempfile
-from typing import Any, Iterable, Iterator, Mapping
+from typing import Any, Callable, Iterable, Iterator, Mapping
 
 from .ontology_tools import (_ITEM_ACL_SCHEMES, TOOL_NAMES, OntologyTools, ReadPolicy,
                              StoreReader, _envelope_bytes, _error, default_schema,
@@ -99,9 +99,11 @@ def _review_store_gap(result: Any, error: Any, contract: Mapping[str, Any] | Non
 def table_tool_names() -> frozenset[str]:
     """The tools ``tool_table`` serves (``CaseHostTools.table``): none may be registered
     over them (``CaseHostTools.register_tool``)."""
-    from . import ontology_tools_investigate, ontology_tools_process, ontology_tools_traverse
+    from . import (meeting_agenda, ontology_tools_investigate, ontology_tools_process,
+                   ontology_tools_traverse)
     return frozenset(TOOL_NAMES) | frozenset(ontology_tools_traverse.TOOL_NAMES) | frozenset(
-        ontology_tools_process.TOOL_NAMES) | frozenset(ontology_tools_investigate.TOOL_NAMES)
+        ontology_tools_process.TOOL_NAMES) | frozenset(ontology_tools_investigate.TOOL_NAMES) \
+        | frozenset(meeting_agenda.TOOL_NAMES)
 
 
 class _LazyProcess:
@@ -133,15 +135,16 @@ def tool_table(tools: OntologyTools, runtime: Any, *,
     ``label_reserve``: the bytes the host's labels add to a result after plx.investigate
     answers (``InvestigateTools``), kept free by its pages. Every handler reads under
     ``tools.policy`` as the caller set it for this call."""
-    from . import (ontology_tools, ontology_tools_investigate, ontology_tools_process,
-                   ontology_tools_traverse)
+    from . import (ontology_tools, ontology_tools_evidence, ontology_tools_investigate,
+                   ontology_tools_process, ontology_tools_traverse)
     table: dict[str, dict[str, Any]] = {}
     ontology_tools.register(table, tools)
     traverse = ontology_tools_traverse.TraverseTools(tools)
     # The store facts every reader's plx.around / plx.timeline needs, read once per store
     # generation as the table is built over it (a served generation is a file never written
-    # again; a newer one gets a new table), so no reader's call pays for them.
-    traverse.prime()
+    # again; a newer one gets a new table), so no reader's call pays for them. A later
+    # process over the same file reads them from beside it (``facts_path``).
+    traverse.prime(cell_families=ontology_tools_evidence.STORE_DOCUMENT_FAMILIES)
     ontology_tools_traverse.register(table, traverse)
     ontology_tools_process.register(table, _LazyProcess(tools))
     ontology_tools_investigate.register(table, ontology_tools_investigate.InvestigateTools(
@@ -150,18 +153,52 @@ def tool_table(tools: OntologyTools, runtime: Any, *,
         scope=ontology_tools_investigate.read_scope(tools),
         captured=ontology_tools_investigate.capture_claims(tools),
         complete=ontology_tools_investigate.relation_complete(tools), follow_ups=follow_ups,
-        reviews=traverse.review, label_reserve=label_reserve))
+        reviews=traverse.review,
+        held_markings=lambda actor: tools.policy.held_markings(actor),
+        landed_actuals=landed_actuals_of(runtime),
+        people=people_directory_of(runtime),
+        label_reserve=label_reserve))
+    # plx.agenda: a meeting's agenda read through this same table (operating/meeting_agenda.py).
+    from . import meeting_agenda
+    meeting_agenda.register(table, schema if schema is not None else tools.schema)
     return table
+
+
+def people_directory_of(runtime: Any) -> Any:
+    """The people directory provider of a runtime (``operating.people_graph.directory_of``:
+    its people guard and mail capture, read anew per call), or None for a runtime with no
+    state directory: the people engines then name nobody (fail closed)."""
+    if not isinstance(getattr(runtime, "state_dir", None), (str, Path)):
+        return None
+    from .people_graph import directory_of
+    return directory_of(runtime)
+
+
+def landed_actuals_of(runtime: Any) -> Any:
+    """The recorded duty and freight charges captured on this host
+    (``<state_dir>/landed-actuals``, ``duty_actual.ActualsFile``), or None for a runtime with no
+    state directory. A host without the capture answers LANDED_ACTUALS_NOT_CAPTURED, a named
+    gap, never 'no charge'."""
+    state_dir = getattr(runtime, "state_dir", None)
+    if not isinstance(state_dir, (str, Path)):
+        return None
+    from .duty_actual import ActualsFile
+    return ActualsFile.under(state_dir)
 
 
 def live_lookups(runtime: Any, *, bc: bool = True,
                  bc_books: Mapping[str, str] | None = None,
-                 max_staleness: float | None = None) -> dict[str, Any]:
+                 max_staleness: float | None = None,
+                 captured_bound: float | None = None,
+                 freshness_clock: Callable[[], Any] | None = None) -> dict[str, Any]:
     """``SourceLookup`` per source family over the runtime's own readers (GET only);
-    ``max_staleness`` bounds the age of the mirror pages the Portal lookup answers from."""
+    ``max_staleness`` bounds the age of the mirror pages the Portal lookup answers from;
+    ``captured_bound``: the mirror is the host's ingest capture, never refreshed here,
+    stale past that age (``MirrorLookup``)."""
     from ontology.resolve import BcLookup, MirrorLookup
-    lookups: dict[str, Any] = {"portal_api": MirrorLookup(runtime.mirror,
-                                                          max_staleness=max_staleness)}
+    lookups: dict[str, Any] = {"portal_api": MirrorLookup(
+        runtime.mirror, max_staleness=max_staleness, captured_bound=captured_bound,
+        freshness_clock=freshness_clock)}
     live = getattr(runtime, "live", None)
     if bc and live is not None and live.bc is not None:
         lookups["bc"] = BcLookup(live.bc, actor_for=runtime.employee_gate, books=bc_books)
@@ -368,8 +405,17 @@ class CaseHostTools:
                  max_staleness: float | None = None, reviews: Any = None,
                  portal_captured: bool = False, follow_ups: Any = None,
                  knowledge_namespaces: str | Path | None = None,
-                 marking_grants: Mapping[str, Iterable[str]] | None = None) -> None:
+                 marking_grants: Mapping[str, Iterable[str]] | None = None,
+                 freshness_bounds: Mapping[str, float] | None = None,
+                 freshness_clock: Callable[[], Any] | None = None) -> None:
         self.runtime, self.actor = runtime, actor
+        # The "now" a capture's age is judged at against ``freshness_bounds`` (None: the
+        # wall clock); never the tools' own clock (``as_known_at``, record times).
+        self.freshness_clock = freshness_clock
+        # Source family -> seconds: how old this host's own capture of it may be before
+        # it is stale (``operating.host.freshness_bounds``, from the configured ingest
+        # cadence); none: the projection states no capture stale by its age.
+        self.freshness_bounds = dict(freshness_bounds or {})
         # The host config's marking grants (``case_host_policy``); none: no marking is held.
         self.marking_grants = check_marking_grants(None if marking_grants is None else {
             marking: list(principals) for marking, principals in marking_grants.items()})
@@ -438,18 +484,31 @@ class CaseHostTools:
         The newer generation is opened here, before the call runs (``open_generation``),
         so the call does not pay the store-wide reads. A missing store file keeps the
         generation open. Requests are not concurrent (one connection, one serving
-        thread)."""
+        thread). The mail reader's directory lookups (a mailbox's identity set, never
+        mail content) are shared for the request (``GraphMailReader.directory_cache``):
+        an item gate that re-reads many messages of one mailbox asks the directory once,
+        not once per message; every audience, owner ACL and message decision is still
+        made per item."""
         swapped = False
         if self._depth == 0 and self._reader is not None and self.store_path is not None:
             now = _file_identity(self.store_path)
             if now is not None and now != self._store_identity:
                 self.close()
+                # The case runtime's capture gates read the projection too: free the
+                # older generation's file now, not at their next resolve.
+                close_captures = getattr(getattr(self.runtime, "captures", None), "close",
+                                         None)
+                if callable(close_captures):
+                    close_captures()
                 swapped = True
+        mail = getattr(getattr(self.runtime, "live", None), "mail", None)
+        block = getattr(mail, "directory_cache", None)
         self._depth += 1
         try:
-            if swapped:
-                self._open_table()
-            yield self
+            with block() if callable(block) else nullcontext():
+                if swapped:
+                    self._open_table()
+                yield self
         finally:
             self._depth -= 1
 
@@ -480,9 +539,16 @@ class CaseHostTools:
             else:   # before opening: a swap in between is seen by the next request
                 self._store_identity = _file_identity(store)
             reader = self._reader = StoreReader.open(store)
+            # A host whose Portal its own ingest captures and that holds no Portal client
+            # serves the mirror as that capture, judged by the capture's bound, never
+            # refreshed by this reader (``MirrorLookup(captured_bound=)``).
+            captured = (self.freshness_bounds.get("portal_api") if self.portal_captured
+                        and not getattr(self.runtime, "client_configured", True) else None)
             lookups = {source: lookup for source, lookup in
                        live_lookups(self.runtime, bc=self.bc, bc_books=self.bc_books,
-                                    max_staleness=self.max_staleness).items()
+                                    max_staleness=self.max_staleness,
+                                    captured_bound=captured,
+                                    freshness_clock=self.freshness_clock).items()
                        if source != self.exclude_source}
             self._reader_keys = reader.audience_keys()
             self._bc_units = store_bc_units(reader)
@@ -502,7 +568,9 @@ class CaseHostTools:
                 # No Workbench API client and no host capture of the Portal: the Portal
                 # is not configured on this host.
                 unconfigured=() if self.portal_captured
-                or getattr(self.runtime, "client_configured", True) else ("portal_api",))
+                or getattr(self.runtime, "client_configured", True) else ("portal_api",),
+                freshness_bounds=self.freshness_bounds,
+                freshness_clock=self.freshness_clock)
             # The empty placeholder store is not a projection: filter/listing finds
             # on it report projection_not_built and complete=false.
             self._tools.projection_built = self.store_path is not None

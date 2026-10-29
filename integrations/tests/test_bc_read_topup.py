@@ -1,11 +1,11 @@
 """A completed BC capture is a starting point for the next invocation, never proof of
-freshness.
+freshness (Dot finding 8c94674f, directive d87fc61052ad item 1).
 
 The bug: a consumer (the projection probe, the order-margin eval) topped up any store file
 it found, so a second process over a store an earlier one had finished made no entity GET
 and reported ``all_complete`` while serving rows the source had since changed or deleted.
-Now a unit is reused only when this live-check session completed it (``fresh_since``, the
-session's start the live check passes as ``bc_read.FRESH_SINCE_ENV``); any other unit is read
+Now a unit is reused only when this verifier session completed it (``fresh_since``, the
+session's start the verifier passes as ``bc_read.FRESH_SINCE_ENV``); any other unit is read
 again, and every complete unit reports its capture age. Injected transport (the BC fake of
 ``integrations/tests/test_bc_capture.py``); the store clock is the harness's.
 """
@@ -61,7 +61,7 @@ def current_orders(tmp: str) -> dict[str, str]:
 
 class CrossInvocationTest(unittest.TestCase):
     def test_a_second_invocation_reads_a_completed_store_again(self) -> None:
-        """The source changes an amount and deletes an order
+        """The Dot's reproduction: the source changes an amount and deletes an order
         between two probe processes over the same state."""
         fake = tb.FakeBc(companies=tb.CO)
         with tempfile.TemporaryDirectory() as tmp:

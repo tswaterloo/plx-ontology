@@ -32,7 +32,7 @@ class GeneratorTest(unittest.TestCase):
         self.assertEqual({f: families.count(f) for f in set(families)},
                          {"F1": 12, "F2": 6, "F3": 6, "F4": 6})
         self.assertEqual(len({i["id"] for i in items}), 30)
-        # Every stratum (SO/PO/AO/receipt/BC invoice/mail/SharePoint) is sampled.
+        # Every directive stratum (SO/PO/AO/receipt/BC invoice/mail/SharePoint) is sampled.
         self.assertEqual(set(generated.item_strata.values()), set(STRATA))
         for stratum in STRATA:
             self.assertGreaterEqual(generated.strata[stratum]["items"], 1, stratum)

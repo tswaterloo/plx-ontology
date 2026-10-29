@@ -249,7 +249,7 @@ class AllocationTests(unittest.TestCase):
         self.assertIn("allocation_conflict", reasons)
 
     def test_a_lead_naming_another_order_is_never_auto_allocated(self):
-        # Real packet -> order links are lead mentions. A lead naming
+        # Review of aa7c5fcd: real packet -> order links are lead mentions. A lead naming
         # a second order makes the packet need allocations even when the other order is
         # reached at the floor (a person's accept_link, or a corroborated link).
         def link(packet, order, tier, kind="mention", n=[0], handles=()):
@@ -335,7 +335,7 @@ class AllocationTests(unittest.TestCase):
         self.assertNotIn("allocation_review_required", reasons)
         self.assertLessEqual({"reviewed_allocation_used", "allocation_remainder_unallocated"},
                              reasons)
-        # The rejected link is its contradicted row: the mention ends there.
+        # The rejected link is its contradicted row: the mention ends there (1c0959b3d22e).
         self.assertEqual(self.pair_links("mention"), [("corroborated", ta.T0, at)])
         self.assertEqual([tier for tier, _, until in self.pair_links("reviewed")
                           if until is None], ["contradicted"])
@@ -550,7 +550,7 @@ class SourceRemovalTests(unittest.TestCase):
 # The v1 review module as committed before ``allocate`` (4614a1dfb^:ontology/reviews.py),
 # byte for byte: its git blob id is checked, so the v1 file below is the one v1 wrote.
 V1_SOURCE = Path(__file__).parent / "fixtures" / "reviews_v1.py.txt"
-V1_BLOB = "94e48f057f004c5c4ee670c6297f7eeb968bc56a"
+V1_BLOB = "c051a3315dc6ff7bb7a1658683d5ce803ebbf289"
 
 
 def v1_reviews():

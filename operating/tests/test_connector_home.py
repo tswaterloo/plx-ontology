@@ -6,14 +6,14 @@ SYNTHETIC fixtures only: projection stores built with ``StoreBuilder`` from the 
 operating/tests/test_proactive_engine.py, the engine run over them into the inbox, read
 through a ``CaseHostTools`` whose policy and ``plx.find`` are stubbed per reader, over a
 real ``CaseRuntime`` (no upstream). Evidence label: isolated-fixture (no network, no
-business system). ``LiveCheckTest`` runs ``verify/live-checks/connector.home.json``'s own
+business system). ``LiveCheckTest`` runs ``devloop/live-checks/connector.home.json``'s own
 command over the injected-transport world of ``case.proactive_engine`` (fake Workbench and
 fake drive): injected-transport, never live.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import re
@@ -23,7 +23,7 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
-from verify import live_verify as lv
+from devloop import live_verify as lv
 from integrations.http import SourceHttpError
 from ontology.core import Actor
 from ontology.json_contract import validate
@@ -97,8 +97,17 @@ class Host(CaseHostTools):
         return json.loads(json.dumps(NOT_FOUND))
 
 
+ENGINE_MOMENT = datetime(2026, 10, 19, 16, tzinfo=timezone.utc)   # 12:00 ET on AS_OF
+
+
 class Base(unittest.TestCase):
     def setUp(self):
+        # The engine runs for AS_OF at ENGINE_MOMENT; the answer comes an hour later, on
+        # the same ET day, so the inbox is fresh (operating/mcp_server.py _inbox_stale).
+        patcher = mock.patch.object(mcp_server, "_now",
+                                    lambda: ENGINE_MOMENT + timedelta(hours=1))
+        patcher.start()
+        self.addCleanup(patcher.stop)
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.dir = Path(temp.name)
@@ -109,9 +118,8 @@ class Base(unittest.TestCase):
 
     def engine(self, world, coverage=None):
         world.build(self.store)
-        moment = datetime(2026, 10, 19, 6, tzinfo=timezone.utc)
         return pe.run(self.store, pe.inbox_path(self.store), AS_OF, coverage=coverage,
-                      qc_link_types=(QC_LINK,), clock=lambda: moment)
+                      qc_link_types=(QC_LINK,), clock=lambda: ENGINE_MOMENT)
 
     def server(self, host=None):
         server = MCPServer(case_runtime=self.runtime, actor=READER, ontology=host)
@@ -158,8 +166,15 @@ class HomeModeTest(Base):
         self.assertEqual([g["id"] for g in home["gaps"]],
                          [g["id"] for g in direct["gaps"]][:mcp_server.HOME_LIMIT])
         self.assertEqual([g["rank"] for g in home["gaps"]], list(range(1, home["returned"] + 1)))
-        order = [("high", "medium", "low").index(g["priority"]) for g in home["gaps"]]
-        self.assertEqual(order, sorted(order))   # priority first
+        # late purchase orders first, longest late first; then the rest by priority
+        days = {g["id"]: g.get("days_late") for g in direct["gaps"]}
+        late = [g for g in home["gaps"] if days.get(g["id"]) is not None]
+        rest = [g for g in home["gaps"] if days.get(g["id"]) is None]
+        self.assertEqual(home["gaps"][:len(late)], late)
+        self.assertEqual([days[g["id"]] for g in late],
+                         sorted((days[g["id"]] for g in late), reverse=True))
+        order = [("high", "medium", "low").index(g["priority"]) for g in rest]
+        self.assertEqual(order, sorted(order))
         self.assertEqual(home["more"], len(direct["gaps"]) > mcp_server.HOME_LIMIT)
         for gap in home["gaps"]:
             self.assertTrue(1 <= len(gap["citations"]) <= mcp_server.HOME_CITATIONS)
@@ -245,6 +260,12 @@ class HomeModeTest(Base):
         self.assertEqual((unscheduled["completeness"]["complete"],
                           unscheduled["completeness"]["reason"]), (False, "not_scheduled"))
         self.assertEqual(len(unscheduled["home"]["not_run"]), len(pe.DETECTORS))
+        # every rule not complete names a typed reason; none is complete without its run
+        for rule in unscheduled["home"]["rules"]:
+            self.assertNotEqual(rule["status"], "complete", rule)
+            self.assertTrue(rule["reasons"], rule)
+            self.assertTrue(all(re.fullmatch(r"[a-z][a-z0-9_]{0,63}", r)
+                                for r in rule["reasons"]), rule)
         pe.inbox_path(self.store).write_bytes(b"SYNTH not an inbox" * 64)
         broken = self.find(Host(self.store), {"query": "what is at risk"})
         self.assertEqual((broken["home"]["inbox"], broken["home"]["complete"]),
@@ -391,7 +412,7 @@ class PrimerTest(Base):
 
 
 class LiveCheckTest(unittest.TestCase):
-    """``verify/live-checks/connector.home.json`` over injected sources: its own command
+    """``devloop/live-checks/connector.home.json`` over injected sources: its own command
     over the ``case.proactive_engine`` host config and world (fake Workbench, fake drive),
     the network refused. Evidence label: injected-transport."""
 
@@ -410,7 +431,7 @@ class LiveCheckTest(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.temp = Path(temp.name)
-        self.spec = json.loads((ROOT / "verify" / "live-checks" / f"{self.SPEC_ID}.json")
+        self.spec = json.loads((ROOT / "devloop" / "live-checks" / f"{self.SPEC_ID}.json")
                                .read_text("utf-8"))
 
     def run_spec(self, *, fetch=None):

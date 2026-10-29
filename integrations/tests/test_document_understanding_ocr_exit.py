@@ -1,5 +1,6 @@
 """An OCR tool exit is a typed per-file result, never a run failure, and a re-extraction
-is a new immutable version that keeps the old citation (11 of 37 customer-PO SharePoint files read ``ocr_failed:tool_exit``).
+is a new immutable version that keeps the old citation (owner directive 4b2734959760,
+core gap C: 11 of 37 customer-PO SharePoint files read ``ocr_failed:tool_exit``).
 
 Injected-transport: the poppler/tesseract processes are faked at ``child_process.run``
 (evidence label ``injected-transport``; no network, no credentials, no real document).
@@ -26,6 +27,8 @@ from ontology.core import ValidationError
 from ontology.types import Actor
 
 RECORD = {"name": "po.pdf", "mime_type": "application/pdf"}
+# Whole and with a content stream, so a tool refusal is pdf_unreadable, not a pdf_stub.
+WHOLE_PDF = b"%PDF-1.4\n1 0 obj\n<< /Length 0 >>\nstream\nendstream\nendobj\n%%EOF\n"
 WORD = ("5\t1\t1\t1\t1\t1\t10\t10\t80\t20\t96\tPO-4711\n")
 
 
@@ -112,7 +115,7 @@ class ToolExitIsATypedResultTests(unittest.TestCase):
     def status(self, poppler) -> str:
         """What the capture keeps for one scanned file: a status, never an exception."""
         with hosted(poppler):
-            status, text = capture_text(b"%PDF-1.4\n", RECORD)
+            status, text = capture_text(WHOLE_PDF, RECORD)
         self.assertIsNone(text)
         return status
 
@@ -178,7 +181,7 @@ class ToolExitIsATypedResultTests(unittest.TestCase):
 
     def status_or_text(self, poppler) -> str:
         with hosted(poppler):
-            return capture_text(b"%PDF-1.4\n", RECORD)[0]
+            return capture_text(WHOLE_PDF, RECORD)[0]
 
 
 class FallbackTests(unittest.TestCase):
@@ -194,7 +197,7 @@ class FallbackTests(unittest.TestCase):
         self.assertIn("ocr_text_requires_identity_review", warnings)
         self.assertGreaterEqual(poppler.count("pdftoppm"), 1)
         with hosted(Poppler({"pdftotext": (3, b"x")})):
-            self.assertEqual(capture_text(b"%PDF-1.4\n", RECORD)[0], "extracted_ocr")
+            self.assertEqual(capture_text(WHOLE_PDF, RECORD)[0], "extracted_ocr")
 
     def test_the_text_layer_pass_alone_cannot_fall_through_and_says_so(self):
         # Without OCR there is nothing to fall through to: a typed failure.
@@ -236,7 +239,7 @@ class FallbackTests(unittest.TestCase):
     def test_orientation_failure_still_reads_the_page_as_rendered(self):
         poppler = Poppler({"osd": (1, b"Too few characters\n")})
         with hosted(poppler):
-            self.assertEqual(capture_text(b"%PDF-1.4\n", RECORD)[0], "extracted_ocr")
+            self.assertEqual(capture_text(WHOLE_PDF, RECORD)[0], "extracted_ocr")
 
 
 class MacosHelperExitTests(unittest.TestCase):

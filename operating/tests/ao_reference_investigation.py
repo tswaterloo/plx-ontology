@@ -3,7 +3,7 @@
 This is ``operating/ao_case_script.investigate`` as of the base of task allowlist-3,
 moved out of product code when every product caller (``operating.case_workspace_live``,
 the console's ``--open``) moved to the generic path (``plx.find``, ``plx.object``,
-``plx.investigate``) and its live checks retired. It stays as
+``plx.investigate``) and its live checks retired (devloop/ALLOWLIST-BURNDOWN.md). It stays as
 the deterministic, realistic AO case the evaluator tests score: playbook
 ``ao_quantity_reconciliation`` v2-v4 (``test_playbook_eval``), the claim gate
 (``test_claim_checks``) and the case tools' paging, originals and permission tests
@@ -34,7 +34,7 @@ from operating.capability_guards import properties_of_fields
 from operating.customer_po_coverage import parse_date_value
 from operating.ontology_tools import shared_schema
 
-# The six real packets all carry a letter suffix; a
+# The six real packets (devloop/CONTEXT/02 section 3.1) all carry a letter suffix; a
 # suffixless code is refused until a real one is confirmed. Input is case-insensitive.
 AO_CODE_SHAPE = re.compile(r"AO-\d{5}[A-Z]")
 # Bindings and identifier properties that name the record itself (ontology/schema/domains):
@@ -92,7 +92,7 @@ def _found(candidates: list[dict[str, Any]], literal: str, match: tuple[str, str
     return list(seen.values())
 
 
-# FM AO finished-good columns the Portal reads (docs/reference/portal-code-map.md 4.8;
+# FM AO finished-good columns the Portal reads (03-PORTAL.md 4.8;
 # portal/src/app/api/mrp/assembly/[id]/route.ts@8da33e4 writes qtyacc_c = total - sample;
 # portal/src/app/mrp/assembly/assembly-queries.ts@8da33e4 reads both). The reporting API
 # does not serve them today: a column missing from the cited row is unread, not absent.
@@ -102,7 +102,7 @@ FG_HEADER = {"totalprodqty_c": "produced finished goods including samples",
 PIECE, PER_FG = "pc", "pc/EA"
 
 _PAPER_KINDS = ("component_damage", "filled", "produced_not_filled", "date_manufactured")
-# Portal manufacturing-order columns divergence 6 asks for (portal-code-map.md 3.8/4.8), by the
+# Portal manufacturing-order columns divergence 6 asks for (03-PORTAL.md 3.8/4.8), by the
 # spellings a served row may use; absent ones are recorded as a gap, never guessed.
 MO_COLUMNS = {"qty_sample": ("qty_sample", "qtySample"),
               "qty_damaged": ("qty_damaged", "qtyDamaged"),
@@ -549,7 +549,7 @@ def investigate(call: Call, paper: dict[str, Any] | None = None,
                 [cite["item"], *[handle for _, handle in planned["differ"]]],
                 code="planned_fg_conflict")
         link_made = _number(link["row"].get("qtymfg_c")) if link else None
-        # qtyplan_c is the same kind of FM link calc (portal-code-map.md 4.8); never "planned".
+        # qtyplan_c is the same kind of FM link calc (03-PORTAL.md 4.8); never "planned".
         plan_note = (" Its qtyplan_c is likewise an FM link-table calculation no Portal code "
                      "reads, not the planned figure." if link and "qtyplan_c" in link["row"]
                      else "")
@@ -815,7 +815,7 @@ def investigate(call: Call, paper: dict[str, Any] | None = None,
             "Its SharePoint original (the QCQA site's AO folder) was not attached to this case; attach "
             "it with plx.case_attach_original drive_id + item_id (or an operator copy "
             f"with inbox_name).{tried} Until then its figures are unverified leads "
-            "(an offline OCR, in the investigation report's paper_leads, not "
+            "(the context pack's offline OCR, in the investigation report's paper_leads, not "
             "in this case). " + compared, quality, [cite["ao"], *cite["damage"]],
             code="paper_original_not_attached")
 

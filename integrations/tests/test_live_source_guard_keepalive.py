@@ -1,4 +1,4 @@
-"""Keep-alive in the real guarded sender.
+"""Keep-alive in the real guarded sender (gap-e7f87c40ec57).
 
 ``urllib_sender`` runs whole (``build_opener``, the redirect and error processors, the
 pool) against in-process fake servers: the HTTPS handler's ``https_open`` is pointed at a

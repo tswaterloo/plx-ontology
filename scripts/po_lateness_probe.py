@@ -1,7 +1,7 @@
 """Live check ``process.po_lateness``: PO lateness (po_delivery_window's receipt stage)
 over live captures.
 
-The projection probe (``scripts.ontology_projection_probe --build-only``) builds or reuses the
+The L7 probe (``scripts.ontology_projection_probe --build-only``) builds or reuses the
 session projection exactly as ``scripts.process_dependencies_probe`` does; then, offline
 and with no client, this probe calls ``plx.process`` with no process name through the
 served host (``Host.served_tools``) as its capture principal on up to ``--scan``
@@ -134,7 +134,7 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     parser.add_argument("--db", required=True, help="throwaway mirror file")
     parser.add_argument("--store", required=True, help="throwaway ontology store file")
     parser.add_argument("--budget-seconds", type=float, default=None,
-                        help="the projection build's budget")
+                        help="the L7 build's budget")
     parser.add_argument("--lateness-budget-seconds", type=float, default=None)
     parser.add_argument("--scan", type=int, default=400,
                         help="PurchaseOrder roots answered")

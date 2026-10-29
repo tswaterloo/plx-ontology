@@ -3,7 +3,7 @@
 Today the brain is served by VMC (agentic-swarm ``apps/vmc-web`` @
 ``b1117811c``, routes ``app/api/vmc/knowledge/agent/*``); after retirement R7
 it moves to ``brain.plxcustomer.io`` with the same paths, envelope and header
-(``docs/reference/vmc-brain-tools.md`` §0.1, §4.1, §6). The host and key
+(``devloop/CONTEXT/05-VMC-BRAIN-TOOLS.md`` §0.1, §4.1, §6). The host and key
 are configured as one pair (``plx_hub_guard.BrainConfig``): ``BRAIN_BASE_URL``
 + ``BRAIN_API_KEY`` (``brn_*``) when the brain key is set, else
 ``VMC_API_URL`` + ``VMC_API_KEY``.
@@ -14,7 +14,7 @@ checked by ``plx_hub_guard.check_brain_request`` before I/O: GET only, only
 Responses are retried (bounded) on 429/502/503/504.
 
 ``/api/vmc/cursor/context`` retired with VMC (not one of the routes that move
-to the brain, vmc-brain-tools.md §0.2); task context is Mission Control ``mc_get_context``.
+to the brain, pack 05 §0.2); task context is Mission Control ``mc_get_context``.
 
 Brain content is derived engineering/agent knowledge with no per-employee
 ACL; upstream labels agent text as 0.9 ``deterministic_link`` facts. Every

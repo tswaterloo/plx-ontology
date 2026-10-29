@@ -25,6 +25,16 @@ ORIGINALS = ROOT / "examples" / "case_originals.json"
 CARDS_FORMAT = "plx-eval-case-card-proposals/v1"
 GAPS_FORMAT = "plx-case-ontology-gaps/v1"
 CARD_KEYS = {"id", "layer", "question", "criterion", "originals", "live_sources", "cites"}
+# A card may carry one of these (card anchors, scripts/eval_case_cards.py ``_anchor``):
+# ``anchor`` {identifier, object_type[, identifier_kind], source} names the record the
+# card is about and the committed source that names it; ``anchor_gap`` says why no
+# committed source names one. Never both.
+ANCHOR_KEYS = {"anchor", "anchor_gap"}
+# A card may carry its own audit fields (scripts/eval_case_cards.py ``card_scoring``, which
+# refuses a malformed one): its own ``unscored`` mark and the own-document path's audit.
+AUDIT_KEYS = {"unscored", "own_document_evidence", "own_document_note",
+              "own_document_audited"}
+ANCHOR_FIELDS = {"identifier", "object_type", "identifier_kind", "source"}
 GAP_KINDS = {"object", "link", "reader"}
 UNKNOWN = "source unknown"
 # repo:path@commit, optionally :lines or a row id after it.
@@ -70,6 +80,25 @@ def _pinned(a: dict) -> bool:
             and str(a.get("path", "")).startswith("context/") and "@" in str(a.get("ref", "")))
 
 
+def anchor_problem(card: dict) -> str | None:
+    """Why a card's anchor fields break the anchors rule (``ANCHOR_KEYS``), or None: an
+    ``anchor`` has a non-empty identifier, object type and source, string fields only and
+    no other key; an ``anchor_gap`` is non-empty text; a card never carries both."""
+    if ANCHOR_KEYS <= set(card):
+        return "anchor and anchor_gap"
+    if "anchor_gap" in card and not (isinstance(card["anchor_gap"], str)
+                                     and card["anchor_gap"].strip()):
+        return "anchor_gap empty"
+    if "anchor" in card:
+        anchor = card["anchor"]
+        if not isinstance(anchor, dict) or set(anchor) - ANCHOR_FIELDS \
+                or not all(isinstance(v, str) for v in anchor.values()) \
+                or not all(str(anchor.get(k, "")).strip()
+                           for k in ("identifier", "object_type", "source")):
+            return "anchor malformed"
+    return None
+
+
 def problems(cards: dict, gaps: dict, originals: dict, dev_dir: Path = DEV) -> list[str]:
     out: list[str] = []
     rows = {r["id"]: r for r in originals["rows"]}
@@ -99,9 +128,13 @@ def problems(cards: dict, gaps: dict, originals: dict, dev_dir: Path = DEV) -> l
     known = advisories | set(rows) | set(live)
     for card in example["cards"]:
         cid = card["id"]
-        if set(card) != CARD_KEYS:
-            out.append(f"{cid}: keys {sorted(set(card) ^ CARD_KEYS)}")
+        if set(card) - ANCHOR_KEYS - AUDIT_KEYS != CARD_KEYS:
+            out.append(f"{cid}: keys "
+                       f"{sorted((set(card) - ANCHOR_KEYS - AUDIT_KEYS) ^ CARD_KEYS)}")
             continue
+        problem = anchor_problem(card)
+        if problem:
+            out.append(f"{cid}: {problem}")
         if card["layer"] not in cards["layers"] or not card["question"].endswith("?") \
                 or not card["criterion"].strip():
             out.append(f"{cid}: layer/question/criterion")
@@ -130,8 +163,8 @@ def problems(cards: dict, gaps: dict, originals: dict, dev_dir: Path = DEV) -> l
         if any(not REF.match(s["ref"]) or not s["relation"] for s in refs):
             out.append(f"{gid}: source not path@commit")
         unknown = gap.get("source") == UNKNOWN
-        if unknown and not str(gap.get("open_question", "")).endswith("?"):
-            out.append(f"{gid}: source unknown without an open question")
+        if unknown and not str(gap.get("dot_question", "")).endswith("?"):
+            out.append(f"{gid}: source unknown without a Dot question")
         if not refs and not unknown:
             out.append(f"{gid}: no source")
     return out

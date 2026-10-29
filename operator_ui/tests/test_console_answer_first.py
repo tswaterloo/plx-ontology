@@ -469,7 +469,7 @@ class ConsoleQuestionLiveCheckTest(unittest.TestCase):
     blocked without a reader before any read, and a pass on the fixture world (injected
     transport, the scripted planner: never live evidence)."""
 
-    SPEC = json.loads((ROOT / "verify/live-checks/workspace.console_question_one_path.json")
+    SPEC = json.loads((ROOT / "devloop/live-checks/workspace.console_question_one_path.json")
                       .read_text("utf-8"))
 
     def run_probe(self, **kwargs):
@@ -486,7 +486,7 @@ class ConsoleQuestionLiveCheckTest(unittest.TestCase):
         return code, json.loads(out.getvalue())
 
     def test_the_probe_blocks_without_a_reader_and_passes_on_the_fixture_world(self):
-        from verify import live_verify
+        from devloop import live_verify
 
         self.assertEqual(live_verify.validate_spec(self.SPEC), [])
         code, document = self.run_probe(environ={})

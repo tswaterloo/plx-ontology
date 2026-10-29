@@ -1,6 +1,6 @@
 """Mission Control as a capture source (L1): read-only, into the capture store.
 
-Mission Control was a read probe only; this module captures
+Directive ddc3e0c36691 (L6). Mission Control was a read probe only; this module captures
 what the MC operator scope may see into the versioned capture store
 (``integrations.capture_store``, source kind ``mission_control``, scheme ``mc``), so
 ``ontology.project_mc`` projects it as typed objects (MCTask, MCApproval, MCBucket,
@@ -20,7 +20,7 @@ read that sees a restricted project only through the operator email also appends
 ``authz.shadow_mismatch`` row (PLX_MC@0cca756 TASK-3026 ``recordReadShadowMismatch``;
 the answer is unchanged). The brain's items are not captured here:
 ``integrations.knowledge_source`` is the only brain-item path (namespace authority,
-personal namespaces refused; docs/decisions/2026-10-08-gov13-one-brain-capture.md).
+personal namespaces refused; devloop/DECISIONS/2026-10-08-gov13-one-brain-capture.md).
 
 Records. Path ``<scope>/<collection>/<id>`` (``mc://...@<generation>-<capture>``),
 collection one of ``COLLECTIONS``. ``row`` is the MC record with MC's own field
@@ -73,7 +73,7 @@ Completeness, per unit (``mc:<scope>/<collection>``), never an atomic snapshot:
   names both listing tools and the run's ``detail`` (``tool``, ``arguments``) the one that
   read it, so the same task read either way is one version: a context crossing the bound
   re-versions nothing. This replaced a full read per bucket, which can never return a task
-  without a bucket row (live: the bucket pages held 30 fewer tasks than MC
+  without a bucket row (live 9826f60e9039: the bucket pages held 30 fewer tasks than MC
   counted, every run, so the unit never completed). The unit summary's ``drops`` counts
   each dropped task by reason (counts only): ``no_bucket_row`` (its bucket is in neither
   list while the lists moved), ``bucket_project_invalid`` (its bucket's project is no MC
@@ -134,7 +134,7 @@ needs that project grant like every unparented record; when the bucket lists cha
 during a paged read it is dropped instead. A bucket whose project is no MC project id (and
 its tasks) is dropped, never shared. MC-shared projects need their project grant too:
 the capture holds no project visibility, so the Workbench cannot tell a shared project
-from a restricted one (docs/decisions/2026-10-07-mc-shared-project-grant.md). A unit
+from a restricted one (devloop/DECISIONS/2026-10-07-mc-shared-project-grant.md). A unit
 summary's ``withheld_project_grant`` counts the current records that no principal granted the
 collection may read for want of the project grant (captured, readable by nobody; None
 when the audience cannot list its principals). The live audience
@@ -158,11 +158,21 @@ is refused (``scope_principal_unknown``: its principal is not known; capture a n
 scope). When the principal read fails, the cycle reads nothing else: ``tasks``,
 ``buckets`` (and ``knowledge``) fail with its error.
 
-CLI (the credentialed live check, ``verify/live-checks/mc.sources_capture.json``;
+CLI (the credentialed live verifier, ``devloop/live-checks/mc.sources_capture.json``;
 counts, states and booleans only, never a title, id, email or citation)::
 
     python3 -m integrations.mc_sources capture --store D/mc.sqlite --scope live \\
         --query "PLX Agent Workbench" --max-task-reads 25 --passes 2
+
+Without ``--live-audience`` the store is the live check's own (tenant ``live-check``, one
+reader principal). The host's ingest mode (``operating.ingest_forever``) passes its capture
+audience and principal (``--live-audience``, ``--principal``) and ``--budget-seconds``: the
+store is stamped with that audience's tenant, so the host's ``mc://`` reads resolve for the
+readers its own audience grants; the people-exclusion list must load first (its code
+otherwise, nothing read); a store stamped for another tenant is moved to
+``<name>.tenant-mismatch`` and captured again (``store_reset``: ``tenant_mismatch``), never
+relabelled; past the budget the task-detail reads pause (``cap:budget_seconds``) and the
+next cycle resumes them.
 """
 
 from __future__ import annotations
@@ -173,13 +183,14 @@ from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 import json
 import os
+import time
 from pathlib import Path
 import re
 import sys
 from typing import Any, Iterable, Mapping, Sequence
 
-from .capture_store import (CaptureError, CaptureStore, CapturedRecord, SourceKind,
-                            register_source_kind)
+from .capture_store import (MAX_BATCH_HANDLES, CaptureError, CaptureStore, CapturedRecord,
+                            SourceKind, register_source_kind)
 from .http import SourceUnavailable
 from .live_source_guard import ReadOnlyGuardError
 from .mc import McAnswerRefused, MissionControlMcpClient
@@ -207,13 +218,18 @@ CAPTURE_DIR, CAPTURE_FILE = "mc-capture", "capture.sqlite"
 CAPTURE_TOOLS = frozenset({"mc_get_context", "mc_search_tasks", "mc_get_task",
                            "mc_list_buckets", "mc_search_knowledge"})
 POLICY_PATH = Path(__file__).with_name("mc_tool_policy.json")
-EVENT_WINDOW = 25  # mc_get_task returns the latest 25 events (mission-control.md section 3 row 5)
+EVENT_WINDOW = 25  # mc_get_task returns the latest 25 events (pack 04 section 3 row 5)
 SEARCH_LIMIT = 200  # mc_search_tasks' largest page (task-search-schema.ts: limit 1..200)
 MAX_SEARCH_PAGES = 2000  # a cursor that never ends is refused (search_pages_exceeded)
 RETIRED_READ_IDS = 50  # task ids per mc_get_context taskIds read (plx_hub_guard's bound)
 # The tools that list tasks: a task version names both, the run the one that read it.
 TASK_LISTING_TOOLS = ("mc_get_context", "mc_search_tasks")
 DROP_REASONS = ("no_bucket_row", "bucket_project_invalid", "not_permitted", "other")
+# A host capture reads every task's details (a live MC holds a few thousand tasks); its
+# time budget (``deadline``) pauses the run first and the cursor resumes it next cycle.
+MAX_TASK_READS = 50_000
+# Where a host capture moves a store stamped for another tenant (``run_cli``).
+TENANT_MISMATCH_SUFFIX = ".tenant-mismatch"
 
 _POLICY = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
 if (not CAPTURE_TOOLS <= frozenset(_POLICY["reads"])
@@ -226,7 +242,8 @@ _ERROR_CODE = re.compile(r"^[a-z][a-z0-9_]{2,63}$")
 _CONFIG_CODES = frozenset({
     "mc_path_invalid", "mc_project_invalid", "mc_audience_key_invalid", "mc_scope_invalid",
     "mc_knowledge_queries_invalid", "mc_knowledge_limit_invalid",
-    "mc_max_task_reads_invalid", "mc_page_size_invalid"})
+    "mc_max_task_reads_invalid", "mc_page_size_invalid", "mc_principal_missing",
+    "mc_budget_seconds_invalid"})
 _RECORD_ID = re.compile(r"^[^\x00-\x1f\x7f]{1,200}$")
 _TASK_ID = re.compile(r"^TASK-[A-Za-z0-9-]{1,40}$")
 _PROJECT_ID = re.compile(r"^PRJ-[A-Z0-9-]{1,120}$")  # PLX_MC src/lib/sync/mapping.ts PROJECT_ID_RE
@@ -365,7 +382,8 @@ class CaptureSpec:
         if isinstance(queries, str) or len(queries) > 10 or any(
                 not isinstance(q, str) or not 1 <= len(q.strip()) <= 200 for q in queries):
             raise ValueError("mc_knowledge_queries_invalid")
-        for name, low, high in (("knowledge_limit", 1, 25), ("max_task_reads", 0, 500),
+        for name, low, high in (("knowledge_limit", 1, 25),
+                                ("max_task_reads", 0, MAX_TASK_READS),
                                 ("page_size", 1, 100)):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
@@ -499,12 +517,16 @@ def _bucket_listing(payload: Any) -> list[Any]:
 class McSourcesCapture:
     """One capture cycle of one MC operator scope into a ``CaptureStore``."""
 
-    def __init__(self, store: CaptureStore, mc: CaptureMcClient | None) -> None:
+    def __init__(self, store: CaptureStore, mc: CaptureMcClient | None, *,
+                 deadline: float | None = None, clock: Any = time.monotonic) -> None:
         if not isinstance(store, CaptureStore):
             raise TypeError("store must be a CaptureStore")
         if mc is not None and not isinstance(mc, CaptureMcClient):
             raise TypeError("mc must be a CaptureMcClient")
         self.store, self.mc = store, mc
+        # ``clock()`` at or past ``deadline`` pauses the task-detail reads
+        # (``cap:budget_seconds``); the cursor resumes them in the next cycle
+        self.deadline, self._clock = deadline, clock
         self.principal: str | None = None  # the MC service principal (``_pin_view``)
 
     # -- helpers ----------------------------------------------------------------
@@ -810,6 +832,10 @@ class McSourcesCapture:
         pending = [t for t in task_ids if after is None or t > after]
         reads = pending[:spec.max_task_reads]
         for start in range(0, len(reads), spec.page_size):
+            if self.deadline is not None and self._clock() >= self.deadline:
+                for run in (gates_run, events_run):
+                    self.store.pause_run(run["run_id"], reason="cap:budget_seconds")
+                return
             chunk = reads[start:start + spec.page_size]
             gates, events, dropped, windowed = [], [], 0, False
             for task_id in chunk:
@@ -977,10 +1003,17 @@ def _reader_check(store: CaptureStore, units: Sequence[Mapping[str, Any]], scope
             trimmed = False
         except CaptureError as error:
             trimmed = trimmed and error.code == "not_visible"
-    resolved = store.resolve_many(handles, reader) if handles else {"results": []}
-    results = resolved.get("results") or []
+    # in batches: a scope past MAX_BATCH_HANDLES records (8,262 live on 2026-10-26) made
+    # one call refuse the whole check (``invalid_handles``) after a good capture
+    results = []
+    for start in range(0, len(handles), MAX_BATCH_HANDLES):
+        results += store.resolve_many(handles[start:start + MAX_BATCH_HANDLES],
+                                      reader).get("results") or []
+    # a reader the audience grants nothing sees no record: never a vacuous pass
+    granted = bool(handles) or not any(u.get("records_current") for u in units)
     return {"handles_resolved": len(results),
-            "resolve_all_ok": all(r.get("ok") for r in results) and len(results) == len(handles),
+            "resolve_all_ok": granted and all(r.get("ok") for r in results)
+            and len(results) == len(handles),
             "audience_trim_ok": trimmed}
 
 
@@ -1026,8 +1059,9 @@ def _project_check(store: CaptureStore, units: Sequence[Mapping[str, Any]], scop
             visible = _all_records(view, limited, unit)
             seen += len(visible)
             ungranted += sum(i["meta"].get("project") != granted for i in visible)
-            for start in range(0, len(items), 1000):
-                results = view.resolve_many([i["citation"] for i in items[start:start + 1000]],
+            step = min(1000, MAX_BATCH_HANDLES)
+            for start in range(0, len(items), step):
+                results = view.resolve_many([i["citation"] for i in items[start:start + step]],
                                              limited)["results"]
                 ungranted += sum(bool(r.get("ok")) and r["meta"].get("project") != granted
                                  for r in results)
@@ -1041,6 +1075,28 @@ def _project_check(store: CaptureStore, units: Sequence[Mapping[str, Any]], scop
             "project_scoped_records": sum(len(items) for items in full.values()),
             "ungranted_project_records": ungranted,
             "granted_project_records_ok": seen == expected}
+
+
+def _set_aside_other_tenant(path: Path, audience: Any) -> str | None:
+    """A store at ``path`` stamped for another tenant is never captured into, read under
+    ``audience`` or relabelled: it is moved, with its WAL files, to
+    ``<name>.tenant-mismatch`` (replacing an earlier one) and this cycle captures into a
+    new store stamped for ``audience.tenant``. ``tenant_mismatch`` when it did, else None.
+    A store of another format still refuses (``format_mismatch``)."""
+    if not path.is_file():
+        return None
+    with CaptureStore.open_read_only(path, audience) as kept:
+        stamped = kept.stamped_tenant()
+    if stamped == audience.tenant:
+        return None
+    for suffix in ("", "-wal", "-shm"):
+        source = path.with_name(path.name + suffix)
+        target = path.with_name(path.name + TENANT_MISMATCH_SUFFIX + suffix)
+        if source.exists():
+            os.replace(source, target)
+        elif target.exists():
+            target.unlink()   # no stale WAL beside the moved store
+    return "tenant_mismatch"
 
 
 def run_cli(args: argparse.Namespace, environ: Mapping[str, str], *,
@@ -1067,22 +1123,45 @@ def run_cli(args: argparse.Namespace, environ: Mapping[str, str], *,
         mc = None
         report["missing_inputs"].append(str(error)[:200])
     spec = CaptureSpec(args.scope, tuple(args.query or ()), max_task_reads=args.max_task_reads)
-    reader = Actor("live-check", frozenset({"live-check:mc-reader"}), "restricted")
-    outsider = Actor("live-check", frozenset({"live-check:outsider"}), "restricted")
-    audience = LiveSourceAudience({f"mc:{args.scope}:*": [next(iter(reader.principals))]},
-                                  tenant="live-check")
+    budget = getattr(args, "budget_seconds", None)
+    if budget is not None and not 1 <= budget <= 7200:
+        raise ValueError("mc_budget_seconds_invalid")
+    deadline = None if budget is None else time.monotonic() + budget
+    host_audience = getattr(args, "live_audience", None)
+    reset = None
+    if host_audience is None:
+        # the live check's throwaway store: its own tenant and one reader principal
+        reader = Actor("live-check", frozenset({"live-check:mc-reader"}), "restricted")
+        outsider = Actor("live-check", frozenset({"live-check:outsider"}), "restricted")
+        audience = LiveSourceAudience({f"mc:{args.scope}:*": [next(iter(reader.principals))]},
+                                      tenant="live-check")
+    else:
+        # The host's capture (operating.ingest_forever): the store is stamped with the
+        # host's capture audience and read as its capture principal, so the host's
+        # ``mc://`` reads (its tenant) resolve for the readers its audience grants.
+        if not getattr(args, "principal", None):
+            raise ValueError("mc_principal_missing")
+        from .people_exclusion import PeopleExclusion
+        refusal = PeopleExclusion.from_env(environ).unavailable
+        if refusal:   # the capture re-checks the people guard itself: fail closed
+            raise CaptureError(refusal, "people exclusion list unavailable")
+        audience = LiveSourceAudience.from_file(host_audience)
+        reader = Actor(audience.tenant, frozenset({args.principal}), "restricted")
+        outsider = Actor(audience.tenant, frozenset({"workbench:mc-outsider-probe"}),
+                         "restricted")
+        reset = _set_aside_other_tenant(Path(args.store), audience)
     Path(args.store).parent.mkdir(parents=True, exist_ok=True)
     passes = []
     with CaptureStore(args.store, audience) as store:
-        capture = McSourcesCapture(store, mc)
+        capture = McSourcesCapture(store, mc, deadline=deadline)
         for _ in range(args.passes):
             passes.append(capture.capture(spec))
         units = passes[-1]["units"] if passes else []
         check = _reader_check(store, units, args.scope, reader, outsider)
         check.update(_project_check(store, units, args.scope, reader))
     called = sorted({t for p in passes for t in p["tools_called"]})
-    # The units an MC-side failure stopped, named by layer: the live check records the
-    # check blocked, never failed (verify/live_verify.py).
+    # The units an MC-side failure stopped, named by layer: the live verifier records the
+    # check blocked, never failed (devloop/live_verify.py).
     blocked = [{"part": u["collection"], "source": "mission-control-mcp",
                 "error_code": u["error"], "cause": "upstream_outage"}
                for u in units if u["reason"] == BLOCKED]
@@ -1093,6 +1172,7 @@ def run_cli(args: argparse.Namespace, environ: Mapping[str, str], *,
                                                  "dropped")} for u in p["units"]]}
                    for p in passes],
         "requests_sent": hub.requests_sent,
+        "store_reset": reset,
         "tools_called": called,
         "_summary": {
             "units_total": len(units),
@@ -1123,6 +1203,13 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     cap.add_argument("--operator-email", default=None, help="not printed")
     cap.add_argument("--operator-email-default", default=None,
                      help="used only when MC_OPERATOR_EMAIL is unset; not printed")
+    cap.add_argument("--live-audience", type=Path, default=None,
+                     help="the host's capture audience: stamp the store with its tenant "
+                          "(with --principal); absent: the live check's own audience")
+    cap.add_argument("--principal", default=None,
+                     help="the host's capture principal (with --live-audience)")
+    cap.add_argument("--budget-seconds", type=float, default=None,
+                     help="pause the task-detail reads past this; the next run resumes")
     args = parser.parse_args(argv)
     env = os.environ if environ is None else environ
     try:

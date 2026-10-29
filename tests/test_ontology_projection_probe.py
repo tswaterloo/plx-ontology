@@ -3,7 +3,7 @@ the served path (what the host's plx tools serve its reader, not a probe-only pa
 
 Evidence label: ``injected-transport``. The mirror sync is a fake that advances a fake
 clock, or the fixture Workbench and BC fakes; nothing here is live
-(``verify/live-checks/ontology.projection.json`` stays live-unverified).
+(``devloop/live-checks/ontology.projection.json`` stays live-unverified).
 """
 
 from __future__ import annotations
@@ -67,12 +67,19 @@ def synthetic_store(path: str, records: int, *, restricted: bool = False,
     conn.executemany("INSERT INTO object_versions (object_id, l1_handle, digest, lineage, "
                      "recorded_at) VALUES (?, ?, 'd', 'workbench', '2026-01-01')",
                      [(o, f"api://public.t/{i}") for o, i, _ in objects])
-    conn.executemany("INSERT INTO value_sources VALUES (?, ?, ?, 'd', 'workbench', 'b', "
-                     "'2026-01-01', NULL)",
-                     [(src, o, f"api://public.t/{i}") for src, (o, i, _)
-                      in enumerate(objects, 1)])
-    conn.executemany("INSERT INTO value_cells (src, field, kind, value) VALUES (?, ?, ?, ?)",
-                     cells)
+    # v10: a source names its version by rowid (the versions above, in object order)
+    conn.executemany("INSERT INTO value_sources (src, ver, binding_id, recorded_at) "
+                     "VALUES (?, ?, 'b', '2026-01-01')",
+                     [(src, src) for src in range(1, len(objects) + 1)])
+    pairs = sorted({(field, kind) for _, field, kind, _ in cells})
+    layout = {pair: n for n, pair in enumerate(pairs, 1)}
+    conn.executemany("INSERT INTO value_layouts (layout, fields) VALUES (?, ?)",
+                     [(n, store_ddl.singleton_fields(*pair)) for pair, n in layout.items()])
+    conn.executemany("INSERT INTO value_layout_fields (layout, pos, field, kind) "
+                     "VALUES (?, 0, ?, ?)", [(n, *pair) for pair, n in layout.items()])
+    conn.executemany("INSERT INTO value_cells (src, field, layout, value) VALUES (?, ?, ?, ?)",
+                     [(src, field, layout[(field, kind)], value)
+                      for src, field, kind, value in cells])
     conn.execute("INSERT INTO store_meta VALUES ('audience_keys', ?)",
                  (json.dumps(["api:public.t", "api:public.w"]),))
     conn.commit()
@@ -303,9 +310,11 @@ class ProbeBudgetTest(unittest.TestCase):
             (_, _, s_steps), (l_checks, l_asked, l_steps) = run(small, 60), run(large, 60)
             # the sample's connection (the first): no scan, no sort, whatever the size
             self.assertLess(l_steps[0], s_steps[0] * 1.5 + 2000, (s_steps, l_steps))
-            # the gate reads the store's contracts once, not once per claimed value
-            few = sum(run(large, 6)[2][1:])
-            self.assertLess(sum(l_steps[1:]), few * 1.5, (few, l_steps))
+            # the gate never reads the whole store: it looks each claimed handle up by
+            # index (store v10), so its work does not grow with the store (10x the values
+            # here) and stays far below one read of every value
+            self.assertLess(sum(l_steps[1:]), 1.5 * sum(s_steps[1:]) + 500, (s_steps, l_steps))
+            self.assertLess(sum(l_steps[1:]), 6 * 5000 // 4, l_steps)
             for path in (small, large):
                 checks, asked, _ = run(path, 60)
                 conn = real_connect(path)
@@ -650,7 +659,7 @@ class ClaimSampleTest(unittest.TestCase):
 
 
 class MirrorCompleteRuleTest(unittest.TestCase):
-    """``mirror_complete`` is the rule (complete bound relations over
+    """``mirror_complete`` is owner rule 1b5e555dce17 (complete bound relations over
     ``bound_total``, ``scripts.mirror_measure.completeness``), as mirror.full_coverage
     gates it: never the 93-relation served-catalog figure."""
 
@@ -805,13 +814,13 @@ class ServedPathTest(unittest.TestCase):
         self.assertEqual(denied["denied_leaks"], checks["withheld_citations_resolved"])
 
     def test_a_trim_that_did_not_run_is_not_checked_and_fails_the_spec(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         with tempfile.TemporaryDirectory() as tmp:
             probe.prepare_served(f"{tmp}/store.sqlite", "staff:reader")
             denied = probe.denied_checks(probe.served_host(f"{tmp}/store.sqlite"))
         self.assertEqual(set(denied.values()), {probe.NOT_CHECKED})
         for spec_id in ("ontology.projection", "ontology.mentions"):
-            spec = json.loads((ROOT / f"verify/live-checks/{spec_id}.json").read_text("utf-8"))
+            spec = json.loads((ROOT / f"devloop/live-checks/{spec_id}.json").read_text("utf-8"))
             failures = lv.check_expectations(spec, 0, {**denied, "citations": {}})
             self.assertIn("denied_leaks != expected", failures)
             self.assertIn("denied_objects_probed < 200", failures)
@@ -918,11 +927,11 @@ class RemovalSpecTest(unittest.TestCase):
     """The ontology.projection spec reads the probe's removal counts (ING-09, REC-04)."""
 
     def test_the_spec_records_removals_and_fails_closed_when_not_known(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from tests.test_ontology_projection_probe_removals import probe_after_removals
         with tempfile.TemporaryDirectory() as tmp:
             _, after = probe_after_removals(Path(tmp), 3)
-        spec = json.loads((ROOT / "verify/live-checks/ontology.projection.json")
+        spec = json.loads((ROOT / "devloop/live-checks/ontology.projection.json")
                           .read_text("utf-8"))
         failures = lv.check_expectations(spec, 0, after)
         self.assertFalse([f for f in failures if "remov" in f], failures)
@@ -1106,7 +1115,7 @@ class DiskTest(unittest.TestCase):
         self.assertGreater(peak["store_bytes"], 0)
 
     def test_a_build_short_of_free_space_never_starts(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from ontology import project
         low = {"free_bytes": 1, "total_bytes": 10}
         with tempfile.TemporaryDirectory() as tmp:
@@ -1177,11 +1186,11 @@ class SessionBuildSplitTest(unittest.TestCase):
     the phase timings under the spec. Fixture Workbench mirror; nothing live."""
 
     def test_the_session_build_reports_and_records_its_split(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from integrations.workbench_read_api import WorkbenchReadApiClient
         from scripts.mirror_measure import ordered_full_coverage
 
-        spec = json.loads((ROOT / "verify/live-checks/ontology.session_projection.json")
+        spec = json.loads((ROOT / "devloop/live-checks/ontology.session_projection.json")
                           .read_text(encoding="utf-8"))
         with tempfile.TemporaryDirectory() as tmp:
             mirror = f"{tmp}/mirror.sqlite"
@@ -1212,7 +1221,7 @@ class ColdPathSingleBuildTest(unittest.TestCase):
     copies that store. FakeWorkbench and FakeGraph (``ProbeWithMailTests.probe_world``);
     nothing live."""
 
-    SPEC = json.loads((ROOT / "verify/live-checks/ontology.mentions.json")
+    SPEC = json.loads((ROOT / "devloop/live-checks/ontology.mentions.json")
                       .read_text(encoding="utf-8"))
 
     def world(self, tmp, **options):
@@ -1220,7 +1229,7 @@ class ColdPathSingleBuildTest(unittest.TestCase):
         return ProbeWithMailTests.probe_world(self, tmp, None, **options)[0]
 
     def rebuild_failures(self, result, code=0):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         return [f for f in lv.check_expectations(self.SPEC, code, result) if "rebuild" in f]
 
     def session(self, tmp):

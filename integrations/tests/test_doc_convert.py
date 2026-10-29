@@ -504,7 +504,7 @@ class MarkItDownAdapterTest(ConverterTestCase):
 
     def test_a_mail_attachment_is_converted_as_its_own_document(self):
         # The attachment is a container member: converted on its own bytes, never as a
-        # section of the mail's text.
+        # section of the mail's text (direction finding 11e322b9).
         attachment = make_docx(["Vendor confirmation: VC-300", "Customer PO: CPO_42"])
         message = EmailMessage()
         message["Subject"] = "Confirmation"
@@ -616,7 +616,7 @@ class ConvertedClaimsTest(ConverterTestCase):
         self.assertTrue(all(c["converted"] is True and c["page"] == 1 for c in document.claims))
 
     def test_pdf_with_an_unknown_page_count_is_never_converted_whole(self):
-        """Without a page count (pypdf rejects the file and
+        """Directive 5ba82b6040ec (3): without a page count (pypdf rejects the file and
         poppler cannot count it) MarkItDown is never given the PDF: it could be over the
         page bound. Poppler's count bounds it: over the bound it is refused unconverted."""
         class Text(FakeMarkItDown):

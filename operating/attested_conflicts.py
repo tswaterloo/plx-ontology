@@ -31,7 +31,7 @@ a ``currency_*`` / ``tax_basis_*`` gap, never a conflict and never a match; noth
 converted. Every conflict is ``tier`` ``lead``, never authoritative. A record value cited by a ``bc://`` handle
 names its Business Central company (``bc_companies``: the company GUID and the book its
 lineage names); when every compared record value comes from Business Central (no Portal
-row reached, decision D2) the note says so.
+row reached, lead decision D2) the note says so.
 
 A value the document states that the attested records hold empty is no conflict but a
 ``missing_in_record`` lead (REC-01): the document's value first (with the page and span
@@ -404,16 +404,22 @@ def _same(kind: str, left: dict[str, Any], right: dict[str, Any],
           vocabulary: Iterable[str] = ()) -> bool | None:
     """Whether two values agree; None when they are not the same measure (a code
     compares with the one word of its vocabulary a record's text holds, else not)."""
+    from operating.ontology_tools import compared_text
     a, b = left.get("value"), right.get("value")
     if kind == "money":   # one currency and tax basis: _not_comparable decided that
         try:
             return Decimal(str(a)) == Decimal(str(b))
         except (InvalidOperation, ValueError):
             return None
+    # A withheld text (not_po_like) compares on its source text, never shown; without
+    # it the value is unknown: neither a match nor a conflict.
+    withheld = [v for v in (a, b) if isinstance(v, Mapping) and "withheld" in v]
+    if any(compared_text(v) is None for v in withheld):
+        return None
     if isinstance(a, Mapping):
-        a = a.get("untrusted_text")
+        a = compared_text(a) if "withheld" in a else a.get("untrusted_text")
     if isinstance(b, Mapping):
-        b = b.get("untrusted_text")
+        b = compared_text(b) if "withheld" in b else b.get("untrusted_text")
     if kind == "quantity":
         ua, ub = _unit(left.get("unit")), _unit(right.get("unit"))
         if ua and ub and ua != ub:

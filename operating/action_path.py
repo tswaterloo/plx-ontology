@@ -1,6 +1,6 @@
 """Goal-2 action path: case proposal -> human approvals -> dispatch -> read-back.
 
-This module is the state machine and its
+Design: ``devloop/GOAL2-ACTIONS.md``. This module is the state machine and its
 records; it enables **no** production write. Every step is one append-only,
 hash-chained event (own SQLite table, same pattern as ``operating.cases``), and
 every call re-reads the case for the calling actor, so an actor who cannot see
@@ -51,7 +51,7 @@ Safety properties this module holds by construction:
   decider must be an ``admin``/``owner`` on the supplied MC ``ApproverRoster``.
   Agents, service principals, members and the operator can never authorize.
 * Separation of duties (decision g2-1; ``plx-intent-identity/v2``,
-  docs/decisions/2026-10-04-goal2-identity.md): every intent records ``sub`` (the
+  devloop/DECISIONS/2026-10-04-goal2-identity.md): every intent records ``sub`` (the
   employee it is for, with their Entra ``oid``) and ``act`` (who acted: agent or
   human, channel, client host, session digest), taken only from the registering
   session (``session_identity.intent_identity``). Every later step takes the host's
@@ -140,7 +140,7 @@ Mission Control as the owning system (``MC_CALL_CAPABILITIES``: the catalog's
                                        idempotency key is MC's idempotencyKey)
     read_back_call(MC reader)          verified (mc_get_task holds every sent field) | unchanged
 
-The per-call human approval is the approval of an MC write (MC
+The per-call human approval is the approval of an MC write (pack 04 section 8 R1/R3: MC
 writes are W-A). No MC gate is raised: MC's gate needs a task, and the write here is the
 task. ``mc_call_refusal`` is this path's hard guard; ``production_target_refusal`` still
 refuses every other real system.
@@ -202,6 +202,11 @@ OUTCOMES = ("not_dispatched", "unknown", "verified", "failed")
 _CALL_APPROVABLE = {"proposed", "gate_request_refused", "gate_rejected", "gate_not_authorizing",
                     "approval_expired", "gate_request_lost"}
 DEFAULT_DECISION_MAX_AGE = timedelta(hours=24)
+# A person's per-call approval taken at the console (``approve_in_session``): what was
+# shown (``call_approval_subject``) and how long the approval stands for the one send.
+CALL_APPROVAL_SUBJECT_SCHEMA = "plx-call-approval-subject/v1"
+CONSOLE_APPROVAL_VALIDITY = timedelta(hours=1)
+_SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 # How long an unanswered mc_request_approval may still be running somewhere. The
 # client sends it once (``retry=False``) with a transport timeout of at most 60 s
 # (``plx_hub_guard.HubTransport``), but MC's route (PLX_MC
@@ -211,7 +216,7 @@ DEFAULT_DECISION_MAX_AGE = timedelta(hours=24)
 # 800 s; not verified here). Until it has passed since ``gate.request_started`` a
 # task without our gate proves nothing: reconcile records no absence and no human
 # next step. A gate landing after the intent's own gate authorized and dispatched
-# is not recorded (nothing reads the task then).
+# is not recorded (nothing reads the task then); see GOAL2-ACTIONS.md limitations.
 DEFAULT_GATE_SEND_SETTLE = timedelta(minutes=15)
 _RECONCILABLE = {"gate_request_unknown", "gate_request_lost"}
 _CLOCK_SKEW = timedelta(minutes=5)
@@ -252,7 +257,7 @@ REAL_CAPABILITIES: Mapping[str, Capability] = {
     "portal.sales_order.set_customer_po": Capability(
         "portal.sales_order.set_customer_po", "portal",
         "PATCH sales order header -> updateSalesOrderHeader (po_reference)",
-        "plx-customer-portal service.ts:651 @ 6c9415973c19"),
+        "plx-customer-portal service.ts:651 @ 6c9415973c19 (pack 03 section 3.3)"),
 }
 REAL_SYSTEMS = frozenset({"portal", "bc", "mc", "sharepoint", "mail"})
 FIXTURE_CAPABILITY = "fixture.record.set_field"
@@ -419,7 +424,7 @@ class ActionIntent:
 
 @dataclass(frozen=True)
 class CallApproval:
-    """A human's approval of one exact MC call."""
+    """A human's approval of one exact MC call (pack 04 section 8 R1)."""
 
     tool: str
     arguments: Mapping[str, Any]
@@ -856,8 +861,8 @@ def _gate_reason(intent_id: str, capability: str, effect: Mapping[str, Any],
 class ActionPath:
     """The goal-2 action state machine over a ``CaseStore``.
 
-    ``call_approvers``: human emails configured to approve every action type per call,
-    as a set or as ``{email: Entra oid}``; a
+    ``call_approvers``: human emails configured to approve every action type per call
+    (pack 04 section 8 R1: Tanush or Vince), as a set or as ``{email: Entra oid}``; a
     host passes none and takes its approvers from ``approver_roster``, where each counts
     only for its own action types. Separation of duties matches an approver by oid too
     (the configured one, else the ``approver_roster``'s); an approver with no known oid is
@@ -879,7 +884,7 @@ class ActionPath:
     ``gate_send_settle``: how long after ``gate.request_started`` an unanswered
     request may still land (``DEFAULT_GATE_SEND_SETTLE``).
     ``mc_follow_up_bucket``: the MC bucket (``BKT-*``) a person chose for the Workbench's
-    follow-up tasks; without it, and without
+    follow-up tasks (GOAL2-ACTIONS.md section 8 item 1); without it, and without
     ``mc_operator_email``, no MC call is prepared.
     ``mc_follow_up_audience``: ``bucket -> McBucketAudience | None``, who reads that
     bucket's tasks in MC. A cited source's text goes into the call only when every member
@@ -1567,7 +1572,7 @@ class ActionPath:
     def _injection_hook(self, actor: Actor, case_id: str, proposal_id: str,
                         proposal: Mapping[str, Any],
                         evidence: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-        """Argument provenance: every dispatched parameter traces to a
+        """Argument provenance (10-DECISION 7): every dispatched parameter traces to a
         typed cited value or a human-written case objective, else a refusal
         (``injection_guard.REFUSAL*``). ``evidence``: ``register``'s (document rows
         read for ``actor``). Returns the per-parameter trace."""
@@ -1584,8 +1589,8 @@ class ActionPath:
         """Record the MC approval request (``mc_request_approval{taskId, reason}``)
         that a human is asked to approve. Nothing is sent; see ``request_gate``.
 
-        First MC is read through ``mc`` (``goal2_mc_approval.ground_task``):
-        MC must be live with its sync gate met, the task
+        First MC is read through ``mc`` (``goal2_mc_approval.ground_task``, pack
+        04 section 8 R3 step 1): MC must be live with its sync gate met, the task
         visible and open, and carry no gate with this action's reason that the
         intent does not track (a lost request that landed). A refusal raises and
         records nothing. The record names the exact call and carries the case,
@@ -1731,12 +1736,14 @@ class ActionPath:
                 "request": self.get(actor, intent_id)["prepared"]}
 
     def approve_call(self, actor: Actor, intent_id: str, task_id: str | None,
-                     record: Mapping[str, Any], *, session: Any = None) -> dict[str, Any]:
+                     record: Mapping[str, Any], *, session: Any = None,
+                     shown_sha256: str | None = None,
+                     approver_session: Any = None) -> dict[str, Any]:
         """Record a human's per-call approval of exactly the prepared MC call:
         ``mc_request_approval{taskId, reason}`` of a gate (``task_id``), or the prepared
         call of an MC-owned intent (``task_id`` None; ``prepare_call``).
 
-        Record format (proposed): ``schema``, ``tool``,
+        Record format (proposed, see GOAL2-ACTIONS.md): ``schema``, ``tool``,
         ``arguments`` (must equal the prepared call's: for a gate ``{"taskId": task_id,
         "reason": gate_reason}``), ``approved_by`` (a configured human approver),
         ``approved_at``, ``expires_at`` (ISO 8601 with offset), ``evidence_ref`` (where the
@@ -1744,8 +1751,16 @@ class ActionPath:
         not be a subject by canonical email or by their oid (``_call_approver_oid``;
         ``_sod_refusal``, on the committing write); an approver with no known oid is
         refused.
+
+        ``shown_sha256`` / ``approver_session`` (``approve_in_session``, the console's
+        door) only add checks, inside the same write: the call as shown to the person
+        must still be the call approved (``call_approval_stale``), the session's own
+        identities count for separation of duties, and its Entra oid must be the one the
+        roster or configuration names for the approver
+        (``call_approver_session_oid_mismatch``).
         """
         act = _session_act(session, actor)
+        held = _approver_session_identities(approver_session)
         if task_id is not None and (not isinstance(task_id, str)
                                     or not _TASK_ID.fullmatch(task_id)):
             raise ActionPathError("invalid_task_id")
@@ -1773,6 +1788,8 @@ class ActionPath:
                                                          "reason": intent.gate_reason}
                 if _canon(state["prepared"]["arguments"]) != _canon(expected):
                     raise ActionPathError("call_approval_arguments_mismatch")
+            if shown_sha256 is not None and shown_sha256 != call_approval_sha256(state):
+                raise ActionPathError("call_approval_stale")
             if (record.get("schema") != CALL_APPROVAL_SCHEMA
                     or record.get("tool") != tool):
                 raise ActionPathError("call_approval_names_another_call")
@@ -1780,13 +1797,16 @@ class ActionPath:
                 raise ActionPathError("call_approval_arguments_mismatch")
             approver = str(record.get("approved_by") or "").strip()
             approver_oid = self._call_approver_oid(approver)
-            refusal = _sod_refusal(state, "call_approver", approver, (approver_oid,))
+            refusal = _sod_refusal(state, "call_approver", approver, (approver_oid, *held))
             if refusal:
                 raise ActionPathError(refusal)
             self._check_call_approval(approver, record.get("approved_at"),
                                       record.get("expires_at"), intent.capability)
             if approver_oid is None:   # SoD cannot match an alias without it
                 raise ActionPathError(self._oid_refusal("call_approver", approver))
+            if approver_session is not None and (
+                    approver_session.subject_oid or "").lower() != approver_oid.lower():
+                raise ActionPathError("call_approver_session_oid_mismatch")
             evidence = record.get("evidence_ref")
             if not isinstance(evidence, str) or not 1 <= len(evidence.strip()) <= 300:
                 raise ActionPathError("call_approval_evidence_missing")
@@ -1814,6 +1834,42 @@ class ActionPath:
             db.execute("INSERT INTO consumed_call_approval VALUES(?,?,?)",
                        (identity, intent_id, event["at"]))
             return event
+
+    def approve_in_session(self, actor: Actor, intent_id: str, *, session: Any,
+                           shown_sha256: Any,
+                           valid_for: timedelta = CONSOLE_APPROVAL_VALIDITY) -> dict[str, Any]:
+        """The signed-in person's per-call approval of exactly the call they were shown
+        (``call_approval_subject``; ``shown_sha256`` its digest), as ``approve_call``
+        records any: the approver is the session's own person (never a record's text),
+        approved now, for ``valid_for`` (at most 24 h), with the session and the shown
+        digest as ``evidence_ref``. Only a person's session (no agent, no eval principal)
+        whose email and Entra oid are known; every ``approve_call`` rule applies (an
+        allowed approver of the type with that oid, never a subject, single use). It
+        records the approval only: nothing is sent (``request_gate``/``send_call`` stay
+        separate steps)."""
+        approver = session_approver(session, actor)
+        if not isinstance(shown_sha256, str) or not _SHA256_HEX.fullmatch(shown_sha256):
+            raise ActionPathError("call_approval_subject_required")
+        if not isinstance(valid_for, timedelta) or not (
+                timedelta(0) < valid_for <= DEFAULT_DECISION_MAX_AGE):
+            raise ActionPathError("call_approval_window_invalid")
+        shown = self.view(actor, intent_id)   # the reader's view: a withheld one is unknown
+        if shown.get("withheld"):
+            raise IntentNotFound(intent_id)
+        subject = shown.get("call_approval_subject")
+        if subject is None:
+            raise ActionPathError(f"invalid_state:{shown['state']}")
+        arguments = subject["call"]["arguments"]
+        task_id = (None if subject["action_type"] in MC_CALL_CAPABILITIES
+                   else arguments.get("taskId") if isinstance(arguments, Mapping) else None)
+        now = self._now().astimezone(timezone.utc)
+        record = {"schema": CALL_APPROVAL_SCHEMA, "tool": subject["call"]["tool"],
+                  "arguments": arguments, "approved_by": approver,
+                  "approved_at": now.isoformat(), "expires_at": (now + valid_for).isoformat(),
+                  "evidence_ref": (f"workbench-console:{session.channel}:session:"
+                                   f"{session.session_ref}:shown:{shown_sha256}")}
+        return self.approve_call(actor, intent_id, task_id, record, session=session,
+                                 shown_sha256=shown_sha256, approver_session=session)
 
     def _call_approver_oid(self, approver: str) -> str | None:
         """The call approver's Entra oid: as configured, else the roster's usable now
@@ -2321,7 +2377,7 @@ class ActionPath:
             if (recheck is None and type(dispatcher) is FixtureDispatcher
                     and type(dispatcher.fixture) is IsolatedOwnerSystem):
                 # The owner contract is dispatched only after a fresh MC re-read of the
-                # approval: a property of the path, not of the caller.
+                # approval (10-DECISION #6): a property of the path, not of the caller.
                 raise ActionPathError("mc_recheck_required")
             withdrawn = self._withdrawal(db, actor, intent_id, state, decision, recheck, act)
             if withdrawn is not None:
@@ -3086,7 +3142,7 @@ _REREGISTER = ("reregister", "human",
                "sessions record and register a new proposal through the action path")
 _REREGISTER_STATES = frozenset({"gate_requested", "gate_authorized", "dispatch_refused"})
 # After this many ``effect_not_observed`` read-backs on one intent the next safe step
-# is a human escalation instead of another read.
+# is a human escalation instead of another read (controller decision, review 4ed9adc).
 READ_BACKS_BEFORE_ESCALATION = 3
 _RECOVERY_LED = {"gate_request_unknown", "gate_request_lost", "dispatch_refused",
                  "dispatched_unknown", "failed"}
@@ -3282,6 +3338,9 @@ def public_view(state: Mapping[str, Any], case_view: Mapping[str, Any]) -> dict[
                               .get("outcome") != "not_dispatched"}
                              if prepared else None),
         "call_approved": state.get("call_approval") is not None,
+        # Exactly what a person approves per call, and its digest the approval names.
+        "call_approval_subject": call_approval_subject(state),
+        "call_approval_sha256": call_approval_sha256(state),
         "gate": ({key: gate.get(key) for key in ("task_id", "gate_id", "attempt_id")}
                  if gate else None),
         "gate_request_attempts": state.get("gate_attempts", 0),
@@ -3342,6 +3401,68 @@ def _adds_subject(state: Mapping[str, Any], sub: Any) -> bool:
         return all(_identities_of(item.get("sub")) for item in state["subjects"])
     known = frozenset().union(*(_identities_of(item.get("sub")) for item in state["subjects"]))
     return not new <= known
+
+
+def call_approval_subject(state: Mapping[str, Any]) -> dict[str, Any] | None:
+    """What a person approves per call, exactly as shown before they click (None: the
+    intent is not awaiting a per-call approval): the action type and owning system, its
+    target, the parameters with the source each value was traced to, the expected
+    effect, the cited evidence, the prose preconditions and the exact MC call. It is
+    bound to the intent (``binding_sha256``) and to this prepared request
+    (``prepared_sha256``): a re-prepared request or other intent is another subject."""
+    prepared = state.get("prepared")
+    if state.get("state") not in {"gate_prepared", "call_approval_required"} \
+            or not isinstance(prepared, Mapping):
+        return None
+    intent = state["intent"]
+    effect = intent.get("expected_effect") or {}
+    traces = ((intent.get("parameter_trace") or {}).get("traces") or {})
+    return {"schema": CALL_APPROVAL_SUBJECT_SCHEMA, "intent_id": intent["intent_id"],
+            "binding_sha256": _binding(intent), "prepared_sha256": _sha(prepared),
+            "action_type": intent["capability"], "owner_system": intent["owner_system"],
+            "target": {"relation": effect.get("relation"), "key": effect.get("key")},
+            "parameters": [{"name": name, "source": traces[name]} for name in sorted(traces)],
+            "expected_effect": effect,
+            "evidence": [{"handle": item.get("handle"), "digest": item.get("digest")}
+                         for item in intent.get("evidence") or ()],
+            "human_preconditions": list(intent.get("human_preconditions") or ()),
+            "call": {"tool": prepared.get("tool"), "arguments": prepared.get("arguments")}}
+
+
+def call_approval_sha256(state: Mapping[str, Any]) -> str | None:
+    """Digest of ``call_approval_subject`` (None when there is none)."""
+    subject = call_approval_subject(state)
+    return None if subject is None else _sha(subject)
+
+
+def session_approver(session: Any, actor: Actor) -> str:
+    """The email of the person whose session approves: a person's own session (never an
+    agent, never the eval principal) for ``actor``, with a known email and Entra oid."""
+    from .session_identity import AUTHOR_HUMAN, SessionIdentity
+
+    _session_act(session, actor)   # a session, this actor's, current
+    if type(session) is not SessionIdentity:
+        raise ActionPathError("session_identity_required")
+    if session.author_kind != AUTHOR_HUMAN:
+        raise ActionPathError("only_a_person_approves")
+    if session.eval_principal:
+        raise ActionPathError("eval_principal_never_approves")
+    if not session.subject_oid:
+        raise ActionPathError("call_approver_oid_unknown")
+    if isinstance(session.email, str) and session.email.strip():
+        return session.email.strip().lower()
+    emails = [item for item in session.identities if "@" in item]
+    if len(emails) != 1:
+        raise ActionPathError("call_approver_email_unknown")
+    return emails[0]
+
+
+def _approver_session_identities(session: Any) -> tuple[str, ...]:
+    """The approving session's own identities (email(s), Entra oid), for separation of
+    duties; none without a session."""
+    if session is None:
+        return ()
+    return tuple(sorted(getattr(session, "identities", ()) or ()))
 
 
 def _sod_refusal(state: Mapping[str, Any], role: str, email: Any,
@@ -3421,6 +3542,7 @@ __all__ = ["ActionIntent", "ActionPath", "ActionPathError", "ApprovalRecord", "C
            "DispatcherRegistry", "FIXTURE_CAPABILITIES", "ProductionTargetRefused",
            "RealSystemDispatcher", "target_gates", "FIXTURE_CAPABILITY", "FixtureDispatcher", "FixtureSystem",
            "IntentNotFound", "REAL_CAPABILITIES", "RefusingDispatcher",
-           "BLOCKERS", "MAX_LISTED_INTENTS", "READ_BACKS_BEFORE_ESCALATION", "STATES", "VerificationRecord", "blocker_for",
+           "BLOCKERS", "CALL_APPROVAL_SUBJECT_SCHEMA", "CONSOLE_APPROVAL_VALIDITY",
+           "call_approval_sha256", "call_approval_subject", "session_approver", "MAX_LISTED_INTENTS", "READ_BACKS_BEFORE_ESCALATION", "STATES", "VerificationRecord", "blocker_for",
            "next_safe_step", "OUTCOMES", "outcome_of", "MC_CALL_CAPABILITIES", "mc_call_refusal",
            "production_target_refusal", "public_view"]

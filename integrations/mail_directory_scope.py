@@ -1,5 +1,5 @@
 """Directory-wide mail capture scope: every user mailbox but the excluded people's
-and the HR / payroll deny list.
+and the HR / payroll deny list (owner directive c75dfaba0f8e).
 
 The scope (``plx-mail-directory-scope/v1``, ``integrations/mail_all_mailboxes_scope.json``)
 names the folders (inbox and sent items), the first-round window and an explicit deny
@@ -45,10 +45,17 @@ only, never names, addresses, subjects or ids)::
     python3 -m integrations.graph_read mail-all-mailboxes \\
         --live-audience examples/mail_all_mailboxes_audience.live-check.json --runs 2
 
+A person excluded, or a mailbox denied, after it was captured: every store read hides it
+at once and the next run purges it (``MailCaptureStore.purge_withheld``, decision
+2026-10-21-mail-exclusion-retroactive); the run records each listed mailbox's department
+first, so the deny list decides on it at read. ``exclusion_check`` counts what the store
+still holds of the mailboxes this listing excluded or denied, and how much of it the
+capture actor can still read (both readable counts must be 0).
+
 ``excluded_requested`` is measured on the transport's request log (``RequestLog``: a
 ``GuardedTransport`` observer that sees every request before it is sent, keeps only the
 identity tokens each URL names, in memory, and is read once the run ends), not on the
-result set. Live-unverified until ``verify/live-checks/graph.mail_all_mailboxes.json``
+result set. Live-unverified until ``devloop/live-checks/graph.mail_all_mailboxes.json``
 passes.
 """
 
@@ -56,7 +63,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import os
 from pathlib import Path
@@ -195,6 +202,11 @@ class Enumeration:
     listed: int            # member users with a mail address
     excluded: int          # dropped for the people exclusion
     denied: int            # dropped by the deny list
+    # In memory only, never reported: the excluded and denied object ids (what the store
+    # must no longer serve) and each listed, not excluded user's department.
+    withheld: frozenset[str] = field(default=frozenset(), repr=False, compare=False)
+    departments: Mapping[str, Any] = field(default_factory=dict, repr=False,
+                                           compare=False, hash=False)
 
     def directory(self) -> tuple[list[str], str, int]:
         """``MailCapture.run``'s ``directory`` callable: the same answer every run."""
@@ -214,6 +226,8 @@ def enumerate_mailboxes(api: Any, scope: DirectoryScope,
     url = grammar.url("graph.users", {"$select": LISTING_SELECT, "$top": "999"})
     users, completeness = api.get_pages(url, max_pages=50, max_items=5000)
     kept: set[str] = set()
+    withheld: set[str] = set()
+    departments: dict[str, Any] = {}
     listed = excluded = denied = 0
     for user in users:
         oid = str(user.get("id") or "").lower()
@@ -223,14 +237,18 @@ def enumerate_mailboxes(api: Any, scope: DirectoryScope,
         listed += 1
         if people.excluded([oid, *_addresses(user)]):
             excluded += 1
+            withheld.add(oid)
             continue
+        departments[oid] = user.get("department")
         if scope.deny.denies(user):
             denied += 1
+            withheld.add(oid)
             continue
         kept.add(oid)
     status = ("complete" if completeness.get("complete")
               else f"truncated:{completeness.get('truncation_reason')}")
-    return Enumeration(tuple(sorted(kept)), status, listed, excluded, denied)
+    return Enumeration(tuple(sorted(kept)), status, listed, excluded, denied,
+                       frozenset(withheld), departments)
 
 
 class RequestLog:
@@ -304,6 +322,106 @@ def _visible_rows(store: Any, actor: Actor, audience: LiveSourceAudience) -> dic
             "handles": [item["l1_handle"] for item in view["items"]]}
 
 
+# The share of ``--budget-seconds`` kept back from capture for the read-back probes
+# (resolves, the withheld, owner and exclusion reads): the whole command ends within
+# the budget, so the verifier's timeout never kills it (gap-86a8a6debd2e).
+PROBE_RESERVE_SHARE = 0.15
+
+
+class _ProbesCut(Exception):
+    """The budget ran out during the read-back probes."""
+
+
+def _probes(store: Any, actor: Actor, withheld: Actor, audience: LiveSourceAudience,
+            enumeration: Any, spent: Callable[[], bool]) -> dict[str, Any]:
+    """The store read back as the capture actor, a withheld actor, one mailbox's owner
+    and over the excluded mailboxes; ``spent()`` is checked before every store read.
+    Cut by it: ``cut`` true and every probe not finished null (never zero: a null
+    leak count is not a clean one)."""
+    def check() -> None:
+        if spent():
+            raise _ProbesCut
+
+    out: dict[str, Any] = {
+        "cut": False, "boxes": None, "probe_box": None,
+        "mine_counts": {"messages_current": None, "versions": None,
+                        "attachments_captured": None},
+        "resolve_check": {"handles_checked": None, "resolved_offline": None},
+        "leak_check": {"withheld_actor_mailboxes": None, "withheld_actor_rows": None,
+                       "withheld_actor_counts": None, "withheld_actor_resolved": None},
+        "marking": {"with": None, "without": None},
+        "probe": {"mailboxes_visible": None, "rows_visible": None,
+                  "only_own_mailbox": None, "rows_match_own_mailbox": None},
+        "exclusion": {"mailboxes_stored": None, "items_stored": None,
+                      "items_readable": None, "mailboxes_readable": None}}
+    try:
+        check()
+        mine = _visible_rows(store, actor, audience)
+        out["mine_counts"] = {k: mine["counts"][k] for k in out["mine_counts"]}
+        resolved = 0
+        for handle in mine["handles"]:
+            check()
+            resolved += store.resolve(handle, actor, audience) is not None
+        out["resolve_check"] = {"handles_checked": len(mine["handles"]),
+                                "resolved_offline": resolved}
+        check()
+        hidden = _visible_rows(store, withheld, audience)
+        hidden_resolved = 0
+        for handle in mine["handles"]:
+            check()
+            hidden_resolved += store.resolve(handle, withheld, audience) is not None
+        out["leak_check"] = {"withheld_actor_mailboxes": hidden["mailboxes"],
+                             "withheld_actor_rows": hidden["rows"],
+                             "withheld_actor_counts": hidden["total"]
+                             + sum(hidden["counts"].values()),
+                             "withheld_actor_resolved": hidden_resolved}
+        check()
+        boxes = store.completeness(actor, audience)["mailboxes"]
+        out["boxes"] = boxes
+        check()
+        out["marking"] = store.owner_marking(actor, audience)
+        # One mailbox's owner (its object id as their identity, source ACL required):
+        # they see that mailbox and nothing of any other.
+        probe_box = next((m["mailbox"] for m in boxes if m["current_messages"]),
+                         boxes[0]["mailbox"] if boxes else None)
+        out["probe_box"] = probe_box
+        probe: dict[str, Any] = {"mailboxes_visible": 0, "rows_visible": 0,
+                                 "only_own_mailbox": None}
+        if probe_box is not None:
+            owner_audience = LiveSourceAudience(
+                {"mail:*": [OWNER_PROBE]}, tenant=audience.tenant,
+                classifications={"mail:*": "restricted"},
+                identities={OWNER_PROBE: [probe_box]}, source_acl_required=["mail:*"])
+            owner = Actor(audience.tenant, frozenset({OWNER_PROBE}), "restricted")
+            check()
+            seen = store.completeness(owner, owner_audience)["mailboxes"]
+            own_rows = next((m["current_messages"] for m in boxes
+                             if m["mailbox"] == probe_box), 0)
+            check()
+            probe = {"mailboxes_visible": len(seen),
+                     "rows_visible": store.counts(owner, owner_audience)["messages_current"],
+                     "only_own_mailbox": [m["mailbox"] for m in seen] == [probe_box]}
+            probe["rows_match_own_mailbox"] = probe["rows_visible"] == own_rows
+        out["probe"] = probe
+        # What the store still holds of the mailboxes this listing excluded or denied,
+        # and what of it the capture actor can read (decision
+        # 2026-10-21-mail-exclusion-retroactive).
+        check()
+        held = store.held(sorted(enumeration.withheld) if enumeration else [])
+        withheld_boxes = enumeration.withheld if enumeration else frozenset()
+        readable = 0
+        for handle in held["handles"]:
+            check()
+            readable += store.resolve(handle, actor, audience) is not None
+        out["exclusion"] = {
+            "mailboxes_stored": held["mailboxes"], "items_stored": held["items"],
+            "items_readable": readable,
+            "mailboxes_readable": sum(1 for m in boxes if m["mailbox"] in withheld_boxes)}
+    except _ProbesCut:
+        out["cut"] = True
+    return out
+
+
 def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = None,
             sender: Any = None, sleep: Callable[[float], None] = time.sleep,
             monotonic: Callable[[], float] = time.monotonic) -> dict[str, Any]:
@@ -332,14 +450,21 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
                 mode=0o700, parents=True, exist_ok=True)
     else:
         state_dir = cm.assert_outside_git(args.state_dir)
+    # The whole command within the budget (the verifier kills it at its timeout): the
+    # enumeration and every run inside the capture share, the read-back probes inside
+    # the reserve the capture leaves them.
+    deadline = None if budget is None else monotonic() + budget
+    capture_deadline = None if deadline is None else deadline - budget * PROBE_RESERVE_SHARE
     carried = cm.store_exists(state_dir)
-    store = cm.MailCaptureStore(state_dir, max_store_bytes=args.max_store_bytes)
+    store = cm.MailCaptureStore(state_dir, max_store_bytes=args.max_store_bytes,
+                                deny=scope.deny)
     try:
         api, transport = build_graph(environ, sender=sender,
                                      retry=BoundedBackoff(sleep=sleep, budget_seconds=60))
         log = RequestLog()
         transport.observers.append(log)
         people = from_api(api)
+        store.people = people         # every read below applies this run's exclusion
         reader = GraphMailReader(api, audience, people=people)
         actor = Actor(audience.tenant, frozenset({args.principal}), "restricted")
         withheld = Actor(audience.tenant, frozenset({args.withheld_principal}), "restricted")
@@ -356,49 +481,30 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
                 raise
             blocked = [part]
         runs: list[dict[str, Any]] = []
+        last_run: Mapping[str, Any] | None = None
         if enumeration is not None:
-            deadline = None if budget is None else monotonic() + budget
+            store.record_directory(enumeration.departments)
             refused = []
             for number in range(1, args.runs + 1):
-                share = (None if deadline is None else
-                         max(0.0, (deadline - monotonic()) / (args.runs - number + 1)))
+                share = (None if capture_deadline is None else
+                         (capture_deadline - monotonic()) / (args.runs - number + 1))
+                if share is not None and share <= 0:
+                    break    # nothing left of the capture share: no run opens anything
                 capture = cm.MailCapture(store, reader, actor, page_size=args.page_size,
                                          sleep=sleep, budget_seconds=share,
                                          monotonic=monotonic)
                 run = capture.run(scope.capture_scope(), directory=enumeration.directory)
                 runs.append(cm._report_run(number, run))
                 refused.append(cm.refused_parts(run))
-            if all(refused):
+                last_run = run
+            if refused and all(refused):
                 blocked = refused[-1]
-        mine = _visible_rows(store, actor, audience)
-        resolved = sum(1 for h in mine["handles"]
-                       if store.resolve(h, actor, audience) is not None)
-        hidden = _visible_rows(store, withheld, audience)
-        hidden_resolved = sum(1 for h in mine["handles"]
-                              if store.resolve(h, withheld, audience) is not None)
-        completeness = store.completeness(actor, audience)
-        marking = store.owner_marking(actor, audience)
-        # One mailbox's owner (its object id as their identity, source ACL required):
-        # they see that mailbox and nothing of any other.
-        boxes = completeness["mailboxes"]
-        probe_box = next((m["mailbox"] for m in boxes if m["current_messages"]),
-                         boxes[0]["mailbox"] if boxes else None)
-        probe = {"mailboxes_visible": 0, "rows_visible": 0, "only_own_mailbox": None}
-        if probe_box is not None:
-            owner_audience = LiveSourceAudience(
-                {"mail:*": [OWNER_PROBE]}, tenant=audience.tenant,
-                classifications={"mail:*": "restricted"},
-                identities={OWNER_PROBE: [probe_box]}, source_acl_required=["mail:*"])
-            owner = Actor(audience.tenant, frozenset({OWNER_PROBE}), "restricted")
-            seen = store.completeness(owner, owner_audience)["mailboxes"]
-            own_rows = next((m["current_messages"] for m in boxes
-                             if m["mailbox"] == probe_box), 0)
-            probe = {"mailboxes_visible": len(seen),
-                     "rows_visible": store.counts(owner, owner_audience)["messages_current"],
-                     "only_own_mailbox": [m["mailbox"] for m in seen] == [probe_box]}
-            probe["rows_match_own_mailbox"] = probe["rows_visible"] == own_rows
+        probes = _probes(store, actor, withheld, audience, enumeration,
+                         lambda: deadline is not None and monotonic() >= deadline)
         excluded_requested = log.excluded_requests(people)
-        folders = [f for m in boxes for f in m["folders"]]
+        boxes = probes["boxes"]
+        folders = [f for m in boxes or [] for f in m["folders"]]
+        mine = probes["mine_counts"]
         resumes = sum(1 for r in runs[1:] for m in r["mailboxes"] for f in m["folders"]
                       if f["resumed_from"] in ("next_url", "delta_url"))
         report: dict[str, Any] = {
@@ -421,43 +527,60 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
                             "complete": log.requests == transport.requests_sent,
                             "excluded_requested": excluded_requested},
             "runs": runs,
+            # Runs the budget left no capture share for (nothing opened or read).
+            "runs_skipped": args.runs - len(runs) if enumeration is not None else 0,
             "blocked_upstream": blocked,
-            "summary": {"mailboxes": len(boxes),
-                        "mailboxes_complete": sum(1 for m in boxes if m["complete"]),
-                        "folders": len(folders),
-                        "folders_complete": sum(1 for f in folders if f["complete"]),
-                        "messages_current": mine["counts"]["messages_current"],
-                        "versions": mine["counts"]["versions"],
-                        "attachments_captured": mine["counts"]["attachments_captured"],
+            "summary": {"mailboxes": None if boxes is None else len(boxes),
+                        "mailboxes_complete": None if boxes is None
+                        else sum(1 for m in boxes if m["complete"]),
+                        "folders": None if boxes is None else len(folders),
+                        "folders_complete": None if boxes is None
+                        else sum(1 for f in folders if f["complete"]),
+                        "messages_current": mine["messages_current"],
+                        "versions": mine["versions"],
+                        "attachments_captured": mine["attachments_captured"],
                         "resumed_from_stored_cursor": resumes,
                         "complete_bound": runs[-1]["complete_bound"] if runs else 0,
                         "bound_total": runs[-1]["bound_total"] if runs else 0,
                         "store_bytes": store.store_bytes(),
-                        "store_full": store.store_full()},
-            "owner_marking": marking,
-            "owner_probe": probe,
-            "resolve_check": {"handles_checked": len(mine["handles"]),
-                              "resolved_offline": resolved},
-            "leak_check": {"withheld_actor_mailboxes": hidden["mailboxes"],
-                           "withheld_actor_rows": hidden["rows"],
-                           "withheld_actor_counts": hidden["total"]
-                           + sum(hidden["counts"].values()),
-                           "withheld_actor_resolved": hidden_resolved},
+                        "store_full": store.store_full(),
+                        "purged": {key: sum(r["purged"][key] for r in runs)
+                                   for key in cm.PURGE_COUNTS}},
+            "exclusion_check": probes["exclusion"],
+            "owner_marking": probes["marking"],
+            "owner_probe": probes["probe"],
+            "resolve_check": probes["resolve_check"],
+            "leak_check": probes["leak_check"],
+            # The read-back the budget cut (probes_cut): every probe it did not finish
+            # is null, so the check fails closed, never passes or blocks on it.
+            "probes_cut": probes["cut"],
             "relations": {name: n for name, n in (
-                ("messages", mine["counts"]["messages_current"]),
-                ("attachments", mine["counts"]["attachments_captured"])) if n},
+                ("messages", mine["messages_current"]),
+                ("attachments", mine["attachments_captured"])) if n},
             "requests_sent": transport.requests_sent,
             "operations_read": sorted(transport.operations_read),
         }
-        leak = report["leak_check"]
-        report["ok"] = bool(
-            not blocked and enumeration is not None and enumeration.status == "complete"
+        leak, exclusion = report["leak_check"], probes["exclusion"]
+        probe, resolve = probes["probe"], probes["resolve_check"]
+        rest_ok = bool(
+            not probes["cut"]
+            and enumeration is not None and enumeration.status == "complete"
             and enumeration.mailboxes and excluded_requested == 0
-            and report["request_log"]["complete"] and marking["without"] == 0
-            and resolved == len(mine["handles"])
-            and not any(leak.values())
-            and (probe_box is None or (probe["only_own_mailbox"]
-                                       and probe["rows_match_own_mailbox"])))
+            and report["request_log"]["complete"] and probes["marking"]["without"] == 0
+            and resolve["resolved_offline"] == resolve["handles_checked"]
+            and not any(v != 0 for v in leak.values())
+            and exclusion["items_readable"] == 0 and exclusion["mailboxes_readable"] == 0
+            and (probes["probe_box"] is None or (probe["only_own_mailbox"]
+                                                 and probe["rows_match_own_mailbox"])))
+        if not blocked and rest_ok:
+            # A last run the budget alone cut over a store that was not carried (or no
+            # run left a share): later_ask live-host-persistent-state-dir, the one rule
+            # of capture_mail.budget_cut_block; never an untyped fail.
+            units = (cm.mail_cut_units(last_run) if last_run is not None
+                     else [("mail.run", [cm.TIME_BUDGET])])
+            blocked = cm.budget_cut_block(units, carried=carried)
+            report["blocked_upstream"] = blocked
+        report["ok"] = bool(not blocked and rest_ok)
         return report
     finally:
         store.close()

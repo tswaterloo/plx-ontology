@@ -1,5 +1,5 @@
 """The write twin: in-process emulators of the owning systems the action path writes, for
-test mode only.
+test mode only (owner directive 746d96497341).
 
 * ``twin.portal.PortalTwin``: the Portal's cataloged write routes and its reporting read
   view, built from the generator's facts (``ontology/schema/generated/meta``

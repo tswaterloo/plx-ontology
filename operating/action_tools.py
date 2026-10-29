@@ -1,8 +1,8 @@
-"""``plx.act``: the goal-2 action path as one case-host MCP tool.
+"""``plx.act``: the goal-2 action path as one case-host MCP tool (10-DECISION #4, #6, #7).
 
 One tool, three modes, for the case host's 22-tool budget: it replaces the retired
 ``plx.action_get`` (mode status) and ``plx.action_propose`` (mode propose) and adds internal
-execution and verification. Wiring (2026-10-04):
+execution and verification. Wiring (lead decision 2026-10-04, run ctl-714e2c6f):
 ``operating/mcp_server.py`` lists it and calls one ``ActTool`` per session through
 ``MCPServer.handle`` (output boundary, session actor, per-call host policy);
 ``register`` serves the same tool through ``ontology_host.CaseHostTools.call``. Modes:
@@ -42,7 +42,7 @@ the per-call human approval, the dispatch, escalation, and every other MC write.
 Agents are never principals: MC decides gates (a human admin/owner), Portal owns
 business approvals. Evidence: ``isolated-fixture`` (dispatch/read-back),
 ``workbench-store`` (internal actions), ``mc-read`` (the journal; exercised only over
-injected transports here: live-unverified, ``verify/live-checks/mc.action_journal.json``).
+injected transports here: live-unverified, ``devloop/live-checks/mc.action_journal.json``).
 """
 
 from __future__ import annotations

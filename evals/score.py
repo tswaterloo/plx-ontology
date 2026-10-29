@@ -1,4 +1,4 @@
-"""Score one recorded eval run against its item's known outcome.
+"""Score one recorded eval run against its item's known outcome (10-DECISION decision 8).
 
 Inputs are an item (``evals/item.schema.json``, ``plx-eval-item/v1``) and a transcript
 (``plx-eval-transcript/v1``, written by ``evals.runner``). The score is a pure function of
@@ -27,13 +27,18 @@ The rows the gate checks are the harness reads recorded in the transcript's
 agent finished, never by the agent). The answer's ``text`` is the gate's close outcome:
 a number in it that no claim covers, or a quantity word that disagrees with a grounded
 role, is an unsupported assertion. A citation may carry ``quote``, the passage as written
-that holds the value (a short value such as ``USD`` is too short to verify as a quote of a
-page by itself): for a text value (not a plain number, which keeps the number path and
-ignores it) cited on an original's text (``_quotable``) the gate checks the quote as the
-claim's value, and the value must occur in the quote on token boundaries with no negator
-reversing it (``_quote_holds``), else that citation's claim is ``claim_value_mismatch``.
-On a row field the quote is ignored and the field's one value must equal the claim's:
-containment there would pass ``Shipped`` on a field holding ``Partially Shipped``. ``claim_role_unverified`` /
+that holds the value. The value is checked on its own, whatever the quote (``USD`` alone
+is too short to verify as a quote of a page, ``Shipped`` is not a field holding
+``Partially Shipped``); a quote never stands in for the value; it refuses
+(``_quote_refusal``), and on a number cited on prose it pins the occurrence as the gate
+does (only figures inside it count, scorer /20), so it may settle which of two printed
+meanings is meant, never supply a value the text lacks (``_quote_refusal``, the
+scorer's reading of the claim gate's quote rule): it must hold the value as written (a
+number as a number token of the same value, else the text on token boundaries with no
+negator reversing it, ``_quote_holds``) and the cited record as the harness re-read it
+must hold the quote (an original's text unnegated on token boundaries, a text cell
+verbatim, a number cell only as that number), else that citation's claim is
+``claim_value_mismatch``. ``claim_role_unverified`` /
 ``claim_wording_role_unverified`` (no role contract grounds the field) are reported as
 ``unverified`` and do not fail the item: they measure the Workbench's contract coverage,
 not the answer. A unit the gate has no basis for (a figure an original page prints without
@@ -119,7 +124,10 @@ not list), ``claim_uncited_number`` (``claim_unstructured`` / ``claim_uncited``)
 expects reached the agent in a tool result or the answer; scored fail-closed as
 ``leak_unverifiable`` without the parent).
 
-**Outcome** of a run (``OUTCOMES``): ``blocked`` (the run says nothing about the agent:
+**Outcome** of a run (``OUTCOMES``): ``unscored`` (the item's card set marks its layer
+not scorable yet, ``scoring.unscored``: never correct or wrong, ``excluded`` ``unscored``
+so no pass rate counts it; a run that is ``blocked`` stays ``blocked``), ``blocked`` (the
+run says nothing about the agent:
 ``pin_drift``, the agent session failed without an answer, or it abstained while the host's
 state lacked a pinned original the item cites: ``originals_not_held``), ``justified_abstention`` (it
 passed while abstaining: answerability ``blocked`` or no stated value, which only passes
@@ -133,7 +141,24 @@ agent that abstains everywhere shows coverage 0 and no accuracy, never a good sc
 counts the blocked runs apart as ``read_gap`` and ``other_blocked`` (``blocked`` is their
 sum). Read-gap runs above ``DRIFT_TRIPWIRE_SHARE`` of a run fail it on every path
 (``fail_reasons`` ``blocked_share``,
-docs/decisions/2026-10-08-dev-baseline-blocked-share-exit.md).
+devloop/DECISIONS/2026-10-08-dev-baseline-blocked-share-exit.md).
+
+**Rubric items** (``rubric_item``: known outcome ``partial`` with no expected value and
+no expected gap, a proposal card): the label is not the answer (scorer /20). A run is
+``correct`` only when it passes and states at least one evidenced claim
+(``evidenced_claims``: passed by the claim gate, citing a record a tool result of the run
+returned, on the card's topic: a pinned or named original, a card identifier or one
+card-specific word, ``set_topic_terms``), labelled ``partial`` or ``answerable``; an
+``answerable`` answer with none is ``answerability_mismatch`` (an overclaim). A
+``partial`` answer with no evidenced claim, or a ``blocked`` one with no claim the gate
+passed, is ``label_only`` (``evidence.label_only`` in the score, ``outcome_summary``
+``label_only``): an abstention, ``justified_abstention`` when it names a gap, else
+``wrong`` with item code ``evidence_missing``; a ``blocked`` answer stating a claim the
+gate passed is still ``answerability_mismatch``. A failed
+abstention (that one, or an answerability ``blocked``) is ``blocked``
+(``originals_not_held``) when the host lacked an original the item pins or the item rests
+on one no one holds (``UNHELD_ORIGINAL``). A stated answer the gate refuses stays
+``wrong``.
 
 **Read gap** (``READ_GAP``, ``read_gap``): a stated answer whose only faults come from
 ``bc://`` citations the harness could not re-read as the reader (a revision a capture
@@ -234,6 +259,13 @@ expression the evaluator refuses (an unknown name included) is ``calculation_une
 (adding different units: ``calculation_unit_mismatch``), and more than one currency among
 the inputs is ``calculation_currency_mismatch``.
 
+An input may carry a ``quote``: the passage holding its figure, checked as a cited
+value's quote is (``_quote_refusal``: it must hold the figure and the page must hold it)
+and then pinning which occurrence the figure is, as the claim gate pins an expression
+input (``claim_checks.expression_inputs``), so a figure the page prints twice is not
+ambiguous. A printed percent (``15%``) is checked as a percent the page prints, at
+percent scale, as the gate checks it, and computes as its rate.
+
 An expression input resolves what the page prints: ``12.5%`` is the Decimal fraction
 ``0.125`` (dimensionless; beside a real unit, or a bare figure the page does not print
 as a percent, ``calculation_percent_unit``), and its
@@ -247,6 +279,7 @@ these recompute codes.
 
 from __future__ import annotations
 
+from datetime import date as _date
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 import functools
 import hashlib
@@ -290,7 +323,107 @@ SCORE_FORMAT = "plx-eval-score/v1"
 # 14: a gap's "concerns": null reads as no concerns (was answer_malformed:gaps). The dev
 #    fixture's outcomes are unchanged (its answers leave concerns out or name a value); the
 #    same answer can score differently than under /13, so the version moves.
-SCORER_VERSION = "plx-eval-scorer/14"
+# 15: a citation's ``quote`` is no longer the claim's value: the value is checked on its own
+#    and the quote, on any citation, only refuses (it must hold the value and be held by the
+#    cited record as re-read). ``USD`` quoted as ``Currency: USD`` no longer passes. Dev
+#    fixture outcomes unchanged (19/30).
+# 16: a citation's quote holds a value with the claim gate's tolerance of how it is written
+#    (a number as any ``claim_checks.NUMBER`` token of its value, a status word case-folded);
+#    it still only refuses and the value check is unchanged. Dev fixture outcomes unchanged
+#    (19/30).
+# 17: a rubric item (known outcome ``partial`` with no expected value and no expected gap:
+#    a proposal card) is ``correct`` only with an evidenced claim (``evidenced_claims``: a
+#    claim the gate passed, citing a record a tool result of the run returned, on the
+#    card's topic); the ``partial`` label alone is ``label_only``: a justified abstention
+#    when the answer names a gap, else ``wrong`` (``evidence_missing``); a failed
+#    abstention is ``blocked`` (``originals_not_held``) also when the item rests on an
+#    original no one holds (``UNHELD_ORIGINAL``). Decision
+#    devloop/DECISIONS/2026-10-28-substantive-partial.md. Dev fixture outcomes unchanged
+#    (19/30: it has no rubric item).
+# 18: a topic word must be card-specific (``set_topic_terms``: not a case or set title
+#    word, on at most ``TOPIC_MAX_SHARE`` of the set's cards, not on the cards of more
+#    than ``TOPIC_MAX_SET_SHARE`` of all sets), read from the item's
+#    ``scoring.topic_terms``; one such word suffices. Dev fixture outcomes unchanged
+#    (19/30: no rubric item).
+# 19: a topic-word tie needs both the /17 test (two words of the card's question and
+#    criterion in the claim's value and quote or its record's title) and one card-specific
+#    word (/18) in the claim's value or quote, never the title alone. People's names
+#    (``scoring.topic_names``) and e-mail addresses never count. No run scores higher
+#    than under /17. Dev fixture outcomes unchanged (19/30: no rubric item).
+# 20: three consistency rules (decision devloop/DECISIONS/2026-10-28-substantive-partial.md,
+#    "Scorer /20"). (1) On a rubric item an answer labelled ``blocked`` with no claim the
+#    gate passed is the same abstention as a ``partial`` with no evidenced claim:
+#    ``justified_abstention`` when it names a gap, else ``wrong`` (``evidence_missing``),
+#    never ``answerability_mismatch``. (2) An item whose card set marks its layer
+#    UNSCORED (``scoring.unscored``, ``unscored_mark``) scores ``unscored``, excluded from
+#    every pass rate, never correct or wrong (a blocked run stays blocked). (3) On a
+#    rubric item an ``answerable`` answer with an evidenced claim is ``correct`` as a
+#    ``partial`` one is; an ``answerable`` one with none stays ``answerability_mismatch``.
+#    Value-graded items are unchanged by these three. (4) A number cited on prose (a
+#    page's ``text`` or a record's free-text field) with a ``quote`` the scorer accepts is
+#    checked as the gate checks it: only figures inside the quote count, so a figure the
+#    page prints twice with two meanings (``9900.00``) is no longer ambiguous when the
+#    quote says which (``gate``). Dev fixture outcomes unchanged (19/30: no rubric item,
+#    no unscored item).
+# 21: a rubric item's own source documents (decision
+#    devloop/DECISIONS/2026-10-28-substantive-partial.md, "Scorer /21"). (1) A claim the gate
+#    passed, citing a served record whose re-read is one of the item's
+#    ``scoring.source_documents`` (``source_digests``: an original read's ``sha256``, a
+#    capture read's ``row.content_sha256``, or the handle's own ``#sha256=``), is evidence.
+#    (2) A claim citing another card set's source document (``scoring.foreign_documents``)
+#    is never evidence, by any path. (3) A claim whose value is a person's name or an
+#    e-mail address (``person_value``) is never evidence, by any path. (4) Each score
+#    records the path each counted claim took (``evidence.paths``, ``EVIDENCE_PATHS``) and
+#    marks a correct run resting only on own-document claims (``own_document_only``); a
+#    card whose audit judged that path wrong closes it (``scoring.own_document_disabled``,
+#    ``own_document_evidence``), and ``outcome_summary`` counts the own-document-only
+#    correct runs on unaudited cards apart (``own_document_unaudited``, review only).
+#    (5) An expression input's ``quote`` pins its figure as a cited value's quote does,
+#    and a printed percent input is checked as a percent (the gate lane's expression
+#    claims, ``claim_checks.expression_inputs``). Dev fixture outcomes unchanged (19/30: no
+#    rubric item, no expression).
+# 22: the one prose screen refuses a checked value written beside another currency
+#    (``claim_checks.screen_prose``: ``1,260.50 EUR`` of a value stated in USD is
+#    ``claim_currency_mismatch``, blocking; a bare ``$`` agrees with a dollar), as the
+#    product's final reply refuses that sentence (``answer_gate.final_reply``); it was
+#    an unverified ``claim_prose_unchecked`` word.
+# 23: (1) a value in a percent unit (``percent_unit``) is held by its quote's printed
+#    percent at percent scale, as the gate reads it (``claim_checks._quote_mismatch``):
+#    ``100`` percent quoted as ``... 100% project-dedicated`` is no longer refused
+#    (``_quote_refusal``); a value in any other unit still reads ``100%`` as 1.00.
+#    (2) A card set's source documents (``scoring.source_documents``, compiled by
+#    scripts/eval_case_cards.py) also hold the byte-pinned originals the use-case catalog
+#    names for its use case (``use_case_documents``: the Ricardo maps, the procure-to-gl
+#    map), with the per-card audit guards unchanged. Rescore of the 166 latest dev card
+#    transcripts: RM-07 justified_abstention -> correct (three gate-passed claims on the
+#    PO-Delivery-Window map); RM-06 stays wrong (its audit closes the path).
+#    (3) The answer text's numbers are checked without the whole tokens it restates from
+#    the question asked (``asked_restated``: a token holding a letter and a digit, equal
+#    but for case: ``Q9``, ``MIDAS2``), as the gate's ``check_items(question=)`` reads them.
+# 24: a claim whose cited field is a file's or message's metadata (content type, file
+#    name, size, dates, title or subject, text status; ``metadata_field``) is never topic
+#    or own-document evidence, and the own-document path takes only a document's text
+#    (``document_text``: a page's ``text``, a record's free text): a content type
+#    ``application/zip`` or a file name says nothing the document states. Rescore of the
+#    166 latest dev card transcripts: the four own-document corrects resting only on a
+#    file's content type, text status or name lose their only claim (EMD-01, SP-01,
+#    EMD-09 correct -> justified_abstention: a partial naming a gap; PS-01 correct ->
+#    wrong, answerability_mismatch); two unscored items lose a text-status path; no run
+#    scores higher. (2) ``asked_restated`` keeps a question token that is a quantity
+#    glued to a unit or term (``12kg``, ``500ML``, ``NET30``, ``QTY-12``): a figure.
+SCORER_VERSION = "plx-eval-scorer/24"
+# The last segments of a record field that are file or message metadata
+# (``metadata_field``), case-folded with ``_`` and ``-`` dropped.
+METADATA_FIELD_NAMES = frozenset({
+    "mimetype", "contenttype", "name", "filename", "title", "subject", "size",
+    "sizebytes", "bytes", "length", "lastmodified", "lastmodifieddatetime", "modified",
+    "modifiedat", "createdat", "created", "createddatetime", "textstatus", "contentstatus",
+    "etag", "ctag", "extension", "path", "originalurl", "weburl", "url", "contentsha256",
+    "sha256", "sourcehashes", "lastmodifiedby", "id", "driveid"})
+# The units that make an answer value a percent (the gate's ``_PERCENT_UNITS``), and the
+# scale words a ``NUMBER`` token prints a percent with: the scorer's own reading.
+PERCENT_UNITS = frozenset({"%", "percent", "pct"})
+PERCENT_SCALES = frozenset({"%", "percent", "per cent", "pct"})
 ANSWERABILITY = ("answerable", "partial", "blocked")
 # Gate codes that make an answer value unsupported; the two *_unverified codes only say
 # no role contract grounds the field (Workbench coverage, reported, not failing).
@@ -329,10 +462,69 @@ PINNED_ORIGINAL = re.compile(r"^original://(?:sha256/([0-9a-f]{64})"
 # a byte pin itself (a proposed card's line anchor, scripts/eval_use_case_items.py).
 PINNED_SOURCES = ("evals/exposed/sources.json#", "evals/dev/cases/ao_originals_expected.json#",
                   "original://sha256/")
-# Exposed real cases (visible, dev/regression only) carry this id suffix and are
+# A case original an item rests on that is registered with no bytes anyone holds (a
+# registry ``gap`` row: an artifact known only from an invitation, a bundle never
+# supplied), named in ``oracle.derived_from`` by its registry row id
+# (scripts/eval_case_cards.py). No host can hold it, so an abstention there is
+# ``originals_not_held``, never the agent's.
+UNHELD_ORIGINAL = re.compile(r"^original://unpinned/([A-Za-z0-9_.:\-]{1,64})$")
+# A line anchor on a pinned original in ``derived_from`` (``#L12-L30``).
+_LINE_ANCHOR = re.compile(r"#L[0-9]+-L[0-9]+$")
+# Words any card's question or criterion uses about the card itself, never its topic
+# (``topic_terms``).
+TOPIC_COMMON_TERMS = frozenset({
+    "proposal", "proposed", "propose", "attribute", "attributed", "answer", "answers",
+    "rubric", "never", "criterion", "state", "states", "stated", "report", "reports",
+    "comprehension", "tracing", "question", "use-case", "named", "names", "cited", "cites",
+    "citation", "should", "would", "could", "must", "today", "there", "every", "without",
+    "against", "within", "through", "before", "after", "whose"})
+# A word on more than this share of a card set's cards names the set's shared subject
+# (its map, its systems), never one card's topic (``set_topic_terms``; decision
+# devloop/DECISIONS/2026-10-28-substantive-partial.md, "Card-specific terms").
+TOPIC_MAX_SHARE = 0.25
+# A word on the cards of more than this share of all card sets is generic (``portal``,
+# ``order``, ``review``, ``still``): it names the business, never one card's topic
+# (``generic_terms``).
+TOPIC_MAX_SET_SHARE = 1 / 3
+# A topic term is a word of 1..64 characters (``scoring.topic_terms`` of an item).
+TOPIC_TERM = re.compile(r"^[^\W_]{1,64}$")
+# Distinct card words (/17 ``card_words``) a claim with its record's title must share
+# when no pin, named original or identifier ties it (``evidenced_claims``).
+MIN_TOPIC_WORDS = 2
+# An e-mail address: removed whole from any text before its words are read, so an
+# address's local part (``giulia@...``) is never a topic word.
+_ADDRESS = re.compile(r"[\w.%+-]+@[\w-]+(?:\.[\w-]+)+")
+# A source document of a card set (``scoring.source_documents``): its bytes' SHA-256.
+_DOCUMENT = re.compile(r"^[0-9a-f]{64}$")
+# The pinned bytes a capture handle names (``#sha256=`` or ``&sha256=``; never a zip
+# member's ``member_sha256``): integrations/captured_text.py.
+_HANDLE_SHA = re.compile(r"[#&]sha256=([0-9a-f]{64})(?=&|$)")
+# A word written as a name (``Deep``, ``O'Neil``, ``Andrée``): a capital, then at least one
+# lower-case letter; ``SKU`` or ``DPO`` is no name (``person_value``).
+_NAME_TOKEN = re.compile(r"^[^\W\d_](?:[^\W\d_]|['’-](?=[^\W\d_]))*\.?$")
+# How a claim is evidence for a rubric item (``evidence_paths``), in the order tried: the
+# item's pinned original, an original the card names, a card identifier, the card's topic
+# words, the card set's own source document (scorer /21).
+EVIDENCE_PATHS = ("pin", "named_original", "identifier", "topic", "own_document")
+# Words a person's name has at most (``Giulia Sellitto``, ``Mary Ann Smith``): a value
+# of more is never read as one name.
+MAX_NAME_TOKENS = 4
+# The case prefix of a compiled card question (``In the brand-requirements use case``).
+_CARD_CASE = re.compile(r"^In the ([a-z0-9][a-z0-9-]{0,63}) use case")
+# An identifier-like token (letters and digits, at least five characters): ``REM000002495``,
+# ``F-26-1206``, ``U-18949``. A plain number never names a topic.
+_IDENT_TOKEN = re.compile(r"[^\W_](?:[\w-]*[^\W_])?")
+# Exposed real cases (builder-visible, dev/regression only) carry this id suffix and are
 # listed in their directory's exposed manifest (evals.runner.load_items enforces both).
 EXPOSED_SUFFIX = "-exposed"
-OUTCOMES = ("correct", "wrong", "blocked", "justified_abstention")
+OUTCOMES = ("correct", "wrong", "blocked", "justified_abstention", "unscored")
+# A run of an item whose card set marks its layer not scorable yet (``unscored_mark``):
+# its outcome and its exclusion reason, never correct or wrong.
+UNSCORED = "unscored"
+# How such a mark opens (scripts/eval_case_cards.py ``UNSCORED_MARK`` writes it into the
+# item's ``scoring.unscored``, at most ``MAX_UNSCORED_CHARS``).
+UNSCORED_MARK = "UNSCORED"
+MAX_UNSCORED_CHARS = 200
 READ_GAP = "citation_read_gap"
 # The gap reason of a recorded contradiction between source statements: its subject is the
 # card's own wording, so an answer gap matches it on state, the conflict reason
@@ -634,10 +826,10 @@ def calculation_problem(calc: Any, citations: Any = None) -> str | None:
             return "input"
         if not isinstance(entry, Mapping) or set(entry) - {
                 "l1_handle", "field_path", "unit", "currency", "quantity_role"} - (
-                    {"value"} if expression else set()) or \
+                    {"value", "quote"} if expression else set()) or \
                 not isinstance(entry.get("l1_handle"), str) or any(
                     not isinstance(entry.get(k, ""), str)
-                    for k in ("unit", "currency", "quantity_role")) or \
+                    for k in ("unit", "currency", "quantity_role", "quote")) or \
                 (calc["op"] != "count" and not isinstance(entry.get("field_path"), str)):
             return "input"
     return None
@@ -653,10 +845,10 @@ def _value_text(value: Any) -> str | None:
 
 
 def _quotable(cite: Mapping[str, Any]) -> bool:
-    """Whether a citation names an original's text, where the claim gate checks a text value
-    as a quote (``supported_quotes``): a page's ``text``, or a re-read text field
-    (``ORIGINAL_TEXT_FIELDS``) of an ``ORIGINAL_SCHEMES`` record. Any other field is a
-    structured value with one value, compared exactly whatever the citation quotes."""
+    """Whether a citation names an original's text (a page's ``text``, or a re-read text
+    field ``ORIGINAL_TEXT_FIELDS`` of an ``ORIGINAL_SCHEMES`` record), where a quote must
+    stand in the text unnegated (``_quote_refusal``). Any other field is a structured
+    cell, which must hold a quote verbatim."""
     from operating.claim_checks import ORIGINAL_SCHEMES, ORIGINAL_TEXT_FIELDS, PAGE_TEXT
     field = cite["field_path"]
     return field == PAGE_TEXT or (field in ORIGINAL_TEXT_FIELDS and
@@ -671,6 +863,86 @@ def _quote_holds(value: str, quote: str) -> bool:
     from operating.claim_checks import _negated, _normalised, _spans
     want, text = _normalised(value), _normalised(quote)
     return any(not _negated(want, text, at) for at in _spans(want, text))
+
+
+def _cell(view: Mapping[str, Any], field: str) -> tuple[bool, Any]:
+    """The value at ``field`` (dotted: ``row.status``, ``row.fields.x.value``) of a
+    harness re-read view; (False, None) when the view has no such path."""
+    node: Any = view
+    for part in field.split("."):
+        if not isinstance(node, Mapping) or part not in node:
+            return False, None
+        node = node[part]
+    return True, node
+
+
+def percent_unit(unit: Any) -> bool:
+    """Whether an answer value's ``unit`` is a percent (``PERCENT_UNITS``, case-folded,
+    white space collapsed): the scorer's own reading of the gate's percent unit."""
+    return isinstance(unit, str) and " ".join(unit.casefold().split()) in PERCENT_UNITS
+
+
+def _percent_token(match: re.Match[str]) -> bool:
+    """Whether a ``NUMBER`` token prints a percent (``25%``, ``25 percent``, ``25 pct``)."""
+    scale = " ".join((match.group("scale") or "").casefold().split())
+    return scale in PERCENT_SCALES
+
+
+def _quote_refusal(text: str, number: bool, quote: str, cite: Mapping[str, Any],
+                   rows: Any, percent: bool = False) -> str | None:
+    """Why a citation's ``quote`` refuses its claim, or None. The scorer's own reading of
+    the claim gate's rule (``claim_checks._quote_mismatch``), with the gate's tolerance of
+    how a value is written: the value is checked on its own (a quote never stands in for
+    it); a quote then must hold the value as written: a number as a number token of the
+    same value (``claim_checks.NUMBER``: ``1,000`` or ``1000``, ``25%`` of 0.25, ``1k``;
+    for a value in a percent unit, ``percent``, a printed percent at percent scale too:
+    ``100%`` holds the value 100 in percent, as the gate reads it; scorer /23),
+    a status word case-folded with ``_`` as a space (``partially_shipped`` in ``Partially
+    Shipped``), other text on token boundaries; never with a negator reversing it. The
+    cited record as the harness re-read it must hold the quote: an original's text
+    unnegated on token boundaries, a text cell verbatim on token boundaries, a number cell
+    only as that one number. Anything else (a record not re-read, a cell that is no text
+    or number, a path the record lacks) fails closed."""
+    from operating.claim_checks import NUMBER, _negated, _normalised, _spans, number_value, \
+        value_form
+    said = _normalised(quote)
+    view = rows(cite["l1_handle"])
+    field = cite["field_path"]
+    if number:
+        want = to_decimal(text)
+        held = want is not None and any(
+            (number_value(match) * 100 if percent and _percent_token(match)
+             else number_value(match)) == want for match in NUMBER.finditer(said))
+    elif value_form({"kind": "text", "value": text}, cite["l1_handle"],
+                    view if isinstance(view, Mapping) else None, field) == "enum":
+        folded, within = (_normalised(part).casefold().replace("_", " ")
+                          for part in (text, said))
+        held = any(not _negated(folded, within, at) for at in _spans(folded, within))
+    else:
+        held = _quote_holds(text, quote)
+    if not held:
+        return (f"the citation's quote does not hold {text} as written (on token "
+                "boundaries, without a negator reversing it)")
+    if not isinstance(view, Mapping):
+        return "the cited record was not re-read, so its quote cannot be verified"
+    exists, cell = (("text" in view), view.get("text")) if "page" in view and \
+        field == "text" else _cell(view, field)
+    if not exists:
+        return f"the cited record has no {field}, so it holds no quote"
+    if isinstance(cell, (int, float, Decimal)) and not isinstance(cell, bool):
+        whole = NUMBER.fullmatch(said)
+        if whole is None or to_decimal(cell) is None \
+                or number_value(whole) != to_decimal(cell):
+            return f"the cited {field} is a number; the quote is not that number"
+        return None
+    if not isinstance(cell, str):
+        return f"the cited {field} holds no text, so it holds no quote"
+    held_at = _spans(said, _normalised(cell))
+    if _quotable(cite):
+        held_at = [at for at in held_at if not _negated(said, _normalised(cell), at)]
+    if not held_at:
+        return f"the cited {field} does not hold the quote verbatim on token boundaries"
+    return None
 
 
 # --------------------------------------------------------------------------- the gate
@@ -696,10 +968,90 @@ def _rows(evidence: Mapping[str, Any]):
     return rows
 
 
+# A whole token of a text: letters and digits joined inside by ``-``, ``/`` or ``.``
+# (the scorer's own reading of a question's tokens, ``asked_restated``).
+_ASKED_TOKEN = re.compile(r"(?<![A-Za-z0-9])[A-Za-z0-9]+(?:[-/.][A-Za-z0-9]+)*"
+                          r"(?![A-Za-z0-9])")
+
+
+# Words that make a figure of the digits glued to them in a token (``asked_quantity``):
+# quantity labels, payment and lead-time terms, money and period words (``NET30``,
+# ``QTY-12``, ``PRICE-500``, ``DUE-30``, ``MONTHS-3``). The scorer's own term table; the
+# units are the Portal's one unit table (``ontology.units``).
+QUANTITY_TERMS = frozenset({
+    "qty", "quantity", "moq", "ctn", "ctns", "carton", "cartons", "pcs", "units", "total",
+    "tot", "gross", "wt", "weight", "count", "net", "terms", "lead", "lt", "price", "prices",
+    "amt", "amount", "cost", "costs", "fee", "fees", "charge", "rate", "subtotal", "balance",
+    "due", "eta", "etd", "day", "days", "wk", "wks", "week", "weeks", "mo", "mos", "month",
+    "months", "yr", "yrs", "year", "years", "hr", "hrs", "min", "max", "fy", "no", "nr",
+    "num", "w"})
+# A token that is one quantity glued to its unit or term: digits then letters (``12kg``,
+# ``3.5L``), or letters, an optional ``-``, then digits (``NET30``, ``QTY-12``).
+_GLUED_QUANTITY = re.compile(r"^(?:(?P<n>[0-9]+(?:\.[0-9]+)?)(?P<unit>[A-Za-z]+)"
+                             r"|(?P<term>[A-Za-z]+)-?[0-9]+(?:\.[0-9]+)?)$")
+
+
+def asked_quantity(token: str) -> bool:
+    """Whether a token is a quantity glued to a unit or term (``_GLUED_QUANTITY``): a
+    number then a unit of the Portal's unit table (``ontology.units``: canonical units,
+    their aliases), or a ``QUANTITY_TERMS`` word, a unit of two letters or more or an
+    ISO 4217 code then a number (one letter only for a term: ``W30``, never ``L9``). Such a token is a figure, never a label to restate."""
+    from ontology.units import ISO_4217, RECEIVE_ALIASES, UOM_ALIASES, UOM_CANONICAL
+    match = _GLUED_QUANTITY.match(token)
+    if match is None:
+        return False
+    units = set(UOM_CANONICAL) | set(UOM_ALIASES) | set(RECEIVE_ALIASES)
+    if match.group("unit") is not None:
+        return match.group("unit").casefold() in units
+    term = match.group("term").casefold()
+    if len(term) == 1:   # a one-letter unit (``L9``) or code (``R-1696``) names a thing
+        return term in QUANTITY_TERMS
+    return term in QUANTITY_TERMS | units or term.upper() in ISO_4217
+
+
+def asked_restated(text: str, question: Any, keep: Iterable[Any] = ()) -> str:
+    """``text`` with each whole token that holds a letter and a digit and that
+    ``question`` holds as a whole token (equal but for case) blanked, same length (a word
+    without a digit is no figure and stays, so ``PO 4521`` keeps its label): the question restated
+    (``Q9`` of "the NGen Q9 review", ``MIDAS2``, ``PO-00349``), never a figure the answer
+    asserts (scorer /23). A bare number, a number and a unit apart (``12 kg``) and a
+    token written otherwise (``Q9-10``) stay figures, and a token inside a text of
+    ``keep`` (an answer value's text, which covers its exact text whole) stays. A token
+    that is a quantity glued to its unit or term (``asked_quantity``: ``12kg``, ``NET30``,
+    ``QTY-12``) is a figure even when the question asks it, never exempt (scorer /24)."""
+    if not isinstance(question, str) or not question or not text:
+        return text
+    asked = {token.casefold() for token in _ASKED_TOKEN.findall(question)
+             if any(char.isalpha() for char in token)
+             and any(char.isdigit() for char in token) and not asked_quantity(token)}
+    if not asked:
+        return text
+    kept = [(found.start(), found.end()) for value in keep
+            if isinstance(value, str) and value
+            for found in re.finditer(re.escape(value), text)]
+    return _ASKED_TOKEN.sub(lambda match: " " * len(match.group(0))
+                            if match.group(0).casefold() in asked and not any(
+                                start <= match.start() and match.end() <= end
+                                for start, end in kept) else match.group(0), text)
+
+
+def asked_question(item: Mapping[str, Any], transcript: Mapping[str, Any]) -> str | None:
+    """The question text the run was asked (``question.text`` or the paraphrase of the
+    transcript's ``phrasing_index``), or None."""
+    question = item.get("question") if isinstance(item.get("question"), Mapping) else {}
+    texts = [question.get("text")] + list(question.get("paraphrases") or [])
+    index = transcript.get("phrasing_index") or 0
+    said = texts[index] if isinstance(index, int) and 0 <= index < len(texts) else None
+    return said if isinstance(said, str) else None
+
+
 def gate(answer: Mapping[str, Any], evidence: Mapping[str, Any],
-         contracts: Any = None, *, require_citations: bool = True) -> dict[str, Any]:
+         contracts: Any = None, *, require_citations: bool = True,
+         question: str | None = None) -> dict[str, Any]:
     """Run the claim gate over the answer: per answer value, the result of each cited
-    claim (aligned with its citations), plus the gate's own report.
+    claim (aligned with its citations), plus the gate's own report. The answer text's
+    numbers are checked without the tokens it restates from ``question``
+    (``asked_restated``).
 
     An answer value that states a value but cites nothing never reaches
     ``check_items`` as a claim, so it is added to the report here as a blocking
@@ -712,6 +1064,7 @@ def gate(answer: Mapping[str, Any], evidence: Mapping[str, Any],
         from operating.source_units import SourceUnitContracts
         contracts = SourceUnitContracts.builtin()
     items, per_value, calculations = [], {}, []
+    rows = _rows(evidence)
     for index, value in enumerate(answer.get("values") or []):
         text = _value_text(value.get("value"))
         if isinstance(value.get("calculation"), Mapping):
@@ -726,20 +1079,27 @@ def gate(answer: Mapping[str, Any], evidence: Mapping[str, Any],
         handles = [cite["l1_handle"] for cite in cites]
         raw, refused = [], {}
         for position, cite in enumerate(cites):
-            # a number keeps the number path (its form, the page's unit) and a row field the
-            # exact field-value rule: a quote is for text cited on an original's text
-            quote = None if _PLAIN_NUMBER.match(text) or not _quotable(cite) \
-                else cite.get("quote")
-            if quote is not None and not _quote_holds(text, quote):
-                refused[position] = {
-                    "value": text, "status": "failed", "code": "claim_value_mismatch",
-                    "detail": f"the citation's quote does not hold {text} on token "
-                              "boundaries without a negator reversing it"}
+            # The value is the claim, checked on its own; a quote can only refuse it,
+            # never stand in for it (``_quote_refusal``).
+            quote = cite.get("quote")
+            problem = None if quote is None else _quote_refusal(
+                text, bool(_PLAIN_NUMBER.match(text)), quote, cite, rows,
+                percent=percent_unit(value.get("unit")))
+            if problem is not None:
+                refused[position] = {"value": text, "status": "failed",
+                                     "code": "claim_value_mismatch", "detail": problem}
                 continue
-            # a quote is the claim's value: the gate checks it as a quote of the cited text
-            claim: dict[str, Any] = {"value": text if quote is None else quote,
-                                     "citation": cite["l1_handle"],
+            claim: dict[str, Any] = {"value": text, "citation": cite["l1_handle"],
                                      "field": cite["field_path"]}
+            if quote is not None and _PLAIN_NUMBER.match(text) and (
+                    cite["field_path"] == claim_checks.PAGE_TEXT
+                    or claim_checks.text_field(cite["field_path"])):
+                # A figure of prose (a page's text, a record's free text): the quote, which
+                # holds the value and is held by the cited text (``_quote_refusal`` above),
+                # pins the occurrence, as the gate pins it (only figures inside the quote
+                # count), so a figure printed twice with two meanings is not ambiguous
+                # when the quote says which one (scorer /20).
+                claim["quote"] = quote
             role = value.get("quantity_role")
             if isinstance(role, str) and role in ROLES:
                 claim["role"] = role
@@ -757,9 +1117,11 @@ def gate(answer: Mapping[str, Any], evidence: Mapping[str, Any],
                           "citations": [{"handle": handle, "status": "resolved"}
                                         for handle in dict.fromkeys(handles)],
                           "value_claims": parsed})
-    report = check_items(items, rows=_rows(evidence), contracts=contracts,
+    report = check_items(items, rows=rows, contracts=contracts,
                          calculations=calculations,
-                         outcome=str(answer.get("text") or "") or None)
+                         outcome=asked_restated(str(answer.get("text") or ""), question, [
+                             value.get("value") for value in answer.get("values") or []
+                             if isinstance(value, Mapping)]) or None)
     # The answer's text through the one prose screen, over the value claims whose value
     # checked; a role no contract grounds is dropped, so no quantity word rides on it, and
     # the value's currency (the scorer compares it to the known outcome) spans with it.
@@ -849,16 +1211,37 @@ def _calculation_claims(index: int, value: Mapping[str, Any], text: str | None,
         return entry
     raw, handles, cid = [], [], f"C{index + 1}"
     names: dict[str, Any] = {}
+    refused: dict[int, dict[str, Any]] = {}
+    rows = _rows(evidence)
     for number, given in enumerate(calc["inputs"]):
         handles.append(given["l1_handle"])
         if calc["op"] == "count":
             continue
         cell = _value_text(result["cells"][number])
-        claim = {"value": cell, "citation": given["l1_handle"], "field": given["field_path"]}
-        if given.get("unit") and not cell.endswith("%"):
+        percent = calc["op"] == "expression" and cell.endswith("%")
+        # A printed percent is checked as the gate checks an expression input
+        # (``claim_checks.expression_inputs``): the figure at percent scale, unit percent,
+        # so the cited text must print it as a percent ("15%" in "15% deposit").
+        claim = {"value": cell[:-1].strip() if percent else cell,
+                 "citation": given["l1_handle"], "field": given["field_path"]}
+        if percent:
+            claim["unit"] = "percent"
+        elif given.get("unit") and not cell.endswith("%"):
             claim["unit"] = given["unit"]   # a printed "12.5%" carries its own unit
         if given.get("quantity_role") in ROLES:
             claim["role"] = given["quantity_role"]
+        quote = given.get("quote") if calc["op"] == "expression" else None
+        if quote is not None:
+            # An expression input's quote pins its figure as a cited value's quote does
+            # (``gate``): it must hold the figure and be held by the cited text, and only
+            # figures inside it count, so a figure printed twice is not ambiguous.
+            shown = format(result["inputs"][number][1], "f") if percent else claim["value"]
+            problem = _quote_refusal(shown, True, quote, given, rows)
+            if problem is not None:
+                refused[len(raw) + len(refused)] = {"value": cell, "status": "failed",
+                                     "code": "claim_value_mismatch", "detail": problem}
+                continue
+            claim["quote"] = quote
         raw.append(claim)
         names[f"x{number}"] = {"kind": "citation", "citation": {"handle": given["l1_handle"]},
                                "field": given["field_path"],
@@ -897,7 +1280,7 @@ def _calculation_claims(index: int, value: Mapping[str, Any], text: str | None,
                       "citations": [{"handle": handle, "status": "resolved"}
                                     for handle in dict.fromkeys(handles)],
                       "value_claims": claims})
-    return {**entry, "claims": None,
+    return {**entry, "claims": None, "refused": refused,
             "claim_items": [(item_id, len(claims)) for item_id, claims in zip(ids, parsed)]}
 
 
@@ -1125,7 +1508,7 @@ def resolves_to_pin(read: Any, pin: str) -> bool:
 
 
 def partition_of(item: Mapping[str, Any]) -> str:
-    """``held_out``, ``exposed`` (visible real case) or ``dev`` (synthetic)."""
+    """``held_out``, ``exposed`` (builder-visible real case) or ``dev`` (synthetic)."""
     if item.get("split") == "held_out":
         return "held_out"
     return "exposed" if str(item.get("id", "")).endswith(EXPOSED_SUFFIX) else "dev"
@@ -1143,6 +1526,356 @@ def abstained(answer: Mapping[str, Any] | None) -> bool:
     return answer.get("answerability") == "blocked" or not any(
         value.get("value") is not None for value in answer.get("values") or []
         if isinstance(value, Mapping))
+
+
+def unscored_mark(item: Mapping[str, Any]) -> str | None:
+    """The item's ``scoring.unscored`` mark (its card set marks the layer not scorable
+    yet: a text opening with ``UNSCORED_MARK``), or None for a scored item. Fail closed:
+    any other value is ``ScoreError("unscored_mark_invalid")``, never a scored run."""
+    scoring = item.get("scoring") or {}
+    if "unscored" not in scoring:
+        return None
+    mark = scoring["unscored"]
+    if not isinstance(mark, str) or not mark.startswith(UNSCORED_MARK) \
+            or len(mark) > MAX_UNSCORED_CHARS:
+        raise ScoreError("unscored_mark_invalid")
+    return mark
+
+
+def _passed_claims(checked: Mapping[int, Mapping[str, Any]]) -> int:
+    """How many claims of the answer's values the claim gate passed (``_claim_ok``)."""
+    return sum(1 for entry in checked.values() for claim in entry.get("claims") or []
+               if isinstance(claim, Mapping) and _claim_ok(claim))
+
+
+def rubric_item(item: Mapping[str, Any]) -> bool:
+    """An item graded by a rubric, never by values: known outcome ``partial`` with no
+    expected value and no expected gap (a proposal card, scripts/eval_case_cards.py). Its
+    ``partial`` label alone says nothing about the answer (``evidenced_claims``)."""
+    outcome = item.get("known_outcome") or {}
+    return (outcome.get("answerability") == "partial" and not outcome.get("values")
+            and not outcome.get("gaps"))
+
+
+def _identifiers(text: Any) -> set[str]:
+    """Identifier-like tokens of ``text`` (folded): five characters or more, with a letter
+    and a digit (``REM000002495``, ``F-26-1206``); a plain number or word is none."""
+    return {token for token in _IDENT_TOKEN.findall(_fold(text)) if len(token) >= 5
+            and any(c.isdigit() for c in token) and any(c.isalpha() for c in token)}
+
+
+def _card_text(question: Any, criterion: Any) -> tuple[str, str]:
+    """(prefix, body) of a compiled card: the question's set prefix (``In the <case> use
+    case[, for <record>]``, ``In '<document>' (Draft 8)``: the text before its first
+    ``: ``), and the question after it with the label's criterion."""
+    question = str(question or "")
+    prefix, sep, rest = question.partition(": ")
+    if not sep:
+        prefix, rest = "", question
+    return prefix, f"{rest} {criterion or ''}"
+
+
+def _words(text: Any) -> set[str]:
+    """``_subject_terms`` of ``text`` with every e-mail address removed first."""
+    return _subject_terms(_ADDRESS.sub(" ", str(text or "")))
+
+
+def person_names(owners: Iterable[Any], texts: Iterable[Any] = ()) -> frozenset[str]:
+    """The words (``_subject_terms``) of people's names, from committed data only: the
+    words of each ``owners`` name (the case-originals registry's owners), and in
+    ``texts`` (the card sets) a capitalised word written next to one of them (``Giulia
+    Sellitto``, ``Allison Tam``): a surname or first name of a known person."""
+    known = {word for owner in owners for word in _words(owner)}
+    names = set(known)
+    for text in texts:
+        for match in re.finditer(r"\b([A-Z][^\W\d_]+) ([A-Z][^\W\d_]+)\b",
+                                 _ADDRESS.sub(" ", str(text or ""))):
+            first, last = (_words(match.group(n)) for n in (1, 2))
+            if first & known or last & known:
+                names |= first | last
+    return frozenset(names)
+
+
+def _names(item: Mapping[str, Any]) -> frozenset[str]:
+    terms = (item.get("scoring") or {}).get("topic_names") or []
+    return frozenset(t for t in terms if isinstance(t, str) and TOPIC_TERM.match(t))
+
+
+def card_words(item: Mapping[str, Any], *, with_case: bool = False) -> frozenset[str]:
+    """The /17 words of a rubric item: the distinctive words of its question and its
+    label's criterion, minus the case prefix's words (unless ``with_case``: a record's
+    title may name the case), the words any card uses about itself
+    (``TOPIC_COMMON_TERMS``) and people's names (``scoring.topic_names``)."""
+    question = str((item.get("question") or {}).get("text") or "")
+    case = _CARD_CASE.match(question)
+    common = _subject_terms(case.group(1)) if case and not with_case else set()
+    return frozenset(_words(f"{question} {_criterion(item)}") - common
+                     - TOPIC_COMMON_TERMS - _names(item))
+
+
+def _criterion(item: Mapping[str, Any]) -> str:
+    note = str((item.get("label") or {}).get("note") or "")
+    return note.split("Criterion:", 1)[1] if "Criterion:" in note else ""
+
+
+def card_identifiers(item: Mapping[str, Any]) -> frozenset[str]:
+    """The identifiers (``_identifiers``) a card's question, prefix included, and its
+    criterion name: ``REM000002495``, ``TASK-2627``."""
+    question = str((item.get("question") or {}).get("text") or "")
+    return frozenset(_identifiers(f"{question} {_criterion(item)}"))
+
+
+def generic_terms(sets: Sequence[Sequence[tuple[Any, Any]]]) -> frozenset[str]:
+    """The words (``_subject_terms`` of question and criterion) on the cards of more than
+    ``TOPIC_MAX_SET_SHARE`` of ``sets`` (each set a list of ``(question, criterion)``):
+    the business's common words, never one card's topic."""
+    counts: dict[str, int] = {}
+    for cards in sets:
+        seen: set[str] = set()
+        for question, criterion in cards:
+            seen |= _subject_terms(f"{question} {criterion}")
+        for word in seen:
+            counts[word] = counts.get(word, 0) + 1
+    limit = TOPIC_MAX_SET_SHARE * len(sets)
+    return frozenset(word for word, count in counts.items() if count > limit)
+
+
+def set_topic_terms(cards: Sequence[tuple[Any, Any]], title: str = "",
+                    generic: Iterable[str] = (), names: Iterable[str] = ()
+                    ) -> list[list[str]]:
+    """Per card of one card set (``(question, criterion)`` each, the whole set): the
+    words that are that card's own topic, sorted. A word counts (``_subject_terms`` of the
+    question body and criterion) only when it is not a word of the set's title (``title``:
+    the case and batch names) or of any card's question prefix, not a word any card uses
+    about itself (``TOPIC_COMMON_TERMS``), not a generic word (``generic``, from
+    ``generic_terms``), and on at most ``TOPIC_MAX_SHARE`` of the set's cards (a word on
+    more is the set's shared subject: ``order`` on an order map's cards). The compiler
+    stores them as the item's ``scoring.topic_terms``."""
+    texts = [_card_text(question, criterion) for question, criterion in cards]
+    common = (set(_subject_terms(title)) | set(TOPIC_COMMON_TERMS) | set(generic)
+              | set(names))
+    for prefix, _ in texts:
+        common |= _subject_terms(prefix)
+    words = [_words(body) - common for _, body in texts]
+    frequency: dict[str, int] = {}
+    for terms in words:
+        for term in terms:
+            frequency[term] = frequency.get(term, 0) + 1
+    limit = TOPIC_MAX_SHARE * len(words)
+    return [sorted(t for t in terms if frequency[t] <= limit and TOPIC_TERM.match(t))
+            for terms in words]
+
+
+def topic_terms(item: Mapping[str, Any]) -> frozenset[str]:
+    """The card-specific words of a rubric item: its ``scoring.topic_terms`` (written by
+    the card compiler, ``set_topic_terms``), each a word (``TOPIC_TERM``). An item without
+    them has no topic word (fail closed: only a pin, a named original or an identifier
+    ties a claim to it)."""
+    terms = (item.get("scoring") or {}).get("topic_terms") or []
+    return frozenset(t for t in terms if isinstance(t, str) and TOPIC_TERM.match(t)) \
+        - _names(item)
+
+
+def _record_title(read: Any) -> str:
+    """The title the harness re-read of a cited record carries (a file's ``name``, a
+    message's ``subject``, a row's ``title`` or ``name``), else empty."""
+    row = read.get("row") if isinstance(read, Mapping) else None
+    if not isinstance(row, Mapping):
+        return ""
+    return " ".join(str(row[key])[:300] for key in ("name", "title", "subject")
+                    if isinstance(row.get(key), str))
+
+
+def _item_pin_refs(item: Mapping[str, Any]) -> set[str]:
+    """The pinned originals the item's oracle names in ``derived_from`` (anchor dropped)."""
+    refs = (_LINE_ANCHOR.sub("", str(ref))
+            for ref in (item.get("oracle") or {}).get("derived_from") or [])
+    return {ref for ref in refs if PINNED_ORIGINAL.match(ref)}
+
+
+def unheld_originals(item: Mapping[str, Any]) -> list[str]:
+    """The registry rows the item rests on that no one holds bytes of
+    (``UNHELD_ORIGINAL``), sorted."""
+    return sorted({match.group(1) for ref in (item.get("oracle") or {}).get("derived_from")
+                   or [] if (match := UNHELD_ORIGINAL.match(str(ref)))})
+
+
+def _documents(item: Mapping[str, Any], key: str) -> frozenset[str]:
+    """The SHA-256 digests the item's ``scoring.<key>`` lists (``source_documents``,
+    ``foreign_documents``: scripts/eval_case_cards.py); anything else in the list is
+    ignored (fail closed: no digest, no match)."""
+    listed = (item.get("scoring") or {}).get(key) or []
+    return frozenset(d for d in listed if isinstance(d, str) and _DOCUMENT.match(d)) \
+        if isinstance(listed, list) else frozenset()
+
+
+def source_digests(handle: str, read: Any, *, verified: bool = True) -> set[str]:
+    """The byte digests a cited read is a reading of: an original read's ``sha256``, a
+    capture read's ``row.content_sha256`` and the pinned bytes the handle itself names
+    (``#sha256=``: a zip member's container). ``verified``: only when the harness re-read
+    succeeded (``ok`` true); else every digest it names (a refusing guard reads more)."""
+    if verified and not (isinstance(read, Mapping) and read.get("ok") is True):
+        return set()
+    found = set(_HANDLE_SHA.findall(handle))
+    if isinstance(read, Mapping):
+        row = read.get("row")
+        for digest in (read.get("sha256"),
+                       row.get("content_sha256") if isinstance(row, Mapping) else None):
+            if isinstance(digest, str) and _DOCUMENT.match(digest):
+                found.add(digest)
+    return found
+
+
+def person_value(value: Any, item: Mapping[str, Any]) -> bool:
+    """Whether a claim's value is a person: it holds an e-mail address; its words are all
+    people's names (``scoring.topic_names``, the /19 rule); or it is written as a name
+    (two to ``MAX_NAME_TOKENS`` capitalised words, ``_NAME_TOKEN``) with no word of the
+    card (``card_words`` with the case: a role the card asks for, ``Account Manager``, is
+    a card word and no name)."""
+    text = str(value if value is not None else "")
+    if _ADDRESS.search(text):
+        return True
+    words = _words(text)
+    if words and words <= _names(item):
+        return True
+    tokens = text.split()
+    return (2 <= len(tokens) <= MAX_NAME_TOKENS
+            and all(_NAME_TOKEN.match(t) and t[0].isupper() and any(c.islower() for c in t)
+                    for t in tokens)
+            and not words & card_words(item, with_case=True))
+
+
+def metadata_field(field: Any) -> bool:
+    """Whether a claim's cited ``field`` is a record's file or message metadata
+    (``METADATA_FIELD_NAMES``: its last segment, case-folded, ``_`` and ``-`` dropped), or
+    no field at all (fail closed): what the record is, never what its document says."""
+    if not isinstance(field, str) or not field.strip():
+        return True
+    last = field.rsplit(".", 1)[-1].casefold().replace("_", "").replace("-", "")
+    return last in METADATA_FIELD_NAMES
+
+
+def document_text(field: Any) -> bool:
+    """Whether a claim's cited ``field`` is a document's text: an original page's ``text``
+    or a record's free text (``claim_checks.text_field``), the only fields whose quote
+    says what the document states (the own-document path, scorer /24)."""
+    from operating import claim_checks
+    return isinstance(field, str) and (field == claim_checks.PAGE_TEXT
+                                       or claim_checks.text_field(field))
+
+
+def own_document_evidence(item: Mapping[str, Any]) -> bool:
+    """Whether the own-document path is open for the item: not when its card's audit
+    closed it (``scoring.own_document_disabled``, any value: fail closed)."""
+    return "own_document_disabled" not in (item.get("scoring") or {})
+
+
+def evidenced_claims(item: Mapping[str, Any], transcript: Mapping[str, Any],
+                     answer: Mapping[str, Any] | None,
+                     checked: Mapping[int, Mapping[str, Any]]) -> int:
+    """How many claims of the answer are evidence for a rubric item
+    (``evidence_paths``)."""
+    return len(evidence_paths(item, transcript, answer, checked))
+
+
+def evidence_paths(item: Mapping[str, Any], transcript: Mapping[str, Any],
+                   answer: Mapping[str, Any] | None,
+                   checked: Mapping[int, Mapping[str, Any]]) -> list[str]:
+    """The path of each counted claim (``evidence_claims``)."""
+    return [path for path, _quote in evidence_claims(item, transcript, answer, checked)]
+
+
+def audit_digest(text: Any) -> str:
+    """The SHA-256 of a claim's audited text as an audit records it
+    (``scoring.own_document_audited.quotes``): NFKC, white space runs as one space,
+    case-folded, so the same quote re-wrapped or re-cased is the same claim."""
+    folded = " ".join(unicodedata.normalize("NFKC", str(text)).split()).casefold()
+    return hashlib.sha256(folded.encode("utf-8")).hexdigest()
+
+
+def evidence_claims(item: Mapping[str, Any], transcript: Mapping[str, Any],
+                    answer: Mapping[str, Any] | None,
+                    checked: Mapping[int, Mapping[str, Any]]) -> list[tuple[str, str]]:
+    """(path, ``audit_digest`` of its audited text: the citation's quote, else the claim's
+    value) of each counted claim. The path (``EVIDENCE_PATHS``, the first that holds, in that order) by which each
+    claim of the answer is evidence for a rubric item, one per counted claim in answer
+    order. How many claims of the answer are evidence for a rubric item: a claim the claim
+    gate passed (``_claim_ok``) on a stated value, citing a record a tool result of this
+    run returned (``served_handles``: the handle itself, or the record it is a page of),
+    and on the card's topic: its cited original re-read as one the item pins or one the
+    item names by id; an identifier of the card (``card_identifiers``) in its value, its
+    quote, its handle or the cited record's title (``_record_title``); or both at least
+    ``MIN_TOPIC_WORDS`` distinct card words (``card_words``) in its value and quote, or
+    in that title, and one card-specific word (``topic_terms``: not the case's or set's
+    title words, not on more than ``TOPIC_MAX_SHARE`` of the set's cards, not generic)
+    in its value or quote itself. A generic word (``order``, ``portal``), a title naming
+    the case, a person's name or an e-mail address ties a claim to no card. A claim on
+    the card set's own source document (scorer /21: its cited read is one of the item's
+    ``scoring.source_documents``, ``source_digests``) is evidence. A claim on another
+    card set's source document (``scoring.foreign_documents``: a map of another case read
+    as this one) is no evidence, however well it passes the gate or shares the card's
+    words; nor is a claim whose value is a person (``person_value``). A card whose audit
+    closed the own-document path (``own_document_evidence``) keeps the others.
+    Fail-closed: a refused, unserved or calculated result claim counts nothing."""
+    if answer is None:
+        return []
+    served = served_handles(transcript)
+    records = {handle.split("#", 1)[0] for handle in served}
+    evidence = transcript.get("evidence") or {}
+    own = _documents(item, "source_documents")
+    foreign = _documents(item, "foreign_documents") - own
+    own_open = own_document_evidence(item)
+    pins = _item_pin_refs(item)
+    named = {str(ref) for ref in (item.get("oracle") or {}).get("derived_from") or []}
+    topic = topic_terms(item)
+    words17, titled = card_words(item), card_words(item, with_case=True)
+    idents = card_identifiers(item)
+    paths: list[str] = []
+    for index, value in enumerate(answer.get("values") or []):
+        if not isinstance(value, Mapping) or value.get("value") is None:
+            continue
+        cites = list(value.get("citations") or [])
+        calc = value.get("calculation")
+        if isinstance(calc, Mapping):
+            cites += list(calc.get("inputs") or [])
+        for claim in (checked.get(index) or {}).get("claims") or []:
+            handle = claim.get("citation") if isinstance(claim, Mapping) else None
+            if not isinstance(handle, str) or not _claim_ok(claim) or (
+                    handle not in served and handle.split("#", 1)[0] not in records):
+                continue
+            read = evidence.get(handle)
+            if source_digests(handle, read, verified=False) & foreign \
+                    or person_value(claim.get("value"), item):
+                continue
+            quotes = [str(cite.get("quote") or "") for cite in cites
+                      if isinstance(cite, Mapping) and cite.get("l1_handle") == handle]
+            text = " ".join([str(claim.get("value") or ""), *quotes])
+            record = handle.split("#", 1)[0]
+            title = _record_title(read)
+            said, titled_words = _words(text), _words(title)
+            shared = (said & words17) | (titled_words & titled)
+            ties = (("pin", lambda: any(resolves_to_pin(read, pin) for pin in pins)),
+                    ("named_original",
+                     lambda: record.startswith("original://") and record[11:] in named),
+                    ("identifier", lambda: bool(_identifiers(_ADDRESS.sub(
+                        " ", f"{text} {record} {title}")) & idents)),
+                    ("topic", lambda: len(shared) >= MIN_TOPIC_WORDS and bool(said & topic)),
+                    ("own_document",
+                     lambda: own_open and bool(source_digests(handle, read) & own)))
+            # A file's metadata (its content type, name, size, dates, text status) says
+            # nothing the document states: never a topic or own-document tie (scorer /24).
+            # The own-document path takes only the document's text (``document_text``).
+            field = claim.get("field")
+            if metadata_field(field):
+                ties = ties[:3]
+            elif not document_text(field):
+                ties = ties[:4]
+            path = next((name for name, holds in ties if holds()), None)
+            if path:
+                said_as = next((q for q in quotes if q.strip()), None)
+                paths.append((path, audit_digest(said_as if said_as is not None
+                                                 else claim.get("value"))))
+    return paths
 
 
 def uncited_expected(item: Mapping[str, Any]) -> list[str]:
@@ -1397,7 +2130,7 @@ def _contradictory(given: Sequence[Mapping[str, Any]],
     """Two answer gaps concern the same answer value in different states. A ``concerns``
     resolves to the answer value of that name (the first, folded); one naming no answer
     value concerns nothing. One value has one gap state, whatever the item expects
-    (the oracle gives one)."""
+    (directive c1ff4b736a47: the oracle gives one)."""
     value_of: dict[str, int] = {}
     for index, answer in enumerate(answers):
         if isinstance(answer.get("name"), str):
@@ -1422,7 +2155,7 @@ def _pin(item: Mapping[str, Any], transcript: Mapping[str, Any] | None
     """(generations a citation may carry, highest capture per pinned relation).
 
     With the runner's run pin (``evals.runner.make_run_pin``,
-    docs/decisions/2026-10-02-oracle-pinning.md) the pinned generation is the mirror's
+    devloop/DECISIONS/2026-10-02-oracle-pinning.md) the pinned generation is the mirror's
     and a citation of a pinned relation must name a capture at or before the pinned one
     (the version known at the pin). Without one, the item's own ``l1_generations``."""
     pin = (transcript or {}).get("run_pin")
@@ -1805,12 +2538,30 @@ def score(item: Mapping[str, Any], transcript: Mapping[str, Any], *,
     item_codes: list[str] = []
     value_results: list[dict[str, Any]] = []
     checked: dict[str, Any] = {"values": {}, "report": None}
+    unscored = unscored_mark(item)
+    # A rubric item (a proposal card) expects ``partial`` and no value: its label decides
+    # nothing (scorer /20). Only an evidenced claim makes it correct, whatever the label
+    # (``partial`` or ``answerable``); an answer that commits to nothing (``partial`` with
+    # no evidenced claim, or ``blocked`` with no claim the gate passed) is an abstention,
+    # justified when it names a gap, whatever its label.
+    rubric = rubric_item(item)
+    evidenced = 0
+    paths: list[str] = []
+    counted: list[tuple[str, str]] = []
+    label = (answer or {}).get("answerability")
     if answer is None:
         item_codes.append("no_answer")
     else:
         checked = gate(answer, transcript.get("evidence") or {}, contracts,
-                       require_citations=scoring.get("citations_required", True))
-        if answer.get("answerability") != outcome["answerability"]:
+                       require_citations=scoring.get("citations_required", True),
+                       question=asked_question(item, transcript))
+        if rubric:
+            counted = evidence_claims(item, transcript, answer, checked["values"])
+            paths = [path for path, _quote in counted]
+            evidenced = len(paths)
+        if label != outcome["answerability"] and not (rubric and (
+                (label == "answerable" and evidenced)
+                or (label == "blocked" and not _passed_claims(checked["values"])))):
             item_codes.append("answerability_mismatch")
     answers = list((answer or {}).get("values") or [])
     pin = _pin(item, transcript)
@@ -1911,15 +2662,31 @@ def score(item: Mapping[str, Any], transcript: Mapping[str, Any], *,
     passed = not item_codes and not violations and values_ok
     usage = dict(transcript.get("usage") or {})
     abstain = abstained(answer)
+    # A rubric item's label alone would pass it: a label-only answer (``partial`` with no
+    # evidenced claim, or ``blocked`` with no claim the gate passed: either way it
+    # commits to nothing) that passed otherwise is an abstention, justified when it names
+    # a gap.
+    label_only = rubric and answer is not None and not evidenced and (
+        label == "partial" or (label == "blocked" and not _passed_claims(checked["values"])))
+    if label_only and passed:
+        abstain = True
+        if contradictory or not any(isinstance(gap, Mapping) and str(
+                gap.get("subject") or "").strip() for gap in given):
+            item_codes.append("evidence_missing")
+            passed = False
     session_failed = answer is None and bool(
         usage.get("is_error") or usage.get("exit_code") not in (None, 0))
     # The host's state lacked pinned originals the item cites (evals.runner
-    # originals_held): an abstention there is the state's gap, not the agent's; a stated
-    # answer is still scored, so a confident unsupported answer stays wrong.
-    unheld = abstain and not passed and \
+    # originals_held), or the item rests on an original no one holds (``UNHELD_ORIGINAL``):
+    # a failed abstention there (a label-only answer included) is the state's gap, not the
+    # agent's; a stated answer is still scored, so a confident unsupported answer stays
+    # wrong, and a justified abstention stays justified.
+    unheld = abstain and not passed and (
         ((transcript.get("originals") or {}).get("missing") or 0) > 0
+        or bool(unheld_originals(item)))
     if unheld:
         item_codes.append("originals_not_held")
+        passed = False
     outcome_name = ("blocked" if drift or session_failed or unheld else
                     ("justified_abstention" if abstain else "correct") if passed else "wrong")
     gate_codes = {f["code"] for f in gate_failures} | {"claim_malformed" for _ in malformed}
@@ -1928,6 +2695,12 @@ def score(item: Mapping[str, Any], transcript: Mapping[str, Any], *,
             gate_codes=gate_codes, values=value_results):
         item_codes.append(READ_GAP)
         outcome_name = "blocked"
+    excluded = "pin_drift" if drift else None
+    if unscored is not None and outcome_name != "blocked":
+        # The card set marks this item's layer not scorable yet (``unscored_mark``): the
+        # run is ``unscored``, never correct or wrong, and out of every pass rate; a
+        # blocked run stays blocked (it says nothing about the agent either way).
+        outcome_name, passed, excluded = UNSCORED, False, UNSCORED
     claims = report["counts"]["claims"] if report else 0
     measure = measuring.of_run(transcript, answer, outcome=outcome_name, abstained=abstain,
                                gate_failures=gate_failures)
@@ -1939,7 +2712,7 @@ def score(item: Mapping[str, Any], transcript: Mapping[str, Any], *,
         "run_index": transcript.get("run_index"),
         "phrasing_index": transcript.get("phrasing_index"),
         "transcript_sha256": transcript.get("transcript_sha256"),
-        "passed": passed, "excluded": "pin_drift" if drift else None,
+        "passed": passed, "excluded": excluded,
         "outcome": outcome_name, "abstained": abstain,
         "codes": sorted(set(item_codes)), "violations": sorted(violations),
         "answer_error": answer_error, "values": value_results, "gaps": gap_results,
@@ -1954,6 +2727,16 @@ def score(item: Mapping[str, Any], transcript: Mapping[str, Any], *,
         and not any("invented_absent_value" in r["codes"] or "absence_not_reported" in r["codes"]
                     for r in value_results),
         "leaks": leaks, "action_calls": len(actions),
+        "evidence": {"rubric": rubric, "evidenced_claims": evidenced, "label_only": label_only,
+                     "paths": paths,
+                     # A correct outcome that rests only on own-document claims (scorer
+                     # /21): every such credit is audited claim by claim
+                     # (``own_document_audited``; ``own_document_unaudited``).
+                     "own_document_only": outcome_name == "correct" and bool(paths)
+                     and all(path == "own_document" for path in paths),
+                     "own_document_quotes": [quote for path, quote in counted
+                                             if path == "own_document"],
+                     "own_document_audited": own_document_audited(item, counted)},
         "metrics": {"tool_calls": tool_calls,
                     "input_tokens": usage.get("input_tokens"),
                     "output_tokens": usage.get("output_tokens"),
@@ -1980,6 +2763,7 @@ def redact(result: Mapping[str, Any]) -> dict[str, Any]:
             "claim_checks": {key: result["claim_checks"][key]
                              for key in ("passed", "claims", "failed", "unverified")},
             "gap_honesty": result["gap_honesty"], "leaks": result["leaks"],
+            "evidence": dict(result.get("evidence") or {}),
             "metrics": dict(result["metrics"]), "measure": result.get("measure"),
             "score_sha256": result["score_sha256"]}
 
@@ -2014,8 +2798,11 @@ def outcome_of(result: Mapping[str, Any]) -> str:
 def confident_unsupported(result: Mapping[str, Any]) -> bool:
     """A wrong answer stated without abstaining that the claim gate refused (an
     ``unsupported_assertion`` code or a failed claim check): the numerator of
-    ``confident_unsupported_rate``."""
-    return outcome_of(result) == "wrong" and not result.get("abstained") and (
+    ``confident_unsupported_rate``. An ``unscored`` run's stated answer the gate refused
+    is one too (no gold decides it, but an unsupported claim is unsupported whatever the
+    card): a scoreboard row counts it; ``outcome_summary`` leaves it out of its rate,
+    whose denominator holds no unscored run."""
+    return outcome_of(result) in ("wrong", UNSCORED) and not result.get("abstained") and (
         "unsupported_assertion" in (result.get("codes") or ())
         or bool((result.get("claim_checks") or {}).get("failed")))
 
@@ -2035,6 +2822,46 @@ def answer_rates(*, runs: int, answered: int, correct: int,
             "confident_unsupported_rate": _rate(unsupported, answered)}
 
 
+def own_document_audited(item: Mapping[str, Any],
+                         counted: Sequence[tuple[str, str]]) -> bool:
+    """Whether an audit judged every own-document claim of a run (``evidence_claims``):
+    the card's ``scoring.own_document_audited`` lists each one's ``audit_digest``, under a
+    real ISO date. A new claim on an audited card, a malformed audit or none: False."""
+    audit = (item.get("scoring") or {}).get("own_document_audited")
+    if not isinstance(audit, Mapping) or not audit_date(audit.get("date")) \
+            or not isinstance(audit.get("quotes"), list):
+        return False
+    known = {q for q in audit["quotes"] if isinstance(q, str) and _DOCUMENT.match(q)}
+    own = [quote for path, quote in counted if path == "own_document"]
+    return bool(own) and all(quote in known for quote in own)
+
+
+def audit_date(value: Any) -> bool:
+    """Whether ``value`` is a real ISO date (``2026-10-28``; never ``2026-02-30``)."""
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
+        return False
+    try:
+        _date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def own_document_only(result: Mapping[str, Any]) -> bool:
+    """A correct run whose every evidenced claim counted only through the card set's own
+    source document (scorer /21, ``evidence.own_document_only``)."""
+    return outcome_of(result) == "correct" and bool(
+        (result.get("evidence") or {}).get("own_document_only"))
+
+
+def own_document_unaudited(result: Mapping[str, Any]) -> bool:
+    """An ``own_document_only`` run whose own-document claims no audit judged (a claim
+    whose ``audit_digest`` the card's ``own_document_audited.quotes`` does not list, or a
+    card with no valid audit): still correct, counted apart for review."""
+    return own_document_only(result) and not (result.get("evidence") or {}).get(
+        "own_document_audited")
+
+
 def outcome_summary(scores: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """Correct / wrong / blocked / justified-abstention counts, with the B1 rates of
     ``answer_rates``: coverage (answered over all runs) beside accuracy (correct over
@@ -2042,23 +2869,38 @@ def outcome_summary(scores: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     accuracy None; an unjustified abstention is wrong and never answered. The blocked
     runs are split by cause: ``read_gap`` (the capture tier's gap, out of every rate and
     counted by ``blocked_share``) and ``other_blocked`` (pin drift, a failed agent session,
-    originals not held)."""
+    originals not held). ``correct_with_evidence`` counts the correct runs that are not
+    ``label_only`` (equal to ``correct`` since scorer /17); ``label_only`` counts, as a
+    diagnostic, the rubric runs answered ``partial`` with no evidenced claim (or
+    ``blocked`` with no claim the gate passed, scorer /20), whatever their outcome.
+    ``unscored`` counts the runs of items their card set marks not scorable yet: neither
+    answered nor abstained, in no rate (the rates' denominator leaves them out).
+    ``own_document_only`` counts the correct runs resting only on own-document claims and
+    ``own_document_unaudited`` those of them on a card no audit judged (review only)."""
     counts = dict.fromkeys(OUTCOMES, 0)
-    unjustified = read_gap = unsupported = 0
+    unjustified = read_gap = unsupported = label_only = with_evidence = 0
+    own_only = own_unaudited = 0
     for result in scores:
         name = outcome_of(result)
         counts[name] += 1
+        own_only += own_document_only(result)
+        own_unaudited += own_document_unaudited(result)
+        partial_only = bool((result.get("evidence") or {}).get("label_only"))
+        label_only += partial_only
+        with_evidence += name == "correct" and not partial_only
         unjustified += name == "wrong" and bool(result.get("abstained"))
         read_gap += name == "blocked" and excluded_reason(result) == READ_GAP
-        unsupported += confident_unsupported(result)
+        unsupported += name != UNSCORED and confident_unsupported(result)
     answered = counts["correct"] + counts["wrong"] - unjustified
+    scored = len(scores) - counts[UNSCORED]
     return {"runs": len(scores), **counts, "read_gap": read_gap,
             "other_blocked": counts["blocked"] - read_gap, "unjustified_abstention": unjustified,
             "answered": answered, "confident_unsupported": unsupported,
-            **answer_rates(runs=len(scores), answered=answered, correct=counts["correct"],
+            "correct_with_evidence": with_evidence, "label_only": label_only,
+            "own_document_only": own_only, "own_document_unaudited": own_unaudited,
+            **answer_rates(runs=scored, answered=answered, correct=counts["correct"],
                            unsupported=unsupported),
-            "abstention_rate": _rate(counts["justified_abstention"] + unjustified,
-                                     len(scores))}
+            "abstention_rate": _rate(counts["justified_abstention"] + unjustified, scored)}
 
 
 def blocked_share(read_gap: int, runs: int) -> dict[str, Any]:
@@ -2074,7 +2916,7 @@ def fail_reasons(read_gap: int, runs: int) -> list[str]:
     baseline, the agent runner, the real-agent and Ask checks): ``blocked_tripwire``,
     named as the flag ``blocked_share`` sets, when its read-gap runs trip it, so a capture
     lag never silently shrinks the measured set
-    (docs/decisions/2026-10-08-dev-baseline-blocked-share-exit.md)."""
+    (devloop/DECISIONS/2026-10-08-dev-baseline-blocked-share-exit.md)."""
     return [BLOCKED_TRIPWIRE] if blocked_share(read_gap, runs)["blocked_tripwire"] else []
 
 
@@ -2167,8 +3009,16 @@ def aggregate(scores: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 
 __all__ = ["ANSWER_FORMAT", "BLOCKED_TRIPWIRE", "DRIFT_TRIPWIRE_SHARE", "EXPOSED_SUFFIX",
            "OUTCOMES", "READ_GAP", "READ_GAP_VALUE_CODES", "SCORE_FORMAT", "TRANSCRIPT_FORMAT",
+           "UNSCORED", "UNSCORED_MARK", "unscored_mark",
            "ScoreError", "abstained", "aggregate", "action_calls", "answer_problems",
            "answer_rates", "blocked_share", "confident_unsupported", "evaluate_expression",
+           "card_identifiers", "card_words", "evidence_paths", "evidenced_claims",
+           "generic_terms", "own_document_evidence", "own_document_only",
+           "own_document_unaudited", "own_document_audited", "audit_digest",
+           "audit_date", "evidence_claims",
+           "person_names", "person_value", "rubric_item", "source_digests",
+           "set_topic_terms",
+           "topic_terms", "unheld_originals",
            "excluded_reason", "fail_reasons", "gate",
            "handle_keys", "outcome_of", "outcome_summary", "parse_answer", "partition_label",
            "partition_of", "read_gap", "recompute", "record_identity", "record_revision",

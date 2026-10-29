@@ -46,7 +46,7 @@ provider, as ``ClaudeCodePlanner``'s do. The one HTTP sender is ``post_messages`
 ``API_URL`` only, redirects refused (``scripts/check_http_egress.py`` allowlists it).
 
 Evidence: injected-transport (operating/tests/test_messages_planner.py, a fake transport);
-live-unverified until ``verify/live-checks/eval.ask_agent_messages.json`` has a result.
+live-unverified until ``devloop/live-checks/eval.ask_agent_messages.json`` has a result.
 """
 
 from __future__ import annotations
@@ -96,8 +96,10 @@ DECISION_TOOLS = {
                              "role": {"type": "string"},
                              "unit": {"type": "string"},
                              "currency": {"type": "string"},
-                             "op": {"type": "string", "enum": ["count", "sum"]},
+                             "op": {"type": "string", "enum": ["count", "sum", "expression"]},
                              "of": {"type": "array", "items": {"type": "object"}},
+                             "expression": {"type": "string"},
+                             "quote": {"type": "string"},
                              "lead": {"type": "boolean"}},
                              "required": ["id", "value"]}},
                          "text": {"type": "string"},

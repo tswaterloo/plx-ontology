@@ -1,4 +1,4 @@
-"""Session identity: no live data without a real employee.
+"""Session identity: no live data without a real employee (10-DECISION #7).
 
 Evidence label: ``isolated-fixture``. Portal user rows are Portal-shaped fixtures
 (the Prisma ``User`` fields ``rbac-adapters.ts`` loads), tickets are minted here
@@ -610,7 +610,7 @@ class ConsoleHttpTests(Fixture):
         self.assertEqual(status, 404)
 
     def test_an_employee_signed_in_with_entra_is_the_session_the_journal_records(self):
-        """A fixture-signed Entra access token (isolated-fixture; generated key, no
+        """A9: a fixture-signed Entra access token (isolated-fixture; generated key, no
         Entra, no network) opens a console session whose identity is the token's subject;
         an expired, wrong-audience, foreign-tenant, unsigned or foreign-key token is
         refused; a console without the Entra resource refuses every token."""
@@ -1251,7 +1251,7 @@ class CommittedEntraResourceTests(unittest.TestCase):
                     ("tenant unset as a string", {"tenant_id": "unset"},
                      "entra_resource_tenant_invalid"),
                     ("unknown field", {"client_secret": "x"}, "entra_resource_invalid"),
-                    ("uncited source", {"sources": {"secret": "docs/reference/permissions.md"}},
+                    ("uncited source", {"sources": {"secret": "devloop/ROADMAP.md"}},
                      "entra_resource_sources_invalid")):
                 with self.subTest(name):
                     path = Path(temp) / "resource.json"

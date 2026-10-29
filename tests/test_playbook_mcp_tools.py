@@ -357,7 +357,7 @@ class PlaybookToolsTest(CaseToolsTestCase):
         self.assertEqual(self.refusal(steward, pt.ADOPT, {"proposal_id": pid}),
                          "comparison_unscored")
         self.assertEqual(steward.outbound, [])
-        # The same incomplete read recorded before the full-case reader rule
+        # Dot c77ac53f: the same incomplete read recorded before the full-case reader rule
         # (the old runner stored pass/fail and no unscored items) is never trusted: adoption
         # refuses it, before any form, until the edit is evaluated again.
         [partial_run] = [e for e in self.records() if e["schema"] == sp.COMPARISON]

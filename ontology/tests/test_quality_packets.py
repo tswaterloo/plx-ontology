@@ -1,4 +1,4 @@
-"""Quality AO packets at the tool and evaluation boundaries.
+"""Quality AO packets at the tool and evaluation boundaries (directive P8).
 
 A scanned assembly-order packet (an image-only PDF, so its text is the capture's OCR text)
 is captured from SharePoint over the injected Graph transport of the capture tests, next
@@ -7,7 +7,7 @@ to FileMaker rows mirrored from a fixture reporting API shaped like the live AO 
 as a typed ``AssemblyOrderPacket`` lead linked to its ``AssemblyOrder``; ``plx.object``
 reports where paper and FileMaker disagree as typed conflicts; and the exposed eval item
 ``dev-F3-1001-exposed`` scores through the general path (the deterministic investigator
-over the case host and the generic tools, ``evals.score``), and the P2/P8 bundle is
+over the case host and the generic tools, ``evals.score``), and the Dot's P2/P8 bundle is
 scored field by field against the same reader (``evals.document_fields``). A person's
 confirmed document kind and Portal metadata (``operating.kind_confirmation``) project onto
 the packet's SharePointFile, where ``plx.find`` answers them, and so does a document type a
@@ -54,7 +54,7 @@ READER = Actor("plx", frozenset(PRINCIPALS))
 NO_FILES = Actor("plx", frozenset({"eval:dev-baseline"}))
 AO = 'AssemblyOrder:portal.fm_assembly_order:{"id":10718}'
 
-# The packet as its scan's OCR text reads (docs/reference/cases-and-artifacts.md 3.3).
+# The packet as its scan's OCR text reads (devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md 3.3).
 PAGES = [
     ["ASSEMBLY ORDER MO", "AO LOT#: AO-26005B   BULK LOT#: BC-26007E", "OE: OR1000151885",
      "PO:", "REQUIRED DATE:", "SIZE: 1509 EA"],
@@ -390,7 +390,7 @@ class QualityPacketTests(unittest.TestCase):
 
     def test_shop_floor_table_rows_state_produced_and_filled_cited_by_their_cells(self):
         # The shop-floor sheet states quantities per activity row under QTY (EA), with
-        # Total and Samples rows: produced is the Total row's cell,
+        # Total and Samples rows (CONTEXT/02 3.2-3.3): produced is the Total row's cell,
         # filled the Filling row's, each cited by its own cell; inspected, which the sheet
         # never names, stays not_stated, and a label the reader cannot read is no silence.
         head = "ASSEMBLY ORDER - SHOP FLOOR\n"
@@ -485,7 +485,7 @@ class QualityPacketTests(unittest.TestCase):
                     document_fields.profiles.cache_clear()
 
     def test_a_printed_shop_floor_form_reads_its_unseparated_labels_and_damage_lines(self):
-        # The printed sheet's boxes carry no ':' (live): 'Total QTY (EA)'
+        # The printed sheet's boxes carry no ':' (live gap-d1ebfd445d55): 'Total QTY (EA)'
         # and 'Samples (EA)' share one bottom line, each followed by its number; DAMAGES
         # heads lines of 'part code  qty  initial'; a task cell prints every option and
         # the worker underlines one. Values here are synthetic.
@@ -1174,7 +1174,7 @@ class QualityPacketTests(unittest.TestCase):
         packet_reads = [r for h, r in read.items() if h.startswith("sharepoint://")]
         self.assertTrue(packet_reads and all(r["sha256"] == sha256(self.bytes).hexdigest()
                                              for r in packet_reads))
-        # The same answer citing the original's
+        # Dot finding P8-AO-original-page-unit-route: the same answer citing the original's
         # shop-floor page instead of the projected fields. The gate checks a unit against the
         # one the page prints after the figure ("Filled qty: 1502 EA") and leaves it
         # unverified where none is printed ("QC retain: 1"), for the item's unit to judge.
@@ -1211,7 +1211,7 @@ class QualityPacketTests(unittest.TestCase):
                          [["value_mismatch", "claim_check_failed"]])
 
     def test_the_dots_p8_item_credits_packet_citations_to_its_pinned_original(self):
-        # dev-F7-1002-exposed (the P8 bundle) expects the paper fields by the
+        # dev-F7-1002-exposed (the Dot's P8 bundle) expects the paper fields by the
         # original's byte pin: an answer citing the projected packet scores against it.
         item = self.item(ROOT / "evals/exposed/dev-F7-1002-exposed.json")
         names = {"ao_lot": "ao_lot", "bulk_lot": "bulk_lot",
@@ -1283,7 +1283,7 @@ class DocumentClassLiveCheckTests(unittest.TestCase):
 
     def test_the_check_counts_the_class_and_resolves_every_citation_leaking_nothing(self):
         import argparse
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from ontology.tests.test_document_fields import pdf
         from operating import sharepoint_host_check as check
         from scripts import eval_document_fields_live as live
@@ -1389,7 +1389,7 @@ class DocumentClassLiveCheckTests(unittest.TestCase):
         text = json.dumps(report)
         for secret in ("AO-26005B", "BC-26007E", "1502", "P-01274", tsp.DRIVE, "s3cr3t"):
             self.assertNotIn(secret, text)
-        spec = json.loads((ROOT / "verify/live-checks/ontology.document_fields_sharepoint.json")
+        spec = json.loads((ROOT / "devloop/live-checks/ontology.document_fields_sharepoint.json")
                           .read_text(encoding="utf-8"))
         lv.validate_spec(spec, stem="ontology.document_fields_sharepoint")
         # The live expectation adds OCR (a text-layer fixture has none): everything else

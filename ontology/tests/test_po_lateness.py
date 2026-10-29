@@ -1,4 +1,4 @@
-"""PO lateness: due, promised, revised and received dates of a
+"""PO lateness (lane po-lateness-model): due, promised, revised and received dates of a
 purchase order and its lines, the verdict against the governing date with its reason
 chain, ``po_delivery_window`` for an unnamed ``plx.process`` call on an open PO, the
 ``processes`` section of ``plx.schema`` and the stored ``late_po`` investigate plan.
@@ -160,11 +160,12 @@ class DueDateTests(Base):
         self.assertNotIn("at_risk", entry)
         po = portal_po(s)
         s.link("PurchaseOrder.same_record_as", po, sage, kind="same_record")
-        # the due day is not over until it has ended in every time zone (UTC-12)
-        entry = self.late(s, po, now=at("2099-01-16", 11))
+        # the due day is over once it has ended in ET (EST in January, UTC-5): 04:00Z on
+        # the 16th is 23:00 ET on the 15th, not due; 06:00Z is 01:00 ET on the 16th, late
+        entry = self.late(s, po, now=at("2099-01-16", 4))
         self.assertEqual((entry["state"], entry["late"], entry["measured_on"]),
                          ("not_due", False, "2099-01-15"))
-        entry = self.late(s, po, now=at("2099-01-16", 13))
+        entry = self.late(s, po, now=at("2099-01-16", 6))
         self.assertEqual((entry["state"], entry["late"], entry["days_late"]), ("late", True, 1))
         entry = self.late(s, po)
         self.assertEqual((entry["state"], entry["days_late"], entry["governing"],
@@ -291,10 +292,14 @@ class PromiseTests(Base):
             self.assertEqual((entry["state"], entry["at_risk"]), ("not_due", False), promise)
         # the requested-by date has passed and not fully received: late, whatever the promise
         for ordered in (("10", "0"), ("10", "4")):
-            late = entry_for("2099-02-15", expected="2099-01-20", status="Complete",
-                             ordered=ordered)
+            late = entry_for("2099-02-15", expected="2099-01-20", ordered=ordered)
             self.assertEqual((late["state"], late["late"], late["at_risk"]),
                              ("late", True, False), ordered)
+            # Complete closes whatever was received: the remainder is cancelled, not late
+            closed = entry_for("2099-02-15", expected="2099-01-20", status="Complete",
+                               ordered=ordered)
+            self.assertEqual((closed["state"], closed["late"]), ("not_applicable", False),
+                             ordered)
         # fully received on time: neither, whatever the promise said
         done = entry_for("2099-02-15", expected="2099-01-20", status="Complete",
                          ordered=("10", "10"), received_on="2099-01-18")
@@ -358,7 +363,7 @@ class ReceiptTests(Base):
                          {("ordered_quantity", "100", "each"),
                           ("received_quantity", "40", "each")})
 
-    def test_a_bc_po_is_late_on_its_requested_receipt_date_never_a_lines_expected_one(self):
+    def test_a_bc_po_is_late_on_its_requested_receipt_date_a_lines_expected_one_only_below_it(self):
         # BC's line expectedReceiptDate follows the promised date when one is set: it is
         # the supplier's date, never the requested-by reference (requestedReceiptDate)
         def bc_world(requested):
@@ -385,12 +390,12 @@ class ReceiptTests(Base):
         for ln in lines.values():
             for key in ("due_date", "late", "days_late"):
                 self.assertNotIn(key, ln)
-        # no requested date: reported missing, the lines' expected dates never stand in
+        # no requested date: the earliest open line's expected date is the lowest tier
+        # (bl1 is received, so bl2's 2099-03-01 governs; not due yet)
         s, po = bc_world(None)
         entry = self.late(s, po)
-        self.assertEqual((entry["state"], entry["late"], entry["gap"]["reason"]),
-                         ("undetermined", None, "no_due_date"))
-        self.assertNotIn("governing_date", entry)
+        self.assertEqual((entry["state"], entry["late"], entry["governing_date"]),
+                         ("not_due", False, "2099-03-01"))
         # the stage's own due (overdue) reads the requested date alone
         (due,) = [d for d in self.run_process(s, po)["due"] if d["stage"] == "receipt"]
         self.assertNotIn("due_by", due)
@@ -561,7 +566,8 @@ class UnnamedCallTests(Base):
         for status, ordered, expected in (
                 ("Pending", ("10", "0"), PROCESS), ("B.Order", ("10", "4"), PROCESS),
                 (" pending ", ("10", "0"), PROCESS),
-                ("Complete", ("10", "4"), PROCESS),          # FM Complete alone never closes
+                ("Complete", ("10", "4"), other),            # Complete closes, remainder cancelled
+                ("closed", ("10", "0"), other),              # closed is cancelled (upstream)
                 ("Complete", ("10", "10"), other), ("Pending", ("10", "10"), other),
                 ("DRAFT", ("10", "0"), other), ("Cancel", ("10", "0"), other),
                 ("Revised", ("10", "0"), other), ("Generated", ("10", "0"), other),
@@ -653,6 +659,73 @@ class TwinTests(Base):
                          ("late", True, 22))
         # both roots of the one PO get one verdict
         self.assertEqual(self.late(s, po)["state"], "late")
+
+    def firm_world(self, tier):
+        s = tp.Store()
+        po = portal_po(s)   # open by its line, no date of its own
+        twin = bc_po(s, expected=None)
+        line(s, twin, "bl1", "100", "0", binding="bc.purchase_order_lines", due="2099-01-05")
+        s.link("PurchaseOrder.same_record_as", po, twin, tier=tier, kind="same_record")
+        return s, po, twin
+
+    def test_a_firm_twin_lends_its_line_date_a_lead_or_hidden_one_does_not(self):
+        # one verdict through the link: the status stays the Portal order's, the date is the
+        # twin's open line, cited as that line's
+        s, po, twin = self.firm_world("corroborated")
+        entry = self.late(s, po)
+        self.assertEqual((entry["state"], entry["late"], entry["governing_date"]),
+                         ("late", True, "2099-01-05"))
+        self.assertIn("purchaseOrderLines/bl1", json.dumps(entry))
+        self.assertEqual(self.late(s, twin)["state"], "late")
+        s, po, _ = self.firm_world("lead")
+        self.assertEqual(self.late(s, po)["state"], "undetermined")
+        s, po, _ = self.firm_world("corroborated")
+        text = json.dumps(self.run_process(s, po, SALES))
+        for hidden in ("2099-01-05", "purchaseOrderLines/bl1"):
+            self.assertNotIn(hidden, text)
+
+    def test_a_lead_order_or_receipt_neither_blocks_nor_governs_a_bc_line_date(self):
+        """Live shape (flagship probe 2026-10-27): an open BC order dated only by its open
+        line's expectedReceiptDate, the Portal order its number matches capped at lead
+        (bc_company_not_known) and a receipt linked at lead. A lead is no twin and never
+        counted (po_status.read, the home list), so the line date governs and the order is
+        late, as the home list says; the lead's later header date never governs. A reader
+        of BC who may not read the Portal (where a lead or twin could hang) gets no verdict:
+        it must see every lead a full-grant reader sees."""
+        def world(tier="lead"):
+            s = tp.Store()
+            po = bc_po(s, expected=None)
+            line(s, po, "bl1", "100", "0", binding="bc.purchase_order_lines", due="2099-01-12")
+            lead = portal_po(s, expected="2099-03-01")
+            s.link("PurchaseOrder.same_record_as", lead, po, tier=tier, kind="same_record")
+            rc = s.obj("Receipt:bc.purchase_receipts:rc-lead")
+            s.event("Receipt.posted", rc, "2099-01-11")
+            s.link("Receipt.receives", rc, po, tier="lead")
+            return s, po
+
+        s, po = world()
+        entry = self.late(s, po)
+        self.assertEqual((entry["state"], entry["late"], entry["governing_date"],
+                          entry["days_late"], entry["measured_against"]),
+                         ("late", True, "2099-01-12", 20, "today"))
+        self.assertIn("not_received", entry["reasons"])
+        self.assertIn("purchaseOrderLines/bl1", json.dumps(entry["values"]))
+        self.assertNotIn("2099-03-01", json.dumps(entry))
+        s, po = world("verified")   # a settled Portal twin's header date outranks the line
+        self.assertEqual((self.late(s, po)["state"], self.late(s, po)["governing_date"]),
+                         ("not_due", "2099-03-01"))
+        ops = tp.Actor("plx", frozenset({"ops"}))
+        policy = ot.ReadPolicy("plx", {"api:*": frozenset({"staff"}), "bc:*": frozenset({"ops"})})
+        for tier in ("lead", "verified"):
+            s, po = world(tier)
+            base = ot.OntologyTools(ot.StoreReader(s.conn), policy, schema=tp.SCHEMA,
+                                    contracts=CONTRACTS, clock=lambda: tp.NOW)
+            result = self.answer(op.ProcessTools(base, tp.GRAPHS),
+                                 {"from": po, "process": PROCESS}, ops).result
+            (entry,) = result["lateness"]
+            self.assertEqual((entry["state"], entry["late"]), ("undetermined", None), tier)
+            self.assertNotIn("2099-03-01", json.dumps(result), tier)
+            self.assertNotIn("app_purchase_order:", json.dumps(result), tier)
 
     def test_a_twin_that_is_no_settled_identity_decides_nothing(self):
         for tier in ("corroborated", "lead"):
@@ -756,10 +829,11 @@ class DeclarationTests(unittest.TestCase):
 # --------------------------------------------------------------------------- the plan
 
 class LatePoPlanTests(unittest.TestCase):
-    def table(self, store):
+    def table(self, store, policy=None, item_gate=None):
         table: dict = {}
-        base = ot.OntologyTools(ot.StoreReader(store.conn), tp.POLICY, schema=tp.SCHEMA,
-                                contracts=CONTRACTS, clock=lambda: tp.NOW)
+        base = ot.OntologyTools(ot.StoreReader(store.conn), policy or tp.POLICY,
+                                schema=tp.SCHEMA, contracts=CONTRACTS, clock=lambda: tp.NOW,
+                                item_gate=item_gate)
         ot.register(table, base)
         tt.register(table, tt.TraverseTools(base))
         op.register(table, op.ProcessTools(base, tp.GRAPHS))
@@ -824,14 +898,14 @@ class LatePoPlanTests(unittest.TestCase):
         values = {re.sub(r"_\d+$", "", e["name"]): e for e in out["answer"]
                   if e.get("value") is not None}
         self.assertEqual({n: values[n]["value"] for n in (
-            "need_date", "line_expected_date", "confirmed_delivery_date", "freight_ship_date",
+            "need_date", "open_line", "confirmed_delivery_date", "freight_ship_date",
             "received_date") if n in values}, {
-            "need_date": "2099-01-10", "line_expected_date": "2099-01-18",
+            "need_date": "2099-01-10", "open_line": "2099-01-18",
             "confirmed_delivery_date": "2099-01-20", "freight_ship_date": "2099-01-12",
             "received_date": "2099-01-25"}, json.dumps(out["answer"])[:2000])
-        for name in ("line_expected_date", "confirmed_delivery_date", "freight_ship_date",
-                     "received_date"):
+        for name in ("confirmed_delivery_date", "freight_ship_date", "received_date"):
             self.assertTrue(values[name]["citation"]["l1_handle"], name)
+        self.assertTrue(values["open_line"]["cells"][0]["citation"]["l1_handle"])
         types = {o["object_type"] for o in out["chain"]["objects"]}
         self.assertLessEqual({"PurchaseOrder", "PurchaseOrderLine", "SupplierConfirmation",
                               "FreightBill", "Receipt"}, types)
@@ -845,6 +919,139 @@ class LatePoPlanTests(unittest.TestCase):
         self.assertEqual([p.id for p in oi.load_plans(schema=tp.SCHEMA).values()
                           if "F14" in p.doc["families"]],
                          ["late_po"])
+
+    def documents_world(self, *, name_the_twin):
+        """A late BC order, its Portal twin joined firmly (a corroborated ``same_record_as``
+        from the Portal record, as a firm Your Reference is stored: a BC record carries
+        none of its own) and a Portal record joined only by a lead (the BC number as text);
+        a mail, a mail attachment, a SharePoint file and a Teams chat message, each in its
+        own mailbox, drive or chat, that name (a lead mention) the firm twin, or else
+        another order; and a mail naming the lead twin."""
+        s = tp.Store()
+        bc = bc_po(s, expected=None)
+        line(s, bc, "bl1", "5", "0", binding="bc.purchase_order_lines", due="2099-01-10")
+        twin = portal_po(s, number="PO#4821", ordered=None)
+        s.link("PurchaseOrder.same_record_as", twin, bc, tier="corroborated", kind="same_record")
+        loose = portal_po(s, key="po-2", number="PO#7112", ordered=None)
+        s.link("PurchaseOrder.same_record_as", loose, bc, tier="lead", kind="text_match")
+        named = twin if name_the_twin else portal_po(s, key="po-9", number="PO#9001",
+                                                     ordered=None)
+        for object_id, audience, handle, prop, value_type, value in (
+                ("Email:graph_mail.messages:m1", "mail:box-1",
+                 "graph-mail://box-1/m1@ck-1", "received_at", "timestamp",
+                 "2099-01-12T09:00:00Z"),
+                ("Attachment:graph_mail.attachments:a1", "mail:box-1",
+                 "graph-mail://box-1/m1/a1@ck-1", "name", "text", "Order PO#4821.pdf"),
+                ("SharePointFile:sharepoint.drive_items:f1", "sharepoint:drive-1",
+                 "sharepoint://drive-1/f1@e-1", "name", "text", "PO#4821 confirmation.pdf"),
+                ("TeamsChatMessage:gen.teams.chat_messages:c1", "teams:chat:chat-1",
+                 "teams-chat://chat-1/c1@v-1", "created_at", "timestamp",
+                 "2099-01-13T09:00:00Z"),
+                ("Email:graph_mail.messages:m2", "mail:box-1", "graph-mail://box-1/m2@ck-1",
+                 "received_at", "timestamp", "2099-01-20T09:00:00Z")):
+            s.obj(object_id, "mail")
+            s.conn.execute("UPDATE objects SET audience_key = ? WHERE object_id = ?",
+                           (audience, object_id))
+            s.conn.execute("UPDATE object_versions SET l1_handle = ? WHERE object_id = ?",
+                           (handle, object_id))
+            s.handles[object_id] = (handle, "mail")
+            s.val(object_id, prop, value_type, value)
+            s.link(f"{object_id.split(':')[0]}.mentions_purchase_order", object_id,
+                   loose if object_id.endswith(":m2") else named, tier="lead", kind="mention")
+        return s, bc
+
+    def test_a_bc_root_cites_the_documents_naming_its_twin_only_for_a_reader_of_them(self):
+        """The documents naming a BC order's firmly joined Portal twin are reached and
+        cited (the second source the flagship asks for); a mail naming a record joined only
+        by a lead is not this order's; a reader who may not open the mailbox, drive or chat
+        gets the same answer as when the documents name another order."""
+        held = {"api:*": frozenset({"staff", "buyer"}), "bc:*": frozenset({"staff", "buyer"}),
+                "mail:box-1": frozenset({"staff"}), "sharepoint:drive-1": frozenset({"staff"}),
+                "teams:chat:chat-1": frozenset({"staff"})}
+        policy = ot.ReadPolicy("plx", held, tp.POLICY.markings)
+        buyer = tp.Actor("plx", frozenset({"buyer"}))
+
+        def answer(store, root, actor):
+            # Every item passes its own ACL here: the audience grant alone gates the reader.
+            out = self.investigate(self.table(store, policy, lambda _actor, _handle: True),
+                                   root, actor)
+            return {e["name"]: e for e in out["answer"]}, out
+
+        s, bc = self.documents_world(name_the_twin=True)
+        entries, out = answer(s, bc, STAFF)
+        text = lambda v: v["untrusted_text"] if isinstance(v, dict) else v  # noqa: E731
+        cited = {name: (text(e["value"]), e["citation"]["l1_handle"])
+                 for name, e in entries.items()
+                 if name.startswith(("last_mail_at", "mail_attachment", "file_named",
+                                     "chat_message_at")) and e.get("value") is not None}
+        self.assertEqual(sorted(cited.values()), sorted([
+            ("2099-01-12T09:00:00Z", "graph-mail://box-1/m1@ck-1"),
+            ("Order PO#4821.pdf", "graph-mail://box-1/m1/a1@ck-1"),
+            ("PO#4821 confirmation.pdf", "sharepoint://drive-1/f1@e-1"),
+            ("2099-01-13T09:00:00Z", "teams-chat://chat-1/c1@v-1")]), json.dumps(entries)[:3000])
+        # A reader of the orders only: nothing of the documents, and no trace that they exist.
+        gated, gated_out = answer(s, bc, buyer)
+        bare, bare_out = answer(self.documents_world(name_the_twin=False)[0], bc, buyer)
+        shown = json.dumps(gated_out)
+        for leak in ("box-1", "drive-1", "chat-1", "PO#4821.pdf", "confirmation.pdf",
+                     "graph-mail://", "sharepoint://", "teams-chat://"):
+            self.assertNotIn(leak, shown)
+        self.assertEqual({n: e.get("value") for n, e in gated.items()},
+                         {n: e.get("value") for n, e in bare.items()})
+        self.assertEqual(sorted(json.dumps(g, sort_keys=True) for g in gated_out["gaps"]),
+                         sorted(json.dumps(g, sort_keys=True) for g in bare_out["gaps"]))
+
+    def test_every_open_line_is_its_own_cited_entry_with_its_own_date(self):
+        # one entry per open line (a received line is none), each citing its own record;
+        # a line of another system with no expected date is listed apart, never dropped
+        for n in (1, 10, 60):
+            s = tp.Store()
+            po = bc_po(s, fully_received="false", expected=None)
+            for i in range(n):
+                line(s, po, f"bl{i}", "5", "5" if i % 3 == 2 else "0",
+                     binding="bc.purchase_order_lines", due="2099-01-10")
+            line(s, po, "pl1", "4", "1")
+            out = self.investigate(self.table(s), po)
+            entries = [e for e in out["answer"] if e["name"].startswith("open_line_")]
+            dated = [e for e in entries if not e["name"].startswith("open_line_undated")]
+            undated = [e for e in entries if e["name"].startswith("open_line_undated")]
+            open_lines = sum(1 for i in range(n) if i % 3 != 2)
+            # the process lists at most 10 lines, open ones first: the rest is a stated gap
+            self.assertEqual(len(dated) + len(undated), min(open_lines + 1, 10), n)
+            if open_lines + 1 > 14:
+                self.assertIn("lines_truncated", {g["reason"] for g in out["gaps"]}, n)
+            else:
+                self.assertEqual(len(dated), open_lines, n)
+            self.assertEqual({e["value"] for e in dated}, {"2099-01-10"})
+            handles = [c["citation"]["l1_handle"] for e in dated for c in e["cells"]
+                       if c["property"] == "bc_expected_receipt_date"]
+            self.assertEqual(len(set(handles)), len(dated), n)   # one record per entry
+            if n < 10:   # open BC lines come first: the Portal one is listed only when it fits
+                self.assertEqual([e["value"] for e in undated], ["partial"], n)
+                self.assertTrue(all(c["citation"]["l1_handle"] for c in undated[0]["cells"]))
+
+    def test_a_decided_late_po_with_lines_cut_states_the_cut_as_an_unknown(self):
+        # 11 to 14 open lines (no page cap): the verdict is decided, the process lists 10,
+        # and the answer code states from the plan says how many lines it does not list
+        from operating import plan_answer
+        for n in (10, 11, 14):
+            s = tp.Store()
+            po = bc_po(s, fully_received="false", expected=None)
+            for i in range(n):
+                line(s, po, f"bl{i}", "5", "0", binding="bc.purchase_order_lines",
+                     due="2000-01-01")
+            out = self.investigate(self.table(s), po)
+            late = {e["name"]: e["value"] for e in out["answer"]}.get("late_1")
+            self.assertIs(late, True, n)
+            stated = plan_answer.from_plan(out)
+            self.assertIsNotNone(stated, n)
+            lines = {c["citation"] for c in stated["claims"]
+                     if c["field"].endswith("expected_receipt_date")}   # one per line
+            self.assertEqual(len(lines), min(n, 10), n)
+            cut = [u for u in stated["unknowns"] if f"{n - 10} of {n} lines are not listed" in u]
+            self.assertEqual(len(cut), 1 if n > 10 else 0, (n, stated["unknowns"]))
+            if n > 10:
+                self.assertNotEqual(out["answerability"]["state"], "answerable", n)
 
 # --------------------------------------------------------------------------- cardinality
 
@@ -862,7 +1069,7 @@ class CardinalityTests(Base):
             self.assertLess(time.monotonic() - started, 20, n)
             self.assertEqual((entry["state"], entry["days_late"]), ("late", 22), n)
             listed = [ln["line"] for ln in entry["lines"]]
-            self.assertEqual(len(listed), min(n, 8), n)
+            self.assertEqual(len(listed), min(n, 10), n)
             self.assertEqual(len(set(listed)), len(listed), n)
             self.assertTrue(all(ln["state"] == "partial" for ln in entry["lines"]), n)
             self.assertEqual(entry["values"][0]["property"], "expected", n)  # governing first
@@ -871,7 +1078,7 @@ class CardinalityTests(Base):
                 self.assertEqual([v["property"] for v in entry["values"]],
                                  ["expected", "promised", "received"])
             truncated = {g["reason"] for g in entry.get("gaps", ())}
-            self.assertEqual("lines_truncated" in truncated, n > 8, n)
+            self.assertEqual("lines_truncated" in truncated, n > 10, n)
             self.assertEqual("values_truncated" in truncated, 1 + 2 * n > 10, n)
             self.assertEqual(entry.get("promised_date"), "2099-01-20", n)
 

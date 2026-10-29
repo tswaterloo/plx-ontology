@@ -1,4 +1,4 @@
-"""Static HTTP-egress check (`http-egress` CI check).
+"""Static HTTP-egress gate (`http-egress` in devloop/gate-checks.json).
 
 Hard rule: Graph, SharePoint, BC, Portal, MC and mail HTTP is read-only. This AST
 scan is a tripwire, not a sandbox: it fails when non-test code under the scanned
@@ -34,8 +34,11 @@ re-export (``from integrations.http import Request``) cannot hide a non-GET call
 ALLOWED lists (path, qualified enclosing function) pairs verified by reading the code:
   integrations/live_source_guard.py urllib_sender  the one guarded sender: runs
       after check_request (GET, or the OAuth client-credentials token POST).
+  devloop/wake_bridge.py fire  controller tooling: one POST to the Claude routine
+      fire endpoint (FIRE_URL allowlist, redirects refused). It reaches no
+      business system; the controller owner may retire it.
   operating/messages_planner.py post_messages  the opt-in Messages API planner
-      (decision docs/decisions/messages-api-planner-q7.md): one POST to
+      (decision devloop/DECISIONS/messages-api-planner-q7.md): one POST to
       https://api.anthropic.com/v1/messages (API_URL; any other url raises before the
       request), redirects refused (a redirect handler that raises). It reaches no
       business system; the body carries the reader's own trimmed tool results.
@@ -53,11 +56,11 @@ unlisted senders (path:function:rule), and the allowlisted senders the scan excu
 absent under ROOT is never clean: text mode exits 1; ``--json`` prints only
 ``blocked_reason`` ``scan_tree_missing`` and the missing names and exits 0, so the live
 check reads blocked (its ``blocked_when`` holds only at the expected exit code).
-CI runs main's copy of this script against the candidate tree (ROOT), so a
-candidate cannot widen its own allowlist. The CI command
-still falls back to the candidate's copy when origin/main has no such file
+The gate runs main's copy of this script against the candidate tree (ROOT), so a
+candidate cannot widen its own allowlist; see devloop/gate-checks.json. The gate
+command still falls back to the candidate's copy when origin/main has no such file
 (first introduction or a shallow clone without the ref); that fallback is kept on
-purpose, because dropping it would fail CI where the ref is missing.
+purpose, because dropping it would fail the gate where the ref is missing.
 
 Known limitations (a tripwire sees syntax, not data flow): a curl/wget command or tool
 name built outside the call (``cmd = ["curl", url]; subprocess.run(cmd)``, or
@@ -75,14 +78,15 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 SCANNED = ("ontology", "integrations", "operating", "operator_ui", "ops_plane",
-           "reasoning", "engineering", "scripts", "verify", "twin")
+           "reasoning", "engineering", "scripts", "devloop", "twin")
 # Trees that must exist under ROOT: they hold the reviewed clients and senders. One absent
 # means the scan read the wrong root, never a clean tree (the others may be retired).
-REQUIRED_TREES = ("integrations", "operating", "scripts", "verify")
+REQUIRED_TREES = ("integrations", "operating", "scripts", "devloop")
 
 SENDER_FILES = {"integrations/live_source_guard.py", "integrations/plx_hub_guard.py"}
 ALLOWED = {
     ("integrations/live_source_guard.py", "urllib_sender"),
+    ("devloop/wake_bridge.py", "fire"),
     ("operating/messages_planner.py", "post_messages"),
 }
 SENDER_URLS = {"operating/messages_planner.py": {"https://api.anthropic.com/v1/messages"}}
@@ -91,6 +95,7 @@ ALLOWED_IMPORTS = {("integrations/live_source_guard.py", "http.client.Incomplete
 URLLIB_FILES = {
     "integrations/http.py",
     "integrations/live_source_guard.py",
+    "devloop/wake_bridge.py",
     "operating/messages_planner.py",
 }
 BANNED_MODULES = {

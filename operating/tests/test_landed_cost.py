@@ -55,7 +55,7 @@ class LandedCostTests(unittest.TestCase):
         self.assertEqual(r["fx"][0]["as_of"], "2026-09-29")
 
     def test_fx_validation_matrix(self):
-        """A zero, future-dated or stale rate was used silently."""
+        """Review c202c2f: a zero, future-dated or stale rate was used silently."""
         costs = base_costs()
         costs[0] = {"name": "goods", "category": "goods", "literal": "18", "unit": "CNY/EA"}
         def fx(rate="0.14", as_of="2026-09-29"):
@@ -391,7 +391,7 @@ class InputBindingAndUnitTests(unittest.TestCase):
 class CostTreatmentAndPortalQuoteMirrorTests(unittest.TestCase):
     """ERP-D-015 and the Portal quote landed cost (Portal staging 5724575, landed-cost.ts
     unchanged since 8da33e4, portal/src/lib/costing/landed-cost.ts:landedComponentCost;
-    docs/reference/portal-code-map.md sections 4.1 and 9). The full engine port is golden-tested in
+    devloop/CONTEXT/03-PORTAL.md sections 4.1 and 9). The full engine port is golden-tested in
     test_portal_landed_engine.py against the Portal's own TypeScript."""
 
     def test_every_record_is_labelled_an_estimate_not_item_cost(self):
@@ -520,7 +520,7 @@ class QuoteInputTests(unittest.TestCase):
                 # 1 kg, 4.20 per kg: the 85 stated is neither the total nor chosen over it.
                 ({"quote_amount": "85", "quote_rate": "4.20", "quote_basis": "per kg",
                   "quote_weight": "1 kg"}, (None, {"freight_rate_count_conflict"})),
-                # rate 4,900 x 1 x 40HQ is not the 9,800 stated.
+                # rate 4,900 x 1 x 40HQ is not the 9,800 stated (the reviewer's probe).
                 ({"quote_amount": "9800", "quote_rate": "4900", "quote_basis": "1 x 40HQ"},
                  (None, {"freight_rate_count_conflict"})),
                 ({"quote_amount": "9800", "quote_rate": "9800", "quote_basis": "per 40HQ",

@@ -35,7 +35,7 @@ the objects to read through ``plx.find`` seeds built from the compiled schema an
 document-field comparison rules (no object identifier is named here).
 
 ``python3 -m operating.proactive_gaps`` is the live check's command
-(``verify/live-checks/case.proactive_gaps.json``): one host capture cycle into a state
+(``devloop/live-checks/case.proactive_gaps.json``): one host capture cycle into a state
 directory, then the scan offline for the investigator and any ``--reader``; counts and
 enums only, never an identifier or a value. Evidence label: that of the captures it reads
 (live-unverified until the verifier runs it).
@@ -45,7 +45,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter, deque
-from datetime import date, datetime, timezone
+from datetime import date
 from decimal import Decimal, InvalidOperation
 import functools
 import hashlib
@@ -55,7 +55,7 @@ from pathlib import Path
 import sys
 from typing import Any, Callable, Mapping, Sequence
 
-from . import answerers
+from . import answerers, po_status
 
 SCHEMA = "plx-proactive-gaps/v1"
 KINDS = ("missing_in_record", "conflicting_quantity", "expired_quote", "late_order")
@@ -118,14 +118,17 @@ def _missing_in_record(leads: Any) -> list[dict[str, Any]]:
             continue
         values = [v for v in lead.get("values") or [] if isinstance(v, Mapping)]
         documents = [d for d in lead.get("document_citations") or [] if isinstance(d, Mapping)]
-        stated = values[:1]
-        if not _handles(stated, documents):   # the document's statement must be cited
+        stated, empty = values[:1], _handles(values[1:])
+        # the document's statement and the record's empty read must each be cited: every
+        # empty read is its own group, so a reader of the document alone never learns
+        # what the record holds
+        if not _handles(stated, documents) or not empty:
             continue
         subject = str(lead.get("subject") or "a field")
         out.append({
             "kind": "missing_in_record", "key": subject,
             "handles": _handles(stated, documents, values[1:]),
-            "requires": [_handles(stated, documents)],
+            "requires": [_handles(stated, documents), *([h] for h in empty)],
             "summary": _clip(f"A captured document states a value for {subject} that the "
                              "record holds empty"),
             "missing": _clip(f"Confirm {subject}: a captured document states a value the "
@@ -600,7 +603,7 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
         parser.error("mirror audience tenant must equal --tenant")
     from ontology.core import Actor
 
-    as_of = args.as_of or datetime.now(timezone.utc).date()
+    as_of = args.as_of or po_status.business_today()
     summary: dict[str, Any] = {"schema": SCHEMA, "evidence": live.MIRROR_EVIDENCE["label"],
                                "as_of": as_of.isoformat(), "capture": None}
     if args.host_config is not None:

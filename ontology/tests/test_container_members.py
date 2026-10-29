@@ -1,4 +1,4 @@
-"""Members of captured zip / .msg / .eml files are cited documents.
+"""Members of captured zip / .msg / .eml files are cited documents (gap-e10f050d25a3).
 
 A zip mailed as an attachment or stored in SharePoint (a PO packet) is no longer one
 textless file: each member is a ``ContainerMember`` object and a mention document of its
@@ -6,7 +6,7 @@ own, cited by the member's SHA-256 inside the container's pinned bytes; a classi
 member is a typed document (``documentFields``); every member or part that was not read
 is a member with its reason. A mailed ``.eml``/``.msg`` is read once: its own text under
 its handle, each attachment (nested mail included) only under its member handle
-Projected through the host's entry point over injected
+(direction finding 11e322b9). Projected through the host's entry point over injected
 Graph transports: no network, no credentials.
 """
 
@@ -227,11 +227,11 @@ class ContainerMemberTests(unittest.TestCase):
         ).fetchall()
 
     def test_a_mailed_eml_or_msg_cites_each_attachment_once_under_its_member(self):
-        # The container's text inlined its attachments, so
+        # Direction finding 11e322b9: the container's text inlined its attachments, so
         # PO100234 was a lead (and the confirmation a typed document) under the
         # container's handle and again under the member's. A carried mail (forwarded as
-        # an attachment) is a member read for its own text too; with
-        # no file name it is shown as <Subject>.eml.
+        # an attachment) is a member read for its own text too (gap-0d37a104a3db); with
+        # no file name it is shown as <Subject>.eml (directive 5a8d03900711).
         p1 = self.po("p1")
         rows = self.conn.execute("SELECT link_type, from_object FROM links WHERE to_object = ?",
                                  (p1,)).fetchall()

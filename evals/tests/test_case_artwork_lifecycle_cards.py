@@ -4,7 +4,7 @@
 answer criteria, the originals (``vince-artwork`` rows of ``examples/case_originals.json``)
 and live sources each needs; ``ontology_gaps.json`` names what the ontology lacks to
 answer them (artwork version, proof, printed-component lineage, customer approval, label
-reconciliation), each with a real source or ``source unknown`` and a question. The
+reconciliation), each with a real source or ``source unknown`` and a Dot question. The
 contract is the Asset Tracker cards' checker, scoped to this case's originals.
 """
 
@@ -29,6 +29,27 @@ class ArtworkLifecycleCardsTest(unittest.TestCase):
         self.cards, self.gaps = (json.loads((DIR / n).read_text(encoding="utf-8"))
                                  for n in ("proposed_items.json", "ontology_gaps.json"))
         self.originals = json.loads(contract.ORIGINALS.read_text(encoding="utf-8"))
+
+    def test_an_anchor_or_anchor_gap_is_accepted_only_well_formed(self):
+        # card anchors: AL-08 carries an anchor with its source, AL-06 an anchor_gap
+        by = {c["id"]: c for c in self.cards["real_example"]["cards"]}
+        self.assertTrue(by["AL-08"]["anchor"]["source"])
+        self.assertTrue(by["AL-06"]["anchor_gap"])
+        broken = {
+            "AL-08": lambda c: c["anchor"].pop("source"),
+            "AL-09": lambda c: c["anchor"].update(note="x"),
+            "AL-10": lambda c: c.update(anchor_gap="also a gap"),
+            "AL-06": lambda c: c.update(anchor_gap=" "),
+            "AL-07": lambda c: c.update(anchor_note="an unknown key"),
+        }
+        cards = copy.deepcopy(self.cards)
+        for card in cards["real_example"]["cards"]:
+            if card["id"] in broken:
+                broken[card["id"]](card)
+        self.assertEqual(problems(cards, self.gaps, self.originals),
+                         ["AL-06: anchor_gap empty", "AL-07: keys ['anchor_note']",
+                          "AL-08: anchor malformed", "AL-09: anchor malformed",
+                          "AL-10: anchor and anchor_gap"])
 
     def test_committed_cards_and_gaps_satisfy_the_contract(self):
         self.assertEqual(problems(self.cards, self.gaps, self.originals), [])
@@ -75,9 +96,9 @@ class ArtworkLifecycleCardsTest(unittest.TestCase):
             "unknown original": lambda c, g: card0(c)["originals"].append("co-2b32fe4f123c"),
             "unknown live source": lambda c, g: card0(c)["live_sources"].append("bc.nowhere"),
             "keys": lambda c, g: card0(c).update(values=["1"]),
-            "open question": lambda c, g: next(x for x in g["gaps"]
+            "Dot question": lambda c, g: next(x for x in g["gaps"]
                                               if x.get("source") == contract.UNKNOWN)
-            .update(open_question="ask the owner"),
+            .update(dot_question="ask the Dot"),
             "no source": lambda c, g: next(x for x in g["gaps"] if "source" not in x)
             .update(sources=[]),
             "path@commit": lambda c, g: g["gaps"][0]["sources"][0].update(ref="the portal"),

@@ -1,18 +1,63 @@
 {
  "format": "plx-generator-overrides/v1",
  "kind": "markings",
- "description": "Markings by column name, for columns no other override types. A raw column of one of value_types whose name matches and does not match unless keeps its type (measure and currency undeclared, so plx.aggregate and plx.compare refuse to combine a decimal or text one) and carries the marking, so a reader without it never sees it. exceptions: such names that are not what the rule reads them as, with the evidence. Rules apply in order; declared money columns are skipped.",
+ "description": "Markings by column name, for columns no other override types. A raw column of one of value_types whose name matches and does not match unless keeps its type (measure and currency undeclared, so plx.aggregate and plx.compare refuse to combine a decimal or text one) and carries the marking, so a reader without it never sees it. exceptions: such names that are not what the rule reads them as, with the evidence. Rules apply in order; declared money columns are skipped. scoped_markings: a declared, owner-decided marking that replaces a rule's marking on the listed columns (generated types) and properties (curated and document-field types) only; held_with names the markings whose holders hold it too (ontology/store_ddl.py MARKING_HELD_WITH).",
+ "domain_markings": [
+  {"domain": "people-access", "markings": ["pii"],
+   "applied": "Portal users, departments, access grants and elevations say who may see what: a generated type of the people-access domain is pii-marked, so a reader without the marking never reaches it (the curated Person type of pending/people_lots.json is pii-marked the same way)."}
+ ],
+ "scoped_markings": [
+ {
+  "marking": "purchasing_prices",
+  "replaces": "finance",
+  "held_with": ["finance"],
+  "description": "Owner decision (Tanush, 2026-10-27): purchasing staff may see purchase-order line prices: the unit price, the line amount, the discount, the PO total and the supplier's quoted price (its order confirmation or proforma invoice) on purchase orders and their lines, in BC, the Portal and FileMaker. These columns and properties carry purchasing_prices instead of finance; the host config grants it to purchasing principals (marking_grants), and every holder of finance holds it too (held_with, ontology/store_ddl.py MARKING_HELD_WITH). Everything else keeps finance: PO header freight and duty estimates and tax, receipts' freight and duty actuals, Sage AP charges, purchase invoices, margins, GL, AP/AR balances, sales prices and costing.",
+  "columns": [
+   {"relation": "public.app_purchase_order", "column": "total_cost", "reason": "the PO total (PurchaseOrder.total_cost reads it)"},
+   {"relation": "public.app_purchase_order", "column": "subtotal", "reason": "the PO goods subtotal before tax, shipping and duties: the sum of its line amounts"},
+   {"relation": "public.app_purchase_order", "column": "discount", "reason": "the PO discount"},
+   {"relation": "public.app_purchase_order_line", "column": "unit_price", "reason": "the PO line unit price (PurchaseOrderLine.unit_price reads it)"},
+   {"relation": "public.app_purchase_order_line", "column": "total_price", "reason": "the PO line amount (PurchaseOrderLine.line_total reads it)"},
+   {"relation": "public.generated_purchase_order", "column": "costtotal_c", "reason": "the FileMaker PO total (PurchaseOrder.total_cost reads it)"},
+   {"relation": "public.generated_purchase_order", "column": "discount", "reason": "the FileMaker PO discount"},
+   {"relation": "sage.po_header", "column": "discount", "reason": "the Sage PO discount"},
+   {"relation": "sage.po_header", "column": "doctotal", "reason": "the Sage PO total"},
+   {"relation": "sage.po_header", "column": "extended", "reason": "the Sage PO goods total: the sum of its lines' extended amounts"},
+   {"relation": "sage.po_detail", "column": "extended", "reason": "the Sage PO line amount (its extended amount)"},
+   {"relation": "sage.po_detail", "column": "discount", "reason": "the Sage PO line discount"},
+   {"relation": "sage.po_detail", "column": "discountf", "reason": "the Sage PO line discount (in the PO's own currency)"},
+   {"relation": "silver.purchase_orders", "column": "total_cost", "reason": "the silver PO total"},
+   {"relation": "silver.purchase_orders", "column": "subtotal", "reason": "the silver PO goods subtotal"},
+   {"relation": "silver.purchase_orders", "column": "discount", "reason": "the silver PO discount"},
+   {"relation": "silver.purchase_order_items", "column": "unit_cost", "reason": "the silver PO line unit price"},
+   {"relation": "silver.purchase_order_items", "column": "total_cost", "reason": "the silver PO line amount"}
+  ],
+  "properties": [
+   {"object_type": "PurchaseOrder", "property": "total_cost"},
+   {"object_type": "PurchaseOrderLine", "property": "unit_price"},
+   {"object_type": "PurchaseOrderLine", "property": "line_total"},
+   {"object_type": "PurchaseOrderLine", "property": "fm_item_cost"},
+   {"object_type": "PurchaseOrderLine", "property": "bc_direct_unit_cost"},
+   {"object_type": "PurchaseOrderLine", "property": "bc_amount_excluding_tax"},
+   {"object_type": "PurchaseOrderLine", "property": "bc_line_discount_amount"},
+   {"object_type": "PurchaseOrderLine", "property": "bc_line_discount_percent"},
+   {"object_type": "SupplierConfirmation", "property": "evidence"},
+   {"object_type": "SupplierConfirmation", "property": "amount"},
+   {"object_type": "SupplierConfirmation", "property": "unit_price"}
+  ]
+ }
+ ],
  "name_rules": [
   {
    "marking": "finance",
    "value_types": ["decimal", "integer", "text"],
-   "matches": "cost|price|amount|subtotal|discount|surcharge|fee|charge",
+   "matches": "cost|price|amount|subtotal|discount|surcharge|fee|charge|amt|doctotal|^extended$|^extcancel$|^extreceive$|^taxbase\\d$|^tax_c$",
    "unless": "percent|pct|rate|ratio|qty|quantity|code|list|class",
-   "applied": "the name reads as money; no measure or currency is declared",
+   "applied": "the name reads as money (Sage abbreviates amount as amt; doctotal is a Sage document total, extended/extcancel/extreceive its extended amounts, taxbase1-5 its tax bases; tax_c is the FileMaker PO tax); no measure or currency is declared",
    "exception_label": "not money",
    "exceptions": [
     {"relation": "public.app_manufacturing_order_line", "column": "actual_amount",
-     "reason": "the quantity of the component used, not money (docs/reference/portal-code-map.md section 3.8: ManufacturingOrderLine quantity = required, actual_amount = used)"},
+     "reason": "the quantity of the component used, not money (devloop/CONTEXT/03-PORTAL.md section 3.8: ManufacturingOrderLine quantity = required, actual_amount = used)"},
     {"relation": "public.assembly_order_item", "column": "actualamount",
      "reason": "the FM component consumption (qty_per_batch x produced units), not money (operating/source_unit_contracts.json silver-assembly-order-items-actual-amount-actual)"}
    ]

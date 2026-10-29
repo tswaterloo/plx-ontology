@@ -1,4 +1,4 @@
-"""The bounded agent loop over the ontology tools (the loop for questions no
+"""The bounded agent loop over the ontology tools (10-DECISION #4, the loop for questions no
 plan covers).
 
 Evidence label: ``isolated-fixture``. The planner is scripted (it stands in for a model
@@ -31,6 +31,7 @@ from operating.ontology_host import CaseHostTools
 from operating.tests.test_mcp_http_host import RULES, USERS, EmployeeDoorTestCase
 from operating.tests.test_session_identity import OID_A, OID_B, identity_files
 
+PLAN_ROOT = {"family": "late_po", "root": {"identifier": "PO5447"}}
 QUESTION = "Who is purchase order PO5447 ordered from, and where is that recorded?"
 
 
@@ -246,13 +247,13 @@ class AgentLoopTests(EmployeeDoorTestCase):
         right = [cell(po_id, 5447, "po"), cell("row.supplier_id", "sup-synth-1", "sup")]
         wrong = cell(po_id, 5448, "po")
         wrong_text = cell("row.supplier_id", "sup-synth-2", "sup")
-        # A status word is checked case-folded; the answer shows the
+        # Directive 912374bc973a: a status word is checked case-folded; the answer shows the
         # cell as recorded.
         status = cell("row.status", "Revised", "st")
-        # A count over the records a claim cites is one claim; with
+        # Directive 24e7aa78f585: a count over the records a claim cites is one claim; with
         # no complete count a tool returned it is a lower bound, and the Portal PO and its
-        # FileMaker PO (one PO 5447 in two relations) may be twins: at least 1.
-        # Code states the bound, whatever the answerer's text says.
+        # FileMaker PO (one PO 5447 in two relations) may be twins: at least 1
+        # (2aafc4270e73). Code states the bound, whatever the answerer's text says.
         def count(value):
             return {"id": "n", "value": value, "op": "count", "role": "record_count",
                     "of": [{"citation": handle}, {"citation": other}]}
@@ -407,7 +408,7 @@ class AgentLoopTests(EmployeeDoorTestCase):
                 Bounds(max_repairs=bad)
 
     def test_the_ask_loop_and_an_mcp_session_answer_through_the_one_gate_alike(self):
-        """An employee's MCP session (Claude Code's path, plx.case_get answer
+        """ROADMAP B1: an employee's MCP session (Claude Code's path, plx.case_get answer
         mode) gates a final answer as the Ask loop does, by the same function: for the same
         claims over the same server a refused claim is dropped, repaired once, and the
         repaired answer is the same; a second refusal gets no second repair."""
@@ -552,7 +553,7 @@ class AgentLoopTests(EmployeeDoorTestCase):
                 Bounds(max_billed_tokens=bad)
 
     def test_the_loop_records_no_follow_up_even_over_an_action_path(self):
-        """The Ask loop stays read-only (docs/decisions/2026-10-10-follow-ups-ask-loop-
+        """The Ask loop stays read-only (devloop/DECISIONS/2026-10-10-follow-ups-ask-loop-
         writes.md). Over a server that records follow-ups (an action path) plx.investigate
         is listed as a writer and the loop is not offered it; over one that does not, it is
         offered without follow_ups and a call carrying them is refused before the server
@@ -578,6 +579,111 @@ class AgentLoopTests(EmployeeDoorTestCase):
                                  [] if action_path else [investigate])
                 self.assertEqual(server.case_runtime.cases.get(server.actor, case_id)["gaps"],
                                  [])
+
+    def test_answer_plan_is_stated_by_code_in_one_planner_call(self):
+        """The planner picks the family and asks code to state its result: one planner call,
+        the claims cited to records the plan returned, the gaps listed as unknowns."""
+        asked = []
+
+        def plan(request):
+            asked.append(len(request["transcript"]))
+            return {"action": "answer_plan", **PLAN_ROOT}, None
+
+        result = agent_loop.run(QUESTION, self.server(OID_A), plan)
+        self.assertEqual((result["outcome"], asked), ("answered", [0]))
+        self.assertEqual([c["tool"] for c in result["tool_calls"]], ["plx.investigate"])
+        self.assertTrue(result["claims"])
+        returned = set(result["tool_calls"][0]["evidence"])
+        for claim in result["claims"]:
+            self.assertTrue(claim["citations"] and set(claim["citations"]) <= returned)
+        self.assertTrue(result["unknowns"])
+
+    def test_answer_plan_that_code_declines_the_gate_refuses_or_the_host_errors_is_no_answer(self):
+        asked = []
+
+        def plan(request):
+            asked.append(len(request["transcript"]))
+            if request["transcript"]:
+                return {"action": "abstain", "reason": "out_of_scope: planner decided"}, None
+            return {"action": "answer_plan", **PLAN_ROOT}, None
+
+        # a plan whose result code cannot state whole (from_plan: None, the cases of
+        # test_plan_answer): the planner is shown it and goes on
+        real = agent_loop.plan_answer.from_plan
+        self.addCleanup(setattr, agent_loop.plan_answer, "from_plan", real)
+        agent_loop.plan_answer.from_plan = lambda result: None
+        declined_asks = []
+
+        def declined_plan(request):
+            declined_asks.append(len(request["transcript"]))
+            return plan(request)
+
+        declined = agent_loop.run(QUESTION, self.server(OID_A), declined_plan)
+        self.assertEqual((declined["outcome"], declined["claims"]), ("abstained", []))
+        # shown the result, then asked once more why it abstains over evidence it holds
+        self.assertEqual(declined_asks, [0, 1, 1])
+        self.assertEqual([c["tool"] for c in declined["tool_calls"]], ["plx.investigate"])
+        asked.clear()
+        # a claim the gate refuses (a record this run never returned) is shown to nobody
+        agent_loop.plan_answer.from_plan = lambda result: {
+            "action": "answer", "unknowns": [], "claims": [
+                {"id": "c1", "value": "x", "citation": "api://never/returned@v-1",
+                 "field": "row.x"}]}
+        refused = agent_loop.run(QUESTION, self.server(OID_A), plan)
+        self.assertEqual((refused["outcome"], refused["claims"], asked), ("abstained", [],
+                                                                         [0, 1, 1]))
+        # one refused claim among stated ones: the planner reads the result, no answer
+        # drops it silently
+        asked.clear()
+        stated = real
+        agent_loop.plan_answer.from_plan = lambda result: (lambda out: out and {
+            **out, "claims": out["claims"] + [
+                {"id": "c99", "value": "x", "citation": "api://never/returned@v-1",
+                 "field": "row.x"}]})(stated(result))
+        partial = agent_loop.run(QUESTION, self.server(OID_A), plan)
+        self.assertEqual((partial["outcome"], partial["claims"], asked), ("abstained", [],
+                                                                          [0, 1, 1]))
+        # an unserved family is an error observation: no claim
+        agent_loop.plan_answer.from_plan = real
+        bad = agent_loop.run(QUESTION, self.server(OID_A), lambda request: (
+            {"action": "abstain", "reason": "out_of_scope: none"} if request["transcript"]
+            else {"action": "answer_plan", "family": "no_such_family",
+                  "root": PLAN_ROOT["root"]}, None))
+        self.assertEqual(bad["claims"], [])
+        self.assertTrue(bad["tool_calls"][0]["is_error"] or not bad["tool_calls"][0]["evidence"])
+
+    def test_a_named_family_s_seeded_plan_is_the_answer_without_a_planner_call(self):
+        """The caller named the family: the seeded plan, stated whole by code and passed by
+        the gate, is the answer at step 0. Unnamed, or a result code cannot state whole, or
+        a claim the gate refuses: the planner is asked, as before."""
+        investigate = {"tool": "plx.investigate", "arguments": dict(PLAN_ROOT)}
+        asked = []
+
+        def plan(request):
+            asked.append(len(request["transcript"]))
+            return {"action": "abstain", "reason": "out_of_scope: planner decided"}, None
+
+        direct = agent_loop.run(QUESTION, self.server(OID_A), plan, seed=[investigate],
+                                answer_seeded_plan=True)
+        self.assertEqual((direct["outcome"], direct["steps"], asked), ("answered", 0, []))
+        returned = set(direct["tool_calls"][0]["evidence"])
+        self.assertTrue(direct["claims"])
+        for claim in direct["claims"]:
+            self.assertTrue(claim["citations"] and set(claim["citations"]) <= returned)
+        unnamed = agent_loop.run(QUESTION, self.server(OID_A), plan, seed=[investigate])
+        self.assertEqual(unnamed["outcome"], "abstained")
+        self.assertEqual(asked, [1, 1])
+        real = agent_loop.plan_answer.from_plan
+        self.addCleanup(setattr, agent_loop.plan_answer, "from_plan", real)
+        for stated in (lambda result: None, lambda result: {
+                "action": "answer", "unknowns": [], "claims": [
+                    {"id": "c1", "value": "x", "citation": "api://never/returned@v-1",
+                     "field": "row.x"}]}):
+            asked.clear()
+            agent_loop.plan_answer.from_plan = stated
+            out = agent_loop.run(QUESTION, self.server(OID_A), plan, seed=[investigate],
+                                 answer_seeded_plan=True)
+            self.assertEqual((out["outcome"], out["claims"], asked), ("abstained", [], [1, 1]))
 
     def test_the_model_planner_has_no_tools_and_its_usage_counts(self):
         sent = []

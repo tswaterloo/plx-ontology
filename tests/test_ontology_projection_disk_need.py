@@ -1,4 +1,4 @@
-"""Projection disk need.
+"""Projection disk need (lane projection-disk-need, owner order 38b49958892d).
 
 The 2026-10-16 daily stopped four projection checks with SQLITE_FULL at 21-23.6 GB free:
 one full build took about twice its store. These tests pin, over synthetic captures and
@@ -307,7 +307,7 @@ class StageDiskTests(unittest.TestCase):
 class ProbeDiskTests(unittest.TestCase):
 
     def test_stage_keys_are_the_projector_stages_and_the_verifier_records_them(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         self.assertEqual(probe.STAGE_KEYS, STAGES)
         self.assertEqual(tuple(lv.ENVELOPE_DISK["stages"]), STAGES)
         self.assertEqual(tuple(lv.ENVELOPE_DISK["peak"]), probe.PEAK_KEYS)
@@ -334,7 +334,7 @@ class ProbeDiskTests(unittest.TestCase):
                           peak["work_bytes"], peak["layout"], peak["scratch_bytes"]),
                          (600, 1000, 77, 50, WORK_LAYOUT, 300))
         self.assertEqual(out["disk"]["stages"], {"load": 40, "values": 250})
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         kept = lv._envelope_disk(out["disk"])
         self.assertEqual(kept["peak"], peak)
         self.assertEqual(kept["stages"], {"load": 40, "values": 250})

@@ -1,6 +1,6 @@
 """Human review decisions over the ontology: an append-only store and their projection.
 
-A person's correction survives a
+Directive dd40ff1bf83f P3 (amendment bb664f58910f §1): a person's correction survives a
 restart and changes the next investigation. Decisions, each by one authenticated
 employee, timestamped, citing the exact record versions (L1 handle and content digest)
 the person reviewed:
@@ -41,7 +41,7 @@ the person reviewed:
   that link's key has an acceptance in force: a later ``reject_link`` of the link, or a
   retraction leaving none, withdraws the alias over that stretch (``alias_spans``;
   ``state_at``: ``withdrawn``, ``link_not_accepted``), its history kept; a link
-  acceptance in force again holds it again.
+  acceptance in force again holds it again. Directive 1c5c5561cd74.
 * ``confirm_value`` / ``correct_value``: a person read one value of the subject (its
   ``property``) in the original and confirms the machine-read value (citing that value's
   own citation, the value recorded as read) or corrects it (the value, its unit and
@@ -1124,7 +1124,9 @@ def _write_links(conn: sqlite3.Connection, builder: Any, declared: Mapping[str, 
                 counts["allocations"] += 1
             if cites:
                 feature["citations"] = cites[:4]
-            marks: set[str] = set()
+            # The link type's own markings (as every projected link of it carries) and the
+            # markings of the evidence it rests on: a review never unmarks a link.
+            marks: set[str] = set(link.get("markings") or ())
             for version in versions:
                 marks.update(json.loads(version["markings"]))
             tier = "reviewed" if accept else "contradicted"

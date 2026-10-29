@@ -22,7 +22,7 @@ import threading
 import unittest
 from unittest import mock
 
-from verify import live_verify as lv
+from devloop import live_verify as lv
 from integrations.http import SourceHttpError
 from ontology.core import Actor
 from ontology.schema import load_schema
@@ -232,8 +232,11 @@ class ScanTest(unittest.TestCase):
                 self.assertEqual([sorted(g["citations"]) for g in result["gaps"]], cited)
         document = "sharepoint://fixture/doc@v1"
         call, _ = world({"CustomerPoDocument": [card("CustomerPoDocument", leads=[lead()])]})
+        # the claim needs the document's statement and the record's empty read alike: a
+        # reader of only one of them never sees it
         for opened, cited in (({handle(12)}, None),            # only the empty record field
-                              ({document}, [document]),
+                              ({document}, None),               # only the document
+                              ({document, handle(12)}, [document, handle(12)]),
                               ({handle(11), handle(12)}, [handle(11), handle(12)])):
             with self.subTest(opened=sorted(opened)):
                 gaps = pg.scan(call, AS_OF, readable=lambda h: opened & set(h))["gaps"]
@@ -506,7 +509,7 @@ class HomeTest(unittest.TestCase):
 
 class LiveCheckTest(unittest.TestCase):
     """The retired live spec ``case.proactive_gaps`` (kept as
-    ``operating/tests/fixtures/case.proactive_gaps.spec.json``; the scheduled check is
+    ``operating/tests/fixtures/case.proactive_gaps.spec.json``; the scheduled A9 check is
     ``case.proactive_engine``) over injected sources: its own
     command and host config (the ``case.customer_po_missing`` world plus Portal quotes in
     the FakeWorkbench, a fake drive for the site), the network refused. Evidence label:

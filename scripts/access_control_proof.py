@@ -1,12 +1,14 @@
 """Live check ``access.control_proof``: no employee is served another person's mail or Teams
 content, a finance-only file to a reader without finance clearance, or anything of an
-excluded person (``denied_leaks`` 0 with real employee identities).
+excluded person (ROADMAP A6: ``denied_leaks`` 0 with real employee identities).
 
-``python3 -m scripts.access_control_proof`` reads the host the way its sessions serve it
-(``PLX_WORKBENCH_HOST_CONFIG``, ``PLX_WORKBENCH_STATE_DIR``): the mail, Teams and SharePoint
+``python3 -m scripts.access_control_proof [--default-host-config FILE]`` reads the host the
+way its sessions serve it (``PLX_WORKBENCH_HOST_CONFIG``, ``PLX_WORKBENCH_STATE_DIR``; with
+no host config in the environment, ``--default-host-config``: the live spec names the
+verifier's host, and ``host_config_from`` says which was read): the mail, Teams and SharePoint
 captures, the employee policy and the Portal access snapshot (the in-repo role model,
 ``plx-portal-access-snapshot/v1``, since the reporting API does not serve the Portal role
-tables: docs/reference/permissions.md blocker 3). Every active snapshot user of the policy's tenant
+tables: devloop/PERMISSIONS.md blocker 3). Every active snapshot user of the policy's tenant
 is a reader (at most ``MAX_READERS``, ordered by a digest of the object id); every reader
 asks for up to ``MAX_TARGETS`` stored records of each kind through every consumer that
 serves a citation: ``CaseRuntime.resolve_citation`` (whose refusal is the typed reason),
@@ -36,6 +38,27 @@ Who may read a record is decided here from the stores, independently of the guar
   offline (fail closed). ``senders_unresolved`` counts them. A sender in no tenant domain
   is not a member of the tenant and is read as ``mail_other``.
 
+Stored cases (GOV-19): each reader lists the cases it may read (newest ``MAX_CASES``) and
+gets each; every stored item (finding, calculation, gap, proposal, verification, link) whose
+citation the host's item gate refuses that reader must be served withheld (content
+``withheld_citation_unavailable``, no value key, citations without handle or digest and
+none of the stored item's text): ``withheld_unresolved`` counts them, ``unresolved_served``
+the rest (each a denied leak). A stored item whose payload does not have the shape counts
+``case_items_unreadable`` and fails (fail closed).
+
+``po_reference`` text (REC-07): up to ``MAX_PO_VALUES`` current values of the served
+projection that ``customer_po_coverage.po_like`` (the one shape test) rejects, and up to
+``MAX_PO_CONTROLS`` it accepts. Per reader, through the session's own ontology tools
+(``case_tools_host.serving_tools``): ``plx.object`` on each object holding the value,
+``plx.find`` for it whole and by its first word, ``plx.investigate`` F2 on its customer PO
+and every served case. ``echoed_non_po`` counts each served string stating a non-PO-like
+value (whole words, any case or spacing; the caller's own query given back is no echo)
+and fails; ``po_reference_scanned`` counts the values a reader was served an object of and
+``po_like_served`` the PO-like ones stated (the guard is not withholding everything).
+
+The mail_other and teams_other refusals are also the ING-14 proof: a captured message
+reaches no reader outside its mailbox or conversation.
+
 A reader the oracle admits is a control (``controls_served`` shows the guards are not
 simply refusing everything). Output: counts and reason codes only, never an identifier.
 A refusal without a typed code counts ``untyped`` and fails, as any leak does.
@@ -43,6 +66,7 @@ A refusal without a typed code counts ``untyped`` and fails, as any leak does.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -60,6 +84,22 @@ KINDS = ("mail_other", "teams_other", "finance_non_finance", "excluded_person",
 REQUEST_KINDS = KINDS[:3]
 MAX_READERS = 60
 MAX_TARGETS = 10
+MAX_CASES = 10          # newest cases each reader may list, read in full
+MAX_PO_VALUES = 5       # non-PO-like po_reference values probed per reader
+MAX_PO_CONTROLS = 2     # PO-like po_reference values probed per reader (controls)
+MAX_PO_OBJECTS = 3      # objects holding one value read per reader
+MAX_ANSWER_PROBES = 2   # plx.investigate answers per reader that asks
+# Readers (the first, in digest order) that also search and ask: the value guard does not
+# depend on the reader, and an answer costs a plan (bounded under the spec's timeout).
+MAX_FIND_READERS = 3
+MAX_ANSWER_READERS = 1
+PO_ROOT_TYPE = "CustomerPurchaseOrder"
+# Keys whose text is the code's own vocabulary (gap states, reasons, kinds, types), never
+# source text: a value such as ``unknown`` is not echoed by ``"state": "unknown"``. Every
+# other string served is scanned (ids, handles, details and subjects included).
+CODE_KEYS = frozenset({"state", "reason", "status", "kind", "code", "value_type", "property",
+                       "object_type", "feature", "family", "withheld", "content",
+                       "field_path", "lineage", "role", "identifier_kind"})
 EVIDENCE = "live-unverified"
 _TYPED = re.compile(r"^[a-z][a-z0-9_.:\-]{0,63}$")
 _GUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
@@ -173,7 +213,11 @@ def targets(state: Path, exclusion: Any, internal_domains: Iterable[str] = ()
                 message = (payload.get("meta") or {}).get("source_acl")
                 unit = units.get((row["kind"], row["unit"]))
                 members = (_acl(message) or frozenset()) | (_acl(unit) or frozenset())
-                sender = _guids((payload.get("row") or {}).get("from"))
+                row_ = payload.get("row") or {}
+                # A conversation's own record names its participants (TeamsChat/Channel/Team).
+                sender = _guids([row_.get("from"), *[p.get("id") for p in
+                                                     row_.get("participants") or ()
+                                                     if isinstance(p, dict)]])
                 if exclusion.excluded(sender) or (row["kind"] == "teams_chat" and exclusion.excluded(
                         [i for i in members if _GUID.match(i)])):
                     held += 1
@@ -296,6 +340,279 @@ def prove(runtime: Any, tenant: str, readers: list[dict[str, Any]],
                                                    for k in kinds.values())}
 
 
+# ------------------------------------------------------------------ case items (GOV-19)
+
+# The stored case events that record an item, and the payload key of its id.
+ITEM_EVENTS = {"finding.recorded": "finding_id", "calculation.recorded": "calc_id",
+               "gap.recorded": "gap_id", "proposal.recorded": "proposal_id",
+               "verification.recorded": "verification_id", "link.recorded": "link_id"}
+# What a withheld item may still show: who recorded it when, and that it is withheld.
+_ITEM_META = frozenset({"id", "kind", "label", "recorded_by", "at", "seq", "superseded",
+                        "content", "citations", "proposal_id", "evidence_finding_id"})
+
+
+def _cited(event_kind: str, payload: Mapping[str, Any]) -> list[str] | None:
+    """The handles an item's served view is gated on (``CaseStore.get``), None when the
+    stored payload does not have the shape (fails closed: counted, never skipped)."""
+    if event_kind == "calculation.recorded":
+        inputs = payload.get("inputs")
+        if not isinstance(inputs, Mapping):
+            return None
+        cites = [spec.get("citation") for spec in inputs.values()
+                 if isinstance(spec, Mapping) and spec.get("kind") == "citation"]
+    else:
+        cites = payload.get("citations") or []
+    if not isinstance(cites, list) or not all(
+            isinstance(c, Mapping) and isinstance(c.get("handle"), str) for c in cites):
+        return None
+    return [c["handle"] for c in cites]
+
+
+def _texts(value: Any, skip: frozenset[str] = frozenset()) -> list[str]:
+    """Every string leaf of ``value`` outside the keys ``skip`` names."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, Mapping):
+        return [t for k, v in value.items() if k not in skip for t in _texts(v, skip)]
+    if isinstance(value, (list, tuple)):
+        return [t for v in value for t in _texts(v, skip)]
+    return []
+
+
+def stored_items(cases_file: Path) -> dict[str, list[dict[str, Any]]]:
+    """Per case, every stored item: its id, case seq, the handles it cites and the text
+    it holds (each string of its payload but ids, codes, handles and digests)."""
+    db = _open(cases_file)
+    out: dict[str, list[dict[str, Any]]] = {}
+    if db is None:
+        return out
+    skip = _ITEM_META | {"status", "handle", "digest", "current_digest"} | set(
+        ITEM_EVENTS.values())
+    with db:
+        for row in db.execute("SELECT case_id, case_seq, kind, payload_json FROM case_event "
+                              "ORDER BY seq"):
+            key = ITEM_EVENTS.get(row["kind"])
+            if key is None:
+                continue
+            try:
+                payload = json.loads(row["payload_json"])
+            except (TypeError, ValueError):
+                payload = None
+            if not isinstance(payload, Mapping):   # unreadable: counted, never skipped
+                out.setdefault(row["case_id"], []).append({
+                    "id": None, "seq": row["case_seq"], "kind": row["kind"],
+                    "handles": None, "texts": []})
+                continue
+            out.setdefault(row["case_id"], []).append({
+                "id": payload.get(key), "seq": row["case_seq"], "kind": row["kind"],
+                "handles": _cited(row["kind"], payload),
+                "texts": sorted({t for t in _texts(payload, frozenset(skip))
+                                 if len(t.strip()) >= 4})})
+    db.close()
+    return out
+
+
+def _served_item(view: Any, item: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """Every dict of a served case that is ``item`` (its id at its case seq)."""
+    if isinstance(view, Mapping):
+        found = [view] if view.get("id") == item["id"] and view.get("seq") == item["seq"] \
+            else []
+        return found + [d for v in view.values() for d in _served_item(v, item)]
+    if isinstance(view, (list, tuple)):
+        return [d for v in view for d in _served_item(v, item)]
+    return []
+
+
+def _withheld(served: Mapping[str, Any], item: Mapping[str, Any]) -> bool:
+    """A served item shows none of its content: ``content`` withheld, every other key
+    either metadata or None, citations without handle or digest, and no text the stored
+    item holds anywhere in what is served of it."""
+    from operating.cases import WITHHELD
+    if served.get("content") != WITHHELD:
+        return False
+    extra = {k for k, v in served.items() if k not in _ITEM_META and v is not None}
+    if extra - ({"status"} if item["kind"] == "proposal.recorded" else set()):
+        return False
+    cites = served.get("citations") or []
+    if not isinstance(cites, list) or any(
+            not isinstance(c, Mapping) or set(c) - {"index", "status"} for c in cites):
+        return False
+    shown = " ".join(_texts(served)).casefold()
+    return not any(text.casefold() in shown for text in item["texts"])
+
+
+def prove_cases(runtime: Any, tenant: str, readers: list[dict[str, Any]],
+                items: Mapping[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    """GOV-19: for each reader, every stored item of the cases it may list (newest
+    ``MAX_CASES``) whose citation the item gate refuses that reader is served withheld."""
+    from ontology.types import Actor
+    from operating.ontology_tools import item_gate_from_case_runtime
+
+    gate = item_gate_from_case_runtime(runtime)
+    out = {"cases_read": 0, "case_reads_refused": 0, "case_items_unresolved": 0,
+           "withheld_unresolved": 0, "unresolved_served": 0, "case_items_resolved": 0,
+           "case_items_unreadable": 0}
+    for reader in readers:
+        actor = Actor(tenant, frozenset({"employee:" + reader["oid"]}))
+        try:
+            listed = runtime.cases.list(actor, limit=MAX_CASES)
+        except Exception:  # noqa: BLE001 - a reader the store refuses is served no case
+            out["case_reads_refused"] += 1
+            continue
+        allowed: dict[str, bool] = {}
+        for summary_row in listed:
+            try:
+                view = runtime.cases.get(actor, summary_row["case_id"])
+            except Exception:  # noqa: BLE001 - nothing of the case is served
+                out["case_reads_refused"] += 1
+                continue
+            out["cases_read"] += 1
+            for item in items.get(summary_row["case_id"], ()):
+                if item["handles"] is None:
+                    out["case_items_unreadable"] += 1
+                    continue
+                for handle in item["handles"]:
+                    if handle not in allowed:
+                        allowed[handle] = gate(actor, handle)
+                if all(allowed[h] for h in item["handles"]):
+                    out["case_items_resolved"] += 1
+                    continue
+                out["case_items_unresolved"] += 1
+                if all(_withheld(d, item) for d in _served_item(view, item)):
+                    out["withheld_unresolved"] += 1
+                else:
+                    out["unresolved_served"] += 1
+    return out
+
+
+# ------------------------------------------------------------------ po_reference (REC-07)
+
+def po_reference_values(projection: Path) -> dict[str, list[str]]:
+    """Every current ``po_reference`` value of the served projection (read-only) and the
+    objects holding it: the non-PO-like ones (``customer_po_coverage.po_like``, the one
+    shape test) first, then up to ``MAX_PO_CONTROLS`` PO-like controls."""
+    from operating.customer_po_coverage import po_like
+    from operating.ontology_tools import PO_TEXT_FIELD
+
+    db = _open(projection)
+    if db is None:
+        return {}
+    held: dict[str, set[str]] = {}
+    with db:
+        for row in db.execute("SELECT object_id, value, field_path FROM object_values "
+                              "WHERE superseded_at IS NULL AND value_type = 'text'"):
+            if (isinstance(row["value"], str) and row["value"].strip()
+                    and str(row["field_path"]).rsplit(".", 1)[-1] == PO_TEXT_FIELD):
+                held.setdefault(row["value"], set()).add(row["object_id"])
+    db.close()
+    ordered = sorted(held, key=_digest)
+    other = [v for v in ordered if not po_like(v)][:MAX_PO_VALUES]
+    like = [v for v in ordered if po_like(v)][:MAX_PO_CONTROLS]
+    return {v: sorted(held[v])[:MAX_PO_OBJECTS] for v in other + like}
+
+
+def _words(text: str) -> str:
+    return " ".join(text.split()).casefold()
+
+
+def echoes(served: Any, value: str, asked: str | None = None) -> int:
+    """String leaves of ``served`` that state ``value`` (any case and spacing, as whole
+    words), outside the keys whose text is the code's own vocabulary and the caller's own
+    query (``asked``) given back."""
+    wanted, count = _words(value), 0
+    for text in _texts(served, CODE_KEYS):
+        words = _words(text)
+        if asked is not None and words == _words(asked):
+            continue
+        at = words.find(wanted)
+        while at >= 0:
+            end = at + len(wanted)
+            if (at == 0 or not words[at - 1].isalnum()) and (
+                    end == len(words) or not words[end].isalnum()):
+                count += 1
+                break
+            at = words.find(wanted, at + 1)
+    return count
+
+
+def prove_po(runtime: Any, tenant: str, readers: list[dict[str, Any]],
+             values: Mapping[str, list[str]], open_tools: Callable[[Any], Any]
+             ) -> dict[str, Any]:
+    """REC-07: per reader, every sampled non-PO-like ``po_reference`` value is stated by
+    no served object (``plx.object`` on each object holding it) or served case; for the
+    first ``MAX_FIND_READERS`` readers by no find result (``plx.find`` for the value and
+    for its first word) and for the first ``MAX_ANSWER_READERS`` by no answer
+    (``plx.investigate`` F2 on its customer PO, ``MAX_ANSWER_PROBES`` values). A PO-like
+    value is stated. ``po_probed_by`` counts the served results scanned per consumer."""
+    from ontology.types import Actor
+    from operating.customer_po_coverage import po_like
+
+    surfaces = ("object", "find", "answer", "case")
+    out = {"po_reference_values": len(values),
+           "po_reference_non_po_like": sum(not po_like(v) for v in values),
+           "po_reference_scanned": 0, "echoed_non_po": 0, "po_like_served": 0,
+           "echoed_by": dict.fromkeys(surfaces, 0), "po_probed_by": dict.fromkeys(surfaces, 0)}
+
+    def call(tools: Any, gated: Any, name: str, arguments: dict[str, Any]) -> Any:
+        try:
+            return tools.call(name, arguments, gated)
+        except Exception:  # noqa: BLE001 - a refused call serves nothing
+            return None
+
+    probed = 0
+    for reader in readers if values else ():
+        actor = Actor(tenant, frozenset({"employee:" + reader["oid"]}))
+        try:
+            gated = runtime.employee_gate(actor)
+        except Exception:  # noqa: BLE001 - a refused employee is served nothing
+            continue
+        finds, answers = probed < MAX_FIND_READERS, probed < MAX_ANSWER_READERS
+        probed += 1
+        served_cases = []
+        try:
+            for row in runtime.cases.list(actor, limit=MAX_CASES):
+                served_cases.append(runtime.cases.get(actor, row["case_id"]))
+        except Exception:  # noqa: BLE001 - nothing more of the cases is served
+            pass
+        tools = open_tools(actor)
+        try:
+            answered = 0
+            for value, objects in values.items():
+                views = [call(tools, gated, "plx.object", {"object_id": o}) for o in objects]
+                shown = [v for v in views if isinstance(v, Mapping) and v.get("object")]
+                if not shown:
+                    continue
+                out["po_reference_scanned"] += 1
+                if po_like(value):
+                    out["po_like_served"] += int(any(echoes(v, value) for v in shown))
+                    continue
+                results = {"object": [(v, None) for v in shown],
+                           "case": [(c, None) for c in served_cases]}
+                if finds:
+                    # The value asked for whole (the caller's own words given back are no
+                    # echo) and by its first word, which finds it without stating it.
+                    words = value.split()
+                    asks = [value] + words[:1] * (len(words) > 1)
+                    results["find"] = [(call(tools, gated, "plx.find", {"query": ask}), ask)
+                                       for ask in asks]
+                root = next((o for o in objects if o.startswith(PO_ROOT_TYPE + ":")), None)
+                if answers and root is not None and answered < MAX_ANSWER_PROBES:
+                    answered += 1
+                    results["answer"] = [(call(tools, gated, "plx.investigate",
+                                               {"family": "F2", "root": root}), None)]
+                for where, served in results.items():
+                    count = sum(echoes(result, value, asked=ask) for result, ask in served
+                                if result is not None)
+                    out["po_probed_by"][where] += sum(r is not None for r, _ in served)
+                    out["echoed_by"][where] += count
+                    out["echoed_non_po"] += count
+        finally:
+            close = getattr(tools, "close", None)
+            if close is not None:
+                close()
+    return out
+
+
 # ------------------------------------------------------------------ readers
 
 def readers_from_snapshot(path: Path, tenant_id: str, directory: Any = None
@@ -333,25 +650,51 @@ def readers_from_snapshot(path: Path, tenant_id: str, directory: Any = None
 
 # ------------------------------------------------------------------ main
 
+def _copy(source: Path, target: Path) -> None:
+    """A consistent copy of a host store (read through ``mode=ro``), when it exists."""
+    held = _open(source)
+    if held is None:
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    copy = sqlite3.connect(target)
+    try:
+        held.backup(copy)
+    finally:
+        copy.close()
+        held.close()
+
+
 def _blocked(reason: str, **extra: Any) -> dict[str, Any]:
     return {"check": CHECK, "ok": False, "blocked_reason": reason, "evidence_label": EVIDENCE,
             "requests_sent": 0, **extra}
 
 
-def summary(environ: Mapping[str, str], *, directory: Any = None, mail_scope: Any = None
-            ) -> dict[str, Any]:
+def summary(environ: Mapping[str, str], *, directory: Any = None, mail_scope: Any = None,
+            default_config: str | None = None) -> dict[str, Any]:
     """``directory`` / ``mail_scope`` (tests): the Entra directory provider and the case
-    mail scope; live: the host's (``operating.host.directory_provider``, built-in scope)."""
+    mail scope; live: the host's (``operating.host.directory_provider``, built-in scope).
+    ``default_config``: the host config read when the environment names none."""
+    own = environ.get("PLX_WORKBENCH_HOST_CONFIG")
+    out = _summary(environ, own or default_config, directory, mail_scope)
+    if own or default_config:
+        out["host_config_from"] = "environment" if own else "default"
+    return out
+
+
+def _summary(environ: Mapping[str, str], config_text: str | None, directory: Any,
+             mail_scope: Any) -> dict[str, Any]:
     from integrations.live_source_guard import LiveSourceAudience
     from integrations.people_exclusion import PeopleExclusion
     from operating import host as host_module
-    from operating.case_runtime import CaseRuntime, LiveReaders
-    from operating.case_tools_host import CaseCaptures
+    from integrations import capture_mail
+    from integrations import capture_sharepoint as cs
+    from operating.case_runtime import (CASE_RUNTIME_DIR, CASES_FILE, MIRROR_FILE, CaseRuntime,
+                                        LiveReaders)
+    from operating.case_tools_host import CaseCaptures, serving_tools
     from operating.employee_permissions import (EmployeePermissionPolicy,
                                                EmployeePermissionResolver, PortalAccessSnapshot)
 
-    state_text, config_text = (environ.get("PLX_WORKBENCH_STATE_DIR"),
-                               environ.get("PLX_WORKBENCH_HOST_CONFIG"))
+    state_text = environ.get("PLX_WORKBENCH_STATE_DIR")
     if not state_text:
         return _blocked("state_dir_unset")
     if not config_text:
@@ -393,37 +736,70 @@ def summary(environ: Mapping[str, str], *, directory: Any = None, mail_scope: An
     else:
         domains = mail_scope.internal_domains
     found, held, unresolved = targets(state, exclusion, domains)
+    held_cases = state / CASE_RUNTIME_DIR / CASES_FILE
+    items = stored_items(held_cases)
+    projection = host_module.projection_path(state)
+    values = po_reference_values(projection)
     resolver = EmployeePermissionResolver(policy, portal, directory=directory)
     with tempfile.TemporaryDirectory() as tmp:
         own = Path(tmp)
         if (state / "teams-capture").is_dir():
             (own / "teams-capture").symlink_to((state / "teams-capture").resolve(),
                                                target_is_directory=True)
+        # The stored cases and mirror rows, copied: the runtime opens its stores to write.
+        for name in (CASES_FILE, MIRROR_FILE):
+            _copy(state / CASE_RUNTIME_DIR / name, own / CASE_RUNTIME_DIR / name)
         runtime = CaseRuntime(own, client=None, audience=config.mirror_audience,
                               tenant=config.tenant, live=LiveReaders(audience),
                               employee_permissions=resolver, require_employee=True,
                               mail_scope=mail_scope, people_exclusion=exclusion)
+
+        def open_tools(actor: Any) -> Any:
+            # The ontology host a session is served (``Host.served_tools``), read-only.
+            return serving_tools(
+                runtime, actor, store_path=projection,
+                mail_capture_dir=state if capture_mail.store_exists(state) else None,
+                sharepoint_capture_dir=state if cs.store_exists(state) else None,
+                portal_captured="portal" in config.sources,
+                knowledge_namespaces=config.knowledge_namespaces,
+                marking_grants=config.marking_grants)
+
         try:
             runtime.captures = CaseCaptures(runtime, mail_capture_dir=state,
                                             sharepoint_capture_dir=state)
             proof = prove(runtime, config.tenant, readers, found)
+            cases = prove_cases(runtime, config.tenant, readers, items)
+            po = prove_po(runtime, config.tenant, readers, values, open_tools)
         finally:
             runtime.close()
-    ok = proof["denied_leaks"] == 0 and proof["untyped"] == 0 and held == 0
+    proof["denied_leaks"] += cases["unresolved_served"]
+    ok = (proof["denied_leaks"] == 0 and proof["untyped"] == 0 and held == 0
+          and cases["case_items_unreadable"] == 0 and po["echoed_non_po"] == 0)
     out = {"check": CHECK, "ok": ok, "evidence_label": EVIDENCE, "requests_sent": 0,
            "excluded_held": held, "excluded_people": exclusion.count,
-           "senders_unresolved": unresolved, **proof}
+           "senders_unresolved": unresolved, **proof, **cases, **po}
     if ok:
-        absent = [k for k in REQUEST_KINDS if not proof["kinds"][k]["requests"]]
+        absent = [f"{k}_requests_absent" for k in REQUEST_KINDS
+                  if not proof["kinds"][k]["requests"]]
+        absent += ["case_store_absent"] if not held_cases.is_file() else (
+            ["case_store_unread"] if not cases["cases_read"] else
+            ["case_unresolved_citations_absent"] if not cases["case_items_unresolved"] else [])
+        absent += ["projection_absent"] if not projection.is_file() else (
+            ["po_reference_values_absent"] if not values else
+            ["po_reference_unserved"] if not po["po_reference_scanned"] else [])
         if absent:
-            out["blocked_reason"] = f"{absent[0]}_requests_absent"
+            out["blocked_reason"] = absent[0]
     return out
 
 
 def main(argv: list[str] | None = None, *, environ: Mapping[str, str] | None = None,
          directory: Any = None, mail_scope: Any = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
+    parser.add_argument("--default-host-config", default=None,
+                        help="host config read when PLX_WORKBENCH_HOST_CONFIG is unset")
+    args = parser.parse_args(argv)
     out = summary(os.environ if environ is None else environ, directory=directory,
-                  mail_scope=mail_scope)
+                  mail_scope=mail_scope, default_config=args.default_host_config)
     print(json.dumps(out, sort_keys=True))
     return 0 if out["ok"] or "blocked_reason" in out else 1
 

@@ -1,6 +1,6 @@
 """Permission-enforcing local mirror of the Portal Workbench reporting API.
 
-Part A of the case runtime (docs/reference/case-runtime.md section 1 and the
+Part A of the case runtime (devloop/CASE-RUNTIME.md section 1 and the
 ``plx.source_catalog`` / ``plx.source_rows`` / ``plx.source_resolve`` tools).
 
 The mirror is a disposable SQLite projection of approved Workbench API
@@ -28,8 +28,9 @@ cursor is never read again at a size already proven too small or too large, so
 when both errors close that window the relation is a ``source_defect``. A
 keyset that breaks its contract (a key on a later page again, a cursor that does
 not move or does not name the page's last key) is a ``paging_defect``; it and a
-traversal past ``max_rows_per_relation`` (``row_bound``) are abandoned, never
-resumed into a capture stitched from two reads. Every other interrupted
+traversal past ``max_rows_per_relation`` (``row_bound``: rows counted over the
+whole traversal, across the runs it resumes in) are abandoned, never resumed into
+a capture stitched from two reads. Every other interrupted
 traversal (the time budget, throttling, a 500, a source defect) keeps its
 committed pages and resumes on the next run: that is how a relation too large
 for one budget completes over several runs.
@@ -84,7 +85,7 @@ one removal path, and the ontology projection learns the successor from it. A ke
 with no successor stays ``missing_from_source_since``; an incremental capture never
 marks a key missing, so it never infers a replacement.
 
-Lineage: every stored row carries a ``lineage`` derived from
+Lineage (09-CRITIQUE R1): every stored row carries a ``lineage`` derived from
 the declared rules in ``integrations/source_mirror_ingest.json`` (schema,
 ``external_id`` prefixes, ``custom_fields`` markers, Portal bridge ids), so a
 staging-native or unclassified gold row is labelled wherever the API exposes
@@ -193,6 +194,7 @@ from ontology.core import LEVELS, Actor
 
 from .http import SourceUnavailable
 from .workbench_read_api import PagingDefect, RelationUnavailable, catalog_revision
+from .capture_store import bound_wal, checkpoint
 
 
 AUDIENCE_SCHEMA = "plx-source-mirror-audience/v1"
@@ -215,6 +217,48 @@ _YYYYMMDD = re.compile(r"^(\d{4})(\d{2})(\d{2})$")
 _SINCE_MODES = ("timestamptz", "timestamp-utc", "yyyymmdd-text")
 # mirror_meta name of a copy restored from the capture store (integrations/mirror_capture.py).
 PERSISTED_FALLBACK_META = "persisted_fallback"
+# A scoped fallback (``integrations/mirror_capture.py``): a small file holding its own
+# ``mirror_meta`` and this table, which names the shared mirror (attached read-only) and the
+# scope relations; TEMP views over the shared mirror's relation tables show only the scope.
+POINTER_TABLE = "mirror_pointer"
+# Shared-mirror tables keyed by relation, shown through scope views; capture_state and
+# absence_seen follow their capture and scan.
+_SCOPED_TABLES = ("absence_scan", "capture", "identifier_index", "persisted_relation",
+                  "refresh_failure", "relation_lineage", "relation_soft_delete",
+                  "relation_state", "row_current", "row_removal", "row_version", "stage_row",
+                  "stage_seen", "sync_progress")
+
+
+def attach_scoped(conn: sqlite3.Connection) -> list[str] | None:
+    """When ``conn``'s file is a scoped fallback (it holds ``POINTER_TABLE``): attach the
+    shared mirror it names read-only and shadow its relation tables with TEMP views of the
+    scope; returns the scope relations. None for any other file (nothing changed). Staged
+    pages and unfinished traversals are never shown (they were never served)."""
+    if conn.execute("SELECT 1 FROM main.sqlite_master WHERE name = ?",
+                    (POINTER_TABLE,)).fetchone() is None:
+        return None
+    path, relations = conn.execute(f"SELECT path, relations FROM {POINTER_TABLE}").fetchone()
+    scope = json.loads(relations)
+    conn.execute("ATTACH DATABASE ? AS shared", (f"file:{path}?mode=ro",))
+    have = {row[0] for row in conn.execute("SELECT name FROM shared.sqlite_master "
+                                           "WHERE type = 'table'")}
+    # A TEMP view cannot take parameters: the scope is written into it as quoted literals.
+    quoted = ", ".join("'" + str(name).replace("'", "''") + "'" for name in scope)
+    for table in _SCOPED_TABLES:
+        if table not in have:
+            continue
+        where = "0" if table in ("stage_row", "stage_seen", "sync_progress") \
+            else f"relation IN ({quoted})"
+        conn.execute(f"CREATE TEMP VIEW {table} AS SELECT * FROM shared.{table} WHERE {where}")
+    if "capture_state" in have:
+        conn.execute("CREATE TEMP VIEW capture_state AS SELECT * FROM shared.capture_state "
+                     "WHERE capture_id IN (SELECT capture_id FROM temp.capture)")
+    if "absence_seen" in have and "absence_scan" in have:
+        conn.execute("CREATE TEMP VIEW absence_seen AS SELECT * FROM shared.absence_seen "
+                     "WHERE scan_id IN (SELECT scan_id FROM temp.absence_scan)")
+    return scope
+
+
 _WHERE_OPS = ("eq", "prefix", "in", "gte", "lte", "is_null")
 # IEEE-754 binary64 round-trips at most 15 significant decimal digits.
 _BINARY64_DIGITS = 15
@@ -296,6 +340,14 @@ DEFAULT_IDENTIFIERS: dict[str, tuple[tuple[str, str, str], ...]] = {
         ("ordnumber", "sage_order_number", "system_document_number"),
         ("ponumber", "customer_po_number", "external_reference"),
         ("shinumber", "sage_shipment_number", "system_document_number")),
+    # Portal snapshots of BC invoices (no company column: a match is a lead, never an identity).
+    "public.bc_invoice_snapshot": (
+        ("number", "bc_sales_invoice_number", "system_document_number"),
+        ("external_document_number", "bc_invoice_external_document_number", "external_reference")),
+    "public.bc_purchase_invoice_snapshot": (
+        ("number", "bc_purchase_invoice_number", "system_document_number"),
+        ("order_number", "bc_purchase_order_number", "system_document_number"),
+        ("vendor_invoice_number", "vendor_invoice_number", "external_reference")),
     "sage.oe_shipment_header": (
         ("shinumber", "sage_shipment_number", "system_document_number"),
         ("ordnumber", "sage_order_number", "system_document_number"),
@@ -421,7 +473,7 @@ def sales_order_po_reference_strength(row: Mapping[str, Any]) -> tuple[str, str]
         return "external_reference", "fm_oe_ensure_custpocode"
     if source is None and portal_trim_text(fields.get("fmId")):
         # Same lineage name as customer_po_coverage.classify_origin for an fmId row
-        # without source ; the strength is unchanged.
+        # without source (review 7f818ce minor); the strength is unchanged.
         return "external_reference", "fm_linked_without_source"
     if source in (None, "gold-so-bridge"):
         return "external_reference", "portal_order_entry"
@@ -930,17 +982,28 @@ def _order_value(value: Any) -> tuple[int, Any]:
 
 INGEST_SCHEMA = "plx-source-mirror-ingest/v1"
 DEFAULT_INGEST_PATH = Path(__file__).with_name("source_mirror_ingest.json")
-# The C0 lineage values (ontology/schema/_format.schema.json $defs.lineage)
-# a Portal mirror row can carry. Like the C0 binding examples, a gold row with
+# The C0 lineage values (ontology/schema/_format.schema.json $defs.lineage, 09-CRITIQUE
+# R1) a Portal mirror row can carry. Like the C0 binding examples, a gold row with
 # no exposed origin marker defaults to gold_native_staging (never authority until a
-# human confirms it); its rule id (lineage_rule ``gold_no_origin_marker``)
+# human confirms it, Q1); its rule id (lineage_rule ``gold_no_origin_marker``)
 # says the origin is unproven. A row no rule matches has lineage None.
 LINEAGES = frozenset({"fm_bronze", "sage_bronze", "silver_view", "gold_etl_from_fm",
                       "gold_etl_from_sage", "gold_native_staging"})
 UNCLASSIFIED = (None, "no_lineage_rule")
 _LINEAGE_OPS = ("eq", "prefix", "gte", "in", "is_null", "present")
+# The highest ``max_rows_per_relation`` a configuration may set. The bound stops a
+# runaway traversal (one that keeps reading rows appended behind its cursor, as the
+# Portal ETL's cuid() re-inserts can); it is counted over the whole traversal, across
+# the runs a budget-cut traversal resumes in, and must never cut a real relation.
+# Measured 2026-10-29 by key-ordered full reads (page size 5000): the largest served
+# relation, public.app_manufacturing_order_line, holds 31,658,270 rows (262,608
+# natural keys: the ETL's per-run copies), read in 3,608 s (8,776 rows/s). The
+# configured bound (source_mirror_ingest.json) is about twice that; the cap leaves
+# room to raise it again without letting one traversal stage an unbounded file.
+MAX_ROWS_PER_RELATION_CAP = 100_000_000
 _SYNC_KEYS = {"page_size": (1, 5000), "min_page_size": (1, 5000),
-              "max_rows_per_relation": (1, 1_000_000), "throttle_attempts": (1, 20),
+              "max_rows_per_relation": (1, MAX_ROWS_PER_RELATION_CAP),
+              "throttle_attempts": (1, 20),
               "max_retry_after_seconds": (0, 3600)}
 # Why a key was not held by its source over a ``row_removal`` interval; the row label
 # of a soft delete says how its time was read (the source's value, or the capture).
@@ -1303,6 +1366,11 @@ CREATE TABLE IF NOT EXISTS stage_row (
   run_index INTEGER NOT NULL, run_length INTEGER NOT NULL, row_json TEXT NOT NULL,
   row_digest TEXT NOT NULL, lineage TEXT, lineage_basis TEXT,
   PRIMARY KEY (capture_id, key_json, run_index)) WITHOUT ROWID;
+-- The keys a full traversal saw with their content unchanged: they are not staged and
+-- their rows are not written (``_apply_page``); only this key is, until ``_finish``.
+CREATE TABLE IF NOT EXISTS stage_seen (
+  relation TEXT NOT NULL, capture_id INTEGER NOT NULL, key_json TEXT NOT NULL,
+  PRIMARY KEY (capture_id, key_json)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS absence_scan (
   scan_id INTEGER PRIMARY KEY AUTOINCREMENT, relation TEXT NOT NULL,
   state TEXT NOT NULL CHECK (state IN ('in_progress','complete','abandoned')),
@@ -1334,12 +1402,50 @@ _ADDED_COLUMNS = {
     # The writer that holds an in-progress traversal (NULL on rows written
     # before owners existed; the next refresh takes those over as a resume).
     "sync_progress": ("owner TEXT",),
+    # The latest full traversal that saw every row of the relation then present, and
+    # when it finished: a row it saw unchanged is not written (``_sighting_sql``).
+    "relation_state": ("seen_through_capture INTEGER", "seen_through_at TEXT"),
 }
+_ADDED_COLUMNS["row_current"] += (
+    # The ``seen_through_capture`` in force when a key scan lifted the row's absence:
+    # that traversal did not see the row, so only a later one counts as its sighting.
+    "sighting_floor INTEGER",)
 _ROW_CURRENT_COLUMNS = ("relation, key_json, run_index, run_length, row_json, row_digest, "
                         "capture_id, first_seen_capture, first_seen_at, last_seen_capture, "
                         "last_seen_at, absent_since_capture, missing_from_source_since, "
                         "missing_basis, lineage, lineage_basis, deleted_in_source, "
                         "deleted_basis")
+
+
+def _sighting_sql(r: str) -> tuple[str, str]:
+    """SQL for the last sighting (capture id, time) of a ``row_current`` row ``r``.
+
+    A full traversal writes only the rows whose content or state changed; a row it saw
+    unchanged keeps its stored ``last_seen_*`` and the relation records the traversal
+    once (``relation_state.seen_through_*``, set only when every row then present was
+    seen). A present row's sighting is the later of the two; an absent row's (and one
+    whose absence a key scan lifted after that traversal: ``sighting_floor``) is its
+    own. Every write that ends a row's presence or supersedes it stores this value first,
+    so the stored value is exact wherever the rule no longer applies."""
+    applies = (f"s.relation = {r}.relation AND {r}.absent_since_capture IS NULL AND "
+               f"s.seen_through_capture > COALESCE({r}.sighting_floor, 0)")
+    return (f"MAX({r}.last_seen_capture, COALESCE((SELECT s.seen_through_capture FROM "
+            f"relation_state s WHERE {applies}), 0))",
+            f"MAX({r}.last_seen_at, COALESCE((SELECT s.seen_through_at FROM "
+            f"relation_state s WHERE {applies}), ''))")
+
+
+_SEEN_CAPTURE, _SEEN_AT = _sighting_sql("row_current")
+
+
+def _seen(record: sqlite3.Row, part: str) -> Any:
+    """A cited record's last sighting (``part``: ``capture`` or ``at``): a current row
+    read with ``_sighting_sql`` (``seen_*``), else a version's stored value."""
+    if f"seen_{part}" in record.keys():
+        return record[f"seen_{part}"]
+    return record[f"last_seen_{part}"]
+
+
 # The replacement label of a key's open absence, for a ``row_current`` row ``{r}``.
 _REPLACED_SQL = ("(SELECT json_array(rm.replaced_basis, rm.replaced_by) FROM row_removal rm "
                  "WHERE rm.relation = {r}.relation AND rm.key_json = {r}.key_json AND "
@@ -1421,7 +1527,7 @@ class SourceMirror:
                 raise ValueError("source_mirror_policy_invalid")
         if (not isinstance(yyyymmdd_overlap_days, int) or not 1 <= yyyymmdd_overlap_days <= 31
                 or not isinstance(max_rows_per_relation, int)
-                or not 1 <= max_rows_per_relation <= 1_000_000
+                or not 1 <= max_rows_per_relation <= MAX_ROWS_PER_RELATION_CAP
                 or not isinstance(page_size, int) or not 1 <= page_size <= 5000
                 or not isinstance(read_attempts, int) or not 1 <= read_attempts <= 5
                 or not isinstance(throttle_attempts, int) or not 1 <= throttle_attempts <= 20
@@ -1489,7 +1595,17 @@ class SourceMirror:
         self._db = sqlite3.connect(str(path), isolation_level=None)
         self._db.row_factory = sqlite3.Row
         self._db.execute(f"PRAGMA busy_timeout = {int(_busy_timeout_ms)}")
+        # A scoped fallback reads the shared mirror through scope views; it is never written
+        # (no schema, migration or meta write), and only offline.
+        self.scope: list[str] | None = attach_scoped(self._db)
+        if self.scope is not None:
+            if client is not None:
+                self._db.close()
+                raise ValueError("source_mirror_persisted_copy_is_offline")
+            self._open_scoped()
+            return
         self._db.execute("PRAGMA journal_mode = WAL")
+        bound_wal(self._db)
         removals_new = self._db.execute(
             "SELECT 1 FROM sqlite_master WHERE name = 'row_removal'").fetchone() is None
         self._db.executescript(_DDL)
@@ -1530,9 +1646,21 @@ class SourceMirror:
         self.fallback: dict[str, Any] | None = (json.loads(fallback) if fallback is not None
                                                 else None)
 
+    def _open_scoped(self) -> None:
+        """The read state of a scoped fallback: its generation, legacy marker and the
+        fallback freshness it was restored with (its own ``mirror_meta``)."""
+        self.generation = self._meta("generation")
+        legacy_max = self._meta("legacy_capture_max")
+        self._legacy_capture_max = int(legacy_max) if legacy_max is not None else None
+        fallback = self._meta(PERSISTED_FALLBACK_META)
+        self.fallback = json.loads(fallback) if fallback is not None else None
+
     # -- lifecycle -------------------------------------------------------
 
     def close(self) -> None:
+        """Close the connection after a checkpoint of the WAL (no wait), so the
+        writes of a sync never stay in a growing WAL file (``capture_store.checkpoint``)."""
+        checkpoint(self._db)
         self._db.close()
 
     def __enter__(self) -> "SourceMirror":
@@ -2123,6 +2251,8 @@ class SourceMirror:
                                  "WHERE capture_id = ?", (note, progress["capture_id"]))
                 self._db.execute("DELETE FROM stage_row WHERE capture_id = ?",
                                  (progress["capture_id"],))
+                self._db.execute("DELETE FROM stage_seen WHERE capture_id = ?",
+                                 (progress["capture_id"],))
             self._db.execute("DELETE FROM sync_progress WHERE relation = ?",
                              (progress["relation"],))
 
@@ -2331,9 +2461,12 @@ class SourceMirror:
                     [values[c] for c in capture_columns])
                 mapping[row["capture_id"]] = cursor.lastrowid
             refs = {"capture_state": ("capture_id",),
-                    "relation_state": ("last_full_capture_id", "last_capture_id"),
+                    # Every column holding a capture id of the relation: the sighting
+                    # rule (``_sighting_sql``) compares them with each other.
+                    "relation_state": ("last_full_capture_id", "last_capture_id",
+                                       "seen_through_capture"),
                     "row_current": ("capture_id", "first_seen_capture", "last_seen_capture",
-                                    "absent_since_capture"),
+                                    "absent_since_capture", "sighting_floor"),
                     "row_version": ("capture_id", "last_seen_capture",
                                     "superseded_by_capture"),
                     "identifier_index": (), "relation_lineage": (), "row_removal": (),
@@ -2394,18 +2527,24 @@ class SourceMirror:
             keys = list(runs)
             for start in range(0, len(keys), 500):
                 batch = keys[start:start + 500]
+                marks = ",".join("?" for _ in batch)
                 if self._db.execute(
-                        "SELECT 1 FROM stage_row WHERE capture_id = ? AND key_json IN ("
-                        + ",".join("?" for _ in batch) + ") LIMIT 1",
-                        [capture_id, *batch]).fetchone():
+                        f"SELECT 1 FROM stage_row WHERE capture_id = ? AND key_json IN ({marks}) "
+                        f"UNION ALL SELECT 1 FROM stage_seen WHERE capture_id = ? AND key_json "
+                        f"IN ({marks}) LIMIT 1",
+                        [capture_id, *batch, capture_id, *batch]).fetchone():
                     # The service keeps an equal-key run on one page; a key that
                     # recurs on a later page means a broken page boundary.
                     raise MirrorError("paging_defect", "workbench API duplicate page key")
+            unchanged = (self._unchanged_keys(relation, runs, progress, now_iso)
+                         if progress["mode"] != "incremental" else set())
+            self._db.executemany("INSERT INTO stage_seen VALUES (?, ?, ?)",
+                                 [(relation, capture_id, key_json) for key_json in unchanged])
             self._db.executemany(
                 "INSERT INTO stage_row VALUES (?,?,?,?,?,?,?,?,?)",
                 [(relation, capture_id, key_json, index, len(run), row_json, digest,
                   *classify_lineage(self._lineage_rules, relation, row))
-                 for key_json, run in runs.items()
+                 for key_json, run in runs.items() if key_json not in unchanged
                  for index, (digest, row_json, row) in enumerate(run)])
             pages = progress["pages"] + 1
             received = progress["rows_received"] + len(page["rows"])
@@ -2425,6 +2564,28 @@ class SourceMirror:
                     (page["next_cursor"], pages, received, longest, now_iso, relation))
         progress.update(capture_id=capture_id, cursor=page["next_cursor"], pages=pages,
                         rows_received=received, max_run_length=longest, updated_at=now_iso)
+
+    def _unchanged_keys(self, relation: str,
+                        runs: Mapping[str, list[tuple[str, str, Mapping[str, Any]]]],
+                        progress: Mapping[str, Any], now_iso: str) -> set[str]:
+        """The keys of a full traversal's page whose stored state the merge would leave
+        as it is: present (not absent), the same row digests in the same order, and the
+        same soft-delete state (deleted or not; a key deleted again keeps its label).
+        Their rows are neither staged nor written: ``stage_seen`` holds the key and the
+        relation's ``seen_through_*`` their sighting (``_sighting_sql``)."""
+        soft = soft_delete_columns(self._soft_delete_rules, relation,
+                                   json.loads(progress["columns_json"]))
+        existing = self._existing_runs(relation, list(runs))
+        unchanged = set()
+        for key_json, run in runs.items():
+            old = existing.get(key_json)
+            if old is None or old["absent"] or old["digests"] != tuple(i[0] for i in run):
+                continue
+            deleted = _soft_deleted([i[2] for i in run], soft, now_iso) if soft else None
+            if (deleted is None) != (old["deleted"] is None):
+                continue
+            unchanged.add(key_json)
+        return unchanged
 
     def _insert_progress(self, relation: str, capture_id: int, progress: Mapping[str, Any],
                          page: Mapping[str, Any], pages: int, received: int, longest: int,
@@ -2498,11 +2659,11 @@ class SourceMirror:
                     counts["changed"] += 1
                     first_capture, first_at = old["first_seen_capture"], old["first_seen_at"]
                     self._db.execute(
-                        """INSERT OR IGNORE INTO row_version (relation, key_json, capture_id,
+                        f"""INSERT OR IGNORE INTO row_version (relation, key_json, capture_id,
                            run_index, run_length, row_json, row_digest, last_seen_capture,
                            last_seen_at, superseded_by_capture, lineage, lineage_basis)
                            SELECT relation, key_json, capture_id, run_index, run_length,
-                           row_json, row_digest, last_seen_capture, last_seen_at, ?,
+                           row_json, row_digest, {_SEEN_CAPTURE}, {_SEEN_AT}, ?,
                            lineage, lineage_basis
                            FROM row_current WHERE relation = ? AND key_json = ?""",
                         (capture_id, relation, key_json))
@@ -2543,9 +2704,13 @@ class SourceMirror:
         cap = _parse_instant(generated_at)
         best: tuple[datetime, Any] | None = None
         null_count = future = 0
+        path = f'$."{since["column"]}"'
+        # The rows seen unchanged were not staged: their stored content is what was read.
         for (raw,) in self._db.execute(
-                "SELECT json_extract(row_json, ?) FROM stage_row WHERE capture_id = ?",
-                (f'$."{since["column"]}"', capture_id)):
+                "SELECT json_extract(row_json, ?) FROM stage_row WHERE capture_id = ? "
+                "UNION ALL SELECT json_extract(r.row_json, ?) FROM stage_seen v JOIN "
+                "row_current r ON r.relation = v.relation AND r.key_json = v.key_json "
+                "WHERE v.capture_id = ?", (path, capture_id, path, capture_id)):
             moment = _since_instant(since["mode"], raw)
             if moment is None:
                 null_count += 1
@@ -2588,22 +2753,31 @@ class SourceMirror:
                 entry.get("since"))
             absent = 0
             if full:
-                # Seen by this traversal = last_seen_capture == capture_id; seen by
-                # a later capture (another process) = greater. Neither is missing.
+                counts["unchanged"] += self._lift_seen(relation, capture_id, now_iso)
+                # Seen by this traversal = last_seen_capture == capture_id (staged) or its
+                # key in stage_seen (seen unchanged); seen by a later capture (another
+                # process) = greater. None of them is missing.
                 missing = ("relation = ? AND last_seen_capture < ? "
-                           "AND absent_since_capture IS NULL")
+                           "AND absent_since_capture IS NULL AND NOT EXISTS (SELECT 1 FROM "
+                           "stage_seen v WHERE v.capture_id = ? AND "
+                           "v.key_json = row_current.key_json)")
+                params = (relation, capture_id, capture_id)
                 absent = self._db.execute(
                     f"SELECT COUNT(DISTINCT key_json) FROM row_current WHERE {missing}",
-                    (relation, capture_id)).fetchone()[0]
-                self._start_removals(missing, (relation, capture_id), now_iso)
+                    params).fetchone()[0]
+                self._start_removals(missing, params, now_iso)
                 if absent and prior is not None and prior["last_full_capture_id"]:
                     self._label_replacements(relation, prior["last_full_capture_id"],
                                              columns, missing, capture_id)
+                # Their last sighting is stored first: once absent, the relation's
+                # seen_through no longer stands for it.
                 self._db.execute(
-                    "UPDATE row_current SET absent_since_capture = ?, "
+                    f"UPDATE row_current SET last_seen_capture = {_SEEN_CAPTURE}, "
+                    f"last_seen_at = {_SEEN_AT}, absent_since_capture = ?, "
                     f"missing_from_source_since = ?, missing_basis = ? WHERE {missing}",
-                    (capture_id, now_iso, f"full_traversal:{capture_id}", relation, capture_id))
+                    (capture_id, now_iso, f"full_traversal:{capture_id}", *params))
             self._db.execute("DELETE FROM stage_row WHERE capture_id = ?", (capture_id,))
+            self._db.execute("DELETE FROM stage_seen WHERE capture_id = ?", (capture_id,))
             self._db.execute(
                 """UPDATE capture SET finished_at = ?, keys_new = ?, keys_changed = ?,
                    keys_unchanged = ?, keys_absent = ?, health_after_json = ?
@@ -2632,8 +2806,8 @@ class SourceMirror:
                    last_capture_id, last_refresh_at, last_refresh_mode, last_read_seconds,
                    watermark, watermark_raw, row_count, absent_count, null_since_rows,
                    future_since_rows, health_before_json, health_after_json,
-                   identifier_columns_json)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   identifier_columns_json, seen_through_capture, seen_through_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (relation, progress["catalog_revision"], _canonical(entry),
                  _canonical(list(entry["key"])), progress["columns_json"],
                  since_entry.get("column"), since_entry.get("mode"), int(key_unique),
@@ -2645,9 +2819,32 @@ class SourceMirror:
                  present, absent_count,
                  null_since if full else prior["null_since_rows"], future,
                  _canonical(health_before), _canonical(dict(health_after)),
-                 _canonical(identifier_columns)))
+                 _canonical(identifier_columns),
+                 # Every row present now was seen by a full traversal (staged, seen
+                 # unchanged, or marked absent just above).
+                 capture_id if full else (prior["seen_through_capture"] if prior else None),
+                 now_iso if full else (prior["seen_through_at"] if prior else None)))
             self._db.execute("DELETE FROM sync_progress WHERE relation = ?", (relation,))
         return capture_id
+
+    def _lift_seen(self, relation: str, capture_id: int, now_iso: str) -> int:
+        """The keys this full traversal saw unchanged (``stage_seen``; inside
+        ``_finish``): their count, after the absence of any of them marked while the
+        traversal ran (a key scan) is lifted, as the merge lifts a staged key's."""
+        seen = ("relation = ? AND absent_since_capture IS NOT NULL AND key_json IN "
+                "(SELECT key_json FROM stage_seen WHERE capture_id = ?)")
+        self._db.execute(
+            "UPDATE row_removal SET until = MAX(since, ?), until_basis = ? WHERE "
+            "relation = ? AND basis = ? AND until IS NULL AND key_json IN "
+            f"(SELECT key_json FROM row_current WHERE {seen})",
+            (now_iso, UNTIL_OBSERVED, relation, MISSING_FROM_SOURCE, relation, capture_id))
+        self._db.execute(
+            "UPDATE row_current SET last_seen_capture = ?, last_seen_at = ?, "
+            "absent_since_capture = NULL, missing_from_source_since = NULL, "
+            f"missing_basis = NULL, sighting_floor = NULL WHERE {seen}",
+            (capture_id, now_iso, relation, capture_id))
+        return self._db.execute("SELECT COUNT(*) FROM stage_seen WHERE capture_id = ?",
+                                (capture_id,)).fetchone()[0]
 
     def _label_replacements(self, relation: str, previous_full: int, columns: Sequence[str],
                             missing: str, capture_id: int) -> None:
@@ -2662,7 +2859,7 @@ class SourceMirror:
         vanished = {}
         for key_json, row_json in self._db.execute(
                 f"SELECT key_json, row_json FROM row_current WHERE {missing} "
-                "AND run_index = 0", (relation, capture_id)):
+                "AND run_index = 0", (relation, capture_id, capture_id)):
             text = natural_text(json.loads(row_json), natural)
             if text is not None:
                 vanished[key_json] = text
@@ -2672,8 +2869,10 @@ class SourceMirror:
         appeared, content, kept = {}, {}, Counter()
         for key_json, first, content_capture, row_json in self._db.execute(
                 "SELECT key_json, first_seen_capture, capture_id, row_json FROM row_current "
-                "WHERE relation = ? AND run_index = 0 AND last_seen_capture >= ?",
-                (relation, capture_id)):
+                "WHERE relation = ? AND run_index = 0 AND (last_seen_capture >= ? OR EXISTS "
+                "(SELECT 1 FROM stage_seen v WHERE v.capture_id = ? AND "
+                "v.key_json = row_current.key_json))",
+                (relation, capture_id, capture_id)):
             text = natural_text(json.loads(row_json), natural)
             if text not in wanted:
                 continue
@@ -2787,8 +2986,8 @@ class SourceMirror:
         now_iso = _iso(self._now())
         changed = []
         cursor = self._db.execute(
-            "SELECT key_json, row_json, last_seen_at, deleted_in_source, deleted_basis "
-            "FROM row_current WHERE relation = ? AND "
+            f"SELECT key_json, row_json, {_SEEN_AT} AS last_seen_at, deleted_in_source, "
+            "deleted_basis FROM row_current WHERE relation = ? AND "
             + ("1" if soft else "deleted_in_source IS NOT NULL")
             + " ORDER BY key_json, run_index", (relation,))
         for key_json, records in itertools.groupby(cursor, key=lambda r: r["key_json"]):
@@ -2909,15 +3108,16 @@ class SourceMirror:
         with self._write():
             self._pin_binding(tenant)
             # Rows a content capture saw after the scan started are present.
-            missing = (f"relation = ? AND absent_since_capture IS NULL AND last_seen_at < ? "
+            missing = (f"relation = ? AND absent_since_capture IS NULL AND {_SEEN_AT} < ? "
                        f"AND {unseen}")
             keys_missing = self._db.execute(
                 f"SELECT COUNT(DISTINCT key_json) FROM row_current WHERE {missing}",
                 (relation, started, scan_id)).fetchone()[0]
             self._start_removals(missing, (relation, started, scan_id), now_iso)
             self._db.execute(
-                "UPDATE row_current SET absent_since_capture = ?, missing_from_source_since = ?, "
-                f"missing_basis = ? WHERE {missing}",
+                f"UPDATE row_current SET last_seen_capture = {_SEEN_CAPTURE}, "
+                f"last_seen_at = {_SEEN_AT}, absent_since_capture = ?, "
+                f"missing_from_source_since = ?, missing_basis = ? WHERE {missing}",
                 (state["last_capture_id"], now_iso, f"key_scan:{scan_id}",
                  relation, started, scan_id))
             # Only a mark made before this scan started is lifted by it.
@@ -2932,9 +3132,13 @@ class SourceMirror:
                 f"(SELECT key_json FROM row_current WHERE {returned})",
                 (now_iso, UNTIL_OBSERVED, relation, MISSING_FROM_SOURCE, relation, started,
                  scan_id))
+            # The key scan saw the key, not its content: the full traversal in force
+            # did not see the row, so only a later one counts as its sighting.
             self._db.execute(
                 "UPDATE row_current SET absent_since_capture = NULL, "
-                f"missing_from_source_since = NULL, missing_basis = NULL WHERE {returned}",
+                "missing_from_source_since = NULL, missing_basis = NULL, sighting_floor = "
+                "(SELECT seen_through_capture FROM relation_state s WHERE s.relation = "
+                f"row_current.relation) WHERE {returned}",
                 (relation, started, scan_id))
             unmirrored = self._db.execute(
                 """SELECT COUNT(*) FROM absence_seen s WHERE s.scan_id = ? AND NOT EXISTS
@@ -3334,6 +3538,9 @@ class SourceMirror:
                 self._unrecorded.pop(run["relation"], None)
             else:
                 run["record_error"] = self._unrecorded[run["relation"]] = record_error
+        # The sync's safe point: its writes leave the WAL (no wait: a projection build
+        # holding a snapshot makes this busy, and the host checkpoints after the build).
+        checkpoint(self._db)
         return {"schema": "plx-source-mirror-sync/v1", "full": full,
                 "absence_scan": absence_scan, "runs": runs, "workers": workers,
                 "throttle_waits": {"count": len(waits), "seconds": round(sum(waits), 3)},
@@ -3692,7 +3899,8 @@ class SourceMirror:
         matches = []
         for record in self._db.execute(
                 "SELECT key_json, run_index, run_length, row_json, row_digest, capture_id, "
-                "last_seen_at, absent_since_capture, missing_from_source_since, lineage, "
+                f"{_SEEN_AT} AS last_seen_at, absent_since_capture, missing_from_source_since, "
+                "lineage, "
                 "deleted_in_source, deleted_basis, " + _REPLACED_SQL.format(r="row_current") +
                 " FROM row_current WHERE " + " AND ".join(clauses), params):
             row = json.loads(record["row_json"])
@@ -3967,6 +4175,7 @@ class SourceMirror:
                                  [(index, *item) for index, item in enumerate(items)])
             for record in self._db.execute(
                     """SELECT b.idx AS batch_idx, r.*, """ + _REPLACED_SQL.format(r="r") +
+                    ", {} AS seen_capture, {} AS seen_at".format(*_sighting_sql("r")) +
                     """ FROM temp.cite_batch b
                        JOIN row_current r ON r.relation = b.relation AND r.key_json = b.key_json
                        ORDER BY b.idx, r.run_index"""):
@@ -4032,8 +4241,8 @@ class SourceMirror:
             "key": key, "mirror_generation": self.generation,
             "changed_since": status == "superseded",
             "capture": _capture_dict(lookup["captures"].get(capture_id)),
-            "content_last_seen_at": cited[0]["last_seen_at"],
-            "content_last_seen_capture": cited[0]["last_seen_capture"],
+            "content_last_seen_at": _seen(cited[0], "at"),
+            "content_last_seen_capture": _seen(cited[0], "capture"),
             "relation_last_refresh_at": state["last_refresh_at"] if state else None,
             "lineage": lineages[0] if len(lineages) == 1 else "mixed",
             "lineage_rule": cited[0]["lineage_basis"] if len(lineages) == 1 else None,
@@ -4065,7 +4274,7 @@ class SourceMirror:
                 ("absent_from_latest_key_scan" if basis.startswith("key_scan:")
                  else "absent_from_latest_full_traversal") if absent is not None else
                 "observed_in_latest_full_traversal"
-                if state and current[0]["last_seen_capture"] >= state["last_full_capture_id"]
+                if state and _seen(current[0], "capture") >= state["last_full_capture_id"]
                 else "not_rechecked_since_latest_full_traversal")
             if absent is not None:
                 result["absent_since_capture"] = absent
@@ -4373,7 +4582,7 @@ def scan_relation(mirror: Any, actor: Actor, relation: str, limit: int,
     denial. The first page refreshes the mirror per ``max_staleness``; a capture that
     changes between pages stops the scan (``mirror_changed_during_scan``) and a scan cut
     at ``limit`` says so (``scan_bound_reached``): neither is ``complete``. A Portal
-    failure carries its HTTP status and error code (``upstream``) for the live checks'
+    failure carries its HTTP status and error code (``upstream``) for the live verifier's
     ``blocked_upstream``."""
     rows: list[dict[str, Any]] = []
     reasons: list[str] = []
@@ -4510,7 +4719,8 @@ __all__ = ["AUDIENCE_SCHEMA", "AudienceMap", "DEFAULT_IDENTIFIERS", "IDENTIFIER_
            "full_coverage_probe", "load_ingest_config", "mirror_options", "scan_relation",
            "PO_REFERENCE_STRENGTH_RULE", "ROW_STRENGTH_RULES", "portal_trim_text",
            "sales_order_po_reference_strength",
-           "MAX_ROWS_LIMIT", "MirrorError", "PERSISTED_FALLBACK_META", "SourceMirror",
+           "MAX_ROWS_LIMIT", "MirrorError", "PERSISTED_FALLBACK_META", "POINTER_TABLE",
+           "SourceMirror", "attach_scoped",
            "citation_generation",
            "make_citation", "main", "parse_citation", "parse_decimal",
            "MISSING_FROM_SOURCE", "SOFT_DELETE", "SOFT_DELETE_OBSERVED",

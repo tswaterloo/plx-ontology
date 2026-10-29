@@ -1,11 +1,11 @@
-"""Typed, page/span-cited fields of captured business documents.
+"""Typed, page/span-cited fields of captured business documents (directives P2 and P8).
 
 A captured document (a mail attachment, a SharePoint file) is read from its own pinned
 bytes by the deterministic extractor (``integrations.document_understanding``; no model,
 no OCR at projection time) and recognised as one *document class* of the profile file
 ``ontology/schema/document_fields.json``: a supplier confirmation / proforma invoice, a
 forwarder quote, a packing slip, ... Each class names its object type and its fields; a
-new class is a new profile, never new code (modules are named by
+new class is a new profile, never new code (rule 4190c1c690ce: modules are named by
 capability, not by transaction kind).
 
 What it decides
@@ -54,7 +54,7 @@ What it decides
   (``ISSUED_SIGNALS``): ``issued_category``, the Portal's DocumentCategory confirmed for
   this very version is an issued purchase order, or ``own_mailbox_send``, a mail
   attachment the captured mailbox itself sent. A forwarded or replied copy keeps the
-  document's original direction: bytes a captured mailbox
+  document's original direction (decision c5c50e8b58e6): bytes a captured mailbox
   received from outside the own party (a sender whose domain is no captured mailbox's)
   before it sent them (an outside copy received after the send, a supplier returning
   the own party's PO, decides nothing; with either time unknown it counts) are a
@@ -161,7 +161,8 @@ What it decides
   page, where the one row cell after the label lying under the column's header cell alone
   (by x-overlap, no other cell overlapping that column) is the read; a handwritten cell
   OCR dropped elsewhere in the row no longer hides it (decision
-  ``docs/decisions/2026-10-18-ao-ocr-layout-columns.md``). A row whose first cell lists the row label as one option of several
+  ``devloop/DECISIONS/2026-10-18-ao-ocr-layout-columns.md``, revisiting directive
+  6fd5c7b38847). A row whose first cell lists the row label as one option of several
   ('Filling/Setup/Tear down', or ruled 'Filling | Setup | Tear down' with a speck
   before an option; the task chosen by an underline the text does not hold) is
   the gap ``unreadable`` citing the row, never that task's value. A field no cell
@@ -181,7 +182,7 @@ What it decides
   ``integrations.document_understanding.HANDWRITING_CONFIDENCE`` (handwritten part codes
   OCR cannot key: a typed reader limit,
   also citing the box text; never a key mapped out of it; decision
-  ``docs/decisions/2026-10-19-ao-handwritten-reader-limit.md``), ``single_spaced`` a value one space after the label,
+  ``devloop/DECISIONS/2026-10-19-ao-handwritten-reader-limit.md``), ``single_spaced`` a value one space after the label,
   ``value_unplaced`` a plain label, ``row_unaligned`` a row label under a header naming
   the field, ``header_unseen`` a row label with no such header above; a label seen only
   as one option of a ``/`` list is ``unreadable`` instead: the mark that picks the option
@@ -260,8 +261,8 @@ from ``MailCaptures`` and ``SharePointCaptures`` and the schema binds it per cla
 declared ``mention`` link types (``SupplierConfirmation.confirms`` ...) into the same
 generation, through the generation's identifier index (``mentions``' candidate lookup).
 
-Comparison
-----------
+Comparison (P8)
+---------------
 A class may declare what it ``attests`` about a record type: field / property pairs
 reached over declared link paths, an event, or a keyed field matched per key through a
 key path (:func:`comparisons`). ``plx.object`` compares them at read time over the
@@ -298,8 +299,8 @@ import re
 from typing import Any, Callable, Container, Iterable, Iterator, Mapping, NamedTuple
 
 from integrations import document_understanding as du
-from integrations.captured_text import (OCR_UNAVAILABLE, TEXT_OCR, TEXT_READ, CapturedText,
-                                        Member, NotRemembered, ReadingMemo,
+from integrations.captured_text import (OCR_DEFERRED, OCR_UNAVAILABLE, TEXT_OCR, TEXT_READ,
+                                        CapturedText, Member, NotRemembered, ReadingMemo,
                                         byte_pinned, captured_text, container_members,
                                         member_handle, ocr_digest, ocr_failure_cause,
                                         read_blob, read_text, text_status_kind)
@@ -1037,10 +1038,12 @@ def _bare_values(profile_id: str, pages: list[tuple[int | None, str]], cite: Any
                         raw = body[at:end].strip()
                         if stated and raw and not re.search(r"[A-Za-z]", raw):
                             raw = f"{raw} {stated[1]}"
-                        if (after := du.column_gap_end(body, end)) is not None and \
-                                (cell := _CELL.match(body, after)) and \
-                                labelled.match(body, after) is None and \
-                                start.match(body, after) is None and \
+                        # ``after`` is the label pattern the glued reads use on later
+                        # lines: the next cell's start has its own name.
+                        if (next_cell := du.column_gap_end(body, end)) is not None and \
+                                (cell := _CELL.match(body, next_cell)) and \
+                                labelled.match(body, next_cell) is None and \
+                                start.match(body, next_cell) is None and \
                                 not {":", "#"} & set(cell.group()):
                             past = cell.group()
                     yield _label_key(m["label"]), raw, cite(page, text, offset + at,
@@ -1705,7 +1708,7 @@ HANDWRITTEN_UNKEYED = "handwritten_unkeyed"
 # The share of an unread box's text (its words' characters) OCR must have read below the
 # handwriting bound for the box to be handwriting: a stray glyph or mark in handwriting
 # may read high, printed text rarely reads low (decision
-# docs/decisions/2026-10-19-ao-handwritten-reader-limit.md).
+# devloop/DECISIONS/2026-10-19-ao-handwritten-reader-limit.md).
 HANDWRITTEN_SHARE = Fraction(3, 4)
 UNREAD_REASONS = ("header_unseen", "row_unaligned", "single_spaced", "no_key",
                   HANDWRITTEN_UNKEYED, "value_unplaced")
@@ -1975,6 +1978,12 @@ def _fields(read: CapturedText, l1_handle: str | None, issued: str | None = None
         result["gaps"].append({"field": "pages", "reason": "skipped_by_cap", **skipped,
                                "citations": []})
     unstated = "not_stated" if skipped is None else NOT_STATED_IN_READ_PAGES
+    if read.ocr_deferred:   # scanned pages not OCR-read yet: unread, never absent
+        result["gaps"].append({"field": "pages", "reason": OCR_DEFERRED, "citations": []})
+        unstated = NOT_STATED_IN_READ_PAGES
+        if status != "extracted" or read.text is None:
+            result["status"] = OCR_DEFERRED
+            return result
     if status != "extracted":
         return result
     classes, dismissed = _classes(pages, cite, issued)
@@ -2242,22 +2251,33 @@ def own_record_keys(object_type: str, evidence: Mapping[str, Any]
         if normalized else []
 
 
-def resolve_citation(content: bytes, citation: Mapping[str, Any], *, mime_type: str,
+def resolve_citation(content: bytes | None, citation: Mapping[str, Any], *, mime_type: str,
                      filename: str = "", local_pdf_ocr: bool = False,
-                     text: str | None = None) -> str | None:
+                     text: str | None = None, reading: CapturedText | None = None
+                     ) -> str | None:
     """The literal a field citation names in ``content``, or None when the bytes are not
     the cited ones (SHA-256), the page or span does not exist, or the text there differs.
     A citation of OCR text (``text_sha256``) is checked against ``text``, which must be
-    that text (its SHA-256) of these bytes."""
-    if sha256(content).hexdigest() != citation.get("source_sha256"):
-        return None
-    if citation.get("text_sha256") is not None:
-        if text is None or sha256(text.encode("utf-8")).hexdigest() != citation["text_sha256"]:
+    that text (its SHA-256) of these bytes. ``reading``: when the capture dropped the
+    original (``content`` None), the reading it kept of those bytes (and of ``text``),
+    refused unless it is of the cited bytes and the cited text."""
+    if content is None:
+        if not isinstance(reading, CapturedText) \
+                or reading.source_sha256 != citation.get("source_sha256") \
+                or reading.text_sha256 != citation.get("text_sha256"):
             return None
-    elif text is not None:
-        text = None   # a text-layer citation is read from the bytes alone
-    pages = read_text(content, mime_type, filename=filename, text=text,
-                      local_pdf_ocr=local_pdf_ocr).pages
+        pages = reading.pages
+    else:
+        if sha256(content).hexdigest() != citation.get("source_sha256"):
+            return None
+        if citation.get("text_sha256") is not None:
+            if text is None or sha256(text.encode("utf-8")).hexdigest() != \
+                    citation["text_sha256"]:
+                return None
+        elif text is not None:
+            text = None   # a text-layer citation is read from the bytes alone
+        pages = read_text(content, mime_type, filename=filename, text=text,
+                          local_pdf_ocr=local_pdf_ocr).pages
     page = citation.get("page")
     found = next((t for p, t in pages if p == page), None)
     start, end = citation.get("start"), citation.get("end")
@@ -2273,7 +2293,7 @@ MAX_FIELDS = 1024
 _FIELDS: ReadingMemo[dict[str, Any] | None] = ReadingMemo(MAX_FIELDS, lambda _found: 1)
 
 
-def _fields_of(key: tuple[str, str, str, str | None, str | None],
+def _fields_of(key: tuple[str, str, str, str | None, str | None, bool],
                read: Callable[[], CapturedText | None]) -> dict[str, Any] | None:
     """The fields of one reading of a document (``read``: ``captured_text`` of a
     captured version's pinned bytes or the capture's OCR text of a scan, or a container
@@ -2310,7 +2330,8 @@ def _documents(row: Mapping[str, Any], blobs: str | Path, *, read: bool = False,
         return
     issued = _issued_by(row, received)
     reading = captured_text(blobs, row) if read else None
-    yield None, _fields_of((digest, mime, name, ocr_digest(row), issued),
+    yield None, _fields_of((digest, mime, name, ocr_digest(row), issued,
+                            row.get("text_status") == OCR_DEFERRED),
                            (lambda: reading) if read else
                            (lambda: captured_text(blobs, row))), reading, issued
     members = container_members(blobs, row)
@@ -2320,7 +2341,8 @@ def _documents(row: Mapping[str, Any], blobs: str | Path, *, read: bool = False,
         forwarded = _kind(mime, name) == "message" or any(
             _kind("", part) == "message" for part in member.path.split("!/")[:-1])
         inner = None if issued == "own_mailbox_send" and forwarded else issued
-        yield member, _fields_of((member.sha256, member.mime_type, member.name, None, inner),
+        yield member, _fields_of((member.sha256, member.mime_type, member.name, None, inner,
+                                  False),
                                  lambda m=member: m.reading), \
             member.reading if read else None, inner
 
@@ -2564,8 +2586,9 @@ def _pinned(handle: Any) -> tuple[str, str, str] | None:
                                      cited["attachment_id"]]), cited["sha256"])
 
 
-def pinned_document_row(handle: str, l1_handle: str, content: bytes, row: Mapping[str, Any],
-                        text: str | None = None) -> dict[str, Any]:
+def pinned_document_row(handle: str, l1_handle: str, content: bytes | None,
+                        row: Mapping[str, Any], text: str | None = None, *,
+                        reading: CapturedText | None = None) -> dict[str, Any]:
     """The ``documentFields`` row of a byte-pinned document citation (:func:`_pinned`) as
     its bytes state it now: ``content`` the bytes a gate already served the reader
     (refused unless they hash to the handle's pin), ``row`` the capture's row of the
@@ -2575,20 +2598,30 @@ def pinned_document_row(handle: str, l1_handle: str, content: bytes, row: Mappin
     tells a forward from, as the mail projection reads them), ``text`` the capture's
     OCR text of a scan (else None),
     re-extracted; ``l1_handle`` the version's capture handle (the row cites it
-    byte-pinned, as the projection does). ``{"ok", "relation", "row",
-    "sha256"}``; anything else (another citation, other bytes, no single class):
-    ``ok`` false."""
+    byte-pinned, as the projection does). ``reading``: when the capture dropped the
+    original (``content`` None), the reading it kept of those bytes
+    (``integrations.captured_text``: the same reading the bytes and ``text`` give, so the
+    same row), refused unless it is of the pinned bytes and of ``text``.
+    ``{"ok", "relation", "row", "sha256"}``; anything else (another citation, other
+    bytes, no single class): ``ok`` false."""
     refused = {"ok": False, "error": "citation_unresolvable"}
     pinned = _pinned(handle)
-    if (pinned is None or not isinstance(content, bytes)
-            or sha256(content).hexdigest() != pinned[2]):
+    if pinned is None:
+        return refused
+    if content is None and reading is not None:
+        pinned_text = None if text is None else sha256(text.encode("utf-8")).hexdigest()
+        if not isinstance(reading, CapturedText) or reading.source_sha256 != pinned[2] \
+                or reading.text_sha256 != pinned_text:
+            return refused
+    elif not isinstance(content, bytes) or sha256(content).hexdigest() != pinned[2]:
         return refused
     source, source_key, digest = pinned
     mime = row.get("content_type") or row.get("mime_type") or "application/octet-stream"
     try:
-        found = extract_fields(content, str(mime), filename=str(row.get("name") or ""),
-                               text=text, issued=_issued_by(
-                                   row, _received(row.get("mailbox_copies") or ())))
+        issued = _issued_by(row, _received(row.get("mailbox_copies") or ()))
+        found = (_fields(reading, None, issued) if content is None else
+                 extract_fields(content, str(mime), filename=str(row.get("name") or ""),
+                                text=text, issued=issued))
     except Exception:  # noqa: BLE001 - unreadable now: no evidence
         return refused
     if found["status"] != "classified":
@@ -2612,11 +2645,15 @@ def capture_citation_reader(store: Any, actor: Any, audience: Any
             return {"ok": False, "error": "citation_unresolvable"}
         view = store.resolve(handle, actor, audience)
         content = None if view is None else store.content(handle, actor, audience)
-        if view is None or content is None:
+        # An original the capture dropped once its text was read: the reading it kept.
+        reading = None if view is None or content is not None else \
+            store.original_reading(handle, actor, audience)
+        if view is None or (content is None and reading is None):
             return {"ok": False, "error": "citation_unresolvable"}
         row = view["row"]
         text = row.get("content_text") if row.get("text_status") == TEXT_OCR else None
-        return pinned_document_row(handle, view["l1_handle"], content, row, text)
+        return pinned_document_row(handle, view["l1_handle"], content, row, text,
+                                   reading=reading)
     return read
 
 

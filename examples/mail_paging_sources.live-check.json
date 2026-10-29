@@ -1,7 +1,7 @@
 {
  "schema": "plx-ingest-sources/v1",
  "tenant": "plx",
- "note": "Live-check scope for verify/live-checks/graph.mail_paging.json: the one allowlisted shared operational inbox of examples/ingestion_sources.live-check.json, read with page_size=1 and max_pages=3 so a 730-day window with at least four messages (three read: pages 3, cap:page_cap, items_read 3) must follow Graph's @odata.nextLink (OData key form mailFolders('<id>')/messages). Read-only; counts only.",
+ "note": "Live-check scope for devloop/live-checks/graph.mail_paging.json: the one allowlisted shared operational inbox of examples/ingestion_sources.live-check.json, read with page_size=1 and max_pages=3 so a 730-day window with at least four messages (directive e2d79103249f; three read: pages 3, cap:page_cap, items_read 3) must follow Graph's @odata.nextLink (OData key form mailFolders('<id>')/messages, directive 4f484b130e05). Read-only; counts only.",
  "actor": {"principals": ["svc:ingest", "staff:operations"], "clearance": "restricted"},
  "sources": [
   {"id": "mail.purchase-order.inbox.paging", "kind": "mail_folder",

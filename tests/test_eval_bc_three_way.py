@@ -19,7 +19,7 @@ from unittest import mock
 from urllib.error import URLError
 from urllib.parse import unquote, urlsplit
 
-from verify import live_verify
+from devloop import live_verify
 from integrations.tests.test_bc_purchase import BASE, collection, gid, header, line
 from integrations.tests.test_live_source_adapters import COMPANY, ENV, FakeSender, j
 from scripts import eval_bc_three_way as ev
@@ -29,7 +29,7 @@ BOOKS = {COMPANY: "manufacturing"}
 # Live 2026-10-08 samples span three companies.
 COMPANIES = (COMPANY, "0f0e0d0c-0b0a-0908-0706-0504030201ff",
              "0f0e0d0c-0b0a-0908-0706-0504030202ff")
-SPEC = Path(__file__).resolve().parents[1] / "verify/live-checks/eval.bc_three_way.json"
+SPEC = Path(__file__).resolve().parents[1] / "devloop/live-checks/eval.bc_three_way.json"
 
 
 class World:
@@ -192,7 +192,7 @@ class LatencySender:
         return self.sender(method, url, headers, body, timeout, max_bytes)
 
 
-# Measured by the live checks (eval.bc_three_way, 17 runs 2026-10-07/08): least squares
+# Measured on claude/devloop-live (eval.bc_three_way, 17 runs 2026-10-07/08): least squares
 # of duration over GETs and retries (requests_sent - reads.sent - 1) gives 16 s per failed
 # attempt. The slowest hour (bb601a96, 10:33Z, run_budget_exhausted at 483 s with 8 of 14
 # items scored): 128 GETs, 24 failed attempts, so 0.77 s per answered attempt; one attempt
@@ -540,7 +540,7 @@ class OutputContractTests(unittest.TestCase):
         # the unread items is not slept: the set is held, its company's items are blocked
         # upstream by name and the run completes. So too for a throttle while sampling: the
         # items still to be drawn keep their time.
-        # At the live failure rate a 10 or 30 s Retry-After after the
+        # Review (a393ddc6): at the live failure rate a 10 or 30 s Retry-After after the
         # first items was held and an item blocked, although the wait fit: the first items
         # read (here all with receipts, ~15 times an excluded item) were the measure of the
         # rest. Now they weigh beside PRIOR_ITEMS items at the priors and the wait is slept,
@@ -622,7 +622,7 @@ class OutputContractTests(unittest.TestCase):
                 self.assertGreaterEqual(found["scored"], 5)
 
     def test_the_reserve_weighs_the_priors_as_three_items_beside_the_items_read(self):
-        # The reserve switched to the measured cost after the first
+        # Directive 8b59bc9138e8: the reserve switched to the measured cost after the first
         # item, and an item that reads its receipts costs ~15 times one the oracle excludes.
         # Each unread item now costs the priors weighed as 3 items read beside the seconds
         # of the items read (a throttle wait is no item's cost), less what the item in
@@ -646,7 +646,7 @@ class OutputContractTests(unittest.TestCase):
             self.assertAlmostEqual(cost.reserve(), 14 * per_item - 20.0 + 16.0)
 
     def test_no_throttle_profile_ends_the_run_over_budget_or_incomplete(self):
-        # Sweep of the reserve: no failures or one attempt in 6, a 429 on the invoices
+        # Review sweep of the reserve: no failures or one attempt in 6, a 429 on the invoices
         # after 0 to 11 of their reads, Retry-After 10 to 480 s. Whatever the reserve
         # sleeps or holds, every run ends inside the budget, complete, every sampled item
         # accounted for once. The product's answer spends none of the run's clock, so it
@@ -806,7 +806,7 @@ class OutputContractTests(unittest.TestCase):
                           "cost.retries.failed_attempts_over_bound > 0"])
 
     def test_each_get_attempt_is_timed_from_its_send_and_only_a_connect_timeout_has_slack(self):
-        # The token POST counted in the next attempt, a get_document
+        # Review of 10c50c9d: the token POST counted in the next attempt, a get_document
         # attempt was timed from the GET before it, a read's slowest answer was its last
         # page's and a non-connect failure in (10.0, 10.5] s passed the bound. Each request
         # here takes the next scripted seconds (the token POST first, then GET attempts).

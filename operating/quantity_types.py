@@ -1,7 +1,7 @@
 """Quantity types of computed values: a small closed algebra over the expression tree.
 
 Planned, manufactured, actual, filled, ordered and damaged quantities share a dimension
-but are different quantities (AO-26005B: planned 1,509 / manufactured 1,503 /
+but are different quantities (pack 02, AO-26005B: planned 1,509 / manufactured 1,503 /
 filled 1,502). A calculation's result is a quantity of one of those types only when the
 arithmetic actually makes it one. This module decides that from the **expression tree
 and the inputs' types alone**: never from a relation's ``as`` name, never from the order

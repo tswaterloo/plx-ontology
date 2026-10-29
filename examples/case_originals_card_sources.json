@@ -1,0 +1,53 @@
+{
+ "schema": "plx-case-originals-card-sources/v1",
+ "note": "Generator input of scripts.case_originals registry --card-sources: the originals an eval case card names that no source-pin record lists. A chat_attachment is pinned by the advisory record it names (source_id, source_revision, the chat message among its evidence) and read through its content URL; a gap is a named gap row. Ids, names and pins only: no file body or secret.",
+ "entries": [
+  {
+   "case": "brand-requirements",
+   "chat_attachment": {
+    "name": "regulatory-process-flow-mapper.zip",
+    "owner": "Laura Abate",
+    "url": "https://petrasoap-my.sharepoint.com/personal/laura_a_petrasoap_com/Documents/Microsoft%20Teams%20Chat%20Files/regulatory-process-flow-mapper.zip",
+    "teams_message_url": "https://teams.microsoft.com/l/message/19%3A0c750e4d651d4ce2bf589ccba5685dab%40thread.v2/1792424594223?context=%7b%22contextType%22%3a%22chat%22%7d",
+    "attachment_id": "3f6962f7-39ac-4675-b1fb-844893e7705d",
+    "submitted_at": "2026-10-19T15:43:14.223Z",
+    "bytes": 18604,
+    "sha256": "1c081e639484c04ad5a82dc16244caa917cf3ae33889fb1848ab92cf02afd6d9",
+    "advisory": {
+     "commit": "3d9269e8012b530ce9c5e0a389130838ed583586",
+     "path": "context/51cf697a454be593964566fa4ad4b43be95c8d8583775fd1444cee1aed9066fe.json"
+    }
+   }
+  },
+  {
+   "case": "rnd-maps",
+   "gap": {
+    "item": "Allison Tam's R&D process map: R&D bi-weekly meeting agenda preparation",
+    "owner": "Allison Tam",
+    "source": "claude.ai artifact, known only from an artifact-invitation email",
+    "evidence": "advisory:d7076d889756",
+    "status": "no bytes held or pinned: the map exists only as an artifact-invitation email, so its SHA-256 is unknown"
+   }
+  },
+  {
+   "case": "rnd-maps",
+   "gap": {
+    "item": "Erin's R&D process map: Raw material samples: from request to used up",
+    "owner": "Erin",
+    "source": "claude.ai artifact, known only from an artifact-invitation email",
+    "evidence": "advisory:c034c7ea5fa6",
+    "status": "no bytes held or pinned: the map exists only as an artifact-invitation email, so its SHA-256 is unknown"
+   }
+  },
+  {
+   "case": "rnd-maps",
+   "gap": {
+    "item": "Giulia's R&D process map: Ingredient lists, from sample made to IL in the customer's hands",
+    "owner": "Giulia",
+    "source": "claude.ai artifact, known only from an artifact-invitation email",
+    "evidence": "advisory:13be54ca81d2",
+    "status": "no bytes held or pinned: the map exists only as an artifact-invitation email, so its SHA-256 is unknown"
+   }
+  }
+ ]
+}

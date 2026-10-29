@@ -21,8 +21,8 @@ import json
 import unittest
 from urllib.parse import unquote, urlsplit
 
-from verify import data_profile, live_verify as lv
-from verify.tests.test_live_verify import FakeRoot
+from devloop import data_profile, live_verify as lv
+from devloop.tests.test_live_verify import FakeRoot
 from integrations import graph_directory, graph_read
 from integrations.graph_directory import roster_upns
 from integrations.tests.test_live_source_adapters import (
@@ -127,7 +127,7 @@ class ProbeBlockedTest(unittest.TestCase):
         return code, out.getvalue(), err.getvalue()
 
     def replay(self, check_id: str, code: int, stdout: str, environ=ENV) -> dict:
-        """The live check's result for this output under the committed spec, unchanged:
+        """The live verifier's result for this output under the committed spec, unchanged:
         its own module in the fake root prints the output and exits with the probe's code.
         The replay stands in for the live run, so an injected-transport label reads as the
         live one (the label rule itself: test_graph_directory, test_data_profile)."""
@@ -175,7 +175,7 @@ class ProbeBlockedTest(unittest.TestCase):
         # No PLX_EXCLUDED_PEOPLE_OIDS: the people guard refuses the mailbox read before
         # any request for it (fail closed). The probe names that typed block (later_ask
         # excluded-people-oids, codes only) and still measures SharePoint, so the spec
-        # reads blocked, never fail and never pass.
+        # reads blocked, never fail and never pass (gap-501f33145a0d).
         unset = {k: v for k, v in ENV.items() if k != "PLX_EXCLUDED_PEOPLE_OIDS"}
         part = {"part": "mail.people_exclusion", "source": "people-exclusion",
                 "http_status": None, "error_code": "excluded_people_oids_absent",

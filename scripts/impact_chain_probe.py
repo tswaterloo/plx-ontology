@@ -1,7 +1,7 @@
 """Live check ``process.impact_chain``: customer orders at risk from late purchase orders
 (``operating.impact_chain``) over live captures.
 
-The projection probe (``scripts.ontology_projection_probe --build-only``) builds or reuses the
+The L7 probe (``scripts.ontology_projection_probe --build-only``) builds or reuses the
 session projection exactly as ``scripts.po_lateness_probe`` does; then, offline and with
 no client, this probe runs ``operating.impact_chain.scan`` over the projection as the
 served host's capture principal: links and dates only of records that principal's policy
@@ -24,6 +24,11 @@ mirror or the BC capture). When no chain is found the output also carries ``no_c
 keyed by each missing link, and the spec's ``json_absent`` names it in the failure: a run
 without a chain fails by the missing link's name, never as a silent 0.
 ``days_at_risk_basis``: days at risk is a lower bound (no assembly lead time is recorded).
+Per late PO walked, ``late_pos_with_full_chain`` (it reaches a customer order and no chain
+from it stops at a missing link) and ``late_pos_with_partial_chain`` (it reaches one, another
+chain stops); ``orders_with_margin``, ``margin_at_stake`` (per currency, read as the capture
+principal through ``plx.object``: amounts printed, recorded by currency only) and
+``margin_not_stated_by_reason``.
 
 Exit 0 = no contract failure, no process or investigate error, budget held; the spec
 further requires at least one late PO considered, one chain and one order at risk.
@@ -161,7 +166,9 @@ def check_impact(host: Any, *, scan: int, budget_seconds: float | None) -> dict[
                 "SELECT object_id, audience_key FROM objects")
                 if policy.may_read(reader, audience)}
             found = ic.scan(st, call, bound=scan, value=value, samples=SAMPLES,
-                            visible=visible)
+                            visible=visible,
+                            margin_values=ic.object_margin_values(value),
+                            landed_values=ic.investigate_landed_values(call))
             pos = sorted({s["po"] for s in found["samples"]},
                          key=lambda i: sha256(i.encode("utf-8")).hexdigest())
             for po in pos:
@@ -183,7 +190,9 @@ def check_impact(host: Any, *, scan: int, budget_seconds: float | None) -> dict[
                 "pos_not_checked", "pos_not_reaching_assembly", "lateness_undetermined",
                 "chains_found", "chains_broken", "broken_share_percent", "broken_by_reason",
                 "top_missing_links", "orders_affected", "orders_at_risk", "orders_excluded",
-                "orders_with_value", "value_at_risk", "days_at_risk_basis", "truncated"):
+                "orders_with_value", "value_at_risk", "days_at_risk_basis", "truncated",
+                "late_pos_with_full_chain", "late_pos_with_partial_chain",
+                "orders_with_margin", "margin_at_stake", "margin_not_stated_by_reason"):
         report[key] = found[key]
     relations = link_relations()
     report["missing_links"] = [
@@ -204,7 +213,7 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     parser.add_argument("--db", required=True, help="throwaway mirror file")
     parser.add_argument("--store", required=True, help="throwaway ontology store file")
     parser.add_argument("--budget-seconds", type=float, default=None,
-                        help="the projection build's budget")
+                        help="the L7 build's budget")
     parser.add_argument("--impact-budget-seconds", type=float, default=None)
     parser.add_argument("--scan", type=int, default=500,
                         help="POs whose lateness is asked (those reaching an assembly order)")

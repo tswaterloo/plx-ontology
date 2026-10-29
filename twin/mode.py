@@ -24,10 +24,10 @@ from contextlib import contextmanager
 import os
 from typing import Iterable, Iterator, Mapping
 
-from verify.credential_names import KEYLESS, SHELL_KEEP
+from devloop.credential_names import KEYLESS, SHELL_KEEP
 
 TWIN_LABEL = "twin-transport"
-# A credential is a name the keyless helper strips (verify.credential_names.KEYLESS, the
+# A credential is a name the keyless helper strips (devloop.credential_names.KEYLESS, the
 # gate's pattern: keys, tokens, secrets, passwords and database URLs), less SHELL_KEEP:
 # git's injected config and the GitHub token, which are not business credentials. A new
 # key (BRAIN_API_KEY, REPORTING_DATABASE_URL, ...) needs no second list here.

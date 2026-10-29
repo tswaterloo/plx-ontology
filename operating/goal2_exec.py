@@ -186,7 +186,7 @@ class IsolatedMissionControl:
     the stage before the cancel. Events are ``eventsForTask`` rows (``seq``, ``ts``, ``kind``,
     ``actor``, ``taskId``, ``payload``: ``compliance/repo.ts``). An approval is stamped
     with ``expiresAt`` (decidedAt + 72h, unscoped) and an unsigned ``signature`` (TASK-3408
-    @ 2d2cac7; no signing key here). Re-read @ 2d2cac7: the
+    @ 2d2cac7; no signing key here). Re-read @ 2d2cac7 (drift-1021-mc-permissions): the
     decide route also refuses a decider off ``PLX_MC_APPROVAL_DECIDERS`` and a scoped gate
     whose rendered scope was not echoed; the Workbench requests unscoped gates only, and
     the isolated MC models the allowlist as unset (any admin/owner). Served to the real

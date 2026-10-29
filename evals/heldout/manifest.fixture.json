@@ -5,6 +5,7 @@
   "exhausted": false,
   "seconds": 2400.0
  },
+ "budget_by_stratum": {},
  "by_family": {
   "F1": 24,
   "F2": 16,
@@ -59,1452 +60,1452 @@
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "712cb023575e677a",
+   "hash16": "1018e7eea59a4e54",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "27a64b28f849fb46",
+   "hash16": "c70e1e007b3fd8e0",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "47065bbfcf336c76",
+   "hash16": "9130debe7ec8e4b0",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "fd573261184fd0f0",
+   "hash16": "62e91bb88ef5c79c",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "55ab743c8ec6f569",
+   "hash16": "9cac20cacda94e4e",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "11e0a67e7e855d7c",
+   "hash16": "4ad1610d38366eb2",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "95d722bc54a3d1bc",
+   "hash16": "83a23746846dfef7",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "e1cb19495d549f53",
+   "hash16": "7bee702604a0ab86",
    "variant": "standard"
   },
   {
    "answerability": "partial",
    "family": "F1",
-   "hash16": "08e598d17b0f774f",
+   "hash16": "17506cf91d3dc95b",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "23ee62a8d3df17b8",
+   "hash16": "2d98e1aa8d4d2126",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "75391e53ffbc987e",
+   "hash16": "3c101d7c1a579392",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "057f31c5e4878c4e",
+   "hash16": "62f891b3cdcd2808",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "c2fa016cbdd3f4b5",
+   "hash16": "43f991adc7a574c4",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "e323ecc3e3b89b2e",
+   "hash16": "96946ea6b26e9e25",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "8d0ff633b8a33972",
+   "hash16": "b001701dc79979bb",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "c78a3b6c704dec70",
+   "hash16": "9fc412d64375d52e",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "0d9721789e75f034",
+   "hash16": "4a180b6bc20746c9",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "7067a6110122e089",
+   "hash16": "06ebb0dabfb70b59",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "3b6fc392318e0947",
+   "hash16": "41b08e83e37b0eae",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "1cde661b206980f0",
+   "hash16": "e8339a982f59800c",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "9043ce6c4e818c45",
+   "hash16": "3836771e595f364d",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "7a920af05a840c6a",
+   "hash16": "92e276292f2c2ff9",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "508b9bb39a6de3c9",
+   "hash16": "f8bd488e081dc03f",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "2b276891bce468d5",
+   "hash16": "e199fea5f2581943",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F2",
-   "hash16": "17483131689f80b9",
+   "hash16": "30e81bd682ccdc13",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F2",
-   "hash16": "b1bdde2fc37eee06",
+   "hash16": "0185728e7d6f9a50",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F2",
-   "hash16": "aae9188224cb4d59",
+   "hash16": "a5c30766274900a7",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F2",
-   "hash16": "b41fc20271ae8803",
+   "hash16": "9933a5e925f8a93a",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F2",
-   "hash16": "47c1daac393562d4",
+   "hash16": "ff48d01220079cbb",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F2",
-   "hash16": "6ae69371dcec6654",
+   "hash16": "b38827ecf3313da8",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F2",
-   "hash16": "f8fe8533a1480f4f",
+   "hash16": "f3b6277ffb3f3fb8",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F2",
-   "hash16": "e4212daad9b7bd2d",
+   "hash16": "ddc769c19b9a3e3c",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F2",
-   "hash16": "2e7b955d0558af4d",
+   "hash16": "af2b3c4d69227da2",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F2",
-   "hash16": "1ba9447ddb8de113",
+   "hash16": "128353b69df8c646",
    "variant": "standard"
   },
   {
    "answerability": "partial",
    "family": "F2",
-   "hash16": "6ec7d48ec24a30f6",
+   "hash16": "b44f100e2632a5dc",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F2",
-   "hash16": "4232423a85682cd7",
+   "hash16": "87a6f195941b9d2d",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F2",
-   "hash16": "db1d0ece021d654c",
+   "hash16": "b40b02312025439b",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F2",
-   "hash16": "ecfa1a9849b92f69",
+   "hash16": "a078014891971582",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F2",
-   "hash16": "ec618feb2bfa91df",
+   "hash16": "8ea3944a97286b8d",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F2",
-   "hash16": "350eb623aea46819",
+   "hash16": "ceda55aa8b2fad60",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F3",
-   "hash16": "5cd826cca72e9803",
+   "hash16": "5c47c99c31ede832",
    "variant": "standard"
   },
   {
    "answerability": "partial",
    "family": "F3",
-   "hash16": "b91030c153e07b7e",
+   "hash16": "0296f659548412e2",
    "variant": "standard"
   },
   {
    "answerability": "partial",
    "family": "F3",
-   "hash16": "42c5b61dbf522b1f",
+   "hash16": "7c60356cf08b1095",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F3",
-   "hash16": "361b7dd17ebf311a",
+   "hash16": "cb3ac8b37ab4f8f9",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F3",
-   "hash16": "062b01fc54be558f",
+   "hash16": "2614e047b335f00e",
    "variant": "standard"
   },
   {
    "answerability": "partial",
    "family": "F3",
-   "hash16": "bc8fae0b2e1e04f4",
+   "hash16": "84d27cf520ccf5f2",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F3",
-   "hash16": "e819d30742e88df9",
+   "hash16": "565169ab9deb2ba2",
    "variant": "standard"
   },
   {
    "answerability": "partial",
    "family": "F3",
-   "hash16": "eea83802af4cd546",
+   "hash16": "69abfe5dce3e6615",
    "variant": "standard"
   },
   {
    "answerability": "partial",
    "family": "F3",
-   "hash16": "4a3d42f14b46612e",
+   "hash16": "6041e0f937c53bda",
    "variant": "standard"
   },
   {
    "answerability": "partial",
    "family": "F3",
-   "hash16": "0b67edd0d6f713c5",
+   "hash16": "4a0ce1be4dd39386",
    "variant": "standard"
   },
   {
    "answerability": "partial",
    "family": "F3",
-   "hash16": "36cbb3010b700e27",
+   "hash16": "dc26d50bede599c6",
    "variant": "standard"
   },
   {
    "answerability": "partial",
    "family": "F3",
-   "hash16": "03284ffc69bc2b62",
+   "hash16": "e5c1f66cc6c4d493",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F3",
-   "hash16": "da7cc7c7ac3e991e",
+   "hash16": "96b7bcbd690df3dc",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F3",
-   "hash16": "2df5b34141a33c76",
+   "hash16": "99abb1c66e3c96a9",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F3",
-   "hash16": "465ff8b3335875f0",
+   "hash16": "b2fd43f24e9ce66c",
    "variant": "standard"
   },
   {
    "answerability": "partial",
    "family": "F3",
-   "hash16": "2b6320c3ecf3c506",
+   "hash16": "d726d1d2d8f2677f",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F4",
-   "hash16": "29df6d574630de81",
+   "hash16": "d68f9c7d274c9041",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F4",
-   "hash16": "cd6a0856fc8f0068",
+   "hash16": "9e1e10d3399b790e",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F4",
-   "hash16": "84a737f612b4cde5",
+   "hash16": "ce2043426d201540",
    "variant": "standard"
   },
   {
    "answerability": "partial",
    "family": "F4",
-   "hash16": "527e76cb423b75fd",
+   "hash16": "a03a8cbbb9a3eaab",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F4",
-   "hash16": "d2edf36c89b9ce4a",
+   "hash16": "28327309de39aa55",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F4",
-   "hash16": "b75140085d713d28",
+   "hash16": "91d2b9c34331b98c",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F4",
-   "hash16": "4712d2dcb342ef9b",
+   "hash16": "a88e6492de058692",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F4",
-   "hash16": "491d8583787591be",
+   "hash16": "c3203f5acae8589a",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F4",
-   "hash16": "0d078b0d0f59f135",
+   "hash16": "dfeb090a8c400ecf",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F4",
-   "hash16": "c3448925bea2e1f6",
+   "hash16": "412eca7c7497569b",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F4",
-   "hash16": "991ef4e2a2b9abc3",
+   "hash16": "8960af4f75bb040a",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F4",
-   "hash16": "cb55bfe9eae7b830",
+   "hash16": "0281f95061df916e",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F4",
-   "hash16": "5dffb5dc49eacc59",
+   "hash16": "6ac9a5fd68b78f84",
    "variant": "standard"
   },
   {
    "answerability": "partial",
    "family": "F4",
-   "hash16": "941f7ecbd4952b61",
+   "hash16": "c58a9f2d2371ea40",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F4",
-   "hash16": "a81482bce1780ace",
+   "hash16": "3038aff51dd25c10",
    "variant": "standard"
   },
   {
    "answerability": "partial",
    "family": "F4",
-   "hash16": "f867b7cc6fe220b4",
+   "hash16": "f7c559c6e4ddf802",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "ca500ddb5bf97658",
+   "hash16": "b8deb1746461524f",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "0d57d358193de326",
+   "hash16": "6ba1bd662a5e067b",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "fc2b50fa8b460b61",
+   "hash16": "488436b05341c11a",
    "variant": "standard"
   },
   {
    "answerability": "partial",
    "family": "F5",
-   "hash16": "475e7ddf9f0a8144",
+   "hash16": "e93a80ed96abd333",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "9d0ee3b4bc64a83c",
+   "hash16": "bcc7d362ac26728a",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "f7ee0e87f13ffb3f",
+   "hash16": "94d2e06bebe8d02c",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "333518242addb708",
+   "hash16": "65af019498f86d79",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "f944f91429e94cb7",
+   "hash16": "b35b5e52a6b3f633",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "fdf66719969fc614",
+   "hash16": "1e33783811b7957c",
    "variant": "standard"
   },
   {
    "answerability": "partial",
    "family": "F5",
-   "hash16": "398cb84f98c4a631",
+   "hash16": "cc6f52e5e51055bd",
    "variant": "standard"
   },
   {
    "answerability": "partial",
    "family": "F5",
-   "hash16": "55b8150935f06277",
+   "hash16": "a546f6cd89ba6949",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "43c059ed9d594a87",
+   "hash16": "cb72187f525441f4",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "c97605b061be8823",
+   "hash16": "272d68047e5fa863",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "7a153c367580a00c",
+   "hash16": "49dda8ab7fdb7a30",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "6e4b4ff93ae640d2",
+   "hash16": "657b745f3a0fb767",
    "variant": "standard"
   },
   {
    "answerability": "partial",
    "family": "F5",
-   "hash16": "302e589481364acf",
+   "hash16": "1f8acecbb772498c",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "096862f18279f355",
+   "hash16": "92651df2cc9623d5",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "9f617f1015060792",
+   "hash16": "19b6f04af8c22f88",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "3eb99e5d02d15ca1",
+   "hash16": "7463db1cacc53621",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "c3f11e3b84247d26",
+   "hash16": "0ed169d2290e34c6",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "90781f64f406a6ae",
+   "hash16": "124b3c5612d471f6",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "6ed8d3e9f07ef841",
+   "hash16": "285c612742de29ca",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "ef0d18c5aa749ae6",
+   "hash16": "bd08a6b5838cd938",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "5f09a557dc051942",
+   "hash16": "85129bc60466ac66",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F6",
-   "hash16": "30fcdad0efec8704",
+   "hash16": "8729f37413972c21",
    "variant": "standard"
   },
   {
    "answerability": "partial",
    "family": "F6",
-   "hash16": "bb965a06b8533c59",
+   "hash16": "633df985f9f81054",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F6",
-   "hash16": "1af03b7097d71d0b",
+   "hash16": "6ac828690b17cc1f",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F6",
-   "hash16": "cbe45a5fdf9bb812",
+   "hash16": "863657c050801f54",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F6",
-   "hash16": "24a69b561d723076",
+   "hash16": "e7d0f9a6577bc9fa",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F6",
-   "hash16": "affc7b1148fcf873",
+   "hash16": "e46fd10b300cf320",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F6",
-   "hash16": "bacd2821411a5ef8",
+   "hash16": "135ae84d483e5ff9",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F6",
-   "hash16": "6d5203ade836f03a",
+   "hash16": "5350455736ae02a7",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F6",
-   "hash16": "8eca670ea9ecf957",
+   "hash16": "82caacf4a2c4afa5",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F6",
-   "hash16": "fe860e4625034011",
+   "hash16": "f30669b0c4c110cf",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F6",
-   "hash16": "f3faf43490456aff",
+   "hash16": "de0234076aea2317",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F6",
-   "hash16": "27edfce5adba0250",
+   "hash16": "a396d5038b6e56de",
    "variant": "standard"
   },
   {
    "answerability": "partial",
    "family": "F6",
-   "hash16": "cb3fd6b89a591372",
+   "hash16": "b5c769e40a771cfa",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F6",
-   "hash16": "8d15719eb8f23868",
+   "hash16": "0245cab63c0aa881",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F6",
-   "hash16": "ea992f526cd48d3d",
+   "hash16": "de2b5dc8daa395f8",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F6",
-   "hash16": "d33681867bd25a21",
+   "hash16": "16509933174d4776",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F6",
-   "hash16": "e6441721e54d1f26",
+   "hash16": "4cd8e84ff61bb593",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F6",
-   "hash16": "135252540505b5ae",
+   "hash16": "091b41dc3f17022a",
    "variant": "standard"
   },
   {
    "answerability": "partial",
    "family": "F6",
-   "hash16": "06db2fed15ca06ef",
+   "hash16": "c32c30c88614dc4d",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F6",
-   "hash16": "07c644349d1164d4",
+   "hash16": "d83abf2fb9b347c1",
    "variant": "standard"
   },
   {
    "answerability": "partial",
    "family": "F6",
-   "hash16": "6615cc8c755cdd61",
+   "hash16": "009d511c6b9aef00",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F6",
-   "hash16": "ef6f9c4d4a6f80dc",
+   "hash16": "adf52294c266d4e8",
    "variant": "standard"
   },
   {
    "answerability": "partial",
    "family": "F6",
-   "hash16": "7d227273140f6149",
+   "hash16": "919be27bf2c0035d",
    "variant": "standard"
   },
   {
    "answerability": "partial",
    "family": "F6",
-   "hash16": "3dd9efbd657641e2",
+   "hash16": "e048ba442f8a0b72",
    "variant": "standard"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "1f504e1bead49163",
+   "hash16": "7a2d7e5dab82486c",
    "variant": "shifted_dates"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "2c756b6553fea325",
+   "hash16": "0e4664f143b84688",
    "variant": "shifted_dates"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "bb30989595011749",
+   "hash16": "ddb7a78ba791b618",
    "variant": "shifted_dates"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "bb841d37c1fcd519",
+   "hash16": "d80d39bff86cb51d",
    "variant": "shifted_dates"
   },
   {
    "answerability": "answerable",
    "family": "F2",
-   "hash16": "25db7ff8317de8b5",
+   "hash16": "d07c587a2a72b595",
    "variant": "shifted_dates"
   },
   {
    "answerability": "answerable",
    "family": "F2",
-   "hash16": "92dde81d953aa111",
+   "hash16": "348cdab6a8120d7a",
    "variant": "shifted_dates"
   },
   {
    "answerability": "answerable",
    "family": "F2",
-   "hash16": "c364be0ace1b9a7a",
+   "hash16": "63852a8829e581f6",
    "variant": "shifted_dates"
   },
   {
    "answerability": "partial",
    "family": "F3",
-   "hash16": "21f75263a106e19c",
+   "hash16": "5b6227707764fcac",
    "variant": "shifted_dates"
   },
   {
    "answerability": "partial",
    "family": "F3",
-   "hash16": "f4e11b198a2146ae",
+   "hash16": "044b8201b3e41df1",
    "variant": "shifted_dates"
   },
   {
    "answerability": "answerable",
    "family": "F3",
-   "hash16": "8a817e8001232954",
+   "hash16": "27678aea0c827cec",
    "variant": "shifted_dates"
   },
   {
    "answerability": "answerable",
    "family": "F4",
-   "hash16": "7b33e88f3d6d88fc",
+   "hash16": "0cc9dac23c11bc07",
    "variant": "shifted_dates"
   },
   {
    "answerability": "answerable",
    "family": "F4",
-   "hash16": "6028dbf17c912a2e",
+   "hash16": "bb1288c4e8e83e22",
    "variant": "shifted_dates"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "f9b07d122663e9be",
+   "hash16": "4ac47384777c0d34",
    "variant": "shifted_dates"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "81a45a7c671d1889",
+   "hash16": "e0c3a7def63de6af",
    "variant": "shifted_dates"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "e6e116a176435c8f",
+   "hash16": "1122b2895086e9fe",
    "variant": "shifted_dates"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "706256c63304148a",
+   "hash16": "4a59976cf2be84d4",
    "variant": "shifted_dates"
   },
   {
    "answerability": "answerable",
    "family": "F6",
-   "hash16": "bc63730cb55ca257",
+   "hash16": "c140d62ce3a4f1f1",
    "variant": "shifted_dates"
   },
   {
    "answerability": "answerable",
    "family": "F6",
-   "hash16": "722e755a0945b632",
+   "hash16": "a3311e3d05947a59",
    "variant": "shifted_dates"
   },
   {
    "answerability": "partial",
    "family": "F6",
-   "hash16": "c616abf24f7c619c",
+   "hash16": "5a5005bac4b4fc5e",
    "variant": "shifted_dates"
   },
   {
    "answerability": "partial",
    "family": "F6",
-   "hash16": "4020559a7bede446",
+   "hash16": "8434f0cf55a248ad",
    "variant": "shifted_dates"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "d29df56403f857bf",
+   "hash16": "f959cbf993679208",
    "variant": "scaled_quantity"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "e0a300ec97a1b8d7",
+   "hash16": "e40d3b43d54abebc",
    "variant": "scaled_quantity"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "b680907f0bc6c821",
+   "hash16": "5bfd29b56abab78a",
    "variant": "scaled_quantity"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "342ab282ba706562",
+   "hash16": "3c225c22f802a8da",
    "variant": "scaled_quantity"
   },
   {
    "answerability": "answerable",
    "family": "F2",
-   "hash16": "5b2f203e686523b5",
+   "hash16": "35bfeb92f4578829",
    "variant": "scaled_quantity"
   },
   {
    "answerability": "answerable",
    "family": "F2",
-   "hash16": "de82ad718a27106f",
+   "hash16": "4729a642ce615931",
    "variant": "scaled_quantity"
   },
   {
    "answerability": "answerable",
    "family": "F2",
-   "hash16": "fcda7a3b54cd25dd",
+   "hash16": "7d8435e519fa0177",
    "variant": "scaled_quantity"
   },
   {
    "answerability": "answerable",
    "family": "F3",
-   "hash16": "e4859bb4db75513d",
+   "hash16": "b0063119b55b7bf7",
    "variant": "scaled_quantity"
   },
   {
    "answerability": "partial",
    "family": "F3",
-   "hash16": "ebac498da6caa594",
+   "hash16": "33bb09acf00d5d50",
    "variant": "scaled_quantity"
   },
   {
    "answerability": "partial",
    "family": "F3",
-   "hash16": "d741baa8810457e3",
+   "hash16": "7f4ab068b4fb953d",
    "variant": "scaled_quantity"
   },
   {
    "answerability": "answerable",
    "family": "F4",
-   "hash16": "772317d5c89243d5",
+   "hash16": "1465f32d65c44fc0",
    "variant": "scaled_quantity"
   },
   {
    "answerability": "answerable",
    "family": "F4",
-   "hash16": "b96be16a42e30417",
+   "hash16": "c46d5a1ae994922b",
    "variant": "scaled_quantity"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "14534ecada7542bd",
+   "hash16": "258ac6af610bab98",
    "variant": "scaled_quantity"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "f7b9a205d4455bb0",
+   "hash16": "58e8479938fb7496",
    "variant": "scaled_quantity"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "be22d227bc61469f",
+   "hash16": "c1d40e6a327aefba",
    "variant": "scaled_quantity"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "5d0e83480681c00b",
+   "hash16": "5616758727df2b1a",
    "variant": "scaled_quantity"
   },
   {
    "answerability": "partial",
    "family": "F6",
-   "hash16": "4e282bd65edf93ee",
+   "hash16": "c2b80749d27fad57",
    "variant": "scaled_quantity"
   },
   {
    "answerability": "answerable",
    "family": "F6",
-   "hash16": "6352f35044d863a5",
+   "hash16": "5b38ee0e8e4933f4",
    "variant": "scaled_quantity"
   },
   {
    "answerability": "answerable",
    "family": "F6",
-   "hash16": "7573ab7a99429a23",
+   "hash16": "2848010ed8c488f4",
    "variant": "scaled_quantity"
   },
   {
    "answerability": "answerable",
    "family": "F6",
-   "hash16": "fef92d55f974fdab",
+   "hash16": "2123faa38c5cd3d5",
    "variant": "scaled_quantity"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "8512a91e5a8c7e29",
+   "hash16": "bb558c1d502bd850",
    "variant": "ambiguous_party"
   },
   {
    "answerability": "partial",
    "family": "F1",
-   "hash16": "c9dffd4aed576437",
+   "hash16": "5d536550eff2e4df",
    "variant": "ambiguous_party"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "6e2d0eb6460d4cb2",
+   "hash16": "aab31acb2855f6e7",
    "variant": "ambiguous_party"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "d899ce043577f845",
+   "hash16": "87ff21e0f90beef3",
    "variant": "ambiguous_party"
   },
   {
    "answerability": "answerable",
    "family": "F2",
-   "hash16": "b54aee46c536021c",
+   "hash16": "3309423d081db4f8",
    "variant": "ambiguous_party"
   },
   {
    "answerability": "answerable",
    "family": "F2",
-   "hash16": "1d9620b5a3a085dc",
+   "hash16": "32b7b75418db4c1c",
    "variant": "ambiguous_party"
   },
   {
    "answerability": "answerable",
    "family": "F2",
-   "hash16": "624be84bb07780be",
+   "hash16": "f08b4f3a2cb6e85a",
    "variant": "ambiguous_party"
   },
   {
    "answerability": "answerable",
    "family": "F3",
-   "hash16": "faa057b2223606a0",
+   "hash16": "1b79dd41f9b13301",
    "variant": "ambiguous_party"
   },
   {
    "answerability": "partial",
    "family": "F3",
-   "hash16": "35a267483bbf4d46",
+   "hash16": "a018700dd92cc7f8",
    "variant": "ambiguous_party"
   },
   {
    "answerability": "answerable",
    "family": "F4",
-   "hash16": "f17e6499e7aed56e",
+   "hash16": "70dc0df4f8252875",
    "variant": "ambiguous_party"
   },
   {
    "answerability": "answerable",
    "family": "F4",
-   "hash16": "3576f53ee9c8eafc",
+   "hash16": "e65b4fe5f6401451",
    "variant": "ambiguous_party"
   },
   {
    "answerability": "answerable",
    "family": "F4",
-   "hash16": "2d1945df750cf00b",
+   "hash16": "d5a7aeefa9eaacea",
    "variant": "ambiguous_party"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "0a03fa533f57b0cb",
+   "hash16": "fcb03007f0ee1657",
    "variant": "ambiguous_party"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "43f9280cb5b4d100",
+   "hash16": "8079647dc2ccc416",
    "variant": "ambiguous_party"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "ca8abfa0a14ee6df",
+   "hash16": "4e371c4e35d5e04d",
    "variant": "ambiguous_party"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "7d87d3c5e6822d7a",
+   "hash16": "8de018bd0d4602b4",
    "variant": "ambiguous_party"
   },
   {
    "answerability": "answerable",
    "family": "F6",
-   "hash16": "751a4d83fa587fc9",
+   "hash16": "468b7f10702d8466",
    "variant": "ambiguous_party"
   },
   {
    "answerability": "answerable",
    "family": "F6",
-   "hash16": "303aea8d83105471",
+   "hash16": "99c292a8b9e691e3",
    "variant": "ambiguous_party"
   },
   {
    "answerability": "answerable",
    "family": "F6",
-   "hash16": "3a28793b49d257d9",
+   "hash16": "b0c223e3a038ceb4",
    "variant": "ambiguous_party"
   },
   {
    "answerability": "partial",
    "family": "F6",
-   "hash16": "a609aaaa07dd4999",
+   "hash16": "144220d9b41dee95",
    "variant": "ambiguous_party"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "a9f331ee3544c71f",
+   "hash16": "4b2f252c12b21594",
    "variant": "repeated_event"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "822f957c930896b4",
+   "hash16": "2fbcc9d7824effb9",
    "variant": "repeated_event"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "36509e8388801b6e",
+   "hash16": "be69aad4bd6bb6b9",
    "variant": "repeated_event"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "458845377d8a4542",
+   "hash16": "30ac55745707c93d",
    "variant": "repeated_event"
   },
   {
    "answerability": "answerable",
    "family": "F2",
-   "hash16": "fdd94e143d1c6986",
+   "hash16": "823544fd9e219c9f",
    "variant": "repeated_event"
   },
   {
    "answerability": "answerable",
    "family": "F2",
-   "hash16": "9ecf484ff09fe032",
+   "hash16": "71cd9c6f3d95932b",
    "variant": "repeated_event"
   },
   {
    "answerability": "answerable",
    "family": "F2",
-   "hash16": "ed9624a3a4157cb3",
+   "hash16": "e0e385054a33e949",
    "variant": "repeated_event"
   },
   {
    "answerability": "partial",
    "family": "F3",
-   "hash16": "a603da4220355302",
+   "hash16": "37e048e8c10f83a9",
    "variant": "repeated_event"
   },
   {
    "answerability": "partial",
    "family": "F3",
-   "hash16": "d3ba8ba9219c0221",
+   "hash16": "ebb6209bd0b21c72",
    "variant": "repeated_event"
   },
   {
    "answerability": "answerable",
    "family": "F4",
-   "hash16": "a71f6c18bb8f8e4a",
+   "hash16": "f640a68e3ef0d602",
    "variant": "repeated_event"
   },
   {
    "answerability": "answerable",
    "family": "F4",
-   "hash16": "56f79c16aefea5ec",
+   "hash16": "808cd85939164334",
    "variant": "repeated_event"
   },
   {
    "answerability": "partial",
    "family": "F4",
-   "hash16": "1a63de29990692d1",
+   "hash16": "a21a01ecfba694c5",
    "variant": "repeated_event"
   },
   {
    "answerability": "partial",
    "family": "F5",
-   "hash16": "33f928161bd46944",
+   "hash16": "d816b35c955a0e31",
    "variant": "repeated_event"
   },
   {
    "answerability": "partial",
    "family": "F5",
-   "hash16": "af47591ace8ac255",
+   "hash16": "cdaa53eae072c8e8",
    "variant": "repeated_event"
   },
   {
    "answerability": "partial",
    "family": "F5",
-   "hash16": "e797d37fd4eba8ed",
+   "hash16": "d387449d6aaa000c",
    "variant": "repeated_event"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "3d39981954ec94d1",
+   "hash16": "180b6cef39e152c8",
    "variant": "repeated_event"
   },
   {
    "answerability": "answerable",
    "family": "F6",
-   "hash16": "fafd672a2877c123",
+   "hash16": "16d41d2325bfb160",
    "variant": "repeated_event"
   },
   {
    "answerability": "answerable",
    "family": "F6",
-   "hash16": "4d39ecff6cd77f28",
+   "hash16": "52074d1e6e6ef7e3",
    "variant": "repeated_event"
   },
   {
    "answerability": "answerable",
    "family": "F6",
-   "hash16": "e9bae3aecb0fd51d",
+   "hash16": "fd6bc33c348b3225",
    "variant": "repeated_event"
   },
   {
    "answerability": "answerable",
    "family": "F6",
-   "hash16": "dc399bbe616f7daa",
+   "hash16": "22d45a12a18ecc91",
    "variant": "repeated_event"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "0f545eacffed0090",
+   "hash16": "3e4172ad553935f2",
    "variant": "conflicting_units"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "b0b470e6d0f963bd",
+   "hash16": "7a731f6a5f12c9f2",
    "variant": "conflicting_units"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "73a8b8f981f49af3",
+   "hash16": "b712c296de3c84a6",
    "variant": "conflicting_units"
   },
   {
    "answerability": "answerable",
    "family": "F1",
-   "hash16": "c0d0b386f440c619",
+   "hash16": "161ec4ec268bb696",
    "variant": "conflicting_units"
   },
   {
    "answerability": "answerable",
    "family": "F2",
-   "hash16": "cfb9977ecf960e9f",
+   "hash16": "817ca7556a206e0e",
    "variant": "conflicting_units"
   },
   {
    "answerability": "partial",
    "family": "F2",
-   "hash16": "b5df22e5a5269867",
+   "hash16": "19058de4e391ae43",
    "variant": "conflicting_units"
   },
   {
    "answerability": "answerable",
    "family": "F3",
-   "hash16": "bed0dad4626b52be",
+   "hash16": "287e888f8545411e",
    "variant": "conflicting_units"
   },
   {
    "answerability": "answerable",
    "family": "F3",
-   "hash16": "828b3d73daf1a87c",
+   "hash16": "41c4f09a0c78d652",
    "variant": "conflicting_units"
   },
   {
    "answerability": "answerable",
    "family": "F3",
-   "hash16": "7a973b9841318a2a",
+   "hash16": "05efdddd671ffcc5",
    "variant": "conflicting_units"
   },
   {
    "answerability": "partial",
    "family": "F4",
-   "hash16": "4244cd48988a9ad1",
+   "hash16": "856d56e923a90f30",
    "variant": "conflicting_units"
   },
   {
    "answerability": "partial",
    "family": "F4",
-   "hash16": "fd300fb0db4bafcb",
+   "hash16": "6792d543d90cf5ce",
    "variant": "conflicting_units"
   },
   {
    "answerability": "partial",
    "family": "F4",
-   "hash16": "6c96eadbb82f167e",
+   "hash16": "25c944f68d560f45",
    "variant": "conflicting_units"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "a65b86275565d3d2",
+   "hash16": "5d6adcc0203219c0",
    "variant": "conflicting_units"
   },
   {
    "answerability": "partial",
    "family": "F5",
-   "hash16": "9a99dce7e7ff4b4f",
+   "hash16": "28669d3f6675ed92",
    "variant": "conflicting_units"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "b7216fcf208acb98",
+   "hash16": "5fdd78e8bdea5562",
    "variant": "conflicting_units"
   },
   {
    "answerability": "answerable",
    "family": "F5",
-   "hash16": "2583156f49ab4e00",
+   "hash16": "c7fa93a3264c5aa1",
    "variant": "conflicting_units"
   },
   {
    "answerability": "partial",
    "family": "F6",
-   "hash16": "fd009986f0979d4b",
+   "hash16": "592395d1b36a0804",
    "variant": "conflicting_units"
   },
   {
    "answerability": "partial",
    "family": "F6",
-   "hash16": "6a947eda519fe98c",
+   "hash16": "c22ecdda2d79b0ba",
    "variant": "conflicting_units"
   },
   {
    "answerability": "partial",
    "family": "F6",
-   "hash16": "afa87efc710e1057",
+   "hash16": "01d9a53d318a1ca4",
    "variant": "conflicting_units"
   },
   {
    "answerability": "partial",
    "family": "F6",
-   "hash16": "913858fc83ecef2a",
+   "hash16": "5798a01f3988639d",
    "variant": "conflicting_units"
   },
   {
    "answerability": "partial",
    "family": "F1",
-   "hash16": "a8a3c4afde89372a",
+   "hash16": "5899938554f493e9",
    "variant": "partial_source_failure"
   },
   {
    "answerability": "partial",
    "family": "F1",
-   "hash16": "63aeaa54646f04df",
+   "hash16": "675f354fe5c8157c",
    "variant": "partial_source_failure"
   },
   {
    "answerability": "partial",
    "family": "F4",
-   "hash16": "9a1c9d33d7043251",
+   "hash16": "0d240474a6a9cabc",
    "variant": "partial_source_failure"
   },
   {
    "answerability": "partial",
    "family": "F4",
-   "hash16": "a169e6db41a4a8d4",
+   "hash16": "b96d2387dd407979",
    "variant": "partial_source_failure"
   },
   {
    "answerability": "partial",
    "family": "F4",
-   "hash16": "9600b21f20482364",
+   "hash16": "e9cc2f9e42903303",
    "variant": "partial_source_failure"
   },
   {
    "answerability": "partial",
    "family": "F5",
-   "hash16": "9fc83ae592d0a11f",
+   "hash16": "12c24dbd775be64f",
    "variant": "partial_source_failure"
   },
   {
    "answerability": "partial",
    "family": "F5",
-   "hash16": "1b4df62fe9f3fabc",
+   "hash16": "2a6492787e68bfb1",
    "variant": "partial_source_failure"
   },
   {
    "answerability": "partial",
    "family": "F5",
-   "hash16": "c793e321e9e67ab1",
+   "hash16": "37f436e20eb5ffca",
    "variant": "partial_source_failure"
   },
   {
    "answerability": "partial",
    "family": "F5",
-   "hash16": "a1f0dbd7df5966f4",
+   "hash16": "a738fa33d0a92a39",
    "variant": "partial_source_failure"
   },
   {
    "answerability": "partial",
    "family": "F3",
-   "hash16": "f8ddb9c782db1d1c",
+   "hash16": "6f548273f05aceb3",
    "variant": "partial_source_failure"
   },
   {
    "answerability": "partial",
    "family": "F3",
-   "hash16": "74a15b826c5c42ba",
+   "hash16": "dc52fcdafffdb8b9",
    "variant": "partial_source_failure"
   },
   {
    "answerability": "partial",
    "family": "F3",
-   "hash16": "af9c09fcc8617cc0",
+   "hash16": "fb333f34e7de0d8f",
    "variant": "partial_source_failure"
   },
   {
    "answerability": "partial",
    "family": "F6",
-   "hash16": "432aa8598f7987e6",
+   "hash16": "97e47862c8f4d295",
    "variant": "partial_source_failure"
   },
   {
    "answerability": "partial",
    "family": "F6",
-   "hash16": "c66109ac699c394a",
+   "hash16": "073b73870ce86bf2",
    "variant": "partial_source_failure"
   },
   {
    "answerability": "partial",
    "family": "F6",
-   "hash16": "ffc65eba72a5ea5a",
+   "hash16": "300f2ca4480a6ab8",
    "variant": "partial_source_failure"
   },
   {
    "answerability": "partial",
    "family": "F6",
-   "hash16": "97e167ca4af1422a",
+   "hash16": "cb6e46bce5a12559",
    "variant": "partial_source_failure"
   },
   {
    "answerability": "partial",
    "family": "F2",
-   "hash16": "79d7764b0fc5732c",
+   "hash16": "ee8dc169efa198c8",
    "variant": "partial_source_failure"
   },
   {
    "answerability": "partial",
    "family": "F2",
-   "hash16": "40aa3c92ed1debf2",
+   "hash16": "a0928c94567ad260",
    "variant": "partial_source_failure"
   },
   {
    "answerability": "partial",
    "family": "F1",
-   "hash16": "2b543443bfb5105e",
+   "hash16": "cb519685284abc80",
    "variant": "partial_source_failure"
   },
   {
    "answerability": "partial",
    "family": "F1",
-   "hash16": "a2a832c62566418d",
+   "hash16": "fa394acfbe37c17a",
    "variant": "partial_source_failure"
   }
  ],
  "live_dev_manifests": 0,
  "oracle": [
-  "oracle:f1_chain@1c117db7f628",
-  "oracle:f2_customer_po_status@1c117db7f628",
-  "oracle:f3_quantities@1c117db7f628",
-  "oracle:f4_three_way_match@1c117db7f628",
-  "oracle:f5_unmatched_invoices@1c117db7f628",
-  "oracle:f6_shipped_short@1c117db7f628"
+  "oracle:f1_chain@e7ef7b810b2b",
+  "oracle:f2_customer_po_status@e7ef7b810b2b",
+  "oracle:f3_quantities@e7ef7b810b2b",
+  "oracle:f4_three_way_match@e7ef7b810b2b",
+  "oracle:f5_unmatched_invoices@e7ef7b810b2b",
+  "oracle:f6_shipped_short@e7ef7b810b2b"
  ],
  "outage_unmeasured": null,
  "partition_dropped": {
@@ -1517,7 +1518,7 @@
  "run_id": "heldout-v2",
  "schema": "plx-eval-heldout-manifest/v1",
  "set": "heldout",
- "set_sha256": "9e628fc2a4176faef1205e4ee519c1f74e4e8526227ff9a7fd402365f33fee76",
+ "set_sha256": "c0f1f6799de9c42fa79102f239ca6867c6123b7973a63f5d020e44c7f87eecfd",
  "sources": {
   "bc": "injected-transport",
   "documents": "injected-transport",

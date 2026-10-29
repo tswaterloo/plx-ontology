@@ -1,4 +1,5 @@
-"""Mail capture resumes folders across runs and one bad folder never stalls the stream.
+"""Mail capture resumes folders across runs and one bad folder never stalls the stream
+(owner directive 4b2734959760, core gap C; gap-8d2fdf5ec18b).
 
 Injected-transport tests over the in-process fake Graph of ``test_capture_mail``
 (evidence label ``injected-transport``; no network, no credentials). Live: the
@@ -17,7 +18,8 @@ import unittest
 import unittest.mock
 from urllib.parse import unquote
 
-from verify import live_verify as lv
+from devloop import live_verify as lv
+from devloop.tests.spec_verdict import verdict
 from integrations import capture_mail, graph_read
 from integrations.capture_mail import CaptureScope, MailCapture, MailCaptureStore
 from integrations.tests import test_capture_mail as base
@@ -190,9 +192,8 @@ class ResumeTests(base.CaptureCase):
         self.assertEqual(run["mailboxes"][1]["folders"][0]["round"], "incremental")
 
 
-class CliHostStateTests(unittest.TestCase):
-    """The live check keeps its store in the host state directory across invocations,
-    so a budget-cut or interrupted folder resumes on the next daily run."""
+class CliCase(unittest.TestCase):
+    """``run_cli`` as the live check runs it, over a one-folder scope in host state."""
 
     def args(self, state_dir, **extra):
         parser = argparse.ArgumentParser()
@@ -226,25 +227,36 @@ class CliHostStateTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def invoke(self, ticks=None, **extra):
-        """``run_cli`` as the live check runs it; ``ticks``: a fake monotonic clock."""
+    def invoke(self, ticks=None, hook=None, **extra):
+        """``run_cli`` as the live check runs it; ``ticks``: a fake monotonic clock;
+        ``hook(capture)``: applied to the MailCapture it builds."""
         real = capture_mail.MailCapture
 
         def capture(*a, **kw):
             if ticks is not None:
                 kw["monotonic"] = lambda: next(ticks)
-            return real(*a, **kw)
+            built = real(*a, **kw)
+            if hook is not None:
+                hook(built)
+            return built
 
         with unittest.mock.patch.object(capture_mail, "MailCapture", capture), \
                 unittest.mock.patch.object(base.MailScope, "builtin", lambda: base.SYNTHETIC):
             return capture_mail.run_cli(self.args(None, **extra), environ=self.env,
                                         sender=self.graph, sleep=lambda _s: None)
 
+
+
+class CliHostStateTests(CliCase):
+    """The live check keeps its store in the host state directory across invocations,
+    so a budget-cut or interrupted folder resumes on the next daily run."""
+
     def test_without_a_state_dir_the_second_invocation_carries_on_the_first(self):
-        # The time budget cuts invocation 1 after its first page; invocation 2, a new
+        # The time budget (one tick per clock read: the mailbox open, the folder, the
+        # page) cuts invocation 1 after its first page; invocation 2, a new
         # process with the same host state, resumes from the stored cursor and ends
         # complete. A {tmp} state directory would have started over.
-        first = self.invoke(ticks=iter(range(1000)), budget_seconds=3)
+        first = self.invoke(ticks=iter(range(1000)), budget_seconds=4)
         self.assertEqual((first["storage"]["host_state"], first["storage"]["carried"],
                           first["storage"]["state_base"]),
                          (True, False, "workbench_state_dir"))
@@ -277,12 +289,72 @@ class CliHostStateTests(unittest.TestCase):
                                      sleep=lambda _s: None)
 
 
+class ColdStoreTests(CliCase):
+    """One rule over every capture check that resumes across runs
+    (capture_mail.budget_cut_block): a run the budget alone cut over a store that was
+    not carried is blocked later_ask live-host-persistent-state-dir, with its progress;
+    any other gap, or a cut over a carried store, is a typed fail; never a pass. Judged
+    on real ``run_cli`` output through the committed graph.mail_capture spec."""
+
+    def spec(self):
+        return json.loads((ROOT / "devloop" / "live-checks" / "graph.mail_capture.json")
+                          .read_text())
+
+    def judged(self, report):
+        return verdict(self.spec(), 0 if report["ok"] else 1, json.loads(json.dumps(report)))
+
+    def test_budget_cut_on_new_store_is_blocked_later_ask(self):
+        report = self.invoke(ticks=iter(range(1000)), budget_seconds=3)
+        self.assertFalse(report["storage"]["carried"])
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["runs"][0]["mailboxes"][0]["folders"][0]["reason"],
+                         capture_mail.TIME_BUDGET)
+        self.assertEqual(report["blocked_upstream"], [{
+            "part": "mail.mailbox0.folder0", "source": "microsoft-graph",
+            "cause": "later_ask", "later_ask": "live-host-persistent-state-dir"}])
+        result, failures = self.judged(report)
+        self.assertEqual((result, failures), ("blocked", []))
+        self.assertEqual([p["cause"] for p in lv.blocked_parts(report)], ["later_ask"])
+        # Progress is shown: what the cut run brought in and what is left.
+        self.assertEqual(report["summary"]["bound_total"], 1)
+        self.assertGreater(report["summary"]["messages_current"], 0)
+        # A leak under the blocked verdict still fails.
+        leaked = {**report, "leak_check": {**report["leak_check"], "withheld_actor_rows": 1}}
+        self.assertEqual(self.judged(leaked)[0], "fail")
+
+    def test_folder_error_on_new_store_fails_not_blocked(self):
+        def arm(capture):
+            hook = FailingMessages(capture, BOX_A, RuntimeError(SECRET_IN_ERROR))
+            hook.fails_on = {"MSG-3"}
+
+        # One reader thread: the hook replaces the per-message step that path calls.
+        report = self.invoke(hook=arm, workers=1)
+        self.assertFalse(report["storage"]["carried"])
+        self.assertEqual(report["runs"][0]["mailboxes"][0]["folders"][0]["reason"],
+                         "folder_error:RuntimeError")
+        self.assertEqual(report["blocked_upstream"], [])
+        self.assertEqual(self.judged(report)[0], "fail")
+        self.assertNotIn(SECRET_IN_ERROR, json.dumps(report))
+
+    def test_budget_cut_on_carried_store_fails_not_blocked(self):
+        self.invoke(ticks=iter(range(1000)), budget_seconds=3)
+        self.graph.put(BOX_A, "MSG-6", "CK-6-1")
+        report = self.invoke(ticks=iter(range(1000)), budget_seconds=3)
+        self.assertTrue(report["storage"]["carried"])
+        self.assertEqual(report["runs"][0]["mailboxes"][0]["folders"][0]["reason"],
+                         capture_mail.TIME_BUDGET)
+        self.assertEqual(report["blocked_upstream"], [])
+        result, failures = self.judged(report)
+        self.assertEqual(result, "fail")
+        self.assertTrue(failures)
+
+
 class LiveCheckSpecTests(unittest.TestCase):
     """graph.mail_capture is in the daily set and resumes (spec fields, then the real
     ``run_cli`` summary through ``check_expectations``)."""
 
     def spec(self):
-        return json.loads((ROOT / "verify" / "live-checks" / "graph.mail_capture.json")
+        return json.loads((ROOT / "devloop" / "live-checks" / "graph.mail_capture.json")
                           .read_text())
 
     def test_the_spec_is_daily_validates_and_keeps_host_state(self):
@@ -292,7 +364,7 @@ class LiveCheckSpecTests(unittest.TestCase):
         self.assertIn("--budget-seconds", spec["command"])
         budget = float(spec["command"][spec["command"].index("--budget-seconds") + 1])
         self.assertLess(budget, spec["timeout_seconds"])
-        lv.validate_spec(spec)   # raises SpecError when the live check would refuse it
+        lv.validate_spec(spec)   # raises SpecError when the verifier would refuse it
 
     def test_expectations_hold_on_real_run_cli_output_and_fail_when_a_folder_errors(self):
         spec = self.spec()

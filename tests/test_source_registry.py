@@ -392,7 +392,7 @@ class CheckTests(UpstreamFixture):
         sage.ap_vendor_remit is bound exactly when the pinned manifest lists it (TASK-3355 dropped
         it, TASK-3390 lifted it); columns the manifest excludes are bound by no property. TASK-3525
         lifts public.app_bc_entity_map alone (13 pinned columns, every other app_bc_*/bc_* stays
-        denied): a route reading it resolves it, and bc_invoice_snapshot stays unresolved."""
+        denied): a route reading it resolves it. The two BC invoice snapshots are added from the live catalog (2026-10-26) and cite it."""
         pins = json.loads(sr.PINS_PATH.read_text())
         commit = sr.repo_pins(pins)[PORTAL]["commit"]
         catalog = json.loads((sr.ROOT / "ontology/schema/generated/meta/portal_catalog.json").read_text())
@@ -400,6 +400,14 @@ class CheckTests(UpstreamFixture):
         self.assertTrue(commit.startswith(catalog["source"]["commit"]), (commit, catalog["source"]))
         self.assertIn(sr.MANIFEST_PATH, catalog["source"]["paths"])
         served = {r["name"] for r in catalog["relations"]}
+        # Relations the live GET /v1/relations serves (248 on 2026-10-26) but the pinned manifest
+        # does not list: added by `gen_ontology_skeleton merge-live`, never by hand. Each cites
+        # the live read, not an allowlist line (the two BC invoice snapshots among them).
+        LIVE_ADDED = set(catalog["live_added"]["relations"])
+        self.assertEqual(len(LIVE_ADDED), 144)
+        self.assertEqual(len(served), 104 + len(LIVE_ADDED))
+        self.assertLessEqual({"public.bc_invoice_snapshot",
+                              "public.bc_purchase_invoice_snapshot"}, LIVE_ADDED)
         entries = {e["id"]: e for e in sr.load_registry()["entries"]}
         tables = {e["name"]: e["table"] for e in entries.values() if e["kind"] == "prisma_model"}
         facts = sr.RepoFacts()
@@ -413,7 +421,10 @@ class CheckTests(UpstreamFixture):
         for name in sorted(served):
             with self.subTest(relation=name):
                 entry = entries[f"portal-reporting-api.relation:{name}"]
-                self.assertRegex(entry["evidence"][0], rf"allowlist\.json@{commit[:12]}:\d+$")
+                if name in LIVE_ADDED:
+                    self.assertIn("live GET /v1/relations", entry["evidence"][0])
+                else:
+                    self.assertRegex(entry["evidence"][0], rf"allowlist\.json@{commit[:12]}:\d+$")
                 self.assertIn(("portal_api", name), facts.bindings)
                 row = sr.entry_status(entry, facts, None, tables)
                 self.assertGreater(sr.STAGES.index(row["status"]), sr.STAGES.index("bound"), row)
@@ -439,8 +450,12 @@ class CheckTests(UpstreamFixture):
         bridge = next(r for r in catalog["relations"] if r["name"] == "public.app_bc_entity_map")
         self.assertEqual(sorted(bridge["columns"]), entity_map)       # TASK-3525 at the pin
         self.assertEqual(sorted(bound_columns("gen.public.app_bc_entity_map")), entity_map)
-        self.assertEqual({n for n in served if n.split(".", 1)[1].startswith(("app_bc_", "bc_"))},
-                         {"public.app_bc_entity_map"})
+        # At the pin only app_bc_entity_map of the app_bc_*/bc_* relations is served; any
+        # other one is served because the live read lists it (live_added), never by hand.
+        bc_served = {n for n in served if n.split(".", 1)[1].startswith(("app_bc_", "bc_"))}
+        self.assertEqual(bc_served - LIVE_ADDED, {"public.app_bc_entity_map"})
+        self.assertLessEqual({"public.bc_invoice_snapshot", "public.bc_purchase_invoice_snapshot"},
+                             bc_served & LIVE_ADDED)
         readers = [e for e in entries.values() if e["kind"] == "api_route"
                    and "public.app_bc_entity_map" in e.get("relations", ())]
         self.assertGreaterEqual(len(readers), 4)
@@ -464,8 +479,8 @@ class CoverageTests(unittest.TestCase):
             _entry("portal", "prisma_model", "SalesOrder", table="app_sales_order"),
             _entry("portal", "prisma_model", "Widget", table="app_widget"),
             _entry("portal", "api_route", "/api/x", models=["SalesOrder", "Widget"]),
-            _entry("portal", "prisma_model", "User", table="app_user"),
-            _entry("portal", "api_route", "/api/me", models=["SalesOrder", "User"]),
+            _entry("portal", "prisma_model", "AuditLog", table="app_audit_log"),
+            _entry("portal", "api_route", "/api/me", models=["SalesOrder", "AuditLog"]),
             _entry("sharepoint", "site", "PLXCUSTOMERS"),
             _entry("sharepoint", "site", "Maintenance"),
             _entry("portal", "api_route", "/api/auth-only", models_via_shared=["User"]),
@@ -514,9 +529,9 @@ class CoverageTests(unittest.TestCase):
         self.assertEqual(rows["portal.api_route:/api/x"]["blocking"], ["portal_api:public.app_widget"])
         # A model the API does not serve is declared by a not_served type with an ask (the
         # generator's coverage map); a route is credited through its models.
-        self.assertEqual(stage("portal.prisma_model:User"), ("declared", "bound", "not_served"))
+        self.assertEqual(stage("portal.prisma_model:AuditLog"), ("declared", "bound", "not_served"))
         self.assertEqual(stage("portal.api_route:/api/me"), ("declared", "bound", "not_served"))
-        self.assertEqual(rows["portal.api_route:/api/me"]["blocking"], ["portal_api:public.app_user"])
+        self.assertEqual(rows["portal.api_route:/api/me"]["blocking"], ["portal_api:public.app_audit_log"])
         self.assertEqual(stage("sharepoint.site:PLXCUSTOMERS"),
                          ("fixture_queryable", "evaluated", "no_live_check"))
         # No capture target names it, but the estate's discover rule captures every site
@@ -565,7 +580,7 @@ class CoverageTests(unittest.TestCase):
         scopes = {s["scope"]: s for s in doc["out_of_scope"]}
         self.assertEqual(scopes["external.host:api.github.com"],
                          {"scope": "external.host:api.github.com", "entries": 1,
-                          "decision": "docs/decisions/2026-10-07-source-scope-out-of-scope.md"})
+                          "decision": "devloop/DECISIONS/2026-10-07-source-scope-out-of-scope.md"})
         self.assertEqual(scopes["infra-ops.mcp_tool"]["entries"], 1)
         self.assertEqual(scopes["external.host"]["entries"], 0)   # the entry id scope wins
         self.assertEqual({k for row in doc["uncovered"] for k in row} - {
@@ -653,7 +668,7 @@ class CoverageTests(unittest.TestCase):
             coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
             served_tid = coverage["relations"]["public.app_customer"]["object_type"]
             coverage["not_served"] = {
-                "public.app_user": coverage["not_served"]["public.app_user"],
+                "public.app_audit_log": coverage["not_served"]["public.app_audit_log"],
                 "public.app_widget": {"object_type": served_tid},
                 "public.app_gizmo": {"object_type": "NoSuchType"},
                 "public.app_gadget": {"object_type": "RelPublicAppGadget"}}
@@ -670,7 +685,7 @@ class CoverageTests(unittest.TestCase):
             bc_coverage["not_served"]["locations"] = {"object_type": "RelBcLocations"}  # served
             bc_path.write_text(json.dumps(bc_coverage), encoding="utf-8")
             facts = sr.RepoFacts(root)
-        self.assertEqual(set(facts.unserved), {("portal_api", "public.app_user"),
+        self.assertEqual(set(facts.unserved), {("portal_api", "public.app_audit_log"),
                                                ("bc", "postedSalesInvoices"),
                                                ("bc", "salesReceivablesSetup"),
                                                ("bc", "plxCustomerShipTos"),
@@ -924,7 +939,7 @@ class DeclaredTests(unittest.TestCase):
         items = rows["/sites/{}/lists/{}/items"]
         self.assertEqual((items["status"], items["reason"], items.get("blocked")),
                          ("fixture_queryable", "no_live_results", None))
-        decision = "docs/decisions/2026-10-07-ovs-teams-capture.md"
+        decision = "devloop/DECISIONS/2026-10-07-ovs-teams-capture.md"
         self.assertTrue((self.root / decision).is_file())
         path = self.root / sr.GRAPH_ENDPOINTS
         doc = json.loads(path.read_text())
@@ -936,12 +951,12 @@ class DeclaredTests(unittest.TestCase):
 
     def test_a_scope_without_a_decided_record_is_refused(self):
         scope = self.root / "ontology/source_scope.json"
-        decided = "docs/decisions/2026-10-07-external-infra-ops-not-sources.md"
+        decided = "devloop/DECISIONS/2026-10-07-external-infra-ops-not-sources.md"
         self.assertIn("external.host", sr.load_scope(self.root))
-        (self.root / "docs/decisions/open-probe.md").write_text("# Q\n\n- status: open\n")
-        for decision, refusal in (("docs/decisions/2026-10-08-no-such-record.md", "missing"),
-                                  ("docs/decisions/open-probe.md", "not status: decided"),
-                                  ("docs/elsewhere.md", "not a docs/decisions")):
+        (self.root / "devloop/DECISIONS/open-probe.md").write_text("# Q\n\n- status: open\n")
+        for decision, refusal in (("devloop/DECISIONS/2026-10-08-no-such-record.md", "missing"),
+                                  ("devloop/DECISIONS/open-probe.md", "not status: decided"),
+                                  ("docs/elsewhere.md", "not a devloop/DECISIONS")):
             scope.write_text(json.dumps({"format": sr.SCOPE_FORMAT, "out_of_scope": {
                 "external.host": decided, "external.sdk": decision}}))
             with self.assertRaisesRegex(sr.RegistryError, refusal):

@@ -14,7 +14,7 @@ from evals.oracle import generator
 from evals.oracle.families import ORACLES
 
 ROOT = Path(__file__).resolve().parents[2]
-BRANCH = "origin/claude/verify-task-evals-employee-20261005T201622Z"
+BRANCH = "origin/claude/devloop-task-evals-employee-20261005T201622Z"
 PROPOSED = "evals/proposed/employee-20261005T201622Z/"
 
 

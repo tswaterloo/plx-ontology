@@ -3,7 +3,7 @@
  "format": "plx-ontology-domain/v1",
  "domain": "items",
  "origin": "curated",
- "description": "Development FG items and Sage item units of measure. The FG item links to the product it was minted as, its analog reference product and the FM finished product it adopted; a unit of measure links to its Sage item. Conversions are Decimal text read from Sage, never inferred.",
+ "description": "Development FG items and Sage item units of measure (schema-coverage lane, directive 612e1dd724f7). The FG item links to the product it was minted as, its analog reference product and the FM finished product it adopted; a unit of measure links to its Sage item. Conversions are Decimal text read from Sage, never inferred.",
  "upstream_pins": {
   "plx-customer-portal": "790256ca43"
  },
@@ -425,10 +425,353 @@
   },
   {
    "id": "Lot",
-   "description": "An inventory lot of one product (lot number BASE@BINCODE) with on-hand, reserved and available quantities, QC status, ownership and expiry. Bindings and links are declared and tested in ontology/schema/pending/people_lots.json, which replaces this placeholder when loaded with include_pending.",
+   "description": "A supplier lot as one receipt line received it (identifier object, one per carrying line): FM lotnoqc on the raw and packaging receipt rows, else the gold receipt line's supplier_lot_number. The same lot received on several lines is several Lot records sharing one lot number, joined only as candidates (identity key supplier_lot, lead, not unique). A lot placeholder (N/A, NONE, -) is no lot number. The stock ledger of lots (public.app_inventory_lot: on-hand, QC status, ownership) is InventoryLot, still unserved.",
+   "anchor": true,
+   "availability": {
+    "state": "partial",
+    "reason": "Served from receipt lines only: the inventory lot ledger (public.app_inventory_lot, InventoryLot) is not served by the reporting API (03-PORTAL 3.9).",
+    "upstream_ask": "Q3"
+   },
+   "bindings": [
+    {
+     "id": "portal.app_receipt_line.supplier_lot",
+     "source": "portal_api",
+     "relation": "public.app_receipt_line",
+     "key": [
+      "id"
+     ],
+     "where": [
+      {
+       "path": "supplier_lot_number",
+       "op": "present"
+      }
+     ],
+     "lineage": {
+      "default": "gold_native_staging",
+      "rules": [
+       {
+        "when": [
+         {
+          "path": "lab_id",
+          "op": "prefix",
+          "value": "UAT-"
+         }
+        ],
+        "lineage": "gold_native_staging",
+        "evidence": [
+         {
+          "kind": "ref",
+          "id": "portal.receipt_lab_id"
+         }
+        ]
+       }
+      ],
+      "inherit": "Lot.received_in"
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.receipt_line"
+      },
+      {
+       "kind": "ref",
+       "id": "allowlist.public.app_receipt_line"
+      },
+      {
+       "kind": "ref",
+       "id": "live.portal_relation_keys"
+      }
+     ],
+     "note": "Gold receipt lines with a supplier lot; a lot inherits its receipt's lineage (Lot.received_in), as the line does."
+    },
+    {
+     "id": "portal.fm_receipt_raw_material.lotnoqc",
+     "source": "portal_api",
+     "relation": "public.receipt_raw_material",
+     "key": [
+      "id"
+     ],
+     "where": [
+      {
+       "path": "lotnoqc",
+       "op": "present"
+      }
+     ],
+     "lineage": {
+      "default": "fm_bronze",
+      "rules": [
+       {
+        "when": [
+         {
+          "path": "idlabid",
+          "op": "prefix",
+          "value": "UAT-"
+         }
+        ],
+        "lineage": "gold_native_staging",
+        "evidence": [
+         {
+          "kind": "ref",
+          "id": "portal.receipt_lab_id"
+         }
+        ]
+       }
+      ]
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "allowlist.public.receipt_raw_material"
+      },
+      {
+       "kind": "ref",
+       "id": "live.portal_relation_keys"
+      },
+      {
+       "kind": "ref",
+       "id": "context.portal.3.5"
+      }
+     ]
+    },
+    {
+     "id": "portal.fm_receipt_packaging.lotnoqc",
+     "source": "portal_api",
+     "relation": "public.receipt_packaging",
+     "key": [
+      "id"
+     ],
+     "where": [
+      {
+       "path": "lotnoqc",
+       "op": "present"
+      }
+     ],
+     "lineage": {
+      "default": "fm_bronze"
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "allowlist.public.receipt_packaging"
+      },
+      {
+       "kind": "ref",
+       "id": "live.portal_relation_keys"
+      },
+      {
+       "kind": "ref",
+       "id": "context.portal.3.5"
+      }
+     ]
+    }
+   ],
+   "properties": [
+    {
+     "name": "lot_number",
+     "value_type": "identifier",
+     "identifier_kind": "lot_number",
+     "description": "The supplier's lot as written on the receiving line (the lot normaliser: case-blind, a placeholder is no value). Names this lot, never the line that received it and never a PLX lab id.",
+     "sources": [
+      {
+       "binding": "portal.fm_receipt_raw_material.lotnoqc",
+       "path": "lotnoqc",
+       "parser": "identifier"
+      },
+      {
+       "binding": "portal.fm_receipt_packaging.lotnoqc",
+       "path": "lotnoqc",
+       "parser": "identifier"
+      },
+      {
+       "binding": "portal.app_receipt_line.supplier_lot",
+       "path": "supplier_lot_number",
+       "parser": "identifier"
+      }
+     ],
+     "authority": {
+      "precedence": [
+       {
+        "lineage": [
+         "fm_bronze"
+        ],
+        "evidence": [
+         {
+          "kind": "ref",
+          "id": "context.critique.r1"
+         }
+        ]
+       },
+       {
+        "lineage": [
+         "gold_etl_from_fm"
+        ],
+        "evidence": [
+         {
+          "kind": "ref",
+          "id": "portal.etl_silver_receipts"
+         }
+        ]
+       }
+      ]
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.receipt_line"
+      },
+      {
+       "kind": "ref",
+       "id": "allowlist.public.receipt_raw_material"
+      },
+      {
+       "kind": "ref",
+       "id": "allowlist.public.receipt_packaging"
+      }
+     ]
+    },
+    {
+     "name": "lot_text",
+     "value_type": "text",
+     "description": "The lot as the line wrote it.",
+     "sources": [
+      {
+       "binding": "portal.fm_receipt_raw_material.lotnoqc",
+       "path": "lotnoqc",
+       "parser": "trim"
+      },
+      {
+       "binding": "portal.fm_receipt_packaging.lotnoqc",
+       "path": "lotnoqc",
+       "parser": "trim"
+      },
+      {
+       "binding": "portal.app_receipt_line.supplier_lot",
+       "path": "supplier_lot_number",
+       "parser": "trim"
+      }
+     ],
+     "authority": {
+      "precedence": [
+       {
+        "lineage": [
+         "fm_bronze"
+        ],
+        "evidence": [
+         {
+          "kind": "ref",
+          "id": "context.critique.r1"
+         }
+        ]
+       },
+       {
+        "lineage": [
+         "gold_etl_from_fm"
+        ],
+        "evidence": [
+         {
+          "kind": "ref",
+          "id": "portal.etl_silver_receipts"
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "name": "expiry_date",
+     "value_type": "date",
+     "description": "The lot's expiry as the receiving line states it.",
+     "sources": [
+      {
+       "binding": "portal.fm_receipt_raw_material.lotnoqc",
+       "path": "expirydate",
+       "parser": "iso_date"
+      },
+      {
+       "binding": "portal.fm_receipt_packaging.lotnoqc",
+       "path": "expirydate",
+       "parser": "iso_date"
+      },
+      {
+       "binding": "portal.app_receipt_line.supplier_lot",
+       "path": "expiry_date",
+       "parser": "iso_date"
+      }
+     ],
+     "authority": {
+      "precedence": [
+       {
+        "lineage": [
+         "fm_bronze"
+        ],
+        "evidence": [
+         {
+          "kind": "ref",
+          "id": "context.critique.r1"
+         }
+        ]
+       },
+       {
+        "lineage": [
+         "gold_etl_from_fm"
+        ],
+        "evidence": [
+         {
+          "kind": "ref",
+          "id": "portal.etl_silver_receipts"
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ],
+   "identity_keys": [
+    {
+     "name": "supplier_lot",
+     "properties": [
+      "lot_number"
+     ],
+     "identifier_kind": "lot_number",
+     "tier": "lead",
+     "unique": false,
+     "scope": "cross_binding",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.receipt_line"
+      },
+      {
+       "kind": "ref",
+       "id": "context.portal.3.5"
+      }
+     ]
+    }
+   ],
+   "display": [
+    "lot_text"
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "prisma.receipt_line"
+    },
+    {
+     "kind": "ref",
+     "id": "context.portal.3.5"
+    },
+    {
+     "kind": "ref",
+     "id": "prisma.inventory_lot"
+    }
+   ]
+  },
+  {
+   "id": "InventoryLot",
+   "description": "The inventory lot ledger of one product (lot number BASE@BINCODE) with on-hand, reserved and available quantities, QC status, ownership and expiry. Bindings and links are declared and tested in ontology/schema/pending/people_lots.json, which replaces this placeholder when loaded with include_pending.",
    "availability": {
     "state": "not_served",
-    "reason": "Pending: the reporting-API allowlist (services/workbench-api/manifest/allowlist.json@790256ca43) does not serve public.app_inventory_lot (portal-code-map.md 3.9: no lot or inventory relation is served); lot numbers appear only as text on AO, MO, batch and receipt rows.",
+    "reason": "Pending: the reporting-API allowlist (services/workbench-api/manifest/allowlist.json@790256ca43) does not serve public.app_inventory_lot (03-PORTAL 3.9: no lot or inventory relation is served); supplier lots are served only as text on receipt rows (Lot).",
     "upstream_ask": "Q3"
    },
    "bindings": [],
@@ -566,6 +909,172 @@
      ]
     }
    ]
+  },
+  {
+   "id": "ReceiptLine.received_lot",
+   "from": "ReceiptLine",
+   "to": "Lot",
+   "name": "received_lot",
+   "reverse_name": "receiving_lines",
+   "cardinality": "N:1",
+   "description": "The supplier lot a receipt line received: the Lot made from the same row (stored key id = id). Followed from the line to its lot only, so a lot number never finds the line as its identity.",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "portal.app_receipt_line",
+     "to_binding": "portal.app_receipt_line.supplier_lot",
+     "pairs": [
+      {
+       "from": "id",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.receipt_line"
+      }
+     ]
+    },
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "portal.fm_receipt_raw_material",
+     "to_binding": "portal.fm_receipt_raw_material.lotnoqc",
+     "pairs": [
+      {
+       "from": "id",
+       "to": "id",
+       "compare": "integer_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "allowlist.public.receipt_raw_material"
+      }
+     ]
+    },
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "portal.fm_receipt_packaging",
+     "to_binding": "portal.fm_receipt_packaging.lotnoqc",
+     "pairs": [
+      {
+       "from": "id",
+       "to": "id",
+       "compare": "integer_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "allowlist.public.receipt_packaging"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "Lot.received_in",
+   "from": "Lot",
+   "to": "Receipt",
+   "name": "received_in",
+   "reverse_name": "received_lots",
+   "cardinality": "N:1",
+   "description": "The receipt header whose line received the lot (the line's receipt key).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "portal.app_receipt_line.supplier_lot",
+     "to_binding": "portal.app_receipt",
+     "pairs": [
+      {
+       "from": "receipt_id",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.receipt_line"
+      }
+     ]
+    },
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "portal.fm_receipt_raw_material.lotnoqc",
+     "to_binding": "portal.fm_receipt",
+     "pairs": [
+      {
+       "from": "idreceipt",
+       "to": "id",
+       "compare": "integer_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "allowlist.public.receipt_raw_material"
+      }
+     ]
+    },
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "portal.fm_receipt_packaging.lotnoqc",
+     "to_binding": "portal.fm_receipt",
+     "pairs": [
+      {
+       "from": "idreceipt",
+       "to": "id",
+       "compare": "integer_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "allowlist.public.receipt_packaging"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "Lot.of_item",
+   "from": "Lot",
+   "to": "Product",
+   "name": "of_item",
+   "reverse_name": "received_lots",
+   "cardinality": "N:1",
+   "description": "The item the gold receipt line received in this lot (product_id).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "portal.app_receipt_line.supplier_lot",
+     "to_binding": "portal.app_product",
+     "pairs": [
+      {
+       "from": "product_id",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "prisma.receipt_line"
+      }
+     ]
+    }
+   ]
   }
  ],
  "evidence_catalog": {
@@ -639,12 +1148,12 @@
   },
   "context.portal.3.6": {
    "kind": "context_pack",
-   "ref": "docs/reference/portal-code-map.md#3.6",
+   "ref": "devloop/CONTEXT/03-PORTAL.md#3.6",
    "note": "Item / product; app_fg_item and sage.ic_item_uom are served."
   },
   "context.portal.4.5": {
    "kind": "context_pack",
-   "ref": "docs/reference/portal-code-map.md#4.5",
+   "ref": "devloop/CONTEXT/03-PORTAL.md#4.5",
    "note": "Line UOMs are free strings and are never converted on orders or shipments."
   },
   "prisma.inventory_lot": {
@@ -658,8 +1167,74 @@
   },
   "context.portal.3.9": {
    "kind": "context_pack",
-   "ref": "docs/reference/portal-code-map.md#3.9",
+   "ref": "devloop/CONTEXT/03-PORTAL.md#3.9",
    "note": "Lot ledger app_inventory_lot; not served by the reporting API."
+  },
+  "allowlist.public.receipt_raw_material": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "services/workbench-api/manifest/allowlist.json",
+   "commit": "b46934a",
+   "note": "FM public.receipt_raw_material is served: id, idreceipt, idpogenitem, idlabid, sumqty, lotnoqc, expirydate.",
+   "lines": "1549"
+  },
+  "allowlist.public.receipt_packaging": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "services/workbench-api/manifest/allowlist.json",
+   "commit": "b46934a",
+   "note": "FM public.receipt_packaging is served: id, idreceipt, idpogenitem, idlab, sumqty, lotnoqc, expirydate.",
+   "lines": "1529"
+  },
+  "allowlist.public.app_receipt_line": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "services/workbench-api/manifest/allowlist.json",
+   "commit": "b46934a",
+   "note": "public.app_receipt_line is served (domain purchasing).",
+   "lines": "691"
+  },
+  "prisma.receipt_line": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/prisma/schema.prisma",
+   "commit": "b46934a",
+   "note": "model ReceiptLine @@map(\"app_receipt_line\"): receiptId FK, productId FK, labId, quantity, uom, supplierLotNumber, expiryDate, status.",
+   "symbol": "ReceiptLine",
+   "lines": "3618-3645"
+  },
+  "portal.receipt_lab_id": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/src/lib/mrp/receipt-lab-id.ts",
+   "commit": "b46934a",
+   "note": "Lab ids: raw YYDDD-N, packaging RP+7 digits, both via prefixRef ('UAT-YYDDD-N' on staging).",
+   "symbol": "formatRawLabId",
+   "lines": "5-15"
+  },
+  "live.portal_relation_keys": {
+   "kind": "live_trace",
+   "ref": "EVIDENCE/live/2026-09-30-portal-live-check.json",
+   "note": "Live reporting API check 2026-09-30: key per relation (id for app_*/FM/silver; orduniq, shiuniq, invuniq, porhseq, rcphseq, _sage_pk for Sage)."
+  },
+  "context.portal.3.5": {
+   "kind": "context_pack",
+   "ref": "devloop/CONTEXT/03-PORTAL.md#3.5",
+   "note": "PurchaseOrder/Receipt models, number series, renumbering, receiving flow, BC push rules."
+  },
+  "context.critique.r1": {
+   "kind": "context_pack",
+   "ref": "devloop/CONTEXT/09-CRITIQUE.md#R1",
+   "note": "Authority by era: FM/Sage bronze outranks the gold ETL copy; BC is authority for posted documents and money; gold_native_staging is never authority until a human confirms it (Q1)."
+  },
+  "portal.etl_silver_receipts": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/scripts/etl-silver-to-gold.ts",
+   "commit": "b46934a",
+   "note": "silver.receipts -> app_receipt copies po_item_id, po_reference, supplier_name; it sets no purchase_order_id.",
+   "symbol": "etlReceipts",
+   "lines": "1002-1062"
   }
  }
 }

@@ -91,6 +91,9 @@ _REASON_TEXT = {
     "below_tier_floor": "only weak links were found",
     "staging_root": "the record comes from a staging copy: a lead, never proven",
     "not_applicable_to_source": "this source does not record it",
+    "original_not_openable": "matching originals exist that you cannot open",
+    "originals_store_refused": "the captured originals could not be searched for you",
+    "before_first_capture": "nothing captured from this source is that old",
 }
 # Reason codes only the case and home views show, as full sentences (abstentions stay
 # abstentions: "not proof there is none"). A code in ``_REASON_TEXT`` always takes those
@@ -111,6 +114,8 @@ _CASE_REASON_TEXT = {
     "po_lines_incomplete": "Some purchase order lines were not read with a price and an "
                            "ordered and received quantity, so totals are not complete.",
     "unpriced_line": "A line has no cited unit price.",
+    "unit_price_withheld": "The unit price carries a marking you do not hold, so no line "
+                           "is priced for you.",
     "receipt_actual_not_read": "The freight and duty actually posted at receipt were not "
                                "read; the estimates on the order are not the actuals.",
     "lead_evidence_not_counted": "Some records reach this only through weak links and are "

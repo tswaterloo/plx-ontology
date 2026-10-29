@@ -1,4 +1,5 @@
-"""An isolated owner with a door has one write path.
+"""An isolated owner with a door has one write path (directives a5cffa3a42c6, 9eb1ad9b4ab8;
+decision 14).
 
 ``IsolatedOwnerSystem.process_pending`` refuses (``OwnerRejected``) a door operation, on
 the owner with the door and on a reopened owner without one, whether the door's answer

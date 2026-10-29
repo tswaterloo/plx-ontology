@@ -1,4 +1,5 @@
-"""Captured Graph mail and SharePoint files as first-class ontology sources.
+"""Captured Graph mail and SharePoint files as first-class ontology sources (directive
+ddc3e0c36691 L4).
 
 One state directory holds a versioned mail capture and a versioned SharePoint capture
 (filled over injected Graph transports); with synthetic Portal and BC purchase orders it
@@ -353,7 +354,8 @@ class TeamsProjectionTests(tct.CaptureCase):
                                  clock=now)
         with sqlite3.connect(path) as conn:
             objects = dict(conn.execute(
-                "SELECT object_id, audience_key FROM objects WHERE object_type LIKE 'Teams%'"))
+                "SELECT object_id, audience_key FROM objects "
+                "WHERE object_type LIKE 'Teams%Message'"))
         # The chat is projected beside the channels (gated by its captured membership).
         self.assertFalse([g for g in report["gaps"] if g["where"].startswith("gen.teams.")])
         general = {o for o, unit in objects.items() if tct.GENERAL in unit}
@@ -409,6 +411,71 @@ class TeamsProjectionTests(tct.CaptureCase):
                 self.assertNotIn("teams-chat://", text)
 
 
+    def test_teams_message_text_reaches_search_and_mentions_per_reader(self):
+        """A Teams message's body is in the text index and its identifier mentions are
+        links (``TeamsCaptures.documents``): a reader finds it by its words, and reaches it
+        from the record it names, only in the conversations it is a member of."""
+        from ontology.mentions import store_mention_links
+        from ontology.text_index import store_text_index
+
+        self.assertTrue(self.capture.run(tct.scope())["complete"])
+        path = Path(self.tmp.name) / "projection.sqlite"
+        now = lambda: dt.datetime.now(dt.timezone.utc)   # noqa: E731
+        portal = Source("portal_api", {"public.app_purchase_order": [
+            {"id": "p9", "po_number": "PO12172025"}]})
+        with TeamsCaptures(self.store.path) as captured:
+            report = build_store(path, schema_loader.load_schema(),
+                                 {"teams": captured, "portal_api": portal}, clock=now,
+                                 post_project={"text_index": store_text_index,
+                                               "mentions": store_mention_links})
+        indexed, linked = report["post_project"]["text_index"], report["post_project"]["mentions"]
+        self.assertEqual((indexed["documents"], indexed["documents_not_projected"]), (7, 0))
+        self.assertEqual(linked["counts"]["links"], 3)   # 1001, 1002 and chat 3001 name it
+        with sqlite3.connect(path) as conn:
+            units = dict(conn.execute("SELECT object_id, audience_key FROM objects "
+                                      "WHERE object_type LIKE 'Teams%Message'"))
+            bodies = {o for (o,) in conn.execute(
+                "SELECT DISTINCT object_id FROM text_fields WHERE field_path='row.body_text' "
+                "AND document_kind='teams_message'")}
+            po = conn.execute("SELECT object_id FROM objects WHERE object_type="
+                              "'PurchaseOrder'").fetchone()[0]
+        self.assertEqual(bodies, set(units))   # every message's body is indexed
+        general = {o for o, u in units.items() if tct.GENERAL in u}
+        chat = {o for o, u in units.items() if u.startswith("teams:chat:")}
+        private = set(units) - general - chat
+        quoted = {o for o in units if any(f'"id":"{m}"' in o for m in ("1001", "1002", "3001"))}
+        reader = ot.StoreReader.open(path)
+        self.addCleanup(reader.conn.close)
+        runtime = CaseRuntime(self.tmp.name, client=None, audience=AudienceMap({}, tenant="plx"),
+                              tenant="plx", live=LiveReaders(self.audience),
+                              people_exclusion=PeopleExclusion.from_env(tct.ENV))
+        self.addCleanup(runtime.close)
+        everyone = {"staff:cos", "staff:vince", "staff:teams-member", "staff:teams-outsider"}
+        base = ot.OntologyTools(
+            reader, ot.ReadPolicy(tenant="plx", audiences={
+                "teams:*": everyone, "api:*": everyone | {"staff:nobody"}}),
+            item_gate=ot.item_gate_from_case_runtime(runtime),
+            schema=ot.SchemaView.from_compiled(schema_loader.load_schema()), grammar=None,
+            contracts=CONTRACTS, clock=now)
+        nobody = Actor("plx", frozenset({"staff:nobody"}), "restricted")
+        for actor, seen in ((tct.MEMBER, set(units)), (tct.COS_ONLY, general | chat),
+                            (tct.VINCE_ONLY, general | private), (tct.OUTSIDER, set()),
+                            (nobody, set())):
+            found = base.call("plx.find", {"query": "freight quote", "limit": 50}, actor)
+            hits = {c["object"]["object_id"] for c in found.get("candidates", [])}
+            self.assertEqual(hits, quoted & seen, actor)
+            read = base.call("plx.object", {"object_id": po}, actor)
+            counts = {c["link_type"]: c["count"] for c in read.get("linked_counts", [])}
+            self.assertEqual(counts, {f"{kind}.mentions_purchase_order": n for kind, n in (
+                ("TeamsChannelMessage", len(quoted & seen & general)),
+                ("TeamsChatMessage", len(quoted & seen & chat))) if n}, actor)
+            text = json.dumps([found, read])
+            for hidden in set(units) - seen:
+                self.assertNotIn(hidden, text, actor)
+            if not seen:
+                self.assertNotIn(tct.SECRET_TEXT, text)
+
+
 class GraphFamiliesTests(unittest.TestCase):
     """``ontology/generator/graph.py`` over the committed CSDL subset, rules and registry,
     and the source registry reading its endpoint map (evidence: isolated-fixture; the live
@@ -433,7 +500,7 @@ class GraphFamiliesTests(unittest.TestCase):
             return {k: v for k, v in mapped[self.E + template].items()
                     if k not in ("resolved", "methods")}
         write = {"not_business_data": "write_operation",
-                 "decision": "docs/decisions/2026-10-07-rec03-production-writes.md"}
+                 "decision": "devloop/DECISIONS/2026-10-07-rec03-production-writes.md"}
         # Upstream only POSTs or PUTs these (a folder create, an upload, a channel post):
         # upstream actions, never read sources, though a rule binds their resource.
         for template, method in (("/drives/{}/{}:/children", "POST"),

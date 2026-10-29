@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "plx-eval-item/v1",
   "title": "PLX evaluation item (C0 contract, frozen)",
-  "description": "One evaluation question. Dev items (60, visible) live in the repo; held-out items (120) are generated and stored only in the credentialed live environment and must never be committed. Validated with ontology/json_contract.py (stdlib, imports nothing else from the repo; the oracle loads it by file path from scripts/, so evals/oracle/ itself never imports ontology/).",
+  "description": "One evaluation question (09-CRITIQUE R7, 10-DECISION decision 8). Dev items (60, visible) live in the repo; held-out items (120) are generated and stored only in the credentialed live environment and must never be committed. Validated with ontology/json_contract.py (stdlib, imports nothing else from the repo; the oracle lane loads it by file path from scripts/, so evals/oracle/ itself never imports ontology/).",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -217,7 +217,7 @@
         "when",
         "note"
       ],
-      "description": "A human confirmed these staging-native rows are real business records (not an audit of the label)."
+      "description": "R1/Q1: a human confirmed these staging-native rows are real business records (not an audit of the label)."
     },
     "actor": {
       "type": "object",
@@ -331,6 +331,57 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 200
+        },
+        "topic_terms": {
+          "description": "A rubric item's card-specific words (evals.score.set_topic_terms): words not in the case or set title and on at most a quarter of the set's cards. A claim sharing one is on the card's topic.",
+          "type": "array",
+          "items": {"type": "string", "pattern": "^[^\\W_]{1,64}$"},
+          "maxItems": 200
+        },
+        "topic_names": {
+          "description": "Words of people's names (evals.score.person_names, from committed data): never a topic word of a rubric item.",
+          "type": "array",
+          "items": {"type": "string", "pattern": "^[^\\W_]{1,64}$"},
+          "maxItems": 200
+        },
+        "source_documents": {
+          "description": "A rubric item's own card set's source documents by byte SHA-256 (scripts/eval_case_cards.py set_documents): a gate-passed claim whose cited read is one is evidence (evals.score.evidenced_claims, scorer /21).",
+          "type": "array",
+          "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "maxItems": 400
+        },
+        "foreign_documents": {
+          "description": "Other card sets' source documents by byte SHA-256, minus the item's own and the originals its card names: a claim citing one is never evidence (evals.score.evidenced_claims, scorer /21).",
+          "type": "array",
+          "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "maxItems": 400
+        },
+        "own_document_disabled": {
+          "description": "Why an audit closed the own-document evidence path for this card (scripts/eval_case_cards.py card_scoring; evals.score.own_document_evidence, scorer /21): other paths still apply.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "own_document_audited": {
+          "description": "The own-document claims an audit judged deserved (scorer /21): the date (a real ISO date, evals.score.audit_date) and each audited claim's evals.score.audit_digest. An own-document-only correct run with a claim not listed is counted own_document_unaudited, for review.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["date", "quotes"],
+          "properties": {
+            "date": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+            "quotes": {
+              "type": "array",
+              "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "minItems": 1,
+              "maxItems": 50
+            }
+          }
+        },
+        "unscored": {
+          "description": "The card set's mark that this item's layer is not scorable yet (scripts/eval_case_cards.py UNSCORED_MARK): the scorer reports the run unscored, never correct or wrong (evals.score.unscored_mark).",
+          "type": "string",
+          "pattern": "^UNSCORED",
+          "maxLength": 200
         }
       }
     },
@@ -497,7 +548,7 @@
   ],
   "$defs": {
     "lineage": {
-      "description": "Where an L1 record or L2 value came from (plus `workbench` for records the Workbench itself authors: cases, review decisions, annotations). `bc_<company>` names the BC Production company (R15: the company/book is a dimension of every BC-sourced object). `mission_control` is a record read through a Mission Control read tool, `brain` a record read from the brain's agent knowledge GET routes (integrations/knowledge_source.py): engineering/agent work records and derived knowledge, never business facts.",
+      "description": "Where an L1 record or L2 value came from (09-CRITIQUE R1, plus `workbench` for records the Workbench itself authors: cases, review decisions, annotations). `bc_<company>` names the BC Production company (R15: the company/book is a dimension of every BC-sourced object). `mission_control` is a record read through a Mission Control read tool, `brain` a record read from the brain's agent knowledge GET routes (integrations/knowledge_source.py): engineering/agent work records and derived knowledge, never business facts.",
       "anyOf": [
         {
           "type": "string",
@@ -546,7 +597,7 @@
       ]
     },
     "tier": {
-      "description": "Link/identity evidence tier, strongest first: verified (typed stored key agrees) > reviewed (a person accepted it, bound to exact source revisions) > corroborated (>=2 independent features agree; inferred, never fact) > stored_by_text_join > lead > contradicted.",
+      "description": "Link/identity evidence tier, strongest first (07 C.2): verified (typed stored key agrees) > reviewed (a person accepted it, bound to exact source revisions) > corroborated (>=2 independent features agree; inferred, never fact) > stored_by_text_join > lead > contradicted.",
       "type": "string",
       "enum": [
         "verified",
@@ -582,7 +633,7 @@
     "family": {
       "type": "string",
       "pattern": "^F[1-9][0-9]?$",
-      "description": "Question family id (F1 chain, F2 customer-PO status, F3 ordered/produced/shipped, F4 three-way match, ...). Held-out families have no plan in ontology/plans/."
+      "description": "Question family id (09 R7: F1 chain, F2 customer-PO status, F3 ordered/produced/shipped, F4 three-way match, ...). Held-out families have no plan in ontology/plans/."
     },
     "expected_value": {
       "type": "object",
@@ -769,7 +820,7 @@
         "values",
         "gaps"
       ],
-      "description": "What an oracle returns for one item. The oracle interface: oracle(item.root, item.as_known_at) -> oracle_result. Oracles (evals/oracle/) never import ontology/ and derive joins only from Portal FKs (docs/reference/portal-code-map.md)."
+      "description": "What an oracle returns for one item. The oracle interface: oracle(item.root, item.as_known_at) -> oracle_result. Oracles (evals/oracle/) never import ontology/ and derive joins only from Portal FKs (devloop/CONTEXT/03-PORTAL.md)."
     },
     "oracle_ref": {
       "type": "object",

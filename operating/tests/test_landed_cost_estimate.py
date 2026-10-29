@@ -48,7 +48,8 @@ def _assumption(**over):
 
 
 def plan(lines, *, freight="100", freight_extra=None, duty=None, hs=(), currency="USD",
-         assumptions=None, extra=None, complete=True, covers=True, rows_hidden=()):
+         assumptions=None, extra=None, complete=True, covers=True, rows_hidden=(),
+         withheld=None, receipts=0):
     """One engine run over a purchase order whose ``lines`` are ``(price, ordered, received)``
     in USD per ea; ``hs``: the line indexes whose item cites an HS code."""
     evidence: dict = {"currency": [_entry("currency", PO, {"untrusted_text": currency})]}
@@ -64,6 +65,9 @@ def plan(lines, *, freight="100", freight_extra=None, duty=None, hs=(), currency
         if i in hs:
             evidence.setdefault("classification", []).append(
                 _entry("classification", f"Item:{i}", {"untrusted_text": "3923.30"}))
+    for n in range(1, receipts + 1):
+        edges.append({"link_type": "Receipt.receives", "from": f"Receipt:{n}", "to": PO,
+                      "tier": "stored_by_text_join"})
     if freight is not None:
         evidence["freight_estimate"] = [_entry("freight_estimate", PO, freight, currency="USD",
                                                **(freight_extra or {}))]
@@ -79,7 +83,7 @@ def plan(lines, *, freight="100", freight_extra=None, duty=None, hs=(), currency
     out = lc.plan_run(ARGS, evidence, edges, items={}, name="landed_cost", as_of="2099-01-02",
                       resolver=lambda h, actor: None if h in rows_hidden else rows[h],
                       actor=None, complete=complete, covers=lambda link: covers,
-                      assumptions=assumptions)
+                      assumptions=assumptions, withheld=withheld)
     out["by_name"] = {e["name"]: e for e in out["entries"]}
     return out
 
@@ -127,6 +131,43 @@ class EstimateEngineTests(unittest.TestCase):
         self.assertIsNone(e["landed_cost"]["value"])
         self.assertIsNone(e["landed_cost_line_1"]["value"])
         self.assertNotIn(lc.ESTIMATE_LABEL, e["landed_cost_line_1"]["steps"])
+
+    def test_amounts_read_in_cents_while_each_value_keeps_its_full_precision(self):
+        """A history rate times goods leaves a long Decimal tail (live: 371.1994200100...).
+        Every step reads money to 2 places (a rate stays exact); each entry's value is the
+        exact Decimal, and the console verdict reads the value in cents."""
+        tail = "371.199420010000000000000000101"
+        out = plan([("1.00", "100", "0"), ("1.00", "200", "0")], freight=tail)
+        e = out["by_name"]
+        total = e["landed_cost_estimate"]
+        # The engine's Decimal value, not the cents the steps show (28 significant digits:
+        # the default context of every sum after the freight split).
+        self.assertEqual(total["value"], "690.6994200100000000000000001")
+        self.assertEqual(e["landed_cost_estimate_subtotal"]["value"],
+                         "671.1994200100000000000000001")
+        self.assertEqual(sum(Decimal(e[f"landed_cost_estimate_line_{i}"]["value"]) * q
+                             for i, q in ((1, 100), (2, 200))).quantize(Decimal("1e-20")),
+                         Decimal("690.69942001").quantize(Decimal("1e-20")))
+        steps = [x for name in ("landed_cost_estimate", "landed_cost_estimate_subtotal",
+                                "landed_cost_estimate_line_1", "landed_cost_estimate_line_2")
+                 for x in e[name]["steps"]]
+        self.assertFalse([x for x in steps if re.search(r"\d\.\d{5,}", x)], steps)
+        self.assertIn("subtotal: goods + freight = 671.20 USD",
+                      e["landed_cost_estimate_subtotal"]["steps"])
+        self.assertTrue(any("0.065" in x for x in total["steps"]))   # a rate is not money
+        # Exactly as many places as the source said, never padded.
+        self.assertEqual(lc.money_text(Decimal("2500"), "USD"), "2500")
+        self.assertEqual(lc.money_text(Decimal("10025.000"), "USD"), "10025")
+        self.assertEqual(lc.money_text(Decimal("137.50"), "USD"), "137.5")
+        self.assertEqual(lc.money_text(Decimal("0.012345"), "USD/kg"), "0.0123")
+        self.assertEqual(lc.money_text(Decimal("1.234567"), "CAD/USD"), "1.234567")
+        self.assertEqual(lc.money_text(Decimal("12.345678"), "kg"), "12.345678")
+        from operator_ui.object_workspace import investigation_verdict
+        verdict = investigation_verdict("landed_cost", {"investigation": {
+            "answer": [{"name": "landed_cost", "kind": "computed", "value": total["value"],
+                        "unit": "USD", "currency": "USD"}],
+            "answerability": {"state": "answerable", "reasons": []}}})
+        self.assertEqual(verdict["text"], "Landed cost 690.70 USD")
 
     def test_with_no_duty_source_and_no_assumption_the_missing_input_is_named(self):
         out = plan([("1.00", "100", "0"), ("3.00", "100", "0")], hs=(1,))
@@ -221,6 +262,37 @@ class EstimateEngineTests(unittest.TestCase):
         [gap] = _gap(out, "receipt_actual_not_read")
         self.assertEqual(gap["who_can_answer"], ["WH"])
         self.assertIsNotNone(out["by_name"]["landed_cost_line_1"])
+
+    def test_a_receipt_read_with_no_actual_is_not_a_receipt_never_read(self):
+        # The receipt is read (a link reached it) but records no freight or duty: the gap says
+        # so, and who can answer is the Warehouse; no receipt read keeps the old code.
+        out = plan([("1.00", "100", "100"), ("3.00", "100", "100")], receipts=2)
+        [gap] = _gap(out, "receipt_actual_not_recorded")
+        self.assertIn("2 receipt(s) of this purchase order are read", gap["detail"])
+        self.assertEqual(gap["who_can_answer"], ["WH"])
+        self.assertEqual(_gap(out, "receipt_actual_not_read"), [])
+        entry = out["by_name"]["landed_cost_estimate"]
+        self.assertIsNone(entry["value"])
+        self.assertTrue(entry["steps"][0].startswith("no estimate: RECEIPT_ACTUAL_NOT_RECORDED "))
+        out = plan([("1.00", "100", "100"), ("3.00", "100", "100")])
+        self.assertTrue(_gap(out, "receipt_actual_not_read"))
+        self.assertEqual(_gap(out, "receipt_actual_not_recorded"), [])
+
+    def test_withheld_lines_are_counted_never_dropped_and_no_total_is_stated(self):
+        out = plan([("1.00", "100", "0"), ("3.00", "100", "0")], covers=False,
+                   withheld=lambda link: 3)
+        self.assertEqual({e["value"] for e in out["entries"]}, {None})
+        [gap] = _gap(out, "estimate_read_scope_unproven")
+        self.assertIn("3 line(s) of the purchase order carry a marking this reader does not "
+                      "hold and are withheld", gap["detail"])
+        [gap] = [g for g in _gap(out, "po_lines_incomplete")
+                 if g["subject"] == "purchase order lines"]
+        self.assertIn("3 line(s) of the purchase order carry a marking", gap["detail"])
+        self.assertIn("po_lines_incomplete", out["reasons"])
+        # No count decided (None): the older reader-limit wording, still no amount.
+        out = plan([("1.00", "100", "0")], covers=False, withheld=lambda link: None)
+        self.assertTrue(_gap(out, "estimate_read_scope_unproven"))
+        self.assertEqual({e["value"] for e in out["entries"]}, {None})
 
     def test_a_partial_line_set_or_unpriced_line_names_the_input(self):
         for kwargs, reason in (({"complete": False}, "estimate_lines_incomplete"),
@@ -355,8 +427,8 @@ class InvestigateEstimateTests(unittest.TestCase):
         cls.runtime.close()
         cls.tmp.cleanup()
 
-    def investigate(self, markings, assumptions=None) -> dict:
-        reader = ot.StoreReader.open(self.product.store)
+    def investigate(self, markings, assumptions=None, store=None) -> dict:
+        reader = ot.StoreReader.open(store or self.product.store)
         self.addCleanup(reader.conn.close)
         who = {self.PRINCIPAL}
         policy = ot.ReadPolicy(tenant=self.tenant,
@@ -400,6 +472,50 @@ class InvestigateEstimateTests(unittest.TestCase):
         computed = [x for x in blind["answer"] if x["kind"] == "computed"]
         self.assertTrue(any(x["name"] == "landed_cost_estimate" for x in computed))
         self.assertEqual({x["value"] for x in computed}, {None})
+
+    def marked_store(self, marking: str) -> Path:
+        """A copy of the fixture store in which the second line of PO300001 (its price,
+        quantities and the link to its order) carries ``marking``."""
+        import shutil
+        import sqlite3
+        copy = Path(self.tmp.name) / f"marked-{marking}.sqlite"
+        shutil.copy(self.product.store, copy)
+        conn = sqlite3.connect(copy)
+        self.addCleanup(conn.close)
+        [line] = [r[0] for r in conn.execute(
+            "SELECT object_id FROM objects WHERE object_type = 'PurchaseOrderLine' "
+            "ORDER BY object_id LIMIT 1 OFFSET 1")]
+        text = json.dumps([marking])
+        conn.execute("UPDATE object_values SET markings = ? WHERE object_id = ?", (text, line))
+        conn.commit()
+        return copy
+
+    def test_the_scope_proof_is_per_marking_of_the_orders_own_lines(self):
+        # Every store marking is not needed: the finance marking the lines carry is enough.
+        some = [m for m in store_ddl.MARKINGS if m == "finance"]
+        for held in (some, store_ddl.MARKINGS):
+            e = {x["name"]: x for x in self.investigate(held)["answer"] if x["kind"] == "computed"}
+            self.assertEqual(e["landed_cost_estimate"]["value"], "863", held)
+        # A line carrying a marking the reader lacks is withheld: named by count, no total
+        # and no amount of the order or of that line anywhere in the answer.
+        marked = self.marked_store("l5")
+        full = self.investigate(store_ddl.MARKINGS, store=marked)
+        self.assertEqual({x["name"]: x for x in full["answer"]}["landed_cost_estimate"]["value"],
+                         "863")
+        part = self.investigate(some, store=marked)
+        computed = [x for x in part["answer"] if x["kind"] == "computed"]
+        self.assertEqual({x["value"] for x in computed}, {None})
+        [gap] = [g for g in part["gaps"] if g["reason"] == "estimate_read_scope_unproven"]
+        self.assertIn("1 line(s) of the purchase order carry a marking this reader does not "
+                      "hold and are withheld", gap["detail"])
+        self.assertIn("po_lines_incomplete", {g["reason"] for g in part["gaps"]})
+        self.assertIn("po_lines_incomplete", part["completeness"].get("reasons", [])
+                      + [g["reason"] for g in part["gaps"]])
+        text = json.dumps(part)
+        # (437, the header freight the reader reads, may appear; no amount derived from lines.)
+        for amount in ("109.25", "327.75", "837", "863", "2.1575"):
+            self.assertIsNone(re.search(
+                rf"(?<![0-9A-Za-z.]){re.escape(amount)}(?![0-9A-Za-z])", text), amount)
 
     def test_a_recorded_assumption_reaches_the_engine_through_the_executor(self):
         root = {}

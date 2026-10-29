@@ -1,4 +1,5 @@
-"""SharePoint files in the projection with stored mention links.
+"""SharePoint files in the projection with stored mention links (owner decision
+93047ba19524).
 
 A versioned SharePoint capture (``integrations.capture_sharepoint``, filled over an
 injected Graph transport) and synthetic Portal purchase orders are projected under the

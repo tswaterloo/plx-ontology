@@ -2,7 +2,7 @@
 oracle's own reading (GET only). An evaluation harness (it imports the oracle), named
 ``eval_*`` so product code may not import it (``scripts/check_no_hardcoded_cases.py``).
 
-``case.packaging_case_script`` used to pass on the script's own
+Directive e56de121288d T5: ``case.packaging_case_script`` used to pass on the script's own
 ``checks.*`` flags. The per-kind packaging script is retired (task allowlist-3); this
 wiring now opens the purchase order the way every case opens: ``operating.ingestion`` fills
 the state directory's source mirror (GET only), then ``operating.case_workspace_live``
@@ -42,7 +42,7 @@ the lines agree),
 normal form) or ``case_failed`` (no case: ``case.missing`` names why, the generic path's
 typed code such as ``missing_data:not_found`` or ``ambiguous_identifier``). The case's
 ``checks`` are recorded, never trusted. A Portal outage at ingestion is reported in
-``blocked_upstream`` (the live-check runner records the check blocked, never a pass). Exit 0 on
+``blocked_upstream`` (the live verifier records the check blocked, never a pass). Exit 0 on
 ``agree`` and on an ``oracle_gap`` (the top-level ``oracle_gap`` then names the gap reason,
 and the live spec's ``blocked_when`` records the check blocked with cause ``source_gap``,
 never a pass), 3 otherwise, 1 when the run could not start. stdout holds counts, booleans,
@@ -52,7 +52,7 @@ citation.
     python3 -m scripts.eval_packaging_oracle_check --state-dir D --mirror-audience A \\
         --ingest-sources S --principal staff:purchasing --po <purchase order number>
 
-``landed-cost`` (live check ``case.packaging_landed_cost``):
+``landed-cost`` (lane landed-cost-end-to-end, live check ``case.packaging_landed_cost``):
 one capture cycle of a host (``operating.host``: the Portal purchase-order relations and the
 SharePoint containers its config names, GET only) into the state directory, the purchase
 order opened through the generic path offline (``CaseOpener``), then ``plx.investigate``
@@ -73,7 +73,7 @@ stdout holds pins, codes, counts and booleans only.
         --host-config H --principal staff:operations --po <number> --registry R \\
         --proforma <pin> --quote <pin> [--quote <pin>]
 
-``landed-estimate`` (live check ``landed_cost.estimate``): one
+``landed-estimate`` (lane landed-cost-estimate, live check ``landed_cost.estimate``): one
 host cycle as ``landed-cost``, then every PurchaseOrder this reader can read whose Gold
 is open by the one PO status definition (``operating.po_status``: its header word with its
 own lines' summed quantities, each read through ``plx.object``/``plx.around`` as this reader;
@@ -84,13 +84,24 @@ complete; null for a capped scan, ``listing_reason`` saying why), ``investigated
 ``not_investigated`` (past the limit). Per purchase order
 it reads whether a labelled estimate (``operating.landed_cost.ESTIMATE_LABEL``) is stated,
 its freight source and assumption kinds (``ASSUMPTION_STEPS``) and the missing inputs the
-estimate names (gap reason and ``who_can_answer``); stdout holds counts, codes and
+estimate names (gap reason and ``who_can_answer``). The counts are disjoint: ``with_estimate``,
+else ``with_named_missing_input``, else ``without_estimate_or_named_input`` (they sum to
+``investigated``), with ``with_estimate_and_named_missing_input`` the overlap reported apart.
+``fm_landed_cost_agreement`` counts lines whose FileMaker ``dlt_costlanded_c`` agrees with,
+differs from or is missing against ours (counts only, never an amount; ``not_reported`` when
+the run reached no FileMaker figure; FileMaker's figure is what it recorded, at the price
+tier the line's ordered quantity reaches). ``inputs_stated`` counts the orders whose answer
+states each real input read from a served row (``supplier_tariff_rate``: the FileMaker
+supplier row ``tariff_c``; ``receipt_currency``: the Sage receipt header's currency). stdout
+holds counts, codes and
 ``ESTIMATE_SAMPLES`` samples of those codes, never a PO number, an id or an amount. Exit 0
 when the listing is complete, every listed order was investigated, and every one states an
 estimate or names a missing input with who can
 give it, every estimate entry is labelled and every assumption is classified, or when no
 open purchase order is readable (``estimate.blocked``: the live spec records the check
-blocked, never a pass); 3 otherwise; 1 when the run could not start.
+blocked, never a pass), and ``investigated`` and ``with_estimate`` equal the tally read
+apart from the readings, from the raw answers (``answer_tally``); 3 otherwise; 1 when the
+run could not start.
 
     python3 -m scripts.eval_packaging_oracle_check landed-estimate --state-dir D \\
         --host-config H --principal staff:operations [--limit 500]
@@ -103,6 +114,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 import json
 import os
+import re
 from pathlib import Path
 import sys
 from typing import Any, Callable, Mapping, Sequence
@@ -578,14 +590,23 @@ LISTING_PAGES = 200
 ASSUMPTION_STEPS = (
     ("assumption: the header duty estimate", "duty_header_estimate_prorated"),
     ("assumption: duty at the Portal default tariffRate", "duty_portal_default"),
+    ("assumption: duty at the FileMaker supplier row tariff", "duty_supplier_row_tariff"),
+    ("assumption: duty at the Portal rate settings tariff_rate", "duty_portal_rate_setting"),
     ("assumption: duty rate ", "duty_recorded_by_person"),
     ("tariff: the ontology projects no duty rate", "tariff_rate_not_projected"),
     ("range: ", "duty_range_stated"))
 # Estimate gaps that are this reader's limit, not an input a person can give: never counted
 # as a named missing input (the executor may still name the source's owners on them).
 READER_LIMIT_CODES = frozenset({"estimate_read_scope_unproven"})
+# The last step of the ``<name>_fm_agreement`` entry: FileMaker's dlt_costlanded_c against
+# ours, as counts only (operating.landed_cost._fm_agreement).
+FM_AGREEMENT_COUNTS = re.compile(r"counts: agree (\d+), differ (\d+), missing (\d+) ")
 FREIGHT_STEPS = (("purchase order header shipping estimate", "freight_header_estimate"),
                  ("forwarder quote total", "freight_forwarder_quote"))
+# The real inputs an answer states when it read them from a served row: the property entry
+# (object type, property) -> the key counted in ``inputs_stated`` (orders stating it).
+STATED_INPUTS = ((("SupplierItem", "tariff_rate"), "supplier_tariff_rate"),
+                 (("Receipt", "currency"), "receipt_currency"))
 
 
 def estimate_reading(result: Mapping[str, Any]) -> dict[str, Any]:
@@ -623,92 +644,87 @@ def estimate_reading(result: Mapping[str, Any]) -> dict[str, Any]:
                       for g in result.get("gaps") or [] if isinstance(g, Mapping)
                       and (str(g.get("subject") or "").startswith("estimate")
                            or str(g.get("reason")) in cited)})
+    agreement = None
+    for entry in entries:
+        steps = entry.get("steps") or []
+        match = FM_AGREEMENT_COUNTS.match(steps[-1]) if entry["name"].endswith(
+            "_fm_agreement") and steps and isinstance(steps[-1], str) else None
+        if match:
+            agreement = dict(zip(("agree", "differ", "missing"), map(int, match.groups())))
+    stated = sorted({key for e in result.get("answer") or [] if isinstance(e, Mapping)
+                     and e.get("kind") == "property" and _states(e.get("value"))
+                     for (type_id, prop), key in STATED_INPUTS
+                     if e.get("object_type") == type_id and e.get("property") == prop})
     return {"estimate": any(e.get("value") is not None for e in totals),
-            "estimate_entry": bool(totals), "labelled": labelled,
+            "estimate_entry": bool(totals), "labelled": labelled, "fm_agreement": agreement,
+            "inputs_stated": stated,
             "freight_source": freight[0] if len(freight) == 1 else
             "none" if not freight else "ambiguous",
             "assumptions": sorted(assumptions),
             "missing": [{"code": code, "who_can_answer": list(who)} for code, who in missing]}
 
 
-PO_LINE_LINK = "PurchaseOrderLine.line_of"
-LINE_PAGES = 20
+def _states(value: Any) -> bool:
+    """A cell stating something: not null and not empty (or whitespace-only) text."""
+    if isinstance(value, Mapping) and set(value) <= {"untrusted_text"}:
+        value = value.get("untrusted_text")
+    return value is not None and not (isinstance(value, str) and not value.strip())
 
 
-def _values(page: Mapping[str, Any]) -> dict[str, list[Any]] | None:
-    """A ``plx.object`` answer's values per property, raw (a text value's untrusted text,
-    a quantity with its unit); None when the answer withholds or cannot read one."""
-    if "error" in page or page.get("withheld") or any(
-            (g or {}).get("reason") in ("unparseable_value", "uncitable_value")
-            for g in page.get("gaps") or []):
-        return None
-    out: dict[str, list[Any]] = {}
-    for value in page.get("values") or []:
-        raw = value.get("value")
-        if isinstance(raw, Mapping):
-            raw = raw.get("untrusted_text")
-        out.setdefault(str(value.get("property")), []).append(
-            (raw, value.get("unit")) if value.get("value_type") == "quantity" else raw)
-    return out
+def answer_tally(results: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    """Counts read from the raw ``plx.investigate`` answers, apart from ``estimate_reading``:
+    ``investigated`` (answers) and ``with_estimate`` (answers whose ``<name>_estimate`` entry
+    states a finite Decimal amount). The pass condition compares the summary with it, so a
+    reading that lost or invented an estimate fails the check."""
+    def amount(value: Any) -> bool:
+        if value is None or isinstance(value, (bool, float, Mapping)):
+            return False
+        try:
+            return Decimal(str(value)).is_finite()
+        except ArithmeticError:
+            return False
+    return {"investigated": len(results),
+            "with_estimate": sum(1 for result in results if any(
+                isinstance(e, Mapping) and e.get("kind") == "computed"
+                and isinstance(e.get("name"), str) and e["name"].endswith("_estimate")
+                and amount(e.get("value")) for e in result.get("answer") or []))}
 
 
-def _po_lines(call: Callable[[str, dict], Mapping[str, Any]], oid: str
-              ) -> list[tuple[Any, Any, Any]] | None:
-    """The order's own lines as ``(ordered, received, unit)`` for ``po_status.record``;
-    None when the line listing is not complete for this reader. A line whose quantities
-    are withheld, disagree or are in two units is ``UNREAD``."""
+def estimate_ok(summary: Mapping[str, Any] | None, run: Mapping[str, Any]) -> bool:
+    """The ``landed-estimate`` pass condition: every open order listed and investigated with
+    no error, each stating a labelled estimate or naming a missing input, every assumption
+    classified, and the summary's ``investigated`` and ``with_estimate`` equal to the tally
+    read from the raw answers (``answer_tally``; no tally, no pass)."""
+    tally = run.get("tally")
+    if not summary or not isinstance(tally, Mapping):
+        return False
+    return summary["listing"] == "complete" \
+        and summary["investigated"] == summary["open_pos"] \
+        and not summary["investigate_errors"] \
+        and summary["investigated"] == tally.get("investigated") \
+        and summary["with_estimate"] == tally.get("with_estimate") \
+        and summary["with_estimate"] + summary["with_named_missing_input"] \
+        + summary["without_estimate_or_named_input"] == summary["investigated"] \
+        and not any(summary[key] for key in (
+            "without_estimate_or_named_input", "without_estimate_entry", "unlabelled",
+            "unclassified_assumptions"))
+
+
+def po_read(call: Callable[[str, dict], Mapping[str, Any]], oid: str,
+            today: Any = None):
+    """One purchase order as this reader reads it, by the one reader
+    (``po_status.read`` over ``po_status.ToolSource``: the plx tools as this principal
+    calls them; its settled twins, status values, lines and FM QC log, and with ``today``
+    the requested-by date, the promise and the lateness verdict). Anything unread is
+    unknown, never open; a twin link the listing withholds is blind."""
     from operating import po_status
 
-    ids: list[str] = []
-    cursor = None
-    for _ in range(LINE_PAGES):
-        page = call("plx.around", {"from": oid, "limit": 50, "path": [
-            {"link_type": PO_LINE_LINK, "direction": "reverse"}],
-            **({"cursor": cursor} if cursor else {})})
-        if "error" in page or (page.get("withheld") or {}).get("objects"):
-            return None
-        ids += [o["object_id"] for o in page.get("objects") or []
-                if str(o.get("object_id", "")).startswith("PurchaseOrderLine:")]
-        completeness = page.get("completeness") or {}
-        cursor = completeness.get("next_cursor")
-        if not cursor:
-            if completeness.get("complete") is not True:
-                return None
-            break
-    else:
-        return None
-    lines = []
-    for line in dict.fromkeys(ids):
-        values = _values(call("plx.object", {"object_id": line, "properties": [
-            "ordered_quantity", "received_quantity"]}))
-        if values is None:
-            return None
-        # a stored null (the Portal's empty received cell) states no quantity: null
-        ordered = {v for v in values.get("ordered_quantity", []) if v[0] is not None}
-        received = {v for v in values.get("received_quantity", []) if v[0] is not None}
-        if len(ordered) > 1 or len(received) > 1 or (
-                ordered and received and next(iter(ordered))[1] != next(iter(received))[1]):
-            lines.append((po_status.UNREAD,) * 3)
-            continue
-        want = next(iter(ordered), (None, None))
-        got = next(iter(received), (None, None))
-        lines.append((want[0], got[0], want[1]))
-    return lines
+    return po_status.read(po_status.ToolSource(call), oid, today, dates=today is not None)
 
 
 def po_class(call: Callable[[str, dict], Mapping[str, Any]], oid: str):
-    """One purchase order record's ``po_status.PoStatus`` as this reader reads it: its
-    status values (``po_status.SOURCE_OF``) and, for an issued Portal header word, its own
-    lines. Anything unread is unknown, never open."""
-    from operating import po_status
-
-    values = _values(call("plx.object", {"object_id": oid,
-                                         "properties": list(po_status.SOURCE_OF)}))
-    if values is None:
-        return po_status.PoStatus(po_status.UNKNOWN, reason="status_missing")
-    words = values.get("status", [])
-    issued = len(set(words)) == 1 and po_status.header_class(words[0]) == po_status.ISSUED
-    return po_status.record(values, _po_lines(call, oid) if issued else None)
+    """One purchase order's ``po_status.PoStatus`` as this reader reads it (``po_read``)."""
+    return po_read(call, oid).status
 
 
 def open_purchase_orders(call: Callable[[str, dict], Mapping[str, Any]],
@@ -781,6 +797,7 @@ def run_landed_estimate(args: argparse.Namespace, environ: Mapping[str, str],
     mirror = AudienceMap.from_file(config.mirror_audience)
     runtime = live_ws.offline_runtime(args.state_dir, config.mirror_audience, config.tenant)
     readings: list[dict[str, Any]] = []
+    results: list[Mapping[str, Any]] = []
     errors: list[str] = []
     try:
         opener = live_ws.CaseOpener(runtime, actor, args.state_dir, audience=mirror)
@@ -796,6 +813,7 @@ def run_landed_estimate(args: argparse.Namespace, environ: Mapping[str, str],
                 if "error" in result:
                     errors.append(str(result["error"]))
                     continue
+                results.append(result)
                 readings.append(estimate_reading(result))
         finally:
             session.close()
@@ -806,7 +824,8 @@ def run_landed_estimate(args: argparse.Namespace, environ: Mapping[str, str],
     listing = "limit" if complete == "complete" and len(ids) > args.limit else complete
     return 0, {"capture": capture, "blocked_upstream": upstream, "readings": readings,
                "listed": len(ids), "listing": listing, "listing_reason": listed_reason,
-               "errors": errors, "held_markings": held, "po_classes": classes}
+               "errors": errors, "held_markings": held, "po_classes": classes,
+               "tally": answer_tally(results)}
 
 
 def estimate_summary(run: Mapping[str, Any], samples: int = ESTIMATE_SAMPLES
@@ -817,12 +836,16 @@ def estimate_summary(run: Mapping[str, Any], samples: int = ESTIMATE_SAMPLES
     def names_input(reading: Mapping[str, Any]) -> bool:
         return any(m["who_can_answer"] and m["code"] not in READER_LIMIT_CODES
                    for m in reading["missing"])
-    named = [r for r in readings if names_input(r)]
+    # Disjoint: an order states an estimate, else names a missing input, else neither; an
+    # estimate that also names an input is counted once, under with_estimate, and reported as
+    # the overlap.
+    named = [r for r in readings if not r["estimate"] and names_input(r)]
+    overlap = [r for r in readings if r["estimate"] and names_input(r)]
     unexplained = [r for r in readings if not r["estimate"] and not names_input(r)]
     count: Callable[[Any], dict[str, int]] = lambda items: dict(sorted(
         {item: sum(1 for x in items if x == item) for item in set(items)}.items()))
     picked = [r for r in readings if r["estimate"]][:samples]
-    picked += [r for r in named if r not in picked][:samples - len(picked)]
+    picked += [r for r in named if r not in picked][:max(0, samples - len(picked))]
     listed = run.get("listed") or 0
     errors = list(run.get("errors") or [])
     return {
@@ -838,6 +861,7 @@ def estimate_summary(run: Mapping[str, Any], samples: int = ESTIMATE_SAMPLES
         "investigate_errors": sorted(set(errors)),
         "with_estimate": sum(1 for r in readings if r["estimate"]),
         "with_named_missing_input": len(named),
+        "with_estimate_and_named_missing_input": len(overlap),
         "without_estimate_or_named_input": len(unexplained),
         "without_estimate_entry": sum(1 for r in readings if not r["estimate_entry"]),
         "unlabelled": sum(1 for r in readings if not r["labelled"]),
@@ -850,6 +874,13 @@ def estimate_summary(run: Mapping[str, Any], samples: int = ESTIMATE_SAMPLES
                                  for w in m["who_can_answer"]]),
         "assumptions": count([a for r in readings for a in r["assumptions"]]),
         "freight_sources": count([r["freight_source"] for r in readings if r["estimate"]]),
+        # FileMaker's own landed cost against ours, per line: counts only, never amounts.
+        # The real inputs read from served rows: orders whose answer states each.
+        "inputs_stated": count([key for r in readings for key in r.get("inputs_stated") or ()]),
+        "fm_landed_cost_agreement": {
+            **{key: sum((r.get("fm_agreement") or {}).get(key, 0) for r in readings)
+               for key in ("agree", "differ", "missing")},
+            "not_reported": sum(1 for r in readings if r.get("fm_agreement") is None)},
         "samples": [{key: r[key] for key in ("estimate", "freight_source", "assumptions",
                                              "missing")} for r in picked],
         "blocked": "no_open_purchase_orders" if listed == 0 and run.get("listing") == "complete"
@@ -879,12 +910,8 @@ def landed_estimate_main(argv: Sequence[str], *, environ: Mapping[str, str],
     capture = run.get("capture") or {}
     summary = estimate_summary(run) if code == 0 else None
     # Every open order the reader can read, each investigated: a capped or partial listing,
-    # or an order past the limit, never passes.
-    ok = bool(summary) and summary["listing"] == "complete" \
-        and summary["investigated"] == summary["open_pos"] \
-        and not summary["investigate_errors"] and not any(summary[key] for key in (
-            "without_estimate_or_named_input", "without_estimate_entry", "unlabelled",
-            "unclassified_assumptions"))
+    # an order past the limit, or counts the raw answers do not bear out never pass.
+    ok = estimate_ok(summary, run)
     print(json.dumps({
         "schema": ESTIMATE_SCHEMA, "evidence_label": label, "adapter_status": "live-unverified",
         "blocked_upstream": list(run.get("blocked_upstream") or []),

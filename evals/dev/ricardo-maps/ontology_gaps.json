@@ -1,7 +1,7 @@
 {
  "format": "plx-case-ontology-gaps/v1",
  "case": "ricardo-maps",
- "status": "What the ontology lacks to answer evals/dev/ricardo-maps/proposed_items.json. Every source is unknown here; each carries the question that would find one.",
+ "status": "What the ontology lacks to answer evals/dev/ricardo-maps/proposed_items.json. Every source is unknown here; each carries the Dot question that would find one.",
  "advisory": "advisory:4c1fe69b043e",
  "gaps": [
   {
@@ -13,7 +13,7 @@
     "RM-02"
    ],
    "source": "source unknown",
-   "open_question": "Where is the signed approval or release of QRM-26037 recorded, and who signs?"
+   "dot_question": "Where is the signed approval or release of QRM-26037 recorded, and who signs?"
   },
   {
    "id": "RM-GAP-02",
@@ -25,7 +25,7 @@
     "RM-05"
    ],
    "source": "source unknown",
-   "open_question": "Which receiving record shows the actual receipt of PO5455 and of PO-00349 against slip 228524?"
+   "dot_question": "Which receiving record shows the actual receipt of PO5455 and of PO-00349 against slip 228524?"
   },
   {
    "id": "RM-GAP-03",
@@ -36,7 +36,7 @@
     "RM-04"
    ],
    "source": "source unknown",
-   "open_question": "Does Purchasing treat ES-2 and Thamesurf SLES-30 as the same item, and where is that recorded?"
+   "dot_question": "Does Purchasing treat ES-2 and Thamesurf SLES-30 as the same item, and where is that recorded?"
   },
   {
    "id": "RM-GAP-04",
@@ -47,7 +47,7 @@
     "RM-03"
    ],
    "source": "source unknown",
-   "open_question": "Where is the resolution of Dandylion's October 2 complaint recorded, and which inventory transaction posted P-02289?"
+   "dot_question": "Where is the resolution of Dandylion's October 2 complaint recorded, and which inventory transaction posted P-02289?"
   },
   {
    "id": "RM-GAP-05",
@@ -61,7 +61,7 @@
     "RM-05"
    ],
    "source": "source unknown",
-   "open_question": "Which runtime can read these originals by native ID and hash, and under whose permission?"
+   "dot_question": "Which runtime can read these originals by native ID and hash, and under whose permission?"
   },
   {
    "id": "RM-GAP-06",
@@ -72,7 +72,7 @@
     "RM-08"
    ],
    "source": "source unknown",
-   "open_question": "Where are the inspection result, accept/reject/rework decision, signer and stock disposition recorded for a received lot?"
+   "dot_question": "Where are the inspection result, accept/reject/rework decision, signer and stock disposition recorded for a received lot?"
   }
  ]
 }

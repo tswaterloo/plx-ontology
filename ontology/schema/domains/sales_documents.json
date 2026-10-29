@@ -3,7 +3,7 @@
  "format": "plx-ontology-domain/v1",
  "domain": "sales_documents",
  "origin": "curated",
- "description": "Document-derived sales-side records: customer purchase orders and delivery receipts / proofs of delivery the document-field extractor reads from captured mail attachments and SharePoint files (ontology/document_fields.py, classes customer_po and delivery_receipt). Every value is a page/span-cited machine-read lead; each document links to the SalesOrder or Shipment it names (lead mentions), and plx.object compares what it attests with the record (attests in ontology/schema/document_fields.json): a disagreement is a conflict, a value the record holds empty a missing_in_record lead, never a pick and never a write.",
+ "description": "Document-derived sales-side records (directive 27b95ec2180b): customer purchase orders and delivery receipts / proofs of delivery the document-field extractor reads from captured mail attachments and SharePoint files (ontology/document_fields.py, classes customer_po and delivery_receipt). Every value is a page/span-cited machine-read lead; each document links to the SalesOrder or Shipment it names (lead mentions), and plx.object compares what it attests with the record (attests in ontology/schema/document_fields.json): a disagreement is a conflict, a value the record holds empty a missing_in_record lead, never a pick and never a write.",
  "upstream_pins": {
   "plx-customer-portal": "b46934a"
  },

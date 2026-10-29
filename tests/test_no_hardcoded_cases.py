@@ -1,6 +1,6 @@
-"""Hardcoded-case check tests: positive (must flag) and negative (must pass) samples.
+"""Hardcoded-case gate tests: positive (must flag) and negative (must pass) samples.
 
-``scripts/check_no_hardcoded_cases.py`` is the `no-hardcoded-cases` check. These
+``scripts/check_no_hardcoded_cases.py`` is the `no-hardcoded-cases` gate check. These
 tests build a temporary repo with the real denylist and prove what fails (case
 literals in code, JSON values, JS strings, case-named modules/functions, expired
 allowlist entries, identifiers of eval items nobody listed, product code reaching
@@ -49,7 +49,7 @@ class HardcodedCaseGateTests(unittest.TestCase):
 
     def _reset(self):
         for top in self.root.iterdir():
-            if top.name != "verify":
+            if top.name != "devloop":
                 shutil.rmtree(top)
 
     def write(self, relative: str, text: str):
@@ -159,18 +159,18 @@ class HardcodedCaseGateTests(unittest.TestCase):
 
     def test_tests_live_checks_and_docs_are_ignored(self):
         for name in ("tests/test_x.py", "operating/tests/test_y.py",
-                     "verify/live-checks/ao.json",
-                     "verify/tests/test_z.py", "docs/x.py", "EVIDENCE/x.json",
+                     "devloop/live-checks/ao.json", "devloop/CONTEXT/x.py",
+                     "devloop/tests/test_z.py", "docs/x.py", "EVIDENCE/x.json",
                      "examples/x.py", "operator_ui/x.test.js", "operating/README.md",
-                     "verify/sub/nested.py", "verify/notes.json"):
+                     "devloop/sub/nested.py", "devloop/notes.json"):
             body = '{"order": "AO-26005B"}' if name.endswith(".json") else "X = 'AO-26005B'\n"
             self.write(name, body)
         self.write("tests/ao_case_script.py", "X = 1\n")
         self.assert_passes()
 
-    def test_top_level_verify_python_is_scanned(self):
-        self.write("verify/controller.py", "X = 'PO5447'\n")
-        self.assert_fails("verify/controller.py:1 identifier PO5447=")
+    def test_top_level_devloop_python_is_scanned(self):
+        self.write("devloop/controller.py", "X = 'PO5447'\n")
+        self.assert_fails("devloop/controller.py:1 identifier PO5447=")
 
     def test_allowlist_passes_before_expiry_and_fails_after(self):
         self.write("operating/packaging_case_script.py", "X = 'SoapBox example'\n")

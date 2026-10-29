@@ -675,64 +675,6 @@
    ]
   },
   {
-   "id": "RelPublicAppTemporaryElevationGrant",
-   "description": "Generated not_served type: the Portal table public.app_temporary_elevation_grant (Prisma model TemporaryElevationGrant). No record is readable until the reporting API serves it (upstream ask Q3); a served column that references it is a plain reference value, never a link.",
-   "availability": {
-    "state": "not_served",
-    "reason": "public.app_temporary_elevation_grant (Prisma model TemporaryElevationGrant) is not an approved relation of the Portal reporting API (services/workbench-api/manifest/allowlist.json@52c9116f77ab): no record of it is readable.",
-    "upstream_ask": "Q3"
-   },
-   "bindings": [],
-   "properties": [],
-   "evidence": [
-    {
-     "kind": "upstream_code",
-     "repo": "plx-customer-portal",
-     "path": "services/workbench-api/manifest/allowlist.json",
-     "commit": "52c9116f77ab",
-     "note": "public.app_temporary_elevation_grant is not an approved reporting-API relation."
-    },
-    {
-     "kind": "upstream_code",
-     "repo": "plx-customer-portal",
-     "path": "portal/prisma/schema.prisma",
-     "commit": "52c9116f77ab",
-     "symbol": "TemporaryElevationGrant",
-     "lines": "1311-1337",
-     "note": "model TemporaryElevationGrant @@map(\"app_temporary_elevation_grant\")"
-    }
-   ]
-  },
-  {
-   "id": "RelPublicAppTemporaryElevationRequest",
-   "description": "Generated not_served type: the Portal table public.app_temporary_elevation_request (Prisma model TemporaryElevationRequest). No record is readable until the reporting API serves it (upstream ask Q3); a served column that references it is a plain reference value, never a link.",
-   "availability": {
-    "state": "not_served",
-    "reason": "public.app_temporary_elevation_request (Prisma model TemporaryElevationRequest) is not an approved relation of the Portal reporting API (services/workbench-api/manifest/allowlist.json@52c9116f77ab): no record of it is readable.",
-    "upstream_ask": "Q3"
-   },
-   "bindings": [],
-   "properties": [],
-   "evidence": [
-    {
-     "kind": "upstream_code",
-     "repo": "plx-customer-portal",
-     "path": "services/workbench-api/manifest/allowlist.json",
-     "commit": "52c9116f77ab",
-     "note": "public.app_temporary_elevation_request is not an approved reporting-API relation."
-    },
-    {
-     "kind": "upstream_code",
-     "repo": "plx-customer-portal",
-     "path": "portal/prisma/schema.prisma",
-     "commit": "52c9116f77ab",
-     "symbol": "TemporaryElevationRequest",
-     "lines": "1285-1309",
-     "note": "model TemporaryElevationRequest @@map(\"app_temporary_elevation_request\")"
-    }
-   ]
-  },
-  {
    "id": "RelPublicAppTestLot",
    "description": "Generated not_served type: the Portal table public.app_test_lot (Prisma model AppTestLot). No record is readable until the reporting API serves it (upstream ask Q3); a served column that references it is a plain reference value, never a link.",
    "availability": {
@@ -1338,64 +1280,6 @@
      "symbol": "AppUiSetting",
      "lines": "1023-1029",
      "note": "model AppUiSetting @@map(\"app_ui_settings\")"
-    }
-   ]
-  },
-  {
-   "id": "RelPublicAppUserAccessScope",
-   "description": "Generated not_served type: the Portal table public.app_user_access_scope (Prisma model UserAccessScope). No record is readable until the reporting API serves it (upstream ask Q3); a served column that references it is a plain reference value, never a link.",
-   "availability": {
-    "state": "not_served",
-    "reason": "public.app_user_access_scope (Prisma model UserAccessScope) is not an approved relation of the Portal reporting API (services/workbench-api/manifest/allowlist.json@52c9116f77ab): no record of it is readable.",
-    "upstream_ask": "Q3"
-   },
-   "bindings": [],
-   "properties": [],
-   "evidence": [
-    {
-     "kind": "upstream_code",
-     "repo": "plx-customer-portal",
-     "path": "services/workbench-api/manifest/allowlist.json",
-     "commit": "52c9116f77ab",
-     "note": "public.app_user_access_scope is not an approved reporting-API relation."
-    },
-    {
-     "kind": "upstream_code",
-     "repo": "plx-customer-portal",
-     "path": "portal/prisma/schema.prisma",
-     "commit": "52c9116f77ab",
-     "symbol": "UserAccessScope",
-     "lines": "1243-1258",
-     "note": "model UserAccessScope @@map(\"app_user_access_scope\")"
-    }
-   ]
-  },
-  {
-   "id": "RelPublicAppUserDepartmentMembership",
-   "description": "Generated not_served type: the Portal table public.app_user_department_membership (Prisma model UserDepartmentMembership). No record is readable until the reporting API serves it (upstream ask Q3); a served column that references it is a plain reference value, never a link.",
-   "availability": {
-    "state": "not_served",
-    "reason": "public.app_user_department_membership (Prisma model UserDepartmentMembership) is not an approved relation of the Portal reporting API (services/workbench-api/manifest/allowlist.json@52c9116f77ab): no record of it is readable.",
-    "upstream_ask": "Q3"
-   },
-   "bindings": [],
-   "properties": [],
-   "evidence": [
-    {
-     "kind": "upstream_code",
-     "repo": "plx-customer-portal",
-     "path": "services/workbench-api/manifest/allowlist.json",
-     "commit": "52c9116f77ab",
-     "note": "public.app_user_department_membership is not an approved reporting-API relation."
-    },
-    {
-     "kind": "upstream_code",
-     "repo": "plx-customer-portal",
-     "path": "portal/prisma/schema.prisma",
-     "commit": "52c9116f77ab",
-     "symbol": "UserDepartmentMembership",
-     "lines": "1218-1241",
-     "note": "model UserDepartmentMembership @@map(\"app_user_department_membership\")"
     }
    ]
   },

@@ -1,4 +1,4 @@
-"""Real-agent accuracy: the product fixes behind the causes the
+"""Real-agent accuracy (lane real-agent-accuracy): the product fixes behind the causes the
 classification of the real agent's fixture answers found (``evals/bench/real_agent_failures.json``).
 
 Evidence label: ``isolated-fixture``. Every test drives the product boundary an MCP client
@@ -60,14 +60,16 @@ class AnswerTextCheckTests(AgentLoopTests):
         self.assertEqual(covered["outcome"], "answered")
         self.assertEqual((covered["text_check"]["passed"], covered["text_check"]["uncovered"],
                           covered["text_check"]["instruction"]), (True, [], None))
-        # An identifier of capitals then digits alone, a count in words and a stray number
-        # are claims in prose too: each is listed with the gate's code, never passed.
+        # Digits glued to a lower-case prefix, a count in words and a stray number are
+        # claims in prose too: each is listed with the gate's code, never passed. A label
+        # of capitals then digits (QRX-082) names a record and states no figure.
         loose = self.submit(session, {"claims": [self.claim(handle, 5447)],
-                                      "text": "PO id 5447 on QRX-082, twelve lines, 9999 units."})
+                                      "text": "PO id 5447 on QRX-082, x82 boxes, twelve "
+                                              "lines, 9999 units."})
         check = loose["text_check"]
         self.assertFalse(check["passed"])
         self.assertEqual(sorted(entry["value"] for entry in check["uncovered"]),
-                         sorted(["082", "9999", "twelve"]))
+                         sorted(["82", "9999", "twelve"]))
         self.assertTrue(all(entry["code"] == "claim_unstructured"
                             for entry in check["uncovered"]))
         self.assertIn("cited value claim", check["instruction"])
@@ -306,8 +308,14 @@ class HomeRuleCoverageTests(unittest.TestCase):
                 self.assertEqual(rule["not_evaluated"] == 0, skipped == 0, (name, rule))
             self.assertEqual(rule["status"], summary["detectors"][name])
         # records, not reasons: the disputed need date sits on two records of one order;
-        # the Sage-only, status-less and unmapped-word POs are unknown and counted
-        self.assertEqual(rules["late_or_unconfirmed_po"]["not_evaluated"], 8)
+        # the Sage-only, status-less and unmapped-word POs are unknown and counted, as are
+        # the PO with only a lead confirmation and the one with no date on header or line.
+        # The PO whose open line carries the date is judged (po_status: an open line's
+        # expected date stands in for an empty header), so it is not counted.
+        self.assertEqual(rules["late_or_unconfirmed_po"]["not_evaluated"], 7)
+        self.assertEqual(summary["not_evaluated"]["late_or_unconfirmed_po"], {
+            "confirmation_unsettled": 1, "need_date_disputed": 1, "no_need_date": 1,
+            "sage_unmapped": 1, "status_missing": 1, "status_unmapped": 1})
         # Every rule ran to the end, yet records were left unjudged: never a clean result.
         self.assertEqual((found["home"]["complete"], found["completeness"]["complete"],
                           found["completeness"]["reason"]), (False, False, "rule_not_evaluated"))
@@ -344,11 +352,13 @@ class HomeRuleCoverageTests(unittest.TestCase):
                 self.assertFalse(found["completeness"]["complete"])
 
     def test_a_skip_a_hidden_record_caused_is_not_counted_so_it_hints_at_nothing(self):
-        # A skip over an identity cluster was counted against every
+        # Review of b665a049: a skip over an identity cluster was counted against every
         # member, so a reader of one member learnt that a record it may not read (a twin
         # disputing the need date, a lead from a hidden confirmation, a value at a marking
         # it does not hold) made the rule skip. Each hidden part below is the whole cause
         # of its skip; the narrow reader's count must be what it is without those parts.
+        # A hidden twin's need date is after AS_OF so today lies inside the disputed range
+        # (po_status.verdict: past every disputed date is late, not a skip).
         def world(hidden):
             w = self.home.World()
             po = self.home.po
@@ -359,12 +369,12 @@ class HomeRuleCoverageTests(unittest.TestCase):
             po(w, "Pending")   # no need date: its own skip
             if hidden:
                 w.link("PurchaseOrder.same_record_as", twin,
-                       po(w, "Pending", "2026-10-07", audience="api:b"))
+                       po(w, "Pending", "2026-10-25", audience="api:b"))
                 w.link("SupplierConfirmation.confirms", w.obj(
                     "SupplierConfirmation", {"delivery_date": "2026-10-01"},
                     audience="api:b"), lead, "lead")
                 w.link("PurchaseOrder.same_record_as", marked,
-                       po(w, "Pending", "2026-10-09", markings='["finance"]'))
+                       po(w, "Pending", "2026-10-26", markings='["finance"]'))
             return w
         narrow = {"units": ("api:a", self.home.UNIT), "held": ()}
         counts = {}

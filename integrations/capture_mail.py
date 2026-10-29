@@ -1,10 +1,10 @@
 """Versioned mail capture (L1): Graph delta paging into Workbench state.
 
-The Workbench may
+09-CRITIQUE R2 / lane L3 and owner decision 5be438765457: the Workbench may
 read every mailbox in its capture scope and keep everything it captures --
 message metadata, text bodies, attachment metadata and attachment bytes -- in
 its own capture store under the configured Workbench state directory. Nothing
-captured goes to Git or logs. Who may *see* a captured
+captured goes to Git, logs or advisory records. Who may *see* a captured
 mailbox is decided again on every read, per reader (``LiveSourceAudience``
 over the mailbox identity set recorded at capture plus the derived owner ACL):
 a mailbox withheld from an actor yields no rows, no counts and no completeness
@@ -18,7 +18,20 @@ one ``live_source_guard`` client):
   (default 90 days), no page cap. After every page the next cursor is stored,
   so an interrupted run resumes mid-round; the round's ``@odata.deltaLink``
   is stored and the next run reads only the changes since it. A folder is
-  ``complete`` only when its latest round reached a deltaLink.
+  ``complete`` only when its latest round reached a deltaLink (and, with
+  ``history`` all, its history below).
+* Every folder (scope ``folders`` ``"all"``): the mailbox's folder tree is listed when
+  a run opens it (``GraphMailReader.list_folders``, ids and item counts, kept for
+  ``FOLDER_RELIST_SECONDS``); each folder is its own unit with its own cursors, an
+  empty one that holds no captured mail is skipped until a listing counts mail in it,
+  and a listing that fails leaves the mailbox incomplete
+  (``folder_listing_incomplete``).
+* History (scope ``history`` ``"all"``): once a folder's windowed round reached its
+  deltaLink, the mail older than the window is read newest first
+  (``GraphMailReader.message_pages``: ``receivedDateTime lt`` the window's start,
+  ``$orderby receivedDateTime desc``), resuming by its own stored cursor
+  (``backfill_next_url``) until it reaches the end (``backfill_status`` complete).
+  That older mail has no delta: a later change to it is not followed.
 * For a new or changed message version: the message with its text body
   (expected in the same folder), its attachment list (paged through
   ``@odata.nextLink`` up to a hard cap, ``MAX_ATTACHMENTS_LISTED``) and the
@@ -42,7 +55,9 @@ one ``live_source_guard`` client):
   capture through the one text path of captured files (``integrations.captured_text``,
   as for SharePoint files): a scanned PDF's pages are OCR-read locally when this host
   has an engine and the OCR text is pinned by SHA-256, so every reader (mentions, typed
-  fields, ``resolve``) cites that one reading. Without an engine a scan is
+  fields, ``resolve``) cites that one reading. With ``defer_ocr`` (the host's and the
+  CLI's :data:`PRODUCTION`) a scan is stored at once with its text layer as
+  ``ocr_pending`` and OCR-read beside the capture (``_OcrQueue``), never holding it. Without an engine a scan is
   ``ocr_unavailable``; a later round on a host with one re-reads the stored bytes
   (bounded per round, no source read), as for attachments captured before text was.
   A re-read is a new immutable version of the attachment's text
@@ -56,7 +71,7 @@ one ``live_source_guard`` client):
   the folder stops ``incomplete`` with reason ``throttled`` and the next run
   resumes. An expired delta token (HTTP 410) restarts the round.
 
-Versions (``as_known_at``): one row per captured message version, keyed by
+Versions (R8, ``as_known_at``): one row per captured message version, keyed by
 its L1 handle -- the same ``graph-mail://<mailbox>/<message>@<changeKey>``
 citation the GET-only reader mints and ``operating/claim_checks.py`` accepts
 (field paths ``row.<field>``). ``recorded_at`` is when this store first
@@ -73,7 +88,7 @@ rounds (``degraded_*`` in completeness). Attachments are cited
 (``graph_evidence.mail_attachment_citation``). Captured handles resolve
 offline (``resolve``) for a reader who may see the mailbox.
 
-Which mailboxes. ``all_mailboxes``: every
+Which mailboxes. ``all_mailboxes`` (owner rule 5be438765457, ING-06): every
 mailbox of the tenant directory -- each member user with a mail address, listed
 through the guarded, paged ``/users`` GET at the start of every run -- except the
 scope's explicit ``exclude`` list (addresses or object ids, each with its reason;
@@ -88,7 +103,9 @@ canonical allowlist, ``operating/case_mail_scope.json``
 (``outside_allowlist``, counted) and never requested. Capturing a mailbox never
 lets anyone see it: every reader is re-gated per mailbox when viewing.
 
-Scheduling (``schedule_units``, one rule shared with the SharePoint capture). A run
+Scheduling (``schedule_units``, one rule shared with the SharePoint capture; with
+``pages_per_turn`` the run takes the folders in that order in turns of a few pages each,
+``MailCapture._turns``, so every folder's newest pages come before any second turn). A run
 captures first the folders with a stored frontier (a round cut mid-way), the one started
 earliest first, then other incomplete folders in the scope's order, then complete
 folders (each reading only its delta) the one brought current longest ago first, then
@@ -113,7 +130,36 @@ Storage: ``<state-dir>/mail-capture/`` (SQLite + ``blobs/sha256/``), private
 modes; the state directory must lie outside every git work tree (checked
 before anything is created). Bodies and attachment bytes are content-addressed
 blobs (one copy per sha256, shared across changeKeys); an optional
-``max_store_bytes`` bound stops capture with reason ``store_full``.
+``max_store_bytes`` bound stops capture with reason ``store_full``. The store is
+compact enough to capture every mailbox continuously:
+
+* Bodies and attachment texts are stored zlib-compressed (``<sha256>.z``).
+* An attachment original over ``DROP_ORIGINALS_ABOVE`` (256 KiB) is dropped once nothing
+  needs its bytes (``MailCaptureStore.settle_original``): its sha256, size, name and MIME
+  type stay on its row, and every reading a reader makes of it (each captured name and
+  type of those bytes, without and with each pinned OCR text) is made from the bytes and
+  kept in its ``.dropped`` form (``integrations.captured_text``), so resolve, the claim
+  gate, the mention documents and the typed fields read the same text, pages and status
+  as before. Its quickXorHash is kept too. Kept are: small originals, containers (zip,
+  ``.msg``, ``.eml``: their members are cited from the bytes), bytes that are their own
+  text (compressed), and originals a later reading needs (never read, OCR pending or
+  without an engine, an untyped OCR failure) until that reading is stored. The bytes
+  are re-read from Graph on demand (``refetch_original``: one GET, checked against the
+  pin, never stored).
+* The originals kept for a pending reading are bounded (``max_pending_ocr_bytes``,
+  default 1 GiB): past it, a new PDF attachment is not downloaded
+  (``content_status`` ``deferred:ocr_backlog``; its folder ``incomplete`` with reason
+  ``attachments_deferred``) and a later round reads it once OCR has drained the backlog.
+* A scope's ``ocr`` ``deferred`` (or ``compact --defer-ocr``) drops the bytes of scans
+  waiting for OCR too: their text status becomes ``ocr_deferred`` (a new text version;
+  the text layer stays read and indexed) and every answer on one carries the named gap
+  ``ocr_deferred`` (``ocr_deferred_gap``; documentFields: ``not_stated_in_read_pages``),
+  never an empty or absent reading. ``python3 -m integrations.capture_mail ocr-deferred
+  --state-dir D --live-audience F --budget-seconds N`` re-fetches each one
+  (``refetch_original``), OCR-reads it, stores the reading and drops the bytes again.
+* ``python3 -m integrations.capture_mail compact --state-dir D`` compacts a store
+  captured before (``MailCaptureStore.compact``): prune, compress, then ``VACUUM INTO`` a
+  new file swapped in atomically when the free disk covers it.
 
 CLI (credentialed live check; prints counts, booleans and completeness only,
 never addresses, subjects, bodies, names or ids)::
@@ -126,15 +172,22 @@ never addresses, subjects, bodies, names or ids)::
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import wait as wait_futures
+from contextlib import contextmanager
+import contextvars
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
 import os
 from pathlib import Path
 import re
+import shutil
 import sqlite3
+import sys
 import time
-from typing import Any, Callable, Iterable, Mapping, Sequence
+import zlib
+from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 from ontology.mentions import cited_page, is_paged_file
 from ontology.mentions import sender_class as mentions_sender_class
@@ -142,18 +195,27 @@ from ontology.types import Actor
 from operating.case_mail_scope import MailScope
 
 from . import live_source_grammar as grammar
-from .captured_text import (OCR_UNAVAILABLE, TEXT_OCR, TEXT_UNREAD, UNTYPED_OCR_FAILURES,
-                            capture_text, captured_text, member_view, split_member)
-from .capture_store import SourceKind, register_source_kind
+from .captured_text import (COMPRESSED_SUFFIX, DROPPED_SUFFIX, OCR_DEFERRED, OCR_PENDING,
+                            OCR_UNAVAILABLE,
+                            TEXT_OCR, TEXT_UNREAD, UNTYPED_OCR_FAILURES, blob_path,
+                            capture_text, captured_text, file_type, inflate, member_view,
+                            ocr_digest, read_dropped, reading_key, readings_of,
+                            split_member, write_dropped)
+from .capture_store import (SourceKind, register_source_kind, sqlite_bytes,
+                            checkpoint, wal_journal)
 from .graph_evidence import (FILE_ATTACHMENT_TYPE, MAX_ATTACHMENT_BYTES,
                              is_mail_attachment_citation, mail_attachment_citation)
 from .graph_read import MAX_ATTACHMENTS_LISTED
-from .people_exclusion import ExclusionUnavailable, PeopleExcluded, PeopleExclusion
+from .people_exclusion import (ExclusionUnavailable, PeopleExcluded, PeopleExclusion,
+                               is_object_id)
 from .live_source_guard import (LiveSourceAudience, NotVisible, SourceUnavailable,
                                 is_nextlink_refusal, unavailable_detail)
 from .plx_hub_guard import GRAPH_BLOCKS, upstream_blocks
 
 SCOPE_SCHEMA = "plx-mail-capture-scope/v1"
+ALL_FOLDERS = "all"   # a scope's folders: every folder of the mailbox
+HISTORIES = ("window", "all")
+OCR_MODES = ("inline", "deferred")   # a scope's ``ocr`` (CaptureScope)
 STORE_DIR = "mail-capture"
 DB_FILE = "capture.db"
 LINEAGE = "mail"
@@ -283,13 +345,27 @@ class CaptureScope:
     ``MailScope``; ``MailScope.unrestricted()`` only for isolated tests over
     synthetic mailboxes): a named mailbox outside it is set aside
     (``outside_allowlist``) and never captured. Configuration, never a grant:
-    the capture actor still needs the live-source audience."""
+    the capture actor still needs the live-source audience.
+
+    ``folders`` may be ``"all"`` (:data:`ALL_FOLDERS`): every folder of the mailbox, listed
+    when the run opens it (``GraphMailReader.list_folders``). ``history`` ``"all"``: after a
+    folder's windowed delta round, the mail older than its window is read too, newest
+    first, resuming by its own cursor (``"window"``, the default: the window only)."""
 
     def __init__(self, mailboxes: Sequence[Mapping[str, Any]], *, window_days: int = 90,
                  internal_domains: Iterable[str] | None = None, all_mailboxes: bool = False,
-                 all_mailbox_folders: Sequence[str] = ("inbox",),
+                 all_mailbox_folders: Sequence[str] | str = ("inbox",),
                  allowlisted_folders: Sequence[str] | None = None,
-                 allowlist: MailScope | None = None, exclude: Iterable[str] = ()) -> None:
+                 allowlist: MailScope | None = None, exclude: Iterable[str] = (),
+                 history: str = "window", ocr: str = "inline") -> None:
+        if history not in HISTORIES:
+            raise CaptureError("scope_history_invalid")
+        if ocr not in OCR_MODES:
+            raise CaptureError("scope_ocr_invalid")
+        self.history = history
+        # ``deferred``: a scan's OCR is put off and its bytes dropped (``ocr_deferred``,
+        # read later by ``ocr-deferred``); ``inline``: kept until OCR has read it.
+        self.ocr = ocr
         self.allowlist = MailScope.builtin() if allowlist is None else allowlist
         if not isinstance(self.allowlist, MailScope):
             raise CaptureError("scope_allowlist_invalid")
@@ -352,6 +428,8 @@ class CaptureScope:
 
     @staticmethod
     def _folders(folders: Any) -> tuple[str, ...]:
+        if folders == ALL_FOLDERS:
+            return (ALL_FOLDERS,)
         if isinstance(folders, (str, bytes)) or not isinstance(folders, Sequence) \
                 or not folders or len(folders) > 50:
             raise CaptureError("scope_folders_invalid")
@@ -367,7 +445,7 @@ class CaptureScope:
     def from_json(cls, document: Any, *, allowlist: MailScope | None = None
                   ) -> "CaptureScope":
         allowed = {"schema", "note", "window_days", "internal_domains", "mailboxes",
-                   "all_mailboxes", "allowlisted_mailboxes"}
+                   "all_mailboxes", "allowlisted_mailboxes", "history", "ocr"}
         if (not isinstance(document, dict) or document.get("schema") != SCOPE_SCHEMA
                 or set(document) - allowed or not isinstance(document.get("mailboxes", []),
                                                              list)):
@@ -392,7 +470,9 @@ class CaptureScope:
                    all_mailbox_folders=every.get("folders", ["inbox"]),
                    allowlisted_folders=None if listed is None
                    else listed.get("folders", ["inbox", "sentitems"]), allowlist=allowlist,
-                   exclude=[e["address"] for e in exclude])
+                   exclude=[e["address"] for e in exclude],
+                   history=document.get("history", "window"),
+                   ocr=document.get("ocr", "inline"))
 
     @classmethod
     def from_file(cls, path: str | Path, *, allowlist: MailScope | None = None
@@ -503,7 +583,77 @@ CREATE TABLE IF NOT EXISTS message_events (
     event TEXT NOT NULL,
     at TEXT NOT NULL
 );
+-- The directory department of a listed mailbox (JSON of the listing's value), recorded
+-- before each directory-wide run so the deny list decides on it at read.
+CREATE TABLE IF NOT EXISTS mailbox_directory (
+    mailbox_id TEXT PRIMARY KEY,
+    department TEXT,
+    listed_at TEXT NOT NULL
+);
 """
+# Every folder of a mailbox (``folders`` all): ids and Graph's item count of the latest
+# listing (``GraphMailReader.list_folders``), re-listed after FOLDER_RELIST_SECONDS.
+_FOLDER_LISTING_DDL = """CREATE TABLE IF NOT EXISTS mailbox_folders (
+    mailbox_id TEXT NOT NULL,
+    folder_id TEXT NOT NULL,
+    total INTEGER,
+    listed_at TEXT NOT NULL,
+    PRIMARY KEY (mailbox_id, folder_id))"""
+# The one exception to append-only attachment text: an exclusion purge
+# (``MailCaptureStore.purge_withheld``) drops the trigger, deletes and re-creates it in one
+# transaction.
+_TEXT_NO_DELETE = ("CREATE TRIGGER attachment_text_versions_no_delete BEFORE DELETE ON "
+                   "attachment_text_versions BEGIN SELECT RAISE(ABORT, "
+                   "'attachment_text_versions_immutable'); END")
+PURGE_COUNTS = ("mailboxes", "messages", "versions", "attachments", "blobs")
+# A mailbox row with the directory listing that named it (``record_directory``), if any.
+_MAILBOX_ROWS = ("SELECT m.*, d.department AS department, d.listed_at AS listed_at FROM "
+                 "mailboxes m LEFT JOIN mailbox_directory d ON d.mailbox_id=m.mailbox_id "
+                 "ORDER BY m.mailbox_id")
+_ENV_GUARD: dict[str, Any] = {}
+_DENY: dict[str, Any] = {}
+
+
+def _env_people() -> PeopleExclusion:
+    """The people guard of this process's environment now (``PeopleExclusion.from_env``),
+    read again whenever the variables, the named file or the committed config change."""
+    from . import people_exclusion as pe
+
+    def stat(path: Any) -> tuple[int, int] | None:
+        try:
+            found = Path(path).expanduser().stat()
+        except (OSError, TypeError, ValueError):
+            return None
+        return found.st_mtime_ns, found.st_size
+
+    named = os.environ.get(pe.ENV_FILE)
+    key = (os.environ.get(pe.ENV_IDS), named, stat(named) if named else None,
+           stat(pe.CONFIG))
+    if _ENV_GUARD.get("key") != key:
+        _ENV_GUARD.update(key=key, guard=PeopleExclusion.from_env(os.environ))
+    return _ENV_GUARD["guard"]
+
+
+def _default_deny() -> Any:
+    """The shipped HR / payroll deny list (``mail_directory_scope.DEFAULT_SCOPE``), read
+    again when the file changes; None when it is unusable (every mailbox is withheld)."""
+    from .mail_directory_scope import DEFAULT_SCOPE, DirectoryScope, DirectoryScopeError
+    try:
+        found = DEFAULT_SCOPE.stat()
+        key = (found.st_mtime_ns, found.st_size)
+    except OSError:
+        return None
+    if _DENY.get("key") != key:
+        try:
+            deny = DirectoryScope.from_file(DEFAULT_SCOPE).deny
+        except (DirectoryScopeError, CaptureError):
+            deny = None
+        _DENY.update(key=key, deny=deny)
+    return _DENY["deny"]
+
+
+def _usable(guard: Any) -> bool:
+    return isinstance(guard, PeopleExclusion) and not guard.unavailable
 # Body statuses that a later run retries (a non-transient read failure).
 _DEGRADED_BODY = "unavailable:%"
 # messages.attachments_status: 'complete' (the listing reached its end, or the
@@ -523,10 +673,43 @@ TIME_BUDGET = "time_budget"   # a folder left when the run's time budget was spe
 _ATTACHMENT_COLUMNS = ("(message_handle, attachment_id, l1_handle, mailbox_id, metadata, "
                        "content_sha256, content_status, recorded_at, text_status, "
                        "text_sha256) VALUES (?,?,?,?,?,?,?,?,?,?)")
+# Compact storage (module docstring, *Storage*): an attachment original over this many
+# bytes is dropped once every reading of it is kept (its ``.dropped`` form), unless a
+# later reading still needs it (OCR pending, never read) or it is a container whose
+# members are cited. Originals kept for a pending reading are bounded by
+# ``MAX_PENDING_OCR_BYTES``: past it, new PDF attachments are not downloaded
+# (``content_status`` ``deferred:ocr_backlog``) until the OCR backlog drains.
+DROP_ORIGINALS_ABOVE = 256 * 1024
+MAX_PENDING_OCR_BYTES = 1 << 30
+ATTACHMENT_DEFERRED = "deferred:ocr_backlog"
+_COMPRESSED_KINDS = ("body", "text")
 # attachments.content_status of bytes that failed verification (module docstring).
 MISMATCH_SHA256 = "mismatch:sha256"
 MISMATCH_SIZE = "mismatch:size"
 _MISMATCH = "mismatch:%"
+
+
+# One tool call's mailbox visibility (``MailCaptureStore._visible``): None outside a
+# scope, so every read decides afresh; a scope decides once per store file, reader,
+# audience and exclusion, and forgets when it ends.
+_VISIBILITY: contextvars.ContextVar[dict[Any, Any] | None] = contextvars.ContextVar(
+    "plx_mail_visibility", default=None)
+
+
+@contextmanager
+def visibility_scope() -> Iterator[None]:
+    """One tool call's mailbox visibility, decided once and reused by every mail read
+    of the call (a per-handle gate re-read otherwise re-decides every mailbox for each
+    message). A revocation or exclusion recorded during the call applies from the next
+    call. Nested scopes share the outer one."""
+    if _VISIBILITY.get() is not None:
+        yield
+        return
+    token = _VISIBILITY.set({})
+    try:
+        yield
+    finally:
+        _VISIBILITY.reset(token)
 
 
 class MailCaptureStore:
@@ -537,7 +720,8 @@ class MailCaptureStore:
     the folder ``incomplete`` with that reason. ``None`` = unbounded."""
 
     def __init__(self, state_dir: str | Path, *, clock: Callable[[], datetime] = _now,
-                 max_store_bytes: int | None = None) -> None:
+                 max_store_bytes: int | None = None, people: PeopleExclusion | None = None,
+                 deny: Any = None) -> None:
         if max_store_bytes is not None and (isinstance(max_store_bytes, bool)
                                             or not isinstance(max_store_bytes, int)
                                             or max_store_bytes < 1):
@@ -552,9 +736,14 @@ class MailCaptureStore:
         self.path = self.root / DB_FILE
         self._clock = clock
         self.max_store_bytes = max_store_bytes
+        # The exclusion every read applies (``withheld_mailboxes``): this people guard,
+        # else the process environment's; this deny list, else the shipped one.
+        self.people = people
+        self.deny = deny
         self.db = sqlite3.connect(self.path, timeout=30)
         os.chmod(self.path, 0o600)
         self.db.row_factory = sqlite3.Row
+        wal_journal(self.db)
         self.db.execute("PRAGMA foreign_keys = ON")
         tables = {r[0] for r in self.db.execute("SELECT name FROM sqlite_master "
                                                 "WHERE type='table'")}
@@ -580,9 +769,69 @@ class MailCaptureStore:
                 self.db.execute("ALTER TABLE attachments ADD COLUMN text_status TEXT")
                 self.db.execute("ALTER TABLE attachments ADD COLUMN text_sha256 TEXT "
                                 "REFERENCES blobs(sha256)")
+        columns = {r[1] for r in self.db.execute("PRAGMA table_info(folders)")}
+        with self.db:
+            # The history older than a round's window, read newest first after the round
+            # (``history`` all): its listing cursor, the fixed ``before`` bound the cursor
+            # was minted for, and ``complete`` once it reached its end.
+            for name in ("backfill_next_url", "backfill_before", "backfill_status"):
+                if name not in columns:
+                    self.db.execute(f"ALTER TABLE folders ADD COLUMN {name} TEXT")
+            self.db.execute(_FOLDER_LISTING_DDL)
+            # Compact storage: the size of a blob's stored form (NULL: its bytes, as
+            # before) and when its original was dropped (``settle_original``).
+            have = {r[1] for r in self.db.execute("PRAGMA table_info(blobs)")}
+            for name, kind in (("stored_bytes", "INTEGER"), ("dropped_at", "TEXT")):
+                if name not in have:
+                    self.db.execute(f"ALTER TABLE blobs ADD COLUMN {name} {kind}")
+            for name, on in (("attachments_by_content", "attachments(content_sha256)"),
+                             ("attachments_by_text", "attachments(text_sha256)"),
+                             ("messages_by_body", "messages(body_sha256)")):
+                self.db.execute(f"CREATE INDEX IF NOT EXISTS {name} ON {on}")
         if version != STORE_SCHEMA_VERSION:
             self.db.close()
             raise CaptureError("store_schema_outdated")
+
+    # Columns a store of the current schema holds once ``__init__`` brought it up to date.
+    _CURRENT_COLUMNS = {"messages": {"attachment_list_attempts"},
+                        "attachments": {"text_status", "text_sha256"},
+                        "folders": {"backfill_next_url", "backfill_before", "backfill_status"},
+                        "blobs": {"stored_bytes", "dropped_at"}}
+
+    @classmethod
+    def open_read_only(cls, state_dir: str | Path, *, timeout: float = 5.0
+                       ) -> "MailCaptureStore":
+        """The store opened only to read it (a host serving captured mail): ``mode=ro``,
+        no directory, schema, journal or permission change and no write, so a reader
+        kept open never holds a capture's write lock. Its people guard and deny list
+        are the process's (the constructor's defaults). A missing store, another schema
+        version or a store not yet brought up to date by a writer raises
+        ``CaptureError``. The connection may serve another thread: its holder
+        serialises use."""
+        store = cls.__new__(cls)
+        store.root = Path(state_dir).expanduser().resolve() / STORE_DIR
+        store.blobs = store.root / "blobs" / "sha256"
+        store.path = store.root / DB_FILE
+        store._clock, store.max_store_bytes = _now, None
+        store.people, store.deny = None, None
+        if not store.path.is_file():
+            raise CaptureError("store_missing")
+        store.db = sqlite3.connect(store.path.as_uri() + "?mode=ro", uri=True,
+                                   timeout=timeout, check_same_thread=False)
+        store._read_only = True
+        store.db.row_factory = sqlite3.Row
+        try:
+            version = store.db.execute(
+                "SELECT value FROM meta WHERE key='schema_version'").fetchone()
+            current = version is not None and version[0] == STORE_SCHEMA_VERSION and all(
+                wanted <= {r[1] for r in store.db.execute(f"PRAGMA table_info({table})")}
+                for table, wanted in cls._CURRENT_COLUMNS.items())
+        except sqlite3.Error:
+            current = False
+        if not current:
+            store.db.close()
+            raise CaptureError("store_schema_outdated")
+        return store
 
     def _migrate_from_2(self) -> str:
         """Schema 2 had no attachment-list state, and its listings stopped at 50
@@ -611,6 +860,10 @@ class MailCaptureStore:
         return "MailCaptureStore()"
 
     def close(self) -> None:
+        """Close the connection; a writer first checkpoints its WAL (no wait:
+        ``capture_store.checkpoint``)."""
+        if not getattr(self, "_read_only", False):
+            checkpoint(self.db)
         self.db.close()
 
     def now(self) -> str:
@@ -619,8 +872,11 @@ class MailCaptureStore:
     # ---------------------------------------------------------------- size
 
     def store_bytes(self) -> int:
-        blobs = self.db.execute("SELECT COALESCE(SUM(bytes), 0) FROM blobs").fetchone()[0]
-        return self.path.stat().st_size + blobs
+        """The SQLite file plus every blob as stored (compressed, or its ``.dropped``
+        form)."""
+        blobs = self.db.execute("SELECT COALESCE(SUM(COALESCE(stored_bytes, bytes)), 0) "
+                                "FROM blobs").fetchone()[0]
+        return sqlite_bytes(self.db) + blobs
 
     def store_full(self) -> bool:
         return self.max_store_bytes is not None and self.store_bytes() >= self.max_store_bytes
@@ -715,32 +971,51 @@ class MailCaptureStore:
         return len(rows)
 
     def put_blob(self, content: bytes, expected_sha256: str, *, kind: str = "attachment") -> str:
-        """Content-addressed bytes (attachments and bodies); one copy per sha256."""
+        """Content-addressed bytes (attachments, bodies, texts); one copy per sha256. A
+        body or text is stored zlib-compressed (``<sha256>.z``); an attachment as its
+        bytes, also when its original was dropped before (it is settled again)."""
         digest = sha256(content).hexdigest()
         if digest != expected_sha256:
             raise CaptureError("attachment_digest_mismatch")
         known = self.db.execute("SELECT 1 FROM blobs WHERE sha256=?", (digest,)).fetchone()
-        folder = self.blobs / digest[:2]
-        target = folder / digest
-        if known is None or not target.exists():
+        if known is None or not self._present(digest):
+            stored = (zlib.compress(content, 6) if kind in _COMPRESSED_KINDS else content)
             if known is None:
-                self._reserve(len(content))
-            folder.mkdir(exist_ok=True, mode=0o700)
-            temporary = folder / f".{digest}.{os.getpid()}.tmp"
-            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(descriptor, "wb") as handle:
-                handle.write(content)
-            os.replace(temporary, target)
+                self._reserve(len(stored))
+            self._write_file(blob_path(self.blobs, digest, COMPRESSED_SUFFIX
+                                       if kind in _COMPRESSED_KINDS else ""), stored)
             with self.db:
-                self.db.execute("INSERT OR IGNORE INTO blobs VALUES (?,?,?,?)",
-                                (digest, kind, len(content), self.now()))
+                self.db.execute("INSERT OR IGNORE INTO blobs (sha256, kind, bytes, stored_at,"
+                                " stored_bytes) VALUES (?,?,?,?,?)",
+                                (digest, kind, len(content), self.now(), len(stored)))
+                self.db.execute("UPDATE blobs SET stored_bytes=?, dropped_at=NULL WHERE "
+                                "sha256=?", (len(stored), digest))
         return digest
 
+    def _present(self, digest: str) -> bool:
+        """Whether the blob's bytes are stored (as they are or compressed)."""
+        return (blob_path(self.blobs, digest).exists()
+                or blob_path(self.blobs, digest, COMPRESSED_SUFFIX).exists())
+
+    @staticmethod
+    def _write_file(target: Path, data: bytes) -> None:
+        target.parent.mkdir(exist_ok=True, mode=0o700)
+        temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+        os.replace(temporary, target)
+
     def blob(self, digest: str) -> bytes:
+        """A blob's bytes (stored as they are or compressed), re-hashed. An original the
+        store dropped raises ``FileNotFoundError`` like a missing file."""
         if not isinstance(digest, str) or _SHA256.fullmatch(digest) is None:
             raise CaptureError("attachment_digest_invalid")
-        content = (self.blobs / digest[:2] / digest).read_bytes()
-        if sha256(content).hexdigest() != digest:
+        try:
+            content: bytes | None = blob_path(self.blobs, digest).read_bytes()
+        except FileNotFoundError:
+            content = inflate(blob_path(self.blobs, digest, COMPRESSED_SUFFIX).read_bytes())
+        if content is None or sha256(content).hexdigest() != digest:
             raise CaptureError("attachment_digest_mismatch")
         return content
 
@@ -764,6 +1039,36 @@ class MailCaptureStore:
                     and known.get("last_modified") == metadata.get("last_modified")):
                 return {**dict(row), "metadata": known}
         return None
+
+    def captured_attachments(self, mailbox_id: str, message_id: str) -> list[dict[str, Any]]:
+        """The captured attachments of every stored version of one message (what
+        :meth:`known_attachment` matches against), for a reader thread that may not
+        touch this store."""
+        return [{**dict(row), "metadata": json.loads(row["metadata"])}
+                for row in self.db.execute(
+                    "SELECT * FROM attachments WHERE mailbox_id=? AND content_status='captured' "
+                    "AND message_handle IN (SELECT l1_handle FROM messages WHERE mailbox_id=? "
+                    "AND message_id=?)", (mailbox_id, mailbox_id, message_id))]
+
+    def folder_listing(self, mailbox_id: str) -> tuple[list[dict[str, Any]], str | None]:
+        """(the stored folder listing of a mailbox, when it was listed; None: never)."""
+        rows = [dict(r) for r in self.db.execute(
+            "SELECT folder_id, total, listed_at FROM mailbox_folders WHERE mailbox_id=? "
+            "ORDER BY rowid", (mailbox_id,))]
+        return rows, (min(r["listed_at"] for r in rows) if rows else None)
+
+    def save_folder_listing(self, mailbox_id: str, folders: Sequence[Mapping[str, Any]]
+                            ) -> None:
+        now = self.now()
+        with self.db:
+            self.db.execute("DELETE FROM mailbox_folders WHERE mailbox_id=?", (mailbox_id,))
+            self.db.executemany("INSERT OR IGNORE INTO mailbox_folders VALUES (?,?,?,?)",
+                                [(mailbox_id, f["id"], f.get("total"), now) for f in folders])
+
+    def folder_holds_current(self, mailbox_id: str, folder_id: str) -> bool:
+        return self.db.execute("SELECT 1 FROM messages WHERE mailbox_id=? AND folder_id=? "
+                               "AND superseded_at IS NULL LIMIT 1",
+                               (mailbox_id, folder_id)).fetchone() is not None
 
     def _stored_record(self, record: Mapping[str, Any]) -> tuple[str, str | None]:
         """The record JSON without the body (kept once, content-addressed) and the
@@ -857,20 +1162,28 @@ class MailCaptureStore:
                                 (message_handle, "attachment_list_recovered", now))
         return added
 
-    def text_unread(self, mailbox_id: str, folder_id: str, limit: int
+    def text_unread(self, mailbox_id: str | None, folder_id: str | None, limit: int
                     ) -> list[dict[str, Any]]:
         """Captured attachments of current versions in a folder whose text was never
         read (captured before attachment text), and PDFs whose scanned pages were not
         OCR-read (no engine then, or a failure from before the OCR tool exits were typed
         by tool, ``UNTYPED_OCR_FAILURES``): a later round re-reads their stored bytes,
-        once, since the new reading is typed by tool and is not among those."""
+        once, since the new reading is typed by tool and is not among those. ``None`` for
+        the mailbox or folder: every one (the run's OCR backlog), newest version first."""
+        where = " AND ".join(["1=1"] + (["a.mailbox_id=?"] if mailbox_id is not None else [])
+                             + (["m.folder_id=?"] if folder_id is not None else []))
+        order = ("m.version_id DESC" if mailbox_id is None or folder_id is None
+                 else "m.version_id")
+        unread = ",".join("?" * len(TEXT_UNREAD))
         rows = self.db.execute(
             "SELECT a.* FROM attachments a JOIN messages m ON m.l1_handle=a.message_handle "
-            "AND m.superseded_at IS NULL WHERE a.mailbox_id=? AND m.folder_id=? AND "
+            f"AND m.superseded_at IS NULL WHERE {where} AND "
             "a.content_status='captured' AND (a.text_status IS NULL OR a.text_status IN "
-            "(?,?) OR (a.text_status IN (?,?) AND NOT EXISTS (SELECT 1 FROM message_events e "
-            "WHERE e.l1_handle=a.l1_handle AND e.event='text_reextracted'))) ORDER BY m.version_id, a.attachment_id LIMIT ?",
-            (mailbox_id, folder_id, *TEXT_UNREAD, *UNTYPED_OCR_FAILURES, limit)).fetchall()
+            f"({unread}) OR (a.text_status IN (?,?) AND NOT EXISTS (SELECT 1 FROM message_events e "
+            f"WHERE e.l1_handle=a.l1_handle AND e.event='text_reextracted'))) ORDER BY {order}, "
+            "a.attachment_id LIMIT ?",
+            (*[v for v in (mailbox_id, folder_id) if v is not None], *TEXT_UNREAD,
+             *UNTYPED_OCR_FAILURES, limit)).fetchall()
         return [dict(r) for r in rows if r["text_status"] is None or is_paged_file(
             {"mime_type": (meta := json.loads(r["metadata"])).get("content_type"),
              "name": meta.get("name")})]
@@ -939,6 +1252,278 @@ class MailCaptureStore:
         raw = text.encode("utf-8")
         return self.put_blob(raw, sha256(raw).hexdigest(), kind="text")
 
+    # ---------------------------------------------------------------- compact storage
+
+    @staticmethod
+    def _awaits_reading(text_status: Any, metadata: Mapping[str, Any]) -> bool:
+        """Whether a later round reads an attachment's text from its stored bytes again
+        (:meth:`text_unread`): never read, a scan whose OCR is pending or had no engine,
+        or an OCR failure from before failures were typed. Its bytes are kept."""
+        if text_status is None or text_status in UNTYPED_OCR_FAILURES:
+            return True
+        return text_status in TEXT_UNREAD and is_paged_file(
+            {"mime_type": metadata.get("content_type"), "name": metadata.get("name")})
+
+    def _pending_rows(self, digest: str | None = None) -> list[sqlite3.Row]:
+        """Captured attachments of current versions whose bytes a later reading needs
+        (:meth:`_awaits_reading`), with their blob's size; of one blob, or of all."""
+        unread = (*TEXT_UNREAD, *UNTYPED_OCR_FAILURES)
+        marks = ",".join("?" * len(unread))
+        rows = self.db.execute(
+            "SELECT a.content_sha256 AS digest, a.l1_handle, a.metadata, a.text_status, "
+            "a.text_sha256, b.bytes FROM "
+            "attachments a JOIN blobs b ON b.sha256=a.content_sha256 AND b.dropped_at IS NULL "
+            "WHERE a.content_status='captured' AND (a.text_status IS NULL OR a.text_status IN "
+            f"({marks})) AND EXISTS (SELECT 1 FROM messages m WHERE m.l1_handle="
+            "a.message_handle AND m.superseded_at IS NULL)"
+            + ("" if digest is None else " AND a.content_sha256=?"),
+            (*unread, *(() if digest is None else (digest,)))).fetchall()
+        return [r for r in rows if self._awaits_reading(r["text_status"],
+                                                        json.loads(r["metadata"]))]
+
+    def pending_ocr_bytes(self) -> int:
+        """Bytes of the originals kept only because a later reading needs them (the OCR
+        backlog), each blob once."""
+        return sum({r["digest"]: r["bytes"] for r in self._pending_rows()}.values())
+
+    def _referenced_as_text(self, digest: str) -> bool:
+        return self.db.execute(
+            "SELECT 1 FROM messages WHERE body_sha256=? UNION ALL SELECT 1 FROM attachments "
+            "WHERE text_sha256=? UNION ALL SELECT 1 FROM attachment_text_versions WHERE "
+            "text_sha256=? LIMIT 1", (digest, digest, digest)).fetchone() is not None
+
+    def original_dropped(self, digest: Any) -> bool:
+        """Whether the store dropped this attachment original (its readings kept)."""
+        row = self.db.execute("SELECT dropped_at FROM blobs WHERE sha256=?",
+                              (digest,)).fetchone()
+        return row is not None and row["dropped_at"] is not None
+
+    def settle_original(self, digest: str, *, content: bytes | None = None,
+                        readings: Mapping[str, Any] | None = None,
+                        defer_ocr: bool = False) -> str:
+        """Drop an attachment original once nothing needs its bytes (module docstring,
+        *Storage*): over :data:`DROP_ORIGINALS_ABOVE`, no current attachment awaiting a
+        reading of it, not a body or text, not a container, and every reading a reader
+        makes of it (each captured name and type of these bytes, without and with each
+        pinned OCR text it has) made from the bytes and kept in its ``.dropped`` form.
+        ``content``: its bytes when in hand; ``readings``: readings made already (the
+        capture's reader thread). The ``.dropped`` form is written before the bytes go,
+        so a reader never finds neither. Returns the outcome (``dropped``, ``kept_small``,
+        ``kept_pending``, ``kept_text``, ``kept_container``, ``kept_unreadable``,
+        ``unreferenced``, ``absent``).
+
+        ``defer_ocr`` (scope ``ocr`` ``deferred``, ``compact --defer-ocr``): a scan whose
+        OCR is pending (``TEXT_UNREAD``) is dropped too; its current attachments get a new
+        text version ``ocr_deferred`` keeping the text layer (:data:`OCR_DEFERRED`), read
+        later by :func:`ocr_deferred_pass`. An original dropped before is settled again
+        when its bytes are in hand (``content``, re-fetched and re-hashed): the readings
+        of a new text version (its OCR text) are added to its ``.dropped`` form."""
+        row = self.db.execute("SELECT bytes, dropped_at FROM blobs WHERE sha256=?",
+                              (digest,)).fetchone()
+        if row is None or _SHA256.fullmatch(digest) is None:
+            return "absent"
+        dropped = row["dropped_at"] is not None
+        if dropped and (content is None or sha256(content).hexdigest() != digest):
+            blob_path(self.blobs, digest).unlink(missing_ok=True)   # an interrupted drop
+            return "dropped"
+        if not dropped and row["bytes"] <= DROP_ORIGINALS_ABOVE:
+            return "kept_small"
+        if not dropped and self._referenced_as_text(digest):
+            # Bytes that are their own text (a plain-text or CSV file): kept, compressed.
+            self._compress(digest)
+            return "kept_text"
+        captured = self.db.execute(
+            "SELECT l1_handle, metadata, text_status, text_sha256 FROM attachments WHERE "
+            "content_sha256=? AND content_status='captured'", (digest,)).fetchall()
+        if not captured:
+            return "unreferenced"
+        pending = self._pending_rows(digest)
+        if pending and not (defer_ocr and all(r["text_status"] in TEXT_UNREAD
+                                              for r in pending)):
+            return "kept_pending"
+        if content is None:
+            try:
+                content = self.blob(digest)
+            except (CaptureError, OSError):
+                return "kept_unreadable"
+        from operating.use_case_parts import is_container
+        keys: set[tuple[str, str, str | None]] = set()
+        for found in captured:
+            mime, name = file_type(json.loads(found["metadata"]))
+            if is_container(content, name, mime):
+                return "kept_container"   # its members are cited from its bytes
+            chain = self.text_chain(found["l1_handle"]) if found["l1_handle"] else []
+            keys.add((mime, name, None))
+            keys.update((mime, name, ocr_digest(v)) for v in
+                        [*chain, dict(found)] if ocr_digest(v) is not None)
+        kept = read_dropped(self.blobs, digest)
+        have = dict(kept["readings"]) if kept is not None else {}
+        have.update(readings or {})
+        missing = [k for k in sorted(keys, key=lambda k: reading_key(*k))
+                   if reading_key(*k) not in have]
+
+        def text(text_digest: str) -> str | None:
+            try:
+                return self.blob(text_digest).decode("utf-8")
+            except (CaptureError, OSError, UnicodeDecodeError):
+                return None
+        made = readings_of(content, missing, text)
+        if made is None:
+            return "kept_unreadable"
+        have.update(made)
+        from .graph_read import quick_xor_hash
+        size = write_dropped(self.blobs, digest, len(content), have, quick_xor_hash(content))
+        for found in pending:   # its scans' OCR put off: a new text version, layer kept
+            self.fill_text(found["l1_handle"], OCR_DEFERRED, found["text_sha256"])
+        with self.db:
+            self.db.execute("UPDATE blobs SET dropped_at=COALESCE(dropped_at, ?), "
+                            "stored_bytes=? WHERE sha256=?", (self.now(), size, digest))
+        blob_path(self.blobs, digest).unlink(missing_ok=True)
+        return "dropped"
+
+    def _compress(self, digest: str) -> bool:
+        """Store a blob kept as its bytes zlib-compressed instead (``<sha256>.z``, written
+        before the bytes go); False when it is not stored as its bytes or unreadable."""
+        raw = blob_path(self.blobs, digest)
+        if not raw.exists():
+            return False
+        try:
+            content = self.blob(digest)
+        except (CaptureError, OSError):
+            return False
+        packed = zlib.compress(content, 6)
+        self._write_file(blob_path(self.blobs, digest, COMPRESSED_SUFFIX), packed)
+        with self.db:
+            self.db.execute("UPDATE blobs SET stored_bytes=? WHERE sha256=?",
+                            (len(packed), digest))
+        raw.unlink()
+        return True
+
+    def ocr_deferred_count(self, mailbox_id: str | None = None) -> int:
+        """Attachments of current versions whose scanned pages wait for the
+        ``ocr-deferred`` pass (``ocr_deferred``)."""
+        return len(self.ocr_deferred_rows(mailbox_id, None))
+
+    def ocr_deferred_rows(self, mailbox_id: str | None, limit: int | None
+                          ) -> list[dict[str, Any]]:
+        """Current attachments whose OCR was put off with their bytes dropped
+        (``ocr_deferred``), newest version first: each one's attachment handle, digest,
+        metadata and re-fetch ids."""
+        rows = self.db.execute(
+            "SELECT a.l1_handle, a.content_sha256, a.metadata, a.mailbox_id, a.attachment_id,"
+            " m.message_id FROM attachments a JOIN messages m ON m.l1_handle=a.message_handle "
+            "AND m.superseded_at IS NULL WHERE a.content_status='captured' AND "
+            "a.text_status=?" + ("" if mailbox_id is None else " AND a.mailbox_id=?")
+            + " ORDER BY m.version_id DESC, a.attachment_id"
+            + ("" if limit is None else " LIMIT ?"),
+            (OCR_DEFERRED, *(() if mailbox_id is None else (mailbox_id,)),
+             *(() if limit is None else (limit,)))).fetchall()
+        return [dict(r) for r in rows]
+
+    def deferred_attachments(self, mailbox_id: str, folder_id: str | None = None) -> int:
+        """Attachments of current versions not downloaded while the OCR backlog was full
+        (``deferred:ocr_backlog``), retried by later rounds."""
+        sql = ("SELECT COUNT(*) FROM attachments a JOIN messages m ON "
+               "m.l1_handle=a.message_handle AND m.superseded_at IS NULL WHERE "
+               "a.mailbox_id=? AND a.content_status=?")
+        params: list[Any] = [mailbox_id, ATTACHMENT_DEFERRED]
+        if folder_id is not None:
+            sql += " AND m.folder_id=?"
+            params.append(folder_id)
+        return self.db.execute(sql, params).fetchone()[0]
+
+    def compact(self, *, vacuum: bool = True, defer_ocr: bool = False,
+                free_bytes: Callable[[Path], int] = lambda path: shutil.disk_usage(path).free
+                ) -> dict[str, Any]:
+        """One-time compaction of a store captured before compact storage (CLI
+        ``compact``): bodies and texts stored as they are are compressed; every
+        attachment original nothing needs is dropped (:meth:`settle_original`); then the
+        SQLite file is rewritten (``VACUUM INTO`` a new file in the same directory,
+        checked, swapped in atomically) when the free disk covers the new file, else it
+        is left as it is (``vacuum`` ``skipped:<why>``). Counts and bytes only. Never run
+        it beside a capture (the CLI holds the host's cycle lock)."""
+        before = self._disk_bytes()
+        result: dict[str, Any] = {"bytes_before": before, "compressed": 0, "outcomes": {}}
+        for digest, kind, size in self.db.execute(
+                "SELECT sha256, kind, bytes FROM blobs WHERE dropped_at IS NULL AND "
+                "(stored_bytes IS NULL OR stored_bytes=bytes)").fetchall():
+            raw = blob_path(self.blobs, digest)
+            if not raw.exists() or self.db.execute(
+                    "SELECT 1 FROM attachments WHERE content_sha256=? LIMIT 1",
+                    (digest,)).fetchone() is not None:
+                continue   # an attachment's bytes are settled below, never compressed
+            if self._referenced_as_text(digest):
+                result["compressed"] += self._compress(digest)
+        for (digest,) in self.db.execute(
+                "SELECT DISTINCT content_sha256 FROM attachments WHERE content_status="
+                "'captured' AND content_sha256 IS NOT NULL ORDER BY content_sha256"
+                ).fetchall():
+            outcome = self.settle_original(digest, defer_ocr=defer_ocr)
+            result["outcomes"][outcome] = result["outcomes"].get(outcome, 0) + 1
+        result["pending_ocr_bytes"] = self.pending_ocr_bytes()
+        result["vacuum"] = self._vacuum(free_bytes) if vacuum else "skipped:not_asked"
+        result["bytes_after"] = self._disk_bytes()
+        return result
+
+    def _disk_bytes(self) -> int:
+        """Bytes on disk of the store: the SQLite file with its WAL, every blob file."""
+        total = 0
+        for path in (self.path, self.path.with_name(self.path.name + "-wal")):
+            total += path.stat().st_size if path.exists() else 0
+        for folder in self.blobs.iterdir():
+            if folder.is_dir():
+                total += sum(f.stat().st_size for f in folder.iterdir() if f.is_file())
+        return total
+
+    def _vacuum(self, free_bytes: Callable[[Path], int]) -> str:
+        """Rewrite the SQLite file without its free pages: into a new file beside it,
+        checked (integrity and every table's row count), then swapped in by an atomic
+        rename. Skipped when the free disk does not cover the new file with a margin, or
+        when the WAL cannot be emptied first (another connection reading)."""
+        page_size = self.db.execute("PRAGMA page_size").fetchone()[0]
+        used = (self.db.execute("PRAGMA page_count").fetchone()[0]
+                - self.db.execute("PRAGMA freelist_count").fetchone()[0]) * page_size
+        if free_bytes(self.root) < used + used // 10 + 64 * 1024 * 1024:
+            return "skipped:disk_space"
+        busy = self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]
+        if busy:
+            return "skipped:wal_busy"
+        target = self.path.with_name(f".{self.path.name}.vacuum.tmp")
+        target.unlink(missing_ok=True)
+        tables = [r[0] for r in self.db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
+        counts = {t: self.db.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0]
+                  for t in tables}
+        self.db.execute("VACUUM INTO ?", (str(target),))
+        check = sqlite3.connect(target)
+        try:
+            whole = check.execute("PRAGMA integrity_check").fetchone()[0] == "ok" and all(
+                check.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0] == n
+                for t, n in counts.items())
+        finally:
+            check.close()
+        if not whole:
+            target.unlink(missing_ok=True)
+            return "skipped:copy_check_failed"
+        os.chmod(target, 0o600)
+        self.db.close()
+        wal = self.path.with_name(self.path.name + "-wal")
+        if wal.exists() and wal.stat().st_size:
+            target.unlink(missing_ok=True)   # written to since the checkpoint: keep the file
+            self._reopen()
+            return "skipped:wal_busy"
+        os.replace(target, self.path)
+        for suffix in ("-wal", "-shm"):
+            self.path.with_name(self.path.name + suffix).unlink(missing_ok=True)
+        self._reopen()
+        return "done"
+
+    def _reopen(self) -> None:
+        self.db = sqlite3.connect(self.path, timeout=30)
+        self.db.row_factory = sqlite3.Row
+        wal_journal(self.db)
+        self.db.execute("PRAGMA foreign_keys = ON")
+
     def degraded(self, mailbox_id: str, folder_id: str, limit: int) -> list[dict[str, Any]]:
         """Current versions in a folder whose body or an attachment read failed
         non-transiently, or whose attachment listing was truncated; a later run
@@ -947,10 +1532,10 @@ class MailCaptureStore:
             "SELECT * FROM messages m WHERE mailbox_id=? AND folder_id=? AND "
             "superseded_at IS NULL AND (body_status LIKE ? OR attachments_status=? OR "
             "EXISTS (SELECT 1 FROM attachments a WHERE a.message_handle=m.l1_handle AND "
-            "(a.content_status='unavailable' OR a.content_status LIKE ?))) "
+            "(a.content_status IN ('unavailable', ?) OR a.content_status LIKE ?))) "
             "ORDER BY version_id LIMIT ?",
-            (mailbox_id, folder_id, _DEGRADED_BODY, ATTACHMENTS_TRUNCATED, _MISMATCH,
-             limit)).fetchall()
+            (mailbox_id, folder_id, _DEGRADED_BODY, ATTACHMENTS_TRUNCATED,
+             ATTACHMENT_DEFERRED, _MISMATCH, limit)).fetchall()
         return [dict(r) for r in rows]
 
     def mismatched(self, mailbox_id: str, folder_id: str | None = None) -> int:
@@ -1004,17 +1589,221 @@ class MailCaptureStore:
                                         "absent_after_resync")
         return len(rows)
 
+    # ---------------------------------------------------------------- exclusion
+
+    def record_directory(self, departments: Mapping[str, Any]) -> None:
+        """The directory department (any JSON value) of each mailbox a directory-wide
+        listing named, recorded before the run so the deny list decides on it at read."""
+        now = self.now()
+        with self.db:
+            self.db.executemany(
+                "INSERT INTO mailbox_directory VALUES (?,?,?) ON CONFLICT(mailbox_id) DO "
+                "UPDATE SET department=excluded.department, listed_at=excluded.listed_at",
+                [(str(oid).lower(), json.dumps(value), now)
+                 for oid, value in departments.items()])
+
+    def _withholds(self, people: Any = None, *, undecided: bool = True
+                   ) -> Callable[[Mapping[str, Any]], bool] | None:
+        """What the exclusion in effect now withholds (decision
+        2026-10-21-mail-exclusion-retroactive): ``check(row)`` over a ``_MAILBOX_ROWS``
+        row, true for a mailbox whose recorded object ids (its addresses too once the
+        guard is bound) name an excluded person, or that a directory-wide listing named
+        and the deny list matches (addresses, department). The guard is ``people``, else
+        the store's, else the process environment's; the deny list the store's, else the
+        shipped one. None: every mailbox is withheld (a configured guard that cannot
+        decide). No list configured at all applies no people check here: the store cannot
+        know who is excluded, and the case runtime serves no captured mail without a
+        usable guard (``operating.ontology_tools_evidence``). A deny list that cannot
+        decide withholds every listed mailbox; ``undecided=False`` (the purge) keeps them
+        instead, so an unusable list never deletes."""
+        guard = people if people is not None else (
+            self.people if self.people is not None else _env_people())
+        if not _usable(guard):
+            if getattr(guard, "unavailable", None) != "excluded_people_oids_absent":
+                return None
+            guard = None
+        deny: list[Any] = []
+
+        def withheld(row: Mapping[str, Any]) -> bool:
+            identities = [row["mailbox_id"], row["upn"], *json.loads(row["identities"])]
+            if guard is not None:
+                try:
+                    if guard.excluded(v for v in identities
+                                      if guard.bound or is_object_id(v)):
+                        return True
+                except ExclusionUnavailable:
+                    return undecided
+            if row["listed_at"] is None:
+                return False
+            if not deny:
+                deny.append(self.deny if self.deny is not None else _default_deny())
+            if deny[0] is None:
+                return undecided
+            department = row["department"]
+            return deny[0].denies({
+                "userPrincipalName": row["upn"],
+                "proxyAddresses": [f"smtp:{v}" for v in identities
+                                   if isinstance(v, str) and "@" in v],
+                "department": None if department is None else json.loads(department)})
+        return withheld
+
+    def withheld_mailboxes(self, people: Any = None) -> list[str] | None:
+        """The captured mailboxes the exclusion withholds now (None: every one)."""
+        withholds = self._withholds(people)
+        if withholds is None:
+            return None
+        return [row["mailbox_id"] for row in self.db.execute(_MAILBOX_ROWS) if withholds(row)]
+
+    def held(self, mailbox_ids: Sequence[str]) -> dict[str, Any]:
+        """What the store holds of these mailboxes, unfiltered (the capture's own check,
+        ``mail_directory_scope.run_cli``): mailbox rows, items (message versions plus
+        attachments) and the items' handles, to be resolved as a reader."""
+        marks = ",".join("?" * len(mailbox_ids))
+        if not mailbox_ids:
+            return {"mailboxes": 0, "items": 0, "handles": []}
+        boxes = self.db.execute(f"SELECT COUNT(*) FROM mailboxes WHERE mailbox_id IN "
+                                f"({marks})", list(mailbox_ids)).fetchone()[0]
+        versions = self.db.execute(f"SELECT l1_handle FROM messages WHERE mailbox_id IN "
+                                   f"({marks})", list(mailbox_ids)).fetchall()
+        attachments = self.db.execute(f"SELECT l1_handle FROM attachments WHERE mailbox_id "
+                                      f"IN ({marks})", list(mailbox_ids)).fetchall()
+        handles = sorted({h for (h,) in [*versions, *attachments] if h})
+        return {"mailboxes": boxes, "items": len(versions) + len(attachments),
+                "handles": handles}
+
+    def purge_withheld(self, people: PeopleExclusion) -> dict[str, int]:
+        """Delete what the exclusion withholds (a capture run, its guard prepared): each
+        withheld mailbox whole, and in every other mailbox each message (every version)
+        whose sender or To/Cc recipient is an excluded person (the guard bound), with
+        their attachments, attachment text readings and events; then every blob nothing
+        references any more, with its file. Nothing is deleted on a guard or deny list
+        that cannot decide. Returns the ``PURGE_COUNTS``."""
+        counts = dict.fromkeys(PURGE_COUNTS, 0)
+        withholds = self._withholds(people, undecided=False) if _usable(people) else None
+        if withholds is None:
+            return counts
+        boxes = [row["mailbox_id"] for row in self.db.execute(_MAILBOX_ROWS)
+                 if withholds(row)]
+        addresses: list[str] = []
+        if people.bound:
+            found = self.db.execute(
+                "SELECT DISTINCT lower(json_extract(record, '$.from')) FROM messages UNION "
+                "SELECT DISTINCT lower(j.value) FROM messages, json_each(messages.record, "
+                "'$.to') j UNION SELECT DISTINCT lower(j.value) FROM messages, "
+                "json_each(messages.record, '$.cc') j").fetchall()
+            addresses = [a for (a,) in found if isinstance(a, str) and people.is_excluded(a)]
+        if not boxes and not addresses:
+            return counts
+        db = self.db
+        db.execute("CREATE TEMP TABLE IF NOT EXISTS purge_boxes (id TEXT PRIMARY KEY)")
+        db.execute("CREATE TEMP TABLE IF NOT EXISTS purge_addresses (a TEXT PRIMARY KEY)")
+        db.execute("CREATE TEMP TABLE IF NOT EXISTS purge_messages (h TEXT PRIMARY KEY)")
+        db.execute("CREATE TEMP TABLE IF NOT EXISTS purge_attachments (h TEXT PRIMARY KEY)")
+        db.execute("CREATE TEMP TABLE IF NOT EXISTS purge_blobs (d TEXT PRIMARY KEY)")
+        try:
+            with db:
+                for table in ("purge_boxes", "purge_addresses", "purge_messages",
+                              "purge_attachments", "purge_blobs"):
+                    db.execute(f"DELETE FROM temp.{table}")
+                db.executemany("INSERT INTO temp.purge_boxes VALUES (?)", [(b,) for b in boxes])
+                db.executemany("INSERT OR IGNORE INTO temp.purge_addresses VALUES (?)",
+                               [(a,) for a in addresses])
+                named = ("SELECT 1 FROM temp.purge_addresses WHERE a={}")
+                pairs = db.execute(
+                    "SELECT DISTINCT mailbox_id, message_id FROM messages WHERE mailbox_id IN "
+                    "(SELECT id FROM temp.purge_boxes) OR EXISTS ("
+                    + named.format("lower(json_extract(record, '$.from'))") + ") OR EXISTS "
+                    "(SELECT 1 FROM json_each(messages.record, '$.to') j WHERE EXISTS ("
+                    + named.format("lower(j.value)") + ")) OR EXISTS (SELECT 1 FROM "
+                    "json_each(messages.record, '$.cc') j WHERE EXISTS ("
+                    + named.format("lower(j.value)") + "))").fetchall()
+                counts["messages"] = len(pairs)
+                for mailbox_id, message_id in pairs:
+                    db.execute("INSERT OR IGNORE INTO temp.purge_messages SELECT l1_handle "
+                               "FROM messages WHERE mailbox_id=? AND message_id=?",
+                               (mailbox_id, message_id))
+                inside = ("message_handle IN (SELECT h FROM temp.purge_messages) OR "
+                          "mailbox_id IN (SELECT id FROM temp.purge_boxes)")
+                db.execute("INSERT OR IGNORE INTO temp.purge_attachments SELECT l1_handle "
+                           f"FROM attachments WHERE l1_handle IS NOT NULL AND ({inside})")
+                db.execute(
+                    "INSERT OR IGNORE INTO temp.purge_blobs SELECT d FROM ("
+                    "SELECT body_sha256 AS d FROM messages WHERE l1_handle IN (SELECT h FROM "
+                    f"temp.purge_messages) UNION SELECT content_sha256 FROM attachments WHERE "
+                    f"{inside} UNION SELECT text_sha256 FROM attachments WHERE {inside} UNION "
+                    "SELECT text_sha256 FROM attachment_text_versions WHERE l1_handle IN "
+                    "(SELECT h FROM temp.purge_attachments)) WHERE d IS NOT NULL")
+                # The one deletion of attachment text history (an exclusion), the trigger
+                # re-created inside the same transaction.
+                db.execute("DROP TRIGGER attachment_text_versions_no_delete")
+                db.execute("DELETE FROM attachment_text_versions WHERE l1_handle IN "
+                           "(SELECT h FROM temp.purge_attachments)")
+                db.execute(_TEXT_NO_DELETE)
+                counts["attachments"] = db.execute(
+                    f"DELETE FROM attachments WHERE {inside}").rowcount
+                db.execute("DELETE FROM message_events WHERE l1_handle IN (SELECT h FROM "
+                           "temp.purge_messages) OR l1_handle IN (SELECT h FROM "
+                           "temp.purge_attachments)")
+                counts["versions"] = db.execute(
+                    "DELETE FROM messages WHERE l1_handle IN (SELECT h FROM "
+                    "temp.purge_messages) OR mailbox_id IN (SELECT id FROM "
+                    "temp.purge_boxes)").rowcount
+                for table in ("folders", "mailbox_directory"):
+                    db.execute(f"DELETE FROM {table} WHERE mailbox_id IN (SELECT id FROM "
+                               "temp.purge_boxes)")
+                counts["mailboxes"] = db.execute(
+                    "DELETE FROM mailboxes WHERE mailbox_id IN (SELECT id FROM "
+                    "temp.purge_boxes)").rowcount
+                db.execute(
+                    "DELETE FROM temp.purge_blobs WHERE d IN (SELECT body_sha256 FROM messages "
+                    "UNION SELECT content_sha256 FROM attachments UNION SELECT text_sha256 "
+                    "FROM attachments UNION SELECT text_sha256 FROM attachment_text_versions)")
+                gone = [d for (d,) in db.execute("SELECT d FROM temp.purge_blobs")]
+                counts["blobs"] = db.execute(
+                    "DELETE FROM blobs WHERE sha256 IN (SELECT d FROM temp.purge_blobs)"
+                ).rowcount
+            for digest in gone:   # after the commit: a file is never missing for a row
+                if _SHA256.fullmatch(digest):
+                    for suffix in ("", COMPRESSED_SUFFIX, DROPPED_SUFFIX):
+                        blob_path(self.blobs, digest, suffix).unlink(missing_ok=True)
+        finally:
+            for table in ("purge_boxes", "purge_addresses", "purge_messages",
+                          "purge_attachments", "purge_blobs"):
+                db.execute(f"DROP TABLE IF EXISTS temp.{table}")
+        return counts
+
     # ---------------------------------------------------------------- reads (per reader)
 
     def _visible(self, actor: Actor, audience: LiveSourceAudience) -> dict[str, dict]:
         """Mailboxes this reader may see, decided on the identity set and owner ACL
-        recorded at capture with the reader's audience. Anything else is absent."""
+        recorded at capture with the reader's audience, less every mailbox the exclusion
+        in effect now withholds (:meth:`_withholds`; grant holders included). Anything
+        else is absent. Inside :func:`visibility_scope` (one tool call) the decision is
+        made once per store file, reader, audience and exclusion, and reused."""
         if not isinstance(actor, Actor) or not isinstance(audience, LiveSourceAudience):
             return {}
         if not audience.may_read_any(actor, "mail:"):
             return {}
+        memo = _VISIBILITY.get()
+        if memo is None:
+            return self._decide_visible(actor, audience)
+        # The objects themselves are held with the decision, so an id in the key is
+        # never reused by another object while the scope lasts.
+        key = (str(self.path), actor, id(audience), id(self.people), id(self.deny))
+        if key not in memo:
+            memo[key] = ((audience, self.people, self.deny),
+                         self._decide_visible(actor, audience))
+        return {mailbox: dict(row) for mailbox, row in memo[key][1].items()}
+
+    def _decide_visible(self, actor: Actor, audience: LiveSourceAudience
+                        ) -> dict[str, dict]:
+        withholds = self._withholds()
+        if withholds is None:
+            return {}
         visible = {}
-        for row in self.db.execute("SELECT * FROM mailboxes ORDER BY mailbox_id"):
+        for row in self.db.execute(_MAILBOX_ROWS):
+            if withholds(row):
+                continue
             resources = json.loads(row["resources"])
             acl = json.loads(row["source_acl"])
             if audience.visible_all(actor, resources, acl):
@@ -1154,6 +1943,8 @@ class MailCaptureStore:
                     return None
                 if read is not None and read.skipped_by_cap is not None:
                     row["skipped_by_cap"] = read.skipped_by_cap   # the text's pages only
+            if row.get("text_status", found["text_status"]) == OCR_DEFERRED:
+                row["gaps"] = [ocr_deferred_gap()]
             return {"relation": "graph-mail.attachment", "l1_handle": handle,
                     "lineage": LINEAGE, "recorded_at": found["recorded_at"],
                     "superseded_at": message["superseded_at"],
@@ -1269,22 +2060,130 @@ class MailCaptureStore:
         """A ``claim_checks`` ``Rows`` callable bound to one reader."""
         return lambda handle: self.resolve(handle, actor, audience, text=True)
 
-    def attachment_content(self, handle: Any, actor: Actor, audience: LiveSourceAudience
-                           ) -> bytes | None:
-        """Captured attachment bytes (re-hashed against the handle), or ``None``."""
+    def _pinned_attachment(self, handle: Any, actor: Actor, audience: LiveSourceAudience
+                           ) -> dict[str, Any] | None:
+        """The resolved attachment a byte-pinned handle names for this reader, else None."""
         resolved = self.resolve(handle, actor, audience)
         if resolved is None or resolved["relation"] != "graph-mail.attachment":
             return None
         digest = resolved["row"].get("content_sha256")
         if not digest or not handle.endswith("sha256=" + digest):
             return None
+        return resolved
+
+    def attachment_content(self, handle: Any, actor: Actor, audience: LiveSourceAudience
+                           ) -> bytes | None:
+        """Captured attachment bytes (re-hashed against the handle), or ``None`` (also
+        when the store dropped the original: :meth:`attachment_reading` reads its text,
+        :meth:`refetch_original` its bytes from the source)."""
+        resolved = self._pinned_attachment(handle, actor, audience)
+        if resolved is None:
+            return None
+        digest = resolved["row"]["content_sha256"]
+        if self.original_dropped(digest):
+            return None
         return self.blob(digest)
+
+    def attachment_reading(self, handle: Any, actor: Actor, audience: LiveSourceAudience
+                           ) -> Any:
+        """The reading (``captured_text.CapturedText``) of a byte-pinned attachment every
+        reader cites, from its bytes or, when the original was dropped, from the readings
+        it left; None when not visible or unreadable."""
+        resolved = self._pinned_attachment(handle, actor, audience)
+        if resolved is None:
+            return None
+        found = self.db.execute("SELECT metadata, text_status, text_sha256 FROM attachments "
+                                "WHERE l1_handle=?", (cited_page(handle)[0],)).fetchone()
+        if found is None:
+            return None
+        return captured_text(self.blobs, {
+            **json.loads(found["metadata"]), "content_sha256": resolved["row"]["content_sha256"],
+            "text_status": found["text_status"], "text_sha256": found["text_sha256"]})
+
+    def attachment_hashes(self, handle: Any, actor: Actor, audience: LiveSourceAudience
+                          ) -> dict[str, Any] | None:
+        """``sha256``, ``bytes`` and ``quick_xor`` (OneDrive's quickXorHash) of a
+        byte-pinned attachment's original, from its bytes or the record its dropped
+        original left; None when not visible or neither verifies."""
+        from .graph_read import quick_xor_hash
+        resolved = self._pinned_attachment(handle, actor, audience)
+        if resolved is None:
+            return None
+        digest = resolved["row"]["content_sha256"]
+        if self.original_dropped(digest):
+            kept = read_dropped(self.blobs, digest)
+            return None if kept is None else {"sha256": digest, "bytes": kept["bytes"],
+                                              "quick_xor": kept["quick_xor"]}
+        try:
+            content = self.blob(digest)
+        except (CaptureError, OSError):
+            return None
+        return {"sha256": digest, "bytes": len(content), "quick_xor": quick_xor_hash(content)}
+
+    def original_source(self, handle: Any, actor: Actor, audience: LiveSourceAudience
+                        ) -> dict[str, Any] | None:
+        """The re-fetch handle of a byte-pinned attachment for this reader: its mailbox,
+        message and attachment ids, digest, size and whether the store keeps its bytes."""
+        resolved = self._pinned_attachment(handle, actor, audience)
+        if resolved is None:
+            return None
+        found = self.db.execute(
+            "SELECT a.mailbox_id, a.attachment_id, m.message_id FROM attachments a JOIN "
+            "messages m ON m.l1_handle=a.message_handle WHERE a.l1_handle=? LIMIT 1",
+            (cited_page(handle)[0],)).fetchone()
+        if found is None:
+            return None
+        digest = resolved["row"]["content_sha256"]
+        row = self.db.execute("SELECT bytes FROM blobs WHERE sha256=?", (digest,)).fetchone()
+        return {"mailbox_id": found["mailbox_id"], "message_id": found["message_id"],
+                "attachment_id": found["attachment_id"], "content_sha256": digest,
+                "bytes": None if row is None else row["bytes"],
+                "stored": not self.original_dropped(digest)}
+
+    def refetch_original(self, handle: Any, actor: Actor, audience: LiveSourceAudience,
+                         reader: Any, reader_actor: Actor) -> bytes | None:
+        """A dropped (or kept) original's bytes for this reader, read again from Graph by
+        one GET through ``reader`` (``GraphMailReader.get_attachment``, as
+        ``reader_actor``) and returned only when they hash to the handle's pin; never
+        stored. None when not visible, gone at the source or changed there."""
+        source = self.original_source(handle, actor, audience)
+        if source is None:
+            return None
+        if source["stored"]:
+            return self.attachment_content(handle, actor, audience)
+        try:
+            read = reader.get_attachment(reader_actor, source["mailbox_id"],
+                                         source["message_id"], source["attachment_id"],
+                                         max_bytes=MAX_ATTACHMENT_BYTES)
+        except (NotVisible, SourceUnavailable):
+            return None
+        content = read.get("content")
+        if not isinstance(content, bytes) or \
+                sha256(content).hexdigest() != source["content_sha256"]:
+            return None
+        return content
+
+    def attachment_verified(self, handle: Any, actor: Actor, audience: LiveSourceAudience
+                            ) -> bool:
+        """Whether a byte-pinned attachment's original verifies: its bytes hash to the
+        pin, or the store dropped it and its ``.dropped`` record is whole."""
+        resolved = self._pinned_attachment(handle, actor, audience)
+        if resolved is None:
+            return False
+        digest = resolved["row"]["content_sha256"]
+        if self.original_dropped(digest):
+            return read_dropped(self.blobs, digest) is not None
+        try:
+            self.blob(digest)
+        except (CaptureError, OSError):
+            return False
+        return True
 
     def _mailbox_bytes(self, mailbox_id: str) -> int:
         records = self.db.execute("SELECT COALESCE(SUM(length(record)), 0) FROM messages "
                                   "WHERE mailbox_id=?", (mailbox_id,)).fetchone()[0]
         blobs = self.db.execute(
-            "SELECT COALESCE(SUM(bytes), 0) FROM blobs WHERE sha256 IN ("
+            "SELECT COALESCE(SUM(COALESCE(stored_bytes, bytes)), 0) FROM blobs WHERE sha256 IN ("
             "SELECT body_sha256 FROM messages WHERE mailbox_id=? UNION "
             "SELECT content_sha256 FROM attachments WHERE mailbox_id=?)",
             (mailbox_id, mailbox_id)).fetchone()[0]
@@ -1325,6 +2224,8 @@ class MailCaptureStore:
                               "current_messages": counts["current"] or 0,
                               "degraded_bodies": counts["degraded"] or 0,
                               "degraded_attachments": attachments,
+                              "deferred_attachments": self.deferred_attachments(mailbox_id),
+                              "ocr_deferred_attachments": self.ocr_deferred_count(mailbox_id),
                               "truncated_attachment_lists": truncated,
                               "stored_bytes": self._mailbox_bytes(mailbox_id)})
         bound = [f for m in mailboxes for f in m["folders"]]
@@ -1519,6 +2420,66 @@ def folder_standing(state: Mapping[str, Any] | None) -> tuple[int, str]:
     return PENDING, ""
 
 
+# The cut a kept store resumes is a later_ask while the store is not kept between runs.
+PERSISTENT_STATE_ASK = "live-host-persistent-state-dir"
+
+
+def budget_cut_block(units: Iterable[tuple[str, Iterable[str]]], *, carried: bool,
+                     source: str = "microsoft-graph",
+                     cuts: frozenset[str] = frozenset({TIME_BUDGET})) -> list[dict[str, Any]]:
+    """The live verifier's ``blocked_upstream`` parts of a budget-bound capture's last
+    run, one rule for every capture check that resumes across runs (mail folders, the
+    SharePoint estate's roots, the QCQA census; decision
+    2026-10-21-sharepoint-census-across-runs). ``units``: ``(part, reasons)`` of each
+    unit the run left incomplete (comma-joined reasons split), ``carried``: the store
+    existed before this invocation (``store_exists``, observed, never inferred from
+    where it lies).
+
+    Blocked (cause ``later_ask`` live-host-persistent-state-dir) only when the store
+    was not carried and every incomplete unit was cut by the time budget alone: the
+    run did all it could in one budget over a store nobody kept, and only a host that
+    keeps it lets the next run resume. A carried store resumes by itself (the check
+    fails until it has), and any unit incomplete for another reason (an error, a
+    refusal, a scope bound, an unknown or empty reason) is a typed fail: no parts.
+    Nothing incomplete: no parts."""
+    found: dict[str, dict[str, Any]] = {}
+    for part, reasons in units:
+        named = {x for r in reasons for x in str(r or "").split(",") if x}
+        if not named or not named <= cuts:
+            return []
+        found.setdefault(str(part), {"part": str(part), "source": source,
+                                     "cause": "later_ask", "later_ask": PERSISTENT_STATE_ASK})
+    return [] if carried else list(found.values())
+
+
+def mail_cut_units(run: Mapping[str, Any]) -> list[tuple[str, list[str]]]:
+    """The ``(part, reasons)`` of every unit a :meth:`MailCapture.run` left incomplete,
+    for :func:`budget_cut_block`: a folder by mailbox and folder ordinal (a complete one
+    the budget deferred counts as cut: it was not brought current), a mailbox that was
+    not opened once per scope folder with its status, an incomplete directory listing,
+    a people guard that refused the run."""
+    if run.get("people_blocked"):
+        return [("mail.people", ["people_blocked"])]
+    units: list[tuple[str, list[str]]] = []
+    if run.get("directory") not in (None, "complete"):
+        units.append(("mail.directory", [f"directory_{run['directory']}"]))
+    for entry in run.get("mailboxes") or []:
+        index = entry["index"]
+        if entry.get("folders"):
+            for j, folder in enumerate(entry["folders"]):
+                if folder["complete"] and folder.get("deferred"):
+                    units.append((f"mail.mailbox{index}.folder{j}", [TIME_BUDGET]))
+                elif not folder["complete"]:
+                    units.append((f"mail.mailbox{index}.folder{j}",
+                                  [str(folder.get("reason") or "")]))
+        elif entry.get("status") != "complete":
+            units += [(f"mail.mailbox{index}.folder{j}", [str(entry.get("status") or "")])
+                      for j in range(max(int(entry.get("folders_bound") or 0), 1))]
+    if not run.get("complete") and not units:
+        units.append(("mail.run", ["incomplete"]))   # incomplete for no unit: never a cut
+    return units
+
+
 def folder_error_reason(exc: BaseException) -> str:
     """The typed reason of a folder that raised: ``folder_error:<cause>``, the cause a
     ``CaptureError``'s fixed code or the exception class name (a short identifier),
@@ -1568,7 +2529,7 @@ def blocked_reason(part: Mapping[str, Any]) -> str:
 # (403). A mailbox is opened by its directory lookup (``graph.user``); a folder is read
 # through its mail endpoints (``graph.mail_folder``, then the message delta under the
 # same Mail.Read grant). A folder 403 with Mail.Read granted is an Exchange application
-# access policy that leaves the mailbox out (docs/reference/source-notes.md, "Graph refusals").
+# access policy that leaves the mailbox out (devloop/SOURCE-NOTES.md, "Graph refusals").
 _PERMISSION = {"graph.user": "User.Read.All", "graph.mail_folder": "Mail.Read"}
 # The part and the Graph call each refused unit stands for.
 REFUSED_PARTS = {"mailbox": ("mail.mailbox_lookup", "graph.user"),
@@ -1583,7 +2544,7 @@ def _blocked(kind: str, exc: BaseException) -> dict[str, Any] | None:
 
 
 def refused_parts(run: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """The live checks' ``blocked_upstream`` parts of a capture run the source
+    """The live verifier's ``blocked_upstream`` parts of a capture run the source
     refused outright: when every mailbox the run bound (the allowlist's refusals aside)
     is refused under the one upstream rule (``graph_block``: HTTP 403 or 401), on its
     directory lookup or on every one of its folders, the run read nothing because the
@@ -1593,7 +2554,7 @@ def refused_parts(run: Mapping[str, Any]) -> list[dict[str, Any]]:
     budget deferred with its stored ``forbidden`` reason, that 403. A run where any
     bound mailbox or folder was not refused (read, throttled, not visible, budget-cut)
     has no parts: a partial refusal stays a capture gap in ``reasons`` (why mail
-    differs from Teams and lists here: docs/reference/source-notes.md, "Graph refusals")."""
+    differs from Teams and lists here: devloop/SOURCE-NOTES.md, "Graph refusals")."""
     if run.get("people_blocked"):
         return [run["people_blocked"]]
     bound = [m for m in run.get("mailboxes") or [] if m.get("status") != "outside_allowlist"]
@@ -1616,16 +2577,182 @@ def refused_parts(run: Mapping[str, Any]) -> list[dict[str, Any]]:
     return sorted(unique, key=lambda p: (p["part"], p["http_status"]))
 
 
+# Reader threads per capture at most (``MailCapture`` workers / ocr_workers).
+MAX_WORKERS = 16
+# A folder whose turn read ``pages_per_turn`` pages: the run comes back to it (run()).
+TURN = "turn"
+# The mailbox folder listing (``folders`` all) is read again after this long.
+FOLDER_RELIST_SECONDS = 6 * 3600
+# The OCR backlog a run queues at its start (``_OcrQueue``), newest versions first.
+OCR_BACKLOG_PER_RUN = 2000
+# What the host and the CLI capture with (``MailCapture``): four concurrent reads per
+# mailbox (Exchange's per-mailbox limit), two pages per folder per turn, OCR beside the
+# capture on up to four threads (each runs one local OCR process at a time).
+PRODUCTION: dict[str, Any] = {"workers": 4, "pages_per_turn": 2, "defer_ocr": True,
+                              "ocr_workers": max(1, min(4, (os.cpu_count() or 2) // 2)),
+                              "page_size": 100}
+
+
+class _OcrQueue:
+    """The deferred OCR of captured attachments (``ocr_pending`` and the other unread
+    statuses), read from their stored bytes by ``workers`` threads beside the capture.
+    A thread reads only the blob file and runs the extractor; the capture thread alone
+    writes each reading (``MailCaptureStore.fill_text``: a new text version) when it
+    drains the queue. A reading not started once ``spent()`` is dropped and stays
+    pending for the next run; ``close`` cancels the ones not started and waits for the
+    running ones."""
+
+    def __init__(self, store: MailCaptureStore, workers: int, spent: Callable[[], bool]
+                 ) -> None:
+        self.store, self._spent = store, spent
+        self._pool = ThreadPoolExecutor(workers, thread_name_prefix="mail-ocr")
+        self._pending: dict[str, tuple[Future, str]] = {}
+        self.counts = {"queued": 0, "read": 0, "texts_ocr": 0, "texts_ocr_unavailable": 0,
+                       "left_pending": 0, "failed": 0, "originals_dropped": 0}
+
+    def submit(self, l1_handle: str, digest: str, metadata: Mapping[str, Any]) -> None:
+        if l1_handle in self._pending or not isinstance(digest, str):
+            return
+        self._pending[l1_handle] = (self._pool.submit(self._read, digest, dict(metadata)),
+                                    digest)
+        self.counts["queued"] += 1
+
+    def _read(self, digest: str, metadata: Mapping[str, Any]) -> tuple[str, str | None] | None:
+        if self._spent():
+            return None
+        try:
+            content = self.store.blob(digest)   # the blob file only: no database access
+        except (CaptureError, OSError):
+            return None   # bytes missing or altered: left as they are, never re-read
+        return capture_text(content, metadata)
+
+    def drain(self, *, wait: bool = False) -> int:
+        """Store the readings done (each a new text version), then drop each original
+        nothing needs any more (``settle_original``); returns the readings stored."""
+        stored = 0
+        for handle, (future, digest) in list(self._pending.items()):
+            if not (wait or future.done()):
+                continue
+            del self._pending[handle]
+            if future.cancelled():
+                self.counts["left_pending"] += 1
+                continue
+            try:
+                found = future.result()
+            except Exception:   # noqa: BLE001 - an extractor defect leaves the text as it was
+                self.counts["failed"] += 1
+                continue
+            if found is None:
+                self.counts["left_pending"] += 1
+                continue
+            status, text = found
+            self.store.fill_text(handle, status, self.store.put_text(text))
+            stored += 1
+            self.counts["read"] += 1
+            self.counts["texts_ocr"] += status == TEXT_OCR
+            self.counts["texts_ocr_unavailable"] += status == OCR_UNAVAILABLE
+            self.counts["originals_dropped"] += _settle(self.store, digest) == "dropped"
+        return stored
+
+    def close(self) -> dict[str, int]:
+        for future, _digest in self._pending.values():
+            future.cancel()
+        self._pool.shutdown(wait=True)
+        self.drain(wait=True)
+        return dict(self.counts)
+
+
+def ocr_deferred_gap() -> dict[str, Any]:
+    """The named gap of an attachment whose scanned pages were not OCR-read yet
+    (``ocr_deferred``): what its text does not state is unread, never absent or empty."""
+    return {"kind": "not_ingested", "reason": OCR_DEFERRED,
+            "detail": "scanned pages of this attachment were not OCR-read yet (OCR "
+                      "deferred, its bytes re-read from the source later); only its text "
+                      "layer is read, so what it does not state is unknown, not absent"}
+
+
+def ocr_deferred_pass(store: MailCaptureStore, reader: Any, actor: Actor,
+                      audience: LiveSourceAudience, *, budget_seconds: float,
+                      monotonic: Callable[[], float] = time.monotonic,
+                      limit: int = OCR_BACKLOG_PER_RUN) -> dict[str, int]:
+    """OCR the attachments whose OCR was deferred (``ocr_deferred``), newest first,
+    within ``budget_seconds``: each original re-fetched by one Graph GET
+    (``MailCaptureStore.refetch_original``: visible to ``actor``, re-hashed against its
+    pin, never stored as such), OCR-read here (``capture_text``), the reading stored as a
+    new text version (``fill_text``), its readings added to the ``.dropped`` form and the
+    bytes dropped again (``settle_original``). An original gone or changed at the source
+    stays ``ocr_deferred`` (``refetch_failed``); a reading that still needs OCR (no
+    engine) is not stored (``left_deferred``). Counts only."""
+    counts = {"selected": 0, "read": 0, "refetch_failed": 0, "left_deferred": 0,
+              "texts_ocr": 0, "originals_dropped": 0, "budget_spent": 0}
+    deadline = monotonic() + budget_seconds
+    for row in store.ocr_deferred_rows(None, limit):
+        if monotonic() >= deadline:
+            counts["budget_spent"] = 1
+            break
+        counts["selected"] += 1
+        content = store.refetch_original(row["l1_handle"], actor, audience, reader, actor)
+        if content is None:
+            counts["refetch_failed"] += 1
+            continue
+        status, text = capture_text(content, json.loads(row["metadata"]))
+        if status in TEXT_UNREAD or status == OCR_DEFERRED:
+            counts["left_deferred"] += 1
+            continue
+        store.fill_text(row["l1_handle"], status, store.put_text(text))
+        counts["read"] += 1
+        counts["texts_ocr"] += status == TEXT_OCR
+        counts["originals_dropped"] += _settle(store, row["content_sha256"],
+                                               content=content) == "dropped"
+    counts["left"] = store.ocr_deferred_count()
+    return counts
+
+
+def _settle(store: MailCaptureStore, digest: str, **given: Any) -> str:
+    """``settle_original``; a file that cannot be written keeps the original
+    (``kept_unwritable``), never stops the capture."""
+    try:
+        return store.settle_original(digest, **given)
+    except OSError:
+        return "kept_unwritable"
+
+
+def _readings(content: bytes, attachment: Mapping[str, Any], status: str, text: str | None,
+              *, defer_ocr: bool = False) -> dict[str, Any] | None:
+    """Reader side: the readings of new attachment bytes the store keeps when it drops
+    the original (``settle_original``), made here so the store thread does not: none
+    for bytes it keeps anyway (small, awaiting a reading, a container)."""
+    from operating.use_case_parts import is_container
+
+    mime, name = file_type(attachment)
+    if len(content) <= DROP_ORIGINALS_ABOVE or (
+            MailCaptureStore._awaits_reading(status, attachment)
+            and not (defer_ocr and status in TEXT_UNREAD)) or is_container(content, name, mime):
+        return None
+    keys = [(mime, name, None)]
+    pinned = None if text is None else sha256(text.encode("utf-8")).hexdigest()
+    if status == TEXT_OCR and pinned is not None:
+        keys.append((mime, name, pinned))
+    return readings_of(content, keys, lambda digest: text if digest == pinned else None)
+
+
+def _ocr_engine() -> bool:
+    from .document_understanding import local_ocr_available
+    return local_ocr_available()
+
+
 def _new_counts() -> dict[str, int]:
     return {key: 0 for key in (
         "pages", "messages_seen", "versions_new", "versions_superseded", "unchanged",
         "reappeared", "removed", "absent_after_resync", "vanished", "bodies_captured",
         "bodies_unavailable", "bodies_recovered", "attachments_captured",
         "attachments_reused", "attachments_recovered", "attachment_bytes",
-        "attachments_metadata_only", "attachment_lists_incomplete",
+        "attachments_metadata_only", "attachments_deferred", "originals_dropped",
+        "attachment_lists_incomplete",
         "attachment_lists_recovered", "attachment_lists_capped", "attachments_mismatched",
         "texts_ocr", "texts_ocr_unavailable", "texts_reextracted",
-        "provenance_dropped", "people_dropped", "throttle_waits", "round_restarts")}
+        "provenance_dropped", "people_dropped", "throttle_waits", "round_restarts",
+        "backfill_pages")}
 
 
 def _count_text(status: str, counts: dict[str, int]) -> None:
@@ -1643,7 +2770,23 @@ class MailCapture:
     timeout. Every folder after it is ``deferred`` (nothing read): incomplete with reason
     ``time_budget``, or still complete (its next run reads only its delta), or still its
     terminal reason. A run captures its folders in the order of :func:`schedule_units`,
-    so a budget-bound scope completes over several runs; a mailbox or run is complete only when no folder was deferred."""
+    so a budget-bound scope completes over several runs; a mailbox or run is complete only when no folder was deferred.
+
+    Throughput (:data:`PRODUCTION`, what the host and CLI use; the defaults read one
+    message at a time):
+
+    * ``pages_per_turn``: a folder reads at most this many pages per turn, then the run
+      goes on to the next folder and comes back in a later turn (its cursor stored), so
+      one large mailbox never takes a whole budget while the others wait: every folder's
+      newest pages arrive in the first turns.
+    * ``workers``: the messages of a page are read concurrently (body, attachment
+      listing and bytes, text) by that many reader threads, at most Exchange's four
+      concurrent requests per mailbox; this thread alone writes the store, in page order.
+      Graph throttling (429 ``Retry-After``) holds every thread (``BoundedBackoff``).
+    * ``defer_ocr`` and ``ocr_workers``: a scanned PDF is stored with its text layer as
+      ``ocr_pending`` and OCR-read from its stored bytes by a pool beside the capture
+      (``ocr_workers`` threads), so a 60 s scan never holds the mail behind it. Readings
+      not finished when the budget ends stay pending; the next run reads them first."""
 
     def __init__(self, store: MailCaptureStore, reader: Any, actor: Actor, *,
                  page_size: int = 50, throttle_waits: Sequence[float] = DEFAULT_THROTTLE_WAITS,
@@ -1652,13 +2795,35 @@ class MailCapture:
                  max_attachment_bytes: int = MAX_ATTACHMENT_BYTES,
                  attachment_list_cap: int = MAX_ATTACHMENTS_LISTED,
                  budget_seconds: float | None = None,
-                 monotonic: Callable[[], float] = time.monotonic) -> None:
+                 monotonic: Callable[[], float] = time.monotonic,
+                 workers: int = 1, pages_per_turn: int | None = None,
+                 defer_ocr: bool = False, ocr_workers: int = 0,
+                 max_pending_ocr_bytes: int | None = MAX_PENDING_OCR_BYTES) -> None:
         if page_budget is not None and (isinstance(page_budget, bool)
                                         or not isinstance(page_budget, int) or page_budget < 1):
             raise CaptureError("page_budget_invalid")
         if budget_seconds is not None and (isinstance(budget_seconds, bool) or not isinstance(
                 budget_seconds, (int, float)) or not budget_seconds >= 0):
             raise CaptureError("budget_seconds_invalid")
+        for value, low, code in ((workers, 1, "workers_invalid"),
+                                 (ocr_workers, 0, "ocr_workers_invalid")):
+            if isinstance(value, bool) or not isinstance(value, int) \
+                    or not low <= value <= MAX_WORKERS:
+                raise CaptureError(code)
+        if pages_per_turn is not None and (isinstance(pages_per_turn, bool) or not isinstance(
+                pages_per_turn, int) or pages_per_turn < 1):
+            raise CaptureError("pages_per_turn_invalid")
+        if max_pending_ocr_bytes is not None and (
+                isinstance(max_pending_ocr_bytes, bool)
+                or not isinstance(max_pending_ocr_bytes, int) or max_pending_ocr_bytes < 1):
+            raise CaptureError("max_pending_ocr_bytes_invalid")
+        self.max_pending_ocr_bytes = max_pending_ocr_bytes
+        # Whether the OCR backlog is at its bound (read by reader threads, set here).
+        self._backlog_full = False
+        # The scope's ``ocr`` ``deferred`` (``run`` takes it): scans' bytes dropped.
+        self._defer_all = False
+        # Originals stored this message, settled once their rows are written.
+        self._unsettled: dict[str, tuple[bytes, Mapping[str, Any] | None]] = {}
         self._monotonic = monotonic
         self._deadline = None if budget_seconds is None else monotonic() + budget_seconds
         if isinstance(attachment_list_cap, bool) or not isinstance(attachment_list_cap, int) \
@@ -1672,15 +2837,29 @@ class MailCapture:
         self.page_budget = page_budget
         self.max_attachment_bytes = max_attachment_bytes
         self.window_days = 90  # ``run`` takes the scope's window
+        self.history = "window"  # ``run`` takes the scope's
+        self.workers = workers
+        self.pages_per_turn = pages_per_turn
+        self.defer_ocr = defer_ocr
+        self.ocr_workers = ocr_workers
+        self._ocr: _OcrQueue | None = None
+        self._pool: ThreadPoolExecutor | None = None
+        self._pages_read: dict[tuple[str, str], int] = {}   # per folder, this object's runs
 
     def _spent(self) -> bool:
         return self._deadline is not None and self._monotonic() >= self._deadline
 
     # ---------------------------------------------------------------- per message
+    #
+    # Reader side (``_download``, ``_list_attachments``, ``_read_message``, ``_prefetch``):
+    # Graph reads and text extraction only, never the store, so a reader thread may run
+    # it. Store side (``_commit_*``): this thread only, in page order.
 
-    def _fetch_attachment(self, mailbox_id: str, message: Mapping[str, Any],
-                          meta: Mapping[str, Any], counts: dict[str, int]) -> dict[str, Any]:
-        """One attachment entry: bytes captured and pinned, or why not."""
+    def _download(self, mailbox_id: str, message: Mapping[str, Any], meta: Mapping[str, Any],
+                  known: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+        """One attachment, reader side: its bytes and text (``content``, ``text``), or the
+        captured copy it is (``reused``: the same message, id, size and last-modified in
+        ``known``, so a message whose changeKey moved re-downloads nothing), or why not."""
         entry: dict[str, Any] = {"id": meta["id"], "metadata": dict(meta)}
         size = meta.get("size")
         if meta.get("kind") not in (None, FILE_ATTACHMENT_TYPE):
@@ -1689,74 +2868,120 @@ class MailCapture:
         if isinstance(size, int) and size > self.max_attachment_bytes + 1_000_000:
             entry["content_status"] = "exceeds_cap"
             return entry
-        known = self.store.known_attachment(mailbox_id, message["id"], meta["id"], meta)
-        if known is not None:
-            entry.update(content_status="captured", content_sha256=known["content_sha256"],
-                         metadata={**known["metadata"]}, text_status=known["text_status"],
-                         text_sha256=known["text_sha256"])
+        for row in known:
+            if (row["attachment_id"] == meta["id"]
+                    and row["metadata"].get("size") == meta.get("size")
+                    and row["metadata"].get("last_modified") == meta.get("last_modified")):
+                entry.update(content_status="captured", content_sha256=row["content_sha256"],
+                             metadata={**row["metadata"]}, text_status=row["text_status"],
+                             text_sha256=row["text_sha256"], reused=True)
+                return entry
+        if self._backlog_full and is_paged_file({"mime_type": meta.get("content_type"),
+                                                 "name": meta.get("name")}):
+            # A PDF may be a scan whose bytes wait for OCR: not read while the backlog is
+            # at its bound; a later round reads it (degraded, its folder incomplete).
+            entry["content_status"] = ATTACHMENT_DEFERRED
+            return entry
+        try:
+            read = self.reader.get_attachment(
+                self.actor, mailbox_id, message["id"], meta["id"],
+                max_bytes=self.max_attachment_bytes, message=message)
+        except SourceUnavailable as exc:
+            if _transient(unavailable_detail(exc)):
+                raise
+            text = str(exc)
+            entry["content_status"] = (
+                "not_file_attachment" if "not a file attachment" in text
+                else MISMATCH_SIZE if "exceed its reported size" in text
+                else "exceeds_cap" if "byte bound" in text else "unavailable")
+            return entry
+        listed, reported = meta.get("size"), read["attachment"].get("size")
+        if listed is not None and reported is not None and listed != reported:
+            entry["content_status"] = MISMATCH_SIZE   # not the attachment listed
+            return entry
+        status, text = capture_text(read["content"], read["attachment"],
+                                    defer_ocr=self.defer_ocr or self._defer_all)
+        entry.update(content=read["content"], read=dict(read["attachment"]),
+                     text_status=status, text=text,
+                     readings=_readings(read["content"], read["attachment"], status, text,
+                                        defer_ocr=self._defer_all))
+        return entry
+
+    def _commit_attachment(self, message: Mapping[str, Any], entry: dict[str, Any],
+                           counts: dict[str, int]) -> dict[str, Any]:
+        """One attachment, store side: bytes pinned by SHA-256, its text stored, counted;
+        its original settled once its row is written (``_settle_new``)."""
+        readings = entry.pop("readings", None)
+        if entry.pop("reused", False):
             counts["attachments_reused"] += 1
-        else:
+        elif "content" in entry:
+            content, read, text = entry.pop("content"), entry.pop("read"), entry.pop("text")
             try:
-                read = self.reader.get_attachment(
-                    self.actor, mailbox_id, message["id"], meta["id"],
-                    max_bytes=self.max_attachment_bytes, message=message)
-            except SourceUnavailable as exc:
-                if _transient(unavailable_detail(exc)):
-                    raise
-                text = str(exc)
-                entry["content_status"] = (
-                    "not_file_attachment" if "not a file attachment" in text
-                    else MISMATCH_SIZE if "exceed its reported size" in text
-                    else "exceeds_cap" if "byte bound" in text else "unavailable")
-                counts["attachments_mismatched"] += entry["content_status"] == MISMATCH_SIZE
-                return entry
-            listed, reported = meta.get("size"), read["attachment"].get("size")
-            if listed is not None and reported is not None and listed != reported:
-                entry["content_status"] = MISMATCH_SIZE   # not the attachment listed
-                counts["attachments_mismatched"] += 1
-                return entry
-            try:
-                digest = self.store.put_blob(read["content"],
-                                             read["attachment"]["content_sha256"])
+                digest = self.store.put_blob(content, read["content_sha256"])
             except CaptureError as exc:
                 if exc.code != "attachment_digest_mismatch":
                     raise
+                entry.pop("text_status", None)
                 entry["content_status"] = MISMATCH_SHA256
                 counts["attachments_mismatched"] += 1
                 return entry
-            status, text = capture_text(read["content"], read["attachment"])
-            entry.update(content_status="captured", content_sha256=digest,
-                         metadata=dict(read["attachment"]), text_status=status,
+            entry.update(content_status="captured", content_sha256=digest, metadata=read,
                          text_sha256=self.store.put_text(text))
+            self._unsettled[digest] = (content, readings)
             counts["attachments_captured"] += 1
-            counts["attachment_bytes"] += len(read["content"])
-            _count_text(status, counts)
-        entry["l1_handle"] = mail_attachment_citation(message["citation"], meta["id"],
+            counts["attachment_bytes"] += len(content)
+            _count_text(entry["text_status"], counts)
+        else:
+            counts["attachments_mismatched"] += entry["content_status"] == MISMATCH_SIZE
+            counts["attachments_deferred"] += entry["content_status"] == ATTACHMENT_DEFERRED
+            return entry
+        entry["l1_handle"] = mail_attachment_citation(message["citation"], entry["id"],
                                                       entry["content_sha256"])
         return entry
 
-    def _attachments(self, mailbox_id: str, message: Mapping[str, Any],
-                     counts: dict[str, int], *, skip: Iterable[str] = ()
-                     ) -> tuple[list[dict[str, Any]], str]:
-        """(attachment entries, listing state): ``truncated`` when the listing
-        stopped at a cap, so the version is retried later. ``skip``: attachment
-        ids already stored for this version (not read again)."""
+    def _fetch_attachment(self, mailbox_id: str, message: Mapping[str, Any],
+                          meta: Mapping[str, Any], counts: dict[str, int]) -> dict[str, Any]:
+        """One attachment entry, read and stored on this thread: bytes captured and
+        pinned, or why not."""
+        known = self.store.captured_attachments(mailbox_id, message["id"])
+        return self._commit_attachment(message, self._download(mailbox_id, message, meta,
+                                                               known), counts)
+
+    def _list_attachments(self, mailbox_id: str, message: Mapping[str, Any],
+                          known: Sequence[Mapping[str, Any]], skip: Iterable[str] = ()
+                          ) -> tuple[list[dict[str, Any]], str]:
+        """Reader side: (each listed attachment ``_download``-ed, listing state:
+        ``truncated`` when the listing stopped at a cap). ``skip``: attachment ids
+        already stored for this version (not read again)."""
         listing = self.reader.list_attachments(self.actor, mailbox_id, message["id"],
                                                max_items=self.attachment_list_cap)
-        status = "complete"
-        if not listing["completeness"].get("complete", False):
-            counts["attachment_lists_incomplete"] += 1
-            status = ATTACHMENTS_TRUNCATED
-        known = frozenset(skip)
+        status = ("complete" if listing["completeness"].get("complete", False)
+                  else ATTACHMENTS_TRUNCATED)
+        skipped = frozenset(skip)
+        return [self._download(mailbox_id, message, meta, known)
+                for meta in listing["items"] if meta["id"] not in skipped], status
+
+    def _commit_attachments(self, message: Mapping[str, Any], entries: Sequence[dict[str, Any]],
+                            status: str, counts: dict[str, int]
+                            ) -> tuple[list[dict[str, Any]], str]:
+        counts["attachment_lists_incomplete"] += status == ATTACHMENTS_TRUNCATED
         captured = []
-        for meta in listing["items"]:
-            if meta["id"] in known:
-                continue
-            entry = self._fetch_attachment(mailbox_id, message, meta, counts)
+        for entry in entries:
+            entry = self._commit_attachment(message, entry, counts)
             if entry["content_status"] != "captured":
                 counts["attachments_metadata_only"] += 1
             captured.append(entry)
         return captured, status
+
+    def _attachments(self, mailbox_id: str, message: Mapping[str, Any],
+                     counts: dict[str, int], *, skip: Iterable[str] = ()
+                     ) -> tuple[list[dict[str, Any]], str]:
+        """(attachment entries, listing state), read and stored on this thread:
+        ``truncated`` when the listing stopped at a cap, so the version is retried later.
+        ``skip``: attachment ids already stored for this version (not read again)."""
+        known = self.store.captured_attachments(mailbox_id, message["id"])
+        return self._commit_attachments(
+            message, *self._list_attachments(mailbox_id, message, known, skip), counts)
 
     def _read_message(self, mailbox_id: str, folder_id: str, message_id: str
                       ) -> tuple[dict[str, Any] | None, str]:
@@ -1774,6 +2999,59 @@ class MailCapture:
             return None, f"unavailable:{detail}"
         return full, "truncated" if full.get("body_truncated") else "captured"
 
+    def _prefetch(self, mailbox_id: str, folder_id: str, item: Mapping[str, Any],
+                  known: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+        """Reader side of one listed message new to the store: its body, then its
+        attachments (``known``: the captured attachments of this message)."""
+        full, body_status = self._read_message(mailbox_id, folder_id, item["id"])
+        if body_status == "vanished":
+            return {"vanished": True}
+        record = full if full is not None else dict(item)
+        fetched: dict[str, Any] = {"full": full, "record": record, "body_status": body_status}
+        if record.get("has_attachments"):
+            try:
+                fetched["attachments"] = self._list_attachments(mailbox_id, record, known)
+            except NotVisible:
+                fetched["attachments_vanished"] = True
+        return fetched
+
+    def _commit_message(self, folder_id: str, fetched: Mapping[str, Any],
+                        counts: dict[str, int]) -> None:
+        if fetched.get("vanished"):
+            counts["vanished"] += 1  # moved or deleted since the page; delta reports it
+            return
+        counts["bodies_unavailable" if fetched["full"] is None else "bodies_captured"] += 1
+        record = fetched["record"]
+        if self._observed(self.store.observe(record["citation"], folder_id), counts):
+            return
+        if fetched.get("attachments_vanished"):
+            counts["vanished"] += 1  # gone between the message and its attachments
+            return
+        attachments, listed = (self._commit_attachments(record, *fetched["attachments"], counts)
+                               if "attachments" in fetched else ([], "complete"))
+        superseded = self.store.add_version(record, folder_id=folder_id,
+                                            body_status=fetched["body_status"],
+                                            attachments=attachments, attachments_status=listed)
+        counts["versions_new"] += 1
+        counts["versions_superseded"] += superseded
+        self._settle_new(counts)
+        self._queue_ocr_of(record["citation"])
+
+    def _settle_new(self, counts: dict[str, int]) -> None:
+        """Settle the originals stored since the last call, their rows now written
+        (``MailCaptureStore.settle_original``), then re-measure the OCR backlog."""
+        unsettled, self._unsettled = self._unsettled, {}
+        for digest, (content, readings) in unsettled.items():
+            counts["originals_dropped"] += _settle(self.store, digest, content=content,
+                                                   readings=readings,
+                                                   defer_ocr=self._defer_all) == "dropped"
+        if unsettled:
+            self._check_backlog()
+
+    def _check_backlog(self) -> None:
+        self._backlog_full = (self.max_pending_ocr_bytes is not None and
+                              self.store.pending_ocr_bytes() >= self.max_pending_ocr_bytes)
+
     def _observed(self, outcome: str, counts: dict[str, int]) -> bool:
         if outcome == "new":
             return False
@@ -1785,28 +3063,75 @@ class MailCapture:
         counts["messages_seen"] += 1
         if self._observed(self.store.observe(item["citation"], folder_id), counts):
             return
-        full, body_status = self._read_message(mailbox_id, folder_id, item["id"])
-        if body_status == "vanished":
-            counts["vanished"] += 1  # moved or deleted since the page; delta reports it
-            return
-        if full is None:
-            full = dict(item)
-            counts["bodies_unavailable"] += 1
-        else:
-            counts["bodies_captured"] += 1
-        if self._observed(self.store.observe(full["citation"], folder_id), counts):
-            return
+        known = self.store.captured_attachments(mailbox_id, item["id"])
+        self._commit_message(folder_id, self._prefetch(mailbox_id, folder_id, item, known),
+                             counts)
+
+    def _capture_page(self, mailbox_id: str, folder_id: str, items: Sequence[Mapping[str, Any]],
+                      counts: dict[str, int], *, may_cut: bool) -> bool:
+        """Capture one page's messages in page order; False when the time budget cut it
+        after a message (``may_cut``: the page has a stored cursor to resume from). With
+        ``workers`` > 1 the messages new to the store are read ahead by the reader pool
+        (at most two per worker in flight) and stored here in page order; a read that
+        raises cancels the reads not started and waits for the running ones, so no
+        request outlives the page."""
+        if self.workers == 1:
+            for n, item in enumerate(items):
+                if n and may_cut and self._spent():
+                    return False
+                self._capture_message(mailbox_id, folder_id, item, counts)
+                self._drain_ocr()
+            return True
+        if self._pool is None:
+            self._pool = ThreadPoolExecutor(self.workers, thread_name_prefix="mail-read")
+        ahead: list[tuple[str, Future | None]] = []
+        position = 0
+
+        def submit(item: Mapping[str, Any]) -> tuple[str, Future | None]:
+            outcome = self.store.observe(item["citation"], folder_id)
+            if outcome != "new":
+                return outcome, None
+            known = self.store.captured_attachments(mailbox_id, item["id"])
+            return outcome, self._pool.submit(self._prefetch, mailbox_id, folder_id, item,
+                                              known)
         try:
-            attachments, listed = (self._attachments(mailbox_id, full, counts)
-                                   if full.get("has_attachments") else ([], "complete"))
-        except NotVisible:
-            counts["vanished"] += 1  # gone between the message and its attachments
+            for n in range(len(items)):
+                spent = self._spent()
+                if n and may_cut and spent:
+                    return False
+                while position <= n or (position < len(items) and not spent
+                                        and len(ahead) < 2 * self.workers):
+                    ahead.append(submit(items[position]))
+                    position += 1
+                outcome, future = ahead.pop(0)
+                counts["messages_seen"] += 1
+                if future is None:
+                    self._observed(outcome, counts)
+                else:
+                    self._commit_message(folder_id, future.result(), counts)
+                self._drain_ocr()
+            return True
+        finally:
+            running = [f for _o, f in ahead if f is not None and not f.cancel()]
+            if running:
+                wait_futures(running)
+
+    # ---------------------------------------------------------------- OCR beside the capture
+
+    def _queue_ocr_of(self, message_handle: str) -> None:
+        """Queue the deferred OCR of a just-stored version's scanned attachments."""
+        if self._ocr is None:
             return
-        superseded = self.store.add_version(full, folder_id=folder_id,
-                                            body_status=body_status, attachments=attachments,
-                                            attachments_status=listed)
-        counts["versions_new"] += 1
-        counts["versions_superseded"] += superseded
+        for row in self.store.db.execute(
+                "SELECT l1_handle, content_sha256, metadata FROM attachments WHERE "
+                "message_handle=? AND text_status=? AND l1_handle IS NOT NULL",
+                (message_handle, OCR_PENDING)).fetchall():
+            self._ocr.submit(row["l1_handle"], row["content_sha256"],
+                             json.loads(row["metadata"]))
+
+    def _drain_ocr(self) -> None:
+        if self._ocr is not None and self._ocr.drain():
+            self._check_backlog()
 
     def _repair_degraded(self, mailbox_id: str, folder_id: str,
                          counts: dict[str, int]) -> None:
@@ -1814,6 +3139,8 @@ class MailCapture:
         versions of this folder (bounded per round). A read that now returns another
         changeKey is left to the next delta round, which reports the change."""
         for row in self.store.degraded(mailbox_id, folder_id, REPAIRS_PER_ROUND):
+            if self._spent():
+                break   # the rest is retried in a later round
             handle = row["l1_handle"]
             message = json.loads(row["record"])
             if row["body_status"].startswith("unavailable:"):
@@ -1839,20 +3166,22 @@ class MailCapture:
                     listed = ATTACHMENTS_TRUNCATED_CAPPED
                     counts["attachment_lists_capped"] += 1
                 self.store.add_attachments(handle, entries, listed)
+                self._settle_new(counts)
                 counts["attachment_lists_recovered"] += listed not in _TRUNCATED_STATES
             for item in self.store.db.execute(
                     "SELECT * FROM attachments WHERE message_handle=? AND "
-                    "(content_status='unavailable' OR content_status LIKE ?)",
-                    (handle, _MISMATCH)).fetchall():
+                    "(content_status IN ('unavailable', ?) OR content_status LIKE ?)",
+                    (handle, ATTACHMENT_DEFERRED, _MISMATCH)).fetchall():
                 meta = json.loads(item["metadata"])
                 try:
                     entry = self._fetch_attachment(mailbox_id, message, meta, counts)
                 except NotVisible:
                     break
-                if entry["content_status"] != "unavailable" \
+                if entry["content_status"] not in ("unavailable", ATTACHMENT_DEFERRED) \
                         and not entry["content_status"].startswith("mismatch:"):
                     self.store.fill_attachment(handle, entry)
                     counts["attachments_recovered"] += entry["content_status"] == "captured"
+                self._settle_new(counts)
 
     def _reextract(self, mailbox_id: str, folder_id: str, counts: dict[str, int]) -> None:
         """Read the text of captured attachments of this folder never read, or whose
@@ -1862,7 +3191,14 @@ class MailCapture:
 
         if not local_ocr_available():
             return
+        if self._ocr is not None:   # read beside the capture, never on this thread
+            for row in self.store.text_unread(mailbox_id, folder_id, REPAIRS_PER_ROUND):
+                self._ocr.submit(row["l1_handle"], row["content_sha256"],
+                                 json.loads(row["metadata"]))
+            return
         for row in self.store.text_unread(mailbox_id, folder_id, REPAIRS_PER_ROUND):
+            if self._spent():
+                break   # the rest is read in a later round
             try:
                 content = self.store.blob(row["content_sha256"])
             except (CaptureError, OSError):
@@ -1871,6 +3207,8 @@ class MailCapture:
             self.store.fill_text(row["l1_handle"], status, self.store.put_text(text))
             counts["texts_reextracted"] += 1
             _count_text(status, counts)
+            counts["originals_dropped"] += _settle(self.store, row["content_sha256"],
+                                                   content=content) == "dropped"
 
     # ---------------------------------------------------------------- per folder
 
@@ -1878,11 +3216,14 @@ class MailCapture:
         return (self.store._clock() - timedelta(days=self.window_days)).astimezone(
             timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    def capture_folder(self, mailbox_id: str, folder_key: str) -> dict[str, Any]:
-        """One folder's delta round; ``cursor`` names what the next run resumes from
-        (``next_url`` mid-round, ``delta_url`` after a round, ``None``: starts over)."""
+    def capture_folder(self, mailbox_id: str, folder_key: str, *, turn: int | None = None
+                       ) -> dict[str, Any]:
+        """One folder's delta round (then, with ``history`` all, its older mail);
+        ``cursor`` names what the next run resumes from (``next_url`` mid-round,
+        ``delta_url`` after a round, ``None``: starts over). ``turn``: at most that many
+        pages this call, then reason ``turn`` with the cursor stored (``run`` comes back)."""
         try:
-            result = self._capture_folder(mailbox_id, folder_key)
+            result = self._capture_folder(mailbox_id, folder_key, turn)
         except Exception as exc:   # noqa: BLE001 - typed below, never the message
             result = self._folder_failed(mailbox_id, folder_key, exc)
         state = self.store.folder_state(mailbox_id, folder_key) or {}
@@ -1908,7 +3249,8 @@ class MailCapture:
                 else "configured_id", "counts": _new_counts(), "round": None,
                 "status": "incomplete", "complete": False, "reason": reason}
 
-    def _capture_folder(self, mailbox_id: str, folder_key: str) -> dict[str, Any]:
+    def _capture_folder(self, mailbox_id: str, folder_key: str,
+                        turn: int | None = None) -> dict[str, Any]:
         counts = _new_counts()
         store = self.store
         state = store.folder_state(mailbox_id, folder_key)
@@ -1963,7 +3305,8 @@ class MailCapture:
         result["round"] = kind
         throttles = 0
         gone_restarts = 0
-        pages_this_run = 0
+        pages_this_turn = 0
+        unit = (mailbox_id, folder_key)
         while True:
             since = store.folder_state(mailbox_id, folder_key)["received_since"]
             try:
@@ -1971,13 +3314,24 @@ class MailCapture:
                         self.actor, mailbox_id, folder_id, cursor=cursor,
                         received_since=since, page_size=self.page_size):
                     counts["pages"] += 1
-                    pages_this_run += 1
+                    pages_this_turn += 1
+                    self._pages_read[unit] = self._pages_read.get(unit, 0) + 1
                     counts["provenance_dropped"] += page["provenance_dropped"]
                     # Sent by an excluded person: dropped by the reader before any
                     # body read, never stored or indexed; only the count is kept.
                     counts["people_dropped"] += page.get("people_dropped", 0)
-                    for item in page["items"]:
-                        self._capture_message(mailbox_id, folder_id, item, counts)
+                    # Spent within a page (each message may read a body and attachments):
+                    # cut there, the stored cursor still this page's, so the next run
+                    # resumes from it (in progress, what this run stored of it counts
+                    # unchanged). A round's first page has no stored cursor to resume
+                    # from: it is read whole, so the cut keeps its next_url (decision
+                    # 2026-10-19-sharepoint-listing-resume: a cut resumes).
+                    if not self._capture_page(mailbox_id, folder_id, page["items"], counts,
+                                              may_cut=cursor is not None):
+                        store.save_folder(mailbox_id, folder_key, status="incomplete",
+                                          reason=TIME_BUDGET, last_run_at=store.now())
+                        return {**result, "status": "incomplete", "complete": False,
+                                "reason": TIME_BUDGET}
                     for gone in page["removed"]:
                         counts["removed"] += store.remove(mailbox_id, gone["id"], folder_id,
                                                           gone["reason"])
@@ -1991,6 +3345,19 @@ class MailCapture:
                                 done["received_since"])
                         self._repair_degraded(mailbox_id, folder_id, counts)
                         self._reextract(mailbox_id, folder_id, counts)
+                        if self.history == "all" and done["backfill_status"] != "complete":
+                            # The round is current: its deltaLink is kept, then the mail
+                            # older than its window is read, newest first (_backfill).
+                            store.save_folder(mailbox_id, folder_key, next_url=None,
+                                              delta_url=page["delta_url"],
+                                              last_complete_at=store.now(),
+                                              rounds_complete=done["rounds_complete"] + 1)
+                            stopped = self._backfill(mailbox_id, folder_key, folder_id,
+                                                     counts, result, pages_this_turn, turn)
+                            if stopped is not None:
+                                return stopped
+                            done = store.folder_state(mailbox_id, folder_key)
+                            done["rounds_complete"] -= 1   # counted above
                         if store.truncated_lists(mailbox_id, folder_id):
                             # The round reached its deltaLink, but a current version's
                             # attachment list was cut: not complete until a later run
@@ -2002,6 +3369,16 @@ class MailCapture:
                                               rounds_complete=done["rounds_complete"] + 1)
                             return {**result, "status": "incomplete", "complete": False,
                                     "reason": "attachment_lists_truncated"}
+                        if store.deferred_attachments(mailbox_id, folder_id):
+                            # PDFs not read while the OCR backlog was at its bound: read
+                            # by a later round; the folder is not complete until then.
+                            store.save_folder(mailbox_id, folder_key, next_url=None,
+                                              delta_url=page["delta_url"], status="incomplete",
+                                              reason="attachments_deferred",
+                                              last_run_at=store.now(),
+                                              rounds_complete=done["rounds_complete"] + 1)
+                            return {**result, "status": "incomplete", "complete": False,
+                                    "reason": "attachments_deferred"}
                         if store.mismatched(mailbox_id, folder_id):
                             # Bytes that failed verification are kept as metadata only and
                             # retried; the folder is not complete while one is current.
@@ -2021,7 +3398,8 @@ class MailCapture:
                                 "reason": None}
                     cursor = page["next_url"]
                     store.save_folder(mailbox_id, folder_key, next_url=cursor)
-                    if self.page_budget is not None and pages_this_run >= self.page_budget:
+                    if self.page_budget is not None and \
+                            self._pages_read[unit] >= self.page_budget:
                         store.save_folder(mailbox_id, folder_key, status="incomplete",
                                           reason="page_budget", last_run_at=store.now())
                         return {**result, "status": "incomplete", "complete": False,
@@ -2031,6 +3409,13 @@ class MailCapture:
                                           reason=TIME_BUDGET, last_run_at=store.now())
                         return {**result, "status": "incomplete", "complete": False,
                                 "reason": TIME_BUDGET}
+                    if turn is not None and pages_this_turn >= turn:
+                        # This folder's turn is over: the run reads the other folders'
+                        # pages, then comes back to this cursor (run()).
+                        store.save_folder(mailbox_id, folder_key, status="incomplete",
+                                          reason=TURN)
+                        return {**result, "status": "incomplete", "complete": False,
+                                "reason": TURN}
                 raise SourceUnavailable("graph listing invalid: delta stream ended "
                                         "without a deltaLink")
             except CaptureError as exc:
@@ -2079,7 +3464,155 @@ class MailCapture:
                               last_run_at=store.now())
             return {**result, "status": "incomplete", "complete": False, "reason": reason}
 
+    def _backfill(self, mailbox_id: str, folder_key: str, folder_id: str,
+                  counts: dict[str, int], result: Mapping[str, Any], pages_used: int,
+                  turn: int | None) -> dict[str, Any] | None:
+        """Read a folder's mail older than its round's window (``history`` all), newest
+        first, from its stored listing cursor (``GraphMailReader.message_pages``; the
+        ``before`` bound fixed when it started, so the stored cursor stays valid). None
+        once it reached its end (``backfill_status`` complete: the folder may complete);
+        otherwise the folder's incomplete result: its turn or the page budget is spent
+        (``turn``, ``page_budget``), the time budget (``time_budget``), or a typed
+        failure (the cursor kept; a refused one dropped so the history starts over). The
+        older mail has no delta: a later change to it is not followed."""
+        store = self.store
+        state = store.folder_state(mailbox_id, folder_key)
+        before = state["backfill_before"] or state["received_since"]
+        if before is None:
+            store.save_folder(mailbox_id, folder_key, backfill_status="complete")
+            return None
+        store.save_folder(mailbox_id, folder_key, backfill_before=before)
+        cursor = state["backfill_next_url"]
+        unit = (mailbox_id, folder_key)
+
+        def stop(reason: str) -> dict[str, Any]:
+            store.save_folder(mailbox_id, folder_key, status="incomplete", reason=reason,
+                              **({} if reason == TURN else {"last_run_at": store.now()}))
+            return {**result, "status": "incomplete", "complete": False, "reason": reason}
+
+        def exhausted() -> str | None:
+            if self._spent():
+                return TIME_BUDGET
+            if self.page_budget is not None and \
+                    self._pages_read.get(unit, 0) >= self.page_budget:
+                return "page_budget"
+            if turn is not None and pages_used >= turn:
+                return TURN
+            return None
+        if exhausted() is not None:
+            return stop(exhausted())
+        try:
+            for page in self.reader.message_pages(self.actor, mailbox_id, folder_id,
+                                                  before=before, cursor=cursor,
+                                                  page_size=min(self.page_size, 100)):
+                counts["pages"] += 1
+                counts["backfill_pages"] += 1
+                pages_used += 1
+                self._pages_read[unit] = self._pages_read.get(unit, 0) + 1
+                counts["provenance_dropped"] += page["provenance_dropped"]
+                counts["people_dropped"] += page.get("people_dropped", 0)
+                if not self._capture_page(mailbox_id, folder_id, page["items"], counts,
+                                          may_cut=cursor is not None):
+                    return stop(TIME_BUDGET)
+                cursor = page["next_url"]
+                if cursor is None:
+                    store.save_folder(mailbox_id, folder_key, backfill_next_url=None,
+                                      backfill_status="complete")
+                    return None
+                store.save_folder(mailbox_id, folder_key, backfill_next_url=cursor)
+                if exhausted() is not None:
+                    return stop(exhausted())
+        except CaptureError as exc:
+            if exc.code != "store_full":
+                raise
+            return stop("store_full")
+        except NotVisible:
+            return stop("not_visible")
+        except SourceUnavailable as exc:
+            if is_nextlink_refusal(exc):
+                store.save_folder(mailbox_id, folder_key, backfill_next_url=None)
+            detail = unavailable_detail(exc) or "unclassified"
+            return stop("throttled" if _transient(detail) else _failure(exc))
+        raise SourceUnavailable("graph listing invalid: history listing ended without an end")
+
     # ---------------------------------------------------------------- per run
+
+    def _turns(self, ordered: Sequence[tuple[str, str]]) -> dict[tuple[str, str], Any]:
+        """Capture ``ordered`` folders in turns: each reads at most ``pages_per_turn``
+        pages, then the next folder takes its turn; the folders with more to read come
+        back, in the same order, until none has or the time budget is spent (a folder
+        cut by it then ends ``time_budget``). One result per folder: its last turn's,
+        with the counts of every turn. Without ``pages_per_turn``, one call each."""
+        done: dict[tuple[str, str], Any] = {}
+        queue = list(ordered)
+        while queue:
+            again = []
+            for unit in queue:
+                result = self.capture_folder(*unit, turn=self.pages_per_turn)
+                before = done.get(unit)
+                if before is not None:
+                    for key, value in before["counts"].items():
+                        result["counts"][key] += value
+                    result.pop("deferred", None)   # it was read in an earlier turn
+                    # How the run started it (its first turn), never how a turn resumed.
+                    result["resumed_from"] = before.get("resumed_from")
+                    if before.get("round") is not None:
+                        result["round"] = before["round"]
+                done[unit] = result
+                if result.get("reason") == TURN:
+                    if self._spent():
+                        self.store.save_folder(*unit, status="incomplete", reason=TIME_BUDGET,
+                                               last_run_at=self.store.now())
+                        result["reason"] = TIME_BUDGET
+                    else:
+                        again.append(unit)
+            queue = again
+        return done
+
+    def _every_folder(self, mailbox_id: str) -> tuple[tuple[str, ...], bool]:
+        """(the folder keys of every folder of a mailbox, the listing whole): the stored
+        listing while younger than FOLDER_RELIST_SECONDS, else a new one
+        (``GraphMailReader.list_folders``). A folder already captured under a well-known
+        name keeps that key. An empty folder that holds no captured current message is
+        left out until a listing counts mail in it. A listing that fails keeps the stored
+        one (else inbox and sent items) and the mailbox is not complete."""
+        stored, listed_at = self.store.folder_listing(mailbox_id)
+        whole = True
+        fresh = listed_at is not None and (
+            self.store._clock() - datetime.fromisoformat(listed_at.replace("Z", "+00:00"))
+        ).total_seconds() < FOLDER_RELIST_SECONDS
+        if not fresh:
+            try:
+                listing = self.reader.list_folders(self.actor, mailbox_id)
+                whole = listing["complete"]
+                stored = [{"folder_id": f["id"], "total": f["total"]}
+                          for f in listing["folders"]]
+                if stored or whole:
+                    self.store.save_folder_listing(
+                        mailbox_id, [{"id": f["folder_id"], "total": f["total"]}
+                                     for f in stored])
+            except (NotVisible, SourceUnavailable):
+                whole = False
+        if not stored:
+            return ("inbox", "sentitems"), False
+        named = {row["folder_id"]: row["folder_key"] for row in self.store.db.execute(
+            "SELECT folder_key, folder_id FROM folders WHERE mailbox_id=? AND folder_id "
+            "IS NOT NULL", (mailbox_id,)) if row["folder_key"] in grammar.WELL_KNOWN_MAIL_FOLDERS}
+        keys = [named.get(f["folder_id"], f["folder_id"]) for f in stored
+                if f["total"] != 0 or self.store.folder_holds_current(mailbox_id, f["folder_id"])
+                or self.store.folder_state(mailbox_id, named.get(f["folder_id"],
+                                                                 f["folder_id"])) is not None]
+        # A mailbox with no mail in any folder: its inbox still stands for it.
+        return tuple(dict.fromkeys(keys)) or ("inbox",), whole
+
+    def _close_pools(self) -> dict[str, int]:
+        """Stop the reader pool and the OCR queue (its readings not started stay pending
+        for the next run); the OCR counts."""
+        if self._pool is not None:
+            self._pool.shutdown(wait=True)
+            self._pool = None
+        ocr, self._ocr = self._ocr, None
+        return ocr.close() if ocr is not None else {}
 
     def _people_blocked(self, scope: CaptureScope,
                         exc: BaseException | None = None) -> dict[str, Any]:
@@ -2095,7 +3628,7 @@ class MailCapture:
                        for index in range(len(scope.mailboxes))]
             return {"mailboxes": entries, "directory": None, "mailboxes_listed": 0,
                     "mailboxes_excluded": 0, "people_excluded": 0, "people_blocked": None,
-                    "complete": False, "complete_bound": 0,
+                    "purged": dict.fromkeys(PURGE_COUNTS, 0), "complete": False, "complete_bound": 0,
                     "bound_total": sum(len(f) for _a, f in scope.mailboxes),
                     "incomplete_reasons": [_failure(cause)]}
         people = getattr(self.reader, "people", None)
@@ -2105,7 +3638,7 @@ class MailCapture:
         bound_total = sum(len(folders) for _address, folders in scope.mailboxes)
         return {"mailboxes": [], "directory": None, "mailboxes_listed": 0,
                 "mailboxes_excluded": 0, "people_excluded": 0, "people_blocked": part,
-                "complete": False, "complete_bound": 0, "bound_total": bound_total,
+                "purged": dict.fromkeys(PURGE_COUNTS, 0), "complete": False, "complete_bound": 0, "bound_total": bound_total,
                 "incomplete_reasons": [f"people_exclusion:{part['error_code']}"]}
 
     def run(self, scope: CaptureScope, *,
@@ -2118,6 +3651,8 @@ class MailCapture:
         listed mailboxes the exclusion list dropped); each is checked against the
         exclusion list again once opened, on every identity the directory resolved."""
         self.window_days = scope.window_days
+        self.history = scope.history
+        self._pages_read = {}
         named = len(scope.mailboxes)
         # The people guard first: without its ID list (or the directory listing that
         # finds the excluded people's addresses) no mailbox is opened, listed or read.
@@ -2127,6 +3662,14 @@ class MailCapture:
                 prepare()
         except ExclusionUnavailable as exc:
             return self._people_blocked(scope, exc)
+        # A later exclusion: what the store holds of it is purged before anything is read
+        # (decision 2026-10-21-mail-exclusion-retroactive); reads hid it already.
+        purged = dict.fromkeys(PURGE_COUNTS, 0)
+        people = getattr(self.reader, "people", None)
+        if _usable(people):
+            if self.store.people is None:
+                self.store.people = people
+            purged = self.store.purge_withheld(people)
         targets: list[tuple[str, tuple[str, ...]]] = list(scope.mailboxes)
         directory_status = None
         excluded = 0
@@ -2141,7 +3684,16 @@ class MailCapture:
         opened: dict[str, tuple[str, ...]] = {}   # mailbox id -> its scope folders
         with self.reader.directory_cache():
             for index, (address, folders) in enumerate(targets):
-                entry: dict[str, Any] = {"index": index, "folders": []}
+                entry: dict[str, Any] = {"index": index, "folders": [],
+                                         "folders_bound": len(folders)}
+                if self._spent():
+                    # The budget is spent: no mailbox is opened (its lookup is a
+                    # request); each one left stays bound, cut, for the next run. A
+                    # listed one the scope would exclude once opened counts here too:
+                    # never fewer bound than there are (gap-86a8a6debd2e).
+                    entry.update(status=TIME_BUDGET, complete=False)
+                    mailboxes.append(entry)
+                    continue
                 try:
                     identity = self.reader.open_mailbox(self.actor, address)
                 except ExclusionUnavailable as exc:
@@ -2177,26 +3729,46 @@ class MailCapture:
                 self.store.record_mailbox(identity)
                 entry["mailbox_id"] = identity["object_id"]
                 mailboxes.append(entry)
+            # A mailbox whose scope is every folder: its folders as listed (cached).
+            unlisted: set[str] = set()
+            for mailbox_id, folders in list(opened.items()):
+                if folders == (ALL_FOLDERS,):
+                    opened[mailbox_id], whole = self._every_folder(mailbox_id)
+                    if not whole:
+                        unlisted.add(mailbox_id)
             # Every folder of every opened mailbox, captured in the scheduler's order
             # (schedule_units) and reported in the scope's.
             units = [(mailbox_id, folder) for mailbox_id, folders in opened.items()
                      for folder in folders]
-            done = {unit: self.capture_folder(*unit) for unit in schedule_units(
-                units, lambda unit: folder_standing(self.store.folder_state(*unit)))}
+            self._defer_all = scope.ocr == "deferred"
+            self._check_backlog()
+            if self.ocr_workers and self._ocr is None and _ocr_engine():
+                self._ocr = _OcrQueue(self.store, self.ocr_workers, self._spent)
+                for row in self.store.text_unread(None, None, OCR_BACKLOG_PER_RUN):
+                    self._ocr.submit(row["l1_handle"], row["content_sha256"],
+                                     json.loads(row["metadata"]))
+            try:
+                done = self._turns(schedule_units(
+                    units, lambda unit: folder_standing(self.store.folder_state(*unit))))
+            finally:
+                ocr = self._close_pools()
         for entry in mailboxes:
             if "mailbox_id" in entry:
                 entry["folders"] = [done[(entry["mailbox_id"], folder)]
                                     for folder in opened[entry["mailbox_id"]]]
                 # Complete only when every folder is, and was brought current this run.
                 entry["complete"] = all(f["complete"] and not f.get("deferred")
-                                        for f in entry["folders"])
+                                        for f in entry["folders"]) \
+                    and entry["mailbox_id"] not in unlisted
                 entry["status"] = "complete" if entry["complete"] else "incomplete"
+                if entry["mailbox_id"] in unlisted:
+                    entry["folder_listing"] = "incomplete"
         bound = [(f["complete"], f["reason"]) for m in mailboxes for f in m["folders"]]
         bound += [(False, m["status"]) for m in mailboxes if not m["folders"]
                   for _folder in targets[m["index"]][1]]
         return {"mailboxes": mailboxes, "directory": directory_status,
                 "mailboxes_listed": len(targets) - named, "mailboxes_excluded": excluded,
-                "people_excluded": people_excluded, "people_blocked": None,
+                "people_excluded": people_excluded, "people_blocked": None, "purged": purged,
                 "complete": (bool(mailboxes) and all(m["complete"] for m in mailboxes)
                              and directory_status in (None, "complete")),
                 "complete_bound": sum(1 for done, _r in bound if done),
@@ -2204,7 +3776,28 @@ class MailCapture:
                 "incomplete_reasons": sorted({r for done, r in bound if not done and r}
                                              | ({f"directory_{directory_status}"}
                                                 if directory_status not in (None, "complete")
-                                                else set()))}
+                                                else set())
+                                             | ({"folder_listing_incomplete"} if unlisted
+                                                else set())),
+                "ocr": ocr}
+
+
+def directory_members(api: Any, allowed: Callable[[Sequence[str]], bool] | None = None
+                      ) -> tuple[list[tuple[str, str]], str, int]:
+    """The one directory reader: ``(object id, mail)`` of every member user with a mail
+    address, kept only when ``allowed([id, mail])``; guests are skipped. Also returns the
+    status (``complete`` or ``truncated:<reason>``) and how many ``allowed`` refused."""
+    url = grammar.url("graph.users", {"$select": "id,mail,userType", "$top": "999"})
+    users, completeness = api.get_pages(url, max_pages=50, max_items=5000)
+    members = {str(u["id"]).lower(): u["mail"].lower() for u in users
+               if grammar.TYPES["user_id"].valid(str(u.get("id") or ""))
+               and isinstance(u.get("mail"), str) and u["mail"]
+               and u.get("userType") != "Guest"}
+    found = [(i, mail) for i, mail in sorted(members.items())
+             if allowed is None or allowed([i, mail])]
+    status = ("complete" if completeness["complete"]
+              else f"truncated:{completeness['truncation_reason']}")
+    return found, status, len(members) - len(found)
 
 
 def directory_mailboxes(api: Any, allowed: Callable[[Sequence[str]], bool] | None = None
@@ -2215,16 +3808,8 @@ def directory_mailboxes(api: Any, allowed: Callable[[Sequence[str]], bool] | Non
     not excluded); guests have no mailbox here and are skipped. Returns the ids, the
     status ``complete`` or ``truncated:<reason>`` (a run with a truncated listing is
     never complete) and the number of member mailboxes ``allowed`` refused."""
-    url = grammar.url("graph.users", {"$select": "id,mail,userType", "$top": "999"})
-    users, completeness = api.get_pages(url, max_pages=50, max_items=5000)
-    members = {str(u["id"]).lower(): u["mail"].lower() for u in users
-               if grammar.TYPES["user_id"].valid(str(u.get("id") or ""))
-               and isinstance(u.get("mail"), str) and u["mail"]
-               and u.get("userType") != "Guest"}
-    found = sorted(i for i, mail in members.items() if allowed is None or allowed([i, mail]))
-    status = ("complete" if completeness["complete"]
-              else f"truncated:{completeness['truncation_reason']}")
-    return found, status, len(members) - len(found)
+    found, status, refused = directory_members(api, allowed)
+    return [i for i, _mail in found], status, refused
 
 
 def capture_into(state_dir: str | Path, scope: CaptureScope, reader: Any, actor: Actor, *,
@@ -2251,11 +3836,13 @@ def capture_into(state_dir: str | Path, scope: CaptureScope, reader: Any, actor:
     if not kept and not every:
         summary["reasons"] = ["no_mailbox_in_scope"]
         return summary
-    narrowed = CaptureScope([{"address": a, "folders": list(f)} for a, f in kept],
+    narrowed = CaptureScope([{"address": a, "folders": ALL_FOLDERS if f == (ALL_FOLDERS,)
+                              else list(f)} for a, f in kept],
                             window_days=scope.window_days,
                             internal_domains=scope.internal_domains, all_mailboxes=every,
                             all_mailbox_folders=scope.all_mailbox_folders,
-                            allowlist=scope.allowlist, exclude=scope.excluded)
+                            allowlist=scope.allowlist, exclude=scope.excluded,
+                            history=scope.history, ocr=scope.ocr)
     store = MailCaptureStore(state_dir)
     try:
         api = getattr(reader, "_api", None)
@@ -2301,7 +3888,15 @@ def add_cli_arguments(parser: argparse.ArgumentParser) -> None:
                              "as it to prove a withheld mailbox leaks nothing")
     parser.add_argument("--runs", type=int, default=2,
                         help="capture runs; run 2+ resumes from the stored deltaLink")
-    parser.add_argument("--page-size", type=int, default=50)
+    parser.add_argument("--page-size", type=int, default=PRODUCTION["page_size"])
+    parser.add_argument("--workers", type=int, default=PRODUCTION["workers"],
+                        help="concurrent message reads per page (Exchange allows 4 per "
+                             "mailbox)")
+    parser.add_argument("--pages-per-turn", type=int, default=PRODUCTION["pages_per_turn"],
+                        help="pages a folder reads before the next folder takes its turn")
+    parser.add_argument("--ocr-workers", type=int, default=PRODUCTION["ocr_workers"],
+                        help="threads OCR-reading scanned attachments beside the capture "
+                             "(0: OCR inline)")
     parser.add_argument("--max-store-bytes", type=int, default=None,
                         help="bound on the capture store (SQLite + blobs); a folder that "
                              "would pass it stops incomplete with reason store_full")
@@ -2332,7 +3927,9 @@ def _report_run(number: int, run: Mapping[str, Any]) -> dict[str, Any]:
     return {"run": number, "complete": run["complete"], "directory": run["directory"],
             "complete_bound": run["complete_bound"], "bound_total": run["bound_total"],
             "incomplete_reasons": run["incomplete_reasons"],
-            "people_excluded": run.get("people_excluded", 0), "mailboxes": mailboxes}
+            "people_excluded": run.get("people_excluded", 0),
+            "purged": dict(run.get("purged") or dict.fromkeys(PURGE_COUNTS, 0)),
+            "mailboxes": mailboxes}
 
 
 def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = None,
@@ -2364,16 +3961,24 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
         api, transport = build_graph(environ, sender=sender,
                                      retry=BoundedBackoff(sleep=sleep, budget_seconds=60))
         reader = GraphMailReader(api, audience)
+        store.people = reader.people   # every read below applies this run's exclusion
         actor = Actor(audience.tenant, frozenset({args.principal}), "restricted")
         withheld = Actor(audience.tenant, frozenset({args.withheld_principal}), "restricted")
+        ocr_workers = getattr(args, "ocr_workers", 0)
         capture = MailCapture(store, reader, actor, page_size=args.page_size, sleep=sleep,
-                              budget_seconds=getattr(args, "budget_seconds", None))
+                              budget_seconds=getattr(args, "budget_seconds", None),
+                              workers=getattr(args, "workers", 1),
+                              pages_per_turn=getattr(args, "pages_per_turn", None),
+                              defer_ocr=bool(ocr_workers), ocr_workers=ocr_workers)
         runs, refused = [], []
         for number in range(1, args.runs + 1):
             run = capture.run(scope, directory=lambda: directory_mailboxes(
                 api, scope.directory_allows))
             runs.append(_report_run(number, run))
+            runs[-1]["ocr"] = {k: v for k, v in (run.get("ocr") or {}).items()
+                               if isinstance(v, int)}
             refused.append(refused_parts(run))
+            last_run = run
         # Offline resolution of what was captured (no source read).
         view = store.messages(actor, audience, limit=1000)
         resolved = sum(1 for item in view["items"]
@@ -2381,7 +3986,7 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
         attachment_handles = [a["l1_handle"] for item in view["items"]
                               for a in item["attachments"] if a["l1_handle"]]
         verified = sum(1 for h in attachment_handles
-                       if store.attachment_content(h, actor, audience) is not None)
+                       if store.attachment_verified(h, actor, audience))
         hidden_view = store.messages(withheld, audience, limit=1000)
         hidden_counts = store.counts(withheld, audience)
         hidden_completeness = store.completeness(withheld, audience)
@@ -2404,15 +4009,18 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
                         "under_state_dir": Path(store.root).parent == state_dir.resolve(),
                         # Kept across invocations in the host's state directory (no
                         # --state-dir), and carried: the store existed before this one.
-                        # Only workbench_state_dir is kept between the daily live-check
+                        # Only workbench_state_dir is kept between the verifier's daily
                         # runs (check_state_dir).
                         "host_state": args.state_dir is None, "carried": carried,
                         "state_base": state_base},
             "runs": runs,
             # Every run refused outright (HTTP 403 or 401 on every bound mailbox): the
             # host's grant or credential is missing, so the check is blocked upstream,
-            # never a pass or a fail.
-            "blocked_upstream": refused[-1] if all(refused) else [],
+            # never a pass or a fail. Else a last run the budget alone cut over a store
+            # that was not carried (budget_cut_block): later_ask
+            # live-host-persistent-state-dir, never an untyped fail.
+            "blocked_upstream": refused[-1] if all(refused) else budget_cut_block(
+                mail_cut_units(last_run), carried=carried),
             "summary": {"mailboxes": len(completeness["mailboxes"]),
                         "mailboxes_complete": sum(1 for m in completeness["mailboxes"]
                                                   if m["complete"]),
@@ -2460,13 +4068,127 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
             and report["leak_check"]["withheld_actor_counts"] == 0
             and report["leak_check"]["withheld_actor_mailboxes"] == 0
             and hidden_resolved == 0)
+        sound = (resolved == len(view["items"]) and verified == len(attachment_handles)
+                 and not any(report["leak_check"].values()))
+        if not sound and not all(refused):   # blocked only while the cut is the whole failure
+            report["blocked_upstream"] = []
         return report
     finally:
         store.close()
 
 
-__all__ = ["CAPTURE_PRINCIPAL", "CaptureError", "CaptureScope", "MAIL_KIND", "MailCapture",
-           "MailCaptureStore", "WORKBENCH_STATE_ENV", "add_cli_arguments", "assert_outside_git",
-           "blocked_reason", "capture_into", "check_state_dir",
-           "directory_mailboxes", "folder_standing", "graph_block", "run_cli", "schedule_units",
-           "store_exists", "terminal_reason"]
+# ------------------------------------------------------------------ compact (one-time)
+
+def compact_cli(argv: Sequence[str] | None = None) -> int:
+    """``python3 -m integrations.capture_mail compact --state-dir D``: compact a store
+    captured before compact storage (:meth:`MailCaptureStore.compact`), holding the
+    host's cycle lock (``<D>/host/cycle.lock``) so no capture runs beside it. Prints
+    counts and bytes only."""
+    parser = argparse.ArgumentParser(prog="python3 -m integrations.capture_mail compact",
+                                     description=compact_cli.__doc__.splitlines()[0])
+    parser.add_argument("--state-dir", required=True,
+                        help="Workbench state directory holding mail-capture/")
+    parser.add_argument("--no-vacuum", action="store_true",
+                        help="prune and compress only; leave the SQLite file as it is")
+    parser.add_argument("--defer-ocr", action="store_true",
+                        help="also drop the bytes of scans whose OCR is pending (status "
+                             "ocr_deferred; read later by the ocr-deferred command)")
+    args = parser.parse_args(argv)
+    return _locked(args.state_dir, lambda store: store.compact(
+        vacuum=not args.no_vacuum, defer_ocr=args.defer_ocr))
+
+
+def _locked(state_dir: str, work: Callable[[Any], dict[str, Any]], *,
+            open_store: Callable[[Path], Any] = lambda state: MailCaptureStore(state),
+            exists: Callable[[Path], bool] = lambda state: store_exists(state),
+            missing: str = "mail_capture_missing") -> int:
+    """``work`` on the store under ``state_dir`` (``open_store``; the mail store, or the
+    SharePoint store's ``compact``) while holding the host's cycle lock
+    (``<D>/host/cycle.lock``: no capture runs beside it); prints its counts."""
+    import fcntl
+
+    state = Path(state_dir).expanduser()
+    if not exists(state):
+        print(json.dumps({"ok": False, "error": missing}))
+        return 2
+    lock_dir = state / "host"
+    lock_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with open(lock_dir / "cycle.lock", "a+") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(json.dumps({"ok": False, "error": "host_cycle_running"}))
+            return 2
+        try:
+            store = open_store(state)
+            try:
+                result = work(store)
+            finally:
+                store.close()
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+    print(json.dumps({"ok": True, **result}, sort_keys=True))
+    return 0
+
+
+def ocr_deferred_cli(argv: Sequence[str] | None = None, *,
+                     environ: Mapping[str, str] | None = None, sender: Any = None) -> int:
+    """``python3 -m integrations.capture_mail ocr-deferred --state-dir D --live-audience F
+    --budget-seconds N``: OCR the attachments whose OCR was deferred
+    (:func:`ocr_deferred_pass`), re-fetching each original by one guarded Graph GET
+    (credentials from the environment, as the capture). Needs a local OCR engine. Holds
+    the host's cycle lock. Prints counts only."""
+    from .graph_read import GraphMailReader, build_graph
+    from .live_source_guard import BoundedBackoff
+
+    parser = argparse.ArgumentParser(prog="python3 -m integrations.capture_mail ocr-deferred",
+                                     description=ocr_deferred_cli.__doc__.splitlines()[0])
+    parser.add_argument("--state-dir", required=True)
+    parser.add_argument("--live-audience", required=True,
+                        help="plx-live-source-audience/v1 file granting the capture principal")
+    parser.add_argument("--principal", default=CAPTURE_PRINCIPAL)
+    parser.add_argument("--budget-seconds", type=float, required=True)
+    args = parser.parse_args(argv)
+    if not args.budget_seconds > 0:
+        print(json.dumps({"ok": False, "error": "budget_seconds_invalid"}))
+        return 2
+    if not _ocr_engine():
+        print(json.dumps({"ok": False, "error": "ocr_engine_unavailable"}))
+        return 2
+    audience = LiveSourceAudience.from_file(args.live_audience)
+    env = os.environ if environ is None else environ
+    api, _transport = build_graph(env, sender=sender, retry=BoundedBackoff(budget_seconds=60))
+    reader = GraphMailReader(api, audience)
+    actor = Actor(audience.tenant, frozenset({args.principal}), "restricted")
+
+    def work(store: MailCaptureStore) -> dict[str, Any]:
+        store.people = reader.people   # every read applies this run's exclusion
+        return ocr_deferred_pass(store, reader, actor, audience,
+                                 budget_seconds=args.budget_seconds)
+    return _locked(args.state_dir, work)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["compact"]:
+        return compact_cli(argv[1:])
+    if argv[:1] == ["ocr-deferred"]:
+        return ocr_deferred_cli(argv[1:])
+    print("usage: python3 -m integrations.capture_mail compact --state-dir D [--no-vacuum] "
+          "[--defer-ocr]\n       python3 -m integrations.capture_mail ocr-deferred "
+          "--state-dir D --live-audience F --budget-seconds N"
+          "\n(capture runs: python3 -m integrations.graph_read mail-capture ...)")
+    return 2
+
+
+__all__ = ["CAPTURE_PRINCIPAL", "PERSISTENT_STATE_ASK", "CaptureError", "CaptureScope",
+           "MAIL_KIND", "MailCapture", "MailCaptureStore", "WORKBENCH_STATE_ENV",
+           "add_cli_arguments", "assert_outside_git", "blocked_reason", "budget_cut_block",
+           "capture_into", "check_state_dir", "compact_cli", "ocr_deferred_cli",
+           "ocr_deferred_gap", "ocr_deferred_pass", "directory_mailboxes", "folder_standing",
+           "graph_block", "mail_cut_units", "run_cli", "schedule_units", "store_exists",
+           "terminal_reason"]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

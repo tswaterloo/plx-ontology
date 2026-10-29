@@ -1,8 +1,8 @@
 """``plx.investigate``: declarative investigation plans run over the generic primitives.
 
-Layered tools: generic primitives, ``plx.investigate`` running
+10-DECISION decision 4 (layered tools: generic primitives, ``plx.investigate`` running
 declarative plans per question family on the Workbench side, a bounded loop for the
-rest. A plan is data (``ontology/plans/<id>.json``, format ``_plan.schema.json`` there,
+rest). A plan is data (``ontology/plans/<id>.json``, format ``_plan.schema.json`` there,
 validated with ``ontology/json_contract.py`` and cross-checked against the compiled
 ontology schema and the tool contracts by ``load_plans``). Nothing in this module names
 a family, object type, link, property or case: every step is "call primitive P from
@@ -60,7 +60,8 @@ but belong to another party: one whose reference identifiers (``ontology.resolve
 corroborations``: a supplier, a customer) conflict with a record of its ``against``
 collections (default: its ``from``) and agree with none, compared by
 ``ontology.resolve`` on the values ``plx.object``/``plx.around`` show this reader, is
-named in a ``party_differs`` gap per relation and identifier, never silently picked or
+named in a ``party_differs`` gap per relation and identifier (the answer is then partial,
+reason ``party_differs``), never silently picked or
 counted; a side the reader cannot see proves nothing, so the record stays (a record left
 unchecked by the budget is a ``step_budget`` gap). The primitive-call budget (the plan's, or the caller's
 ``step_budget``) stops the run; what was not run is in the trace.
@@ -120,21 +121,32 @@ An engine that takes ``reviews`` gets ``reviews(review_id, actor)``: the review 
 reviewed link re-read from the host's review store for the actor as known at the run's
 ``as_known_at`` (``reviews``: ``TraverseTools.review``, the view ``plx.around`` puts on the
 edge), None without one.
-Missing required
+An engine that takes ``roots`` gets the run's root object ids. An engine that takes ``people`` gets the host's people directory provider
+(``operating.people_graph``); its ``withhold`` names property entries that name a person the
+people exclusion withholds or cannot clear, and those entries leave the answer and its
+values. Missing required
 evidence is a typed gap (``if_no_object``/``if_null``, default
 ``unknown``/``absent_in_source``) whose ``concerns`` names the plan entry it leaves null (the
 numbered entry a per-group value leaves null; a quantity's gap is named by its role, e.g.
 ``produced quantity``), and makes the answer partial; a ``canonical_unit`` item states its
 unit in the one spelling of ``ontology.units`` (``each`` -> ``ea``, never converted) while
 the claim gate checks the cited cell in its own; distinct values
-where the plan expects one are a ``value_disagreement`` conflict. ``trace`` lists every step with
-its status and call count.
+where the plan expects one are a ``value_disagreement`` conflict. A conflict is listed once:
+one of the same kind, subject and note whose compared records another already holds adds
+nothing, and a fuller one replaces those it holds (``_add_conflict``; several plan items read
+the same property of one order's twins). ``trace`` lists every step with its status and call
+count.
 
 **Pages.** An answer too large for one result is paged by computed unit: each computed entry
 whose inputs are not computed travels with the inputs only it uses, an entry no computed entry
 uses travels alone (in an answer with computed entries; one with none is never paged); every
 other entry (common inputs, a value computed from computed entries such as a total over all of
-them) repeats on every page. A unit too large for any page alone (even as trimmed) is split
+them) repeats on every page, as do the gaps and conflicts. When those alone leave no room for
+the widest unit, the conflicts no answer entry cites are dropped, last first, once for the
+whole answer (``_make_room``), and ``_fit`` drops them before any entry loses its cells; then
+the rest, last first, after the gap details. Every drop is stated: a ``conflicts_truncated``
+gap says how many conflicts are not shown (the answer is then cut: ``result_too_large``). A unit too large
+for any page alone (even as trimmed) is split
 across consecutive pages in its order (the computed entry first), never dropped. ``answer_page`` states page of
 pages, ``completeness`` is truncated on every page (``answer_paged`` unless the run itself was
 cut) and its ``next_cursor`` names the next page.
@@ -153,7 +165,7 @@ none, nothing sent), each citing what the answer showed its reader about the gap
 (``follow_up_recorder``), from the whole answer before paging, so its entries (each citing its
 gaps by index) fit every page. Such a host lists the tool as a writer (``readOnlyHint``
 false, as the contract's ``read_only``); a host without one lists it read-only and refuses the
-option (``tool_specs``; docs/decisions/2026-10-10-follow-ups-ask-loop-writes.md). A gap
+option (``tool_specs``; devloop/DECISIONS/2026-10-10-follow-ups-ask-loop-writes.md). A gap
 about the host's own state (``HOST_STATE_REASONS``) is never a follow-up.
 
 **No plan.** An unknown family, or a root of a type no plan covers, is the contract's
@@ -189,7 +201,7 @@ import json
 from pathlib import Path
 import re
 import time
-from typing import Any, Callable, Mapping, MutableMapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, MutableMapping, Sequence
 
 from integrations.source_mirror import parse_citation
 from ontology import store_ddl
@@ -200,11 +212,11 @@ from ontology.units import unit_token
 from . import answerers
 from .cases import GAP_STATES
 from .explanations import FRESHNESS_SOURCES
-from .ontology_tools import (_AUDIENCE_SOURCE, _IDENTITY_TIERS, _ITEM_ACL_AUDIENCES, ROOT_REASONS,
-                             SchemaView, identity_link_type,
+from .ontology_tools import (_AUDIENCE_SOURCE, _IDENTITY_TIERS, _ITEM_ACL_AUDIENCES, REFUSED_CODES,
+                             ROOT_REASONS, SchemaView, identity_link_type,
                              _compare_key, _envelope_bytes, _fingerprint, _inline_defs,
-                             default_grammar, default_schema, load_contracts, scoped_kind,
-                             scoped_root_lead)
+                             default_grammar, default_schema, load_contracts, plan_read,
+                             scoped_kind, scoped_root_lead)
 from .ontology_tools_traverse import (DEFAULT_TIER_FLOOR, PERMISSION_LOSSES, TIER_ORDER,
                                       WITHHELD, navigation_hops)
 
@@ -213,9 +225,18 @@ PLAN_DIR = ROOT / "ontology" / "plans"
 INLINE_EXAMPLES = PLAN_DIR / "_inline_examples.json"  # worked inline plans (not loaded)
 PLAN_FORMAT = "plx-investigate-plan/v1"
 TOOL_NAMES = ("plx.investigate",)
+# Contract tools that compose primitives themselves (operating/meeting_agenda.py): never a
+# plan step.
+COMPOSITE_TOOLS = frozenset({"plx.agenda"})
 DEFAULT_MAX_EACH = 20
 MAX_STEP_BUDGET = 128  # fits max_each (50) line and item reads of a plan with its fixed steps
 MAX_SUGGESTIONS = 8
+# Recorded duty and freight charges are money: the schema's money marking gates them.
+ACTUALS_MARKING = "finance"
+# A reader holding this marking but not ACTUALS_MARKING (purchasing staff: owner decision
+# 2026-10-27, ontology/schema/overrides/markings.json scoped_markings) gets the capture's
+# labelled company-wide history estimates, never a recorded charge or a per-supplier rate.
+ESTIMATES_MARKING = "purchasing_prices"
 RECORD_READS = "count_records"  # the trace entry of the reads made for counted records
 # Gate codes that measure contract coverage rather than a wrong value (evals.score
 # UNVERIFIED_GATE_CODES): reported as ``unverified``, never as passed.
@@ -233,9 +254,11 @@ LEAD_RETRY: Mapping[str, Any] = {"on_gap_reasons": ["below_tier_floor"],
                                  "set_args": {"tier_floor": "lead"},
                                  "note_gap": "lead_tier_links_followed"}
 # A primitive's gap in any state but these leaves evidence unread (not_ingested,
-# inaccessible, stale), so the answer is partial; ``absent_in_source`` is a read absence
-# and ``unknown`` a note.
-_NOTE_GAP_STATES = frozenset({"absent_in_source", "unknown"})
+# inaccessible), so the answer is partial; ``absent_in_source`` is a read absence,
+# ``unknown`` a note, and ``stale`` says the evidence was read from an older copy of its
+# source: the answer states it as its gap (lower confidence), but the cited records were
+# read, so a stale source alone never makes the answer partial.
+_NOTE_GAP_STATES = frozenset({"absent_in_source", "unknown", "stale"})
 MAX_ANSWER = 200  # answer entries in one result (contract maxItems)
 _ENTRY_SLACK = 8  # bytes a page keeps per answer entry for separators
 MAX_ANSWERERS = 4  # source owners named per gap: every gap repeats on every answer page
@@ -418,8 +441,10 @@ def default_engines() -> dict[str, Mapping[str, Callable[..., Any]]]:
     from .impact_chain import PLAN_ENGINES as IMPACT
     from .item_lineage import PLAN_ENGINES as LINEAGE
     from .landed_cost import PLAN_ENGINES as LANDED
+    from .lot_impact import PLAN_ENGINES as LOT
     from .order_margin import PLAN_ENGINES as MARGIN
-    return {**LANDED, **MARGIN, **DECISIONS, **CHAIN, **LINEAGE, **IMPACT}
+    from .people_graph import PLAN_ENGINES as PEOPLE
+    return {**LANDED, **MARGIN, **DECISIONS, **CHAIN, **LINEAGE, **IMPACT, **LOT, **PEOPLE}
 
 
 def check_plan(doc: Mapping[str, Any], schema: SchemaView | None,
@@ -462,7 +487,8 @@ def plan_problems(doc: Mapping[str, Any], schema: SchemaView | None,
         if sid in types:
             add("bad_reference", f"duplicate step id {sid}")
             continue
-        if step["tool"] not in tools or step["tool"] in TOOL_NAMES:
+        if step["tool"] not in tools or step["tool"] in TOOL_NAMES \
+                or step["tool"] in COMPOSITE_TOOLS:
             add("not_a_primitive", f"{sid}: {step['tool']} is not a contract primitive")
             types[sid] = set()
             continue
@@ -552,9 +578,26 @@ def plan_problems(doc: Mapping[str, Any], schema: SchemaView | None,
             add("bad_evidence", f"{name}: zero is complete_search, on a count of named "
                 "bindings")
         for key, kind in (("from", "count"), ("distinct", "count"), ("numbering", "property"),
-                          ("per", "select")):
+                          ("total", "property"), ("prefer", "property"), ("per", "select")):
             if key in item and item["kind"] != kind:
                 add("bad_evidence", f"{name}: {key} is a {kind} item's")
+        if "total" in item and ("quantity_role" not in item or "numbering" in item
+                                or item.get("single")):
+            add("bad_evidence", f"{name}: total sums a quantity_role, never numbered or single")
+        if "prefer" in item:
+            prefer = item["prefer"]
+            if "total" not in item:
+                add("bad_evidence", f"{name}: prefer replaces a total's values")
+            if schema is not None:
+                if prefer["object_type"] not in schema.object_types:
+                    add("unknown_object_type", f"{name}: undeclared object type "
+                        f"{prefer['object_type']}")
+                elif prefer["property"] not in _properties_of(schema, prefer["object_type"]):
+                    add("unknown_property", f"{name}: {prefer['object_type']} has no property "
+                        f"{prefer['property']}")
+                for link_type in prefer["via"]:
+                    if link_type not in schema.link_types:
+                        add("undeclared_link", f"{name}: undeclared link type {link_type}")
         if "per" in item and "*" not in item.get("path", "").split("."):
             add("bad_evidence", f"{name}: per groups the elements of a select path's `*`")
         if "number_as" in item:
@@ -763,6 +806,34 @@ def _binding_of(object_id: str) -> str:
     return parts[1] if len(parts) > 1 else ""
 
 
+def _settle_refused(run: _Run) -> None:
+    """Count each refused-relation gap (``run.refused``) for a relation the run touched: an
+    object of a binding over it, or a cited ``api://`` row of it. Every Portal answer carries
+    the family's freshness, so a refused relation the chain never reads leaves it whole."""
+    touched = {run.relations.get(_binding_of(oid)) for oid in run.objects}
+
+    def walk(node: Any) -> None:
+        if isinstance(node, str):
+            if node.startswith("api://"):
+                try:
+                    touched.add(parse_citation(node)[0])
+                except ValueError:
+                    pass
+        elif isinstance(node, Mapping):
+            for item in node.values():
+                walk(item)
+        elif isinstance(node, (list, tuple)):
+            for item in node:
+                walk(item)
+
+    walk([list(run.edges.values()), list(run.values.values())])
+    for gap in run.refused:
+        if gap.get("subject") in touched:
+            run.add_gap(gap)
+            run.reason(f"gap_{gap.get('state')}")
+    run.refused = []
+
+
 def _value_text(value: Any) -> str | None:
     if isinstance(value, Mapping):
         text = value.get("untrusted_text")
@@ -770,6 +841,14 @@ def _value_text(value: Any) -> str | None:
     if value is None or isinstance(value, bool):
         return None
     return str(value)
+
+
+def _empty_value(value: Any) -> bool:
+    """An ``omit_empty`` item's empty value: none, or text (a trimmed source cell, untrusted
+    or not) holding nothing, e.g. FileMaker's blank ``tariff_c``."""
+    if isinstance(value, Mapping):
+        value = value.get("untrusted_text", value)
+    return value is None or (isinstance(value, str) and not value.strip())
 
 
 @dataclass
@@ -816,6 +895,12 @@ class _Run:
     # the root's identifier search (``plx.find`` arguments, its answer): a count's proof of
     # zero (``_zero_proof``) rests on it
     search: tuple[Mapping[str, Any], Mapping[str, Any]] | None = None
+    # property entries an engine withholds (a person the people exclusion withholds or cannot
+    # clear): never in the answer nor its values
+    withhold_entries: set[str] = field(default_factory=set)
+    # gaps of a relation the live source refuses (``REFUSED_CODES``): a family-wide freshness
+    # claim, held until the answer, which counts each only for a relation the run touched
+    refused: list[dict[str, Any]] = field(default_factory=list)
 
     def spent(self) -> bool:
         """Whether the run may make no more primitive calls: the step budget is used, or
@@ -862,6 +947,9 @@ class InvestigateTools:
     (``TraverseTools.review``). ``assumptions(root_id, actor)``: the person-recorded
     assumptions on the root an engine taking ``assumptions`` gets (landed cost's duty-rate
     assumption; the engine validates each and fails closed); without it, none.
+    ``people()``: the host's people directory under the people exclusion
+    (``operating.people_graph.directory_of``), given to an engine taking ``people``; without
+    it such an engine names nobody (fail closed).
     ``label_reserve``: bytes the host adds to every result after
     this tool answers (its capture labels): pages and trimming leave that much room below
     ``limits.max_result_bytes``."""
@@ -890,6 +978,9 @@ class InvestigateTools:
                  | None = None,
                  assumptions: Callable[[str, Actor], Sequence[Mapping[str, Any]]]
                  | None = None,
+                 held_markings: Callable[[Actor], Iterable[str]] | None = None,
+                 landed_actuals: Callable[[Sequence[str]], Mapping[str, Any]] | None = None,
+                 people: Callable[[], Any] | None = None,
                  timer: Callable[[], float] | None = None,
                  label_reserve: int = 0) -> None:
         self.table = table
@@ -912,6 +1003,9 @@ class InvestigateTools:
         self.follow_ups = follow_ups
         self.reviews = reviews
         self.assumptions = assumptions
+        self.held_markings = held_markings
+        self.landed_actuals = landed_actuals
+        self.people = people
         self._hops: dict[tuple[str, str], list[list[dict[str, str]]]] = {}
         self._starts: dict[str, frozenset[str] | None] = {}
         self._format: Mapping[str, Any] | None = None
@@ -930,6 +1024,24 @@ class InvestigateTools:
             return self.plans[family]
         return next((plan for plan in self.plans.values()
                      if family in plan.doc["families"]), None)
+
+    def _markings_not_held(self, plan: Plan, actor: Actor) -> dict[str, Any] | None:
+        """The refusal of a plan whose ``requires_markings`` the actor does not hold
+        (decided before any root is resolved, so it says nothing about the root); a host
+        that cannot say which markings the actor holds refuses too."""
+        needed = set(plan.doc.get("requires_markings") or ())
+        if not needed:
+            return None
+        try:
+            held = set(self.held_markings(actor)) if self.held_markings is not None else set()
+        except Exception:  # noqa: BLE001 - an undecided grant holds nothing
+            held = set()
+        missing = sorted(needed - held)
+        if not missing:
+            return None
+        return _error("scope_not_held", f"this question needs the {', '.join(missing)} "
+                      "read scope, which this reader does not hold",
+                      "ask someone holding that scope; nothing about the root was read")
 
     def _inline_plan(self, doc: Any) -> Plan | dict[str, Any]:
         """An inline plan held to every rule a stored one is (the format, ``plan_problems``
@@ -1019,6 +1131,9 @@ class InvestigateTools:
             return self._checked(plan)
         if plan is None:
             return self._checked(self._no_plan(arguments, actor, None))
+        refused = self._markings_not_held(plan, actor)
+        if refused is not None:
+            return self._checked(refused)
         run = _Run(plan, actor, min(int(arguments.get("step_budget")
                                         or plan.doc["step_budget"]), MAX_STEP_BUDGET),
                    arguments.get("as_known_at"), relations=self._api_relations(),
@@ -1069,19 +1184,25 @@ class InvestigateTools:
             args.setdefault("as_known_at", run.as_known_at)
         run.used += 1
         try:
-            result = self.table[tool]["handler"](dict(args), run.actor)
+            with plan_read():   # the plan's own read: its answer is what is fitted
+                result = self.table[tool]["handler"](dict(args), run.actor)
         except Exception as exc:  # noqa: BLE001 - a crashing primitive is a gap, not a crash
             result = _error("tool_exception", f"{tool} raised {type(exc).__name__}")
         if not isinstance(result, dict):
             result = _error("tool_exception", f"{tool} returned no object")
         if harvest:
-            self._harvest(run, result)
+            self._harvest(run, result, whole_read=tool == "plx.object"
+                          and args.get("properties") is None)
         return result
 
-    def _harvest(self, run: _Run, result: Mapping[str, Any]) -> None:
+    def _harvest(self, run: _Run, result: Mapping[str, Any], *,
+                 whole_read: bool = False) -> None:
         """Merge the parts every primitive output shares ($defs object_ref, edge, value,
         gap, conflict, withheld, meta) into the run; tool-specific parts stay in the step
-        results for ``select`` evidence."""
+        results for ``select`` evidence. A whole-record read lists every property its
+        source never serves (``not_served``, the same for every reader): such a gap stays
+        listed but leaves the answer short only for a property the plan's evidence names
+        (a read naming its properties asked for each)."""
         meta = result.get("meta")
         if isinstance(meta, Mapping) and run.meta is None and "schema_digest" in meta:
             run.meta = dict(meta)
@@ -1095,14 +1216,20 @@ class InvestigateTools:
             # A primitive answer this reader's grants trimmed: the run never reads as whole.
             run.reason(WITHHELD)
         for gap in result.get("gaps") or ():
+            if gap.get("reason") in REFUSED_CODES:
+                if gap not in run.refused:
+                    run.refused.append(dict(gap))
+                continue
             run.add_gap(gap)
+            if whole_read and gap.get("reason") == "not_served" \
+                    and gap.get("subject") not in _evidence_properties(run.plan.doc):
+                continue
             if gap.get("state") not in _NOTE_GAP_STATES:
                 # Evidence the primitive could not read: the answer is short of it (a state
                 # outside the contract fails the output contract, never reads as whole).
                 run.reason(f"gap_{gap.get('state')}")
         for conflict in result.get("conflicts") or ():
-            if conflict not in run.conflicts:
-                run.conflicts.append(conflict)
+            _add_conflict(run.conflicts, conflict)
         for ref in list(result.get("objects") or ()) + [result.get("object")]:
             if isinstance(ref, Mapping) and isinstance(ref.get("object_id"), str):
                 run.objects.setdefault(ref["object_id"], dict(ref))
@@ -1686,6 +1813,9 @@ class InvestigateTools:
                              "within the step budget; each is kept as reached, unchecked"))
         if not differs:
             return list(reached)
+        # Which same-number record is the root's own rests on a corroboration a person may
+        # overturn: the answer is short of that judgement, never whole.
+        run.reason("party_differs")
         for oid in differs:
             if oid not in known:
                 run.objects.pop(oid, None)
@@ -1832,6 +1962,13 @@ class InvestigateTools:
                 if any(named.get(n, {}).get("lead_basis") for n in entry.get("inputs") or ()):
                     entry["lead_basis"] = True
             answer.extend(entries)
+        if run.withhold_entries:
+            dropped = [e for e in answer if e["name"] in run.withhold_entries]
+            cells = {(e["citation"]["l1_handle"], e["citation"]["field_path"])
+                     for e in dropped if isinstance(e.get("citation"), Mapping)}
+            answer = [e for e in answer if e["name"] not in run.withhold_entries]
+            cited = [v for v in cited if not isinstance(v.get("citation"), Mapping) or (
+                v["citation"].get("l1_handle"), v["citation"].get("field_path")) not in cells]
         return answer, cited
 
     @staticmethod
@@ -1864,6 +2001,26 @@ class InvestigateTools:
         return [{"name": name or item["name"], "kind": item["kind"], "value": None,
                  "check": "not_applicable"}]
 
+    def _markings_lacked(self, run: _Run, type_id: str, props: Sequence[str]) -> list[str]:
+        """The schema markings this reader lacks when every one of ``props`` carries one it
+        does not hold (from the schema and the reader's own grant, never from a row); empty
+        when one property carries none it lacks or the host cannot say what it holds."""
+        if self.held_markings is None:
+            return []
+        try:
+            held = set(self.held_markings(run.actor))
+        except Exception:  # noqa: BLE001 - an undecided grant decides nothing here
+            return []
+        declared = {p["name"]: p for p in (self.schema.object_types.get(type_id) or {}
+                                           ).get("properties") or ()}
+        lacked: set[str] = set()
+        for prop in props:
+            missing = set((declared.get(prop) or {}).get("markings") or ()) - held
+            if not missing:
+                return []
+            lacked |= missing
+        return sorted(lacked)
+
     def _property(self, run: _Run, item: Mapping[str, Any],
                   cited: list[dict[str, Any]]) -> list[dict[str, Any]]:
         objects = self._objects_of(run, item)
@@ -1881,52 +2038,32 @@ class InvestigateTools:
             if oid in unread:
                 continue
             values = [v for v in run.values.get(oid, [])
-                      if not item.get("omit_empty") or v.get("value") is not None]
+                      if not item.get("omit_empty") or not _empty_value(v.get("value"))]
             for prop in props:
                 carried = [v for v in values if v.get("property") == prop]
                 if carried:
                     found.extend((oid, v) for v in carried)
                     break
         if not found:
+            lacked = self._markings_lacked(run, type_id, props)
+            if lacked:
+                # Every property read here carries a marking this reader does not hold: a
+                # withheld value, never a missing one (whether a record holds one is not said).
+                return self._missing(
+                    run, item, "inaccessible", "marking_withheld", f"{type_id}.{'|'.join(props)}",
+                    f"this property carries the {', '.join(lacked)} marking, which this reader "
+                    "does not hold; whether a reached record holds a value is not shown")
             return self._missing(run, item, "unknown", "not_carried",
                                  f"{type_id}.{'|'.join(props)}",
                                  "no reached record carries a readable value of this property")
-        entries: list[dict[str, Any]] = []
+        if item.get("total"):
+            return self._total(run, item, objects, cited)
         many = len(found) > 1 or item.get("numbering") == "value"
         if item.get("numbering") == "value":
             found.sort(key=lambda pair: (_value_text(pair[1].get("value")) or "", pair[0]))
-        for index, (oid, value) in enumerate(found, start=1):
-            name = f"{item['name']}_{index}" if many else item["name"]
-            entry = {"name": name[:64], "kind": "property", "value": value.get("value"),
-                     "value_type": value["value_type"], "object_id": oid,
-                     "object_type": _type_of(oid), "property": value["property"],
-                     "citation": value["citation"], "check": "not_checked"}
-            role = item.get("quantity_role") or value.get("quantity_role")
-            if role:
-                entry["quantity_role"] = role
-            for key in ("unit", "currency"):
-                if key in value:
-                    entry[key] = value[key]
-            if item.get("canonical_unit") and unit_token(entry.get("unit")) is not None:
-                # One unit vocabulary (ontology/units.py): each -> ea; the claim gate still
-                # checks the cited cell in its own spelling (_source_unit).
-                entry["unit"] = unit_token(entry["unit"])
-            if isinstance(value.get("review"), Mapping):
-                # A person's review in force (plx.object), beside the source value and its
-                # citation, never in their place.
-                entry["review"] = dict(value["review"])
-            if value.get("value") is None:
-                entry["check"] = "not_applicable"
-                if item.get("required"):
-                    run.reason(f"missing_{item['name']}")
-                run.add_gap(_gap(item.get("if_null", "absent_in_source"), "value_empty",
-                                 f"{_type_of(oid)}.{value['property']}",
-                                 f"the cited record's {value['citation']['field_path']} is "
-                                 "empty", item["name"]))
-            else:
-                if value not in cited:
-                    cited.append(value)
-            entries.append(entry)
+        entries = [self._value_entry(run, item, oid, value,
+                                     f"{item['name']}_{index}" if many else item["name"], cited)
+                   for index, (oid, value) in enumerate(found, start=1)]
         # Records agree when their values do: a value is its source text (each record's
         # citation differs) compared by type, with its currency and unit.
         distinct = {(_compare_key(e["value_type"], _value_text(e["value"]) or _canonical(e["value"])
@@ -1934,11 +2071,160 @@ class InvestigateTools:
                      e.get("currency"), unit_token(e.get("unit")) or e.get("unit"))
                     for e in entries if e["value"] is not None}
         if item.get("single") and len(distinct) > 1:
-            run.conflicts.append({"kind": "value_disagreement",
-                                  "subject": f"{type_id}.{'|'.join(props)}"[:700],
-                                  "values": [v for _, v in found][:12]})
+            _add_conflict(run.conflicts, {"kind": "value_disagreement",
+                                          "subject": f"{type_id}.{'|'.join(props)}"[:700],
+                                          "values": [v for _, v in found][:12]})
             run.reason(f"conflict_{item['name']}")
         return entries
+
+    def _value_entry(self, run: _Run, item: Mapping[str, Any], oid: str,
+                     value: Mapping[str, Any], name: str,
+                     cited: list[dict[str, Any]]) -> dict[str, Any]:
+        """The answer entry of one read value (a null one is its value_empty gap)."""
+        entry = {"name": name[:64], "kind": "property", "value": value.get("value"),
+                 "value_type": value["value_type"], "object_id": oid,
+                 "object_type": _type_of(oid), "property": value["property"],
+                 "citation": value["citation"], "check": "not_checked"}
+        role = item.get("quantity_role") or value.get("quantity_role")
+        if role:
+            entry["quantity_role"] = role
+        for key in ("unit", "currency"):
+            if key in value:
+                entry[key] = value[key]
+        if item.get("canonical_unit") and unit_token(entry.get("unit")) is not None:
+            # One unit vocabulary (ontology/units.py): each -> ea; the claim gate still
+            # checks the cited cell in its own spelling (_source_unit).
+            entry["unit"] = unit_token(entry["unit"])
+        if isinstance(value.get("review"), Mapping):
+            # A person's review in force (plx.object), beside the source value and its
+            # citation, never in their place.
+            entry["review"] = dict(value["review"])
+        if value.get("value") is None:
+            entry["check"] = "not_applicable"
+            if item.get("required"):
+                run.reason(f"missing_{item['name']}")
+            run.add_gap(_gap(item.get("if_null", "absent_in_source"), "value_empty",
+                             f"{_type_of(oid)}.{value['property']}",
+                             f"the cited record's {value['citation']['field_path']} is "
+                             "empty", item["name"]))
+        elif value not in cited:
+            cited.append(value)
+        return entry
+
+    def _total(self, run: _Run, item: Mapping[str, Any], objects: Sequence[str],
+               cited: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """A ``total: sum`` quantity: per unit, the sum of the reached objects' values (per
+        object its ``prefer`` records' valued sum, in its unit when they carry none, when it
+        has one, else its own value), as
+        one computed entry over the cited lines (``{name}_line_<n>``); a unit of one line
+        is that line's entry. Named ``name``, or ``name_<n>`` per unit in the unit's order.
+        Any reached object unread or carrying no value, a record ``prefer`` cannot tie to
+        one object, a non-numeric value or an incomplete run leaves the total unknown."""
+        from .claim_checks import _plain, to_decimal
+
+        type_id, props = item["object_type"], item["properties"]
+        parts: list[tuple[str, Mapping[str, Any]]] = []
+
+        def first(oid: str, wanted: Sequence[str]) -> Mapping[str, Any] | None:
+            for prop in wanted:
+                carried = [v for v in run.values.get(oid, []) if v.get("property") == prop]
+                if carried:
+                    return carried[0] if len(carried) == 1 else None
+            return None
+
+        def unknown(reason: str, detail: str) -> list[dict[str, Any]]:
+            return self._missing(run, item, "unknown", reason, f"{type_id}.{'|'.join(props)}",
+                                 detail)
+        if run.truncated is not None or run.stopped:
+            return unknown("total_not_determined", "the run did not read every record it "
+                           f"reached ({run.truncated or 'stopped'}), so no total is stated")
+        prefer = item.get("prefer")
+        for oid in objects:
+            if oid not in run.read:
+                return unknown("not_read", f"{oid} was reached but not read, so no total "
+                               "is stated")
+            if prefer is not None:
+                details, why = self._preferred(run, oid, prefer)
+                if why is not None:
+                    return unknown(*why)
+                valued = [(d, v) for d in details
+                          for v in [first(d, [prefer["property"]])]
+                          if v is not None and v.get("value") is not None]
+                own = first(oid, props)
+                if valued and own is not None and own.get("unit") is not None:
+                    # A record that carries no unit counts in its object's unit.
+                    valued = [(d, v if v.get("unit") is not None else {**v, "unit": own["unit"]})
+                              for d, v in valued]
+                if valued:
+                    parts.extend(valued)
+                    continue
+            own = first(oid, props)
+            if own is None:
+                return unknown("not_carried", f"{oid} carries no one readable value of this "
+                               "property, so no total is stated")
+            parts.append((oid, own))
+        if len(parts) == 1:
+            return [self._value_entry(run, item, *parts[0], item["name"], cited)]
+        groups: dict[str | None, list[tuple[str, Mapping[str, Any]]]] = {}
+        for oid, value in parts:
+            if value.get("value") is not None and to_decimal(value["value"]) is None:
+                return unknown("total_not_determined", f"{oid}'s value is not a number")
+            unit = value.get("unit")
+            groups.setdefault(unit.strip() if isinstance(unit, str) and unit.strip() else None,
+                              []).append((oid, value))
+        if any(len(rows) > 50 for rows in groups.values()):
+            return unknown("total_not_determined", "more than 50 records of one unit")
+        entries: list[dict[str, Any]] = []
+        line = 0
+        for index, unit in enumerate(sorted(groups, key=lambda u: (u is None, u or "")), 1):
+            name = item["name"] if len(groups) == 1 else f"{item['name']}_{index}"
+            rows = groups[unit]
+            if len(rows) == 1:
+                entries.append(self._value_entry(run, item, *rows[0], name, cited))
+                continue
+            lines = []
+            for oid, value in rows:
+                line += 1
+                lines.append(self._value_entry(run, item, oid, value,
+                                               f"{item['name']}_line_{line}", cited))
+            numbers = [to_decimal(e["value"]) for e in lines]
+            value = None if None in numbers else _plain(sum(numbers[1:], numbers[0]))
+            steps = [(" + ".join(str(e["value"]) for e in lines) + f" = {value}")[:400]] \
+                if value is not None else []
+            total = {"name": name[:64], "kind": "computed", "value": value,
+                     "value_type": "quantity", "inputs": [e["name"] for e in lines],
+                     "steps": steps, "check": "not_applicable"}
+            for key in ("quantity_role", "unit"):
+                if lines[0].get(key) is not None:
+                    total[key] = lines[0][key]
+            total["digest"] = hashlib.sha256(_canonical(
+                {"op": "sum", "value": value, "unit": total.get("unit"),
+                 "inputs": [e["citation"] for e in lines]}).encode("utf-8")).hexdigest()
+            entries.extend([*lines, total])
+        return entries
+
+    def _preferred(self, run: _Run, oid: str, prefer: Mapping[str, Any]
+                   ) -> tuple[list[str], tuple[str, str] | None]:
+        """The ``prefer`` records of ``oid``: the objects of ``prefer.object_type`` its
+        edges reach along ``prefer.via`` (link types, hop by hop, either direction), and
+        why none can be used (a hop reaching several objects of a 1:1 link, or a reached
+        record not read)."""
+        frontier = [oid]
+        for hop, link_type in enumerate(prefer["via"]):
+            reached = sorted({e["to"] if e["from"] == node else e["from"]
+                              for node in frontier for e in run.edges.values()
+                              if e.get("link_type") == link_type and node in (e["from"], e["to"])
+                              and e.get("tier") != "contradicted"})
+            if hop == 0 and len(reached) > 1:
+                return [], ("prefer_not_unique", f"{oid} has {len(reached)} {link_type} "
+                            "records, so its own value is not one of theirs")
+            frontier = reached
+        details = [d for d in frontier if _type_of(d) == prefer["object_type"]]
+        unread = [d for d in details if d not in run.read]
+        if unread:
+            return [], ("not_read", f"{len(unread)} {prefer['object_type']} of {oid} reached "
+                        "but not read, so no total is stated")
+        return details, None
 
     def _count(self, run: _Run, item: Mapping[str, Any]) -> list[dict[str, Any]]:
         if "from" in item:
@@ -2081,6 +2367,31 @@ class InvestigateTools:
         if calls < len(unread):
             entry["status"] = "budget_exhausted"
 
+    @staticmethod
+    def _list_cuts(run: _Run, item: Mapping[str, Any], result: Mapping[str, Any],
+                   parts: Sequence[str]) -> None:
+        """A list the path reads inside an entry (``lateness.lines.*``: each entry's
+        ``lines``) that the primitive cut to fit says so on that entry (gap
+        ``<list>_truncated``): the gap becomes the item's own and the run's answerability
+        is partial, whatever the entry's verdict, so an answer stating the listed
+        elements never reads as all of them."""
+        for depth, key in enumerate(parts):
+            if key == "*" or depth == 0:
+                continue
+            entries = _select_path(result, list(parts[:depth]))
+            entries = [x for e in entries for x in (e if isinstance(e, list) else [e])]
+            for entry in entries:
+                own = entry.get("gaps") if isinstance(entry, Mapping) else None
+                for gap in own if isinstance(own, list) else ():
+                    if (isinstance(gap, Mapping) and gap.get("reason") == f"{key}_truncated"
+                            and isinstance(gap.get("state"), str)
+                            and isinstance(gap.get("subject"), str)):
+                        detail = gap.get("detail")
+                        run.add_gap(_gap(gap["state"], gap["reason"], gap["subject"],
+                                         detail if isinstance(detail, str) else None,
+                                         item["name"]))
+                        run.reason(gap["reason"])   # a cut list: the answer is partial
+
     def _select(self, run: _Run, item: Mapping[str, Any],
                 produced: Mapping[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
         """A value read from the step's own results, with the cited values the selected
@@ -2101,6 +2412,7 @@ class InvestigateTools:
                 elements.extend(_select_elements(result, path.split("."), item.get("where"),
                                                  item.get("where_any")))
                 truncated = truncated or bool((result.get("completeness") or {}).get("truncated"))
+                self._list_cuts(run, item, result, path.split("."))
         per = item.get("per")
         if per is None:
             return self._reduced(run, item, item["name"], elements, truncated)
@@ -2117,6 +2429,8 @@ class InvestigateTools:
                              f"{loose} element(s) at {path} name no {per}, so no "
                              f"{item['name']} entry states them"))
         if not groups:
+            if item.get("omit_empty"):
+                return []
             return self._missing(run, item, "unknown", "not_determined", item["name"],
                                  f"step {sid} gave no element with a {per} at {path}")
         numbered = produced.get(item.get("number_as", ""), ())
@@ -2139,6 +2453,8 @@ class InvestigateTools:
         sid, path = item["step"], item["path"]
         picked = [value for _, values in elements for value in values]
         reduce = item["reduce"]
+        if item.get("omit_empty") and not [v for v in picked if v is not None]:
+            return []   # an optional select: a group with no value is no entry and no gap
         if reduce in ("all", "any"):
             if not picked or not all(v is None or isinstance(v, bool) for v in picked):
                 return self._missing(run, item, "unknown", "not_determined", name,
@@ -2171,7 +2487,7 @@ class InvestigateTools:
                 value = picked[0] if isinstance(picked[0], (str, int, bool)) else None
         entry: dict[str, Any] = {"name": name, "kind": "select", "value": value,
                                  "check": "not_applicable"}
-        cells = _cells([element for element, _ in elements])
+        cells = _cells([element for element, _ in elements], item.get("cells_only"))
         if cells and not any(validate(cell, _VALUE, root=self.contracts, limit=1)
                              for cell in cells):  # a primitive's malformed value: no cells
             entry["cells"] = cells
@@ -2195,6 +2511,27 @@ class InvestigateTools:
                 return all(self.scope(link_type, root, run.actor) is True for root in roots)
             except Exception:  # noqa: BLE001 - an undecided scope proves nothing
                 return False
+
+        def withheld(link_type: str) -> int | None:
+            """Objects the link attaches to the roots that carry a marking the reader lacks."""
+            counter = getattr(self.scope, "withheld", None)
+            if counter is None or not roots:
+                return None
+            try:
+                counts = [counter(link_type, root, run.actor) for root in roots]
+            except Exception:  # noqa: BLE001 - an undecided count states nothing
+                return None
+            return None if None in counts else sum(counts)
+
+        evidence = {e["name"]: e for e in run.plan.doc["evidence"]}
+
+        def markings_lacked(name: str) -> list[str]:
+            """The markings this reader lacks on every property evidence ``name`` reads
+            (from the schema and its grant; empty when it may read one of them)."""
+            spec = evidence.get(name)
+            if spec is None or spec.get("kind") != "property":
+                return []
+            return self._markings_lacked(run, spec["object_type"], spec["properties"])
 
         def captured(relation: str) -> bool | None:
             if self.captured is None or not roots:
@@ -2220,10 +2557,22 @@ class InvestigateTools:
             takes = inspect.signature(engine).parameters
             extra = {"captured": captured} if "captured" in takes or any(
                 p.kind is p.VAR_KEYWORD for p in takes.values()) else {}
+            if "withheld" in takes:   # by name only, as ``reviews``
+                extra["withheld"] = withheld
+            if "markings_lacked" in takes:   # by name only, as ``reviews``
+                extra["markings_lacked"] = markings_lacked
             if "reviews" in takes:   # by name only: a wrapper forwarding **kw is not one
                 extra["reviews"] = reviews
             if "assumptions" in takes:   # by name only, as ``reviews``
                 extra["assumptions"] = self._assumptions(run, roots)
+            if "landed_actuals" in takes and self.landed_actuals is not None:
+                extra["landed_actuals"] = self._actuals_reader(run)
+            if "people" in takes:   # by name only; None: the engine names nobody
+                extra["people"] = self.people
+            if "roots" in takes:   # by name only: the run's root object ids
+                extra["roots"] = tuple(roots)
+            if "objects" in takes:   # by name only: the reader's object references
+                extra["objects"] = {k: dict(v) for k, v in run.objects.items()}
             out = engine(
                 item["engine_args"], produced, list(run.edges.values()),
                 items={e["name"]: e for e in run.plan.doc["evidence"]}, name=item["name"],
@@ -2238,6 +2587,11 @@ class InvestigateTools:
             run.add_gap(gap)
         for code in out["reasons"]:
             run.reason(code)
+        # Property entries the engine found to name a person the people exclusion withholds
+        # (or cannot clear): dropped from the answer (``_evidence``), never shown.
+        run.withhold_entries.update(n for n in out.get("withhold") or () if isinstance(n, str)
+                                    and any(e["name"] == n and e.get("kind") == "property"
+                                            for done in produced.values() for e in done))
         self._engine_conflicts(run, out.get("conflicts") or (), produced)
         entries = list(out["entries"])
         computed = {e["name"]: e for e in [*(e for done in produced.values() for e in done
@@ -2259,6 +2613,45 @@ class InvestigateTools:
                 entries = [{"name": item["name"], "kind": "computed", "value": None,
                             "inputs": [], "steps": [], "check": "not_applicable"}]
         return entries
+
+    def _actuals_reader(self, run: _Run) -> Callable[[Sequence[str]], Mapping[str, Any]]:
+        """The capture-built recorded charges (``duty_actual.ActualsFile``) for this reader:
+        amounts are finance-marked money, so a reader who holds neither the finance marking
+        nor ``ESTIMATES_MARKING``, or whose markings the host cannot say, gets ``withheld`` and
+        no record; one holding ``ESTIMATES_MARKING`` alone gets ``actuals_withheld``, no record
+        and only the company-wide (level ``all``) history estimates; a provider that fails
+        reads as unavailable, never as no charge."""
+        try:
+            held = set(self.held_markings(run.actor)) if self.held_markings is not None \
+                else set()
+        except Exception:  # noqa: BLE001 - an undecided grant grants nothing
+            held = set()
+        provider = self.landed_actuals
+
+        def read(keys: Sequence[str]) -> Mapping[str, Any]:
+            if ACTUALS_MARKING not in held and ESTIMATES_MARKING not in held:
+                return {"withheld": ACTUALS_MARKING}
+            try:
+                out = provider(list(keys))
+            except Exception:  # noqa: BLE001 - an unreadable capture is no record, named
+                return {"unavailable": "LANDED_ACTUALS_UNREADABLE"}
+            if not isinstance(out, Mapping):
+                return {"unavailable": "LANDED_ACTUALS_UNREADABLE"}
+            if ACTUALS_MARKING in held:
+                return out
+            if out.get("unavailable"):   # a code, no money: named as for a finance reader
+                return {"unavailable": out["unavailable"]}
+            # A purchasing reader (purchasing_prices, no finance): the capture's labelled
+            # company-wide estimates only. No per-PO record, no supplier or country rate
+            # (derived from few orders' AP charges, it can restate one), no linked numbers.
+            defaults = out.get("default_estimates")
+            defaults = {part: rec for part, rec in defaults.items()
+                        if isinstance(rec, Mapping) and rec.get("level") == "all"} \
+                if isinstance(defaults, Mapping) else {}
+            return {"actuals_withheld": ACTUALS_MARKING, "records": {}, "known": [],
+                    "default_estimates": defaults, "digest": out.get("digest"),
+                    "built_at": out.get("built_at")}
+        return read
 
     def _assumptions(self, run: _Run, roots: Sequence[str]) -> list[Mapping[str, Any]]:
         """The person-recorded assumptions on the run's roots, for its reader; none (and a
@@ -2293,8 +2686,7 @@ class InvestigateTools:
                 continue  # nothing two-sided this reader was shown; the engine's gap stays
             found = {k: v for k, v in conflict.items() if k != "inputs"}
             found["values"] = values[:12]
-            if found not in run.conflicts:
-                run.conflicts.append(found)
+            _add_conflict(run.conflicts, found)
 
     # ------------------------------------------------------------------ claims
 
@@ -2382,6 +2774,7 @@ class InvestigateTools:
                 cursor: tuple[int, int, str] | None = None) -> dict[str, Any]:
         blocked = bool({"ambiguous_root", "root_not_found", "root_lead_only"}
                        & set(run.reasons))
+        _settle_refused(run)
         answer, cited = ([], []) if blocked else self._evidence(run)
         claims = self._claim_checks(run, answer) if not blocked else {
             "checked": False, "passed": False, "claims": 0, "failures": []}
@@ -2499,6 +2892,7 @@ class InvestigateTools:
         if cursor is not None and start >= len(flat):
             return _error("invalid_cursor", "the cursor is past the end of this answer",
                           "ask again without cursor")
+        self._make_room(out, shared, units)
         bounds = self._bounds(out, shared, units, start)
         if bounds is None:
             return _too_large()
@@ -2534,13 +2928,7 @@ class InvestigateTools:
         even alone beside the shared entries and trimmed: the answer is too large, refused
         before any page rather than a page over the bound."""
         cap = self.page_cap
-        widest = 10 ** 6  # page numbers and counts as wide as any real one
-        base = dict(out, answer=list(shared), values=[], chain={"objects": [], "edges": []},
-                    answer_page=dict.fromkeys(("page", "pages", "returned", "total"), widest),
-                    completeness=dict(out["completeness"], complete=False, truncated=True,
-                                      reason=out["completeness"].get("reason") or "answer_paged",
-                                      next_cursor=_write_cursor(widest, widest, "0" * 16,
-                                                                "0" * 16)))
+        base = _page_base(out, shared)
         fixed = _envelope_bytes(base)
 
         def cost(entries: list[dict[str, Any]]) -> int:
@@ -2579,6 +2967,40 @@ class InvestigateTools:
         bounds.append((first, position))
         return bounds
 
+    def _make_room(self, out: dict[str, Any], shared: list[dict[str, Any]],
+                   units: list[list[dict[str, Any]]]) -> None:
+        """Drop the conflicts no answer entry cites, last first, until the widest unit fits
+        a page beside what every page repeats (the shared entries, gaps and conflicts): the
+        same for every page of one answer, so the pages pack units, never one each."""
+        conflicts = out.get("conflicts") or []
+        cited = {_cite_key(e.get("citation")) for e in out["answer"]} - {None}
+        candidates = [i for i in reversed(range(len(conflicts)))
+                      if not cited & _conflict_cites(conflicts[i])]
+        if not candidates or not units:
+            return
+        base = _page_base(out, shared)
+        fixed = _envelope_bytes(base)
+        widest = max(_envelope_bytes(dict(base, answer=list(shared) + unit)) - fixed
+                     + _ENTRY_SLACK * len(unit) for unit in units)
+        excess = fixed + widest - self.page_cap
+        if excess <= 0:
+            return
+        before = _envelope_bytes({"g": out.get("gaps") or []})
+        _note_conflicts_cut(out, 0)
+        excess += _envelope_bytes({"g": out.get("gaps") or []}) - before
+        empty = _envelope_bytes({"c": []})
+        cut: list[int] = []
+        while candidates and excess > 0:
+            index = candidates.pop(0)
+            cut.append(index)
+            excess -= _envelope_bytes({"c": [conflicts[index]]}) - empty
+        for index in sorted(cut, reverse=True):
+            del conflicts[index]
+        _note_conflicts_cut(out, len(cut))
+        out["completeness"] = dict(
+            out["completeness"], complete=False, truncated=True,
+            reason=out["completeness"].get("reason") or "result_too_large")
+
     def _trims_to_fit(self, base: Mapping[str, Any], entries: list[dict[str, Any]]) -> bool:
         """Whether a page of ``entries`` alone (beside the shared entries of ``base``) fits
         once ``_fit`` trims it, so it stays whole rather than split."""
@@ -2598,8 +3020,9 @@ class InvestigateTools:
     def _fit(self, out: dict[str, Any]) -> dict[str, Any]:
         """Bound the result to the envelope: the feature citations of chain edges (edges
         below the evidence tiers first, a lead's citations backing no counted value, then the
-        rest; last edge first in each; the edge, its tier and features stay), then edges, then
-        chain objects,
+        rest; last edge first in each; the edge, its tier and features stay), then chain
+        objects, then edges (an edge is the chain's evidence and names its ends by id, which
+        ``plx.object`` resolves; an object is only their display),
         then cited values, each halved until it fits, then the records and cells of the
         largest entries (the
         answer and its citations stay; such an entry is then a figure without its inputs),
@@ -2623,7 +3046,7 @@ class InvestigateTools:
             out["completeness"] = dict(
                 out["completeness"], complete=False, truncated=True,
                 reason=out["completeness"].get("reason") or "result_too_large")
-        for key in ("edges", "objects", "values"):
+        for key in ("objects", "edges", "values"):
             while _envelope_bytes(out) > cap:
                 holder = out["chain"] if key in ("edges", "objects") else out
                 if not holder[key]:
@@ -2632,13 +3055,23 @@ class InvestigateTools:
                 out["completeness"] = dict(
                     out["completeness"], complete=False, truncated=True,
                     reason=out["completeness"].get("reason") or "result_too_large")
+        # a conflict no answer entry cites goes before any entry's own inputs: the entry is
+        # the answer, the conflict context (the conflicts_truncated gap counts the drop)
+        cited = {_cite_key(e.get("citation")) for e in out["answer"]} - {None}
+        self._drop_conflicts(out, lambda c: not cited & _conflict_cites(c))
         inputs = sorted((e for e in out["answer"] if "records" in e or "cells" in e),
                         key=lambda e: -len(e.get("records") or e.get("cells") or ()))
         for entry in inputs:
             if _envelope_bytes(out) <= cap:
                 break
+            # the entry's value rests on a record or a cell when one of them holds it
+            rests = bool(entry.get("records")) or any(
+                isinstance(cell, Mapping) and cell.get("value") == entry.get("value")
+                for cell in entry.get("cells") or ())
             entry.pop("records", None)
             entry.pop("cells", None)
+            if rests:
+                entry["inputs_cut"] = True
             out["completeness"] = dict(
                 out["completeness"], complete=False, truncated=True,
                 reason=out["completeness"].get("reason") or "result_too_large")
@@ -2660,7 +3093,42 @@ class InvestigateTools:
             out["completeness"] = dict(
                 out["completeness"], complete=False, truncated=True,
                 reason=out["completeness"].get("reason") or "result_too_large")
+        self._drop_conflicts(out, lambda c: True)
         return out
+
+    def _drop_conflicts(self, out: dict[str, Any], droppable: Callable[[Mapping[str, Any]], bool]
+                        ) -> None:
+        """Drop ``droppable`` conflicts of ``out``, last first, until it fits the page cap;
+        the answer is then cut (``result_too_large``)."""
+        conflicts = out.get("conflicts") or []
+        candidates = [i for i in reversed(range(len(conflicts))) if droppable(conflicts[i])]
+        if not candidates or _envelope_bytes(out) <= self.page_cap:
+            return
+        _note_conflicts_cut(out, 0)   # its own bytes are counted before any drop
+        try:
+            self._drop_until_fits(out, conflicts, candidates)
+        finally:
+            _drop_empty_cut_note(out)
+
+    def _drop_until_fits(self, out: dict[str, Any], conflicts: list[dict[str, Any]],
+                         candidates: list[int]) -> None:
+        empty = _envelope_bytes({"c": []})
+        while candidates:
+            excess = _envelope_bytes(out) - self.page_cap
+            if excess <= 0:
+                return
+            # as many as their own bytes cover the excess, last first; then measure again
+            cut: list[int] = []
+            while candidates and excess > 0:
+                index = candidates.pop(0)
+                cut.append(index)
+                excess -= _envelope_bytes({"c": [conflicts[index]]}) - empty
+            for index in sorted(cut, reverse=True):
+                del conflicts[index]
+            _note_conflicts_cut(out, len(cut))
+            out["completeness"] = dict(
+                out["completeness"], complete=False, truncated=True,
+                reason=out["completeness"].get("reason") or "result_too_large")
 
     def _checked(self, result: dict[str, Any]) -> dict[str, Any]:
         problems = validate(result, self.contracts["tools"]["plx.investigate"]["output"],
@@ -2746,7 +3214,8 @@ def _instant(text: str) -> dt.datetime:
 
 
 def _select_path(value: Any, parts: Sequence[str]) -> list[Any]:
-    """Values at a dotted path (``*`` iterates a list)."""
+    """Values at a dotted path (``*`` iterates a list; a key met on a list is read of
+    each of its items, so ``lateness.lines.*`` is the lines of every root's entry)."""
     if not parts:
         return [value]
     head, rest = parts[0], parts[1:]
@@ -2754,6 +3223,8 @@ def _select_path(value: Any, parts: Sequence[str]) -> list[Any]:
         if not isinstance(value, list):
             return []
         return [x for item in value for x in _select_path(item, rest)]
+    if isinstance(value, list):
+        return [x for item in value for x in _select_path(item, parts)]
     if isinstance(value, Mapping) and head in value:
         return _select_path(value[head], rest)
     return []
@@ -2778,14 +3249,17 @@ def _select_elements(value: Any, parts: Sequence[str], where: Mapping[str, Any] 
             and (not where_any or any(carries(element, keys) for keys in where_any))]
 
 
-def _cells(elements: Sequence[Any]) -> list[dict[str, Any]] | None:
+def _cells(elements: Sequence[Any], only: Sequence[str] | None = None
+           ) -> list[dict[str, Any]] | None:
     """The cited values (``$defs/value``) the elements compared, one per citation; None
-    unless every element carries one (a verdict is never shown with part of its inputs)."""
+    unless every element carries one (a verdict is never shown with part of its inputs).
+    ``only``: just the values of these properties (a plan item's ``cells_only``)."""
     cells: dict[tuple[str, str], dict[str, Any]] = {}
     for element in elements:
         values = element.get("values") if isinstance(element, Mapping) else None
         cited = [v for v in values or () if isinstance(v, Mapping)
-                 and isinstance(v.get("citation"), Mapping)]
+                 and isinstance(v.get("citation"), Mapping)
+                 and (only is None or v.get("property") in only)]
         if not cited:
             return None
         for value in cited:
@@ -2807,6 +3281,12 @@ def _records(run: _Run, objects: Sequence[str]) -> list[dict[str, str]] | None:
     if len(out) > 100 or len({r["l1_handle"] for r in out}) != len(out):
         return None
     return out
+
+
+def _evidence_properties(doc: Mapping[str, Any]) -> set[str]:
+    """``Type.property`` of each property a plan's ``property`` evidence reads."""
+    return {f"{item['object_type']}.{prop}" for item in doc.get("evidence") or ()
+            if item.get("kind") == "property" for prop in item.get("properties") or ()}
 
 
 def _citation_of(run: _Run, oid: str) -> dict[str, str] | None:
@@ -2869,6 +3349,97 @@ def _api_row(handle: Any) -> tuple[str, tuple[tuple[str, str], ...]] | None:
     return relation, _plain_key(key)
 
 
+def _page_base(out: Mapping[str, Any], shared: list[dict[str, Any]]) -> dict[str, Any]:
+    """What every page of ``out`` holds whatever its units: the shared entries, the gaps,
+    conflicts and the rest, with page numbers and a cursor as wide as any real one (chain
+    and values, which ``_fit`` trims, left out)."""
+    widest = 10 ** 6
+    return dict(out, answer=list(shared), values=[], chain={"objects": [], "edges": []},
+                answer_page=dict.fromkeys(("page", "pages", "returned", "total"), widest),
+                completeness=dict(out["completeness"], complete=False, truncated=True,
+                                  reason=out["completeness"].get("reason") or "answer_paged",
+                                  next_cursor=_write_cursor(widest, widest, "0" * 16, "0" * 16)))
+
+
+CONFLICTS_CUT = "conflicts_truncated"
+_CUT_DETAIL = re.compile(r"^([0-9]+) ")
+
+
+def _note_conflicts_cut(out: dict[str, Any], dropped: int) -> None:
+    """Add ``dropped`` to the answer's ``conflicts_truncated`` gap (made at 0 first, so its
+    bytes are counted before a drop): how many conflicts it does not show and why. A gap
+    list already at its contract bound (50) gets none; ``completeness`` still says cut."""
+    gaps = out.setdefault("gaps", [])
+    gap = next((g for g in gaps if g.get("reason") == CONFLICTS_CUT), None)
+    if gap is None:
+        if len(gaps) >= 50:
+            return
+        gap = {"state": "unknown", "reason": CONFLICTS_CUT, "subject": "conflicts"}
+        gaps.append(gap)
+    found = _CUT_DETAIL.match(gap.get("detail") or "")
+    total = (int(found[1]) if found else 0) + dropped
+    gap["detail"] = (f"{total} conflict(s) between linked records are not shown: none of "
+                     "them is on a record an answer entry cites, and with them the answer "
+                     "does not fit one response; read those records (plx.object) to see "
+                     "them")[:600]
+
+
+def _drop_empty_cut_note(out: dict[str, Any]) -> None:
+    """Remove a ``conflicts_truncated`` gap that counts no drop (the answer fit without)."""
+    out["gaps"] = [g for g in out.get("gaps") or () if not (
+        g.get("reason") == CONFLICTS_CUT and (g.get("detail") or "").startswith("0 "))]
+
+
+def _cite_key(cite: Any) -> tuple[str, str] | None:
+    if isinstance(cite, Mapping) and isinstance(cite.get("l1_handle"), str) \
+            and isinstance(cite.get("field_path"), str):
+        return cite["l1_handle"], cite["field_path"]
+    return None
+
+
+def _conflict_cites(conflict: Mapping[str, Any]) -> set[tuple[str, str]]:
+    """The (record, field) of each value a conflict compares."""
+    return {key for value in conflict.get("values") or () if isinstance(value, Mapping)
+            for key in (_cite_key(value.get("citation")),) if key is not None}
+
+
+def _conflict_held(conflict: Mapping[str, Any]) -> tuple[Any, frozenset] | None:
+    """What a conflict compares: its kind, subject and other fields, and the set of its
+    values' (record, field) or its events; None when a value carries no citation (then it
+    is never merged)."""
+    values = [v for v in conflict.get("values") or ()]
+    keys = {_cite_key(v.get("citation")) if isinstance(v, Mapping) else None for v in values}
+    if None in keys:
+        return None
+    rest = _canonical({k: v for k, v in conflict.items() if k not in ("values", "events")})
+    return rest, frozenset(keys) | frozenset(("event", str(e)) for e in
+                                             conflict.get("events") or ())
+
+
+def _add_conflict(conflicts: list[dict[str, Any]], conflict: Mapping[str, Any]) -> None:
+    """Add ``conflict`` once: one whose compared records (``_conflict_held``) another of the
+    same kind, subject and note already holds adds nothing; one holding more replaces every
+    such one, at the first's place. Several plan items read one property of an order's
+    twins, each naming the same disagreement over its own subset or order of the records."""
+    held = _conflict_held(conflict)
+    if held is None:
+        if conflict not in conflicts:
+            conflicts.append(dict(conflict))
+        return
+    rest, keys = held
+    place = None
+    for index in reversed(range(len(conflicts))):
+        other = _conflict_held(conflicts[index])
+        if other is None or other[0] != rest:
+            continue
+        if keys <= other[1]:
+            return
+        if other[1] < keys:
+            del conflicts[index]
+            place = index
+    conflicts.insert(len(conflicts) if place is None else place, dict(conflict))
+
+
 def _too_large() -> dict[str, Any]:
     return _error("result_too_large", "the answer does not fit one response",
                   "ask a narrower question about this root (a smaller family); cutting "
@@ -2898,8 +3469,10 @@ def _answer_units(answer: Sequence[dict[str, Any]]
 
 def _question(arguments: Mapping[str, Any], actor: Actor) -> str:
     """The cursor's fingerprint: the question and reader, not the follow_ups option (the
-    first page records them; the next pages are asked without it)."""
-    return _fingerprint({k: v for k, v in arguments.items() if k != "follow_ups"}, actor)
+    first page records them; the next pages are asked without it) nor the response_format
+    (how the MCP server words its text, never the answer)."""
+    return _fingerprint({k: v for k, v in arguments.items()
+                         if k not in ("follow_ups", "response_format")}, actor)
 
 
 def _write_cursor(page: int, start: int, digest: str, fingerprint: str) -> str:
@@ -3247,7 +3820,8 @@ def citation_rows(runtime: Any) -> Callable[[str, Actor], Mapping[str, Any] | No
 
     def rows(handle: str, actor: Actor) -> Mapping[str, Any] | None:
         try:
-            view = runtime.claim_row(handle, actor)
+            view = _with_captured_row(runtime, runtime.claim_row(handle, actor), handle,
+                                       actor)
         except Exception:  # noqa: BLE001 - unreadable for this reader through the runtime
             return None
         if not (isinstance(view, Mapping) and isinstance(handle, str)
@@ -3268,6 +3842,33 @@ def citation_rows(runtime: Any) -> Callable[[str, Actor], Mapping[str, Any] | No
         row = view.get("row")
         return {**view, "row": {**(row if isinstance(row, Mapping) else {}), "fields": fields}}
     return rows
+
+
+def _with_captured_row(runtime: Any, view: Any, handle: str, actor: Actor) -> Any:
+    """``view`` (``claim_row``'s, a captured SharePoint version, page or member) with the
+    row ``plx.read`` serves this reader for it now (its fields and ``row.content_text``,
+    read through the host's capture gate, ``CaseCaptures.served_row``), so a value a
+    claim reads from what the reader was shown (a file's name, a passage of its text) is
+    checked against exactly that; a page's view also carries that page's text as
+    ``text`` (``PAGE_TEXT``). Only the claim gate's rows get it: ``claim_row``'s
+    view is the one a case digests and stays as it is, and a field the view already
+    states (a pinned file's ``fields``) is kept. A changed-since view, another scheme
+    or a row the gate does not serve: ``view`` unchanged."""
+    reader = getattr(getattr(runtime, "captures", None), "served_row", None)
+    if not (callable(reader) and isinstance(view, Mapping) and isinstance(handle, str)
+            and handle.startswith("sharepoint://")) or view.get("changed_since"):
+        return view
+    served = reader(handle, actor)
+    if not isinstance(served, Mapping) or not served:
+        return view
+    row = view.get("row") if isinstance(view.get("row"), Mapping) else {}
+    out = {**view, "row": {**served, **row}}
+    if isinstance(view.get("page"), int) and isinstance(served.get("content_text"), str) \
+            and "text" not in view:
+        # A page's value is read on that page's text (field ``text``), as an original
+        # page's and the scorer's re-read of the page give it.
+        out["text"] = served["content_text"]
+    return out
 
 
 def gate_rows(rows: Callable[[str, Actor], Mapping[str, Any] | None] | None, actor: Actor,
@@ -3301,16 +3902,49 @@ def default_unit_contracts() -> Any:
 
 def read_scope(tools: Any) -> Callable[[str, str, Actor], bool]:
     """``scope`` over an ``OntologyTools``: whether its read policy (as set for the call)
-    shows the actor every object ``link_type`` can attach to ``root_id``, at every marking.
-    The reader must hold every store marking (a version may carry any) and read the audience
-    of every binding at the link's other end: ``api:<relation>`` exactly, another source
-    only as a family the policy fully covers (``ReadPolicy.covers_family``) and without item
-    ACLs. Decided from the policy and the schema, never from rows the reader cannot see, so
-    the answer says nothing about whether a withheld object exists."""
+    shows the actor every object ``link_type`` can attach to ``root_id``.
+
+    Markings are proven per object attached to this root, not per store: each object the
+    store holds on that link (read for no reader, shown to none) may carry only markings the
+    reader holds. ``covers.withheld`` counts the attached objects the reader's markings
+    withhold, so a caller names them and never drops them. Audiences are decided from the
+    policy and the schema alone, never from rows the reader cannot see, so the answer says
+    nothing about whether a withheld object exists: the reader must read the audience of
+    every binding at the link's other end, ``api:<relation>`` exactly; a Business Central
+    binding as the unit ``bc:<company>/<relation>`` of the root's own company with no BC unit
+    of the policy denied to it (a root that is not a BC record: the whole ``bc`` family);
+    another source only as a family the policy fully covers (``ReadPolicy.covers_family``)
+    and without item ACLs."""
+    def withheld(link_type: str, root_id: str, actor: Actor) -> int | None:
+        """How many attached objects carry a marking the reader lacks (None: undecided)."""
+        try:
+            with tools.store.lock:
+                found = tools.store.linked_markings(root_id, link_type)
+        except Exception:  # noqa: BLE001 - an undecided scope proves nothing
+            return None
+        held = tools.policy.held_markings(actor)
+        return sum(not marks <= held for marks in found.values())
+
+    def company_unit_granted(root_id: str, relation: str, actor: Actor) -> bool | None:
+        """Whether the reader may read ``bc:<company>/<relation>`` of the root's own company
+        and the policy names no BC unit that is left out of its grant (an explicit denial
+        anywhere in the family, as ``covers_family``); None for a root that is not a BC
+        record. The family-wide grant ``bc:*`` is not required: a link attaches objects of
+        the root's own company."""
+        with tools.store.lock:
+            row = tools.store.objects([root_id]).get(root_id)
+        key = str(row["audience_key"]) if row is not None else ""
+        if not (key.startswith("bc:") and "/" in key):
+            return None
+        policy = tools.policy
+        return policy.may_read(actor, f"{key.partition('/')[0]}/{relation}") and all(
+            principals & actor.principals for pattern, principals in policy.audiences.items()
+            if pattern.startswith("bc:") and pattern != "bc:*")
+
     def covers(link_type: str, root_id: str, actor: Actor) -> bool:
         policy, schema = tools.policy, tools.schema
         link = schema.link_types.get(link_type)
-        if link is None or not set(store_ddl.MARKINGS) <= policy.held_markings(actor):
+        if link is None or withheld(link_type, root_id, actor) != 0:
             return False
         binding = _binding_of(root_id)
         others = [b["from_binding"] if b.get("to_binding") == binding else b["to_binding"]
@@ -3324,10 +3958,13 @@ def read_scope(tools: Any) -> Callable[[str, str, Actor], bool]:
             prefix = prefixes.get(source)
             if prefix is None or prefix in _ITEM_ACL_AUDIENCES:
                 return False
+            unit = company_unit_granted(root_id, relation, actor) if prefix == "bc" else None
             if not (policy.may_read(actor, f"api:{relation}") if prefix == "api"
+                    else unit if unit is not None
                     else policy.covers_family(actor, prefix)):
                 return False
         return bool(others)
+    covers.withheld = withheld  # type: ignore[attr-defined]
     return covers
 
 

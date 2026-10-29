@@ -1,4 +1,4 @@
-# Held-out items and labels never enter Git. The live set is frozen in
+# Held-out items and labels never enter Git (10-DECISION 8). The live set is frozen in
 # the credentialed host's state directory; its manifest is recorded only in live results.
 # manifest.fixture.json is the keyless fixture run (injected-transport), not the real set.
 *

@@ -1,6 +1,6 @@
 """C0 contracts: formats validate their example payloads and stay mutually consistent.
 
-Files under test (frozen formats):
+Files under test (frozen formats every lane codes against):
   ontology/schema/_format.schema.json      domain schema files
   ontology/store_ddl.py                    projection store DDL
   operating/ontology_tool_contracts.json   generic tool I/O
@@ -30,15 +30,15 @@ TOOL_EXAMPLES = {
     data["tool"]: data["examples"]
     for data in (json.loads(p.read_text(encoding="utf-8")) for p in sorted((EXAMPLES / "tools").glob("*.json")))
 }
-# The primitives + plx.investigate, plus plx.schema, plus
-# plx.review and the playbook adoption path's three tools,
-# the tools that write, to the Workbench's own stores only;
+# 10-DECISION decision 4 primitives + plx.investigate, plus plx.schema (09-CRITIQUE R4), plus
+# plx.review (directive dd40ff1bf83f P3) and the playbook adoption path's three tools
+# (directive 0020465a468c), the tools that write, to the Workbench's own stores only;
 # plx.investigate writes case follow-ups on a host with a recorder (2026-10-10-follow-ups-ask-
 # loop-writes), so its contract is not read_only.
 DECIDED_TOOLS = {f"plx.{name}" for name in (
     "schema", "find", "object", "around", "timeline", "aggregate", "process", "compare", "identity",
-    "documents", "read", "investigate", "review", "playbook_propose", "playbook_evaluate",
-    "playbook_adopt")}
+    "documents", "read", "investigate", "agenda", "review", "playbook_propose",
+    "playbook_evaluate", "playbook_adopt")}
 WORKBENCH_WRITERS = {"plx.review", "plx.playbook_propose", "plx.playbook_evaluate",
                      "plx.playbook_adopt", "plx.investigate"}
 
@@ -98,7 +98,7 @@ class EnumerationsAgreeAcrossContracts(unittest.TestCase):
         self.assertEqual(fmt, lineage_enum(TOOLS["$defs"]))
         self.assertEqual(fmt, lineage_enum(ITEM["$defs"]))
         self.assertEqual(fmt, set(store_ddl.LINEAGES))
-        # The lineage values are all present.
+        # R1 values are all present.
         self.assertLessEqual({"fm_bronze", "sage_bronze", "silver_view", "gold_etl_from_fm",
                               "gold_etl_from_sage", "gold_native_staging", "mail", "sharepoint",
                               "original"}, fmt)
@@ -170,7 +170,7 @@ class ExamplesValidate(unittest.TestCase):
 
 
 class FormatRejects(unittest.TestCase):
-    """The binding invariants are enforced by the format, not left to callers."""
+    """The binding invariants are enforced by the format, not left to lanes."""
 
     def _object(self, name: str) -> dict:
         return copy.deepcopy(next(t for t in DOMAIN["object_types"] if t["id"] == name))
@@ -267,7 +267,7 @@ def _money(sources, **prop):
 
 
 class FormatV1Amendments(unittest.TestCase):
-    """M2-M5 and the example's self-consistency."""
+    """Review a76aee8: M2-M5 and the example's self-consistency."""
 
     def _with_property(self, prop: dict) -> dict:
         domain = copy.deepcopy(DOMAIN)
@@ -597,7 +597,7 @@ class ToolContractsReject(unittest.TestCase):
         self.assertRejected("plx.investigate", out)
 
     def test_every_free_text_output_field_is_enveloped_or_workbench_authored(self):
-        """A new unconstrained string field in any tool output must be a deliberate choice."""
+        """R6: a new unconstrained string field in any tool output must be a deliberate choice."""
         # Strings the Workbench writes itself (codes, ids, normalizer output, its own notes),
         # and `value`, which is a plain string only when value_type is not text/json, i.e.
         # the output of a deterministic parser (the $defs/value allOf enforces that).
@@ -724,6 +724,9 @@ class StoreDdl(unittest.TestCase):
         tables = {r[0] for r in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertEqual(tables, {"store_meta", "objects", "object_removals", "object_versions",
                                   "value_sources", "value_fields", "value_kinds", "value_cells",
+                                  # v10: the positions of value rows (cells and records)
+                                  "value_layouts", "value_layout_fields",
+                                  "sqlite_stat1",   # v10: the fixed planner statistics
                                   "link_texts", "link_skeletons", "link_rows", "identifiers",
                                   "events",
                                   "event_objects", "text_fields", "text_chunks",

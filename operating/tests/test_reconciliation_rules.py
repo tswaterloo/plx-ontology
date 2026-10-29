@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest import mock
 from urllib.parse import parse_qs, urlsplit
 
-from verify import live_verify as lv
+from devloop import live_verify as lv
 from integrations import bc_read
 from integrations.bc_read import BusinessCentralReader
 from integrations.live_source_guard import LiveSourceAudience

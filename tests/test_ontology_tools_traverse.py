@@ -1,21 +1,24 @@
-"""plx.around / plx.timeline over a fixture projection store.
+"""Lane L9: plx.around / plx.timeline over a fixture projection store.
 
 The store is created with the frozen DDL (ontology/store_ddl.py) and filled by
 hand; the schema is a small synthetic domain in this file. Every output is
 validated against operating/ontology_tool_contracts.json with
 ontology/json_contract.py. All identifiers are synthetic.
 
-Needs operating/ontology_tools.py (StoreReader, ReadPolicy,
-OntologyTools).
+Needs lane L8's operating/ontology_tools.py (StoreReader, ReadPolicy,
+OntologyTools); run on a branch where it has landed or on a local merge.
 """
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import datetime as dt
 import hashlib
 import json
+import os
 from pathlib import Path
+import shutil
 import sqlite3
 import tempfile
 import threading
@@ -82,7 +85,7 @@ ORDER_BINDINGS = ("portal.order", "bc.sales_orders")
 
 DOMAIN = {
     "format": "plx-ontology-domain/v1", "domain": "fixture", "origin": "curated",
-    "description": "Test fixture.",
+    "description": "L9 test fixture.",
     "object_types": [
         _type("Party", ["name"], [("name", "text"), ("number", "identifier")],
               ["portal.party"]),
@@ -214,7 +217,7 @@ class Store:
         if src in self.skip or dst in self.skip:
             return
         hs, hd = self.handles[src], self.handles[dst]
-        # Cite a projected value of the from end (plx.find's citation rule keeps only those).
+        # Cite a projected value of the from end (L8's citation rule keeps only those).
         reason = [{"feature": "pair", "agrees": True,
                    "citations": [{"l1_handle": hs, "field_path": self.fields.get(src, "row.ref"),
                                   "digest": _h(hs),
@@ -680,7 +683,7 @@ class AroundTests(unittest.TestCase):
         worker.join(10)
         self.assertFalse(worker.is_alive())
         ok(self, "plx.around", results[0])
-        # Many threads over the find and traverse tools at once: every answer equals the serial one.
+        # Many threads over L8 and L9 tools at once: every answer equals the serial one.
         serial = {name: strip(t.call(name, args, FULL)) for name, args in (
             ("plx.around", PARTY_ORDERS), ("plx.timeline", {"from": O1}))}
         find_serial = t.base.call("plx.find", {"query": "ORD-1"}, FULL)
@@ -704,6 +707,141 @@ class AroundTests(unittest.TestCase):
                 self.assertEqual(answer.get("matches"), find_serial.get("matches"))
             else:
                 self.assertEqual(answer, serial[name])
+
+
+class SliceTests(unittest.TestCase):
+    def test_every_gated_handle_of_a_slice_is_named(self):
+        # The whole-table slice read calls the item-gate parser only on rows whose text
+        # can hold a gated scheme; a gated handle in any spelling a JSON list can carry
+        # (a unicode escape included) is still named, so absence is never claimed past it.
+        store = build()
+        escaped = '["%s", "\\u0067raph-mail://inbox/m-9@ck"]' % api("order", "ORD-1")
+        rows = {"l-gm": json.dumps([api("order", "ORD-1"), "graph-mail://inbox/m-1@ck"]),
+                "l-sl": json.dumps(["sharepoint-list://site/list/7@1"]),
+                "l-tc": json.dumps(["teams-chat://chat/msg@1", "bc://x/y/z/w@1"]),
+                "l-esc": escaped,
+                "l-api": json.dumps([api("order", "ORD-2")])}
+        for link_id, handles in rows.items():
+            store.conn.execute(
+                "INSERT INTO links(link_id, link_type, from_object, to_object, tier, "
+                "binding_kind, reason, why_not, evidence_handles, markings, recorded_at, "
+                "superseded_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (link_id, "Fixture.cites", O1, O2, "lead", "mention",
+                 json.dumps([{"feature": "pair", "agrees": True, "citations": []}]), "[]",
+                 handles,
+                 "[]", T0, None))
+        store.conn.commit()
+        t, _ = tools(store)
+        marks, handles = t._slices("link")["Fixture.cites"]
+        self.assertEqual(set(handles), {"graph-mail://inbox/m-1@ck",
+                                        "sharepoint-list://site/list/7@1",
+                                        "teams-chat://chat/msg@1",
+                                        "graph-mail://inbox/m-9@ck"})
+        self.assertEqual(set(marks), {"[]"})
+
+
+class KeptFactsTests(unittest.TestCase):
+    """The store facts ``prime`` reads are kept beside the store file, so a later process
+    over the same unchanged file skips the whole-store scan; anything else reads it."""
+
+    PATH = [{"link_type": "Order.placed_by", "direction": "reverse"},
+            {"link_type": "Shipment.ships_order", "direction": "reverse"}]
+    SCANNED = ("objects", "object_versions", "links", "events")
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = Path(tmp.name) / "ontology.sqlite"
+        source = build().conn
+        with contextlib.closing(sqlite3.connect(self.path)) as target:
+            source.backup(target)
+        source.close()
+
+    def opened(self):
+        reader = ot.StoreReader.open(self.path)
+        self.addCleanup(reader.conn.close)
+        base = ot.OntologyTools(reader, POLICY, item_gate=item_gate, schema=SCHEMA,
+                                grammar=None, contracts=CONTRACTS, clock=lambda: NOW,
+                                monotonic=Clock().monotonic)
+        return tt.TraverseTools(base)
+
+    def primed(self):
+        """(tools, the store statements its prime ran)."""
+        t, statements = self.opened(), []
+        t.store.conn.set_trace_callback(statements.append)
+        t.prime(cell_families=("api", "mail"))
+        t.store.audience_keys()
+        t.store.conn.set_trace_callback(None)
+        return t, [s for s in statements
+                   if any(f" {table} " in f" {s} ".replace("\n", " ") for table in self.SCANNED)]
+
+    def answers(self, t):
+        return [t.call("plx.around", {"from": P1, "path": self.PATH}, actor)
+                for actor in (FULL, OPS)] + [t.call("plx.timeline", {"from": O1}, FULL)]
+
+    @staticmethod
+    def unhandled(answer):
+        """An answer without the set handles it minted (random per call)."""
+        return {k: v for k, v in answer.items() if k != "set"}
+
+    def test_a_later_process_reads_the_kept_facts_and_answers_alike(self):
+        first, scans = self.primed()
+        self.assertTrue(scans)
+        kept = tt.facts_path(self.path)
+        self.assertEqual(kept.stat().st_mode & 0o777, 0o600)
+        later, scans = self.primed()
+        self.assertEqual(scans, [])
+        self.assertEqual(later.store.facts[1], first.store.facts[1])
+        self.assertEqual(later.store.audience_keys(), first.store.audience_keys())
+        for family in ("api", "mail", "teams"):
+            self.assertEqual(later.cell_span(family), first.cell_span(family))
+        answers = self.answers(later)
+        for name, answer in zip(("plx.around", "plx.around", "plx.timeline"), answers):
+            ok(self, name, answer)
+        self.assertEqual([self.unhandled(a) for a in answers],
+                         [self.unhandled(a) for a in self.answers(first)])
+
+    def test_kept_facts_of_another_shape_or_store_state_are_never_read(self):
+        first, _ = self.primed()
+        computed = first.store.facts[1]
+        kept = tt.facts_path(self.path)
+        good = json.loads(kept.read_text(encoding="utf-8"))
+        wrong_shape = copy.deepcopy(good)
+        wrong_shape["facts"]["audiences"] = "api:public.order"
+        other_code = dict(good, store=dict(good["store"], code="0" * 64))
+        for text in ("{not json", json.dumps(wrong_shape), json.dumps(other_code)):
+            kept.write_text(text, encoding="utf-8")
+            again, scans = self.primed()
+            self.assertTrue(scans, text[:40])
+            self.assertEqual(again.store.facts[1], computed)
+        # The store written in place (a link naming a gated handle): read anew, never the
+        # kept facts of the file as it was.
+        with contextlib.closing(sqlite3.connect(self.path)) as conn:
+            conn.execute(
+                "INSERT INTO links(link_id, link_type, from_object, to_object, tier, "
+                "binding_kind, reason, why_not, evidence_handles, markings, recorded_at, "
+                "superseded_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("l-new", "Fixture.cites", O1, O2, "lead", "mention",
+                 json.dumps([{"feature": "pair", "agrees": True, "citations": []}]), "[]",
+                 json.dumps(["graph-mail://inbox/m-new@ck"]), "[]", T0, None))
+            conn.commit()
+        changed, scans = self.primed()
+        self.assertTrue(scans)
+        self.assertIn("graph-mail://inbox/m-new@ck",
+                      changed._slices("link")["Fixture.cites"][1])
+        # A hard link to the file (a run's pin of the generation) is the same store; a
+        # store replaced by a new file drops the facts kept for the one it replaced.
+        pin = self.path.with_name("pin.sqlite")
+        os.link(self.path, pin)
+        self.path, before = pin, tt.facts_path(pin)
+        self.assertEqual(self.primed()[1], [])
+        replaced = self.path.with_name("next.sqlite")
+        shutil.copyfile(pin, replaced)
+        os.replace(replaced, pin)
+        os.unlink(pin.with_name("ontology.sqlite"))
+        self.assertTrue(self.primed()[1])
+        self.assertFalse(before.exists())
+        self.assertTrue(tt.facts_path(pin).is_file())
 
 
 class DeniedReaderTests(unittest.TestCase):
@@ -986,6 +1124,20 @@ class DeniedReaderTests(unittest.TestCase):
         self.assertEqual([(g["reason"], g["state"]) for g in out["gaps"]],
                          [("no_match", "unknown")])
         self.assertIn("unprojected_column", out["gaps"][0]["detail"])
+        # A report that reports every unread compared key speaks for that path too.
+        def report(gaps):
+            store.conn.execute(
+                "INSERT OR REPLACE INTO store_meta VALUES ('build_report', ?)",
+                (json.dumps({"counts": {}, "gaps": gaps, "link_keys": "reported"}),))
+            out = ok(self, "plx.around", tools(store, schema=schema)[0].call(
+                "plx.around", args, FULL))
+            return [(g["reason"], g["state"]) for g in out["gaps"]]
+        self.assertEqual(report([]), [("no_match", "absent_in_source")])
+        handle = api("order", "ORD-7")
+        self.assertEqual(report([{
+            "code": "link_key_value_not_text_id",
+            "where": "Order.placed_by#0@portal.order.unprojected_column",
+            "count": 1, "samples": [handle]}]), [("unreadable_in_source", "unknown")])
 
 
 # --------------------------------------------------------------------------- timeline
@@ -1189,7 +1341,7 @@ class TimelineTests(unittest.TestCase):
 # --------------------------------------------------------------------------- real projector
 
 class AsKnownAtTests(unittest.TestCase):
-    """As known at T at the tool boundary: a set member first captured
+    """As known at T (10-DECISION 5) at the tool boundary: a set member first captured
     after T is left out with a counted not_ingested gap only when this reader may read
     it now; one revoked since the handle was made is neither shown nor counted, and the
     answer cannot tell whether it was captured before or after T. meta.freshness is
@@ -1571,8 +1723,8 @@ class WiringTests(unittest.TestCase):
                          "invalid_input")
 
     def test_live_check_spec_is_valid_and_enabled(self):
-        from verify import live_verify
-        spec = json.loads((ROOT / "verify/live-checks/ontology.traverse.json").read_text())
+        from devloop import live_verify
+        spec = json.loads((ROOT / "devloop/live-checks/ontology.traverse.json").read_text())
         self.assertEqual(live_verify.validate_spec(spec, stem="ontology.traverse"), [])
         self.assertNotIn("disabled", spec)
         self.assertIn("scripts.ontology_traverse_probe", live_verify.ALLOWED_MODULES)

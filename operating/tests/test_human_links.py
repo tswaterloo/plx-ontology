@@ -9,8 +9,8 @@ undo retracts it. Nothing here creates a link on its own.
 
 Evidence label: isolated-fixture (SYNTHETIC PDFs on an injected SharePoint drive, Portal
 rows from a static source), and injected-transport for the live-check command
-(``verify/live-checks/case.human_link.json`` over a FakeWorkbench and an injected Graph
-drive, replayed through the live checks). Nothing here is live.
+(``devloop/live-checks/case.human_link.json`` over a FakeWorkbench and an injected Graph
+drive, replayed through the live verifier). Nothing here is live.
 """
 from __future__ import annotations
 
@@ -38,53 +38,6 @@ PI_LINES = ["PROFORMA INVOICE", f"PI No: {PI_NUMBER}", "Date: 2026-09-12",
 # A second document naming the supplier's number only (never the purchase order).
 NOTE_LINES = ["DELIVERY NOTE", f"Supplier confirmation: {PI_NUMBER}", "Packages: 4"]
 PIN = "co-hlpi00000001"
-ARGS = json.loads((ROOT / "verify" / "live-checks" / "case.packaging_landed_cost.json")
-                  .read_text("utf-8"))["command"][3:]
-FIXTURE = json.loads((ROOT / "operating" / "tests" / "fixtures" / "packaging_case_fixture.json")
-                     .read_text("utf-8"))
-[PROFORMA] = [ARGS[i + 1] for i, arg in enumerate(ARGS) if arg == "--proforma"]
-DEST, AIR = [ARGS[i + 1] for i, arg in enumerate(ARGS) if arg == "--quote"]
-ZIP_PIN, SECOND_PI = "co-synthzip0001", "co-synthpi00002"
-# SYNTHETIC documents shaped like the packaging case's (no real body, price or name).
-PIS = {"pi-a.pdf": ["PROFORMA INVOICE", "PI No: PI-SYN-A", "Date: 2026-09-10",
-                    "Customer PO: PO5447", "Quantity: 40,000 pcs", "Unit Price: USD 0.94/pc",
-                    "Total Amount: USD 37,600.00"],
-       "pi-b.pdf": ["PROFORMA INVOICE", "PI No: PI-SYN-B", "Date: 2026-09-20",
-                    "Customer PO: PO5447", "Quantity: 40,000 pcs",
-                    "Unit Price: USD 1.0025/pc", "Total Amount: USD 40,100.00"]}
-QUOTES = {"quote-40hq.pdf": ["FREIGHT QUOTATION", "Quote No: FQ-SYN-1", "Ref PO: PO5447",
-                             "Scope: destination charges", "Basis: per 40HQ", "Containers: 1",
-                             "Includes: destination charges, delivery",
-                             "Excludes: duties and taxes", "Valid until: 2099-01-31",
-                             "Total amount: USD 1,710.00"],
-          "quote-air.pdf": ["FREIGHT QUOTATION", "Quote No: FQ-SYN-2", "Ref PO: PO5447",
-                            "Scope: door to door, air freight, all-in", "Basis: per shipment",
-                            "Includes: pickup, export clearance, air freight, delivery",
-                            "Excludes: duties and taxes, listed surcharges and contingencies",
-                            "Valid until: 2099-01-31", "All-in total: USD 83,965.56"]}
-PINS = {"pi-a.pdf": PROFORMA, "pi-b.pdf": SECOND_PI, "quote-40hq.pdf": DEST,
-        "quote-air.pdf": AIR}
-
-
-def _pdf(lines: list[str]) -> bytes:
-    from reportlab.pdfgen import canvas
-
-    buffer = io.BytesIO()
-    page = canvas.Canvas(buffer, invariant=1)   # the same bytes on every build
-    for y, line in enumerate(lines):
-        page.drawString(60, 780 - 18 * y, line)
-    page.showPage()
-    page.save()
-    return buffer.getvalue()
-
-
-def _refuse_network(*_args, **_kwargs):
-    raise AssertionError("network I/O attempted")
-
-
-def _row(pin: str, kind: str, content: bytes, parent: str | None) -> dict:
-    return {"id": pin, "status": "pinned", "kind": kind, "parent": parent, "source": {},
-            "expected": {"sha256": hashlib.sha256(content).hexdigest(), "bytes": len(content)}}
 
 
 @unittest.skipUnless(HAVE_PDF, NEEDS)
@@ -374,12 +327,14 @@ class HumanLinkLiveCheckTests(unittest.TestCase):
     console, then the next run reads the case back answered."""
 
     def setUp(self) -> None:
-        from verify.tests.test_live_verify import FakeRoot
+        from devloop.tests import test_live_verify_landed_cost as LC
+        from devloop.tests.test_live_verify import FakeRoot
 
-        self.spec = json.loads((ROOT / "verify" / "live-checks" / "case.human_link.json")
+        self.LC = LC
+        self.spec = json.loads((ROOT / "devloop" / "live-checks" / "case.human_link.json")
                                .read_text("utf-8"))
         for target in ("socket.socket.connect", "socket.create_connection"):
-            patcher = mock.patch(target, _refuse_network)
+            patcher = mock.patch(target, LC._refuse_network)
             patcher.start()
             self.addCleanup(patcher.stop)
         temp = tempfile.TemporaryDirectory()
@@ -388,10 +343,10 @@ class HumanLinkLiveCheckTests(unittest.TestCase):
         self.verifier = FakeRoot()
         self.addCleanup(self.verifier.close)
         # The packaging case's documents, the proforma invoice naming no purchase order.
-        lines = {**PIS, **QUOTES, "pi-a.pdf": [
-            line for line in PIS["pi-a.pdf"] if not line.startswith("Customer PO")]}
+        lines = {**LC.PIS, **LC.QUOTES, "pi-a.pdf": [
+            line for line in LC.PIS["pi-a.pdf"] if not line.startswith("Customer PO")]}
         lines.pop("pi-b.pdf")
-        self.members = {name: _pdf(text) for name, text in lines.items()}
+        self.members = {name: LC._pdf(text) for name, text in lines.items()}
         # One container, byte for byte, across the runs and the console (a zip's entry
         # times would otherwise differ by the second): the file a person confirmed from is
         # the file the next capture reads.
@@ -420,8 +375,8 @@ class HumanLinkLiveCheckTests(unittest.TestCase):
                    self.container, mime="application/zip",
                    drive=tsp.SITE_DRIVE)
         fake = FakeWorkbench()
-        fake.catalog = copy.deepcopy(FIXTURE["catalog"])
-        fake.tables = copy.deepcopy(FIXTURE["tables"])
+        fake.catalog = copy.deepcopy(self.LC.FIXTURE["catalog"])
+        fake.tables = copy.deepcopy(self.LC.FIXTURE["tables"])
         for line in fake.tables["public.app_purchase_order_line"]:
             line["unit_price"] = "0.000"
         return drive, fake
@@ -429,13 +384,14 @@ class HumanLinkLiveCheckTests(unittest.TestCase):
     def run_check(self, run: str, reviews_from: Path | None) -> tuple[int, dict, dict]:
         from integrations.tests import test_capture_sharepoint as tsp
         from integrations.tests.test_source_mirror import BASE, KEY
-        from verify.tests.test_live_verify import FAKE_MODULE, SECRET
+        from devloop.tests.test_live_verify import FAKE_MODULE, SECRET
         from scripts import eval_human_link_check as link_check
 
+        LC = self.LC
         original = self.container
         registry = {"schema": "plx-case-originals/v1",
-                    "rows": [_row(ZIP_PIN, "original", original, None)]
-                    + [_row(PINS[name], "archive_member", data, ZIP_PIN)
+                    "rows": [LC._row(LC.ZIP_PIN, "original", original, None)]
+                    + [LC._row(LC.PINS[name], "archive_member", data, LC.ZIP_PIN)
                        for name, data in sorted(self.members.items())]}
         (self.temp / "registry.json").write_text(json.dumps(registry), "utf-8")
         host = self.config()
@@ -513,7 +469,7 @@ class HumanLinkLiveCheckTests(unittest.TestCase):
         self.assertEqual((code, document["reviews_source"]), (0, "none"), document)
         [gap] = document["human_link"]["gaps"]
         self.assertEqual((gap["code"], gap["pin"], gap["state"]),
-                         ("pi_not_linked_to_po", PROFORMA, "confirm_needed"))
+                         ("pi_not_linked_to_po", self.LC.PROFORMA, "confirm_needed"))
         self.assertEqual(gap["confirm_step"]["decision"], "accept_link")
         self.assertEqual(gap["confirm_step"]["link_type"], "SupplierConfirmation.confirms")
         self.assertEqual(gap["confirm_step"]["grant"], "review:identity")

@@ -1,0 +1,320 @@
+{
+ "format": "plx-eval-case-card-proposals/v1",
+ "status": "PROPOSED dev cards for lead triage, never gold. The three R&D process maps of 16-20 Oct 2026 (Allison's bi-weekly agenda, Erin's raw material samples, Giulia's ingredient lists) as graded questions on the ontology: comprehension of each map, tracing answerable today through plx.agenda (operating/meeting_agenda.py), operating/material_samples.py and operating/formula_versions.py, and the maps' worked examples, whose outcomes the ontology does not hold and must be named as missing. No amounts or expected values beyond the quoted source figures.",
+ "case": "rnd-maps",
+ "source": {
+  "advisory": {
+   "id": "advisory:d7076d889756",
+   "ref": "OntologyProject@57bce1d4cd7d",
+   "path": "context/d7076d8897560e9c362ad0ee6cdfc810209b31313db58cc50360bf20e8784818.json"
+  },
+  "related_advisories": [
+   {
+    "id": "advisory:c034c7ea5fa6",
+    "role": "Erin's raw material sample lifecycle map (Draft 5, 20 Oct 2026), full rendered capture",
+    "ref": "OntologyProject@81c7833e16a3",
+    "path": "context/c034c7ea5fa6c3dcd351dbc59fa2a7a028838c29a2d93449b18eb7a47527c74e.json"
+   },
+   {
+    "id": "advisory:13be54ca81d2",
+    "role": "Giulia's ingredient-list workflow map (16 Oct 2026), full rendered capture",
+    "ref": "OntologyProject@d7af7e5482d5",
+    "path": "context/13be54ca81d248b5e1be017e58f20892cf37acf838943afbba58151528297a02.json"
+   }
+  ]
+ },
+ "maps": {
+  "AG": {
+   "title": "R&D bi-weekly meeting agenda preparation",
+   "advisories": [
+    "advisory:d7076d889756"
+   ]
+  },
+  "RS": {
+   "title": "Raw material samples: from request to used up",
+   "advisories": [
+    "advisory:c034c7ea5fa6"
+   ]
+  },
+  "IL": {
+   "title": "Ingredient lists, from sample made to IL in the customer's hands",
+   "advisories": [
+    "advisory:13be54ca81d2"
+   ]
+  }
+ },
+ "live_sources": [
+  {
+   "id": "teams.rnd_chats",
+   "system": "microsoft-graph-teams",
+   "relation": "chatMessages and channelMessages of the R&D Bi-weekly Meeting chat, the R&D KB channel, the QA hand-off and Sourcing chats (TeamsChatMessage, TeamsChannelMessage; body cited, not projected)",
+   "reader": "served",
+   "evidence": "OntologyProject:ontology/schema/generated/graph_teams.json@95d931c1d773; OntologyProject:ontology/project_graph.py@95d931c1d773"
+  },
+  {
+   "id": "mc.rnd_tasks",
+   "system": "mission-control",
+   "relation": "tasks and approval gates of the R&D bucket (MCTask, MCApproval.gate_of)",
+   "reader": "served",
+   "evidence": "OntologyProject:ontology/schema/domains/mission_control.json@95d931c1d773"
+  },
+  {
+   "id": "sharepoint.wh_tasks",
+   "system": "microsoft-graph-sharepoint",
+   "relation": "WH Tasks list items (SharePointListItem: samples sent, tracking)",
+   "reader": "served",
+   "evidence": "OntologyProject:ontology/schema/generated/graph_sharepoint_lists.json@95d931c1d773"
+  },
+  {
+   "id": "sharepoint.il_files",
+   "system": "microsoft-graph-sharepoint",
+   "relation": "ingredient-list files in the RnD Drive customer folders (SharePointFile name, content_sha256)",
+   "reader": "served",
+   "evidence": "OntologyProject:ontology/schema/domains/documents.json@95d931c1d773"
+  },
+  {
+   "id": "portal.raw_material_supplier",
+   "system": "portal-reporting-api",
+   "relation": "public.raw_material_supplier (itemnumber = supplier code) -> public.raw_material (rawcode = R-number), public.supplier (SupplierItem.for_item, SupplierItem.offered_by)",
+   "reader": "served",
+   "evidence": "OntologyProject:ontology/schema/domains/catalog_parties.json@95d931c1d773"
+  },
+  {
+   "id": "portal.rnd_projects",
+   "system": "portal-reporting-api",
+   "relation": "public.app_project, public.app_project_task (R&D project and task: client, formula, status)",
+   "reader": "none",
+   "evidence": "OntologyProject:ontology/schema/generated/portal_not_served_p_r.json@95d931c1d773"
+  },
+  {
+   "id": "portal.sourcing_requests",
+   "system": "portal-reporting-api",
+   "relation": "public.app_sourcing_request, public.app_sourcing_sample, public.app_sample_dispatch",
+   "reader": "none",
+   "evidence": "OntologyProject:ontology/schema/generated/portal_not_served_s_z.json@95d931c1d773"
+  },
+  {
+   "id": "fm.formulas",
+   "system": "filemaker",
+   "relation": "R&D > Formulas: formula number (F-YY-NNNN, one fixed version), product name, legacy number, formula lines",
+   "reader": "none",
+   "evidence": "OntologyProject:ontology/schema/identifiers.json@95d931c1d773; OntologyProject:ontology/schema/generated/portal_not_served_f_o.json@95d931c1d773"
+  }
+ ],
+ "layers": {
+  "comprehension": "what each map says, attributed, with its proposals kept apart from built behaviour",
+  "tracing": "answers the Workbench gives today from projected records, each line cited and each missing source a named gap",
+  "actual_case_answerability": "UNANSWERED: each card's outcome is missing from the ontology and must be named as missing, not inferred"
+ },
+ "non_goals": [
+  "Portal, FileMaker, Planner or Teams writes",
+  "generating an ingredient list",
+  "posting or editing an agenda"
+ ],
+ "real_example": {
+  "batch_id": "rnd-maps",
+  "exposure": "dev-exposed",
+  "split": "dev",
+  "as_of": "2026-10-20",
+  "cards": [
+   {
+    "id": "AG-01",
+    "layer": "comprehension",
+    "question": "What does Allison's R&D bi-weekly agenda map cover, and what kind of evidence is it?",
+    "criterion": "Attribute to Allison Tam's process map (step 8 of 8, updated 20 Oct 2026; reviewers Giulia Sellitto and Erin Rose): the cycle from the end of one Wednesday meeting to the agenda PDF posted in the R&D Bi-weekly Meeting chat, its three sections (R&D Updates, Ongoing Project Updates, Sourcing Updates) and up to 2 hours per cycle spent confirming lines by hand. Its portal lanes come from the PLX system reference, marked to confirm; it is a stakeholder process capture, not owner approval or verified portal behaviour.",
+    "originals": [
+     "gap-1aefac272d36"
+    ],
+    "live_sources": [],
+    "cites": [
+     "advisory:d7076d889756"
+    ]
+   },
+   {
+    "id": "AG-02",
+    "layer": "tracing",
+    "question": "Since the last posted agenda, what changed in the R&D chats and Mission Control tasks, and what does each agenda line cite?",
+    "criterion": "Use plx.agenda rnd_biweekly with the meeting chat, QA hand-off and MC bucket scopes. The cycle starts at the previous agenda's posting in the meeting chat (cited message), or at a given instant with its offset. Every line names its record and cites the values it shows; a Teams line shows no message text while the projection declares none (text_not_projected, binding_expected), never invented text. A system event or a message before the posting is no line.",
+    "originals": [],
+    "live_sources": [
+     "teams.rnd_chats",
+     "mc.rnd_tasks"
+    ],
+    "cites": [
+     "advisory:d7076d889756"
+    ]
+   },
+   {
+    "id": "AG-03",
+    "layer": "tracing",
+    "question": "Which R&D projects are open, which are blocked, and which decisions are needed before the next meeting?",
+    "criterion": "Open projects are the open Mission Control tasks of the R&D bucket with their cited stage (closed: merged, verified, cancelled); a blocker is a task with no change this cycle or waiting on a pending approval gate, which is listed as a decision needed with its requester. Name the Portal R&D project and task, the R&D KB Board (Planner) and 'waiting on (since when)' as sources the ontology does not hold; do not read blockers out of message text.",
+    "originals": [
+     "gap-1aefac272d36"
+    ],
+    "live_sources": [
+     "mc.rnd_tasks",
+     "portal.rnd_projects"
+    ],
+    "cites": [
+     "advisory:d7076d889756"
+    ]
+   },
+   {
+    "id": "AG-04",
+    "layer": "tracing",
+    "question": "What does the agenda show a reader who may read the meeting chat but not the QA chat or Mission Control?",
+    "criterion": "Only the meeting chat lines that reader's audience and item gate admit; no QA, MC task, gate or owner value, not even an object id of a message the item gate refuses. The unread lanes are gaps (nothing_visible: absence is not established), and a reader without the pii marking sees owner_withheld, never an empty owner.",
+    "originals": [],
+    "live_sources": [
+     "teams.rnd_chats",
+     "mc.rnd_tasks"
+    ],
+    "cites": [
+     "advisory:d7076d889756"
+    ]
+   },
+   {
+    "id": "AG-05",
+    "layer": "actual_case_answerability",
+    "question": "Can each line of the 14 Oct 2026 agenda be traced to the record it came from?",
+    "criterion": "Missing outcome: the map traces only some lines (Soapbox lotion stability samples to the 13 Oct chain-of-custody email to Labofine; Guck Off intake to three Forms notifications of 2 Oct and the PDFs filed 5 Oct; No Pong and Three Ships sourcing to Sourcing's Teams message of 14 Oct, 9:19, edited 9:24). Lines written from memory or the KB Board link to nothing. Name the untraced lines as missing; do not infer a source.",
+    "originals": [
+     "gap-1aefac272d36"
+    ],
+    "live_sources": [
+     "teams.rnd_chats",
+     "portal.rnd_projects"
+    ],
+    "cites": [
+     "advisory:d7076d889756"
+    ]
+   },
+   {
+    "id": "AG-06",
+    "layer": "actual_case_answerability",
+    "question": "Did the 14 Oct review edits reach the Word working copy that seeds the next cycle?",
+    "criterion": "Missing outcome in the ontology: per the map, three review edits (Guck Off benchmarks for scent matching, Merida Wellness kg pricing, the No Pong MOQ 400 kg note) are in the posted PDF and not in the Word copy, and Allison forgot the copy-back that time. Neither the Word copy nor the Canva design is a record the ontology holds; report the map's statement attributed, and the agenda record as absent.",
+    "originals": [
+     "gap-1aefac272d36"
+    ],
+    "live_sources": [],
+    "cites": [
+     "advisory:d7076d889756"
+    ]
+   },
+   {
+    "id": "RS-01",
+    "layer": "comprehension",
+    "question": "What does Erin's raw material sample map cover, and what are its biggest gaps?",
+    "criterion": "Attribute to Erin's Draft 5 (20 Oct 2026): request (FileMaker Request Sourcing email, direct ask or unprompted), receipt into the SharePoint Raw Materials Inventory log, use in lab batches, what is left. Biggest gaps: usage is never recorded, received quantity is a count, nothing shares a key across request, log row and sample card, requests have no status. The target is a stated choice, not built.",
+    "originals": [
+     "gap-15999825ecff"
+    ],
+    "live_sources": [],
+    "cites": [
+     "advisory:c034c7ea5fa6"
+    ]
+   },
+   {
+    "id": "RS-02",
+    "layer": "tracing",
+    "question": "Which raw material and supplier does an open sample request with a supplier code or R-number link to?",
+    "criterion": "Link through SupplierItem.supplier_item_number to the raw material (Product code = R-number) and the Supplier, cited to the Portal records; both identifiers must reach one material, else r_number_disagrees and no link; several offerings under one code are listed as candidates, never picked; a request with neither (a new development) is material_unidentified. Requests come from cited records because Portal sourcing requests are not served (sample_requests_not_served).",
+    "originals": [],
+    "live_sources": [
+     "portal.raw_material_supplier",
+     "portal.sourcing_requests"
+    ],
+    "cites": [
+     "advisory:c034c7ea5fa6"
+    ]
+   },
+   {
+    "id": "RS-03",
+    "layer": "actual_case_answerability",
+    "question": "How much of R-1696 (WS Ouai St Barts U-18949) is left?",
+    "criterion": "Missing outcome: received is logged as \"1\" with no unit on 17 Sep 2026, usage is only in lab notes (1.90 g in F-26-1206, 4.00 g in F-26-1208, other use unknown), so remaining is unknown. Name usage_not_recorded and received_is_a_count; never compute a remainder or treat 5.90 g as the total used.",
+    "originals": [
+     "gap-15999825ecff"
+    ],
+    "live_sources": [
+     "portal.sourcing_requests"
+    ],
+    "cites": [
+     "advisory:c034c7ea5fa6"
+    ]
+   },
+   {
+    "id": "RS-04",
+    "layer": "actual_case_answerability",
+    "question": "Which request produced the U-18949 sample, and what was it based on?",
+    "criterion": "Missing outcome: no Sourcing request exists; Giulia's email of 1 Sep 2026 to Parento names the oil-soluble original U-18165, and only the email thread connects it to the new water-soluble U-18949. Report the based-on link as the thread states it, the request record as absent.",
+    "originals": [
+     "gap-15999825ecff"
+    ],
+    "live_sources": [
+     "portal.sourcing_requests"
+    ],
+    "cites": [
+     "advisory:c034c7ea5fa6"
+    ]
+   },
+   {
+    "id": "IL-01",
+    "layer": "comprehension",
+    "question": "What does Giulia's ingredient-list map cover, and what identity rule does it state?",
+    "criterion": "Attribute to the R&D-reviewed draft of 16 Oct 2026: from sample made to IL in the customer's hands (Claude IL generator, SharePoint upload, QA allergens for fragrance or essential oil formulas, AM hand-off). Each formula number is one fixed version, one IL per formula number; old six-digit numbers in parentheses are legacy labels. Portal findings are unverified (repo not read).",
+    "originals": [
+     "gap-7dc82f245571"
+    ],
+    "live_sources": [],
+    "cites": [
+     "advisory:13be54ca81d2"
+    ]
+   },
+   {
+    "id": "IL-02",
+    "layer": "tracing",
+    "question": "Which formula version does each ingredient-list file resolve to, and which files are a version mix-up?",
+    "criterion": "Each IL file (SharePointFile named 'IL -') resolves to the one formula number its name states; none or several is named, never guessed. Without FileMaker formula access the version stays named_unverified (formula_source_not_served) and the ingredient check cannot run (formula_lines_not_readable). Flag files of different content resolving to one number, and, when formula records are read, one number on two versions or one product name on several numbers.",
+    "originals": [
+     "gap-7dc82f245571"
+    ],
+    "live_sources": [
+     "sharepoint.il_files",
+     "fm.formulas"
+    ],
+    "cites": [
+     "advisory:13be54ca81d2"
+    ]
+   },
+   {
+    "id": "IL-03",
+    "layer": "actual_case_answerability",
+    "question": "Was the ingredient list sent for F-26-1179 the right one?",
+    "criterion": "Missing outcome in the ontology: R&D confirmed it was an older IL under the new formula number (dated 2025-11-20; 17 IL ingredients not in the export, 2 export ingredients missing). The Workbench cannot check an IL against its formula without FileMaker formula lines; report the map's finding attributed and the check as not runnable.",
+    "originals": [],
+    "live_sources": [
+     "fm.formulas"
+    ],
+    "cites": [
+     "advisory:13be54ca81d2"
+    ]
+   },
+   {
+    "id": "IL-04",
+    "layer": "actual_case_answerability",
+    "question": "How many ingredient-list files exist for F-26-1057, and which one is current?",
+    "criterion": "Missing outcome: the map states one IL exists as two file copies with different names (13 Aug and 14 Oct, both dated 2026-08-13, allergens added by QA on 14 Oct). Report several_il_files_for_one_formula only for files captured and visible to the reader; which copy is current is not recorded.",
+    "originals": [],
+    "live_sources": [
+     "sharepoint.il_files"
+    ],
+    "cites": [
+     "advisory:13be54ca81d2"
+    ]
+   }
+  ]
+ }
+}

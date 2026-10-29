@@ -1,0 +1,627 @@
+{
+ "$schema": "../_format.schema.json",
+ "format": "plx-ontology-domain/v1",
+ "domain": "teams_conversations",
+ "origin": "curated",
+ "description": "Teams chats, channels and teams as objects (decision devloop/DECISIONS/2026-10-27-teams-conversation-objects.md): the conversation's own record the Teams capture saves in the conversation's unit (integrations/capture_teams.py CONVERSATION; ontology/project_graph.py TeamsCaptures relations chats, channels, teams), each gated per conversation unit by its latest captured membership and the people exclusion, as its messages are. Messages link to their conversation (TeamsChatMessage.in_chat, TeamsChannelMessage.in_channel, generated with their types: ontology/generator/graph_families.json), a channel to its team. Participants are Entra object ids with directory display names and work addresses; a Person is formed per reader from them by the people graph (no Person object is projected: devloop/DECISIONS/2026-10-27-people-graph-person-fields.md).",
+ "object_types": [
+  {
+   "id": "TeamsChat",
+   "description": "One captured Teams chat (Graph chat): its topic, type, creation, latest captured message time and participants. Cited teams-chat://<chat>/conversation@<generation>-<capture-id> in the chat's own unit (teams:chat:<chat>): the reader needs that unit granted and the chat's latest captured membership (decided per handle by CaseRuntime.resolve_citation, as for its messages), so a reader who cannot read the chat sees neither the chat nor its participants. A member whose visible history starts after the chat's latest message does not see it. Source text is untrusted.",
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "teams.chats",
+     "source": "teams",
+     "relation": "chats",
+     "key": [
+      "chat_id"
+     ],
+     "lineage": {
+      "default": "mail"
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_teams"
+      }
+     ]
+    }
+   ],
+   "properties": [
+    {
+     "name": "chat_id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "teams.chats",
+       "path": "chat_id",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_teams"
+      }
+     ],
+     "description": "The Graph chat id."
+    },
+    {
+     "name": "topic",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "teams.chats",
+       "path": "topic",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_teams"
+      }
+     ],
+     "description": "The chat's topic (a group or meeting chat; a one-on-one chat has none)."
+    },
+    {
+     "name": "chat_type",
+     "value_type": "enum",
+     "sources": [
+      {
+       "binding": "teams.chats",
+       "path": "chat_type",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_teams"
+      }
+     ],
+     "enum_values": [
+      "oneOnOne",
+      "group",
+      "meeting",
+      "unknownFutureValue",
+      "unknown"
+     ]
+    },
+    {
+     "name": "created_at",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "teams.chats",
+       "path": "created_at",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_teams"
+      }
+     ]
+    },
+    {
+     "name": "last_activity_at",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "teams.chats",
+       "path": "last_activity_at",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_teams"
+      }
+     ],
+     "description": "The latest creation or edit time of a message of this conversation the capture holds (the conversation's last captured activity), when the record was saved."
+    },
+    {
+     "name": "last_updated",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "teams.chats",
+       "path": "last_updated",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_teams"
+      }
+     ],
+     "description": "Graph lastUpdatedDateTime: when the chat was renamed or its members last changed."
+    },
+    {
+     "name": "participants",
+     "value_type": "json",
+     "sources": [
+      {
+       "binding": "teams.chats",
+       "path": "participants",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_teams"
+      }
+     ],
+     "description": "The conversation's members as read with its latest captured membership: each participant's Entra object id (the shared key the people graph resolves a Person by, operating/people_graph.py), display name and work address (directory facts every employee sees: unmarked, devloop/DECISIONS/2026-10-27-people-graph-person-fields.md item 1). Phone numbers, personal addresses, department and job title are never captured here. An excluded person never appears: the capture refuses a conversation with an excluded member, and the case runtime withholds the whole record from every reader when a participant is excluded later."
+    },
+    {
+     "name": "participants_basis",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "teams.chats",
+       "path": "participants_basis",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_teams"
+      }
+     ],
+     "description": "How the participants were read: chat_members, channel_members, team_members (a standard channel is its team's audience) or group_fallback (the team's group admits readers and names nobody: participants is empty)."
+    },
+    {
+     "name": "original_url",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "teams.chats",
+       "path": "original_url",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_teams"
+      }
+     ]
+    }
+   ],
+   "identity_keys": [
+    {
+     "name": "source_key",
+     "properties": [
+      "chat_id"
+     ],
+     "tier": "verified",
+     "unique": true,
+     "scope": "within_binding",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_teams"
+      }
+     ]
+    }
+   ],
+   "display": [
+    "topic"
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "wb.capture_teams"
+    }
+   ]
+  },
+  {
+   "id": "TeamsChannel",
+   "description": "One captured Teams channel (Graph channel): its name, description, membership type, creation, latest captured message time, participants and team. Cited teams-channel://<team>/<channel>/conversation@<generation>-<capture-id> in the channel's own unit (teams:channel:<team>/<channel>), gated as its messages are (the unit grant and the channel's latest captured membership), so a reader who cannot read the channel sees neither the channel nor its participants. Source text is untrusted.",
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "teams.channels",
+     "source": "teams",
+     "relation": "channels",
+     "key": [
+      "team_id",
+      "channel_id"
+     ],
+     "lineage": {
+      "default": "mail"
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_teams"
+      }
+     ]
+    }
+   ],
+   "properties": [
+    {
+     "name": "team_id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "teams.channels",
+       "path": "team_id",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_teams"
+      }
+     ]
+    },
+    {
+     "name": "channel_id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "teams.channels",
+       "path": "channel_id",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_teams"
+      }
+     ]
+    },
+    {
+     "name": "display_name",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "teams.channels",
+       "path": "display_name",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_teams"
+      }
+     ]
+    },
+    {
+     "name": "description",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "teams.channels",
+       "path": "description",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_teams"
+      }
+     ]
+    },
+    {
+     "name": "membership_type",
+     "value_type": "enum",
+     "sources": [
+      {
+       "binding": "teams.channels",
+       "path": "membership_type",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_teams"
+      }
+     ],
+     "enum_values": [
+      "standard",
+      "private",
+      "shared",
+      "unknownFutureValue",
+      "unknown"
+     ]
+    },
+    {
+     "name": "created_at",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "teams.channels",
+       "path": "created_at",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_teams"
+      }
+     ]
+    },
+    {
+     "name": "last_activity_at",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "teams.channels",
+       "path": "last_activity_at",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_teams"
+      }
+     ],
+     "description": "The latest creation or edit time of a message of this conversation the capture holds (the conversation's last captured activity), when the record was saved."
+    },
+    {
+     "name": "participants",
+     "value_type": "json",
+     "sources": [
+      {
+       "binding": "teams.channels",
+       "path": "participants",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_teams"
+      }
+     ],
+     "description": "The conversation's members as read with its latest captured membership: each participant's Entra object id (the shared key the people graph resolves a Person by, operating/people_graph.py), display name and work address (directory facts every employee sees: unmarked, devloop/DECISIONS/2026-10-27-people-graph-person-fields.md item 1). Phone numbers, personal addresses, department and job title are never captured here. An excluded person never appears: the capture refuses a conversation with an excluded member, and the case runtime withholds the whole record from every reader when a participant is excluded later."
+    },
+    {
+     "name": "participants_basis",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "teams.channels",
+       "path": "participants_basis",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_teams"
+      }
+     ],
+     "description": "How the participants were read: chat_members, channel_members, team_members (a standard channel is its team's audience) or group_fallback (the team's group admits readers and names nobody: participants is empty)."
+    },
+    {
+     "name": "original_url",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "teams.channels",
+       "path": "original_url",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_teams"
+      }
+     ]
+    }
+   ],
+   "identity_keys": [
+    {
+     "name": "source_key",
+     "properties": [
+      "team_id",
+      "channel_id"
+     ],
+     "tier": "verified",
+     "unique": true,
+     "scope": "within_binding",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_teams"
+      }
+     ]
+    }
+   ],
+   "display": [
+    "display_name"
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "wb.capture_teams"
+    }
+   ]
+  },
+  {
+   "id": "Team",
+   "description": "One Microsoft Teams team (Graph team): its name, description and creation, read with the record of its first standard channel (by unit) that has a captured membership and cited by that record (teams-channel://<team>/<channel>/conversation@...): a standard channel's audience is the team's members, so that channel's unit and membership gate the team. A team none of whose standard channels is captured is not projected.",
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "teams.teams",
+     "source": "teams",
+     "relation": "teams",
+     "key": [
+      "team_id"
+     ],
+     "lineage": {
+      "default": "mail"
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_teams"
+      }
+     ]
+    }
+   ],
+   "properties": [
+    {
+     "name": "team_id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "teams.teams",
+       "path": "team_id",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_teams"
+      }
+     ]
+    },
+    {
+     "name": "display_name",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "teams.teams",
+       "path": "team.display_name",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_teams"
+      }
+     ]
+    },
+    {
+     "name": "description",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "teams.teams",
+       "path": "team.description",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_teams"
+      }
+     ]
+    },
+    {
+     "name": "created_at",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "teams.teams",
+       "path": "team.created_at",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_teams"
+      }
+     ]
+    }
+   ],
+   "identity_keys": [
+    {
+     "name": "source_key",
+     "properties": [
+      "team_id"
+     ],
+     "tier": "verified",
+     "unique": true,
+     "scope": "within_binding",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_teams"
+      }
+     ]
+    }
+   ],
+   "display": [
+    "display_name"
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "wb.capture_teams"
+    }
+   ]
+  }
+ ],
+ "link_types": [
+  {
+   "id": "TeamsChannel.in_team",
+   "from": "TeamsChannel",
+   "to": "Team",
+   "name": "in_team",
+   "reverse_name": "channels",
+   "cardinality": "N:1",
+   "description": "The team a channel belongs to (Graph structure: the channel's team id).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "teams.channels",
+     "to_binding": "teams.teams",
+     "pairs": [
+      {
+       "from": "team_id",
+       "to": "team_id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_teams"
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "event_types": [],
+ "evidence_catalog": {
+  "wb.capture_teams": {
+   "kind": "workbench_code",
+   "path": "integrations/capture_teams.py",
+   "note": "TeamsCapture: the conversation record (conversation_row) saved with every finished or capped read of a chat or channel, after its members cleared the people guard; gated by the unit's latest membership (unit_acl)."
+  }
+ }
+}

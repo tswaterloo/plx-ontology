@@ -1,4 +1,4 @@
-"""Root resolution and mirror completeness of the dev-set baseline.
+"""Root resolution and mirror completeness of the dev-set baseline (directive dbe4ec3aeba8).
 
 The live baseline answered 20 of 26 items blocked: a Portal PO number is also the BC
 purchase order's No. once the Portal drains it to BC, so plx.find lists both records and the
@@ -49,6 +49,10 @@ class TwinRootTests(unittest.TestCase):
         from scripts import eval_unfamiliar_sample as ev
         from tests.test_eval_unfamiliar_sample import fixture_bc_sender
 
+        from operating.ontology_tools import default_schema
+        schema = default_schema()
+        cls.po_identity_links = sorted(lid for lid in schema.identity_link_types()
+                                       if schema.link_types[lid]["from"] == "PurchaseOrder")
         cls.tmp = tempfile.TemporaryDirectory()
         items = [i for i in runner.load_items(script.DEV_DIR, split="dev")
                  if i["family"] in ("F1", "F4")]
@@ -60,7 +64,7 @@ class TwinRootTests(unittest.TestCase):
         number = next(i["root"]["identifier"] for i in drained if i["id"] == cls.sage_item)
         world.relations["sage.po_header"] = [{"porhseq": 990001, "ponumber": number,
                                               "audtdate": "20981231"}]
-        # Copies of POs no dev item roots at (identity probes): the number in
+        # Copies of POs no dev item roots at (identity probes, e99f5ba164b1): the number in
         # two BC companies; an FM copy the PO's stored FM id joins (verified) beside a BC
         # copy (number only); an FM copy and a BC copy sharing only the number; an FM copy
         # alone sharing only the number.
@@ -126,8 +130,14 @@ class TwinRootTests(unittest.TestCase):
             self.assertIn("/purchaseOrders/", twin["handle"])
             self.assertEqual(twin["tier"], "lead")   # the one BC copy shares only the number
             self.assertEqual(validate(twins[0], CONTRACTS["$defs"]["gap"], root=CONTRACTS), [])
+            # The twin walk reads each declared PurchaseOrder identity link once per
+            # direction, no more: the entity map (``bc_posted_as``) is a second one beside
+            # ``same_record_as``, so the walk reads 2 per identity link type, never a repeat.
+            self.assertLessEqual({"PurchaseOrder.same_record_as", "PurchaseOrder.bc_posted_as"},
+                                 set(self.po_identity_links))
             self.assertIn({"step": "root_twins", "tool": "plx.around", "status": "ok",
-                           "calls": 2, "objects": 1}, result["trace"])
+                           "calls": 2 * len(self.po_identity_links), "objects": 1},
+                          result["trace"])
 
     def test_f1_roots_resolve_where_the_record_exists_and_a_separate_record_stays_ambiguous(self):
         from ontology import identifiers
@@ -336,9 +346,14 @@ class VerifiedTwinPlanRootTests(unittest.TestCase):
 class MirrorCompletenessTests(unittest.TestCase):
     """The live mirror read (injected transport): the relations the plans read come first
     and decide eval.complete; every unfinished relation is named in eval.mirror, and one
-    no plan reads is noted in eval.incomplete under its own code."""
+    no plan reads is noted in eval.incomplete under its own code (review 926ee36b)."""
+
+    # Every relation of the fixture world is one an F1-F4 plan reads (F3 states produced
+    # from the FM status entries), so the unplanned case drops that relation from the plans.
+    UNPLANNED = "public.assembly_order_status"
 
     def run_live(self, tmp: str, failing: str) -> tuple[int, dict]:
+        from unittest import mock
         from integrations.workbench_read_api import WorkbenchReadApiClient
         from scripts import eval_dev_baseline as script
         from scripts import eval_oracle_dev as dev
@@ -352,7 +367,7 @@ class MirrorCompletenessTests(unittest.TestCase):
         def build(env, args, *, guard):
             sources, documents, configured, _ = dev.build_fixture(dev.eval_world())
             return sources, documents, configured
-        spec = json.loads((ROOT / "verify" / "live-checks" / "eval.dev_baseline.json")
+        spec = json.loads((ROOT / "devloop" / "live-checks" / "eval.dev_baseline.json")
                           .read_text())
         argv = [arg.replace("{tmp}", tmp).replace("{session_state}", tmp + "/session")
                 for arg in spec["command"][3:]]
@@ -361,29 +376,35 @@ class MirrorCompletenessTests(unittest.TestCase):
         # The run id seeds the item sample: pin it, not the auto 'live-<UTC date>' (the
         # 2026-10-12 sample read no unfinished relation and the incomplete case passed).
         argv[argv.index("--run-id") + 1] = "live-2026-10-10"
+        real = script.plan_relations
+
+        def plans(schema, families):
+            read = real(schema, families)
+            return None if read is None else [r for r in read if r != self.UNPLANNED]
         out = io.StringIO()
-        with contextlib.redirect_stdout(out):
+        with contextlib.redirect_stdout(out), \
+                mock.patch.object(script, "plan_relations", plans):
             code = script.main(argv, environ={}, live_build=build, live_client=client,
                                live_clock=script.fixture_clock)
         return code, json.loads(out.getvalue())
 
     def test_only_an_unfinished_relation_the_plans_read_makes_the_run_incomplete(self):
-        from verify import live_verify
+        from devloop import live_verify
         from ontology.schema import load_schema
         from scripts import eval_dev_baseline as script
 
-        spec = json.loads((ROOT / "verify" / "live-checks" / "eval.dev_baseline.json")
+        spec = json.loads((ROOT / "devloop" / "live-checks" / "eval.dev_baseline.json")
                           .read_text())
         needed = script.plan_relations(load_schema(), ["F1", "F2", "F3", "F4"])
         self.assertIn(PO_RELATION, needed)
-        self.assertNotIn("public.assembly_order_status", needed)
+        self.assertIn(self.UNPLANNED, needed)
         self.assertIsNone(script.plan_relations(load_schema(), ["F1", "F5"]))
         with tempfile.TemporaryDirectory() as tmp:
-            code, document = self.run_live(tmp, "public.assembly_order_status")
+            code, document = self.run_live(tmp, self.UNPLANNED)
         block = document["eval"]
         self.assertEqual((code, block["complete"], block["incomplete"]),
                          (0, True, [bl.MIRROR_UNPLANNED]), block)
-        self.assertEqual(block["mirror"]["unfinished"], ["public.assembly_order_status"])
+        self.assertEqual(block["mirror"]["unfinished"], [self.UNPLANNED])
         self.assertEqual(block["mirror"]["needed_unfinished"], [])
         self.assertGreater(block["mirror"]["unfinished_share"], 0)
         # The spec on this output: the short run's item floor and B1's accuracy bar fail

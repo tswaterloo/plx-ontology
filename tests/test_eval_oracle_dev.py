@@ -3,7 +3,7 @@
 Evidence label: ``injected-transport``. The Portal path runs through the real
 ``WorkbenchReadApiClient`` with the fixture world's fetch; the BC path through the real
 ``BusinessCentralReader`` with the recorded-shape ``FakeSender``. Nothing here is live;
-``verify/live-checks/eval.oracle_dev.json`` is live-unverified until the verifier
+``devloop/live-checks/eval.oracle_dev.json`` is live-unverified until the verifier
 records a pass.
 """
 
@@ -21,14 +21,15 @@ import unittest
 from unittest import mock
 from urllib.parse import urlsplit
 
-from verify import live_verify
+from devloop import live_verify
 from evals.oracle import BcReads, PortalReads, Sources, perturb, run
 from evals.oracle.fixture_world import World, build_live_shaped_world
 from evals.oracle.keys import CLOSED_CITE, RELATIONS
 from evals.oracle.source import ReadFailed, digest
 from evals.oracle.generator import (HELD_OUT_ONLY, QUOTAS, SPLIT_SALT, STRATA,
                                     audit_requested, chain_digests, item_hash,
-                                    item_root_digest, split_of)
+                                    candidate_split, document_candidates, document_cause,
+                                    generate, item_root_digest, portal_candidates, split_of)
 from integrations.tests.test_bc_purchase import BUYER, PO, Fixture
 from ontology.json_contract import validate
 from ontology.types import Actor
@@ -193,14 +194,14 @@ class EntryPointTest(unittest.TestCase):
         self.assertEqual(set(json.loads(err.getvalue())), {"error"})
 
     def test_a_dev_deadline_stops_reads_and_the_funnel_is_still_written(self):
-        """Live 8e61f78: eval.oracle_dev timed out at 1500 s and left
-        no record of the stage that stopped it. The spec's argv runs
+        """Live 8e61f78 (directive d5c79ab4644f): eval.oracle_dev timed out at 1500 s and left
+        no record of the stage that stopped it (7ced1fe7ab64 item 2). The spec's argv runs
         under a read deadline inside its timeout; reads cut by it stop (no transport call
         after it) and their strata say ``blocked: budget`` with their funnels, so the
         verifier reaches a verdict on a whole record."""
         from integrations.workbench_read_api import WorkbenchReadApiClient
 
-        path = ROOT / "verify" / "live-checks" / "eval.oracle_dev.json"
+        path = ROOT / "devloop" / "live-checks" / "eval.oracle_dev.json"
         spec = json.loads(path.read_text(encoding="utf-8"))
         self.assertLess(dev.DEV_BUDGET_SECONDS, spec["timeout_seconds"])
         clock, fetched = [0.0], []
@@ -267,7 +268,7 @@ class EntryPointTest(unittest.TestCase):
         import time
         from integrations.workbench_read_api import WorkbenchReadApiClient
 
-        spec = json.loads((ROOT / "verify" / "live-checks" / "eval.oracle_dev.json")
+        spec = json.loads((ROOT / "devloop" / "live-checks" / "eval.oracle_dev.json")
                           .read_text(encoding="utf-8"))
         budget, reserve = 1.0, 10.0
         release = threading.Event()
@@ -353,7 +354,7 @@ class EntryPointTest(unittest.TestCase):
     def test_a_plain_guard_firing_mid_read_never_makes_a_portal_outage(self):
         """Only a ``Deadline`` guards each Portal page: a plain guard (a sampler's per-kind
         clock) that fires after a read's first page leaves that read whole, never
-        ``blocked: upstream``."""
+        ``blocked: upstream`` (review of 713f4bf)."""
         import argparse
         world, pages = dev.eval_world(), [0]
 
@@ -375,10 +376,10 @@ class EntryPointTest(unittest.TestCase):
         self.assertIsInstance(read["rows"], list)
 
     def test_a_deadline_stops_a_portal_read_at_its_next_page_through_the_public_hook(self):
-        """``build_live`` hands a ``Deadline`` to the client's public ``before_page`` hook:
-        once the deadline passes inside a relation read, the
+        """``build_live`` hands a ``Deadline`` to the client's public ``before_page`` hook
+        (directive 35cbb3e77fab): once the deadline passes inside a relation read, the
         read sends no further GET and is recorded ``blocked: budget``. The client is built
-        with that hook (the read alone also stopped through the
+        with that hook (directive 6face43dd5f9: the read alone also stopped through the
         private wrapper it replaced)."""
         import argparse
         from integrations import workbench_read_api
@@ -410,7 +411,7 @@ class EntryPointTest(unittest.TestCase):
         self.assertFalse([u for u in urls if "/rows" in u])   # no page past the deadline
 
     def test_live_spec_is_valid_allowlisted_and_records_no_values(self):
-        path = ROOT / "verify" / "live-checks" / "eval.oracle_dev.json"
+        path = ROOT / "devloop" / "live-checks" / "eval.oracle_dev.json"
         spec = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(live_verify.validate_spec(spec, stem=path.stem), [])
         self.assertIn("scripts.eval_oracle_dev", live_verify.ALLOWED_MODULES)
@@ -427,9 +428,12 @@ class LiveShapedStrataTest(unittest.TestCase):
 
     def run_world(self, world):
         sources, documents, configured, _ = dev.build_fixture(world)
-        return dev.execute(sources, documents, run_id="live-2099-01-02T03", now=dev.FIXTURE_NOW,
-                           count=30, audit=10, id_suffix="live", evidence_note=None,
-                           evidence_label="injected-transport", configured=configured)
+        report, items = dev.execute(sources, documents, run_id="live-2099-01-02T03",
+                                    now=dev.FIXTURE_NOW, count=30, audit=10, id_suffix="live",
+                                    evidence_note=None, evidence_label="injected-transport",
+                                    configured=configured)
+        dev.stamp_budget(report, documents, seconds=dev.DEV_BUDGET_SECONDS, hit=False)
+        return report, items
 
     def test_all_seven_strata_and_four_families_through_the_client(self):
         report, items = self.run_world(build_live_shaped_world())
@@ -450,17 +454,17 @@ class LiveShapedStrataTest(unittest.TestCase):
         self.assertEqual(report["counts"]["deterministic"], 30)
         for item in items:
             self.assertEqual(validate(item, SCHEMA, root=SCHEMA), [], item["id"])
-        spec = json.loads((ROOT / "verify" / "live-checks" / "eval.oracle_dev.json")
+        spec = json.loads((ROOT / "devloop" / "live-checks" / "eval.oracle_dev.json")
                           .read_text(encoding="utf-8"))
         live = {**report, "evidence_label": "live-read"}
         self.assertEqual(live_verify.check_expectations(spec, 0, live), [])
 
     def spec(self):
-        return json.loads((ROOT / "verify" / "live-checks" / "eval.oracle_dev.json")
+        return json.loads((ROOT / "devloop" / "live-checks" / "eval.oracle_dev.json")
                           .read_text(encoding="utf-8"))
 
     def test_a_named_empty_stratum_is_reported_with_its_source_and_still_fails(self):
-        # An empty stratum names the source it tried, and the live
+        # Owner rule 9ef52816ab90: an empty stratum names the source it tried, and the live
         # spec fails until all seven kinds have candidates.
         world = build_live_shaped_world()
         world.relations["public.receipt_raw_material"] = []
@@ -525,7 +529,7 @@ class LiveShapedStrataTest(unittest.TestCase):
         self.assertNotIn("po_list_status", json.dumps(self.spec()))
 
     def test_unreadable_documents_and_bc_are_never_empty(self):
-        # A source without a reader, fully withheld or cut off is not an
+        # CONTEXT/01 §6 #3: a source without a reader, fully withheld or cut off is not an
         # empty source; the report says which and names what it tried.
         class Mail(MailFake):
             def list_messages(self, actor, mailbox, *, search=None, **kwargs):
@@ -861,7 +865,7 @@ class PortalOutageStrataTest(unittest.TestCase):
         self.assertEqual(report["counts"]["deterministic"], report["counts"]["items"])
         self.assertEqual(report["unexplained_strata"], [])
         # The spec, against this run's real output: blocked parts, the rest measured.
-        spec = json.loads((ROOT / "verify" / "live-checks" / "eval.oracle_dev.json")
+        spec = json.loads((ROOT / "devloop" / "live-checks" / "eval.oracle_dev.json")
                           .read_text(encoding="utf-8"))
         live = json.loads(json.dumps({**report, "evidence_label": "live-read"}))
         code = dev.exit_code(live)
@@ -914,7 +918,7 @@ class DocumentOverlapTest(unittest.TestCase):
                            configured=self.configured)
 
     def spec(self):
-        return json.loads((ROOT / "verify" / "live-checks" / "eval.oracle_dev.json")
+        return json.loads((ROOT / "devloop" / "live-checks" / "eval.oracle_dev.json")
                           .read_text(encoding="utf-8"))
 
     def test_the_cross_sample_searches_the_mailbox_root_first(self):
@@ -1281,10 +1285,10 @@ class DocumentOverlapTest(unittest.TestCase):
         self.assertEqual(sorted(reads), ["memo", "memo", "slip", "slip"])
 
     def test_a_part_scanned_pdf_without_ocr_is_partial_and_csv_and_long_texts_are_read(self):
-        """On a host without OCR a PDF with scanned pages counted as
+        """Review of c94224e: on a host without OCR a PDF with scanned pages counted as
         read; a .csv was no longer read and a text over the extractor's 100k characters
         failed (the old reader read 200k); a long OCR overran the text time.
-        A PDF read on its first pages only (the page bound) is
+        Directive 0bfff43dc217 (5): a PDF read on its first pages only (the page bound) is
         partial like a part-scanned one, its unread pages counted (all of them unknown when
         its page count cannot be told), never a whole read whose no-match is absence."""
         from integrations import captured_text as ct
@@ -1362,7 +1366,7 @@ class DocumentOverlapTest(unittest.TestCase):
                          (0, {"time_budget": 4}))
 
     def test_a_mail_body_of_another_change_key_is_not_attached_and_one_lookup_serves(self):
-        """Over the real GraphMailReader: a message edited between list
+        """Review of c94224e over the real GraphMailReader: a message edited between list
         and body read lent its new body to the listed record, and every body read looked
         the mailbox up again."""
         from integrations import graph_read
@@ -1697,6 +1701,161 @@ class LiveSearchTest(unittest.TestCase):
             "sharepoint", ["FXSO1001"], hits=5)["not_configured"], "sharepoint_paths_not_given")
 
 
+NOW = "2099-01-02T04:00:00Z"
+ALL = 10_000   # roots searched by a direct document_candidates call: every one
+
+
+class LiveDocumentReadTest(unittest.TestCase):
+    """Where the live document strata spent their text budget (injected readers; not live).
+    Live 2026-10-20: 53 of 405 mail documents read, the rest past the budget by a digest of
+    the seed; SharePoint 11 of 40 read, OCR failing on the rest."""
+
+    def setUp(self):
+        from contextlib import contextmanager
+        self.dev = dev
+        self.world = build_live_shaped_world(documents=False)
+        self.sources = Sources(PortalReads(self.world.read_relation), None)
+        self.pool = portal_candidates(self.sources, "sales_order")
+        self.root = next(c for c in self.pool if c.family == "F1"
+                         and candidate_split(c) == "dev")
+        test = self
+
+        class Mail:
+            """Each query answers 5 messages; the last answer of the root's own queries is
+            the one that names it: in its subject, or only in a text attachment."""
+
+            @contextmanager
+            def directory_cache(self):
+                yield
+
+            def resolve_folder(self, actor, mailbox, name):
+                from integrations.live_source_guard import NotVisible
+                raise NotVisible()
+
+            def list_messages(self, actor, mailbox, folder=None, search=None, **kw):
+                names = test.root.identifier in (search or "")
+                items = [{"citation": f"graph-mail://box/{search}-{n}@ck", "id": f"{search}-{n}",
+                          "subject": f"Weekly note {n}", "body_preview": "Update",
+                          "change_key": "ck", "parent_folder_id": "F"} for n in range(5)]
+                if names:
+                    items[-1].update(
+                        subject="Re: " + test.root.identifier + " shipped"
+                        if test.mode == "subject" else "Packing",
+                        has_attachments=test.mode == "attachment")
+                return {"items": items, "completeness": {"truncated": False}}
+
+            def get_message(self, actor, mailbox, message_id, **kw):
+                return {"change_key": "ck", "body_text": "Thanks", "id": message_id,
+                        "mailbox": mailbox}
+
+            def list_attachments(self, actor, mailbox, message_id, **kw):
+                return {"items": [{"id": "A1", "name": "po.txt", "size": 40,
+                                   "content_type": "text/plain", "is_inline": False}]}
+
+            def get_attachment(self, actor, mailbox, message_id, attachment_id, **kw):
+                return {"content": f"PO {test.root.identifier}".encode()}
+
+        self.mail = Mail()
+        self.mode = "subject"
+        self.actor = BUYER
+
+    def sources_full(self):
+        world = build_live_shaped_world(documents=False)
+        return Sources(PortalReads(world.read_relation), BcReads(world.bc_port()))
+
+    def mail_stratum(self):
+        docs = self.dev.LiveDocuments(self.actor, mail_reader=self.mail, mailbox="box")
+        funnel, read = {}, {}
+        with mock.patch.object(self.dev, "MAX_SEARCH_TEXTS", 3):
+            found = document_candidates(self.sources, docs, "mail", self.pool, ALL, funnel,
+                                        read)
+        return found, funnel
+
+    def test_late_mail_naming_a_root_is_read_within_the_same_text_budget(self):
+        for mode in ("subject", "attachment"):
+            self.mode = mode
+            found, funnel = self.mail_stratum()
+            self.assertIn(self.root.identifier, [c.identifier for c in found], mode)
+            self.assertLessEqual(funnel["texts_read"], 9, mode)   # 3 a search call: unchanged
+            self.assertGreater(funnel["texts_unread_text_budget"], 100, mode)
+
+    def test_sharepoint_ocr_failures_are_typed_and_the_readable_files_name_a_root(self):
+        root = self.root.identifier
+        files = {f"f{n}": (f"scan{n}.pdf", status) for n, status in enumerate(
+            ["ocr_failed:deadline", "ocr_failed:tool_exit", "ocr_failed:deadline",
+             "ocr_failed", "ocr_no_text"])}
+        files["t1"], files["t2"] = ("note.txt", "ok"), ("logo.png", "ok")
+
+        class Drive:
+            def search(self, actor, query, max_items):
+                return {"items": [{"citation": f"sharepoint://d/{i}@e", "id": i, "name": name,
+                                   "kind": "file", "size": 10} for i, (name, _) in files.items()],
+                        "completeness": {"truncated": False}}
+
+            def get_content(self, actor, item_id, max_bytes):
+                return {"content": item_id.encode()}
+
+        def capture(content, meta, **kw):
+            status = files[content.decode()][1]
+            return status, (f"Order {root}" if status == "ok" else None)
+
+        docs = self.dev.LiveDocuments(self.actor, drive_reader=Drive(), drive_paths=["/D"])
+        funnel, read = {}, {}
+        with mock.patch("integrations.captured_text.capture_text", capture):
+            found = document_candidates(self.sources, docs, "sharepoint", self.pool, ALL,
+                                        funnel, read)
+        self.assertIn(root, [c.identifier for c in found])
+        self.assertEqual({k: v for k, v in funnel.items() if k.startswith("texts_unread_")},
+                         {"texts_unread_ocr_failed_deadline": 2,
+                          "texts_unread_ocr_failed_tool_exit": 1,
+                          "texts_unread_ocr_failed_untyped": 1, "texts_unread_ocr_no_text": 1,
+                          "texts_unread_not_text_kind": 1})
+
+    def test_an_empty_document_stratum_names_the_cause_it_measured(self):
+        cases = {"text_budget": {"documents": 9, "texts_read": 3,
+                                 "texts_unread_text_budget": 6},
+                 "ocr": {"documents": 9, "texts_read": 2, "texts_unread_ocr_failed_deadline": 4,
+                         "texts_unread_ocr_no_text": 3},
+                 "no_root_in_sample": {"documents": 9, "texts_read": 9}}
+        for cause, funnel in cases.items():
+            self.assertEqual(document_cause(funnel), cause)
+        # through generate: the stratum is blocked by its cause, with its counts, never 'read'
+        docs = self.dev.LiveDocuments(self.actor, mail_reader=self.mail, mailbox="box")
+        self.mode = "none"
+        with mock.patch.object(self.dev, "MAX_SEARCH_TEXTS", 3):
+            entry = generate(self.sources_full(), run_id="live-shaped-a", now=NOW,
+                          documents=docs).strata["mail"]
+        self.assertEqual((entry["status"], entry["reason"], entry["blocked"]),
+                         ("no_candidate_in_sample", "no_document_names_root", "text_budget"))
+        self.assertGreater(entry["funnel"]["texts_unread_text_budget"], 0)
+
+    def test_a_mail_stratum_that_spends_the_run_budget_leaves_sharepoint_its_share(self):
+        # Live b823b276b1: mail used the run's whole read time (blocked: budget) and
+        # SharePoint, searched after it, found 0 of 24 roots.
+        clock = [0.0]
+        root = self.root.identifier
+
+        class SlowMail(self.mail.__class__):
+            def list_messages(self, actor, mailbox, **kw):
+                clock[0] += 100.0   # each mail search takes 100 s of the 1200
+                return {"items": [], "completeness": {"truncated": False}}
+
+        class Drive:
+            def search(self, actor, query, max_items):
+                return {"items": [{"citation": "sharepoint://d/1@e", "id": "1", "kind": "file",
+                                   "name": f"{root}_slip.png"}],
+                        "completeness": {"truncated": False}}
+
+        docs = self.dev.LiveDocuments(
+            self.actor, mail_reader=SlowMail(), mailbox="box", drive_reader=Drive(),
+            drive_paths=["/D"], guard=self.dev.Deadline(1200.0, lambda: clock[0]))
+        strata = generate(self.sources_full(), run_id="live-shaped-a", now=NOW,
+                          documents=docs).strata
+        self.assertEqual(strata["mail"]["blocked"], "budget")
+        self.assertGreaterEqual(strata["sharepoint"]["candidates"], 1)
+        self.assertGreater(strata["sharepoint"]["funnel"]["roots_searched"], 0)
+
+
 HELDOUT = ROOT / "evals" / "heldout"
 FIXTURE_MANIFEST = HELDOUT / "manifest.fixture.json"
 
@@ -1711,7 +1870,7 @@ def run_heldout(state: Path, *extra: str, environ: dict | None = None) -> tuple[
 
 class HeldOutTest(unittest.TestCase):
     """The held-out path, keyless over the fixture world (``--source fixture``); live it
-    runs only in the credentialed verifier (verify/live-checks/eval.heldout.json)."""
+    runs only in the credentialed verifier (devloop/live-checks/eval.heldout.json)."""
 
     @classmethod
     def setUpClass(cls):
@@ -1837,7 +1996,7 @@ class HeldOutTest(unittest.TestCase):
             self.assertTrue((state / "fixture" / dev.HELDOUT_RUN_ID / "frozen.json").exists())
 
     def test_default_run_id_is_the_one_the_live_spec_draws(self):
-        spec = json.loads((ROOT / "verify" / "live-checks" / "eval.heldout.json")
+        spec = json.loads((ROOT / "devloop" / "live-checks" / "eval.heldout.json")
                           .read_text(encoding="utf-8"))
         command = spec["command"]
         self.assertEqual(command[command.index("--run-id") + 1], dev.HELDOUT_RUN_ID)
@@ -1941,7 +2100,7 @@ class HeldOutTest(unittest.TestCase):
         return code, json.loads(stdout.getvalue())
 
     def test_a_portal_outage_blocks_parts_measures_the_rest_and_never_freezes(self):
-        spec = json.loads((ROOT / "verify" / "live-checks" / "eval.heldout.json")
+        spec = json.loads((ROOT / "devloop" / "live-checks" / "eval.heldout.json")
                           .read_text(encoding="utf-8"))
         self.assertNotIn("requires", spec)
         # A fixture draw that holds a BC-rooted variant whose failed hop is a Portal one
@@ -2159,7 +2318,7 @@ class HeldOutTest(unittest.TestCase):
         self.assertTrue(deadline.hit)
 
     def test_live_spec_is_daily_bounded_and_records_no_values(self):
-        path = ROOT / "verify" / "live-checks" / "eval.heldout.json"
+        path = ROOT / "devloop" / "live-checks" / "eval.heldout.json"
         spec = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(live_verify.validate_spec(spec, stem=path.stem), [])
         self.assertEqual(spec["cadence"], "daily")
@@ -2183,6 +2342,103 @@ class HeldOutTest(unittest.TestCase):
                  "f5_unmatched_invoices", "f6_shipped_short"}
         if plans.is_dir():
             self.assertFalse({p.stem for p in plans.glob("*.json")} & names)
+
+
+class FreezeBudgetTest(unittest.TestCase):
+    """A document kind whose share of the read time runs out is exhausted for the held-out
+    freeze (decision 2026-10-21-oracle-freeze-budget). Injected readers; not live."""
+
+    ENV = {"PLX_WORKBENCH_API_URL": "u", "PLX_WORKBENCH_API_KEY": "k"}
+
+    def heldout(self, spent_per_mail_search: float) -> tuple[int, dict, Path]:
+        clock = [0.0]
+
+        class Mail(MailFake):
+            def resolve_folder(self, actor, mailbox, name):
+                from integrations.live_source_guard import NotVisible
+                raise NotVisible()
+
+            def list_messages(self, actor, mailbox, **kw):
+                clock[0] += spent_per_mail_search
+                return {"items": [], "completeness": {"truncated": False}}
+
+        class Drive:
+            def __getattr__(self, name):
+                return lambda *a, **k: {"items": [], "completeness": {"truncated": False}}
+
+        def build(env, args, *, guard):
+            sources, _, _, _ = dev.build_fixture(dev.eval_world())
+            docs = dev.LiveDocuments(BUYER, mail_reader=Mail(), mailbox="box",
+                                     drive_reader=Drive(), drive_paths=["/Documents"],
+                                     guard=guard)
+            return sources, docs, {"portal": "live-read", "documents": "live-read"}
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        state = Path(tmp.name) / "state"
+        out = io.StringIO()
+        class Clocked(dev.Deadline):
+            def __init__(self, seconds, monotonic=None):
+                super().__init__(seconds, monotonic or (lambda: clock[0]))
+                self.whole.append(self)
+        Clocked.whole = self.whole = []
+
+        with mock.patch.object(dev, "build_live", build), \
+                mock.patch.object(dev, "Deadline", Clocked), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            code = dev.main(["heldout", "--state-dir", str(state), "--mailbox", "box",
+                             "--budget-seconds", "2400"],
+                            environ=self.ENV)
+        return code, json.loads(out.getvalue()), state
+
+    def test_a_mail_share_that_runs_out_refuses_the_freeze_and_names_the_stratum(self):
+        # Mail's share runs out while the run's whole deadline does not: only the per-kind
+        # share refuses this freeze.
+        code, manifest, state = self.heldout(spent_per_mail_search=500.0)
+        self.assertIs(self.whole[0].hit, False)
+        self.assertEqual(manifest["budget_by_stratum"], {
+            "mail": {"exhausted": True}, "sharepoint": {"exhausted": False}})
+        self.assertIs(manifest["budget"]["exhausted"], True)
+        self.assertEqual(manifest["frozen"]["deferred"], "budget_exhausted:mail")
+        self.assertEqual(code, 3)
+        self.assertFalse(list(state.rglob(dev.FROZEN)))
+
+    def test_a_full_budget_run_still_freezes(self):
+        code, manifest, state = self.heldout(spent_per_mail_search=0.0)
+        self.assertEqual(manifest["budget_by_stratum"], {
+            "mail": {"exhausted": False}, "sharepoint": {"exhausted": False}})
+        self.assertIs(manifest["budget"]["exhausted"], False)
+        self.assertNotIn("deferred", manifest["frozen"])
+        self.assertEqual(code, 0)
+        self.assertTrue(list(state.rglob(dev.FROZEN)))
+
+
+class DevMailScopeTest(unittest.TestCase):
+    """eval.oracle_dev reads mail through a capture scope (decision
+    2026-10-21-oracle-dev-document-scope)."""
+
+    def test_the_live_spec_takes_the_scope_in_place_of_a_mailbox_and_yields_mail_units(self):
+        path = ROOT / "devloop" / "live-checks" / "eval.oracle_dev.json"
+        command = json.loads(path.read_text(encoding="utf-8"))["command"]
+        self.assertNotIn("--mailbox", command)
+        scope = command[command.index("--mail-scope") + 1]
+        argv = [a for a in command[3:] if a != "{tmp}/items"]
+        seen = []
+
+        def build(env, args, *, guard):
+            seen.append(args)
+            raise ValueError("stop")
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            argv[argv.index("--output-dir") + 1:argv.index("--output-dir") + 1] = [tmp]
+            argv[argv.index("--mail-scope") + 1] = str(ROOT / scope)
+            dev.main(argv, live_build=build, environ={"PLX_WORKBENCH_API_URL": "u",
+                                                      "PLX_WORKBENCH_API_KEY": "k"})
+        args = seen[0]
+        self.assertIsNone(args.mailbox)
+        self.assertEqual(args.mail_units[0][0], "mailbox-1")
+        self.assertTrue(all(re.fullmatch(r"mailbox-\d+", u[0]) for u in args.mail_units))
+        self.assertGreaterEqual(len({u[0] for u in args.mail_units}) + len(args.mail_blocked), 7)
 
 
 if __name__ == "__main__":

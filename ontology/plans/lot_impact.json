@@ -1,0 +1,565 @@
+{
+ "$schema": "_plan.schema.json",
+ "format": "plx-investigate-plan/v1",
+ "id": "lot_impact",
+ "families": [
+  "F17"
+ ],
+ "title": "Which customer orders and shipments a supplier lot touches, and where it came from",
+ "description": "On a quality hold of a supplier lot (a Lot record or its lot number: every receipt-line record carrying it at a firm tier is a root): walk only recorded firm-tier links to the receipt, purchase order and supplier it was received on, and from the assembly-order components recorded as consuming it to their assembly orders, the order lines those are made or allocated for, the customer orders and their recorded shipments. Per order: the ordered quantity of the touched lines, with every link cited. A missing hop is a typed gap naming the source that would hold it; a component matched by lot number only is a candidate, never walked. Needs the quality_controlled read scope.",
+ "requires_markings": [
+  "quality_controlled"
+ ],
+ "root": {
+  "object_types": [
+   "Lot"
+  ],
+  "cardinality": "set",
+  "set_tiers": [
+   "verified",
+   "reviewed",
+   "corroborated"
+  ],
+  "fallback_filters": [
+   {
+    "object_type": "Lot",
+    "property": "lot_number"
+   }
+  ]
+ },
+ "step_budget": 128,
+ "max_each": 50,
+ "steps": [
+  {
+   "id": "lot_read",
+   "tool": "plx.object",
+   "from": "root",
+   "bind": "object_id",
+   "object_types": [
+    "Lot"
+   ],
+   "description": "Each lot record's lot number (one record per receipt line that received it)."
+  },
+  {
+   "id": "lines",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "ReceiptLine.received_lot",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The receipt line that received the lot."
+  },
+  {
+   "id": "receipts",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Lot.received_in",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The receipt the lot came in on."
+  },
+  {
+   "id": "line_receipts",
+   "tool": "plx.around",
+   "from": "lines",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "ReceiptLine.line_of",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The receipt each receipt line belongs to."
+  },
+  {
+   "id": "pos",
+   "tool": "plx.around",
+   "from": [
+    "receipts",
+    "line_receipts"
+   ],
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Receipt.receives",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The purchase order each receipt receives."
+  },
+  {
+   "id": "po_lines",
+   "tool": "plx.around",
+   "from": "lines",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "ReceiptLine.receives_line",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The purchase order line each FileMaker receipt line receives."
+  },
+  {
+   "id": "line_pos",
+   "tool": "plx.around",
+   "from": "po_lines",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrderLine.line_of",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The purchase order of that line."
+  },
+  {
+   "id": "po_suppliers",
+   "tool": "plx.around",
+   "from": [
+    "pos",
+    "line_pos"
+   ],
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrder.ordered_from",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The supplier each purchase order is placed with."
+  },
+  {
+   "id": "receipt_suppliers",
+   "tool": "plx.around",
+   "from": [
+    "receipts",
+    "line_receipts"
+   ],
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Receipt.supplied_by",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The supplier on each receipt."
+  },
+  {
+   "id": "components",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "AssemblyOrderComponent.consumed_lot",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "Assembly-order components recorded as consuming the lot (a reviewed lot-number match; quality-controlled links)."
+  },
+  {
+   "id": "candidate_components",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "AssemblyOrderComponent.consumed_lot",
+      "direction": "reverse"
+     }
+    ],
+    "tier_floor": "lead",
+    "limit": 50
+   },
+   "description": "Components matched to the lot by lot number only (lead tier): candidates, never walked further."
+  },
+  {
+   "id": "assembly",
+   "tool": "plx.around",
+   "from": "components",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "AssemblyOrderComponent.component_of",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The assembly order each consuming component belongs to."
+  },
+  {
+   "id": "allocations",
+   "tool": "plx.around",
+   "from": "assembly",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "AssemblyOrderAllocation.allocates",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "FileMaker order-entry assembly allocations of the FileMaker assembly order."
+  },
+  {
+   "id": "alloc_lines",
+   "tool": "plx.around",
+   "from": "allocations",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "AssemblyOrderAllocation.for_order_line",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The FileMaker order line each allocation is for."
+  },
+  {
+   "id": "ao_twins",
+   "tool": "plx.around",
+   "from": "assembly",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "AssemblyOrder.same_record_as",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The Portal manufacturing order recorded as the same record as the FileMaker assembly order."
+  },
+  {
+   "id": "ao_lines",
+   "tool": "plx.around",
+   "from": "ao_twins",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "AssemblyOrder.for_order_line",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The Portal sales order line a manufacturing order is made for."
+  },
+  {
+   "id": "line_read",
+   "tool": "plx.object",
+   "from": "alloc_lines",
+   "bind": "object_id",
+   "description": "Each touched FileMaker order line's ordered quantity."
+  },
+  {
+   "id": "portal_line_read",
+   "tool": "plx.object",
+   "from": "ao_lines",
+   "bind": "object_id",
+   "description": "Each touched Portal order line's ordered quantity."
+  },
+  {
+   "id": "orders",
+   "tool": "plx.around",
+   "from": "alloc_lines",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrderLine.line_of",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The FileMaker customer order each touched order line belongs to."
+  },
+  {
+   "id": "portal_orders",
+   "tool": "plx.around",
+   "from": "ao_lines",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrderLine.line_of",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The Portal customer order each touched order line belongs to."
+  },
+  {
+   "id": "order_twins",
+   "tool": "plx.around",
+   "from": "orders",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrder.same_record_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The FileMaker order's records in other systems."
+  },
+  {
+   "id": "order_twins_named",
+   "tool": "plx.around",
+   "from": "orders",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrder.same_record_as",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The same, where the other record holds the link."
+  },
+  {
+   "id": "portal_order_twins",
+   "tool": "plx.around",
+   "from": "portal_orders",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrder.same_record_as",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The Portal order's FileMaker record, where that record holds the link."
+  },
+  {
+   "id": "portal_order_twins_fwd",
+   "tool": "plx.around",
+   "from": "portal_orders",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrder.same_record_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The Portal order's records in other systems it holds the link to (FileMaker, Sage, BC)."
+  },
+  {
+   "id": "order_twins2",
+   "tool": "plx.around",
+   "from": "order_twins",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrder.same_record_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "Second link: the copies a twin of the FileMaker order links to (the Portal order's Sage and BC records)."
+  },
+  {
+   "id": "order_twins2_named",
+   "tool": "plx.around",
+   "from": "order_twins_named",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrder.same_record_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "Second link: the copies the Portal record holding the link to the FileMaker order links to (Sage, BC)."
+  },
+  {
+   "id": "shipments",
+   "tool": "plx.around",
+   "from": "order_twins",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Shipment.ships",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "Shipments recorded for the order (which lot a shipment carried is not recorded)."
+  },
+  {
+   "id": "shipments_named",
+   "tool": "plx.around",
+   "from": "order_twins_named",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Shipment.ships",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The same, for twins that hold the link."
+  },
+  {
+   "id": "portal_shipments",
+   "tool": "plx.around",
+   "from": "portal_orders",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Shipment.ships",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "Shipments recorded for the Portal order."
+  },
+  {
+   "id": "portal_copy_shipments",
+   "tool": "plx.around",
+   "from": "portal_order_twins_fwd",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Shipment.ships",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "Shipments recorded on the Portal order's Sage or BC copy."
+  },
+  {
+   "id": "copy_shipments",
+   "tool": "plx.around",
+   "from": "order_twins2",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Shipment.ships",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "Shipments recorded on a copy two links from the FileMaker order."
+  },
+  {
+   "id": "copy_shipments_named",
+   "tool": "plx.around",
+   "from": "order_twins2_named",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Shipment.ships",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The same, through the Portal record holding the link."
+  }
+ ],
+ "evidence": [
+  {
+   "name": "lot",
+   "kind": "property",
+   "object_type": "Lot",
+   "properties": [
+    "lot_number"
+   ],
+   "numbering": "value",
+   "description": "Each lot record's lot number."
+  },
+  {
+   "name": "line_ordered",
+   "kind": "property",
+   "object_type": "SalesOrderLine",
+   "properties": [
+    "ordered_quantity"
+   ],
+   "quantity_role": "ordered",
+   "description": "Each touched order line's ordered quantity."
+  },
+  {
+   "name": "lot_impact",
+   "kind": "compute",
+   "engine": "lot_impact",
+   "required": true,
+   "description": "Per customer order the lot touches: the ordered quantity of the touched lines (Decimal, with the unit the source states) and the cited chain of links; per lot record its purchase orders and suppliers; lot-number candidates apart; a typed gap at each unrecorded hop.",
+   "engine_args": {
+    "lot": "lot",
+    "ordered": "line_ordered"
+   }
+  }
+ ]
+}

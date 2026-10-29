@@ -9,6 +9,7 @@ world of ``case.customer_po_missing`` (fake Workbench, fake drive; network refus
 from __future__ import annotations
 
 import contextlib
+from decimal import Decimal
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from http.client import HTTPConnection
@@ -23,7 +24,7 @@ import time
 import unittest
 from unittest import mock
 
-from verify import live_verify as lv
+from devloop import live_verify as lv
 from integrations.http import SourceHttpError
 from ontology.core import Actor
 from ontology.store import StoreBuilder
@@ -58,11 +59,11 @@ class World:
         self.n = 0
 
     def obj(self, object_type: str, values: dict, *, audience: str = "api:a",
-            markings: str = "[]") -> str:
+            markings: str = "[]", binding: str = "fx") -> str:
         self.n += 1
-        oid = f"{object_type}:fx:{self.n}"
+        oid = f"{object_type}:{binding}:{self.n}"
         self.rows["objects"].append({
-            "object_id": oid, "object_type": object_type, "binding_id": "fx",
+            "object_id": oid, "object_type": object_type, "binding_id": binding,
             "native_key": json.dumps({"id": self.n}), "audience_key": audience,
             "first_recorded_at": T0})
         self.rows["object_versions"].append({
@@ -137,11 +138,11 @@ def seeded(world: World | None = None, *, receipt_markings: str = "[]") -> tuple
     ids["confirmed_late"] = po(w, "Pending", "2026-11-01")
     w.link("SupplierConfirmation.confirms",
            w.obj("SupplierConfirmation", {"delivery_date": "2026-11-15"}), ids["confirmed_late"])
-    # FM's Complete over an outstanding quantity is open, its FileMaker twin decides nothing
-    ids["overdue"] = po(w, "Complete", "2026-10-05", lines=(("10", "4"),))
+    # a back order with an outstanding quantity is open, its FileMaker twin decides nothing
+    ids["overdue"] = po(w, "B.Order", "2026-10-05", lines=(("10", "4"),))
     w.link("SupplierConfirmation.confirms",
            w.obj("SupplierConfirmation", {"delivery_date": "2026-10-04"}), ids["overdue"])
-    fm_twin = w.obj("PurchaseOrder", {"fm_status": "Complete", "expected_date": "2026-10-05"})
+    fm_twin = w.obj("PurchaseOrder", {"fm_status": "B.Order", "expected_date": "2026-10-05"})
     w.link("PurchaseOrder.same_record_as", ids["overdue"], fm_twin)
     ids["overdue_root"] = min(ids["overdue"], fm_twin)
     ids["line_dated"] = w.obj("PurchaseOrder", {"status": "Pending"})   # no requested-by date
@@ -150,8 +151,9 @@ def seeded(world: World | None = None, *, receipt_markings: str = "[]") -> tuple
                                        "ordered_quantity": ("10", "ea")}),
            ids["line_dated"])
     twin_a = po(w, "Pending", "2026-10-03")
-    twin_b = po(w, "Pending", "2026-10-07")
-    w.link("PurchaseOrder.same_record_as", twin_a, twin_b)                         # disputed
+    twin_b = po(w, "Pending", "2026-10-25")
+    # disputed: one rank's need dates disagree and today falls between them
+    w.link("PurchaseOrder.same_record_as", twin_a, twin_b)
     # po_receipt_quantity_mismatch
     ids["over"] = w.obj("PurchaseOrderLine", {"ordered_quantity": ("100", "kg")})
     w.link("ReceiptLine.receives_line",
@@ -252,6 +254,7 @@ class DetectorTest(Engine):
         conflict_root = min(ids["conflict_a"], ids["conflict_b"])
         self.assertEqual(found, {
             ("unconfirmed_po", ids["unconfirmed"]), ("late_po", ids["late_with_lead"]),
+            ("unconfirmed_po", ids["line_dated"]),   # no header date: its open line's
             ("late_po", ids["confirmed_late"]), ("late_po", ids["overdue_root"]),
             ("po_receipt_quantity_mismatch", ids["over"]),
             ("po_receipt_quantity_mismatch", ids["short"]),
@@ -261,16 +264,16 @@ class DetectorTest(Engine):
             ("expired_quote", ids["expired"])})
         self.assertEqual(summary["scanned"], world.n)   # the whole store, not a sample
         self.assertEqual((summary["gaps_found"], summary["gaps_cited"],
-                          summary["gaps_uncited"]), (10, 10, 0))
+                          summary["gaps_uncited"]), (11, 11, 0))
         self.assertFalse(summary["scope_truncated"])
         self.assertEqual(summary["detectors"]["card_rules"], "not_configured")
         self.assertEqual(summary["not_evaluated"]["late_or_unconfirmed_po"],
                          {"confirmation_unsettled": 1, "need_date_disputed": 1,
-                          "no_need_date": 2, "sage_unmapped": 1, "status_missing": 1,
+                          "no_need_date": 1, "sage_unmapped": 1, "status_missing": 1,
                           "status_unmapped": 1})
         self.assertEqual(summary["po_lateness"], {
             "pos": 16, "classes": {"open": 9, "closed": 3, "draft": 1, "unknown": 3},
-            "evaluated": 5, "late": 3, "at_risk": 1, "unconfirmed": 1})
+            "evaluated": 6, "late": 4, "at_risk": 1, "unconfirmed": 2})
         self.assertEqual(summary["not_evaluated"]["po_receipt_quantity_mismatch"],
                          {"receipt_link_unsettled": 1, "sources_unreconciled": 1,
                           "unit_differs": 1})
@@ -619,9 +622,9 @@ class InboxTest(Engine):
         self.assertTrue(shown["truncated"])
 
     def test_a_scheduled_run_with_rules_that_did_not_run_is_never_read_as_clean(self):
-        # The host hook runs without the mirror coverage and without a card caller: those
-        # rules (and QC, with no declared link) did not run, so the read is incomplete and
-        # names them, never a clean "nothing found".
+        # The store-only hook runs without the mirror coverage and without a card caller:
+        # those rules (and QC, with no declared link) did not run, so the read is incomplete
+        # and names them, never a clean "nothing found".
         world, _ids = seeded()
         world.build(self.store)
         hook = pe.after_build(self.store, as_of=AS_OF)
@@ -648,6 +651,43 @@ class InboxTest(Engine):
         gone = self.read()
         self.assertEqual((gone["complete"], gone["not_run"]),
                          (False, {"expired_quote": "not_run"}))
+
+    def test_a_spent_time_budget_is_truncated_never_complete_and_keeps_gaps(self):
+        world, ids = seeded()
+        self.run_engine(world, ids["coverage"])
+        before = {g["id"] for g in self.read()["gaps"]}
+        now = [0.0]
+
+        def slow(_tool, arguments):   # the first tool call spends the whole budget
+            now[0] = 61.0
+            return {"object": {"object_id": arguments.get("object_id")}, "leads": [],
+                    "conflicts": []}
+        def swallowing(_st, _as_of, call, _bound):   # as impact_chain: a failed call is
+            for _ in range(2):                         # "undetermined", the scan complete
+                with contextlib.suppress(Exception):
+                    call("plx.process", {"object_id": "x"})
+            return pe._result([])
+        with mock.patch.object(pe, "_orders_at_risk", swallowing):
+            summary = self.run_engine(world, ids["coverage"], call=slow,
+                                      budget=pe.Budget(60, monotonic=lambda: now[0]))
+        # a rule whose call was refused, even swallowed, or that did not start is
+        # truncated for the budget; the rules run before it are complete
+        for name in ("orders_at_risk", "card_rules"):
+            self.assertEqual(summary["detectors"][name], "truncated", name)
+            self.assertIn(pe.TIME_BUDGET, summary["detector_reasons"][name])
+        self.assertEqual(summary["detectors"]["late_or_unconfirmed_po"], "complete")
+        self.assertTrue(summary["truncated"])
+        found = self.read()
+        self.assertIs(found["complete"], False)
+        self.assertTrue(before <= {g["id"] for g in found["gaps"]})   # none resolved
+        # a hook whose budget is spent before it starts runs nothing as complete
+        hook = pe.after_build(self.store, as_of=AS_OF, budget_seconds=0,
+                              scheduled=lambda as_of, budget: pe.run(
+                                  self.store, self.inbox, as_of, coverage=ids["coverage"],
+                                  call=slow, budget=budget))
+        self.assertEqual(set(hook["detectors"].values()), {"truncated"})
+        self.assertEqual(hook["detector_reasons"]["order_without_customer_po"],
+                         [pe.TIME_BUDGET])
 
     def test_cardinality_no_gap_lost_or_duplicated_within_the_budget(self):
         for n in (1, 10, 60):
@@ -698,6 +738,37 @@ class InboxTest(Engine):
 class PermissionTest(Engine):
     """A restricted reader sees no gap whose subject or any evidence group it may not read,
     and its counts cover only what it may read."""
+
+    def test_a_missing_in_record_gap_needs_the_records_empty_read_too(self):
+        # the card rule run as the capture principal: the document states a customer PO
+        # the order holds empty; a reader of the document alone never sees the claim
+        world = World()
+        doc = world.obj("CustomerPoDocument", {"po_number": "SYNTH-PO-1"},
+                        audience="sharepoint:b")
+        order = world.obj("SalesOrder", {"customer_po": ""}, audience="api:a")
+        stated, empty = handle(1), handle(2)
+
+        def card(_tool, arguments):
+            if arguments["object_id"] != doc:
+                return {"object": {"object_id": arguments["object_id"]}, "leads": [],
+                        "conflicts": []}
+            return {"object": {"object_id": doc, "object_type": "CustomerPoDocument"},
+                    "conflicts": [], "leads": [{
+                        "kind": "missing_in_record", "subject": "SalesOrder.customer_po",
+                        "values": [{"property": "customer_po", "value": "SYNTH-PO-1",
+                                    "citation": {"l1_handle": stated}},
+                                   {"property": "customer_po", "value": None,
+                                    "citation": {"l1_handle": empty}}],
+                        "document_citations": [{"l1_handle": stated}]}]}
+        summary = self.run_engine(world, call=card)
+        self.assertEqual(summary["gaps_by_kind"].get("missing_in_record"), 1, summary)
+        both = self.read(may_read=lambda key: key in ("sharepoint:b", "api:a"))
+        [gap] = [g for g in both["gaps"] if g["kind"] == "missing_in_record"]
+        self.assertEqual((gap["object_id"], set(gap["citations"])), (doc, {stated, empty}))
+        document_only = self.read(may_read=lambda key: key == "sharepoint:b")
+        self.assertNotIn("missing_in_record", {g["kind"] for g in document_only["gaps"]})
+        self.assertNotIn(empty, json.dumps(document_only))
+        self.assertNotIn(order, json.dumps(document_only))
 
     def test_audience_marking_and_item_decisions_each_trim_the_inbox(self):
         world, ids = seeded(receipt_markings='["quality_controlled"]')
@@ -760,9 +831,12 @@ class PoLatenessTest(Engine):
             "pos": 4, "classes": {"open": 3, "closed": 1, "draft": 0, "unknown": 0},
             "evaluated": 3, "late": 1, "at_risk": 1, "unconfirmed": 0})
 
-    def test_fm_complete_with_an_outstanding_quantity_is_open_and_sage_only_is_not(self):
+    def test_complete_closes_with_its_remainder_cancelled_and_sage_only_is_not_open(self):
+        # Ross (advisory 15bb4af8): a Complete header is closed whatever was received, the
+        # outstanding quantity cancelled; only a still-issued word over it is open
         w = World()
-        outstanding = po(w, "Complete", "2026-10-02", lines=(("10", "4"), ("5", "5")))
+        complete = po(w, "Complete", "2026-10-02", lines=(("10", "4"), ("5", "5")))
+        outstanding = po(w, "B.Order", "2026-10-02", lines=(("10", "4"), ("5", "5")))
         fm_only = w.obj("PurchaseOrder", {"fm_status": "Complete",
                                           "expected_date": "2026-10-02"})
         sage_open = w.obj("PurchaseOrder", {"sage_is_complete": "0",
@@ -772,12 +846,15 @@ class PoLatenessTest(Engine):
         summary = self.run_engine(w)
         shown = {g["object_id"] for g in self.read()["gaps"]}
         self.assertEqual(shown, {outstanding})
-        self.assertNotIn(fm_only, shown)
-        self.assertFalse({sage_open, sage_done} & shown)
+        self.assertFalse({complete, fm_only, sage_open, sage_done} & shown)
         self.assertEqual(summary["po_lateness"]["classes"],
-                         {"open": 1, "closed": 0, "draft": 0, "unknown": 3})
+                         {"open": 1, "closed": 2, "draft": 0, "unknown": 2})
         self.assertEqual(summary["not_evaluated"]["late_or_unconfirmed_po"],
-                         {"quantities_unknown": 1, "sage_unmapped": 2})
+                         {"sage_unmapped": 2})
+        status = po_status.read(po_status.StoreSource(pe._Store(self.store)), complete,
+                                AS_OF).status
+        self.assertEqual((status.cls, status.code, status.canceled_remainder),
+                         (po_status.CLOSED, po_status.COMPLETE, Decimal("6")))
 
     def test_unknown_words_and_unread_lines_fail_closed_and_are_counted(self):
         w = World()
@@ -819,18 +896,24 @@ class PoLatenessTest(Engine):
         self.assertEqual(summary["not_evaluated"]["late_or_unconfirmed_po"],
                          {"quantities_unknown": 1})
 
-    def test_no_line_or_supplier_date_stands_in_for_a_missing_requested_by_date(self):
+    def test_an_open_lines_expected_date_stands_in_only_below_every_header_date(self):
+        """No header date: the open line's own expected date is the lowest tier (the
+        lateness oracle's source), so the order is late on it, whatever was confirmed. A
+        supplier's confirmation alone is never a requested-by date."""
         w = World()
-        missing = po(w, "Pending")
+        dated = po(w, "Pending")
         w.link("PurchaseOrderLine.line_of", w.obj("PurchaseOrderLine", {
             "bc_expected_receipt_date": "2026-10-02", "ordered_quantity": ("1", "ea")}),
-            missing)
-        self.confirm(w, missing, "2026-10-03")
+            dated)
+        self.confirm(w, dated, "2026-10-03")
+        bare = po(w, "Pending")
+        self.confirm(w, bare, "2026-10-03")   # promise only: no date of any kind
         summary = self.run_engine(w)
-        self.assertEqual(self.read()["gaps"], [])
+        self.assertEqual({(g["kind"], g["object_id"]) for g in self.read()["gaps"]},
+                         {("late_po", dated)})
         self.assertEqual(summary["not_evaluated"]["late_or_unconfirmed_po"],
                          {"no_need_date": 1})
-        self.assertEqual(summary["po_lateness"]["evaluated"], 0)
+        self.assertEqual(summary["po_lateness"]["evaluated"], 1)
 
     def test_a_reader_who_cannot_read_the_line_quantities_does_not_see_the_gap(self):
         w = World()
@@ -871,6 +954,140 @@ class PoLatenessTest(Engine):
                 self.inbox.unlink(missing_ok=True)
 
 
+def single_query_values(self, types, props=None, *, objects=None):
+    """The engine's value read before it went object first in chunks: one query over the
+    ``object_values`` view per call (the reference the faster read must equal)."""
+    from ontology import store as ostore
+    sql = ("SELECT o.object_id, o.object_type, v.property, v.value_type, v.value, v.unit, "
+           "v.quantity_role, v.l1_handle, v.markings FROM objects o "
+           "JOIN object_values v ON v.object_id = o.object_id "
+           "WHERE o.object_type IN (SELECT value FROM json_each(:types)) "
+           "AND v.superseded_at IS NULL AND NOT " + ostore.removed_at_sql("o.object_id"))
+    params = {"types": json.dumps(list(types))}
+    if props is not None:
+        sql += " AND v.property IN (SELECT value FROM json_each(:props))"
+        params["props"] = json.dumps(list(props))
+    if objects is not None:
+        sql += " AND o.object_id IN (SELECT value FROM json_each(:objects))"
+        params["objects"] = json.dumps(list(objects))
+    out = {}
+    for row in self.conn.execute(sql + " ORDER BY o.object_id, v.property, v.l1_handle",
+                                 params):
+        entry = out.setdefault(row["object_id"], {"type": row["object_type"], "props": {}})
+        entry["props"].setdefault(row["property"], []).append(dict(row))
+    return out
+
+
+def view_quantity_rows(st):
+    """The conflicting-quantity read before it went quantity kind first: the view."""
+    from ontology import store as ostore
+    return [dict(row) for row in st.conn.execute(
+        "SELECT o.object_id, o.object_type, v.property, v.value, v.unit, v.quantity_role, "
+        "v.l1_handle, v.markings FROM objects o JOIN object_values v ON v.object_id = o.object_id "
+        "WHERE v.value_type = 'quantity' AND v.superseded_at IS NULL AND NOT "
+        + ostore.removed_at_sql("o.object_id"))]
+
+
+class FastReadEquivalenceTest(Engine):
+    """The engine's set-wise reads (object first in chunks; quantity kind first) find exactly
+    the gaps, citations, counts and skips the single view queries found, at every chunk
+    size, and a record its source no longer holds stays out of both."""
+
+    def world(self, n: int) -> tuple[World, set]:
+        world, ids = seeded()
+        order = world.obj("PurchaseOrder", {"po_number": "SYNTH-PO-9"})   # line-level late
+        world.link("PurchaseOrder.ordered_from", order,
+                   world.obj("Supplier", {"name": "Synthetic Supplier"}))
+        for i in range(3):
+            world.link("PurchaseOrderLine.line_of", world.obj("PurchaseOrderLine", {
+                "bc_expected_receipt_date": f"2026-10-0{i + 1}",
+                "ordered_quantity": ("100", "kg"), "received_quantity": ("40", "kg"),
+                "description": f"Synthetic item {i}"}), order)
+        late = {po(world, "Pending", "2026-10-01") for _ in range(n)}
+        gone = po(world, "Pending", "2026-10-01", lines=(("10", "0"), ("7", "9")))
+        world.rows["objects"][[r["object_id"] for r in world.rows["objects"]].index(gone)][
+            "missing_from_source_since"] = "2026-10-05T00:00:00.000000Z"
+        # values a later read replaced: a superseded receipt quantity that would conflict
+        # and a superseded header word that would open a completed order
+        closed = po(world, "Complete", "2026-10-01", lines=(("10", "10"),))
+        for oid, prop, value in ((ids["conflict_a"], "received_quantity", "99"),
+                                 (closed, "status", "Pending")):
+            # the record's earlier version (its own handle), superseded by the current one
+            later = "2026-10-02T00:00:00.000000Z"
+            version = next(r for r in world.rows["object_versions"] if r["object_id"] == oid)
+            earlier = version["l1_handle"].replace("@g1", "@g0")
+            world.rows["object_versions"].append({**version, "l1_handle": earlier,
+                                                  "digest": "d0", "superseded_at": later})
+            version["recorded_at"] = later
+            for row in [r for r in world.rows["object_values"] if r["object_id"] == oid]:
+                world.rows["object_values"].append({
+                    **row, "l1_handle": earlier, "digest": "d0", "superseded_at": later,
+                    **({"value": value} if row["property"] == prop else {})})
+                row["recorded_at"] = later
+        self.coverage = ids["coverage"]
+        return world, late | {gone}
+
+    def inbox_rows(self, inbox: Path) -> tuple:
+        with contextlib.closing(sqlite3.connect(inbox)) as conn:
+            gaps = conn.execute("SELECT * FROM gaps ORDER BY gap_id").fetchall()
+            cites = conn.execute("SELECT * FROM gap_cites ORDER BY 1, 2, 3").fetchall()
+            runs = conn.execute("SELECT detector, status, reasons, found, not_evaluated "
+                                "FROM detector_runs ORDER BY detector").fetchall()
+            causes = conn.execute("SELECT * FROM unjudged_causes ORDER BY 1, 2, 3, 4").fetchall()
+            summary = json.loads(conn.execute(
+                "SELECT summary FROM runs ORDER BY run_id DESC LIMIT 1").fetchone()[0])
+        return gaps, cites, runs, causes, summary
+
+    def test_chunked_reads_find_exactly_what_the_view_queries_found(self):
+        for n in (1, 10, 60):
+            world, late = self.world(n)
+            for path in self.dir.glob("*.sqlite*"):
+                path.unlink()
+            world.build(self.store)
+            moment = datetime(2026, 10, 19, 6, tzinfo=timezone.utc)
+            with mock.patch.object(pe._Store, "values", single_query_values), \
+                    mock.patch.object(pe, "_quantity_rows", view_quantity_rows):
+                pe.run(self.store, self.dir / "old.sqlite", AS_OF, coverage=self.coverage,
+                       qc_link_types=(QC_LINK,), clock=lambda: moment)
+            old = self.inbox_rows(self.dir / "old.sqlite")
+            self.assertTrue(old[0])
+            for chunk in (1, 3, pe.VALUES_CHUNK):
+                with self.subTest(n=n, chunk=chunk), mock.patch.object(pe, "VALUES_CHUNK", chunk):
+                    new_inbox = self.dir / f"new-{chunk}.sqlite"
+                    pe.run(self.store, new_inbox, AS_OF, coverage=self.coverage,
+                           qc_link_types=(QC_LINK,), clock=lambda: moment)
+                    new = self.inbox_rows(new_inbox)
+                    self.assertEqual(new, old)
+            shown = {g["object_id"] for g in pe.read_inbox(
+                self.dir / "old.sqlite", self.store, reader="plx:ops", may_read=everyone,
+                held=ALL_MARKINGS, decide=admit, limit=500)["gaps"]}
+            gone = max(late, key=lambda o: int(o.rsplit(":", 1)[1]))
+            self.assertEqual(late - shown, {gone})   # every late order, never the removed one
+            st = pe._Store(self.store)
+            try:
+                with mock.patch.object(pe, "VALUES_CHUNK", 2):
+                    for types, props, objects in (
+                            (("PurchaseOrder",), None, None),
+                            (("PurchaseOrder", "PurchaseOrderLine"), ("status", "ordered_quantity"),
+                             None),
+                            (("PurchaseOrderLine",), ("ordered_quantity",), sorted(late)[:3]),
+                            (("PurchaseOrder",), ("status",), [gone, "PurchaseOrder:fx:nowhere"]),
+                            (("NoSuchType",), None, None)):
+                        self.assertEqual(st.values(types, props, objects=objects),
+                                         single_query_values(st, types, props, objects=objects))
+                self.assertEqual(pe._quantity_rows(st), view_quantity_rows(st))
+            finally:
+                st.close()
+
+    def test_no_detector_read_builds_a_transient_index(self):
+        seeded()[0].build(self.store)
+        st = pe._Store(self.store)
+        try:
+            self.assertEqual(st.conn.execute("PRAGMA automatic_index").fetchone()[0], 0)
+        finally:
+            st.close()
+
+
 class FakeAccess:
     """A host grant: audiences, held markings and per-item refusals for one reader."""
 
@@ -900,6 +1117,174 @@ class FakeStatus:
 
     def read(self, _meta):
         return {"state": "current"}
+
+
+class HomeLateRecallTest(Engine):
+    """Every late purchase order is on the home before any other gap kind, longest late
+    first, and a firm Portal-BC twin lends its line dates to a Portal order that has none
+    (live 2026-10-26: the home listed 7 of 23 late orders; the late ones that carried a
+    supplier confirmation had medium priority and fell behind the 100 cap)."""
+
+    def confirm(self, w: World, po_id: str, day: str) -> None:
+        w.link("SupplierConfirmation.confirms",
+               w.obj("SupplierConfirmation", {"delivery_date": day}), po_id)
+
+    def bc_twin(self, w: World, portal: str, day: str, tier: str = "corroborated") -> str:
+        bc = w.obj("PurchaseOrder", {"status": "Pending"})
+        w.link("PurchaseOrderLine.line_of", w.obj("PurchaseOrderLine", {
+            "bc_expected_receipt_date": day, "ordered_quantity": ("10", "ea")}), bc)
+        w.link("PurchaseOrder.same_record_as", portal, bc, tier)
+        return bc
+
+    def test_late_orders_rank_before_higher_priority_gaps_whatever_the_cap(self):
+        w = World()
+        late = {}
+        for days, number in ((5, "a"), (12, "b"), (1, "c")):   # confirmed: medium priority
+            oid = po(w, "Pending", (AS_OF - timedelta(days=days)).isoformat())
+            self.confirm(w, oid, (AS_OF - timedelta(days=days + 1)).isoformat())
+            late[number] = oid
+        for _ in range(6):   # at risk: high priority, not late
+            oid = po(w, "B.Order", "2026-10-25")
+            self.confirm(w, oid, "2026-11-02")
+        self.run_engine(w)
+        capped = self.read(limit=3)
+        self.assertTrue(capped["more"])
+        self.assertEqual([g["object_id"] for g in capped["gaps"]],
+                         [late["b"], late["a"], late["c"]])
+        self.assertEqual([g["days_late"] for g in capped["gaps"]], [12, 5, 1])
+        every = self.read()["gaps"]
+        self.assertEqual(len(every), 9)   # no other kind is hidden
+        self.assertEqual({g["object_id"] for g in every[:3]}, set(late.values()))
+        self.assertTrue(all("days_late" not in g["follow_up"] for g in every))
+        self.assertTrue(all("days_late" not in g for g in every[3:]))
+
+    def test_line_level_late_orders_never_crowd_out_a_late_purchase_order(self):
+        # live: 330 orders held a past line date (kind late_order, high priority) beside 23
+        # open late POs; the late PO is the one status definition's, the line kind is not
+        w = World()
+        for n in range(4):
+            order = w.obj("PurchaseOrder", {"po_number": f"PO-{n}"})
+            w.link("PurchaseOrder.ordered_from", order, w.obj("Supplier", {"name": "Acme"}))
+            w.link("PurchaseOrderLine.line_of", w.obj("PurchaseOrderLine", {
+                "bc_expected_receipt_date": "2026-09-01", "ordered_quantity": ("100", "kg"),
+                "received_quantity": ("40", "kg", "received")}), order)
+        late = po(w, "Pending", "2026-10-18")
+        self.confirm(w, late, "2026-10-17")      # medium priority: behind every high gap
+        self.run_engine(w)
+        shown = self.read(limit=2)["gaps"]
+        self.assertEqual(shown[0]["object_id"], late)
+        self.assertEqual(shown[0]["days_late"], 1)
+        self.assertNotIn("days_late", shown[1])
+        self.assertEqual(shown[1]["kind"], "late_order")
+
+    def test_a_late_order_without_a_confirmation_ranks_with_the_late_ones(self):
+        w = World()
+        low = po(w, "Pending", "2026-10-18")                  # unconfirmed, 1 day late
+        high = po(w, "Pending", "2026-10-01")                 # unconfirmed, 18 days late
+        today = po(w, "Pending", AS_OF.isoformat())           # due today: not late
+        self.run_engine(w)
+        got = self.read()["gaps"]
+        self.assertEqual([g["object_id"] for g in got], [high, low, today])
+        self.assertNotIn("days_late", got[2])
+
+    def test_a_firm_twin_lends_its_open_line_date_to_a_portal_order_with_none(self):
+        w = World()
+        portal = po(w, "Pending")                              # no date of its own
+        bc = self.bc_twin(w, portal, "2026-10-09")
+        self.run_engine(w)
+        gaps = {g["object_id"]: g for g in self.read()["gaps"]}
+        self.assertEqual(gaps[portal]["days_late"], 10)
+        self.assertIn("2026-10-09", gaps[portal]["summary"])
+        line_handle = handle(int(bc.rsplit(":", 1)[1]) + 1)   # the twin's own line
+        self.assertIn(line_handle, gaps[portal]["citations"])   # cited as the twin's
+        # one item per order (review of 410445eb08): the twin's lateness is this order's,
+        # listed once, never a second item for the same order
+        self.assertNotIn(bc, gaps)
+        # the link lends dates only: a Portal order stays closed whatever the twin says
+        w2 = World()
+        done = po(w2, "Cancel")
+        self.bc_twin(w2, done, "2026-10-09")
+        self.run_engine(w2)
+        self.assertNotIn(done, {g["object_id"] for g in self.read()["gaps"]})
+
+    def test_a_lead_link_lends_no_date(self):
+        w = World()
+        by_lead = po(w, "Pending")
+        self.bc_twin(w, by_lead, "2026-10-09", tier="lead")
+        summary = self.run_engine(w)
+        self.assertNotIn(by_lead, {g["object_id"] for g in self.read()["gaps"]})
+        self.assertEqual(
+            summary["not_evaluated"]["late_or_unconfirmed_po"]["no_need_date"], 1)
+
+
+class BusinessDayTest(Engine):
+    """The engine's day is the business day in America/New_York (decided 2026-10-28),
+    never the UTC day: from 20:00 (EDT) or 19:00 (EST) to midnight ET the UTC day is one
+    ahead. Each moment is given in UTC, so the expected ET day is not derived by the code
+    under test. Both daylight-saving changes of 2026 (Mar 8, Nov 1) are covered."""
+
+    # (due day, the run's moment in UTC, its ET wall time, days late or None: not late)
+    CASES = (
+        ("2026-10-19", "2026-10-20T01:00:00+00:00", "21:00 EDT Oct 19", None),
+        ("2026-10-19", "2026-10-20T04:30:00+00:00", "00:30 EDT Oct 20", 1),
+        # spring forward (Mar 8 02:00 EST -> 03:00 EDT)
+        ("2026-03-07", "2026-03-08T02:00:00+00:00", "21:00 EST Mar 7", None),
+        ("2026-03-07", "2026-03-08T05:30:00+00:00", "00:30 EST Mar 8", 1),
+        ("2026-03-08", "2026-03-09T01:00:00+00:00", "21:00 EDT Mar 8", None),
+        ("2026-03-08", "2026-03-09T04:30:00+00:00", "00:30 EDT Mar 9", 1),
+        # fall back (Nov 1 02:00 EDT -> 01:00 EST)
+        ("2026-10-31", "2026-11-01T01:00:00+00:00", "21:00 EDT Oct 31", None),
+        ("2026-10-31", "2026-11-01T04:30:00+00:00", "00:30 EDT Nov 1", 1),
+        ("2026-11-01", "2026-11-02T02:00:00+00:00", "21:00 EST Nov 1", None),
+        ("2026-11-01", "2026-11-02T05:30:00+00:00", "00:30 EST Nov 2", 1),
+    )
+
+    def test_a_po_due_today_et_is_late_only_once_the_et_day_has_ended(self):
+        root = self.dir
+        for due, moment, wall, days_late in self.CASES:
+            with self.subTest(due=due, at=wall):
+                self.dir = Path(tempfile.mkdtemp(dir=root))
+                self.store = self.dir / "store.sqlite"
+                self.inbox = pe.inbox_path(self.store)
+                w = World()
+                oid = po(w, "Pending", due)
+                w.build(self.store)
+                at = datetime.fromisoformat(moment)
+                pe.run(self.store, self.inbox, qc_link_types=(QC_LINK,), clock=lambda: at)
+                found = self.read()
+                today = date.fromisoformat(due) + timedelta(days=days_late or 0)
+                self.assertEqual(found["as_of"], today.isoformat())
+                if days_late is None:   # the evening's UTC day is already the next day
+                    self.assertEqual(at.date(), today + timedelta(days=1))
+                (gap,) = [g for g in found["gaps"] if g["object_id"] == oid]
+                self.assertEqual(gap.get("days_late"), days_late)
+                # the host's hook judges on the same day
+                hook = pe.after_build(self.store, clock=lambda: at)
+                self.assertEqual(hook["state"], "ran")
+                self.assertEqual(self.read()["as_of"], today.isoformat())
+
+    def test_the_et_day_needs_an_aware_moment_and_a_given_day_must_be_a_date(self):
+        w = World()
+        po(w, "Pending", "2026-10-19")
+        w.build(self.store)
+        naive = datetime(2026, 10, 20, 1, 0)
+        with self.assertRaisesRegex(ValueError, "aware"):
+            pe.run(self.store, self.inbox, clock=lambda: naive)
+        with self.assertRaisesRegex(ValueError, "aware"):
+            po_status.business_today(naive)
+        for wrong in ("2026-10-19", datetime(2026, 10, 19, tzinfo=timezone.utc)):
+            with self.assertRaises(TypeError):
+                pe.run(self.store, self.inbox, wrong)
+        self.assertEqual(pe.after_build(self.store, clock=lambda: naive),
+                         {"state": "failed", "error": "ValueError"})
+        self.assertFalse(self.inbox.exists())   # nothing folded on a refused day
+        # the ET day boundary itself, in both offsets
+        utc = timezone.utc
+        for moment, day in ((datetime(2026, 7, 16, 3, 59, 59, tzinfo=utc), "2026-07-15"),
+                            (datetime(2026, 7, 16, 4, 0, tzinfo=utc), "2026-07-16"),
+                            (datetime(2026, 1, 16, 4, 59, 59, tzinfo=utc), "2026-01-15"),
+                            (datetime(2026, 1, 16, 5, 0, tzinfo=utc), "2026-01-16")):
+            self.assertEqual(po_status.business_today(moment).isoformat(), day, moment)
 
 
 class ConsoleDraftTest(LateOrderWorld):
@@ -1130,7 +1515,7 @@ class HomeTest(Engine):
 
 
 class LiveCheckTest(unittest.TestCase):
-    """``verify/live-checks/case.proactive_engine.json`` over injected sources: its own
+    """``devloop/live-checks/case.proactive_engine.json`` over injected sources: its own
     command over the host config of ``case.customer_po_missing`` (FakeWorkbench plus a fake
     drive), the network refused. Evidence label: injected-transport."""
 
@@ -1149,10 +1534,12 @@ class LiveCheckTest(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.temp = Path(temp.name)
-        self.spec = json.loads((ROOT / "verify" / "live-checks" / f"{self.SPEC_ID}.json")
+        self.spec = json.loads((ROOT / "devloop" / "live-checks" / f"{self.SPEC_ID}.json")
                                .read_text("utf-8"))
 
-    def run_spec(self, *, fetch=None) -> tuple[int, dict, str]:
+    def world(self, *, fetch=None) -> tuple[dict, dict, object]:
+        """The host config file (written to the temp dir), environ and host options of
+        ``case.customer_po_missing``'s world (FakeWorkbench plus a fake drive)."""
         from integrations.tests import test_capture_sharepoint as tsp
         from integrations.tests.test_source_mirror import BASE, KEY, FakeWorkbench
         from operating.tests import order_fixture as fixture
@@ -1169,18 +1556,58 @@ class LiveCheckTest(unittest.TestCase):
             config[key] = str(ROOT / "examples" / config[key])
         config["sharepoint"]["scope"] = str(ROOT / "examples" / config["sharepoint"]["scope"])
         (self.temp / "host.json").write_text(json.dumps(config), "utf-8")
+        drive = _customer_drive()
+        environ = {**tsp.ENV, "PLX_WORKBENCH_API_URL": BASE, "PLX_WORKBENCH_API_KEY": KEY}
+        return environ, {"sender": drive, "workbench_fetch": fetch or fake,
+                         "sleep": lambda _s: None}, drive
+
+    def run_spec(self, *, fetch=None) -> tuple[int, dict, str]:
+        environ, options, drive = self.world(fetch=fetch)
         argv = [str(self.temp / "host.json") if arg.endswith("_host.live-check.json")
                 else str(ROOT / arg) if arg.startswith("examples/")
                 else arg.replace("{tmp}", str(self.temp)) for arg in self.spec["command"][3:]]
-        drive = _customer_drive()
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            code = pe.main(argv, environ={
-                **tsp.ENV, "PLX_WORKBENCH_API_URL": BASE, "PLX_WORKBENCH_API_KEY": KEY},
-                graph_sender=drive, host_options={
-                    "sender": drive, "workbench_fetch": fetch or fake, "sleep": lambda _s: None})
+            code = pe.main(argv, environ=environ, graph_sender=drive, host_options=options)
         self.assertTrue(all(method == "GET" for method, _url in drive.calls))
         return code, json.loads(out.getvalue()), out.getvalue()
+
+    def test_a_host_cycle_runs_every_detector_into_its_inbox_within_its_budget(self):
+        # The host's own post-build refresh (no proactive_engine.main): the coverage rule
+        # and the tool-caller rules run as the capture principal, never not_configured
+        from operating.host import Host, HostConfig, projection_path
+
+        environ, options, drive = self.world()
+        state = self.temp / "state"
+        report = Host(state, HostConfig.from_file(self.temp / "host.json"),
+                      environ=environ, **options).cycle()
+        self.assertTrue(all(method == "GET" for method, _url in drive.calls))
+        self.assertEqual((report["state"], report["projection"]["state"]),
+                         ("complete", "built"))
+        hook = report["projection"]["proactive"]
+        self.assertEqual(hook["state"], "ran", hook)
+        for name in ("order_without_customer_po", "orders_at_risk", "card_rules"):
+            self.assertEqual(hook["detectors"][name], "complete", name)
+        store = projection_path(state)
+        with contextlib.closing(sqlite3.connect(pe.inbox_path(store))) as conn:
+            ran = dict(conn.execute("SELECT detector, status FROM detector_runs"))
+            kinds = {row[0] for row in conn.execute("SELECT DISTINCT kind FROM gaps")}
+        self.assertEqual(ran, hook["detectors"])
+        self.assertTrue({"order_without_customer_po", "missing_in_record"} <= kinds, kinds)
+        # a reader without any grant is shown nothing of what the capture principal found
+        found = pe.read_inbox(pe.inbox_path(store), store, reader="plx:nobody",
+                              may_read=lambda _key: False, held=frozenset(),
+                              decide=admit)
+        self.assertEqual((found["gaps"], found["scanned"]), ([], 0))
+        # the budget spent: every rule is truncated for it, the cycle still complete
+        with mock.patch.object(pe, "REFRESH_BUDGET_SECONDS", 0):
+            spent = Host(state, HostConfig.from_file(self.temp / "host.json"),
+                         environ=environ, **self.world()[1]).cycle()
+        self.assertEqual(spent["state"], "complete")
+        hook = spent["projection"]["proactive"]
+        self.assertEqual(set(hook["detectors"].values()), {"truncated"}, hook)
+        self.assertEqual(set(map(tuple, hook["detector_reasons"].values())),
+                         {(pe.TIME_BUDGET,)})
 
     def test_the_spec_passes_on_the_whole_store_with_a_cited_gap_and_reads_blocked(self):
         lv.validate_spec(self.spec, stem=self.SPEC_ID)

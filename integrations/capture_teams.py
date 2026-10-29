@@ -1,13 +1,14 @@
 """Versioned Teams capture (L1): channel and chat messages into Workbench state.
 
-Capture breadth: Microsoft Teams as a captured
+Directive 8f6976e58be5 item 10 (capture breadth): Microsoft Teams as a captured
 source. Everything is read through the one GET-only Graph client
 (``integrations.graph_read.build_graph`` -> ``live_source_guard``; the closed
 grammar's ``graph.user_joined_teams``, ``graph.user_chats``, ``graph.team_*``,
 ``graph.channel_*`` and ``graph.chat_*`` templates). There is no other HTTP path and
 no write: nothing is posted, replied to or marked read.
 
-The CLI runs a census first (``TeamsCapture.census``): every team of the tenant, each team's channels and the chats of the
+The CLI runs a census first (``TeamsCapture.census``; directives cdce67ac8e8c and
+64fca27acc88): every team of the tenant, each team's channels and the chats of the
 scope's chat accounts, names and 30-day message counts only. Listings select ids and
 types; a team's, channel's or chat's name is requested only once its members cleared
 the people guard (``integrations.people_exclusion``), and one with an excluded member
@@ -20,15 +21,10 @@ purchasing / QA / R&D channels it proposes (by the scope's ``census.proposals``
 keywords: a proposal, never a grant) go to ``<state-dir>/teams-capture/census.json``
 (0600, outside Git) and never to the report.
 
-Content is read only of the channels and chats the operator confirmed: the
-``plx-teams-content-confirmation/v1`` at ``<state-dir>/teams-capture/content-
-confirmation.json`` (``read_confirmation``; written by the operator, never by code), intersected
-with what this run's census cleared (``confirmed_scope``). Its all form (``scope``
-``all_census_cleared``, with the operator's name, the date and the record id; the
-requirement "Teams everything", 2026-10-21) confirms every channel and chat the census cleared and
-nothing else. Without a usable one no message is read and the run is blocked on the
-later ask ``teams-content-confirmation`` (``confirmation_block``, part
-``teams.content_confirmation``): a human approval, never defaulted or written by code.
+Content is read of every channel and chat this run's census lists and the people guard
+cleared (owner decision 2026-10-26: no human content confirmation; the census runs the
+guard first, a blocked guard clears nothing). ``content-confirmation.json`` is neither
+required nor consulted; ``read_confirmation`` stays only for old files.
 
 The people guard runs before every request: a member is cleared before the lookup naming
 them, a conversation before its name or messages, and a chat whose id embeds an excluded
@@ -43,8 +39,8 @@ CLI passes only the confirmed scope):
 * Discovery: explicit teams (all channels, or named ones), explicit chats,
   ``members`` (the teams a member has joined) and, with ``member_chats``
   ``mail_allowlist``, the chats of every account on the canonical mail allowlist
-  (``operating/case_mail_scope.json``, the reported Graph allowlist;
-  decision ``2026-10-07-ovs-teams-capture`` item 2). Those
+  (``operating/case_mail_scope.json``, the reported Graph allowlist; owner policy
+  e251073ef3c5/746d96497341, decision ``2026-10-07-ovs-teams-capture`` item 2). Those
   accounts are derived from the allowlist itself, so the scope keeps no second list of
   whose chats are read: an account added to or removed from the allowlist is added to
   or removed from the chat reads. A member must be on that allowlist, checked on the
@@ -107,7 +103,7 @@ mail capture's shape: ``source``, ``kind``, ids, ``reply_to_id``, times, ``from`
 are read), ``mentions`` (who or what was mentioned) and ``original_url``; ``meta``
 holds ``source_acl`` (the membership: member object ids and addresses) and
 ``source_api``. Lineage ``mail`` (person-to-person messages; the C0 lineage enum
-has no ``teams``: ``docs/decisions/2026-10-07-ovs-teams-capture.md`` item 1).
+has no ``teams``: ``devloop/DECISIONS/2026-10-07-ovs-teams-capture.md`` item 1).
 
 Permission trimming: a reader sees a captured message only when the live audience
 grants ``teams:channel:<team-id>:<channel-id>`` / ``teams:chat:<chat-id>`` *and* one
@@ -131,11 +127,17 @@ so an added member sees the current messages his history covers. A channel or ch
 membership read fails (an HTTP error or a refusal; a capped read keeps what it read, a
 standard channel's refused team read falls back to its group) loses its recorded membership
 (``CaptureStore.clear_unit_acl``): it is neither projected nor resolved until a read
-succeeds (decision ``2026-10-10-followup-decisions`` item 6). It is ``members_unread``
+succeeds (decision ``2026-10-10-followup-decisions`` item 6). A transient failure (429 once
+the bounded ``Retry-After`` retries are spent, 5xx, 408, a timeout or connection failure, a
+request budget or deadline: ``_transient_members_failure``) keeps the membership recorded
+before and its ``recorded_at`` instead (supervisor decision 2026-10-29, lane
+``teams-acl-transient``): the store serves a unit's membership only while it is younger than
+``capture_store.UNIT_ACL_MAX_AGE`` (the capture-age bound, 48 hours), so a kept one stops
+deciding at that bound. Either way it is ``members_unread``
 beside the failure's reason and its run stays open (paused: the next read resumes its
 cursor, or reads a full round when it had none), so neither the
 pass, the store's completeness nor the projection's (``TeamsCaptures.capture_gap``) is
-complete while it is excluded.
+complete while it is excluded (architect decision of lane ``teams-members-read-gap``).
 
 Completeness per conversation: ``complete`` only when the latest round reached its
 end (a full round's end, or a delta/incremental round's end after a full one) with
@@ -163,8 +165,8 @@ Without ``--state-dir`` the CLI keeps its store in the host's state directory
 (``default_state_dir``: ``$PLX_WORKBENCH_STATE_DIR/teams-capture-check``, else
 ``$XDG_STATE_HOME/plx-workbench/teams-capture-check``, the pattern of ``eval.heldout``;
 ``storage.state_base`` says which), so the rotation and every resumable read carry
-across its daily runs until one full pass completes. Only a
-persistent ``PLX_WORKBENCH_STATE_DIR`` survives between the daily live-check runs
+across its daily runs until one full pass completes (followup decision 17). Only a
+persistent ``PLX_WORKBENCH_STATE_DIR`` survives between the verifier's dailies
 (``storage.carried``).
 
 CLI (live check ``graph.teams_capture``; counts, booleans and enums only, never
@@ -197,15 +199,19 @@ Chats need ``Chat.Read.All``: without it they stay their own blocked part
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
+import copy
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from functools import lru_cache
+from hashlib import sha256
 from html.parser import HTMLParser
 from itertools import zip_longest
 import json
 import os
 from pathlib import Path
 import re
+import threading
 import time
 from typing import Any, Callable, Iterable, Mapping, Sequence
 from urllib.parse import unquote, urlsplit
@@ -214,11 +220,13 @@ from ontology.types import Actor
 from operating.case_mail_scope import MailScope
 
 from . import live_source_grammar as grammar
-from .capture_mail import assert_outside_git, blocked_reason, check_state_dir, graph_block
+from .capture_mail import (assert_outside_git, blocked_reason, check_state_dir,
+                           directory_members, graph_block)
 from .capture_store import (CaptureError, CaptureStore, CapturedRecord, SourceKind,
                             register_source_kind)
-from .live_source_guard import (LiveSourceAudience, ReadOnlyGuardError, SourceUnavailable,
-                                unavailable_detail)
+from .live_source_guard import (LiveSourceAudience, ReadOnlyGuardError,
+                                RequestBudgetExhausted, SourceUnavailable,
+                                is_transport_failure, unavailable_detail)
 from .people_exclusion import ExclusionUnavailable, PeopleExcluded
 from .people_exclusion import from_api as people_guard
 
@@ -251,8 +259,20 @@ _PERMISSION = {"graph.user": "User.Read.All", "graph.users": "User.Read.All",
 GROUP_FALLBACK = "group_fallback"
 # A chat an excluded person belongs to: withheld every run, so settled like a complete read.
 PEOPLE_EXCLUDED = "people_excluded"
-SETTLED = frozenset({"complete", PEOPLE_EXCLUDED})
+# A chat whose messages no app-only token of this tenant can read (``not_readable:<why>``):
+# settled for the pass like an excluded one, never a blocked part or a failure, and its
+# messages are never claimed captured (the store's run stays open with the reason).
+NOT_READABLE = "not_readable"
+# Graph answered 403 on the messages of a chat hosted in another tenant (a cross-tenant
+# chat a member of this tenant joined): live 2026-10-27, every one of the chats refused
+# was hosted elsewhere and every chat hosted here was read. Chat.Read.All is this
+# tenant's grant; the host tenant's data is out of its reach, so no consent changes it.
+OTHER_TENANT = "not_readable:other_tenant"
+SETTLED = frozenset({"complete", PEOPLE_EXCLUDED, NOT_READABLE})
 MEMBERS_UNREAD = "members_unread"
+# HTTP statuses of a members read that say nothing about the membership (throttled or a
+# server fault): the membership recorded before is kept (``_transient_members_failure``).
+TRANSIENT_STATUSES = frozenset({408, 429}) | frozenset(range(500, 600))
 MAX_BODY_CHARS = 200_000
 MAX_TEXT = 1000
 MAX_URL = 2048
@@ -264,8 +284,19 @@ WHOLE_HISTORY = datetime(1, 1, 1, tzinfo=timezone.utc)
 # ontology/project_graph.TeamsCaptures; generated types in ontology/schema/generated/
 # graph_teams.json).
 RELATIONS = {"teams_channel": "channelMessages", "teams_chat": "chatMessages"}
+# The conversation's own record: saved under this reserved message-id segment of its unit
+# (``teams-chat://<chat>/conversation@...``, ``teams-channel://<team>/<channel>/
+# conversation@...``), so the unit's membership gates it exactly as it gates the messages.
+# Graph message ids are numeric; a listed message carrying this id is dropped.
+CONVERSATION = "conversation"
+CONVERSATION_RELATIONS = {"teams_channel": "channels", "teams_chat": "chats"}
+TEAMS_RELATION = "teams"
+MAX_PARTICIPANTS = 1000
 REASON_MAX = 64
 ROTATION = "teams_rotation"
+# The chat the last census stopped after when ``max_chats`` or the time budget cut it:
+# the next census starts past it (round to the start), so every chat is reached.
+CENSUS_CHAT_CURSOR = "teams_census_chats"
 ROTATION_VERSION = 2  # the layout _advance writes; any other starts the pass over
 TIME_BUDGET = "cap:time_budget"
 CHECK_STATE = ("plx-workbench", "teams-capture-check")
@@ -292,15 +323,15 @@ CENSUS_OPERATIONS = frozenset({
     "graph.team_channels", "graph.team_channel", "graph.channel_members",
     "graph.user_chats", "graph.chat_members", "graph.chat", "graph.teams_activity_report",
     "graph.user_joined_teams"})
-# The operator's confirmation of the channels and chats whose content may be read (a human
-# approval: written by the operator beside the census, never by code, never defaulted).
+# Tanush's confirmation of the channels and chats whose content may be read (a human
+# approval: written by him beside the census, never by code, never defaulted).
 CONFIRMATION_FILE = "content-confirmation.json"
 CONFIRMATION_SCHEMA = "plx-teams-content-confirmation/v1"
 CONFIRMATION_PART = "teams.content_confirmation"
 CONFIRMATION_LATER_ASK = "teams-content-confirmation"
 MAX_CONFIRMATION_BYTES = 262_144
 # The confirmation's forms: the channels and chats it lists, or every conversation the
-# run's census cleared (the requirement "Teams everything", 2026-10-21); a scope's
+# run's census cleared (owner directive "Teams everything", 2026-10-21); a scope's
 # ``teams`` may name the same set.
 LISTED = "listed"
 ALL_CENSUS_CLEARED = "all_census_cleared"
@@ -308,7 +339,7 @@ _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _DIRECTIVE = re.compile(r"[0-9a-f]{10,32}")
 # The signer of an all_census_cleared confirmation is a person named by name: never a
 # principal, an address, or the name of code (an agent, a service, a script).
-# A full name: at least two words of letters (``Jane Doe``), never a role.
+# A full name: at least two words of letters (``Tanush Shah``), never a role.
 _PERSON = re.compile(r"[^\W\d_]+(?:['-][^\W\d_]+)*\.?(?: [^\W\d_]+(?:['-][^\W\d_]+)*\.?)+")
 _CODE_SIGNERS = frozenset({"admin", "agent", "assistant", "automation", "bot", "claude",
                            "codex", "controller", "gpt", "owner", "script", "service", "svc",
@@ -484,6 +515,9 @@ class TeamsScope:
             raise TeamsCaptureError("scope_member_chats_invalid")
         if member_chats == "mail_allowlist" and self.allowlist.is_unrestricted:
             raise TeamsCaptureError("scope_member_chats_unbounded")
+        # With an all_directory allowlist the chat accounts are every directory user the
+        # people guard leaves in, listed at run time (``TeamsCapture._members``).
+        self.directory_chats = member_chats == "mail_allowlist" and self.allowlist.all_directory
         chat_accounts = set(self.allowlist.addresses) if member_chats == "mail_allowlist" \
             else set()
         if not all(_valid("user_ref", address) for address in chat_accounts):
@@ -674,6 +708,54 @@ def message_row(conversation: Conversation, raw: Mapping[str, Any]) -> dict[str,
         "original_url": _text(raw.get("webUrl"), MAX_URL)}
 
 
+def _participant(member: Mapping[str, Any]) -> dict[str, Any] | None:
+    """One member as a participant: the Entra object id (the shared key a Person is
+    resolved by), the display name and the work address; None without a valid id."""
+    user = member.get("userId")
+    if not isinstance(user, str) or not _valid("guid", user.lower()):
+        return None
+    email = member.get("email")
+    return {"id": user.lower(), "display_name": _text(member.get("displayName"), 200),
+            "email": email.strip().lower() if isinstance(email, str) and "@" in email
+            and len(email) <= 320 else None}
+
+
+def conversation_row(conversation: Conversation, details: Mapping[str, Any] | None,
+                     participants: Sequence[Mapping[str, Any]] | None, *,
+                     basis: str, last_activity_at: str | None,
+                     team: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """The captured row of one conversation (JSON values only): its Graph chat or channel
+    (``details``, None when that read failed: ``details`` ``unread``), its participants as
+    read with the membership (None: the membership names nobody, a group fallback), the
+    latest captured message time and, for a channel, its team (``team``)."""
+    got = details if isinstance(details, Mapping) else {}
+    row: dict[str, Any] = {
+        "source": "graph-teams", "kind": conversation.kind,
+        "details": "read" if isinstance(details, Mapping) else "unread",
+        "created_at": _text(got.get("createdDateTime"), 40),
+        "last_activity_at": last_activity_at,
+        "participants": sorted((dict(p) for p in participants or ()),
+                               key=lambda p: p["id"])[:MAX_PARTICIPANTS],
+        "participants_basis": basis,
+        "participants_truncated": len(participants or ()) > MAX_PARTICIPANTS,
+        "original_url": _text(got.get("webUrl"), MAX_URL)}
+    if conversation.kind == "chat":
+        row.update({"chat_id": conversation.thread, "topic": _text(got.get("topic")),
+                    "chat_type": _enum(got.get("chatType") or conversation.membership),
+                    "last_updated": _text(got.get("lastUpdatedDateTime"), 40)})
+        return row
+    tgot = team if isinstance(team, Mapping) else {}
+    row.update({"team_id": conversation.team, "channel_id": conversation.thread,
+                "display_name": _text(got.get("displayName")),
+                "description": _text(got.get("description")),
+                "membership_type": _enum(got.get("membershipType") or conversation.membership),
+                "team": {"details": "read" if isinstance(team, Mapping) else "unread",
+                         "display_name": _text(tgot.get("displayName")),
+                         "description": _text(tgot.get("description")),
+                         "created_at": _text(tgot.get("createdDateTime"), 40)}})
+    return row
+
+
 def _history_acl(acl: Mapping[str, Any], row: Any) -> dict[str, Any]:
     """A chat's membership ``acl`` as it applies to one captured message (``row``): the
     members whose recorded visible history (``history_start``) starts no later than the
@@ -682,7 +764,7 @@ def _history_acl(acl: Mapping[str, Any], row: Any) -> dict[str, Any]:
     the whole history (fails closed)."""
     starts = acl.get("history_start")
     starts = starts if isinstance(starts, Mapping) else {}
-    created = _instant(row.get("created_at")) if isinstance(row, Mapping) else None
+    created = _instant(_covered_at(row)) if isinstance(row, Mapping) else None
 
     def sees(identity: Any) -> bool:
         value = starts.get(identity) if isinstance(identity, str) else None
@@ -695,6 +777,15 @@ def _history_acl(acl: Mapping[str, Any], row: Any) -> dict[str, Any]:
     shown["identities"] = [i for i in identities if sees(i)] \
         if isinstance(identities, list) else []
     return shown
+
+
+def _covered_at(row: Mapping[str, Any]) -> Any:
+    """The time a member's visible history must cover to see a captured row: a message's
+    creation; the conversation record's latest message (else its own creation), so a
+    member whose history starts after the last message sees no conversation record."""
+    if row.get("kind") in ("chat", "channel"):
+        return row.get("last_activity_at") or row.get("created_at")
+    return row.get("created_at")
 
 
 @lru_cache(maxsize=1024)
@@ -720,6 +811,20 @@ def _error_reason(exc: BaseException) -> str:
             reason = "source_error:SourceUnavailable"
         reason += ":" + detail
     return reason
+
+
+def _transient_members_failure(exc: BaseException) -> bool:
+    """Whether a failed members read is transient: throttled (429, once the client's
+    bounded ``Retry-After`` retries are spent), a server error (5xx), a request timeout
+    (408), a transport failure before any status (timeout, connection reset or refused,
+    TLS) or a request budget or deadline that refused it before any I/O. Such a failure
+    says nothing about who is a member, so the membership recorded before is kept. Every
+    other failure is definitive or unknown and clears it (fail closed): 401, 403, 404 (not
+    a member any more, the conversation gone), a malformed answer, anything unclassified."""
+    if isinstance(exc, RequestBudgetExhausted) or is_transport_failure(exc):
+        return True
+    status = getattr(exc, "http_status", None)
+    return type(status) is int and status in TRANSIENT_STATUSES
 
 
 def _failure(part: str, op: str, exc: BaseException, blocked: list[dict[str, Any]]) -> str:
@@ -769,21 +874,55 @@ def open_store(state_dir: str | Path, audience: Any) -> CaptureStore:
     return store
 
 
+# What the host and the CLI capture with (``TeamsCapture`` workers): conversations, and the
+# census's per-team, per-account and per-chat reads, eight at a time.
+WORKERS = 8
+MAX_WORKERS = 16
+
+
 class TeamsCapture:
     """One capture pass over a ``TeamsScope`` into a ``CaptureStore``, as ``actor``
-    (checked against the live audience per conversation before any of its I/O)."""
+    (checked against the live audience per conversation before any of its I/O).
+
+    ``workers``: how many conversations a run captures at once, and how many teams,
+    accounts and chats the census reads at once. Each conversation's reads keep their
+    order (members before messages, a page before the next); a conversation thread writes
+    through its own connection to the same store (``CaptureStore`` serialises writes),
+    and results are reported in the run's conversation order. Graph throttling (429
+    ``Retry-After``) holds every thread sharing the client (``BoundedBackoff.hold``)."""
 
     def __init__(self, store: CaptureStore, api: Any, audience: LiveSourceAudience,
-                 actor: Actor) -> None:
+                 actor: Actor, *, workers: int = 1, home_tenant: str | None = None) -> None:
+        if isinstance(workers, bool) or not isinstance(workers, int) \
+                or not 1 <= workers <= MAX_WORKERS:
+            raise ValueError(f"workers must be 1..{MAX_WORKERS}")
+        self.workers = workers
+        # The tenant the application's token belongs to (a GUID, lower case): a chat
+        # hosted in any other one is ``not_readable`` once Graph refuses its messages.
+        # None (unknown): every refusal stays a blocked part (fail closed).
+        self.home_tenant = (home_tenant.lower() if isinstance(home_tenant, str)
+                            and _valid("guid", home_tenant.lower()) else None)
         self.store, self.api, self.audience, self.actor = store, api, audience, actor
         # The people guard build_graph attached (none: every read fails closed).
         self.people = people_guard(api)
         # The teams, channels and chats (ids, lower case) the guard refused this process:
         # nothing more of them is requested (``names_excluded`` counts any request that is).
         self.refused: set[str] = set()
+        # Teams read this capture (``_team``), shared by the conversation threads.
+        self._teams: dict[str, Mapping[str, Any] | None] = {}
+        self._team_lock = threading.Lock()
 
     def close(self) -> None:
         self.store.close()
+
+    def _ordered(self, read: Callable[[Any], Any], items: Sequence[Any]) -> list[Any]:
+        """``read`` of every item, in item order: on ``workers`` threads (GETs and the
+        guard only: no store write), else one at a time."""
+        if self.workers == 1 or len(items) < 2:
+            return [read(item) for item in items]
+        with ThreadPoolExecutor(min(self.workers, len(items)),
+                                thread_name_prefix="teams-census") as pool:
+            return list(pool.map(read, items))
 
     def _id_excluded(self, thread: str) -> bool:
         """Whether a conversation id embeds an excluded person's object id (a one-on-one
@@ -814,6 +953,29 @@ class TeamsCapture:
             reasons.add(f"cap:{completeness['truncation_reason']}")
         return items
 
+    def _members(self, scope: TeamsScope, reasons: set[str]
+                 ) -> list[tuple[str, bool, bool]]:
+        """``scope.members`` plus, for an ``all_directory`` allowlist, the chats of every
+        directory member user the people guard leaves in (owner decision 2026-10-26).
+        The exclusion filter runs on the listing before any member is looked up; a guard
+        that is unusable or a listing that fails adds none (fail closed)."""
+        members = list(scope.members)
+        if not scope.directory_chats:
+            return members
+        scope.allowlist.attach_people(self.people)
+        try:
+            self.people.require()
+            self.people.bind(self.api)
+            found, status, _dropped = directory_members(
+                self.api, lambda ids: not self.people.excluded(ids))
+        except (ExclusionUnavailable, SourceUnavailable):
+            reasons.add("blocked:directory_listing")
+            return members
+        if status != "complete":
+            reasons.add(f"cap:directory_{status}")
+        have = {address.lower() for address, _j, _c in members}
+        return members + [(mail, False, True) for _i, mail in found if mail not in have]
+
     def _member(self, address: str, scope: TeamsScope, reasons: set[str]) -> str | None:
         # An excluded person is refused before the lookup naming them, and again by the
         # object ID and names the lookup returns (``PeopleExcluded``).
@@ -824,7 +986,7 @@ class TeamsCapture:
         names = [user.get(k) for k in ("userPrincipalName", "mail")] if user_id else []
         self.people.refuse([user_id, *[n for n in names if isinstance(n, str)]], "chat_member")
         if not _valid("user_id", user_id) or not scope.allowlist.allows(
-                [n for n in names if isinstance(n, str)]):
+                [user_id, *[n for n in names if isinstance(n, str)]]):
             reasons.add("outside_allowlist")
             return None
         return user_id
@@ -850,7 +1012,7 @@ class TeamsCapture:
 
         teams = list(scope.teams)
         chats = [Conversation("chat", chat) for chat in scope.chats]
-        for address, joined, with_chats in scope.members:
+        for address, joined, with_chats in self._members(scope, reasons):
             try:
                 user = attempt("teams.member", "graph.user",
                                lambda: self._member(address, scope, reasons))
@@ -951,13 +1113,14 @@ class TeamsCapture:
                 else "graph.channel_members")
 
     def _membership(self, conversation: Conversation, op: str, scope: TeamsScope
-                    ) -> tuple[dict[str, Any], int, str | None]:
+                    ) -> tuple[dict[str, Any], int, str | None, list[dict[str, Any]]]:
         url = (grammar.url(op, team=conversation.team) if op == "graph.team_members"
                else conversation.url(op))
         items, completeness = self.api.get_pages(url, max_pages=50,
                                                  max_items=scope.max_members)
         identities: set[str] = set()
         starts: dict[str, str | None] = {}
+        participants = {p["id"]: p for p in map(_participant, items) if p}
         for member in items:
             user, email = member.get("userId"), member.get("email")
             found = []
@@ -980,12 +1143,13 @@ class TeamsCapture:
             acl["history_start"] = dict(sorted(starts.items()))
         capped = (f"cap:member_{completeness['truncation_reason']}"
                   if completeness["truncated"] else None)
-        return acl, len(items), capped
+        return acl, len(items), capped, list(participants.values())
 
     def _record(self, conversation: Conversation, raw: Any, acl: Mapping[str, Any], op: str,
                 *, reply_to: str | None = None) -> CapturedRecord | None:
         """A captured version, or None when the item does not belong here (dropped)."""
-        if not isinstance(raw, Mapping) or not _valid("teams_message_id", raw.get("id")):
+        if not isinstance(raw, Mapping) or not _valid("teams_message_id", raw.get("id")) \
+                or raw.get("id") == CONVERSATION:
             return None
         if conversation.kind == "channel":
             where = raw.get("channelIdentity")
@@ -1006,6 +1170,68 @@ class TeamsCapture:
                                   "source_acl": _message_acl(conversation, acl, row),
                                   "source_api": op}},
                               version[:200], LINEAGE)
+
+    def _details(self, conversation: Conversation) -> Mapping[str, Any] | None:
+        """The conversation's own Graph chat or channel (name or topic, type, times), or
+        None when that read fails (the record then says ``details`` ``unread``)."""
+        if conversation.kind == "chat":
+            op, select = ("graph.chat",
+                          "id,topic,chatType,createdDateTime,lastUpdatedDateTime,webUrl,tenantId")
+        else:
+            op, select = ("graph.team_channel",
+                          "id,displayName,description,membershipType,createdDateTime,webUrl")
+        try:
+            found = self.api.get_json(conversation.url(op, {"$select": select}))
+        except SourceUnavailable:
+            return None
+        return found if isinstance(found, Mapping) and found.get("id") == conversation.thread \
+            else None
+
+    def _team(self, team: str | None) -> Mapping[str, Any] | None:
+        """A channel's team (name, description, creation), read once per capture; None
+        when that read fails."""
+        if team is None:
+            return None
+        with self._team_lock:
+            if team in self._teams:
+                return self._teams[team]
+        try:
+            found = self.api.get_json(grammar.url(
+                "graph.team", {"$select": "id,displayName,description,createdDateTime"},
+                team=team))
+        except SourceUnavailable:
+            found = None
+        found = found if isinstance(found, Mapping) \
+            and str(found.get("id") or "").lower() == team else None
+        with self._team_lock:
+            self._teams[team] = found
+        return found
+
+    def _save_conversation(self, conversation: Conversation, run_id: int, cursor: str | None,
+                           about: Mapping[str, Any]) -> None:
+        """Save the conversation's own record (``CONVERSATION``) in this run, with the
+        latest activity of the messages the store holds now, under the membership its
+        messages are saved with."""
+        latest = None
+        for r in self.store.current_records(conversation.source_kind.name, conversation.unit):
+            if r.path[-1] == CONVERSATION:
+                continue
+            row = r.payload.get("row") or {}
+            for value in (row.get("created_at"), row.get("last_modified")):
+                moment = _instant(value)
+                if moment is not None and (latest is None or moment > latest[0]):
+                    latest = (moment, value)
+        row = conversation_row(conversation, about["details"], about["participants"],
+                               basis=about["basis"],
+                               last_activity_at=latest[1] if latest else None,
+                               team=about["team"])
+        version = sha256(json.dumps(row, sort_keys=True).encode("utf-8")).hexdigest()[:40]
+        self.store.save_page(run_id, [CapturedRecord(
+            conversation.path(CONVERSATION),
+            {"row": row, "meta": {"source_acl": _message_acl(conversation, about["acl"], row),
+                                  "source_api": "graph.chat" if conversation.kind == "chat"
+                                  else "graph.team_channel"}},
+            version, LINEAGE)], cursor)
 
     def _sent_by_excluded(self, raw: Any) -> bool:
         """Whether a listed message was sent by an excluded person (``from.user.id``)."""
@@ -1055,6 +1281,8 @@ class TeamsCapture:
         kind = conversation.source_kind
         stale = []
         for r in self.store.current_records(kind.name, conversation.unit):
+            if r.path[-1] == CONVERSATION:
+                continue   # saved again under this membership as the read ends
             wanted = _message_acl(conversation, acl, r.payload.get("row") or {})
             if (r.payload.get("meta") or {}).get("source_acl") != wanted:
                 stale.append((r, wanted))
@@ -1086,14 +1314,18 @@ class TeamsCapture:
         # A refused chat read names its own part, never one a channel read shares.
         part = "teams.chat_" if conversation.kind == "chat" else "teams."
         try:
-            acl, counts["members"], member_cap = self._membership(conversation, members_op,
-                                                                  scope)
+            acl, counts["members"], member_cap, participants = self._membership(
+                conversation, members_op, scope)
         except SourceUnavailable as exc:
             if members_op != "graph.team_members" or getattr(exc, "http_status", None) != 403:
-                # No membership, no conversation: the one recorded before is not kept, and
-                # its run stays open (members_unread) until a members read succeeds.
+                # The run stays open (members_unread) until a members read succeeds. A
+                # transient failure (429, 5xx, timeout, budget) keeps the membership read
+                # before, with its recorded_at: the store serves it only while it is younger
+                # than ``capture_store.UNIT_ACL_MAX_AGE``. Any other failure (403, 404, ...)
+                # drops it: no membership, no conversation.
                 kind = conversation.source_kind
-                self.store.clear_unit_acl(kind.name, conversation.unit)
+                if not _transient_members_failure(exc):
+                    self.store.clear_unit_acl(kind.name, conversation.unit)
                 run = self.store.begin_run(kind.name, conversation.unit,
                                            [conversation.resource])
                 return self._paused(result, run["run_id"], f"{part}members", members_op, exc,
@@ -1102,8 +1334,9 @@ class TeamsCapture:
             # is that group's members, decided per reader by its group identity.
             acl, member_cap = {"status": "derived", "basis": GROUP_FALLBACK,
                                "identities": [f"group:{conversation.team}"]}, None
+            participants = None   # the group names nobody here
         if self.people.excluded(acl["identities"]):
-            # A chat or channel an excluded person belongs to (the
+            # A chat or channel an excluded person belongs to (directive 64fca27acc88: the
             # census refuses it too): no message is read, and what an earlier capture
             # holds of it loses its membership (neither projected nor resolved). Settled,
             # not a gap: it is withheld by policy, every run. A group_fallback audience
@@ -1119,6 +1352,11 @@ class TeamsCapture:
             self.store.clear_unit_acl(conversation.source_kind.name, conversation.unit)
             return {**result, "reasons": [member_cap]}
         result["acl_source"] = acl["basis"]
+        # Its name and times, requested only now the members cleared the people guard.
+        about = {"details": self._details(conversation), "participants": participants,
+                 "basis": acl["basis"], "acl": acl,
+                 "team": self._team(conversation.team) if conversation.kind == "channel"
+                 else None}
         kind = conversation.source_kind
         previous = self.store.run(kind.name, conversation.unit)
         run = self.store.begin_run(kind.name, conversation.unit, [conversation.resource])
@@ -1155,6 +1393,7 @@ class TeamsCapture:
                 cap = ("cap:page_cap" if pages >= scope.max_pages_per_run
                        else "cap:item_cap" if items >= scope.max_items_per_run
                        else TIME_BUDGET)
+                self._save_conversation(conversation, run_id, url, about)
                 self.store.pause_run(run_id, reason=cap)
                 reasons.add(cap)
                 return self._result(result, reasons)
@@ -1197,6 +1436,19 @@ class TeamsCapture:
                     result["round"] = round_
                     self.store.save_page(run_id, [], url, marks=[f"round:{round_}"])
                     continue
+                if self._hosted_elsewhere(conversation, about["details"], exc):
+                    # Not this tenant's to read: settled, no blocked part, nothing claimed.
+                    self.store.pause_run(run_id, reason=OTHER_TENANT)
+                    return {**self._result(result, reasons | {OTHER_TENANT}),
+                            "status": NOT_READABLE}
+                if self._empty_channel(conversation, exc):
+                    # Graph's delta of a channel with no message answers an empty page
+                    # and a nextLink it then refuses (HTTP 400): the round ends here,
+                    # complete and empty, and the next run reads a full round again.
+                    self.store.save_page(run_id, [], None)
+                    self._save_conversation(conversation, run_id, None, about)
+                    return self._finish(result, conversation, run_id, round_, None, reasons,
+                                        empty=True)
                 return self._paused(result, run_id, f"{part}messages", op, exc, blocked,
                                     reasons)
             saved = self.store.save_page(run_id, records, next_url, dropped=dropped,
@@ -1208,8 +1460,34 @@ class TeamsCapture:
             pages += 1
             items += len(records)
             if next_url is None:
+                self._save_conversation(conversation, run_id, None, about)
                 return self._finish(result, conversation, run_id, round_, end, reasons)
             url = next_url
+
+    def _hosted_elsewhere(self, conversation: Conversation, details: Any,
+                          exc: SourceUnavailable) -> bool:
+        """Whether a refused chat read is a chat hosted in another tenant: Graph answered
+        403 and the chat's own record (read this run) names a tenant other than the
+        token's. An unknown home tenant or an unread chat record never is (fail closed)."""
+        if conversation.kind != "chat" or getattr(exc, "http_status", None) != 403 \
+                or self.home_tenant is None or not isinstance(details, Mapping):
+            return False
+        host = str(details.get("tenantId") or "").lower()
+        return _valid("guid", host) and host != self.home_tenant
+
+    def _empty_channel(self, conversation: Conversation, exc: SourceUnavailable) -> bool:
+        """Whether a channel delta page Graph refused with HTTP 400 belongs to a channel
+        that holds no message at all: one page of its plain message listing (``$top=1``)
+        is empty and has no next page. Any other answer, or a failure, is not (the read
+        stays a source error)."""
+        if conversation.kind != "channel" or getattr(exc, "http_status", None) != 400:
+            return False
+        try:
+            page = self.api.get_json(conversation.url("graph.channel_messages", {"$top": "1"}))
+        except SourceUnavailable:
+            return False
+        return (isinstance(page, Mapping) and page.get("value") == []
+                and page.get("@odata.nextLink") is None)
 
     def _relist(self, conversation: Conversation, roots: Iterable[str], acl: Mapping[str, Any],
                 scope: TeamsScope, run_id: int, cursor: str, counts: dict[str, int]) -> None:
@@ -1234,17 +1512,19 @@ class TeamsCapture:
         return found
 
     def _finish(self, result: dict[str, Any], conversation: Conversation, run_id: int,
-                round_: str, end: str | None, reasons: set[str]) -> dict[str, Any]:
+                round_: str, end: str | None, reasons: set[str], *, empty: bool = False
+                ) -> dict[str, Any]:
         marks = self.store.run_marks(run_id)
         capped = sorted(m.split(":", 1)[1] for m in marks if m.startswith("capped:"))
         detail: dict[str, Any] = {"round": round_, "replies_capped": capped[:MAX_CAPPED_ROOTS]}
         if conversation.kind == "channel":
             detail["delta_url"] = end
-            if end is None:
+            if end is None and not empty:
                 reasons.add("delta_link_missing")
         else:
             seen = [_instant(r.payload["row"].get("last_modified")) for r in
-                    self.store.current_records(CHAT_KIND.name, conversation.unit)]
+                    self.store.current_records(CHAT_KIND.name, conversation.unit)
+                    if r.path[-1] != CONVERSATION]
             newest = max((m for m in seen if m is not None), default=None)
             detail["high_water"] = newest.strftime("%Y-%m-%dT%H:%M:%SZ") if newest else None
         result["counts"]["replies_capped"] = len(capped)
@@ -1293,12 +1573,12 @@ class TeamsCapture:
         if refused is not None:
             return refused
         conversations, found, discovery = self.discover(scope, blocked)
-        results: list[dict[str, Any]] = []
-        for conversation in conversations:
-            if out_of_time():
-                break
-            results.append(self.capture(conversation, scope, blocked, out_of_time))
-        capped, cut = len(found) > scope.max_conversations, len(results) < len(conversations)
+        results = self._capture_all(conversations, scope, blocked, out_of_time)
+        # Cut by time: a conversation not taken, or one the deadline paused (concurrent
+        # conversations may all have started before it, the deadline pausing them).
+        capped = len(found) > scope.max_conversations
+        cut = len(results) < len(conversations) or any(
+            TIME_BUDGET in r["reasons"] for r in results)
         unvisited = self._advance(found, conversations[:len(results)], results, capped or cut)
         reasons = {*discovery["reasons"], *(["cap:conversation_cap"] if capped and unvisited
                                             else []), *([TIME_BUDGET] if cut else [])}
@@ -1315,6 +1595,41 @@ class TeamsCapture:
                 "people_excluded": discovery["people_excluded"] + sum(
                     r["status"] == PEOPLE_EXCLUDED for r in results),
                 "people_dropped": sum(r["counts"]["people_dropped"] for r in results)}
+
+    def _capture_all(self, conversations: Sequence[Conversation], scope: TeamsScope,
+                     blocked: list[dict[str, Any]], out_of_time: Callable[[], bool]
+                     ) -> list[dict[str, Any]]:
+        """Capture each conversation due, none started once ``out_of_time()``; the
+        results of the conversations taken, a prefix of ``conversations`` in their order
+        (one started after a later one was refused for time is read again next run).
+        With ``workers`` > 1 the conversations run on that many threads, each one
+        writing through its own connection to the store."""
+        if self.workers == 1 or len(conversations) < 2:
+            results = []
+            for conversation in conversations:
+                if out_of_time():
+                    break
+                results.append(self.capture(conversation, scope, blocked, out_of_time))
+            return results
+        def one(conversation: Conversation) -> dict[str, Any] | None:
+            if out_of_time():
+                return None
+            lane = copy.copy(self)   # shares the client, the guard and the refused set
+            lane.workers = 1
+            lane.store = CaptureStore(self.store.path, self.audience)   # this thread's own
+            try:
+                return lane.capture(conversation, scope, blocked, out_of_time)
+            finally:
+                lane.store.close()
+        with ThreadPoolExecutor(min(self.workers, len(conversations)),
+                                thread_name_prefix="teams-capture") as pool:
+            done = list(pool.map(one, conversations))
+        results = []
+        for result in done:
+            if result is None:
+                break
+            results.append(result)
+        return results
 
     def _people_refused(self, scope: TeamsScope, blocked: list[dict[str, Any]]
                         ) -> dict[str, Any] | None:
@@ -1360,7 +1675,9 @@ class TeamsCapture:
         it is requested, and it is counted, never listed. Channel counts need a content
         read (``CHANNEL_COUNT_REASON``), so a channel's ``messages_30d`` stays None. The
         private listing (names, ids, proposals; never a refused item) goes to the census
-        file only, never to the report."""
+        file only, never to the report. Chats past ``max_chats`` or the time budget are
+        reached in turn: a cut census stores the last chat it reached
+        (``CENSUS_CHAT_CURSOR``) and the next one starts after it, round to the start."""
         config = scope.census
         reasons: set[str] = set()
         refused = {kind: dict.fromkeys(REFUSALS, 0) for kind in ("teams", "channels", "chats")}
@@ -1413,7 +1730,7 @@ class TeamsCapture:
         def withheld(conversation: Conversation, op: str, part: str) -> str | None:
             """Why the guard cannot clear ``conversation`` (None: cleared)."""
             try:
-                acl, _count, capped = self._membership(conversation, op, scope)
+                acl, _count, capped, _people = self._membership(conversation, op, scope)
             except SourceUnavailable as exc:
                 reasons.add(_failure(part, op, exc, blocked))
                 return MEMBERS_UNREAD
@@ -1439,25 +1756,24 @@ class TeamsCapture:
         n["teams"] = len(ordered)
         if len(ordered) > config["max_teams"]:
             reasons.add("cap:team_cap")
-        for index, team in enumerate(ordered[:config["max_teams"]]):
+        late = "time"   # a read the budget kept from starting
+
+        def read_team(team: str) -> tuple:
+            """One team, its channels and their names (a thread: GETs and the guard only)."""
             if out_of_time():
-                reasons.add(TIME_BUDGET)
-                break
+                return (late,)
             if not self.audience.may_read_any(self.actor, f"teams:channel:{team}:"):
-                refused["teams"]["not_visible"] += 1
-                continue
-            enumerated[team] = 0
+                return ("refused", "not_visible")
             why = withheld(Conversation("channel", "", team, "standard"),
                            "graph.team_members", "teams.members")
             if why is not None:
-                refused["teams"][why] += 1
-                continue
+                return ("refused", why, team)
             record = attempt("teams.team", "graph.team", lambda: self.api.get_json(
                 grammar.url("graph.team", {"$select": "id,displayName"}, team=team)))
             entry = {"team_id": team, "name": _named(record, team, "displayName"),
                      "messages_30d": None, "count_reason": "not_requested", "channels": []}
-            teams.append(entry)
             seen: set[str] = set()
+            channel_refusals: list[str] = []
             for item in attempt("teams.channels", "graph.team_channels", lambda: self._listing(
                     "graph.team_channels", {"$select": "id,membershipType"}, reasons,
                     team=team)) or []:
@@ -1468,19 +1784,17 @@ class TeamsCapture:
                 if channel in seen:
                     continue
                 seen.add(channel)
-                n["channels"] += 1
-                enumerated[team] += 1
                 conversation = Conversation("channel", channel, team,
                                             _enum(item.get("membershipType")))
                 if not self.audience.allows(self.actor, conversation.resource):
-                    refused["channels"]["not_visible"] += 1
+                    channel_refusals.append("not_visible")
                     continue
                 # A standard channel's audience is its team's, cleared above; any other
                 # (private, shared, unknown) is cleared on its own members.
                 why = (None if conversation.membership == "standard" else withheld(
                     conversation, "graph.channel_members", "teams.members"))
                 if why is not None:
-                    refused["channels"][why] += 1
+                    channel_refusals.append(why)
                     continue
                 record = attempt("teams.channel", "graph.team_channel",
                                  lambda c=conversation: self.api.get_json(c.url(
@@ -1489,27 +1803,56 @@ class TeamsCapture:
                     "channel_id": channel, "name": _named(record, channel, "displayName"),
                     "membership": conversation.membership, "messages_30d": None,
                     "count_reason": CHANNEL_COUNT_REASON})
+            return ("ok", entry, len(seen), channel_refusals)
+
+        for team, read in zip(ordered, self._ordered(read_team,
+                                                     ordered[:config["max_teams"]])):
+            if read[0] == late:
+                reasons.add(TIME_BUDGET)
+                break
+            if read[0] == "refused":
+                refused["teams"][read[1]] += 1
+                if len(read) > 2:
+                    enumerated[team] = 0
+                continue
+            _ok, entry, listed_channels, channel_refusals = read
+            enumerated[team] = listed_channels
+            n["channels"] += listed_channels
+            for why in channel_refusals:
+                refused["channels"][why] += 1
+            teams.append(entry)
         n["teams_unlisted"] = n["teams"] - len(teams) - sum(refused["teams"].values())
         if scope.all_census_cleared:
             baseline["value"] = self._member_joined(scope, enumerated, attempt, reasons,
                                                     out_of_time)
 
-        accounts = [address for address, _joined, with_chats in scope.members if with_chats]
-        types: dict[str, str] = {}
-        for address in accounts if config["max_chats"] else []:
+        accounts = [address for address, _joined, with_chats in self._members(scope, reasons)
+                    if with_chats]
+
+        def read_account(address: str) -> tuple:
+            """One chat account's chats (ids and types; a thread: GETs and the guard)."""
             if out_of_time():
-                reasons.add(TIME_BUDGET)
-                break
-            n["accounts"] += 1
+                return (late,)
             try:
                 user = attempt("teams.member", "graph.user",
                                lambda: self._member(address, scope, reasons))
             except PeopleExcluded:
-                n["accounts_excluded"] += 1  # none of their chats is listed
+                return ("excluded",)   # none of their chats is listed
+            listed = (attempt("teams.chats", "graph.user_chats", lambda: self._listing(
+                "graph.user_chats", {"$select": "id,chatType"}, reasons, user=user))
+                if user is not None else None) or []
+            return ("ok", listed)
+
+        types: dict[str, str] = {}
+        for read in self._ordered(read_account, accounts if config["max_chats"] else []):
+            if read[0] == late:
+                reasons.add(TIME_BUDGET)
+                break
+            n["accounts"] += 1
+            if read[0] == "excluded":
+                n["accounts_excluded"] += 1
                 continue
-            for item in (attempt("teams.chats", "graph.user_chats", lambda: self._listing(
-                    "graph.user_chats", {"$select": "id,chatType"}, reasons, user=user))
-                         if user is not None else None) or []:
+            for item in read[1]:
                 chat = item.get("id") if isinstance(item, Mapping) else None
                 if _valid("teams_thread", chat):
                     types.setdefault(chat, _enum(item.get("chatType")))
@@ -1520,28 +1863,47 @@ class TeamsCapture:
             chat_types[kind] = chat_types.get(kind, 0) + 1
         if len(types) > config["max_chats"]:
             reasons.add("cap:chat_cap")
-        for chat in sorted(types)[:config["max_chats"]]:
+
+        def read_chat(chat: str) -> tuple:
+            """One chat's members, then its topic once they cleared (a thread)."""
             if out_of_time():
-                reasons.add(TIME_BUDGET)
-                break
+                return (late,)
             conversation = Conversation("chat", chat, membership=types[chat])
             if not self.audience.allows(self.actor, conversation.resource):
-                refused["chats"]["not_visible"] += 1
-                continue
+                return ("refused", "not_visible")
             if self._id_excluded(chat):
                 # A one-on-one chat's id names both its members: one is an excluded
                 # person, so not even its members are requested (counted, never named).
                 self.refused.add(chat.lower())
-                refused["chats"][PEOPLE_EXCLUDED] += 1
-                continue
+                return ("refused", PEOPLE_EXCLUDED)
             why = withheld(conversation, "graph.chat_members", "teams.chat_members")
             if why is not None:
-                refused["chats"][why] += 1
-                continue
+                return ("refused", why)
             record = attempt("teams.chat", "graph.chat", lambda c=conversation: self.api.get_json(
                 c.url("graph.chat", {"$select": "id,topic,chatType"})))
-            chats.append({"chat_id": chat, "topic": _named(record, chat, "topic"),
-                          "chat_type": types[chat]})
+            return ("ok", {"chat_id": chat, "topic": _named(record, chat, "topic"),
+                           "chat_type": types[chat]})
+
+        # Past the cap or the time budget the census rotates: it starts after the chat
+        # the last cut census stopped at, never always at the same first ids.
+        cursor = self.store.state(CENSUS_CHAT_CURSOR) or None
+        ordered_chats = sorted(types)
+        start = next((i for i, chat in enumerate(ordered_chats)
+                      if cursor is not None and chat > cursor), 0)
+        window = (ordered_chats[start:] + ordered_chats[:start])[:config["max_chats"]]
+        reached = 0
+        for read in self._ordered(read_chat, window):
+            if read[0] == late:
+                reasons.add(TIME_BUDGET)
+                break
+            reached += 1
+            if read[0] == "refused":
+                refused["chats"][read[1]] += 1
+                continue
+            chats.append(read[1])
+        if reached:   # a census that reached no chat keeps the cursor it started from
+            self.store.set_state(CENSUS_CHAT_CURSOR,
+                                 window[reached - 1] if reached < len(types) else "")
         n["chats_unlisted"] = n["chats"] - len(chats) - sum(refused["chats"].values())
 
         self._count(config, teams, counts, reasons, blocked)
@@ -1738,10 +2100,10 @@ def read_confirmation(state_dir: str | Path) -> tuple[dict[str, Any] | None, str
 
     The listed form: ``confirmed_by``, ``confirmed_at`` (a date), ``channels``
     (``{team_id, channel_id}``) and ``chats`` (chat ids), at most 200 each, naming at
-    least one. The all form (the requirement "Teams everything", 2026-10-21): ``scope``
+    least one. The all form (owner directive "Teams everything", 2026-10-21): ``scope``
     ``"all_census_cleared"``, ``confirmed_by`` (the owner's full name, never a role,
     address, principal or the name of code: ``content_confirmation_not_owner``),
-    ``confirmed_at`` (a calendar date) and ``directive`` (the record id); no
+    ``confirmed_at`` (a calendar date) and ``directive`` (the directive id); no
     ``channels`` or ``chats``. It confirms exactly what the run's census clears.
 
     Absent, unreadable, inside a git work tree, malformed, of another ``scope`` or naming
@@ -1875,6 +2237,8 @@ def add_cli_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-runs", type=int, default=None,
                         help="keep capturing after --runs until a run is complete (a full "
                              "pass read), at most this many runs in all (default --runs)")
+    parser.add_argument("--workers", type=int, default=WORKERS,
+                        help="conversations captured at once (and census reads at once)")
     parser.add_argument("--budget-seconds", type=float, default=None,
                         help="time budget of the capture runs: none starts, and no read goes "
                              "on to its next page, once it is spent (default none)")
@@ -1945,12 +2309,14 @@ class RequestLog:
         self.gets = 0
         self.excluded = 0
         send = transport._send  # the one path every request takes (GuardedTransport)
+        lock = threading.Lock()   # concurrent readers (TeamsCapture workers) count exactly
 
         def logged(method: str, url: str, *rest: Any, **kwargs: Any) -> Any:
             if method == "GET":
-                self.gets += 1
-                if capture.names_excluded(url):
-                    self.excluded += 1
+                named = capture.names_excluded(url)
+                with lock:
+                    self.gets += 1
+                    self.excluded += named
             return send(method, url, *rest, **kwargs)
 
         transport._send = logged
@@ -2008,37 +2374,31 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
     try:
         retry = BoundedBackoff(budget_seconds=60, **({"sleep": sleep} if sleep else {}))
         api, transport = build_graph(environ, sender=sender, retry=retry)
-        capture = TeamsCapture(store, api, audience, actors["capture"])
+        env_tenant = (environ if environ is not None else os.environ).get(
+            "MICROSOFT_GRAPH_TENANT_ID")
+        capture = TeamsCapture(store, api, audience, actors["capture"],
+                               workers=getattr(args, "workers", None) or 1,
+                               home_tenant=env_tenant)
         log = RequestLog(transport, capture)
         runs, blocked, units, unvisited_first = [], [], {}, []
         captured: dict[str, str] = {}  # unit -> kind, of those with a page of content read
-        # The census first (names and counts, no content), then content only of what the
-        # owner confirmed and this census cleared; without a usable confirmation no
-        # message is read and the run is blocked on that later ask, never defaulted.
+        # The census first (names and counts, no content), then content of what it cleared.
         census, private = capture.census(scope, blocked, expired)
         census["file"] = {"written": write_census(state_dir, private),
                           "outside_git_tree": True, "name": f"{STORE_DIR}/{CENSUS_FILE}"}
-        confirmed, code = read_confirmation(state_dir)
-        content_scope, left_out = (confirmed_scope(scope, private, confirmed)
-                                   if confirmed is not None else (None, 0))
-        everything = ((census["channels_cleared"], census["chats_cleared"])
-                      if confirmed and confirmed["form"] == ALL_CENSUS_CLEARED else None)
-        if confirmed is None:
-            blocked.append(confirmation_block(code))
-        elif content_scope is None:
-            # Everything confirmed is refused or gone now: the owner confirms again.
-            blocked.append(confirmation_block("content_confirmation_none_cleared"))
-        content = {"form": confirmed["form"] if confirmed else None,
-                   "status": ("awaiting_confirmation" if code == "content_confirmation_absent"
-                              else "confirmation_refused" if confirmed is None
-                              else "confirmed" if content_scope is not None
-                              else "none_cleared"),
+        # Owner decision 2026-10-26: no human content confirmation. Content is read of
+        # everything this census lists that the people guard cleared (the census ran the
+        # guard first; a blocked guard clears nothing). A content-confirmation.json is
+        # neither required nor consulted.
+        confirmed = {"form": ALL_CENSUS_CLEARED, "channels": set(), "chats": set()}
+        code = "not_required"
+        content_scope, left_out = confirmed_scope(scope, private, confirmed)
+        everything = (census["channels_cleared"], census["chats_cleared"])
+        content = {"form": ALL_CENSUS_CLEARED,
+                   "status": "census_cleared" if content_scope is not None else "none_cleared",
                    "confirmation": code,
-                   # The all form confirms what the census cleared: those counts.
-                   "confirmed_channels": (len(confirmed["channels"]) if everything is None
-                                          else everything[0]) if confirmed else 0,
-                   "confirmed_chats": (len(confirmed["chats"]) if everything is None
-                                       else everything[1]) if confirmed else 0,
+                   "confirmed_channels": everything[0],
+                   "confirmed_chats": everything[1],
                    "confirmed_not_cleared": left_out,
                    "channels_due": sum(len(channels) for _t, channels in content_scope.teams)
                    if content_scope else 0,
@@ -2064,9 +2424,12 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
         exhausted = expired()
         pairs = [(kind, unit) for unit, kind in sorted(units.items())]
         operator = [store.operator_completeness(actors["capture"], k, u) for k, u in pairs]
-        current = sum(o["records_current"] for o in operator)
-        by_kind = {kind: sum(o["records_current"] for (k, _), o in zip(pairs, operator)
-                             if k == kind) for kind in RELATIONS}
+        # Each conversation's own record (CONVERSATION) is no message: counted apart.
+        own = [sum(r.path[-1] == CONVERSATION for r in store.current_records(k, u))
+               for k, u in pairs]
+        current = sum(o["records_current"] for o in operator) - sum(own)
+        by_kind = {kind: sum(o["records_current"] - n for (k, _), o, n
+                             in zip(pairs, operator, own) if k == kind) for kind in RELATIONS}
         # A group_fallback channel grants group:<team-id>: the member reader then holds
         # its groups too, read live (counted, never printed).
         member_groups: set[str] = set()
@@ -2122,7 +2485,7 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
                         "under_state_dir": store.path.parent.parent == state_dir.resolve(),
                         "host_state": args.state_dir is None, "carried": carried,
                         # Which host state base (capture_mail.check_state_dir): only
-                        # workbench_state_dir is kept between the daily live-check runs.
+                        # workbench_state_dir is kept between the verifier's daily runs.
                         "state_base": state_base},
             "budget": {"seconds": budget, "exhausted": exhausted},
             "status": "blocked" if blocked else "complete" if complete else "incomplete",
@@ -2151,10 +2514,13 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
                 "chats": sum(c["kind"] == "chat" for c in conversations),
                 "conversations_complete": last["complete_bound"] if last else 0,
                 "conversations_blocked": sum(c["status"] == "blocked" for c in conversations),
+                "conversations_not_readable": sum(c["status"] == NOT_READABLE
+                                                  for c in conversations),
                 "conversations_group_fallback": sum(c["acl_source"] == GROUP_FALLBACK
                                                     for c in conversations),
                 "units_captured": len(pairs),
                 "messages_current": current,
+                "conversation_records": sum(own),
                 "versions": sum(o["versions_total"] for o in operator),
                 "replies_read": sum(c["counts"]["replies_read"] for r in runs
                                     for c in r["conversations"]),

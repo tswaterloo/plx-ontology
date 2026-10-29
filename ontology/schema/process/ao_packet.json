@@ -103,7 +103,7 @@
   }
  ],
  "evidence": [
-  "docs/reference/cases-and-artifacts.md (3.2 the AO packet structure, 3.3 what each document shows, 3.6 Ricardo's process maps)",
+  "devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md (3.2 the AO packet structure, 3.3 what each document shows, 3.6 Ricardo's process maps)",
   "ontology/schema/document_fields.json (class ao_packet fields and attests)",
   "ontology/schema/domains/quality.json (AssemblyOrderPacket)",
   "plx-customer-portal:portal/src/lib/policies/seed-rules.ts@48d76e835 (ROUTING_DEPARTMENTS: owner_role is a Portal Department code, what a rule's PolicyApprovalTypeDepartment rows route a WorkItem to, portal/prisma/schema.prisma@48d76e835 :1099, :8467)",

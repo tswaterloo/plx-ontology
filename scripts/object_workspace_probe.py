@@ -7,7 +7,7 @@
         [--sharepoint-capture-scope FILE --sharepoint-state DIR \\
          --sharepoint-budget-seconds N] [--previous-report DAILY.json]
 
-GET only. The projection probe (``scripts.ontology_projection_probe --build-only``: one build,
+GET only. The L7 probe (``scripts.ontology_projection_probe --build-only``: one build,
 no rebuild and no claim checks; a budget stop inside it prints the build's partial counts,
 a failed build its ``code``, ``phase``, ``store`` and ``disk``: ``build_failure``)
 builds the throwaway mirror and projection store (a GET-only Portal sync; with ``--bc-capture`` one GET-only
@@ -48,7 +48,7 @@ and records per panel:
   (``denied_leaks`` 0), so the workspace is no raw graph and no existence oracle (WS-12);
 * ``sharepoint_withheld_*``: each opened root a stored link joins to a SharePoint document
   (``documents_linked_roots_sharepoint``) is opened again as a reader granted the records
-  but not the SharePoint folder (the projection probe's ``MAIL_WITHHELD_PRINCIPAL``, which the
+  but not the SharePoint folder (the L7 probe's ``MAIL_WITHHELD_PRINCIPAL``, which the
   live audience grants BC and the served mirror audience the Portal, never mail or
   SharePoint):
   ``sharepoint_withheld_probed`` such roots, ``sharepoint_withheld_read`` of them it reads
@@ -773,7 +773,7 @@ def record_planner(current: list[str]) -> Any:
     structured claim on the cell it was read from (abstain when it returned none). The
     planner is shown each result without its citations' digests
     (``agent_loop._without_digests``), so it picks the cited cells by handle and leaves
-    whether each was returned as evidence to the agent loop's claim gate, which reads the whole
+    whether each was returned as evidence to the loop's claim gate, which reads the whole
     result: a claim on a handle not returned is refused there, never recorded."""
 
     def plan(request: Mapping[str, Any]) -> tuple[dict[str, Any], None]:
@@ -1079,14 +1079,14 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     parser.add_argument("--db", required=True, help="throwaway mirror file")
     parser.add_argument("--store", required=True, help="throwaway ontology store file")
     parser.add_argument("--budget-seconds", type=float, default=None,
-                        help="the projection build's budget")
+                        help="the L7 build's budget")
     parser.add_argument("--view-budget-seconds", type=float, default=None)
     parser.add_argument("--sample", type=int, default=40)
     parser.add_argument("--per-type", type=int, default=4)
     parser.add_argument("--max-opens", type=int, default=5,
                         help="originals opened (and re-hashed) per root")
     parser.add_argument("--previous-report", default=None,
-                        help="last daily verifier report, passed to the projection build")
+                        help="last daily verifier report, passed to the L7 build")
     parser.add_argument("--workers", type=int, default=None)
     parser.add_argument("--bc-capture", action="store_true")
     parser.add_argument("--mail-capture-scope", default=None)
@@ -1096,7 +1096,7 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     parser.add_argument("--sharepoint-state", default=None)
     parser.add_argument("--sharepoint-budget-seconds", type=float, default=None)
     parser.add_argument("--session-projection", default=None,
-                        help="the verifier session's projection (the projection probe's)")
+                        help="the verifier session's projection (the L7 probe's)")
     parser.add_argument("--session-replay", type=int, default=None,
                         help="keep and replay N Ask sessions instead of the views")
     parser.add_argument("--case-dir", default=None,

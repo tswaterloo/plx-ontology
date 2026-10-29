@@ -22,6 +22,7 @@ from urllib.parse import parse_qs, parse_qsl, quote, unquote, urlencode, urlspli
 
 from integrations import capture_sharepoint as cs
 from integrations import capture_store, graph_read
+from integrations.captured_text import OCR_PENDING
 from integrations.capture_mail import CaptureError
 from integrations.capture_sharepoint import (CaptureScope, SharePointCapture,
                                              SharePointCaptureStore, version_handle)
@@ -444,7 +445,7 @@ class CaptureTests(CaptureCase):
         self.assertIsNotNone(self.store.current(DRIVE, "01FILED"))
 
     def test_permission_reads_that_outrun_the_budget_stop_inside_the_listing(self):
-        # A listing reads up to 5000 items' permissions while the
+        # Directive a8acd47fe58c: a listing reads up to 5000 items' permissions while the
         # budget was asked only per folder, so one large folder overran the check's
         # timeout. Each permission read costs one second of this clock; the budget runs
         # out halfway through a folder of N items (N=10/60): exactly that many reads,
@@ -491,7 +492,7 @@ class CaptureTests(CaptureCase):
                 self.assertEqual(sorted(current), [f"01BIG{n:03d}" for n in range(size)])
 
     def test_a_root_larger_than_one_budget_resumes_its_walk_and_completes_on_run_three(self):
-        # A root the time budget cut was walked from the top again
+        # Directive d272cbc332e2: a root the time budget cut was walked from the top again
         # by every run, so a root larger than one budget never completed. Each download
         # costs one second of this clock and a run has four: the walk resumes from its
         # stored position (the cut folder with the children it holds, then the folders
@@ -531,7 +532,7 @@ class CaptureTests(CaptureCase):
         self.assertIsNone(self.store.walk_position(DRIVE, QUALITY_FOLDER))
 
     def test_a_folder_larger_than_one_listing_is_walked_whole_across_slices(self):
-        # a listing stopped at LIST_MAX_ITEMS (5000) and the walk
+        # gap-375b698206de: a listing stopped at LIST_MAX_ITEMS (5000) and the walk
         # flagged listing_truncated on every run. Scaled down (12,000 captured files cost
         # a minute; the census test lists 12,000 at the real bounds): pages of 7, a
         # listing of at most 50 and a budget of 45 downloads a run, so caps and budget
@@ -611,7 +612,7 @@ class CaptureTests(CaptureCase):
                                            "items_held": 2}))
 
     def test_a_folder_renamed_while_queued_is_resumed_where_it_is_now(self):
-        # The resume queue kept folders by path, so a folder
+        # Directive 5bc5d10c2c8d (2): the resume queue kept folders by path, so a folder
         # renamed between runs was a not_visible gap and the walk started over. It is
         # kept by item id: the renamed folder is listed where it is now and its file
         # re-keyed there; the walk completes.
@@ -643,7 +644,7 @@ class CaptureTests(CaptureCase):
                 reader.list_folder(CAPTURE, "/", folder_id=bad)
 
     def test_a_file_moved_into_a_walked_folder_mid_walk_stays_current(self):
-        # A file moved from a folder the walk had not reached
+        # Directive 5bc5d10c2c8d (1): a file moved from a folder the walk had not reached
         # into one it had listed was called moved_out_of_scope when the walk ended (gone
         # from every reader's index for a run). It is captured where it is now.
         self.cut_walk()
@@ -659,7 +660,7 @@ class CaptureTests(CaptureCase):
             EMPLOYEE, reader_audience())["items"]})
 
     def test_a_file_moved_within_the_root_is_regated_when_the_budget_ends_first(self):
-        # The budget ran out between the reconcile and the
+        # Directive 515540eaf702 (1): the budget ran out between the reconcile and the
         # capture at the new path, so the file kept its old permissions for a run while the
         # root read complete. The move dropped sales from its permissions: hidden from it
         # at once, and the root stays incomplete until a run captures it where it is.
@@ -693,7 +694,7 @@ class CaptureTests(CaptureCase):
         self.assertIsNone(self.store.resolve(handle, EMPLOYEE, reader_audience()))
 
     def test_the_reconcile_matches_a_root_spelled_in_another_case(self):
-        # The walk matched the scope root ignoring case, the
+        # Directive 515540eaf702 (2): the walk matched the scope root ignoring case, the
         # reconcile did not, so a file deleted under a root spelled in another case stayed
         # current (and served) forever.
         lower = scope(folders=[QUALITY_FOLDER.lower()])
@@ -749,7 +750,7 @@ class CaptureTests(CaptureCase):
         self.assertEqual(self.store.counts(EMPLOYEE, reader_audience())["versions"], 0)
 
     def test_a_grant_revoked_without_the_sharing_annotation_is_dropped_after_the_bound(self):
-        # The feed lists a permission-only change (same eTag)
+        # Directive 1cd1c66dd47d: the feed lists a permission-only change (same eTag)
         # without the sharing annotation. Within permission_reread_hours the eTag shortcut
         # still skips get_item (the permission re-read); the first run after it reads the
         # feed from the root's permission position and re-reads the entry, although the
@@ -796,7 +797,7 @@ class CaptureTests(CaptureCase):
                          ("full", "permissions_unknown", True))
 
     def test_a_permission_reread_the_budget_cuts_resumes_and_converges(self):
-        # With the shortcut off, a re-read the budget cut read the same
+        # Review of 2b30b6f4: with the shortcut off, a re-read the budget cut read the same
         # leading entries every run and never ended. Five entries due, two permission reads
         # per run (3 budgets): the changed file first, then each entry once, done in run 3
         # (within k + 1 runs).
@@ -1053,6 +1054,32 @@ class ScopeRemovalAndTextTests(CaptureCase):
         self.assertIn("PO100235", page["row"]["content_text"])
         self.assertEqual(self.store.counts(CAPTURE, capture_audience())["texts_ocr"], 1)
 
+    def test_ocr_starts_only_with_its_reserve_of_the_budget_left_then_reads_later(self):
+        """Live 2026-10-27: a run cut while scans were being OCR-read waited for them past
+        the host's grace and was killed, reporting nothing. With less than
+        OCR_RESERVE_SECONDS of the budget left no OCR starts: the scan's text layer is
+        recorded at once (``ocr_pending``, bytes pinned), and a later walk with the
+        reserve left OCR-reads the captured bytes (no source read)."""
+        scan = _scanned_or_skip(self)
+        self.drive.file("01SCAN", "scan.pdf", "01AOS", scan)
+        short = cs.OCR_RESERVE_SECONDS - 1
+        run = self.capture(budget_seconds=short, monotonic=lambda: 0.0).run(scope())
+        self.assertEqual(self.root(run)["counts"]["texts_ocr"], 0)
+        self.assertEqual(self.store.current(DRIVE, "01SCAN")["text_status"], OCR_PENDING)
+        downloads = self.drive.downloads()
+        run = self.capture(budget_seconds=short, monotonic=lambda: 0.0).run(scope())
+        self.assertEqual(self.root(run)["counts"]["texts_reextracted"], 0)   # still short
+        self.assertEqual(self.store.current(DRIVE, "01SCAN")["text_status"], OCR_PENDING)
+        run = self.capture(budget_seconds=cs.OCR_RESERVE_SECONDS,
+                           monotonic=lambda: 0.0).run(scope())
+        counts = self.root(run)["counts"]
+        self.assertEqual((counts["texts_reextracted"], counts["texts_ocr"]), (1, 1))
+        self.assertEqual(self.drive.downloads(), downloads)     # no source read for it
+        self.assertEqual(self.store.current(DRIVE, "01SCAN")["text_status"], cs.TEXT_OCR)
+        page = self.store.resolve(self.handle("01SCAN") + "#page=2", QUALITY,
+                                  reader_audience())
+        self.assertIn("PO100235", page["row"]["content_text"])
+
 
 def mentions_fields(handle, text):
     from ontology.mentions import file_text_fields
@@ -1088,7 +1115,8 @@ def cli_args(tmp) -> argparse.Namespace:
 class ScopeStoreAndCliTests(unittest.TestCase):
     def test_scope_validation_and_the_shipped_scope(self):
         shipped = CaptureScope.from_file(cs.DEFAULT_SCOPE)
-        self.assertEqual(len(shipped.targets), 3)   # QA/QC library, Customer Documents, AGENTS
+        # QA/QC library, Customer Documents, Operations CM Operations Files, AGENTS
+        self.assertEqual(len(shipped.targets), 4)
         self.assertEqual({bool(t.site) for t in shipped.targets}, {True, False})
         for bad in ([], [{"id": "a"}], [{"id": "a", "drive_id": DRIVE, "site": "X"}],
                     [{"id": "a", "drive_id": DRIVE, "folders": ["no-slash"]}],
@@ -1099,7 +1127,7 @@ class ScopeStoreAndCliTests(unittest.TestCase):
         with self.assertRaises(CaptureError):
             CaptureScope.from_json({"schema": "other", "targets": []})
         # A scope may declare a content cap up to the guard's one-download bound, never
-        # beyond it.
+        # beyond it (gap-e10f050d25a3).
         target = [{"id": "a", "drive_id": DRIVE}]
         self.assertEqual(CaptureScope(target, max_content_bytes=100_000_000)
                          .max_content_bytes, 100_000_000)
@@ -1107,7 +1135,7 @@ class ScopeStoreAndCliTests(unittest.TestCase):
             with self.assertRaises(CaptureError) as raised:
                 CaptureScope(target, max_content_bytes=bad)
             self.assertEqual(raised.exception.code, "scope_max_content_bytes_invalid")
-        # The permission re-read bound defaults to 24 h, is
+        # The permission re-read bound (directive 1cd1c66dd47d) defaults to 24 h, is
         # declared in the shipped scope, and an unknown value fails closed.
         self.assertEqual((CaptureScope(target).permission_reread_hours,
                           shipped.permission_reread_hours), (24, 24))
@@ -1148,9 +1176,9 @@ class ScopeStoreAndCliTests(unittest.TestCase):
         for secret in (NAME_SECRET, TEXT_SECRET, "PO100234", DRIVE, "01FILE", QUALITY_FOLDER,
                        "s3cr3t", "TOKEN"):
             self.assertNotIn(secret, text)
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         root = Path(__file__).resolve().parents[2]
-        spec = json.loads((root / "verify/live-checks/capture.sharepoint.json")
+        spec = json.loads((root / "devloop/live-checks/capture.sharepoint.json")
                           .read_text(encoding="utf-8"))
         lv.validate_spec(spec, stem="capture.sharepoint")
         self.assertEqual({k: v for k, v in report["leak_check"].items()
@@ -1167,18 +1195,20 @@ class ScopeStoreAndCliTests(unittest.TestCase):
             "graph.drive_permissions"])
 
     def test_the_cli_is_never_ok_over_a_truncated_index_or_a_failed_byte_read(self):
-        # The index stops at INDEX_LIMIT files and any failure of
+        # Directive 594fa8d905ae: the index stops at INDEX_LIMIT files and any failure of
         # a pinned-bytes read is a typed count, never a crash or an ok over a partial read.
-        content = SharePointCaptureStore.content
+        # The CLI checks each pinned original with ``original_verified`` (held bytes, or
+        # a dropped original's whole ``.dropped`` record).
+        verified = SharePointCaptureStore.original_verified
 
         def fails_once(store, handle, *args, **kwargs):
             if "01FILEA" in handle:
                 raise RuntimeError("unexpected")
-            return content(store, handle, *args, **kwargs)
+            return verified(store, handle, *args, **kwargs)
 
         for patch, expected in (
                 (mock.patch.object(cs, "INDEX_LIMIT", 2), (True, 2, 2, {})),
-                (mock.patch.object(SharePointCaptureStore, "content", fails_once),
+                (mock.patch.object(SharePointCaptureStore, "original_verified", fails_once),
                  (False, 3, 2, {"unexpected:RuntimeError": 1}))):
             with self.subTest(expected=expected), tempfile.TemporaryDirectory() as tmp, patch:
                 report = cs.run_cli(cli_args(tmp), environ=ENV, sender=seeded_drive(),
@@ -1206,21 +1236,29 @@ class ScopeStoreAndCliTests(unittest.TestCase):
             self.assertFalse(first["ok"])
             self.assertEqual(first["storage"]["state_base"], "workbench_state_dir")
             self.assertTrue(first["storage"]["host_state"])
+            # A first run in the host state: the store was not carried into it, so its
+            # persistence is unproven (decision 2026-10-21-sharepoint-census-across-runs:
+            # carried, observed, never inferred from where the store lies).
+            self.assertFalse(first["storage"]["carried"])
             self.assertEqual(first["incomplete_scope"], [{
                 "target": "quality", "root": 0, "reasons": [cs.TIME_BUDGET],
-                "resumable": True, "persisted": True, "later_ask": None}])
+                "resumable": True, "persisted": False,
+                "later_ask": "live-host-persistent-state-dir"}])
             self.assertIn("sp-live-check", str(next(Path(tmp, "host").iterdir())))
-            # The live check records the named scope from this real report, and the spec
+            # The verifier records the named scope from this real report, and the spec
             # still fails the cut run (never a pass on a partial root).
-            from verify import live_verify as lv
+            from devloop import live_verify as lv
             spec = json.loads((Path(__file__).resolve().parents[2]
-                               / "verify/live-checks/capture.sharepoint.json")
+                               / "devloop/live-checks/capture.sharepoint.json")
                               .read_text(encoding="utf-8"))
             recorded = lv._recorded(spec, first)
             self.assertEqual(recorded["incomplete_scope[*].target"], ["quality"])
             self.assertEqual(recorded["incomplete_scope[*].reasons"], [[cs.TIME_BUDGET]])
             self.assertTrue(lv.check_expectations(spec, 1, first))
-            self.assertEqual(first["blocked_upstream"], [])   # resumes by itself: not blocked
+            # The budget alone cut it over a store not carried: blocked later_ask, never
+            # a pass and never an untyped fail.
+            self.assertEqual(lv.blocked_parts(first), [
+                {"part": "quality.root0", "source": "microsoft-graph", "cause": "later_ask"}])
             args.budget_seconds = 1000
             second = cs.run_cli(args, environ=env, sender=drive, sleep=lambda s: None,
                                 monotonic=drive.downloads)
@@ -1243,9 +1281,9 @@ class ScopeStoreAndCliTests(unittest.TestCase):
                          [("quality", [cs.TIME_BUDGET], True, False,
                            "live-host-persistent-state-dir")])
         # Typed by a later_ask, the run is blocked (never a pass) and the rest still checks.
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         spec = json.loads((Path(__file__).resolve().parents[2]
-                           / "verify/live-checks/capture.sharepoint.json")
+                           / "devloop/live-checks/capture.sharepoint.json")
                           .read_text(encoding="utf-8"))
         self.assertEqual(lv.blocked_parts(report), [
             {"part": "quality.root0", "source": "microsoft-graph", "cause": "later_ask"}])
@@ -1613,7 +1651,7 @@ class PortalColumnsTests(CaptureCase):
 
 
 class SiteReadbackTests(unittest.TestCase):
-    """The
+    """Directive ac56163cf825 U5 (gap-e70bce853a2f) and ING-16 (gap-d5365c514b2a): the
     estate check reads each registry site back by counts and a typed reason. The
     estate fixtures live in the estate test module (imported here to avoid a cycle)."""
 
@@ -1656,7 +1694,7 @@ class SiteReadbackTests(unittest.TestCase):
             self.assertTrue(all(isinstance(v, (int, str, type(None))) for v in row.values()))
 
     def test_a_root_cut_in_one_run_is_walked_before_the_roots_cut_again_in_the_next(self):
-        # With a budget for one root's walk a day, each run resumes first the
+        # ING-16: with a budget for one root's walk a day, each run resumes first the
         # root the last run cut, every run moves each root it reaches on (each slice
         # ends at least one folder), the first place rotates to another root once the
         # root holding it completes, and every root completes within four runs.

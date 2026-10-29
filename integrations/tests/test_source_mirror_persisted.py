@@ -1,6 +1,6 @@
 """The last complete source-mirror capture, served stale through a Portal API outage.
 
-Decision 2026-10-04-scope-freshness. Evidence label:
+Decision 2026-10-04-scope-freshness (directive be1776e885b5). Evidence label:
 ``injected-transport``. The real ``SourceMirror`` behind the real
 ``WorkbenchReadApiClient`` runs against the source-mirror tests' ``FakeWorkbench``; the
 outage is an injected HTTP 500 ``internal`` from ``GET /v1/health`` (the live symptom
@@ -120,9 +120,10 @@ class PersistedTestCase(unittest.TestCase):
         self.addCleanup(mirror.close)
         return mirror
 
-    def tools(self, mirror, *, store_sources=None, policy=None):
+    def tools(self, mirror, *, store_sources=None, policy=None, captured_bound=None):
         resolver = resolve.SourceResolver(
-            self.view, [resolve.MirrorLookup(mirror, clock=self.clock)],
+            self.view, [resolve.MirrorLookup(mirror, clock=self.clock,
+                                             captured_bound=captured_bound)],
             normalizer=identifiers.normalize, workdir=self.root / "work", clock=self.clock)
         self.addCleanup(resolver.close)
         store = self.root / f"store-{len(list(self.root.glob('store-*')))}.sqlite"
@@ -249,6 +250,11 @@ class FindThroughOutageTests(PersistedTestCase):
                             u.get("error_code")) for u in fresh["relations"]])
             self.assertEqual((out["gaps"][0]["reason"], out["gaps"][0]["detail"]),
                              ("stale_source", fresh["label"]), out["gaps"])
+            # One stale source is one gap: the carriers read from that copy add none,
+            # under no second code (full173: 341 per-carrier ``source_stale`` beside it).
+            self.assertEqual([(g["reason"], g["subject"]) for g in out["gaps"]
+                              if g["state"] == "stale"],
+                             [("stale_source", "portal_api")], out["gaps"])
             self.assertNotIn("absent_in_source", {g["state"] for g in out["gaps"]})
         self.assertEqual(out["status"], "not_found", out)
         found = self.find(tools, {"query": "SO100305", "object_type": "SalesOrder"})
@@ -322,6 +328,55 @@ class FindThroughOutageTests(PersistedTestCase):
         self.assertEqual(persisted["public.app_shipment"]["label"], LABEL)
 
 
+class HostCaptureTests(PersistedTestCase):
+    """Supervisor decision 2026-10-27 (captured-Portal staleness): a host whose own ingest
+    captures the Portal and that holds no Portal client serves the mirror as that
+    capture, labelled with its captured time and judged by the host's capture bound,
+    never refreshed by the reader and never labelled "live source unavailable"."""
+
+    def test_the_hosts_capture_is_labelled_by_age_and_stale_only_past_its_bound(self):
+        filled = self.running()
+        filled.rows(SALES, "public.app_sales_order")  # the ingest's capture, 12:00
+        filled.close()
+        mirror = SourceMirror(self.root / "case.sqlite", None, AUDIENCE, clock=self.clock)
+        self.addCleanup(mirror.close)
+        sent = len(self.transport.paths)
+        tools = self.tools(mirror, captured_bound=3600)
+        self.clock.advance(1800)   # past the mirror's 900 s live bound, within the host's
+        out = self.find(tools, {"query": "SO100305", "object_type": "SalesOrder"})
+        self.assertEqual(out["status"], "found", out)
+        fresh = self.portal(out)
+        within = ("host captures as of 2026-09-29T12:00:00.000000Z, 1800 s old, within "
+                  "this host's capture bound of 3600 s")
+        self.assertEqual((fresh["served_from"], fresh["stale"], fresh["label"],
+                          fresh["captured_at"]),
+                         ("host_capture", False, within, AS_OF), fresh)
+        self.assertEqual([g for g in out["gaps"] if g["state"] == "stale"], [], out["gaps"])
+        # A relation the host's capture does not hold is not ingested, not "unavailable".
+        self.assertIn(("not_ingested", "source_not_served",
+                       "portal_api:public.order_entry.erpcode"),
+                      [(g["state"], g["reason"], g["subject"]) for g in out["gaps"]])
+        self.assertIn(("inaccessible", "source_unavailable", "portal_api",
+                       "this host's capture holds none of 1 relation(s) and this host reads "
+                       "no live source: public.order_entry"),
+                      [(g["state"], g["reason"], g["subject"], g["detail"])
+                       for g in out["gaps"]])
+        self.assertNotIn("live source unavailable", json.dumps(out))
+        self.clock.advance(3600)   # 5400 s old: past the host's bound
+        out = self.find(tools, {"query": "SO100305", "object_type": "SalesOrder"})
+        self.assertEqual(out["status"], "found", out)   # the copy still answers, labelled
+        fresh = self.portal(out)
+        past = ("host captures as of 2026-09-29T12:00:00.000000Z, 5400 s old, past this "
+                "host's capture bound of 3600 s")
+        self.assertEqual((fresh["served_from"], fresh["stale"], fresh["label"]),
+                         ("cached_mirror", True, past), fresh)
+        self.assertEqual([(g["reason"], g["subject"], g["detail"]) for g in out["gaps"]
+                          if g["state"] == "stale"], [("stale_source", "portal_api", past)])
+        self.assertNotIn("live source unavailable", json.dumps(out))
+        self.assertNotIn("absent_in_source", {g["state"] for g in out["gaps"]})
+        self.assertEqual(len(self.transport.paths), sent)  # the reader never asked live
+
+
 class MirrorFillTests(PersistedTestCase):
     """A running mirror fills only the relation it never held from the copy; what it
     holds, its citations and its client stay; it reads live again after the TTL."""
@@ -348,6 +403,58 @@ class MirrorFillTests(PersistedTestCase):
         out = mirror.resolve(SALES, "SO100305")
         self.assertEqual([item["relation"] for item in out.get("stale_relations", [])],
                          ["public.app_shipment"])
+
+    def test_a_fill_maps_the_sighting_captures_into_the_running_mirrors_ids(self):
+        """Review of ef26b2f8dc: the import remapped the capture ids but not
+        ``seen_through_capture`` / ``sighting_floor``, so the last-sighting rule compared
+        another relation's capture id with this one's (``not_rechecked_...``)."""
+        shipment = "public.app_shipment"
+        work = SourceMirror(self.root / "work.sqlite", self.client(), AUDIENCE,
+                            clock=self.clock, retry_delay_seconds=0)
+        work.sync(SALES, relations=[shipment])
+        for _ in range(4):   # unchanged full traversals: the sighting is the relation's
+            self.clock.advance(3600)
+            work.refresh(SALES, shipment, full=True)
+        # One row leaves and a key scan finds it back: its row carries a sighting floor.
+        table = self.fake.tables[shipment]
+        gone = table.pop(0)
+        self.clock.advance(3600)
+        work.refresh(SALES, shipment, full=True)
+        table.insert(0, gone)
+        self.clock.advance(3600)
+        work.scan_absence(SALES, shipment)
+        self.assertEqual(len({f for (f,) in work._db.execute(
+            "SELECT sighting_floor FROM row_current WHERE sighting_floor IS NOT NULL")}), 1)
+        self.clock.advance(3600)
+        report = work.sync(SALES, relations=[shipment], full=True)
+        self.assertTrue(self.store.persist(work._path, [shipment], report)["persisted"])
+        source = work.resolve_citation(work.rows(SALES, shipment)["rows"][0]["citation"],
+                                       SALES)
+        self.assertEqual(source["upstream_presence"], "observed_in_latest_full_traversal")
+        work.close()
+        mirror = self.running()
+        for _ in range(7):   # this file's own capture ids run ahead of the copy's
+            self.clock.advance(60)
+            mirror.refresh(SALES, "public.app_sales_order", full=True)
+        self.transport.down = HTTP_500
+        rows = mirror.rows(SALES, shipment)["rows"]
+        self.assertEqual(len(rows), 2)
+        state = mirror._state(shipment)
+        own = {c for (c,) in mirror._db.execute(
+            "SELECT capture_id FROM capture WHERE relation = ?", (shipment,))}
+        self.assertIn(state["seen_through_capture"], own)
+        self.assertEqual(state["seen_through_capture"], state["last_full_capture_id"])
+        self.assertEqual(state["seen_through_at"], source["content_last_seen_at"])
+        floors = {f for (f,) in mirror._db.execute(
+            "SELECT sighting_floor FROM row_current WHERE relation = ?", (shipment,))}
+        self.assertTrue(floors - {None})
+        self.assertLessEqual(floors - {None}, own)
+        for row in rows:
+            cited = mirror.resolve_citation(row["citation"], SALES)
+            self.assertEqual((cited["content_last_seen_capture"], cited["upstream_presence"],
+                              cited["content_last_seen_at"]),
+                             (state["last_full_capture_id"], "observed_in_latest_full_traversal",
+                              source["content_last_seen_at"]), cited)
 
     def test_the_copy_is_left_once_the_source_answers_after_the_ttl(self):
         self.persist_live()
@@ -510,13 +617,19 @@ class StoreTests(PersistedTestCase):
         self.persist_live()
         (manifest_path,) = (self.store.root / "scopes").glob("*/manifest.json")
         manifest = json.loads(manifest_path.read_text())
-        snapshot = manifest_path.parent / manifest["file"]
+        self.assertEqual(manifest["schema"], mc.PIN_SCHEMA)
         self.transport.down = HTTP_500
-        conn = sqlite3.connect(snapshot)
+        # a pin of another mirror generation (the file was replaced) never verifies
+        manifest_path.write_text(json.dumps(dict(manifest, mirror_generation="0" * 16)))
+        with self.assertRaises(MirrorError) as refused:
+            self.serve()
+        self.assertEqual(refused.exception.code, "persisted_incomplete")
+        # nor one whose mirror no longer holds a completed capture of a scope relation
+        manifest_path.write_text(json.dumps(manifest))
+        conn = sqlite3.connect(manifest["mirror"])
         conn.execute("DELETE FROM relation_state WHERE relation = 'public.app_shipment'")
         conn.commit()
         conn.close()
-        manifest_path.write_text(json.dumps(dict(manifest, sha256=mc._file_sha(snapshot))))
         with self.assertRaises(MirrorError) as refused:
             self.serve()
         self.assertEqual(refused.exception.code, "persisted_incomplete")
@@ -524,6 +637,36 @@ class StoreTests(PersistedTestCase):
         with self.assertRaises(MirrorError) as refused:
             self.store.load(RELATIONS, tenant="plx")
         self.assertEqual(refused.exception.code, "persisted_incomplete")
+
+    def test_persisting_and_serving_a_scope_writes_no_copy_of_the_mirror(self):
+        """2026-10-27: a copy per scope (a backup of the whole mirror, then VACUUM) reached
+        6.7 GB on the live state directory. A pin and a scoped fallback write a few KiB;
+        the fallback shows only its scope's relations, read from the shared mirror."""
+        bound = 256 * 1024
+
+        def files():
+            return {p: p.stat().st_size for p in self.root.rglob("*") if p.is_file()}
+        shared = self.store.work_path
+        before = files()
+        mirror, live = self.serve(relations=["public.app_shipment"])
+        self.assertTrue(live["persisted"]["persisted"], live)
+        mirror.close()
+        self.transport.down = HTTP_500
+        served, report = self.serve(relations=["public.app_shipment"])
+        self.assertEqual(report["served_from"], "persisted_capture")
+        grown = {p: size for p, size in files().items()
+                 if not p.name.startswith(shared.name) and size != before.get(p)}
+        self.assertTrue(grown)   # the manifests and the fallback were written
+        self.assertLess(max(grown.values()), bound, grown)
+        self.assertEqual(served.rows(SALES, "public.app_shipment")["freshness"]
+                         ["source_freshness"]["label"], report["source_freshness"]["label"])
+        with self.assertRaises(MirrorError) as outside:   # the shared mirror holds it
+            served.rows(SALES, "public.app_sales_order")
+        self.assertEqual(outside.exception.code, "missing_mirror")
+        # The projection reads the fallback's scope, labelled as served from the copy.
+        with MirrorCaptures(served._path) as captures:
+            described = captures.describe()
+        self.assertEqual(sorted(described["relations"]), ["public.app_shipment"])
 
     def test_a_narrower_copy_never_answers_a_wider_request(self):
         self.serve(relations=["public.app_shipment"])[0].close()
@@ -612,9 +755,9 @@ def carrier_world(schema):
 
 
 class LiveCheckSpecTests(PersistedTestCase):
-    """``verify/live-checks/mirror.persisted_fallback.json`` and its probe over an
+    """``devloop/live-checks/mirror.persisted_fallback.json`` and its probe over an
     injected client, in the live runner's condition: a state directory that starts
-    empty (each live run met a fresh one and failed ``missing_mirror``).
+    empty (each live run on b047200 met a fresh one and failed ``missing_mirror``).
     No network; ``PLX_WORKBENCH_STATE_DIR`` names a temporary directory."""
 
     def setUp(self) -> None:
@@ -623,12 +766,12 @@ class LiveCheckSpecTests(PersistedTestCase):
         self.state = self.root / "verifier-state"
 
     def spec(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         return json.loads((lv.ROOT / lv.SPECS_DIR_NAME / "mirror.persisted_fallback.json")
                           .read_text())
 
     def probe(self, state=None, branch=None):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from scripts import live_read_probes as probes
         spec = self.spec()
         clients = {"mirror-fallback": self.client()}
@@ -643,9 +786,9 @@ class LiveCheckSpecTests(PersistedTestCase):
         return report, lv.check_expectations(spec, code, report)
 
     def verdict(self, report):
-        """The live check's result for this probe output: ``run_spec`` over the real
+        """The verifier's result for this probe output: ``run_spec`` over the real
         spec, its command replaced by a stub that prints ``report``."""
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         printed = self.root / "stdout.json"
         printed.write_text(json.dumps(report))
         stub = self.root / "stub-python"
@@ -656,12 +799,12 @@ class LiveCheckSpecTests(PersistedTestCase):
             "PLX_WORKBENCH_STATE_DIR": str(self.state)})
 
     def test_the_spec_is_valid_get_only_and_independent_of_the_health_check(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         spec = self.spec()
         self.assertEqual(lv.validate_spec(spec), [])
         self.assertIn(spec["command"][2], lv.ALLOWED_MODULES)
         self.assertNotIn("requires", spec)  # it must run while portal.health_catalog fails
-        # The store is the durable one the live check keeps, never the per-check {tmp}.
+        # The store is the durable one the verifier keeps, never the per-check {tmp}.
         self.assertIn("PLX_WORKBENCH_STATE_DIR", spec["optional_env"])
         self.assertFalse(any("{tmp}" in arg for arg in spec["command"]), spec["command"])
         # Unset, the probe runs and blocks naming it (a host misconfiguration), before any
@@ -720,10 +863,10 @@ class LiveCheckSpecTests(PersistedTestCase):
                                            "persisted_scopes", "runs", "schema"])
 
     def test_a_store_holding_no_copy_serves_the_one_on_the_mirror_branch(self):
-        """The live check's container keeps no store,
+        """Owner policy e251073ef3c5 item 6: the verifier's container keeps no store,
         so an outage is answered from the copy an earlier run published on the
-        non-branch ref ``refs/verify/mirror`` and the live check attested on
-        the results branch (a local bare repository here; an injected client never
+        non-branch ref ``refs/devloop/mirror`` and the verifier attested on
+        claude/devloop-live (a local bare repository here; an injected client never
         reads the real one)."""
         from integrations import mirror_branch_store as mbs
         from integrations.tests.test_mirror_branch_store import publish_attested

@@ -80,7 +80,7 @@ RECORD_KEYS: dict[str, tuple[tuple[str, str], ...]] = {
 }
 
 # Document-kind signals. Headings are the printed form titles (Ricardo's AO
-# packet); phrases are whole words in title or text.
+# packet: devloop/CONTEXT/02 §3.2); phrases are whole words in title or text.
 _AO_ANCHOR = re.compile(r"\bASSEMBLY[ \t]+ORDER\b|\bAO[ \t]+LOT[ \t]*#", re.I)
 _CATEGORY_SIGNALS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
     ("ASSEMBLY_ORDER", "FILL_RECORD",
@@ -100,7 +100,7 @@ _CATEGORY_SIGNALS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
     ("PURCHASE_ORDER", "SIGNED_PO", re.compile(r"\bpurchase[ \t]+order\b", re.I)),
 )
 _BULK_LOT = re.compile(r"\bBULK[ \t]+LOT[ \t]*#[ \t]*[:.]?[ \t]*(BC-[A-Z0-9]{3,20})(?![A-Z0-9])", re.I)
-# Form #072B page-1 field labels: AO LOT#,
+# Form #072B page-1 field labels (devloop/CONTEXT/02 §3.2): AO LOT#,
 # BULK LOT#, NAME, SIZE, ERP CODE, OE, CUSTOMER, PO, REQUIRED DATE, BULK TYPE,
 # PRODUCTION LINE. Only these count as "the next label" after a field.
 _AO_FORM_LABEL = re.compile(

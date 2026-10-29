@@ -1,11 +1,11 @@
 """Versioned SharePoint capture (L1): drive items of a bounded scope into Workbench state.
 
-The Workbench keeps
+Owner decisions 5be438765457 and 93047ba19524, 10-DECISION 2: the Workbench keeps
 what it reads from SharePoint in its own credentialed capture store, so a
 ``sharepoint://`` citation resolves offline to exactly the version it cited, a
 changed file keeps its history and the projection (``ontology.project
 .SharePointCaptures``) can serve ``SharePointFile`` objects with their mention links.
-Nothing captured goes to Git or logs. Who may *see* a captured
+Nothing captured goes to Git, logs or advisory records. Who may *see* a captured
 file is decided again on every read, per reader: the reader's
 ``LiveSourceAudience`` over the item's path keys (``sharepoint:<drive>:<path>``)
 and the item permissions recorded at capture. A file withheld from a reader yields
@@ -102,7 +102,7 @@ readers label it unconfirmed. Without a local OCR engine such a file is
 textless; a later walk on a host with OCR re-reads its captured bytes (no source
 read), as it does for a scanned PDF captured before OCR existed (``no_text``).
 
-Versions. Keyed by ``(driveId, itemId)``; one row per validity interval of a
+Versions (R8). Keyed by ``(driveId, itemId)``; one row per validity interval of a
 version, cited ``sharepoint://<drive>/<item>@<eTag>`` (``graph_read.drive_citation``;
 ``#sha256=<hex>`` names the pinned bytes and resolves to the same row). A new eTag
 supersedes the current version (both kept). A version listed at another path with
@@ -147,7 +147,7 @@ the oldest). The full walk every ``full_walk_hours`` also re-reads every item's
 permissions (the feed reports sharing changes only where Graph honours ``Prefer:
 deltashowsharingchanges``).
 
-Permission re-reads (``permission_reread_hours``). The eTag
+Permission re-reads (``permission_reread_hours``, directive 1cd1c66dd47d). The eTag
 shortcut skips ``get_item``, which is also the item's permission re-read, so a
 permission-only change the feed lists without the sharing annotation would stay stale.
 Each root therefore keeps a permission position too (``root_permissions``): a feed
@@ -218,13 +218,13 @@ checked live until later_ask live-host-persistent-state-dir lands, since every l
 starts from fresh state, and only unit tests cover it): each walk's slice is its
 share of the budget left above that reserve, with no floor (a 20 s floor gave each
 first large root of a 224-root estate three times its share and left 78 roots after
-them unreached, live 2026-10-18T09:46Z), so what a small root leaves goes
+them unreached, live 2026-10-18T09:46Z at dabe69ce3), so what a small root leaves goes
 to the walks after it and the first pass reaches every root. A walk its slice cuts
 keeps its position like any cut walk. A slice cuts its walk only once that slice moved it
 on (read a child or ended a folder), so a slice shorter than one listing does not cut the
 walk where the last one did, every pass and every run; it cuts inside a listing (the
 resumed walk lists the folder again and skips the children it holds), never only between
-folders (one listing's files ran 224 s past its slice live at
+folders (one listing's files ran 224 s past its slice live, b38701bd1 at
 2026-10-18T10:41Z). Once every root had its slice, the budget left
 (the reserve, so roots each a little larger than their share are not all cut and none
 completed) goes to the walks slices cut, the one with the fewest folders left to list
@@ -234,7 +234,7 @@ first (the nearest its end as far as the walk knows), each at least
 position (one root result: the counts of every slice, ``walk_slices``). So one root larger
 than the budget no longer holds every root after it unvisited: a growing estate's
 ``roots_unvisited`` falls every run while the large root resumes. A refresh is never
-sliced (it resumes ahead of the roots no walk has reached). A
+sliced (it resumes ahead of the roots no walk has reached, decision 28e628682928). A
 root the time budget reaches before
 reading anything is deferred (``deferred``): nothing of it is read or written, so a
 complete root stays complete with its walked folders and feed position; a terminal
@@ -245,6 +245,30 @@ budget cut by root class (``estate.roots_budget_cut_by``: ``unreached``, ``start
 timeout, a body cut short) is retried once while the budget lasts
 (``SharePointReader.get_content`` ``may_retry``); a second failure leaves the file
 ``unavailable:<detail>``, counted (``contents_unavailable``) and retried by a later run.
+
+Named items first (``named_items``; ``--named-originals``: every item a case original
+under ``<state-dir>/case-originals`` names, ``operating.captured_originals
+.sharepoint_items``). A cold walk of the estate takes days, and a captured original is
+served only through its item's current captured version
+(``operating.captured_originals``), so a run first captures the named items, before any
+root, within ``NAMED_PASS_SHARE`` of the budget left (:meth:`SharePointCapture
+._named_pass`). Only an item of a drive the run planned is read (the scope, discovery's
+site and library exclusions, library classes and the people exclusion already decided
+which drives those are: an excluded person's OneDrive is never planned, so none of its
+items is read); any other is ``out_of_scope``, with no GET. A planned one is read by id
+(``get_item``: metadata and item permissions, as the change feed reads a changed file;
+children never), and only when its path lies under one of its drive's planned roots is
+it recorded, by the walk's own per-file step (:meth:`_capture_file`: the same version
+row, item permissions, bytes, text and listItem columns); else ``outside_root``, nothing
+written. An item held as current and seen within ``permission_reread_hours`` is not
+read again, so the pass is idempotent and a cut pass resumes with the items not held
+first. No root status, walk position, walked folder or feed position is touched: the
+walk that later lists such an item finds its version captured (``unchanged``). Every
+named item ends in one typed outcome (``named_items.outcomes``: ``captured``,
+``unchanged``, ``held_fresh``, ``out_of_scope``, ``outside_root``, ``not_visible``,
+``not_found``, ``not_file``, ``source_error:<detail>``, ``time_budget``,
+``store_full``, ``invalid``, ``not_recorded``, ``over_bound``); the failures by item stay
+on the capture (``named_failures``), never printed.
 
 Complete means every listed item reached a terminal outcome. A file whose bytes are
 captured is one; so is a file over ``max_content_bytes`` (``exceeds_cap``): its
@@ -274,7 +298,21 @@ only: once a full walk captured everything, the bytes and text of every version 
 it superseded before that walk started are dropped (``pruned``; a version superseded
 during it keeps its bytes until the next complete walk,
 :meth:`SharePointCaptureStore.prune_superseded`, ``contents_pruned``); the version's
-metadata, permissions, digest and interval stay. Without ``--state-dir``
+metadata, permissions, digest and interval stay. Compact storage (live 2026-10-27: the
+store held 4 GB, mostly originals kept after their text was read), as the mail store's
+(``integrations.capture_mail``, Storage): texts are kept zlib-compressed; an original over
+``DROP_ORIGINALS_ABOVE`` (256 KiB) is dropped once its text is kept and every reading a
+reader makes of it is kept in its ``.dropped`` form with its quickXorHash
+(:meth:`SharePointCaptureStore.settle_original`), so resolve, the typed fields and the
+mention documents read the same text; its version keeps its SHA-256 pin, item id and
+eTag, the refetch handle (:meth:`SharePointCaptureStore.refetch_original`: one guarded
+GET, returned only when it hashes to the pin, never stored). Kept: small originals,
+containers, bytes that are their own text, and originals a pending OCR still needs.
+``python3 -m integrations.capture_sharepoint compact --state-dir D [--defer-ocr]``
+compacts a store captured before (holding the host's cycle lock); ``--defer-ocr`` drops
+pending scans too (``ocr_deferred``: the text layer is the reading, a named gap), and a
+later walk on a host with OCR re-fetches each one, OCR-reads it and drops it again.
+Without ``--state-dir``
 the CLI keeps its store in the host's state directory (:func:`default_state_dir`:
 ``$PLX_WORKBENCH_STATE_DIR/sharepoint-capture-check`` when set, else under
 ``$XDG_STATE_HOME`` or ``$HOME/.local/state``; ``storage.state_base`` says which; the
@@ -286,13 +324,18 @@ Scope not finished (``incomplete_scope``, the CLI over a scope of fixed targets)
 the last run left incomplete is listed by target id and root ordinal with its typed
 reasons, never counted complete (``ok`` stays false). ``resumable``: the time budget cut
 it, so the next run carries on from its stored walk position. A fresh ``--state-dir``
-(the live check's ``{tmp}``) is gone when the check ends, so a root larger than one budget
+(the verifier's ``{tmp}``) is gone when the check ends, so a root larger than one budget
 can never finish there: ``--state-name NAME`` keeps the store as
 ``<host state base>/sharepoint-capture-check-NAME/live`` (``state_base``
-``workbench_state_dir`` is kept between the daily live-check runs), and the cut root
-resumes in the next daily run. Where the store is not kept (``persisted`` false) the
-entry names ``later_ask`` live-host-persistent-state-dir. The count of roots never
-hides: ``summary.roots_complete`` stays below ``summary.roots``.
+``workbench_state_dir`` is kept between the verifier's daily runs), and the cut root
+resumes in the next daily run. Kept is observed, never inferred from the base: an
+entry is ``persisted`` only when this invocation found the store a previous one left
+(``storage.carried``). Where it did not, a run cut by the time budget alone names
+``later_ask`` live-host-persistent-state-dir and ``blocked_upstream`` carries one part
+per cut root (or discovery gap), the verifier's blocked with the progress shown; a cut
+over a carried store, or any other reason, stays a typed fail (one rule for every
+capture: ``capture_mail.budget_cut_block``). The count of roots never hides:
+``summary.roots_complete`` stays below ``summary.roots``.
 
 Estate progress (``estate.progress``, the CLI over an estate scope). Before its runs and
 after them it reads the store: ``roots_complete`` (``summary.roots_complete``) must not
@@ -317,9 +360,9 @@ withheld and, when none was read, ``no_access``, ``empty_site``, ``not_in_scope`
 ``not_walked`` or ``source_error``; a site walked whole that holds no file is
 ``unexercised`` (:func:`credit_readback`), never ``captured``.
 
-Live-unverified until ``verify/live-checks/capture.sharepoint.json`` passes; the estate
+Live-unverified until ``devloop/live-checks/capture.sharepoint.json`` passes; the estate
 (``--scope integrations/sharepoint_estate_scope.json``) until
-``verify/live-checks/capture.sharepoint_estate.json`` passes.
+``devloop/live-checks/capture.sharepoint_estate.json`` passes.
 """
 
 from __future__ import annotations
@@ -333,6 +376,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import sqlite3
 import time
 from typing import Any, Callable, Iterator, Mapping, Sequence
@@ -344,13 +388,18 @@ from operating import doc_metadata_taxonomy as taxonomy
 
 from . import live_source_grammar as grammar
 from . import people_exclusion
-from .capture_mail import (COMPLETE, FRONTIER, PENDING, TERMINAL, CaptureError,
-                           assert_outside_git, check_state_dir, schedule_units,
-                           terminal_reason)
-from .captured_text import (OCR_FAILED, OCR_NO_TEXT, OCR_UNAVAILABLE, TEXT_EXTRACTED,  # noqa: F401
-                            TEXT_OCR, TEXT_READ, TEXT_UNREAD, capture_text, captured_text,
-                            member_view, split_member)
-from .capture_store import SourceKind, register_source_kind
+from .capture_mail import (COMPLETE, DROP_ORIGINALS_ABOVE, FRONTIER, PENDING,
+                           PERSISTENT_STATE_ASK, TERMINAL, CaptureError, MailCaptureStore,
+                           assert_outside_git, budget_cut_block, check_state_dir,
+                           schedule_units, terminal_reason)
+from .captured_text import (COMPRESSED_SUFFIX, DROPPED_SUFFIX, OCR_DEFERRED,  # noqa: F401
+                            OCR_FAILED, OCR_NO_TEXT, OCR_UNAVAILABLE, TEXT_EXTRACTED,
+                            TEXT_OCR, TEXT_READ, TEXT_UNREAD, UNTYPED_OCR_FAILURES, blob_path,
+                            capture_text, captured_text, file_type, inflate, member_view,
+                            ocr_digest, read_blob, read_dropped, reading_key, readings_of,
+                            split_member, write_dropped)
+from .capture_store import (SourceKind, register_source_kind, sqlite_bytes,
+                            checkpoint, wal_journal)
 from .live_source_guard import MAX_CONTENT_BYTES as MAX_DOWNLOAD_BYTES
 from .live_source_guard import (LiveSourceAudience, NotVisible, SourceNotFound,
                                 SourceUnavailable, parse_handle, q, tenant_download_hosts,
@@ -388,10 +437,26 @@ REPAIRS_PER_ROOT = 100
 # reads the next ones (:class:`_Extraction`); 1: inline. Every source read stays on the
 # walking thread, one request at a time, through the one guarded client.
 EXTRACT_WORKERS = max(1, min(4, (os.cpu_count() or 1) - 1))
+# OCR never runs past the run's time budget (live 2026-10-27: a run whose walk was cut
+# while three scans were being OCR-read waited for them, past the host's grace, was
+# killed, and reported nothing). A file's OCR starts only while at least this much of the
+# budget is left (the OCR's own whole-document deadline and a margin); later in the run
+# its text layer is recorded at once (``ocr_pending``, bytes pinned) and its scanned pages
+# are OCR-read from the captured bytes by a later walk of its root (:meth:`_reextract`).
+OCR_RESERVE_SECONDS = 330.0
+# The most of the budget left a walk spends first on those pending OCR reads.
+REEXTRACT_SHARE = 0.25
 # The longest Retry-After a run without a time budget waits once (:meth:`_throttled`);
 # a budgeted run waits only what ends before its root's slice and its deadline.
 RETRY_AFTER_MAX_SECONDS = 120
 FIRST_PASS_SHARE = 0.5   # the most of the budget left a run's retry-first pass spends
+# Named items (module docstring, Named items first): the most of the budget left the pass
+# spends, the most items one run names, and the outcomes it types per item.
+NAMED_PASS_SHARE = 0.5
+MAX_NAMED_ITEMS = 20_000
+NAMED_OUTCOMES = ("captured", "unchanged", "held_fresh", "out_of_scope", "outside_root",
+                  "invalid", "not_visible", "not_found", "not_file", "time_budget",
+                  "store_full")
 # The most of the walk budget (what is left when the first walk starts) the first pass
 # over every root spends (module docstring, Scheduling): the rest resumes the walks its
 # slices cut.
@@ -865,9 +930,10 @@ class SharePointCaptureStore:
         self.path = self.root / DB_FILE
         self._clock = clock
         self.max_store_bytes = max_store_bytes
-        self.db = sqlite3.connect(self.path)
+        self.db = sqlite3.connect(self.path, timeout=30)
         os.chmod(self.path, 0o600)
         self.db.row_factory = sqlite3.Row
+        wal_journal(self.db)
         self.db.executescript(_DDL)
         with self.db:
             self.db.execute("INSERT OR IGNORE INTO meta VALUES ('schema_version', ?)",
@@ -877,6 +943,18 @@ class SharePointCaptureStore:
         if version != STORE_SCHEMA_VERSION:
             self.db.close()
             raise CaptureError("store_schema_outdated")
+        # Compact storage (module docstring, Storage): additive columns, so a reader of
+        # schema version 1 reads either layout.
+        have = {r[1] for r in self.db.execute("PRAGMA table_info(blobs)")}
+        with self.db:
+            for column in ("dropped_at TEXT", "stored_bytes INTEGER"):
+                if column.split()[0] not in have:
+                    self.db.execute(f"ALTER TABLE blobs ADD COLUMN {column}")
+
+    def _reopen(self) -> None:
+        self.db = sqlite3.connect(self.path, timeout=30)
+        self.db.row_factory = sqlite3.Row
+        wal_journal(self.db)
 
     @classmethod
     def open_read_only(cls, state_dir: str | Path, *, timeout: float = 5.0
@@ -892,6 +970,7 @@ class SharePointCaptureStore:
         if not store.path.is_file():
             raise CaptureError("store_missing")
         store.db = sqlite3.connect(store.path.as_uri() + "?mode=ro", uri=True, timeout=timeout)
+        store._read_only = True
         store.db.row_factory = sqlite3.Row
         try:
             version = store.db.execute(
@@ -907,6 +986,10 @@ class SharePointCaptureStore:
         return "SharePointCaptureStore()"
 
     def close(self) -> None:
+        """Close the connection; a writer first checkpoints its WAL (no wait:
+        ``capture_store.checkpoint``)."""
+        if not getattr(self, "_read_only", False):
+            checkpoint(self.db)
         self.db.close()
 
     def now(self) -> str:
@@ -915,8 +998,9 @@ class SharePointCaptureStore:
     # ---------------------------------------------------------------- blobs
 
     def store_bytes(self) -> int:
-        blobs = self.db.execute("SELECT COALESCE(SUM(bytes), 0) FROM blobs").fetchone()[0]
-        return self.path.stat().st_size + blobs
+        blobs = self.db.execute("SELECT COALESCE(SUM(COALESCE(stored_bytes, bytes)), 0) "
+                                "FROM blobs").fetchone()[0]
+        return sqlite_bytes(self.db) + blobs
 
     def store_full(self) -> bool:
         return self.max_store_bytes is not None and self.store_bytes() >= self.max_store_bytes
@@ -927,6 +1011,9 @@ class SharePointCaptureStore:
         known = self.db.execute("SELECT 1 FROM blobs WHERE sha256=?", (digest,)).fetchone()
         folder = self.blobs / digest[:2]
         target = folder / digest
+        if kind == "text" and known is not None and \
+                blob_path(self.blobs, digest, COMPRESSED_SUFFIX).exists():
+            return digest   # held compressed
         if known is None or not target.exists():
             if known is None and self.max_store_bytes is not None and \
                     self.store_bytes() + len(content) > self.max_store_bytes:
@@ -938,17 +1025,39 @@ class SharePointCaptureStore:
                 handle.write(content)
             os.replace(temporary, target)
             with self.db:
-                self.db.execute("INSERT OR IGNORE INTO blobs VALUES (?,?,?,?)",
-                                (digest, kind, len(content), self.now()))
+                self.db.execute("INSERT OR IGNORE INTO blobs (sha256, kind, bytes, stored_at) "
+                                "VALUES (?,?,?,?)", (digest, kind, len(content), self.now()))
+                # Bytes held again (a dropped original captured anew): settled again later.
+                self.db.execute("UPDATE blobs SET dropped_at=NULL, stored_bytes=NULL WHERE "
+                                "sha256=?", (digest,))
         return digest
 
     def blob(self, digest: Any) -> bytes:
+        """A blob's bytes (held as they are, or compressed), re-hashed. An original the
+        store dropped raises ``original_dropped`` (its readings are kept:
+        :meth:`original_reading`; its bytes are re-read from the source:
+        :meth:`refetch_original`); missing raises ``FileNotFoundError``."""
         if not isinstance(digest, str) or _SHA256.fullmatch(digest) is None:
             raise CaptureError("blob_digest_invalid")
-        content = (self.blobs / digest[:2] / digest).read_bytes()
-        if sha256(content).hexdigest() != digest:
+        raw = blob_path(self.blobs, digest)
+        packed = blob_path(self.blobs, digest, COMPRESSED_SUFFIX)
+        if not raw.exists() and packed.exists():
+            content = inflate(packed.read_bytes())
+        elif not raw.exists() and self.original_dropped(digest):
+            raise CaptureError("original_dropped")
+        else:
+            content = raw.read_bytes()
+        if content is None or sha256(content).hexdigest() != digest:
             raise CaptureError("blob_digest_mismatch")
         return content
+
+    def original_dropped(self, digest: Any) -> bool:
+        """Whether the store dropped this original (no bytes held, a whole ``.dropped``
+        form with its readings and quickXorHash kept)."""
+        return isinstance(digest, str) and _SHA256.fullmatch(digest) is not None \
+            and not blob_path(self.blobs, digest).exists() \
+            and not blob_path(self.blobs, digest, COMPRESSED_SUFFIX).exists() \
+            and read_dropped(self.blobs, digest) is not None
 
     # ---------------------------------------------------------------- roots
 
@@ -1279,7 +1388,8 @@ class SharePointCaptureStore:
         were never OCR-read (no engine then, or captured before OCR existed)."""
         rows = self.db.execute(
             "SELECT * FROM items WHERE drive_id=? AND root_path=? AND superseded_at IS NULL "
-            "AND content_status=? AND text_status IN (?,?) ORDER BY version_id LIMIT ?",
+            f"AND content_status=? AND text_status IN ({','.join('?' * len(TEXT_UNREAD))}) "
+            "ORDER BY version_id LIMIT ?",
             (drive_id, root_path, CAPTURED, *TEXT_UNREAD, limit)).fetchall()
         return [dict(r) for r in rows if is_paged_file(json.loads(r["record"]))]
 
@@ -1418,7 +1528,7 @@ class SharePointCaptureStore:
         its bytes and text (``content_status`` and ``text_status`` ``pruned``; a
         ``content_pruned`` event). A version superseded during the walk keeps its bytes
         until the next complete walk, so what a reader cited of the previous capture still
-        reads (decided: ``docs/decisions/2026-10-15-estate-prune-window.md``). Its
+        reads (decided: ``devloop/DECISIONS/2026-10-15-estate-prune-window.md``). Its
         metadata, item permissions, digest and validity interval stay, so its citation still resolves
         (without bytes; a ``#sha256=`` citation of it no longer does). A version whose
         handle is current (moved, same eTag) keeps its bytes; one that comes back later
@@ -1447,8 +1557,171 @@ class SharePointCaptureStore:
                 self.db.execute("DELETE FROM blobs WHERE sha256=?", (digest,))
                 gone.add(digest)
         for digest in gone:
-            (self.blobs / digest[:2] / digest).unlink(missing_ok=True)
+            for suffix in ("", COMPRESSED_SUFFIX, DROPPED_SUFFIX):
+                blob_path(self.blobs, digest, suffix).unlink(missing_ok=True)
         return len(rows)
+
+    # ---------------------------------------------------------------- compact storage
+
+    @staticmethod
+    def _awaits_reading(text_status: Any, record: Mapping[str, Any]) -> bool:
+        """Whether a later walk reads a version's text from its held bytes again
+        (:meth:`text_unread`, :meth:`SharePointCapture._reextract`): a scan whose OCR is
+        pending or had no engine, or an untyped OCR failure. Its bytes are kept."""
+        if text_status is None or text_status in UNTYPED_OCR_FAILURES:
+            return True
+        return text_status in TEXT_UNREAD and is_paged_file(record)
+
+    def _pending_rows(self, digest: str) -> list[sqlite3.Row]:
+        """Current versions holding ``digest`` whose bytes a later reading needs."""
+        rows = self.db.execute(
+            "SELECT l1_handle, record, text_status, text_sha256 FROM items WHERE "
+            "content_sha256=? AND content_status=? AND superseded_at IS NULL",
+            (digest, CAPTURED)).fetchall()
+        return [r for r in rows if self._awaits_reading(r["text_status"],
+                                                        json.loads(r["record"]))]
+
+    def _compress(self, digest: str) -> bool:
+        """A blob held as its bytes stored zlib-compressed instead (``<sha256>.z``,
+        written before the bytes go); False when not held as its bytes or unreadable."""
+        import zlib
+
+        raw = blob_path(self.blobs, digest)
+        if not raw.exists():
+            return False
+        try:
+            content = self.blob(digest)
+        except (CaptureError, OSError):
+            return False
+        packed = zlib.compress(content, 6)
+        target = blob_path(self.blobs, digest, COMPRESSED_SUFFIX)
+        temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(packed)
+        os.replace(temporary, target)
+        with self.db:
+            self.db.execute("UPDATE blobs SET stored_bytes=? WHERE sha256=?",
+                            (len(packed), digest))
+        raw.unlink()
+        return True
+
+    def settle_original(self, digest: str, *, content: bytes | None = None,
+                        defer_ocr: bool = False) -> str:
+        """Drop a captured original once nothing needs its bytes, as the mail capture
+        does (``MailCaptureStore.settle_original``): over ``DROP_ORIGINALS_ABOVE``
+        (256 KiB), not a text, not a container (its members are cited from its bytes),
+        no current version awaiting a reading of it, and every reading a reader makes of
+        it (each captured name and type of these bytes, without and with each pinned OCR
+        text) made from the bytes and kept in its ``.dropped`` form with its quickXorHash
+        (written before the bytes go). Its versions keep their ``content_sha256`` pin,
+        their item ids and eTags: the verified refetch handle
+        (:meth:`refetch_original`). ``defer_ocr`` (``compact --defer-ocr``): a scan whose
+        OCR is pending is dropped too and its current versions read ``ocr_deferred``
+        (text layer kept; a later walk re-fetches and OCR-reads it). Returns the outcome
+        (``dropped``, ``kept_small``, ``kept_pending``, ``kept_text``,
+        ``kept_container``, ``kept_unreadable``, ``unreferenced``, ``absent``)."""
+        row = self.db.execute("SELECT bytes FROM blobs WHERE sha256=?", (digest,)).fetchone()
+        if row is None or _SHA256.fullmatch(digest) is None:
+            return "absent"
+        dropped = self.original_dropped(digest)
+        if dropped and (content is None or sha256(content).hexdigest() != digest):
+            return "dropped"
+        if row["bytes"] <= DROP_ORIGINALS_ABOVE:
+            return "kept_small"
+        if self.db.execute("SELECT 1 FROM items WHERE text_sha256=? LIMIT 1",
+                           (digest,)).fetchone() is not None:
+            self._compress(digest)   # bytes that are their own text: kept, compressed
+            return "kept_text"
+        captured = self.db.execute(
+            "SELECT l1_handle, record, text_status, text_sha256 FROM items WHERE "
+            "content_sha256=? AND content_status=?", (digest, CAPTURED)).fetchall()
+        if not captured:
+            return "unreferenced"
+        pending = self._pending_rows(digest)
+        if pending and not (defer_ocr and all(r["text_status"] in TEXT_UNREAD
+                                              for r in pending)):
+            return "kept_pending"
+        if content is None:
+            try:
+                content = self.blob(digest)
+            except (CaptureError, OSError):
+                return "kept_unreadable"
+        from operating.use_case_parts import is_container
+        keys: set[tuple[str, str, str | None]] = set()
+        for found in captured:
+            mime, name = file_type(json.loads(found["record"]))
+            if is_container(content, name, mime):
+                return "kept_container"
+            keys.add((mime, name, None))
+            if ocr_digest(dict(found)) is not None:
+                keys.add((mime, name, ocr_digest(dict(found))))
+        kept = read_dropped(self.blobs, digest)
+        have = dict(kept["readings"]) if kept is not None else {}
+        missing = [k for k in sorted(keys, key=lambda k: reading_key(*k))
+                   if reading_key(*k) not in have]
+
+        def text(text_digest: str) -> str | None:
+            try:
+                return self.blob(text_digest).decode("utf-8")
+            except (CaptureError, OSError, UnicodeDecodeError):
+                return None
+        made = readings_of(content, missing, text)
+        if made is None:
+            return "kept_unreadable"
+        have.update(made)
+        from .graph_read import quick_xor_hash
+        size = write_dropped(self.blobs, digest, len(content), have, quick_xor_hash(content))
+        for found in pending:   # OCR put off: the text layer stays the reading
+            self.fill_text(found["l1_handle"], OCR_DEFERRED, found["text_sha256"])
+        with self.db:
+            self.db.execute("UPDATE blobs SET dropped_at=COALESCE(dropped_at, ?), "
+                            "stored_bytes=? WHERE sha256=?", (self.now(), size, digest))
+        blob_path(self.blobs, digest).unlink(missing_ok=True)
+        return "dropped"
+
+    def ocr_deferred_rows(self, drive_id: str, root_path: str, limit: int
+                          ) -> list[dict[str, Any]]:
+        """Current versions under a root whose OCR was put off with their bytes
+        dropped (``ocr_deferred``), oldest first."""
+        return [dict(r) for r in self.db.execute(
+            "SELECT * FROM items WHERE drive_id=? AND root_path=? AND superseded_at IS NULL "
+            "AND content_status=? AND text_status=? ORDER BY version_id LIMIT ?",
+            (drive_id, root_path, CAPTURED, OCR_DEFERRED, limit)).fetchall()]
+
+    def compact(self, *, vacuum: bool = True, defer_ocr: bool = False,
+                free_bytes: Callable[[Path], int] = lambda path: shutil.disk_usage(path).free
+                ) -> dict[str, Any]:
+        """One-time compaction of a store captured before compact storage (CLI
+        ``compact``), as ``MailCaptureStore.compact``: every text stored as it is is
+        compressed; every original nothing needs is dropped (:meth:`settle_original`);
+        then the SQLite file is rewritten (``VACUUM INTO``, checked, swapped in
+        atomically) when the free disk covers it. Counts and bytes only. Never beside a
+        capture (the CLI holds the host's cycle lock)."""
+        result: dict[str, Any] = {"bytes_before": self._disk_bytes(), "compressed": 0,
+                                  "outcomes": {}}
+        for (digest,) in self.db.execute(
+                "SELECT sha256 FROM blobs WHERE kind='text' AND dropped_at IS NULL "
+                "ORDER BY sha256").fetchall():
+            if self.db.execute("SELECT 1 FROM items WHERE content_sha256=? LIMIT 1",
+                               (digest,)).fetchone() is None:
+                result["compressed"] += self._compress(digest)
+        for (digest,) in self.db.execute(
+                "SELECT DISTINCT content_sha256 FROM items WHERE content_status=? AND "
+                "content_sha256 IS NOT NULL ORDER BY content_sha256", (CAPTURED,)).fetchall():
+            outcome = self.settle_original(digest, defer_ocr=defer_ocr)
+            result["outcomes"][outcome] = result["outcomes"].get(outcome, 0) + 1
+        result["ocr_deferred"] = self.db.execute(
+            "SELECT COUNT(*) FROM items WHERE superseded_at IS NULL AND text_status=?",
+            (OCR_DEFERRED,)).fetchone()[0]
+        result["vacuum"] = self._vacuum(free_bytes) if vacuum else "skipped:not_asked"
+        result["bytes_after"] = self._disk_bytes()
+        return result
+
+    # The mail store's own measure and rewrite (same attributes: ``db``, ``path``,
+    # ``root``, ``blobs``, ``_reopen``), one copy of each.
+    _disk_bytes = MailCaptureStore._disk_bytes
+    _vacuum = MailCaptureStore._vacuum
 
     # ---------------------------------------------------------------- reads (per reader)
 
@@ -1590,11 +1863,66 @@ class SharePointCaptureStore:
         return out
 
     def content(self, handle: Any, actor: Actor, audience: LiveSourceAudience) -> bytes | None:
-        """Captured bytes of a visible version (re-hashed), or ``None``."""
-        resolved = self.resolve(handle, actor, audience)
-        if resolved is None or resolved["row"]["content_sha256"] is None:
+        """Captured bytes of a visible version (re-hashed), or ``None`` (none captured,
+        or an original the store dropped: :meth:`original_reading`,
+        :meth:`refetch_original`)."""
+        resolved = self.resolve(handle, actor, audience, text=False)
+        if resolved is None or resolved["row"]["content_sha256"] is None \
+                or self.original_dropped(resolved["row"]["content_sha256"]):
             return None
         return self.blob(resolved["row"]["content_sha256"])
+
+    def original_verified(self, handle: Any, actor: Actor, audience: LiveSourceAudience
+                          ) -> bool:
+        """Whether a visible version's original verifies: its held bytes hash to the pin
+        (``blob_digest_mismatch`` raises), or the store dropped it and its ``.dropped``
+        record is whole."""
+        resolved = self.resolve(handle, actor, audience, text=False)
+        if resolved is None or resolved["row"]["content_sha256"] is None:
+            return False
+        digest = resolved["row"]["content_sha256"]
+        if self.original_dropped(digest):
+            return True   # original_dropped reads the .dropped record whole
+        self.blob(digest)
+        return True
+
+    def original_reading(self, handle: Any, actor: Actor, audience: LiveSourceAudience
+                         ) -> Any:
+        """The reading kept of a visible version's dropped original
+        (``captured_text.CapturedText``: the reading its bytes gave), or None (not
+        visible, not dropped, or no such reading kept)."""
+        resolved = self.resolve(handle, actor, audience, text=False)
+        return None if resolved is None else self.kept_reading(resolved["l1_handle"])
+
+    def kept_reading(self, l1_handle: str) -> Any:
+        """:meth:`original_reading` for a version a gate already let its reader see."""
+        row = self._latest(l1_handle)
+        if row is None or not self.original_dropped(row["content_sha256"]):
+            return None
+        return captured_text(self.blobs, {**json.loads(row["record"]),
+                                          **{key: row[key] for key in _CONTENT_COLUMNS}})
+
+    def refetch_original(self, handle: Any, actor: Actor, audience: LiveSourceAudience,
+                         reader: Any, reader_actor: Actor) -> bytes | None:
+        """A visible version's original bytes: held ones, or for a dropped one one
+        guarded GET through ``reader`` (``SharePointReader.get_content`` of its item, as
+        ``reader_actor``) returned only when they hash to the version's pin; never stored.
+        None when not visible, gone or changed at the source."""
+        resolved = self.resolve(handle, actor, audience, text=False)
+        if resolved is None or resolved["row"]["content_sha256"] is None:
+            return None
+        digest = resolved["row"]["content_sha256"]
+        if not self.original_dropped(digest):
+            return self.blob(digest)
+        try:
+            read = reader.get_content(reader_actor, resolved["row"]["id"],
+                                      max_bytes=MAX_DECLARED_CONTENT_BYTES)
+        except (NotVisible, SourceNotFound, SourceUnavailable):
+            return None
+        content = read.get("content")
+        if not isinstance(content, bytes) or sha256(content).hexdigest() != digest:
+            return None
+        return content
 
     def history(self, actor: Actor, audience: LiveSourceAudience, handle: Any
                 ) -> list[dict[str, Any]]:
@@ -1765,7 +2093,8 @@ FOLDER_COUNTS = ("folders_listed", "files_seen", "versions_new", "versions_super
                  "texts_extracted", "texts_ocr", "texts_ocr_unavailable", "texts_reextracted",
                  "withheld", "provenance_dropped", "acl_reads", "feed_changes",
                  "permissions_reread", "list_items_read", "list_items_unavailable",
-                 "contents_pruned", "list_items_reread", "contents_skipped")
+                 "contents_pruned", "list_items_reread", "contents_skipped",
+                 "originals_dropped", "ocr_deferred_refetch_failed")
 
 
 def _count_text(status: str, counts: dict[str, int]) -> None:
@@ -1795,14 +2124,14 @@ class _Extraction:
         return any(waiting == item_id for waiting, _future, _finish in self.pending)
 
     def submit(self, item_id: str, content: bytes, record: Mapping[str, Any],
-               finish: Callable[[tuple], None]) -> None:
+               finish: Callable[[tuple], None], *, defer_ocr: bool = False) -> None:
         if self.pool is None:
-            finish(capture_text(content, record))
+            finish(capture_text(content, record, defer_ocr=defer_ocr))
             return
         while len(self.pending) >= self.workers:
             self._harvest()
-        self.pending.append((item_id, self.pool.submit(capture_text, content, record),
-                             finish))
+        self.pending.append((item_id, self.pool.submit(capture_text, content, record,
+                                                       defer_ocr=defer_ocr), finish))
 
     def _harvest(self) -> None:
         _item, future, finish = self.pending.popleft()
@@ -1871,8 +2200,16 @@ class SharePointCapture:
         # The handles that first pass tried this run: each is retried at most once a run,
         # so a root's own :meth:`_repair` skips them.
         self.first_tried: set[str] = set()
+        # A caller's named items, (drive id, item id), each run captures first
+        # (:meth:`_named_pass`); the last run's item failures (drive id, item id, outcome),
+        # kept on the capture, never in the run's result (which callers print).
+        self.named_items: Sequence[tuple[str, str]] = ()
+        self.named_failures: list[tuple[str, str, str]] = []
         self._monotonic, self._sleep = monotonic, sleep
         self._deadline = None if budget_seconds is None else monotonic() + budget_seconds
+        # The clock as the latest budget check read it (:meth:`_ocr_now` reads no clock of
+        # its own: the walk checks the budget before every file).
+        self._checked_at: float | None = None
         self._slice: float | None = None   # the walking root's own deadline (:meth:`run`)
         # The walking slice has read a child or ended a folder: until it has, only the run's
         # deadline stops the walk, so every slice moves it on (:meth:`_sliced_walk`).
@@ -1884,14 +2221,23 @@ class SharePointCapture:
         self.retry_after_waits, self.retry_after_seconds = 0, 0.0
 
     def _spent(self) -> bool:
-        now = self._monotonic()
+        now = self._checked_at = self._monotonic()
         return (self._slice is not None and self._slice_moved and now >= self._slice
                 ) or self._run_spent(now)
 
+    def _ocr_now(self) -> bool:
+        """Whether an OCR read may start: no budget, or ``OCR_RESERVE_SECONDS`` of it left
+        (so the read, bounded by its own deadline, ends before the run's)."""
+        if self._deadline is None:
+            return True
+        now = self._checked_at if self._checked_at is not None else self._monotonic()
+        return self._deadline - now >= OCR_RESERVE_SECONDS
+
     def _run_spent(self, now: float | None = None) -> bool:
         """The run's own budget spent (a root's slice aside)."""
-        return self._deadline is not None and (
-            self._monotonic() if now is None else now) >= self._deadline
+        if now is None and self._deadline is not None:
+            now = self._checked_at = self._monotonic()
+        return self._deadline is not None and now >= self._deadline
 
     def _throttled(self, call: Callable[[], Any]) -> Any:
         """``call()``; when the source refused it with 429 or 503 and its own Retry-After
@@ -1932,8 +2278,8 @@ class SharePointCapture:
         """:meth:`_walk` within the root's fair share of the budget left: the budget left
         above ``reserve`` (all of it once only the reserve is left) over ``roots_left``,
         the roots of the pass not reached yet, at least ``least`` (never past the run's
-        deadline; module docstring, Scheduling). ``roots_left`` None (a refresh)
-        or a run without a budget: the run's deadline alone.
+        deadline; module docstring, Scheduling). ``roots_left`` None (a refresh,
+        decision 28e628682928) or a run without a budget: the run's deadline alone.
         ``slice_cut``: the slice, not the run's budget, cut the walk and its position is
         kept, so a later pass may resume it."""
         if roots_left is not None and self._deadline is not None:
@@ -1945,7 +2291,7 @@ class SharePointCapture:
             # folder ended): a slice shorter than one listing and its first child would
             # otherwise cut the walk where the last one did, every pass and every run.
             # It cuts inside a listing (the resumed walk re-lists the folder and skips
-            # the children it holds): one listing's files took 224 s live, at
+            # the children it holds): one listing's files took 224 s live, at b38701bd1
             # 2026-10-18T10:41Z, when the slice cut only between folders.
             self._slice_moved = False
         try:
@@ -1963,7 +2309,8 @@ class SharePointCapture:
         """(content columns, the record the bytes belong to)."""
         columns, source, content = self._bytes(reader, record, counts)
         if content is not None:
-            self._text(columns, capture_text(content, source), counts)
+            self._text(columns, capture_text(content, source, defer_ocr=not self._ocr_now()),
+                       counts)
         return columns, source
 
     def _text(self, columns: dict[str, Any], extracted: tuple[str, str | None],
@@ -2046,11 +2393,17 @@ class SharePointCapture:
             counts["versions_superseded"] += self.store.add_version(record, root, keys, acl,
                                                                     columns)
             counts["versions_new"] += 1
+            if content is not None and columns.get("content_sha256"):
+                # Compact storage: an original over 256 KiB goes once its text is kept.
+                outcome = self.store.settle_original(columns["content_sha256"],
+                                                     content=content)
+                counts["originals_dropped"] += outcome == "dropped"
 
         if content is None:
             finish()
         else:
-            extraction.submit(record["id"], content, source, finish)
+            extraction.submit(record["id"], content, source, finish,
+                              defer_ocr=not self._ocr_now())
 
     def _with_columns(self, reader: Any, record: dict[str, Any], counts: dict[str, int]
                       ) -> dict[str, Any]:
@@ -2070,24 +2423,75 @@ class SharePointCapture:
         return {**record, "list_item_fields": {**read["snapshot"],
                                                "field_names": list(self.list_item_columns)}}
 
-    def _reextract(self, drive_id: str, root: str, counts: dict[str, int]) -> None:
+    def _reextract(self, drive_id: str, root: str, counts: dict[str, int], *,
+                   share: float | None = None, reader: Any = None) -> None:
         """OCR the captured bytes of current scanned PDFs whose pages were never read
-        (bounded per walk; no source read). Only on a host with a local OCR engine."""
+        (bounded per walk; no source read), on the extraction workers. Only on a host with
+        a local OCR engine, and each read only while :meth:`_ocr_now` (it ends before the
+        run's budget); ``share``: none starts once that share of the budget left at the
+        call is spent (a walk's first step, so its listing still advances)."""
         from .document_understanding import local_ocr_available
 
-        if not local_ocr_available():
+        if not local_ocr_available() or not self._ocr_now():
             return
-        for row in self.store.text_unread(drive_id, root, REPAIRS_PER_ROOT):
-            try:
-                content = self.store.blob(row["content_sha256"])
-            except (CaptureError, OSError):
-                continue   # bytes missing or altered: left as they are, never re-read
-            status, text = capture_text(content, json.loads(row["record"]))
+        until = None
+        if share is not None and self._deadline is not None:
+            now = self._monotonic()
+            until = now + share * max(0.0, self._deadline - now)
+
+        def finish(extracted: tuple[str, str | None], handle: str, original: str,
+                   content: bytes) -> None:
+            status, text = extracted
             digest = None if text is None else self.store.put_blob(text.encode("utf-8"),
                                                                     kind="text")
-            self.store.fill_text(row["l1_handle"], status, digest)
+            self.store.fill_text(handle, status, digest)
             counts["texts_reextracted"] += 1
             _count_text(status, counts)
+            self.store.settle_original(original, content=content)
+
+        # Scans whose OCR was put off with their bytes dropped (``ocr_deferred``): each
+        # original re-read by one guarded GET and checked against its pin, never stored.
+        deferred = [] if reader is None else self.store.ocr_deferred_rows(
+            drive_id, root, REPAIRS_PER_ROOT)
+        extraction = _Extraction(self.extract_workers)
+        try:
+            for row in [*self.store.text_unread(drive_id, root, REPAIRS_PER_ROOT),
+                        *deferred]:
+                now = self._checked_at = self._monotonic()
+                if not self._ocr_now() or (until is not None and now >= until):
+                    break
+                try:
+                    if row["text_status"] == OCR_DEFERRED:
+                        content = self._refetch(reader, row)
+                        if content is None:
+                            counts["ocr_deferred_refetch_failed"] += 1
+                            continue
+                    else:
+                        content = self.store.blob(row["content_sha256"])
+                except (CaptureError, OSError):
+                    continue   # bytes missing or altered: left as they are, never re-read
+                extraction.submit(row["item_id"], content, json.loads(row["record"]),
+                                  lambda found, handle=row["l1_handle"],
+                                  pin=row["content_sha256"], bytes_=content:
+                                  finish(found, handle, pin, bytes_))
+            extraction.drain()
+        finally:
+            extraction.close()
+
+    def _refetch(self, reader: Any, row: Mapping[str, Any]) -> bytes | None:
+        """A dropped original of ``row`` read again (one guarded GET) when it still hashes
+        to the version's pin, else None."""
+        try:
+            read = self._throttled(lambda: reader.get_content(
+                self.actor, row["item_id"], max_bytes=self.max_content_bytes,
+                may_retry=lambda: not self._run_spent()))
+        except (NotVisible, SourceNotFound, SourceUnavailable):
+            return None
+        content = read.get("content")
+        if not isinstance(content, bytes) or sha256(content).hexdigest() != \
+                row["content_sha256"]:
+            return None
+        return content
 
     def _reread_columns(self, reader: Any, drive_id: str, root: str,
                         counts: dict[str, int]) -> None:
@@ -2125,6 +2529,8 @@ class SharePointCapture:
         rows = self.store.degraded(drive_id, root, REPAIRS_PER_ROOT + len(self.first_tried))
         rows = [r for r in rows if r["l1_handle"] not in self.first_tried]
         for row in rows[:REPAIRS_PER_ROOT]:
+            if self._spent():
+                return   # the rest waits for a later run
             self._retry_bytes(reader, row, json.loads(row["record"]), counts)
 
     def _retry_bytes(self, reader: Any, row: Mapping[str, Any], record: Mapping[str, Any],
@@ -2144,6 +2550,126 @@ class SharePointCapture:
         for key in ("contents_captured", "content_bytes", "texts_extracted", "texts_ocr",
                     "texts_ocr_unavailable", "contents_exceeds_cap"):
             counts[key] += scratch[key]
+
+    def _named_pass(self, plans: Sequence[tuple]) -> dict[str, Any] | None:
+        """Capture every named item (``named_items``) before any root is walked (module
+        docstring, Named items first): only an item of a drive this run planned (the
+        scope, discovery's exclusions and the people exclusion decided that), read by id
+        (``get_item``: metadata and item permissions; children never), and only when
+        the drive's planned roots hold its path; then recorded by :meth:`_capture_file`,
+        exactly as a listed child. An item held as current and seen within
+        ``permission_reread_hours`` is not read again (resumable, idempotent). No root
+        status, walk position or feed position is touched. At most ``NAMED_PASS_SHARE``
+        of the budget left. Every item ends in one typed outcome (``outcomes``); the
+        failures are kept by item in ``named_failures``. None without named items."""
+        self.named_failures = []
+        if not self.named_items:
+            return None
+        outcomes = {key: 0 for key in NAMED_OUTCOMES}
+        counts = _new_counts()
+        drives: dict[str, tuple[Any, list[str]]] = {}
+        for _entry, reader, drive_id, root, _target in plans:
+            drives.setdefault(drive_id, (reader, []))[1].append(root)
+        seen: set[tuple[str, str]] = set()
+        wanted: list[tuple[str, str]] = []
+        for number, pair in enumerate(self.named_items):
+            if number >= MAX_NAMED_ITEMS:
+                outcomes["over_bound"] = len(self.named_items) - MAX_NAMED_ITEMS
+                break
+            if not (isinstance(pair, (tuple, list)) and len(pair) == 2
+                    and all(isinstance(p, str) and p for p in pair)):
+                outcomes["invalid"] += 1
+                continue
+            pair = (pair[0], pair[1])
+            if pair not in seen:
+                seen.add(pair)
+                wanted.append(pair)
+
+        def fail(drive_id: str, item_id: str, outcome: str) -> None:
+            outcomes[outcome] = outcomes.get(outcome, 0) + 1
+            self.named_failures.append((drive_id, item_id, outcome))
+
+        due: list[tuple[str, str, str]] = []   # (last seen or "", drive id, item id)
+        fresh = timedelta(hours=self.permission_reread_hours)
+        for drive_id, item_id in wanted:
+            if drive_id not in drives:
+                fail(drive_id, item_id, "out_of_scope")   # never read
+                continue
+            held = self.store.current(drive_id, item_id)
+            if held is not None and held["removed_reason"] is None:
+                if self._age(held["last_seen_at"]) < fresh:
+                    outcomes["held_fresh"] += 1
+                    continue
+                due.append((held["last_seen_at"], drive_id, item_id))
+            else:
+                due.append(("", drive_id, item_id))
+        due.sort()   # never held first, then the least recently seen
+        recorded: list[tuple[str, str, int]] = []   # (drive, item, observe counts before)
+
+        def observed() -> int:
+            return counts["unchanged"] + counts["moved"] + counts["reappeared"]
+
+        if self._deadline is not None:
+            now = self._monotonic()
+            self._slice = now + max(0.0, self._deadline - now) * NAMED_PASS_SHARE
+        self._extraction = _Extraction(self.extract_workers)
+        left = 0
+        try:
+            for left, (_seen, drive_id, item_id) in enumerate(due):
+                if self._spent():
+                    for _s, drive, item in due[left:]:
+                        fail(drive, item, TIME_BUDGET)
+                    break
+                reader, roots = drives[drive_id]
+                try:
+                    record = self._throttled(lambda: reader.get_item(self.actor, item_id))
+                except NotVisible:
+                    fail(drive_id, item_id, "not_visible")
+                    continue
+                except SourceNotFound:
+                    fail(drive_id, item_id, "not_found")
+                    continue
+                except SourceUnavailable as exc:
+                    fail(drive_id, item_id,
+                         "source_error:" + (unavailable_detail(exc) or "unclassified"))
+                    continue
+                except ValueError:
+                    fail(drive_id, item_id, "invalid")
+                    continue
+                if not isinstance(record, Mapping) or record.get("kind") != "file":
+                    fail(drive_id, item_id, "not_file")
+                    continue
+                path = record.get("path")
+                root = next((r for r in roots if isinstance(path, str) and _in_root(path, r)),
+                            None)
+                if root is None:
+                    fail(drive_id, item_id, "outside_root")   # nothing of it is written
+                    continue
+                before = observed()
+                self._capture_file(reader, drive_id, root, record, counts)
+                recorded.append((drive_id, item_id, observed() - before))
+            else:
+                left = len(due)
+            self._extraction.drain()
+        except CaptureError as exc:
+            if exc.code != "store_full":
+                raise
+            done = {(d, i) for d, i, _o in recorded}
+            for _s, drive, item in due[left:]:
+                if (drive, item) not in done:
+                    fail(drive, item, "store_full")
+        finally:
+            self._extraction.close()
+            self._extraction = _Extraction(1)
+            self._slice = None
+        for drive_id, item_id, seen_again in recorded:
+            if seen_again:
+                outcomes["unchanged"] += 1
+            elif self.store.current(drive_id, item_id) is not None:
+                outcomes["captured"] += 1
+            else:
+                fail(drive_id, item_id, "not_recorded")
+        return {"named": len(self.named_items), "outcomes": outcomes, "counts": counts}
 
     def _retry_first(self, plans: Sequence[tuple]) -> None:
         """Before any walk, in the run's root order, retry the bytes of every degraded
@@ -2217,6 +2743,9 @@ class SharePointCapture:
             store.save_root(drive_id, root, status="in_progress", reason=None,
                             round_started_at=started)
         cut, continued = False, None
+        if not self._spent():
+            # Scanned pages a cut run left unread (``ocr_pending``) first, within a share.
+            self._reextract(drive_id, root, counts, share=REEXTRACT_SHARE, reader=reader)
         self._extraction = _Extraction(self.extract_workers)
         try:
             while queue:
@@ -2556,7 +3085,7 @@ class SharePointCapture:
                     self._capture_file(walk["reader"], drive_id, root, record, counts)
             if not self._spent():   # byte retries and OCR re-reads wait for a later run
                 self._repair(walk["reader"], drive_id, root, counts)
-                self._reextract(drive_id, root, counts)
+                self._reextract(drive_id, root, counts, reader=walk["reader"])
                 self._reread_columns(walk["reader"], drive_id, root, counts)
         except CaptureError as exc:
             if exc.code != "store_full":
@@ -2706,6 +3235,9 @@ class SharePointCapture:
         # The (drive id, root) this run planned: kept on the capture, never in the run's
         # result (which callers print), for the CLI's cross-run progress.
         self.planned = [(p[2], p[3]) for p in plans]
+        # The items a caller names first (module docstring, Named items first): before
+        # any root, without touching a root's state.
+        named = self._named_pass(plans)
         # The capture scheduler's order (capture_mail.schedule_units, shared with mail).
         ordered = schedule_units(plans, lambda plan: self._standing(plan[2], plan[3]))
         if self.retry_first is not None:
@@ -2749,7 +3281,7 @@ class SharePointCapture:
                                         else held["reread_at"] or feed["read_at"])
                     why = "structural_change"
             if walk is None:
-                # A refresh is never sliced (it resumes ahead of
+                # A refresh is never sliced (decision 28e628682928: it resumes ahead of
                 # the roots no walk has reached); any other walk gets its share.
                 refresh = (bool(position.get("refresh")) if position is not None
                            else why == "walk_due")
@@ -2844,6 +3376,8 @@ class SharePointCapture:
                   if "drive_id" not in t for _root in target.folders]
         result = {"targets": targets,
                   "complete": bool(targets) and all(t["complete"] for t in targets)}
+        if named is not None:
+            result["named_items"] = named
         if discovery is not None:
             bound += [(False, gap) for gap in discovery["gaps"]]
             result["discovery"] = discovery
@@ -3028,8 +3562,6 @@ def default_state_dir(env: Mapping[str, str], *, injected: bool) -> Path:
 
 
 STATE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
-# The cut a kept store resumes is a later_ask while the store is not kept between runs.
-PERSISTENT_STATE_ASK = "live-host-persistent-state-dir"
 
 
 def state_name_dir(env: Mapping[str, str], name: Any, *, injected: bool
@@ -3044,18 +3576,19 @@ def state_name_dir(env: Mapping[str, str], name: Any, *, injected: bool
 
 def incomplete_scope(run: Mapping[str, Any], scope: "CaptureScope", *,
                      persisted: bool) -> list[dict[str, Any]]:
-    """Every root of the scope's own targets (not a discovered library: ``estate``) that
-    ended ``run`` incomplete, by target id and root ordinal with its typed reasons: never
-    counted complete. ``resumable``: the time budget cut it, so its walk (the stored
-    position, or from the start for a root no walk reached) carries on in the next run;
-    ``persisted``: that run finds this store (it lies in the host's state base,
-    ``workbench_state_dir``); a resumable cut over a store that is not kept names the
-    ``later_ask`` live-host-persistent-state-dir. Ids, ordinals, enums and booleans only."""
+    """Every root that ended ``run`` incomplete, by target and root ordinal with its
+    typed reasons: never counted complete. A scope target is named by its id, a library
+    an estate rule discovered by its ordinal in the run (``library<n>``: never its name).
+    ``resumable``: the time budget cut it, so its walk (the stored position, or from the
+    start for a root no walk reached) carries on in the next run; ``persisted``: the
+    store was carried into this invocation (observed: it existed before, and the caller
+    did not say it is not kept), so the next run finds it; a resumable cut over a store
+    not proven kept names the ``later_ask`` live-host-persistent-state-dir. Ids,
+    ordinals, enums and booleans only."""
     out: list[dict[str, Any]] = []
     for entry in run["targets"]:
-        if entry.get("discovered"):
-            continue
-        target = scope.targets[entry["index"]].id
+        target = (f"library{entry['index']}" if entry.get("discovered")
+                  else scope.targets[entry["index"]].id)
         roots = entry["roots"] or [None]
         for ordinal, root in enumerate(roots):
             if root is not None and root["complete"]:
@@ -3070,17 +3603,21 @@ def incomplete_scope(run: Mapping[str, Any], scope: "CaptureScope", *,
     return out
 
 
-def blocked_scope(entries: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
-    """The live checks' ``blocked_upstream`` parts (cause ``later_ask``) of an
-    :func:`incomplete_scope` that only a human step settles: every incomplete root is
-    cut by the time budget alone and its resume has no kept store. One root incomplete
-    any other way, or resumable over a kept store (it finishes by itself, the check
-    fails until it has), yields no part: the check fails, never blocked."""
-    if not entries or any(e["reasons"] != [TIME_BUDGET] or e["later_ask"] is None
-                          for e in entries):
-        return []
-    return [{"part": f"{e['target']}.root{e['root']}", "source": "microsoft-graph",
-             "cause": "later_ask"} for e in entries]
+def blocked_scope(entries: Sequence[Mapping[str, Any]], gaps: Sequence[str] = (), *,
+                  carried: bool | None = None) -> list[dict[str, Any]]:
+    """The verifier's ``blocked_upstream`` parts (cause ``later_ask``) of an
+    :func:`incomplete_scope` that only a human step settles, by the one rule of
+    :func:`capture_mail.budget_cut_block`: every incomplete root is cut by the time
+    budget alone and its resume has no kept store. One root incomplete any other way,
+    a discovery gap (``gaps``), or a cut that resumes over a kept store (it finishes by
+    itself, the check fails until it has), yields no part: the check fails, never
+    blocked. ``carried``: the store was carried into this run (default: any entry's
+    ``persisted``; pass it when only discovery gaps may be named)."""
+    units = [(f"{e['target']}.root{e['root']}", e["reasons"]) for e in entries]
+    units += [("estate.discovery", [gap]) for gap in gaps]
+    if carried is None:
+        carried = any(e["persisted"] for e in entries)
+    return budget_cut_block(units, carried=carried)
 
 
 def add_cli_arguments(parser: argparse.ArgumentParser) -> None:
@@ -3116,6 +3653,10 @@ def add_cli_arguments(parser: argparse.ArgumentParser) -> None:
                         help="plx-source-registry/v1 file: an estate run names every site its "
                              "sharepoint site entries name, by outcome, with the typed reason "
                              "of each one not captured (registry_sites)")
+    parser.add_argument("--named-originals", action="store_true",
+                        help="each run first captures every SharePoint item a case original "
+                             "under <state-dir>/case-originals names (named items first; "
+                             "within the scope and the people exclusion only)")
 
 
 def _root_reasons(root: Mapping[str, Any]) -> set[str]:
@@ -3312,6 +3853,11 @@ def _report_run(number: int, run: Mapping[str, Any]) -> dict[str, Any]:
                                "complete": run["discovery"]["complete"],
                                "gaps": sorted(set(run["discovery"]["gaps"])),
                                "counts": dict(run["discovery"]["counts"])}
+    if "named_items" in run:   # counts and typed outcomes only, never an item
+        named = run["named_items"]
+        report["named_items"] = {"named": named["named"],
+                                 "outcomes": {k: v for k, v in named["outcomes"].items() if v},
+                                 "counts": {k: v for k, v in named["counts"].items() if v}}
     return report
 
 
@@ -3461,6 +4007,9 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
                                     monotonic=monotonic, sleep=sleep or time.sleep,
                                     read_content=getattr(args, "read_content", True))
         capture.retry_first = retry_first
+        if getattr(args, "named_originals", False):
+            from operating.captured_originals import sharepoint_items
+            capture.named_items = sharepoint_items(state_dir)
         before = _progress_marks(store, actor, audience)
         raw_runs = [capture.run(scope) for _n in range(args.runs)]
         runs = [_report_run(n, run) for n, run in enumerate(raw_runs, 1)]
@@ -3474,8 +4023,8 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
             # Pinned bytes that fail the re-hash (or are gone, or fail any other way) are
             # a typed count, never a crash.
             try:
-                verified += store.content(f"{i['l1_handle']}#sha256={i['content_sha256']}",
-                                          actor, audience) is not None
+                verified += store.original_verified(
+                    f"{i['l1_handle']}#sha256={i['content_sha256']}", actor, audience)
             except Exception as exc:   # noqa: BLE001 - each failure is counted by type
                 code = (exc.code if isinstance(exc, CaptureError) else "blob_unreadable"
                         if isinstance(exc, OSError) else "unexpected:" + type(exc).__name__)
@@ -3510,17 +4059,17 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
                         # and carried: the store existed before this invocation.
                         "host_state": args.state_dir is None, "carried": carried,
                         # Which host state base (capture_mail.check_state_dir): only
-                        # workbench_state_dir is kept between the daily live-check runs.
+                        # workbench_state_dir is kept between the verifier's daily runs.
                         "state_base": state_base},
             "runs": runs,
             # What the last run left incomplete, by scope target and root, typed (module
             # docstring, Scope not finished); [] only when every scope root is complete.
             "incomplete_scope": (named := incomplete_scope(
                 raw_runs[-1], scope,
-                persisted=(state_base == "workbench_state_dir"
-                           if getattr(args, "state_kept", None) is None
-                           else bool(args.state_kept)))),
-            "blocked_upstream": blocked_scope(named),
+                persisted=carried and getattr(args, "state_kept", None) is not False)),
+            "blocked_upstream": blocked_scope(
+                named, (raw_runs[-1].get("discovery") or {}).get("gaps") or [],
+                carried=carried and getattr(args, "state_kept", None) is not False),
             "summary": {"roots": len(completeness["roots"]),
                         "roots_complete": sum(1 for r in completeness["roots"]
                                               if r["complete"]),
@@ -3573,6 +4122,12 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
         }
         if retry_first is not None:
             report["retried_first"] = capture.first_counts["contents_recovered"]
+        if getattr(args, "named_originals", False):
+            # How many of the named items the store holds as current now (a count only).
+            report["named_items_held"] = sum(
+                1 for drive_id, item_id in set(map(tuple, capture.named_items))
+                if (row := store.current(drive_id, item_id)) is not None
+                and row["removed_reason"] is None)
         if scope.discover is None:
             settled = bool(last["complete"] and report["summary"]["roots"]
                            and report["summary"]["roots_complete"]
@@ -3659,8 +4214,50 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
         store.close()
 
 
+# ------------------------------------------------------------------ compact (one-time)
+
+def compact_cli(argv: Sequence[str] | None = None) -> int:
+    """``python3 -m integrations.capture_sharepoint compact --state-dir D``: compact a
+    store captured before compact storage (:meth:`SharePointCaptureStore.compact`),
+    holding the host's cycle lock (``<D>/host/cycle.lock``) so no capture runs beside it.
+    Prints counts and bytes only."""
+    from .capture_mail import _locked
+
+    parser = argparse.ArgumentParser(prog="python3 -m integrations.capture_sharepoint compact",
+                                     description=compact_cli.__doc__.splitlines()[0])
+    parser.add_argument("--state-dir", required=True,
+                        help="Workbench state directory holding sharepoint-capture/")
+    parser.add_argument("--no-vacuum", action="store_true",
+                        help="compress and drop only; leave the SQLite file as it is")
+    parser.add_argument("--defer-ocr", action="store_true",
+                        help="also drop the bytes of scans whose OCR is pending (status "
+                             "ocr_deferred; a later walk re-fetches and OCR-reads them)")
+    args = parser.parse_args(argv)
+    return _locked(args.state_dir, lambda store: store.compact(
+        vacuum=not args.no_vacuum, defer_ocr=args.defer_ocr),
+        open_store=lambda state: SharePointCaptureStore(state, max_store_bytes=None),
+        exists=store_exists, missing="sharepoint_capture_missing")
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    import sys
+
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["compact"]:
+        return compact_cli(argv[1:])
+    print("usage: python3 -m integrations.capture_sharepoint compact --state-dir D "
+          "[--no-vacuum] [--defer-ocr]\n(capture runs: python3 -m integrations.graph_read "
+          "sharepoint-capture ...)")
+    return 2
+
+
 __all__ = ["ABSENT", "CAPTURE_PRINCIPAL", "CaptureScope", "CaptureTarget", "DISCOVERY_COUNTS",
            "CONTENT_NOT_READ", "CONTENT_SKIPPED", "DiscoveryRule", "EXCEEDS_CAP", "MAX_STORE_BYTES", "PRUNED",
            "FOLDER_COUNTS", "MOVED_OUT", "OCR_FAILED", "OCR_UNAVAILABLE", "SHAREPOINT_KIND",
            "SharePointCapture", "SharePointCaptureStore", "TEXT_OCR", "add_cli_arguments",
-           "folder_only_audience", "run_cli", "store_exists", "version_handle"]
+           "compact_cli", "folder_only_audience", "main", "run_cli", "store_exists",
+           "version_handle"]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

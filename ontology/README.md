@@ -1,6 +1,7 @@
 # PLX ontology
 
-One schema-defined ontology projected from cited L1 captures. It does not replace Portal gold, Business Central,
+One schema-defined ontology projected from cited L1 captures (decision
+`devloop/CONTEXT/10-DECISION.md`). It does not replace Portal gold, Business Central,
 SharePoint or Mission Control and never writes to them.
 
 The contracts are `schema/_format.schema.json` (domain files), `store_ddl.py` (projection
@@ -8,7 +9,7 @@ store), `operating/ontology_tool_contracts.json` (tools) and `evals/item.schema.
 `json_contract.py` validates them (stdlib only), with examples in `schema/examples/`.
 
 The legacy uni-temporal SQLite store (`OntologyStore`) and its identity resolver
-(`ontology/transactions.py`) are deleted (check
+(`ontology/transactions.py`) are deleted (lane identity-ledger-retire; gate
 `no-legacy-ontology-imports` keeps them out). `core.py` only re-exports the shared value
 types for existing importers.
 

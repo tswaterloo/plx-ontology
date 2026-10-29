@@ -1,7 +1,7 @@
 """Expired-material disposition case: PROPOSED dev-exposed cards and the gaps they need.
 
 ``evals/dev/expired-disposition/proposed_items.json`` holds the questions of QC's
-Expired-Material Disposition Map (EMD-*): one disposition case per
+Expired-Material Disposition Map (EMD-*, advisory 28a8482d8ba0): one disposition case per
 lot, the retest, extension, recertification, waiver, relabel and disposal routes,
 batch-demand priority, customer policy, extension history, approval evidence and the
 waiver that sets no new expiry, plus the R-0663 extension and the R-0030 waiver. The
@@ -100,7 +100,7 @@ def problems(cards: dict, gaps: dict, originals: dict) -> list[str]:
             out.append(f"map_says {g['id']}")
         if not (str(g.get("system_of_record", "")).strip()
                 or (g.get("source") == contract.UNKNOWN
-                    and str(g.get("open_question", "")).startswith("QC"))):
+                    and str(g.get("dot_question", "")).startswith("QC"))):
             out.append(f"system of record {g['id']}")
         if "implementation" in g and "unverified" not in g["implementation"]:
             out.append(f"implementation claim {g['id']}")
@@ -142,11 +142,11 @@ class ExpiredDispositionCardsTest(unittest.TestCase):
     def test_pin_matches_the_advisory_record(self):
         """record_sha256 is the SHA-256 of the record at its commit; the archive pin is the
         record's own source item, revision hash and size, and the members it hashes carry
-        the same hashes in the descriptor."""
+        the same hashes in the descriptor. Needs codex/advisory."""
         pin = self.cards["source"]["advisory"]
         raw = _git_show(pin["ref"], pin["path"])
         if raw is None:
-            self.skipTest("commit c8fcb26d is not in this clone")
+            self.skipTest("advisory commit c8fcb26d is not in this clone")
         self.assertEqual(hashlib.sha256(raw).hexdigest(), pin["record_sha256"])
         record = json.loads(raw)
         self.assertEqual((record["source_revision"], record["created_at"]),
@@ -195,8 +195,8 @@ class ExpiredDispositionCardsTest(unittest.TestCase):
             "no source": lambda c, g: gap(g, "EMD-GAP-07").update(sources=[]),
             "system of record EMD-GAP-04": lambda c, g: gap(g, "EMD-GAP-04")
             .pop("system_of_record"),
-            "source unknown without an open question": lambda c, g: gap(g, "EMD-GAP-02")
-            .pop("open_question"),
+            "source unknown without a Dot question": lambda c, g: gap(g, "EMD-GAP-02")
+            .pop("dot_question"),
             "watched file": lambda c, g: source(c)["watched_originals"]["files"][0]
             .update(sha256="pending"),
             "unpinned member": lambda c, g: source(c)["original_archive"]["members"][0]

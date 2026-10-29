@@ -1,11 +1,11 @@
 """Join keys, root lookups and row rules the oracle uses, as data, each with its citation.
 
-Written for the oracle from the Portal code map and the Portal code it cites,
-not from any Workbench ontology or case module (the oracle derives
-joins only from 03 keys). Every rule names where it comes from; ``derived_from``
+Written for the oracle lane from the Portal context pack and the Portal code it cites,
+not from any Workbench ontology or case module (09-CRITIQUE R7 c: the oracle derives
+joins only from pack 03 keys). Every rule names where it comes from; ``derived_from``
 in an item lists the citations of the rules an answer actually used.
 
-Citations: ``03 §n`` = ``docs/reference/portal-code-map.md`` section n; ``P:path:line`` =
+Citations: ``03 §n`` = ``devloop/CONTEXT/03-PORTAL.md`` section n; ``P:path:line`` =
 ``petralabx/plx-customer-portal`` staging at ``PORTAL_COMMIT`` (``portal/`` prefix
 omitted). Nothing here is a transaction or a case: edges are cross-record keys,
 root lookups are identifier kinds.
@@ -18,7 +18,7 @@ from decimal import Decimal
 import re
 
 PORTAL_COMMIT = "b46934a"
-PACK = "docs/reference/portal-code-map.md"
+PACK = "devloop/CONTEXT/03-PORTAL.md"
 
 SO = "public.app_sales_order"
 SO_LINE = "public.app_sales_order_line"
@@ -256,7 +256,7 @@ EDGES: tuple[Edge, ...] = (
 REFERENCE_EDGES: tuple[Edge, ...] = (
     Edge("receipt.fm_raw_receipt", RECEIPT, "receipt_number", FM_RECEIPT_RAW, "idlabid",
          f"{PACK}#3.5 app_receipt.receipt_number = FM lab id receipt_raw_material.idlabid on "
-         "the MRP path ("
+         "the MRP path (03-PORTAL.md:190; "
          "P@c3ffda3:src/lib/mrp/upsert-gold-receipt.ts:161)"),
     # gap-b01a86b2f438: a Portal sales order whose number BC never holds (order_number is
     # rewritten to the BC No. only after drain) still reaches its BC sales order by the
@@ -581,11 +581,11 @@ def bc_unit_code(portal_uom: object) -> str | None:
     return UOM_BC_CODE.get(token, token.upper())
 
 
-# BC identity. A BC number match is a lead (docs/reference/source-notes.md: identity is Portal's
+# BC identity. A BC number match is a lead (devloop/SOURCE-NOTES.md: identity is Portal's
 # app_bc_entity_map, which is not served). The oracle accepts it as identity only when all
 # matches sit in one BC company and, for purchase invoices, the invoice vendorNumber equals
 # the PO supplier's BC Vendor No. Anything else keeps a gap, so the answer is partial.
-BC_IDENTITY_CITE = ("docs/reference/source-notes.md BC number lookups are leads; identity needs one "
+BC_IDENTITY_CITE = ("devloop/SOURCE-NOTES.md BC number lookups are leads; identity needs one "
                     "company and, for purchase invoices, the PO's vendor")
 VENDOR_CITE = (f"{PACK}#3.5 BC Vendor No. = app_supplier.code when Sage-style "
                "(P:src/lib/business-central/serializers.ts:156,208)")

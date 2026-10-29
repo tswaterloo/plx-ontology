@@ -1,16 +1,16 @@
 """Quote-to-order case: PROPOSED dev-exposed cards and the ontology gaps they need.
 
 ``evals/dev/quote-to-order/proposed_items.json`` holds the employee questions of Vince's
-Quote-to-Order Map (QO-*, gap-ba79665b1e75; its invitation
-is pinned as related only), of the quote workbook and email originals of
+Quote-to-Order Map (QO-*, advisory 72bf7b7ae3f6, gap-ba79665b1e75; its invitation
+b663c5f3b388 is pinned as related only), of the quote workbook and email originals of
 the three AGENTS ``/Quote Examples/{G2-Beauty,SAHAJAN,Soapbox}/_Quote Workbooks``
-folders (QW-*) and of the cost-to-assembly user
-journey (CJ-*). Each worked example A-E names its missing outcome (the BC
+folders (QW-*, manifests bb494ac6ba9d and 0dc11f49acee) and of the cost-to-assembly user
+journey (CJ-*, bc0e2a7d0f24). Each worked example A-E names its missing outcome (the BC
 order or the lost reason) in an outcome card and records the quote inputs missing at
-quote time, the slot for the announced incomplete-information case.
+quote time, the slot for the announced incomplete-information case (c70b2464d73c).
 ``ontology_gaps.json`` maps each of the map's 16 ranked gaps to an ontology gap.
 
-The contract is ``evals.case_cards`` (related source records and per-map citations are native
+The contract is ``evals.case_cards`` (related advisories and per-map citations are native
 to it). The workbook
 pins are names, item ids and SHA-256 only; ``examples/case_originals.json`` watches the
 three folders, so a ``case.originals_read`` run reads them as discovered files whose
@@ -141,14 +141,14 @@ class QuoteToOrderCardsTest(unittest.TestCase):
 
     def test_pins_match_the_advisory_records(self):
         """Each record_sha256 is the SHA-256 of the record at its commit, and each watched
-        file pin equals the manifest's own entry."""
+        file pin equals the manifest's own entry. Needs the codex/advisory commits."""
         source = self.cards["source"]
         pins = [source["advisory"], *source["related_advisories"]]
         records = {}
         for pin in pins:
             raw = _git_show(pin["ref"], pin["path"])
             if raw is None:
-                self.skipTest(f"commit of {pin['id']} is not in this clone")
+                self.skipTest(f"advisory commit of {pin['id']} is not in this clone")
             self.assertEqual(hashlib.sha256(raw).hexdigest(), pin["record_sha256"], pin["id"])
             records[pin["id"]] = json.loads(raw)
         for f in source["watched_originals"]["files"]:
@@ -189,9 +189,9 @@ class QuoteToOrderCardsTest(unittest.TestCase):
             .update(status="known"),
             "examples A-E": lambda c, g: c["examples"].pop("B"),
             "ranked gaps": lambda c, g: g["gaps"].pop(11),
-            "open question": lambda c, g: next(x for x in g["gaps"]
+            "Dot question": lambda c, g: next(x for x in g["gaps"]
                                               if x.get("source") == contract.UNKNOWN)
-            .update(open_question="ask the owner"),
+            .update(dot_question="ask the Dot"),
             "no source": lambda c, g: next(x for x in g["gaps"] if "source" not in x)
             .update(sources=[]),
             "path@commit": lambda c, g: g["gaps"][0]["sources"][0].update(ref="the map"),

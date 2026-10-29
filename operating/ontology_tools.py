@@ -1,14 +1,15 @@
-"""Generic ontology tools ``plx.schema``, ``plx.find`` and ``plx.object``.
+"""Generic ontology tools ``plx.schema``, ``plx.find`` and ``plx.object`` (lane L8).
 
-The tools read the L2 projection store (``ontology/store_ddl.py``, built by the
-projector) through ``StoreReader``, a thin read interface over the frozen tables, and
+The tools read the L2 projection store (``ontology/store_ddl.py``, built by lane
+L7) through ``StoreReader``, a thin read interface over the frozen tables, and
 answer exactly the I/O contracts in ``operating/ontology_tool_contracts.json``
 (every output is validated with ``ontology/json_contract.py`` before it leaves).
 Nothing here knows an object type, an identifier kind or a case: types, kinds,
 bindings, display properties and link types all come from the store rows, the
-compiled schema and the identifier grammar (one resolver, no per-kind branch).
+compiled schema and the identifier grammar (10-DECISION 3-4, directive
+4190c1c690ce item 3: one resolver, no per-kind branch).
 
-Permissions (store_ddl docstring): the session actor is
+Permissions (09-CRITIQUE R6 #7, store_ddl docstring): the session actor is
 checked against ``objects.audience_key`` (``ReadPolicy``, default deny), the
 markings of the object's version at T *and* of its latest version (a marking
 added later also hides history), the markings and times of every identifier,
@@ -35,14 +36,14 @@ type (``identity_link_type``: a person's reviewed ``same_record_as`` included, a
 key between two types never), strongest tier first; more than ``MAX_IDENTITY`` are cut
 with an ``identity_truncated`` gap. Every other link is counted in ``linked_counts``.
 
-Identity: a normalized identifier finds candidates; it never merges.
+Identity (R3): a normalized identifier finds candidates; it never merges.
 Several visible matches are always ``ambiguous`` with ranked candidates (matched
 key, binding, reason, tier), never a winner. An identifier a person confirmed as an
 alias of a record (``plx.review``; ``ontology.resolve.ReviewedAliases``, read per call)
 is one more alias row of that record, tier ``reviewed``, citing the field that states
 it. Tiers of a match: an exact match of a typed identifier (the query parses as that kind) is ``verified`` unless the
 indexed row's lineage is ``gold_native_staging`` (never authority until a person
-confirms those rows), which is a ``lead``; a literal match whose kind the
+confirms those rows, R1), which is a ``lead``; a literal match whose kind the
 grammar did not parse and a display-text match are ``lead``. A secondary reading
 of a labelled mention (``Customer PO: 4821`` also reads as the Petra PO form
 ``PO: 4821``; the grammar's ``label_kind_conflict``) is searched too, but its
@@ -71,13 +72,13 @@ use the number, or ``scope_status_excluded``: the Portal skips a cancelled order
 never makes the number ambiguous; BC scopes within its company), and only its literal
 trimmed text is exact (``exact_match``).
 
-Source text: every text taken from a source (display names, raw
+Source text (R6 #1): every text taken from a source (display names, raw
 identifiers, text/json values) is an ``untrusted_text`` envelope citing its L1
 handle and field path. Typed values come only from the projector's deterministic
 parsers and are re-checked against the value type here; a value that does not
 fit is withheld with a typed gap instead of being guessed.
 
-Live fallback: with ``sources``
+Live fallback (directives 4190c1c690ce item 3, 7f61c793591f 2a): with ``sources``
 (an ``ontology.resolve.SourceResolver``), a query the projection store has no
 visible match for is resolved again over the records the live readers carry for
 its typed keys, read only where the policy grants the actor and projected into a
@@ -94,7 +95,7 @@ record's identifier, the tier is the weaker of the match's and the link's, and t
 the reader at T (audience, markings, item ACL of its evidence, both ends). A value
 naming one record directly and another through a link is ambiguous, as ever.
 
-Corroboration (every link explains why it was made and why
+Corroboration (10-DECISION 3; directive: every link explains why it was made and why
 not): every candidate of a binding the schema compares with a binding of another
 source family carries the identity verdict ``corroboration`` (``agrees`` true =
 agree, false = conflict, null = unverifiable), decided on identifiers only, with one
@@ -125,6 +126,8 @@ tools retired into which successor, so the host stays within the contract's
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 import datetime as dt
 import functools
@@ -218,8 +221,8 @@ SCOPE_FEATURES = frozenset({SCOPE_FEATURE, "no_scope_field", "no_scope_value",
                              "scope_value_withheld", SCOPE_EXCLUDED,
                              "identity_scope_ambiguous"})
 _IDENTITY_TIERS = frozenset({"verified", "reviewed"})
-# Lineages that are never authority (gold native staging rows until a
-# person confirms them). The one set plx.find, plx.around, plx.aggregate and
+# Lineages that are never authority (09-CRITIQUE R1: gold native staging rows until a
+# person confirms them, Q1). The one set plx.find, plx.around, plx.aggregate and
 # plx.process read; the link tier they serve is ``_effective_tier``.
 NEVER_AUTHORITY = frozenset({"gold_native_staging"})
 _SCHEME_SOURCE = {"api": "portal_api", "bc": "bc", "graph-mail": "graph_mail",
@@ -244,9 +247,12 @@ _SCHEMA_PAGE_CAPS = {"object_types": 200, "link_types": 400, "event_types": 200,
                      "action_types": 100, "processes": 50}
 # How a unit served from a past capture, never live, is named (ontology.resolve.COPIED).
 COPIED = frozenset({"cached_mirror", "persisted_capture"})
+# Mirror error codes of a live source refusing a relation (integrations/source_mirror.py),
+# not failing to answer: the relation is inaccessible now, whatever copy is held.
+REFUSED_CODES = frozenset({"relation_unavailable", "unknown_relation"})
 # Gaps about how a source was captured or served (``_source_freshness_gaps``).
 FRESHNESS_REASONS = frozenset({"stale_source", "freshness_unknown", "source_unavailable",
-                               "schema_drift"})
+                               "schema_drift"}) | REFUSED_CODES
 TEXT_SCAN_CAP = 400  # readable objects a display-text search returns at most
 LEAD_SCAN_CAP = 2000  # identifier rows one prefix or same-number range reads at most
 FILTER_SCAN_CAP = 5000  # readable objects a filter listing scans at most
@@ -281,6 +287,31 @@ _OBJECT_ID = re.compile(r"^[A-Z][A-Za-z0-9]{1,63}:[a-z][a-z0-9_.-]{1,95}:" + VIS
 
 def load_contracts(path: str | Path = CONTRACTS_PATH) -> dict[str, Any]:
     return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+# A question family's plan (plx.investigate) reads its primitives in-process: their results
+# are no response, the plan's answer is (fitted to one response as a whole, chain first). So
+# a primitive the plan calls answers up to PLAN_READ_SCALE times the response bound before it
+# refuses with result_too_large (a large order's lateness lines are read whole, not lost).
+PLAN_READ_SCALE = 4
+_PLAN_READ: ContextVar[bool] = ContextVar("plx_plan_read", default=False)
+
+
+@contextmanager
+def plan_read() -> Any:
+    """The primitive calls made inside it are a plan's own reads (``result_limit``)."""
+    token = _PLAN_READ.set(True)
+    try:
+        yield
+    finally:
+        _PLAN_READ.reset(token)
+
+
+def result_limit(limits: Mapping[str, Any]) -> int:
+    """The byte bound of one result: ``limits.max_result_bytes``, or PLAN_READ_SCALE times
+    it for a plan's own read (``plan_read``)."""
+    base = int(limits["max_result_bytes"])
+    return base * PLAN_READ_SCALE if _PLAN_READ.get() else base
 
 
 def _envelope_bytes(value: Mapping[str, Any]) -> int:
@@ -369,11 +400,19 @@ class ReadPolicy:
     (as ``integrations/source_mirror.AudienceMap``). ``markings`` maps each marking
     to the principals who hold it; a reader must hold every marking of a row.
     Principals never include ``*``; another tenant reads nothing.
+
+    ``units`` (optional) lists, per source family (``mail``, ``sharepoint`` ...), every
+    audience unit of that family the store being read holds, where the host decided a
+    grant for each of them (exact per-unit keys): a family is then covered for a reader
+    granted every one of its listed units (``covers_family``), and ``ungranted_units``
+    says how many it is not granted. A family not listed is decided from the patterns
+    alone. Each listed unit must belong to its family.
     """
 
     tenant: str
     audiences: Mapping[str, frozenset[str]]
     markings: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    units: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not isinstance(self.tenant, str) or not self.tenant.strip():
@@ -392,6 +431,16 @@ class ReadPolicy:
             raise ValueError(f"read_policy_marking_unknown:{sorted(unknown)}")
         object.__setattr__(self, "audiences", clean)
         object.__setattr__(self, "markings", {m: frozenset(p) for m, p in self.markings.items()})
+        units: dict[str, tuple[str, ...]] = {}
+        for family, keys in dict(self.units).items():
+            listed = tuple(sorted(set(keys))) if not isinstance(keys, str) else None
+            if (not isinstance(family, str) or not family or ":" in family or "*" in family
+                    or listed is None or any(not isinstance(k, str) or "*" in k
+                                             or not k.startswith(family + ":")
+                                             for k in listed)):
+                raise ValueError(f"read_policy_units_invalid:{family!r}")
+            units[family] = listed
+        object.__setattr__(self, "units", units)
 
     def _principals(self, key: str) -> frozenset[str]:
         if key in self.audiences:
@@ -412,20 +461,31 @@ class ReadPolicy:
     def held_markings(self, actor: Actor) -> frozenset[str]:
         if not self._member(actor):
             return frozenset()
-        return frozenset(m for m, p in self.markings.items() if p & actor.principals)
+        return store_ddl.with_implied(
+            m for m, p in self.markings.items() if p & actor.principals)
 
     def covers_family(self, actor: Actor, prefix: str) -> bool:
         """Whether the actor's grant covers every audience unit of one source
         family (``api``, ``bc`` ...): ``<prefix>:*`` (or ``*``) grants it and no
-        more specific pattern of that family takes a unit out. Decided from the
-        policy alone, never from which units the store holds."""
+        more specific pattern of that family takes a unit out, or, for a family whose
+        held units the policy lists (``units``), every listed unit is granted. Decided
+        from the policy alone."""
         if not self._member(actor):
             return False
         family = prefix + ":"
-        if not self._principals(family) & actor.principals:
-            return False
-        return all(principals & actor.principals for pattern, principals in self.audiences.items()
-                   if pattern.startswith(family) and pattern != family + "*")
+        if self._principals(family) & actor.principals and all(
+                principals & actor.principals for pattern, principals in self.audiences.items()
+                if pattern.startswith(family) and pattern != family + "*"):
+            return True
+        return self.ungranted_units(actor, prefix) == 0
+
+    def ungranted_units(self, actor: Actor, prefix: str) -> int | None:
+        """How many of the units the policy lists for family ``prefix`` (``units``) the
+        actor may not read; None when the policy lists none for it (unknown)."""
+        listed = self.units.get(prefix)
+        if listed is None or not self._member(actor):
+            return None
+        return sum(not self.may_read(actor, key) for key in listed)
 
     def granted_sources(self, actor: Actor) -> tuple[str, ...]:
         """L1 source families the actor holds any grant in (for 'what was searched')."""
@@ -462,9 +522,9 @@ class _Scope:
 # --------------------------------------------------------------------------- store
 
 class StoreReader:
-    """Read-only access to a ``plx-ontology-store/v8`` SQLite file.
+    """Read-only access to a ``plx-ontology-store/v10`` SQLite file.
 
-    Only the tables of ``ontology/store_ddl.py`` are read; the projector
+    Only the tables of ``ontology/store_ddl.py`` are read; the projector (L7)
     owns writing them. Every query here is parameterized and keyed; scope
     predicates (visible audience keys, permitted marking sets) are passed as
     JSON arrays and expanded with ``json_each`` so the actor's denied rows never
@@ -474,10 +534,14 @@ class StoreReader:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self.conn = conn
         self.conn.row_factory = sqlite3.Row
-        # One sqlite3 connection is shared by every tool on this store (the base and traverse tools);
+        # One sqlite3 connection is shared by every tool on this store (L8 and L9);
         # each tool call holds this lock so calls from several threads never
         # interleave on the connection.
         self.lock = threading.RLock()
+        # Reader-independent facts of the store as this connection last saw it, shared by
+        # every L9 table over this reader (``TraverseTools._store_cached``).
+        self.facts: tuple[tuple[int, int], dict[Any, Any]] | None = None
+        self._audiences: tuple[tuple[int, int], tuple[str, ...]] | None = None
 
     @classmethod
     def open(cls, path: str | Path) -> "StoreReader":
@@ -489,8 +553,25 @@ class StoreReader:
                 for row in self.conn.execute("SELECT key, value FROM store_meta")}
 
     def audience_keys(self) -> list[str]:
-        return [row[0] for row in self.conn.execute(
-            "SELECT DISTINCT audience_key FROM objects ORDER BY audience_key")]
+        """Every audience key of the store's objects (no reader's grants applied), kept
+        until the store changes: a commit on another connection (``PRAGMA data_version``)
+        or a write on this one (``total_changes``), the stamp of ``facts``. The read scans
+        every object, so each tool call's scope paid for it as the store grew."""
+        with self.lock:
+            stamp = (self.conn.execute("PRAGMA data_version").fetchone()[0],
+                     self.conn.total_changes)
+            if self._audiences is None or self._audiences[0] != stamp:
+                self._audiences = (stamp, tuple(row[0] for row in self.conn.execute(
+                    "SELECT DISTINCT audience_key FROM objects ORDER BY audience_key")))
+            return list(self._audiences[1])
+
+    def remember_audience_keys(self, keys: Sequence[str]) -> None:
+        """``audience_keys`` as read before from this unchanged store (the facts a host
+        keeps beside the file, ``ontology_tools_traverse.prime``), kept as if read now."""
+        with self.lock:
+            stamp = (self.conn.execute("PRAGMA data_version").fetchone()[0],
+                     self.conn.total_changes)
+            self._audiences = (stamp, tuple(keys))
 
     @staticmethod
     def _at(alias: str) -> str:
@@ -723,6 +804,29 @@ class StoreReader:
             "SELECT * FROM links WHERE from_object = ? OR to_object = ? ORDER BY link_id",
             (object_id, object_id)))
 
+    def linked_markings(self, root_id: str, link_type: str) -> dict[str, frozenset[str]]:
+        """For each object ``link_type`` currently attaches to ``root_id`` (either end), the
+        markings it carries: its link rows, every version and every current value (a marking
+        added later applies to the earlier versions too). Read for no reader and answered to
+        none: a caller uses it only to decide whether one reader's markings suffice
+        (``read_scope``), never to show a row."""
+        marks: dict[str, set[str]] = {}
+        for link in self.conn.execute(
+                "SELECT from_object, to_object, markings FROM links WHERE link_type = ? "
+                "AND superseded_at IS NULL AND (from_object = ? OR to_object = ?)",
+                (link_type, root_id, root_id)):
+            other = link["to_object"] if link["from_object"] == root_id else link["from_object"]
+            marks.setdefault(other, set()).update(json.loads(link["markings"]))
+        if marks:
+            ids = json.dumps(sorted(marks))
+            for table, where in (("object_versions", ""),
+                                 ("object_values", " AND superseded_at IS NULL")):
+                for row in self.conn.execute(
+                        f"SELECT object_id, markings FROM {table} WHERE object_id IN "
+                        f"(SELECT value FROM json_each(?)){where}", (ids,)):
+                    marks[row["object_id"]].update(json.loads(row["markings"]))
+        return {key: frozenset(value) for key, value in marks.items()}
+
 
 # --------------------------------------------------------------------------- schema
 
@@ -785,7 +889,7 @@ def identity_link_type(declared: Mapping[str, Any]) -> bool:
 
 
 def default_schema() -> SchemaView | None:
-    """The compiled schema from ``ontology/schema.py`` when it is
+    """The compiled schema from ``ontology/schema.py`` (lane L4) when it is
     installed and loads; None otherwise (tools then fall back to store facts)."""
     try:
         from ontology import schema as schema_loader  # type: ignore[attr-defined]
@@ -1111,23 +1215,42 @@ def _query_keys(grammar: Grammar | None, query: str, kind_filter: str | None) ->
         start = getattr(mention, "label_start", getattr(mention, "start", None))
         end = getattr(mention, "end", None)
         span = (start, end) if isinstance(start, int) and isinstance(end, int) else None
-        add(getattr(mention, "kind", ""), getattr(mention, "normalized", None), False, span)
+        kind = getattr(mention, "kind", "")
+        add(kind, getattr(mention, "normalized", None), False, span)
         for other in getattr(mention, "secondary", ()) or ():
             if getattr(other, "label_kind_conflict", False):
+                # A reading of a kind the label's kind aliases ("Business Central
+                # document PO100192" read as a Petra PO) agrees with the label.
                 add(getattr(other, "kind", ""), getattr(other, "normalized", None), False,
-                    span, secondary=True)
+                    span, secondary=getattr(other, "kind", "") not in _alias_related(
+                        grammar, kind))
     return keys
 
 
-def _text_tokens(query: str, keys: Sequence[_Key]) -> list[str]:
+def _alias_related(grammar: Grammar, kind: str) -> set[str]:
+    """The kinds ``kind`` aliases and the kinds that alias it (``search_keys``' set)."""
+    related: set[str] = set()
+    for other in grammar.kinds():
+        try:
+            if other == kind:
+                related.update(grammar.kind_spec(kind).get("alias_kinds", ()))
+            elif kind in grammar.kind_spec(other).get("alias_kinds", ()):
+                related.add(other)
+        except Exception:  # noqa: BLE001 - a kind the grammar cannot describe
+            continue
+    return related
+
+
+def _text_tokens(query: str, keys: Sequence[_Key], *, limit: int | None = 6) -> list[str]:
     """Words of the query outside identifier mentions (3+ letters or digits each,
-    at most 6), all of which a display value must contain."""
+    at most ``limit``, None: all), all of which a display value must contain."""
     chars = list(query)
     for key in keys:
         if key.span:
             for index in range(max(0, key.span[0]), min(len(chars), key.span[1])):
                 chars[index] = " "
-    return re.findall(r"[^\W_]{3,}", "".join(chars))[:6]
+    words = re.findall(r"[^\W_]{3,}", "".join(chars))
+    return words if limit is None else words[:limit]
 
 
 def _literal_forms(query: str) -> list[str]:
@@ -1151,7 +1274,7 @@ def _source_of(handle: str | None, lineage: str | None = None) -> str | None:
 
 
 def _effective_tier(row: Mapping[str, Any]) -> str:
-    """The one link-tier rule plx.around, plx.aggregate and plx.process serve.
+    """The one link-tier rule plx.around, plx.aggregate and plx.process serve (R1).
 
     ``row`` carries ``tier``, ``from_lineage`` and ``to_lineage`` (the lineage of each
     end's version at T, None when unknown) and, when known, ``binding_kind`` and
@@ -1162,7 +1285,7 @@ def _effective_tier(row: Mapping[str, Any]) -> str:
     stays a lead.
 
     The tier is about the link only. plx.process is stricter about the record on purpose
-    (a never-authority row is never evidence for an authority record's stage): it
+    (R1: a never-authority row is never evidence for an authority record's stage): it
     serves this same tier, but never counts a never-authority record reached from an
     authority one (``never_authority_record``) and makes every answer from a
     never-authority root a lead (``staging_root``)."""
@@ -1192,13 +1315,67 @@ def _one_source_key(row: Mapping[str, Any]) -> bool:
     return len(sources) == 1 and None not in sources
 
 
-def _envelope(text: Any, citation: str, field_path: str | None, limit: int) -> dict[str, Any] | None:
+# A source field that can hold a person's name instead of a PO (devloop/CASE-RUNTIME.md
+# section 4 PO-shape rule, REC-07): its value is served only when PO-like.
+PO_TEXT_FIELD = "po_reference"
+PO_WITHHELD = "not_po_like"
+
+
+def withheld_po_text(field_path: Any, text: Any) -> bool:
+    """Whether ``text`` read from ``field_path`` is a ``po_reference`` value that is not
+    PO-like (``customer_po_coverage.po_like``, the one PO shape test): it is never
+    echoed, since it can be a person's name. Any field path ending in that column (a
+    Portal row's ``row.po_reference``, a page's ``rows.<n>.po_reference``)."""
+    from operating.customer_po_coverage import po_like
+    return (isinstance(field_path, str) and text is not None
+            and field_path.rsplit(".", 1)[-1] == PO_TEXT_FIELD and not po_like(text))
+
+
+class WithheldText(dict):
+    """A withheld ``untrusted_text`` envelope (``withheld: not_po_like``, empty text) that
+    keeps the source text for in-process comparison only (``compared_text``: identity-peer
+    conflicts and attested document comparisons decide on the source's real text, as they
+    would unwithheld). The text is in a slot, never an item: JSON, ``dict(...)`` and the
+    MCP firewall see the items only, so it never leaves the process; a plain copy loses it
+    and then compares as unknown."""
+    __slots__ = ("source_text",)
+
+    def __init__(self, origin: Mapping[str, Any], source_text: str) -> None:
+        super().__init__(untrusted_text="", origin=origin, withheld=PO_WITHHELD)
+        self.source_text = source_text
+
+
+def compared_text(value: Any) -> Any:
+    """The text a comparison reads from a value: an envelope's text, a withheld
+    envelope's source text (``WithheldText``), None for a withheld envelope without it
+    (unknown: neither a match nor a conflict); any other value as it is."""
+    if isinstance(value, Mapping) and "untrusted_text" in value:
+        if "withheld" in value:
+            return getattr(value, "source_text", None)
+        return value["untrusted_text"]
+    return value
+
+
+def _same_text(first: Any, second: Any) -> bool:
+    """The same words, whatever the case and spacing (the caller's own text)."""
+    return (isinstance(first, str) and isinstance(second, str)
+            and " ".join(first.split()).casefold() == " ".join(second.split()).casefold())
+
+
+def _envelope(text: Any, citation: str, field_path: str | None, limit: int,
+              asked: Any = None) -> dict[str, Any] | None:
+    """Source text as an R6 envelope, or None when it cannot be cited. A ``po_reference``
+    value that is not PO-like (``withheld_po_text``) is withheld: empty text with
+    ``withheld: not_po_like``, unless it is ``asked``, the text the caller itself sent
+    (plx.find's query: echoing it tells the caller nothing it did not send)."""
     if text is None or not _HANDLE.match(citation or ""):
         return None
     body = str(text)
     origin: dict[str, Any] = {"citation": citation}
     if field_path and _FIELD_PATH.match(field_path):
         origin["field_path"] = field_path
+    if withheld_po_text(field_path, body) and not _same_text(body, asked):
+        return WithheldText(origin, body)
     out: dict[str, Any] = {"untrusted_text": body[:limit], "origin": origin}
     if len(body) > limit:
         out["truncated"] = True
@@ -1497,8 +1674,16 @@ class OntologyTools:
                  clock: Callable[[], dt.datetime] | None = None,
                  monotonic: Callable[[], float] = time.monotonic,
                  sources: Any = None, aliases: Any = None, reviews: Any = None,
-                 unconfigured: Iterable[str] = ()) -> None:
+                 unconfigured: Iterable[str] = (),
+                 freshness_bounds: Mapping[str, float] | None = None,
+                 freshness_clock: Callable[[], dt.datetime] | None = None) -> None:
         self.store = store
+        # Source family -> seconds: the host's capture bound (``operating.host.
+        # freshness_bounds``, from its configured ingest cadence). A projected source
+        # captured longer ago is stale, stated once per source with its age (``_freshness``).
+        self.freshness_bounds = dict(freshness_bounds or {})
+        # The "now" a capture's age is judged at (None: ``clock``).
+        self.freshness_clock = freshness_clock
         self.sources = sources
         # Source families this host configured no reader for (a host without the Portal
         # API: ``portal_api``): their unknown or unserved capture state is not a
@@ -1595,7 +1780,7 @@ class OntologyTools:
             # Never hand out a result that breaks the frozen contract.
             return _error("contract_violation", ("output failed the contract: "
                                                  + "; ".join(problems))[:600])
-        if _envelope_bytes(result) > self.limits["max_result_bytes"]:
+        if _envelope_bytes(result) > result_limit(self.limits):
             return _error("result_too_large", "the answer does not fit one response",
                           "narrow the request (object_type, properties, limit)")
         return result
@@ -1827,9 +2012,25 @@ class OntologyTools:
                 entries[item["source"]] = item
         out = []
         for source in sorted(set(sources))[:8]:
-            out.append(entries.get(source) or {"source": source, "captured_at": None,
-                                               "completeness": "unknown", "stale": False})
+            out.append(self._aged(entries.get(source) or {
+                "source": source, "captured_at": None, "completeness": "unknown",
+                "stale": False}))
         return out
+
+    def _aged(self, entry: dict) -> dict:
+        """A projected source's entry judged by this host's capture bound for it: past
+        the bound it is stale, labelled with its captured time and age (one
+        ``stale_source`` gap, ``_source_freshness_gaps``). An entry already stale (a
+        copy served while the live source was out) keeps its own label."""
+        bound = self.freshness_bounds.get(entry["source"])
+        captured = _parse_time(entry.get("captured_at"))
+        if bound is None or captured is None or entry.get("stale"):
+            return entry
+        age = ((self.freshness_clock or self.clock)() - captured).total_seconds()
+        if age <= bound:
+            return entry
+        from integrations.mirror_capture import capture_label
+        return dict(entry, stale=True, label=capture_label(entry["captured_at"], age, bound))
 
     def _meta(self, store_meta: Mapping[str, str], at: dt.datetime,
               sources: Iterable[str]) -> dict[str, Any]:
@@ -1837,7 +2038,7 @@ class OntologyTools:
         if digest is None:
             raise ToolError("schema_unavailable",
                             "neither the projection store nor the schema loader names a "
-                            "schema digest", "build the projection or load the schema")
+                            "schema digest", "build the projection (lane L7) or load the schema")
         return {"schema_digest": digest, "as_known_at": _format_time(at),
                 "freshness": self._freshness(store_meta, sources)}
 
@@ -2055,7 +2256,7 @@ class OntologyTools:
     def _schema_tool(self, arguments: Mapping[str, Any], actor: Actor) -> dict[str, Any]:
         if self.schema is None or self.schema.digest_hex is None:
             raise ToolError("schema_unavailable", "the compiled ontology schema is not loaded",
-                            "install the schema loader and domain files")
+                            "install the schema loader (lane L4) and domain files")
         at = self._as_known_at({})
         store_meta = self._store_meta()
         object_type = arguments.get("object_type")
@@ -2209,7 +2410,9 @@ class OntologyTools:
                                          schema=self.schema, grammar=self.grammar,
                                          contracts=self.contracts, clock=self.clock,
                                          monotonic=self.monotonic,
-                                         unconfigured=self.unconfigured)
+                                         unconfigured=self.unconfigured,
+                                         freshness_bounds=self.freshness_bounds,
+                                         freshness_clock=self.freshness_clock)
                     live.sets = _LiveSets(self.sets)
                     live._compared = self._compared
                     with reader.lock:
@@ -2277,7 +2480,15 @@ class OntologyTools:
                            "; absence from the source is not established",
                            gap.get("searched"))
             rest.append(gap)
-        rest.extend(_resolution_gaps(resolution, names_identifier=names_identifier))
+        # A carrier read from a stale copy is the source's ``stale_source``: stated once
+        # per source (its label above), never again per carrier.
+        stale = {g["subject"] for g in fresh if g["reason"] == "stale_source"}
+        for gap in _resolution_gaps(resolution, names_identifier=names_identifier):
+            if gap["reason"] != "stale_source":
+                rest.append(gap)
+            elif gap["searched"]["sources"][0] not in stale:
+                fresh.append(gap)
+                stale.add(gap["searched"]["sources"][0])
         result["gaps"] = _freshness_first(fresh, rest)
         return result
 
@@ -2363,7 +2574,7 @@ class OntologyTools:
             if version is None:
                 continue
             # One tier rule on every path: a record whose lineage is never
-            # authority (gold_native_staging) is at most a lead.
+            # authority (gold_native_staging, R1) is at most a lead.
             if version["lineage"] in NEVER_AUTHORITY:
                 match.tier = "lead"
             held = best.get(match.object_id)
@@ -2436,8 +2647,9 @@ class OntologyTools:
         for oid, extra in self._related_features(scope, shown, related).items():
             features[oid] = list(features.get(oid, [])) + extra
         candidates = (self._candidates(scope, repeated, visible, prior - len(repeated),
-                                       features)
-                      + self._candidates(scope, page, visible, prior + offset, features))
+                                       features, query)
+                      + self._candidates(scope, page, visible, prior + offset, features,
+                                         query))
         for candidate in candidates:
             if candidate["rank"] <= listed_before:
                 candidate["repeated"] = True
@@ -3122,7 +3334,7 @@ class OntologyTools:
             # Another type's record only: a record of the asked type is a candidate
             # itself, and its twin in another binding is an identity question
             # (plx.identity), not what the identifier names. A linked_identifier hop is
-            # suppressed only (docs/decisions/2026-10-05-p0c-hop-scope.md) for
+            # suppressed only (devloop/DECISIONS/2026-10-05-p0c-hop-scope.md) for
             # (1) a kind ambiguous across tables: two or more types key it within a
             # binding (an FM id names a record in each FM table, so its holder's owner
             # is no record the value names), and (2) a kind the asked type keys within
@@ -3277,16 +3489,20 @@ class OntologyTools:
         return out
 
     def _candidates(self, scope: _Scope, page: list[_Match], versions: Mapping[str, Any],
-                    offset: int, corroboration: Mapping[str, list[dict]] | None = None
-                    ) -> list[dict[str, Any]]:
+                    offset: int, corroboration: Mapping[str, list[dict]] | None = None,
+                    asked: Any = None) -> list[dict[str, Any]]:
         displays = self._displays(scope, [m.object_id for m in page])
         limit = self.limits["max_untrusted_text_chars"]
         out = []
         for index, match in enumerate(page):
             version = versions[match.object_id]
-            raw = _envelope(match.raw, match.l1_handle, match.field_path, limit) or {
+            raw = _envelope(match.raw, match.l1_handle, match.field_path, limit,
+                            asked) or {
                 "untrusted_text": match.normalized[:limit],
                 "origin": {"citation": version["l1_handle"]}}
+            if "withheld" not in raw and withheld_po_text(match.field_path, match.raw) \
+                    and not _same_text(match.raw, asked):
+                raw = WithheldText(raw["origin"], str(match.raw))
             if match.sender_class in SENDER_CLASSES and "field_path" in raw["origin"]:
                 raw["origin"]["sender_class"] = match.sender_class
             object_type = match.object_id.split(":", 1)[0]
@@ -3417,7 +3633,7 @@ class OntologyTools:
                                 "on this object lists them by tier"))
         gaps.extend(self._dropped_version_gaps([object_id], store_meta))
         from operating.attested_conflicts import conflicts as attested, label_reads
-        label_reads(self, scope, object_id, object_type, values)   # parser or OCR
+        label_reads(self, scope, object_id, object_type, values)   # parser or OCR (P2)
         if self.reviews is not None:   # a person's confirmation or correction, beside it
             from operating.ontology_tools_review import show_value_reviews
             show_value_reviews(self, self.reviews, scope, object_id, values)
@@ -3646,11 +3862,34 @@ def _resolution_gaps(resolution: Any, *, names_identifier: bool = True
     for (source, relation, path, state), count in sorted(counted.items()):
         gap_state = "not_ingested" if state in ("not_configured", "not_served", "unpinned") \
             else "stale" if state == "stale" else "unknown"
-        out.append(_gap(gap_state, f"source_{state}", f"{source}:{relation}.{path}",
+        # One code for a stale source, whether its projection entry or a carrier says so.
+        reason = "stale_source" if state == "stale" else f"source_{state}"
+        out.append(_gap(gap_state, reason, f"{source}:{relation}.{path}",
                         f"{count} live carrier read(s) {state.replace('_', ' ')}; "
                         f"{resolution.retried} read(s) retried once",
                         {"sources": [source]}))
     return out
+
+
+@functools.lru_cache(maxsize=1)
+def _freshness_label_pattern() -> re.Pattern[str]:
+    """The contract's own pattern of ``$defs/freshness`` ``label``: its prefix and its
+    length budget come from ``ontology_tool_contracts.json``, never a second constant."""
+    return re.compile(load_contracts()["$defs"]["freshness"]["properties"]["label"]["pattern"])
+
+
+def _capture_labels(labels: Sequence[str]) -> str | None:
+    """``labels`` joined into one freshness label the contract accepts: as many whole
+    labels as fit, then how many were left out (``; +N more``); a label is never cut.
+    Every label stays on its unit in the entry's ``relations``. When not even one label
+    and the count fit, the first whole label alone; None when no label fits at all."""
+    fits = _freshness_label_pattern().search
+    for shown in range(len(labels), 0, -1):
+        left = len(labels) - shown
+        text = "; ".join(labels[:shown]) + (f"; +{left} more" if left else "")
+        if fits(text):
+            return text
+    return next((label for label in labels if fits(label)), None)
 
 
 def _scope_freshness_entry(entry: Mapping[str, Any],
@@ -3672,8 +3911,9 @@ def _scope_freshness_entry(entry: Mapping[str, Any],
         out.update(stale=True, served_from="persisted_capture"
                    if "persisted_capture" in served else "cached_mirror")
         labels = sorted({u["label"] for u in held.values() if u.get("label")})
-        if labels:
-            out["label"] = "; ".join(labels)[:599]
+        label = _capture_labels(labels)
+        if label:
+            out["label"] = label
         moments = [(_parse_time(u["captured_at"]), u["captured_at"]) for u in copied
                    if u.get("captured_at")]
         if out.get("captured_at"):
@@ -3681,6 +3921,17 @@ def _scope_freshness_entry(entry: Mapping[str, Any],
         moments = [m for m in moments if m[0] is not None]
         if moments:
             out["captured_at"] = min(moments)[1]
+    elif any(u["served_from"] == "host_capture" for u in units.values()):
+        # The host's own capture, within its bound: as old as its oldest unit read.
+        mine = [u for u in units.values() if u["served_from"] == "host_capture"]
+        moments = [(_parse_time(u["captured_at"]), u) for u in mine if u.get("captured_at")]
+        moments = [m for m in moments if m[0] is not None]
+        out["served_from"] = "host_capture"
+        if moments and not out.get("stale"):  # a projection past its bound keeps its label
+            oldest = min(moments, key=lambda m: m[0])[1]
+            out["captured_at"] = oldest["captured_at"]
+            if oldest.get("label"):
+                out["label"] = oldest["label"]
     elif any(u["served_from"] == "live" for u in units.values()):
         out["served_from"] = "live"
     if missing and out.get("completeness") == "complete":
@@ -3694,7 +3945,9 @@ def _source_freshness_gaps(freshness: Sequence[Mapping[str, Any]]) -> list[dict[
     """One gap per source whose capture is stale (a persisted capture: its label), whose
     state is unknown, and one per source with units the live source did not serve at
     all and no persisted capture holds (``inaccessible``: their HTTP status and error
-    code). How a source was served (stale, inaccessible) comes before what is unknown."""
+    code). A relation the live source now refuses (``REFUSED_CODES``) is inaccessible
+    too, by its own name, although a copy of it is held: the copy is only stale.
+    How a source was served (stale, inaccessible) comes before what is unknown."""
     gaps = []
     for item in freshness:
         if item.get("stale"):
@@ -3704,8 +3957,20 @@ def _source_freshness_gaps(freshness: Sequence[Mapping[str, Any]]) -> list[dict[
         elif item.get("completeness") == "unknown":
             gaps.append(_gap("unknown", "freshness_unknown", item["source"],
                              "the projection does not state this source's capture state"))
+        for unit in item.get("relations", ()):
+            if unit.get("served_from") in COPIED and unit.get("error_code") in REFUSED_CODES:
+                gaps.append(_gap("inaccessible", unit["error_code"], unit["relation"],
+                                 f"the live source refuses this relation now; its records "
+                                 f"are a copy as of {unit.get('captured_at') or 'unknown'}"))
         missing = [u for u in item.get("relations", ()) if u.get("served_from") == "none"]
-        if missing:
+        if missing and all(u.get("error_code") == "not_captured" for u in missing):
+            # ontology.resolve.NOT_CAPTURED: a host with no live client whose own capture
+            # holds none of them; the live source was not asked.
+            gaps.append(_gap("inaccessible", "source_unavailable", item["source"],
+                             f"this host's capture holds none of {len(missing)} "
+                             "relation(s) and this host reads no live source: "
+                             + ", ".join(u["relation"] for u in missing)))
+        elif missing:
             failures = sorted({f"{u.get('http_status') or 'no_http_status'}, "
                                f"{u.get('error_code') or 'unknown'}" for u in missing})
             gaps.append(_gap("inaccessible", "source_unavailable", item["source"],
@@ -4112,9 +4377,13 @@ def identifier_out(kind: str | None, normalized: Any, subject: str, citation: st
     (a digest), so a sender-written Message-ID is quoted source text at the tool, not only
     at the MCP boundary. Other kinds keep the boundary's source-text rule (IB-FIREWALL-4):
     a value a document-field profile typed is compared in process (attested conflicts)
-    (docs/decisions/2026-10-13-roster-copy-identifier-out.md)."""
+    (devloop/DECISIONS/2026-10-13-roster-copy-identifier-out.md)."""
     from ontology import identifiers
     copies = kind in identifiers.kinds() and bool(identifiers.kind_spec(kind).get("copies"))
+    if withheld_po_text(field_path, normalized):
+        return None, _gap("unknown", "value_withheld_not_po_like", subject,
+                          "the recorded po_reference value is not PO-like; it can be a "
+                          "person's name and is never echoed")
     if normalized is None or is_identifier(normalized, kind, citation if copies else None):
         return normalized, None
     gap = _gap("unknown", "identifier_invalid", subject,
@@ -4269,9 +4538,10 @@ def _conflicts(object_type: str, values: list[dict], peer_values: list[tuple[str
             by_property.setdefault(value["property"], []).append(value)
     out = []
     for prop, items in sorted(by_property.items()):
-        present = [v for v in items if v["value"] is not None]
-        keys = {_compare_key(v["value_type"], v["value"]["untrusted_text"]
-                             if isinstance(v["value"], dict) else v["value"]) for v in present}
+        # A withheld text (``WithheldText``) compares on its source text, so a peer holding
+        # the same text is no conflict and a different one stays one; unknown without it.
+        present = [v for v in items if compared_text(v["value"]) is not None]
+        keys = {_compare_key(v["value_type"], compared_text(v["value"])) for v in present}
         if len(keys) >= 2:
             out.append({"kind": "value_disagreement", "subject": f"{object_type}.{prop}",
                         "values": present[:12]})
@@ -4281,11 +4551,14 @@ def _conflicts(object_type: str, values: list[dict], peer_values: list[tuple[str
 # --------------------------------------------------------------------------- host wiring
 
 # Retirement plan for the case host's tool budget (contract limits.max_case_host_tools).
-# Each retired tool names a successor that exists now (one of this module's tools or a
-# kept host tool), never a contract name still unbuilt. basis "directive": named by the owner;
-# "lead": a design decision. The plan leaves the host above the budget.
+# Each retired tool names a successor that exists now (one of this lane's tools or a
+# kept host tool), never a contract name still unbuilt. basis "directive": directive
+# 4190c1c690ce item 4; "lead": the lead's decision in review l8-1. The plan leaves
+# the host above the budget; the overage and the routes to it are recorded in
+# devloop/OPEN-DECISIONS.md (case-host-budget) for the wiring commit.
 HOST_RETIREMENTS: dict[str, dict[str, str]] = {
-    # Source reads and kind tools retire into the generic tools; their successors are on the case host now.
+    # Lead decision case-host-budget (a): source reads and kind tools retire into the
+    # generic tools; their successors are on the case host now.
     "plx.source_resolve": {"successor": "plx.find", "basis": "directive"},
     "plx.source_catalog": {"successor": "plx.schema", "basis": "lead"},
     "plx.source_rows": {"successor": "plx.object", "basis": "lead"},
@@ -4296,14 +4569,14 @@ HOST_RETIREMENTS: dict[str, dict[str, str]] = {
     "plx.case_record_customer_po_gaps": {"successor": "plx.case_record_gap", "basis": "lead"},
     # Freshness rides on every answer instead (``_meta`` of each tools/call result).
     "plx.ingest_status": {"successor": "_meta", "basis": "lead"},
-    # One tool, two modes.
+    # Case-host-budget (b): one tool, two modes.
     "plx.case_list": {"successor": "plx.case_get", "basis": "merge"},
     "plx.case_check_claims": {"successor": "plx.case_get", "basis": "merge"},
     "plx.case_reextract_original": {"successor": "plx.case_attach_original", "basis": "merge"},
     "plx.action_list": {"successor": "plx.act", "basis": "merge"},
 }
-# Named by the owner; all but plx.source_resolve left with the
-# platform host and must never return to the case host.
+# Named by directive 4190c1c690ce item 4; all but plx.source_resolve left with the
+# platform host (deletion-6) and must never return to the case host.
 DIRECTIVE_RETIRED = frozenset({
     "plx.search", "plx.transaction_search", "plx.ask_transaction", "plx.transaction_inquiry",
     "plx.source_resolve", "plx.lookup_replica_named", "plx.discover_fm_procurement"})
@@ -4350,7 +4623,7 @@ def _inline_defs(schema: Any, contracts: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def tool_specs(contracts: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
-    """MCP tool listings (name, description, inputSchema) for this module's tools."""
+    """MCP tool listings (name, description, inputSchema) for this lane's tools."""
     contracts = contracts or load_contracts()
     return [{"name": name, "description": contracts["tools"][name]["description"],
              "inputSchema": _inline_defs(contracts["tools"][name]["input"], contracts),

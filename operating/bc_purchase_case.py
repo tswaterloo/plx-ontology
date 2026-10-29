@@ -49,7 +49,8 @@ Rules that keep it honest:
   row (entity ``purchaseOrder``, ``LINKED``, naming this BC document's id) makes
   the Portal PO and the BC order one identity (Portal
   ``document-finance-queries.ts@4243499:211 resolveBcPoNumbers``). The FM PO No.
-  lives in BC 'Your Reference', which API v2.0 does not expose. BC External
+  is often in BC 'Your Reference', which API v2.0 does not expose (ODataV4 Page 50
+  does; only the BC capture reads it, ``integrations.bc_read``). BC External
   Document No. is never read as a customer PO (REC-10).
 
 ``integrations.bc_purchase`` supplies the GET-only reads (its ``probe`` is the live
@@ -257,7 +258,7 @@ def portal_po_link(order: Mapping[str, Any], portal_po: Mapping[str, Any] | None
     if fm_number and fm_number.casefold() == searched.casefold() \
             and fm_number.casefold() != number.casefold():
         basis.append("searched_fm_po_number")
-        caveats.append("The FM PO No. is BC 'Your Reference', not exposed by API v2.0; "
+        caveats.append("The FM PO No. is often in BC 'Your Reference', not exposed by API v2.0; "
                        "the BC order matched by another field.")
     if po_number.upper().rsplit("-FM", 1)[0] != po_number.upper():
         caveats.append("Portal po_number carries an -FM<id> clash suffix.")

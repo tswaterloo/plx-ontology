@@ -1,18 +1,18 @@
 {
  "schema": "plx-eval-exposed-sources/v1",
- "note": "Identity of the originals the exposed eval items (evals/exposed/dev-*.json) cite, copied from the source records (data, not authority): R = Ricardo/Vince consolidated originals, S = SoapBox archive manifest. Observed through the connectors on 2026-10-02 (R original_access_proof); never read from this repository's runtime. scripts/eval_exposed_sources.py compares what the GET-only Graph readers return with these pins (verify/live-checks/case.exposed_originals.json, case.exposed_mail.json). sha256_basis: bytes = SHA-256 of the downloaded file bytes; utf8_text = SHA-256 of the retrieved UTF-8 text (R says each byte length equals its metadata size); null = no SHA-256 pinned (identity by eTag and quickXorHash only). Mail body_sha256 is the connector's full-body hash and is not comparable with the GET-only reader's text body; mail ids are REST ids (not immutable ids) and the mailbox is not recorded in R, so messages are located by mailbox + received time and attachments by name + byte SHA-256.",
+ "note": "Identity of the originals the exposed eval items (evals/exposed/dev-*.json) cite, copied from the Dot's advisory records on branch codex/advisory (data, not authority): R = Ricardo/Vince consolidated originals, S = SoapBox archive manifest. Observed through the Dot's connectors on 2026-10-02 (R original_access_proof); never read from this repository's runtime. scripts/eval_exposed_sources.py compares what the GET-only Graph readers return with these pins (devloop/live-checks/case.exposed_originals.json, case.exposed_mail.json). sha256_basis: bytes = SHA-256 of the downloaded file bytes; utf8_text = SHA-256 of the retrieved UTF-8 text (R says each byte length equals its metadata size); null = no SHA-256 pinned (identity by eTag and quickXorHash only). Mail body_sha256 is the connector's full-body hash and is not comparable with the GET-only reader's text body; mail ids are REST ids (not immutable ids) and the mailbox is not recorded in R, so messages are located by mailbox + received time and attachments by name + byte SHA-256.",
  "evidence_records": {
   "R": {
    "path": "context/4c1fe69b043e3316d0f83b80d72f0fabd423affbf995c55d5b09429b8c7679ad.json",
    "git_blob_sha": "6d0305f500f12bc025215e25eabe275214039286",
    "content_sha256": "a5f4e154a62be713c0ac19421c1716212f85d25d08939203dfcc5ac9ec3e6949",
-   "branch": "source-records"
+   "branch": "codex/advisory"
   },
   "S": {
    "path": "context/2e7013f1dca3bc5fad6f27dbf887d55a4f784e1e37bef0eb8a53ea1613b78d66.json",
    "git_blob_sha": "475889a9c2b557ce56daa9791b7e09149bde177e",
    "content_sha256": "d58dff9b872e1401ca3ac80f4e08896beaa26486728fe6f414c85a4d94f9652b",
-   "branch": "source-records"
+   "branch": "codex/advisory"
   }
  },
  "observed_at": "2026-10-02T18:07:03.017Z",

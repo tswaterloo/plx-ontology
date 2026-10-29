@@ -28,7 +28,7 @@ from operating.tests.test_mcp_http_host import EmployeeDoorTestCase
 from operating.tests.test_session_identity import OID_A, OID_B
 
 ROOT = Path(__file__).resolve().parents[2]
-SPEC = ROOT / "verify" / "live-checks" / "eval.ask_agent_messages.json"
+SPEC = ROOT / "devloop" / "live-checks" / "eval.ask_agent_messages.json"
 KEY = "sk-test-not-a-real-key-7f3a"  # a made-up value: it must never leave the header
 MODEL = "test-model"
 
@@ -469,7 +469,7 @@ class SettingsTests(unittest.TestCase):
 
 
 class MessagesBenchTests(unittest.TestCase):
-    """The live check's own command (verify/live-checks/eval.ask_agent_messages.json)."""
+    """The live check's own command (devloop/live-checks/eval.ask_agent_messages.json)."""
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
@@ -481,7 +481,7 @@ class MessagesBenchTests(unittest.TestCase):
         return [arg.replace("{tmp}", str(self.root)) for arg in self.spec["command"][3:]]
 
     def test_the_spec_is_valid_and_never_skipped_for_a_missing_key(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         self.assertEqual(lv.validate_spec(self.spec, stem="eval.ask_agent_messages"), [])
         self.assertEqual(lv.spec_tier(self.spec), "real_agent")
         self.assertNotIn("requires_env_any", self.spec)
@@ -491,7 +491,7 @@ class MessagesBenchTests(unittest.TestCase):
 
     def test_without_settings_the_check_blocks_credentials_absent_naming_them(self):
         """The verifier itself runs the command (no key, no model): blocked, never a pass."""
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         base = {"PATH": os.environ.get("PATH", "")}
         for environ, code, settings in (
                 (base, "credentials_absent", list(mp.KEY_SETTINGS)),
@@ -508,7 +508,7 @@ class MessagesBenchTests(unittest.TestCase):
     def test_the_bench_reports_latency_and_cost_per_ask(self):
         """The fixture bench through an injected Messages planner (fake transport): the
         summary's planner block is what the spec expects; injected, never live."""
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from scripts import eval_real_agent as era
         from tests.test_eval_real_agent import card_claims
         api = FakeAPI(messages_model(card_claims))

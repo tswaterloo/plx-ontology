@@ -13,23 +13,39 @@ console, each through the console's own path
    lists (``ObjectWorkspace.gap_inbox``: a gap on one of the order's records) out of the
    late orders the oracle finds. Per order: ``late_order_listed`` or a fail.
 2. ``ask``: Ask answers "why is this order late / what is missing" through its one path
-   (``ObjectWorkspace.ask_run``). It passes only when the answer is correct against the
+   (``ObjectWorkspace.ask_run``), naming the question's family (``QUESTION_FAMILY``, the
+   late-order plan; ``--family`` for another ``--question``) and asking for its plan answer
+   (``plan_answer``), so the plan's result is the answer when code states it whole (no
+   planner call; else the planner goes on from it). It passes only when the answer is correct against the
    oracle: it cites every late line of the order in one system, names each line's
    governing date in a claim that cites the record the date is read from, cites a
-   Business Central record of the order and a second firm source (a captured mail or
-   SharePoint document whose own text names the order's exact number). A claim citing
-   another order's record, or a document that does not name the number, must say it is a
-   lead (``LEAD_WORDS``). A Business Central-Portal number twin is never a second source.
+   Business Central record of the order and a second source: a captured mail, SharePoint
+   document or Teams message whose own text names one of the order's PO numbers
+   (``names_number``: one order whatever its written form, ``PO#4643``, ``PO 4643``,
+   ``PO4643``, ``PO-4643``; a whole token with its prefix, never a bare number). A claim
+   citing another order's record, a document that does not name the number, or a claim the
+   answer itself marks a lead (reached through a lead-tier link) must say it is a lead
+   (``LEAD_WORDS``); a worded lead still counts as a second source when the document names
+   the number. A Business Central-Portal number twin is never a second source (decision
+   ``2026-10-28-flagship-second-source-rule``).
+   The order's numbers are its group's: a BC order joins its Portal order's group by a
+   firm ``Your_Reference`` link only (the product's rule, ``evals.oracle.po_reference.
+   decide``, a copy a parity test ties to it; a lead never joins), so a document naming the
+   FileMaker PO number of a firmly linked order is a second source for it.
 3. ``timing``: the Ask took ``ASK_SECONDS`` or less; slower fails.
 4. ``landed_cost``: passes only with a number (``plx.investigate`` family ``landed_cost``;
    every landed cost is an analytic estimate, labelled ``estimate``). Naming the missing
    inputs alone fails.
 5. ``draft``: a follow-up is drafted on a Workbench case, never sent (``draft_step``).
-6. ``margin``: the order margin of the customer order this purchase order feeds. The
-   schema declares no purchase-order to sales-order link today, so the step reads
-   ``unrelated_sample`` (never a pass). Once per run, ``margin`` reports one sample sales
-   order's margin through the same workspace and reader (``scripts.flagship_margin``):
-   a reader without the finance marking gets the typed gap, never a figure.
+6. ``margin``: the order margin of the customer order this purchase order feeds, over firm
+   links only. The schema declares no direct purchase-order to sales-order link, so the
+   order is the open one the impact chain (``impact_chain`` plan) ranks first among those
+   the PO feeds: PO line -> item, the Portal entity map's verified BC item <-> Portal
+   product identity, FileMaker assembly orders, their order lines, the sales order. No
+   order reached fails with where the walk stopped. The margin is finance-gated: a reader
+   without the finance marking gets ``margin_withheld`` (blocked), never a figure. Once per
+   run, ``margin`` also reports one sample sales order's margin (``scripts.flagship_margin``,
+   ``unrelated_sample``, never a pass).
 
 Nothing is written to a source system and no message is sent: the only writes are the
 Workbench's own case and action stores under ``--work-dir``.
@@ -50,7 +66,7 @@ import sqlite3
 import sys
 import time
 from collections import Counter
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -63,6 +79,7 @@ from evals.oracle.keys import FM_PO, PO, PO_LINE, RECEIPT  # noqa: E402
 
 SCHEMA = "plx-flagship-path/v2"
 QUESTION = "Why is this order late, and what is missing?"
+QUESTION_FAMILY = "late_po"   # the plan (ontology/plans) that answers QUESTION
 STEPS = ("home", "ask", "timing", "landed_cost", "draft", "margin")
 PURCHASE_ORDER = "PurchaseOrder"
 ASK_SECONDS = 20  # an Ask slower than this fails the timing step
@@ -72,11 +89,21 @@ HOME_SCAN = 500  # home gaps on purchase orders mapped to their records, at most
 RAW_PAGE, RAW_ROWS = 500, 50_000  # mirror rows per page; per relation at most
 BC_PAGE = 1000
 BC_CAPTURE = Path("bc-capture") / "capture.sqlite"
-BC_SETS = (po_lateness.BC_ORDERS, po_lateness.BC_LINES, po_lateness.BC_RECEIPTS)
-PORTAL_RELATIONS = (PO, PO_LINE, RECEIPT, FM_PO)
-# The documents that can be the Ask's second firm source: captured mail and SharePoint.
-DOCUMENT_SYSTEMS = ("graph-mail", "sharepoint")
+BC_SETS = (po_lateness.BC_ORDERS, po_lateness.BC_LINES, po_lateness.BC_RECEIPTS,
+           po_lateness.BC_REFERENCES)
+PORTAL_RELATIONS = (PO, PO_LINE, RECEIPT, FM_PO, po_lateness.ENTITY_MAP)
+# The documents that can be the Ask's second source: captured mail, SharePoint and Teams.
+DOCUMENT_SYSTEMS = ("graph-mail", "sharepoint", "teams-chat", "teams-channel")
+TEAMS_SYSTEMS = ("teams-chat", "teams-channel")
+# A PO number as written: its series prefix (PO, DPO) and an optional '#', '-' or space
+# before the digits, a whole token. One order, whatever the form (PO#4643 = PO 4643); a
+# suffixed number (PO#4643-FM12, an FM clash-series order) is another order.
+PO_FORM = re.compile(r"(?<![A-Za-z0-9#-])(D?PO)[ \t]*[#-]?[ \t]*0*(\d{1,9})"
+                     r"(?![A-Za-z0-9]|-[A-Za-z0-9])", re.IGNORECASE)
 FIRM_FLOOR = "corroborated"
+# completeness reasons that cut no part of the walk: the answer fitted to one response or paged
+FITTED = ("result_too_large", "answer_paged")
+IMPACT_FAMILY = "impact_chain"   # the plan that walks a late PO to the orders it feeds
 LEAD_WORDS = re.compile(r"\b(?:lead|leads|unconfirmed|not confirmed)\b", re.IGNORECASE)
 MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August",
           "September", "October", "November", "December")
@@ -136,11 +163,20 @@ def names_date(text: str, day: date) -> bool:
                          re.IGNORECASE) for form in date_texts(day))
 
 
+def po_key(number: str) -> tuple[str, int] | None:
+    """(series, number) of a PO number written whole (``PO#4643`` -> ("PO", 4643)), else
+    None: a bare number or any other text is no PO number."""
+    found = PO_FORM.fullmatch(number.strip()) if isinstance(number, str) else None
+    return (found.group(1).upper(), int(found.group(2))) if found else None
+
+
 def names_number(text: str, numbers: Sequence[str]) -> bool:
-    """Whether ``text`` names one of ``numbers`` exactly (not inside a longer token). A
-    bare number of fewer than 4 digits names nothing: it matches any quantity or line."""
-    return any(re.search(r"(?<![A-Za-z0-9])" + re.escape(n) + r"(?![A-Za-z0-9])", text)
-               for n in numbers if n and not (n.isdigit() and len(n) < 4))
+    """Whether ``text`` names one of ``numbers``, PO numbers each (``po_key``), in any of
+    their written forms as a whole token. A bare number names nothing, nor does a number
+    of the order that carries no PO prefix: it matches any quantity, line or reference."""
+    wanted = {key for key in map(po_key, numbers) if key is not None}
+    return bool(wanted) and any((m.group(1).upper(), int(m.group(2))) in wanted
+                                for m in PO_FORM.finditer(text or ""))
 
 
 # ---- the raw captures the oracle reads -------------------------------------------
@@ -233,6 +269,14 @@ class RawCaptures:
                     self.runtime, mail_capture_dir=self.runtime.mail_capture_dir
                 ).mail_capture(handle, gated, audience, text=True)
                 row = (found[0] or {}).get("row") if found else None
+            elif system in TEAMS_SYSTEMS:
+                if not audience.may_read_any(gated, "teams:"):
+                    return False
+                # The runtime's Teams read: the store's per-record membership check and
+                # the people exclusion (fail-closed), as plx.read serves the message.
+                found = self.runtime.claim_row(handle, gated)
+                row = (found or {}).get("row") if not (found or {}).get("changed_since") \
+                    else None
             elif system == "sharepoint":
                 from integrations.capture_sharepoint import SharePointCaptureStore
                 store = SharePointCaptureStore.open_read_only(self.runtime.state_dir)
@@ -315,18 +359,25 @@ def home_step(group: Mapping[str, Any] | None, records: Mapping[str, str],
     if home.get("truncated"):
         return step("fail", "order_not_reached_by_home_scan", scanned=home.get("scanned"),
                     unscanned=home.get("unscanned"))
+    if home.get("more"):   # the list is capped and late orders come first: report the cap
+        return step("fail", "late_order_beyond_home_cap", limit=home.get("limit"))
     return step("fail", "late_order_not_on_home", scanned=home.get("scanned"))
 
 
 def ask_step(workspace: Any, object_id: str, question: str, *,
              late: Mapping[str, Any] | None, others: set[str],
-             confirm: Callable[[str, Sequence[str]], bool], identify: bool) -> dict[str, Any]:
+             confirm: Callable[[str, Sequence[str]], bool], identify: bool,
+             family: str | None = None) -> dict[str, Any]:
     """The Ask's verdict against the oracle (module doc): ``late`` is the order's late
     group, ``others`` the records of every other order the oracle holds, ``confirm``
-    whether a cited mail or SharePoint document names the order's number."""
+    whether a cited mail or SharePoint document names the order's number. ``family``: the
+    question family whose plan answer the Ask asks for (None: the planner chooses)."""
     started = time.monotonic()
+    request = {"object_id": object_id, "question": question}
+    if family is not None:
+        request.update(family=family, plan_answer=True)
     try:
-        asked = workspace.ask_run({"object_id": object_id, "question": question})
+        asked = workspace.ask_run(request)
     except LookupError as error:
         return step("blocked", str(error.args[0]) if error.args else "ask_not_served",
                     missing_setting="CLAUDE_CODE_OAUTH_TOKEN or PLX_CLAUDE_CODE_OAUTH_TOKEN "
@@ -349,7 +400,14 @@ def ask_step(workspace: Any, object_id: str, question: str, *,
             return not is_confirmed(handle)
         return handle_base(handle) in others
 
-    lead_claims = [claim for claim in claims if any(map(is_lead, claim["citations"]))]
+    # A claim the answer marks a lead (it rests on a lead-tier link) must say so too.
+    def marked_lead(claim: Mapping[str, Any]) -> bool:
+        return claim.get("lead") is True or any(
+            isinstance(v, Mapping) and v.get("lead") is True
+            for v in claim.get("value_claims") or ())
+
+    lead_claims = [claim for claim in claims if marked_lead(claim)
+                   or any(map(is_lead, claim["citations"]))]
     unworded = [claim for claim in lead_claims if not LEAD_WORDS.search(claim["text"])]
     cited = {handle_base(h) for claim in claims for h in claim["citations"]}
     lines = list((late or {}).get("late_lines") or ())
@@ -420,6 +478,22 @@ def _entries(result: Mapping[str, Any], kind: str) -> dict[str, Mapping[str, Any
             if entry.get("kind") == kind}
 
 
+def shown_amount(entry: Mapping[str, Any] | None) -> str | None:
+    """A computed amount as a person reads it: cents (``landed_cost.money_text``) with its
+    unit; the entry's own value keeps its full precision."""
+    from decimal import Decimal, InvalidOperation
+    from operating.landed_cost import money_text
+    value = (entry or {}).get("value")
+    unit = (entry or {}).get("unit") or (entry or {}).get("currency")
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    return f"{money_text(number, unit)} {unit}" if isinstance(unit, str) and unit else str(value)
+
+
 def landed_step(workspace: Any, object_id: str, *, identify: bool) -> dict[str, Any]:
     """Passes only with a landed-cost number: the actual ``landed_cost``, else the open
     order's ``landed_cost_estimate``; ``estimate`` is read from the entry's own label (a
@@ -443,6 +517,8 @@ def landed_step(workspace: Any, object_id: str, *, identify: bool) -> dict[str, 
         detail["landed_cost_estimate"] = (computed.get("landed_cost_estimate") or {}
                                           ).get("value")
         detail["gap_subjects"] = [str(gap.get("subject"))[:300] for gap in gaps]
+        detail["landed_cost_shown"] = shown_amount(computed.get("landed_cost")
+                                                   or computed.get("landed_cost_estimate"))
     for name in ("landed_cost", "landed_cost_estimate"):
         entry = computed.get(name) or {}
         value = entry.get("value")
@@ -555,13 +631,36 @@ def feeds_links(schema: Any = None) -> list[str]:
                   and {link.get("from"), link.get("to")} & SALES_SIDE)
 
 
+def fed_order(workspace: Any, object_id: str) -> tuple[str | None, dict[str, Any]]:
+    """The open customer order the impact chain (``IMPACT_FAMILY``, firm links only: the
+    entity map's verified BC item and PO identity among them) ranks first among those this
+    purchase order feeds, and what the walk said: (None, detail) when it reaches none."""
+    from operating.impact_chain import ranked_orders
+    try:
+        investigated = workspace.investigate(IMPACT_FAMILY, object_id)
+    except (LookupError, KeyError, ValueError) as error:
+        return None, {"impact_refused": str(error.args[0] if error.args else error)[:200]}
+    result = (investigated or {}).get("investigation") or {}
+    ranked = [order for _po, order in ranked_orders(result.get("answer") or ())]
+    detail: dict[str, Any] = {
+        "orders_fed": len(ranked),
+        "impact_stops": sorted({str(gap.get("reason")) for gap in result.get("gaps") or ()
+                                if gap.get("reason")})[:10]}
+    completeness = result.get("completeness") or {}
+    if completeness.get("truncated") and completeness.get("reason") not in FITTED:
+        # the walk itself was cut (a step budget): no order fed is then no fact of the data
+        detail["impact_cut"] = str(completeness.get("reason") or "truncated")
+    return (ranked[0] if ranked else None), detail
+
+
 def margin_step(workspace: Any, object_id: str, *, feeds: Sequence[str],
                 identify: bool) -> dict[str, Any]:
-    """The margin of the customer order this purchase order feeds (``feeds``: the link
-    types that say so), firm links only; without such a link, ``unrelated_sample``:
-    never a pass."""
-    if not feeds:
-        return step("unrelated_sample", "no_link_from_purchase_order_to_sales_order")
+    """The margin of the customer order this purchase order feeds, firm links only: a
+    direct link type that says so (``feeds``), else the open order the impact chain ranks
+    first among those the purchase order feeds (``fed_order``). The margin is the
+    ``order_margin`` answer for this reader, finance-gated (a reader without the marking
+    gets ``margin_withheld``, never a figure). No order fed: a fail naming where the walk
+    stopped; never an unrelated sample."""
     orders: set[str] = set()
     for link_type in feeds:
         for direction in ("forward", "reverse"):
@@ -570,9 +669,15 @@ def margin_step(workspace: Any, object_id: str, *, feeds: Sequence[str],
                 "tier_floor": FIRM_FLOOR, "limit": PICK_LIMIT})
             orders |= {item["object_id"] for item in around.get("objects") or ()
                        if item.get("object_type") == "SalesOrder"}
-    if len(orders) != 1:
-        return step("fail", "sales_order_fed_ambiguous" if orders
-                    else "no_sales_order_fed", sales_orders=len(orders))
+    if len(orders) > 1:
+        return step("fail", "sales_order_fed_ambiguous", sales_orders=len(orders))
+    via: dict[str, Any] = {"fed_by": "link"}
+    if not orders:
+        order_id, chain = fed_order(workspace, object_id)
+        via = {"fed_by": "impact_chain", **chain}
+        if order_id is None:
+            return step("fail", "no_sales_order_fed", **via)
+        orders = {order_id}
     from scripts.flagship_margin import FAMILY, answer_step
     (order,) = orders
     try:
@@ -581,6 +686,7 @@ def margin_step(workspace: Any, object_id: str, *, feeds: Sequence[str],
         return step("fail", f"investigate_refused:{error.args[0] if error.args else error}")
     out = answer_step(investigated, identify=identify)
     out.pop("schema", None)
+    out.update(via)
     if identify:
         out["object_id"] = order
     return out
@@ -654,7 +760,8 @@ def group_of(workspace: Any, object_id: str, late: Sequence[Mapping[str, Any]]
 
 def run(workspace: Any, orders: Sequence[str], *, count: int, as_of: date, question: str,
         identify: bool, ask: bool = True, raw: Any = None,
-        feeds: Sequence[str] | None = None, margin: bool = True) -> dict[str, Any]:
+        feeds: Sequence[str] | None = None, margin: bool = True,
+        family: str | None = None) -> dict[str, Any]:
     """Every step for each order over ``workspace`` (an ``ObjectWorkspace``), scored
     against ``raw`` (default: the workspace reader's ``RawCaptures``)."""
     if raw is None:
@@ -706,7 +813,7 @@ def run(workspace: Any, orders: Sequence[str], *, count: int, as_of: date, quest
                   for r in g["records"]}
         gaps = [gap for gap in home.get("gaps") or () if gap.get("object_id") == object_id]
         asked = (timed(ask_step, workspace, object_id, question, late=group, others=others,
-                       confirm=raw.confirms, identify=identify) if ask
+                       confirm=raw.confirms, identify=identify, family=family) if ask
                  else step("blocked", "ask_not_requested"))
         row["steps"] = {
             "home": home_step(group, records, home),
@@ -737,19 +844,23 @@ def run(workspace: Any, orders: Sequence[str], *, count: int, as_of: date, quest
 def workspace_for(state_dir: Path, mirror_audience: Path, tenant: str,
                   principals: Sequence[str], clearance: str, *, work_dir: Path,
                   planner: Any, live: Any = None,
-                  markings: Sequence[str] = ()) -> tuple[Any, Callable[[], None]]:
+                  markings: Sequence[str] = ()
+                  ) -> tuple[Any, Callable[[], None], dict[str, Any]]:
     """The console's object workspace for one fixture reader (its ``markings``) over
-    ``state_dir``'s projection (projected offline first), with its follow-up controls over
-    a Workbench action store in ``work_dir``; and its closer."""
+    ``state_dir``'s projection, with its follow-up controls over a Workbench action store
+    in ``work_dir``; its closer; and which projection it reads (``run_projection``'s
+    summary: the host's served generation, read-only and pinned, when the directory has
+    one; else a private offline build with a disk check)."""
     from operating import case_workspace_live as live_mod
     from operating.action_path import ActionPath
     from operating.session_identity import CHANNEL_CONSOLE, fixture_session
     from operator_ui import case_console
 
     runtime = live_mod.offline_runtime(state_dir, mirror_audience, tenant, live=live)
+    chosen = None
     try:
-        projection = live_mod.projection_file(state_dir, tenant)
-        live_mod.project_state(state_dir, projection, tenant=tenant)
+        chosen = live_mod.run_projection(state_dir, tenant)
+        projection = chosen.path
         session = fixture_session(tenant, principals, channel=CHANNEL_CONSOLE,
                                   clearance=clearance)
         work_dir.mkdir(parents=True, exist_ok=True)
@@ -761,9 +872,30 @@ def workspace_for(state_dir: Path, mirror_audience: Path, tenant: str,
             session=session, planner=planner, evidence=dict(live_mod.MIRROR_EVIDENCE),
             markings=tuple(markings), **held)
     except BaseException:
+        if chosen is not None:
+            chosen.close()
         runtime.close()
         raise
-    return workspace, runtime.close
+
+    def close() -> None:
+        try:
+            runtime.close()
+        finally:
+            chosen.close()
+    return workspace, close, chosen.summary()
+
+
+def granted_markings(host_config: Path, principals: Sequence[str]) -> set[str]:
+    """The markings a host config's ``marking_grants`` give a reader holding ``principals``
+    (``operating.ontology_host.check_marking_grants``: an invalid grant raises ValueError);
+    none when it grants none. Implied markings (a finance holder's purchasing_prices) are
+    the read policy's, never added here."""
+    from operating.ontology_host import check_marking_grants
+    doc = json.loads(Path(host_config).read_text(encoding="utf-8"))
+    if not isinstance(doc, Mapping):
+        raise ValueError("host_config_not_an_object")
+    grants = check_marking_grants(doc.get("marking_grants"))
+    return {marking for marking, holders in grants.items() if holders & set(principals)}
 
 
 def _store_exists(kind: str, state_dir: Path) -> bool:
@@ -789,6 +921,13 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     parser.add_argument("--live-source-audience", type=Path, default=None,
                         help="the BC/mail/SharePoint grants (plx-live-source-audience/v1); "
                              "without it only the Portal mirror is read")
+    parser.add_argument("--host-policy", type=Path, default=None,
+                        help="a host config (plx-host-config/v1) whose marking_grants decide "
+                             "the markings the reader's principals hold, as that host grants "
+                             "them (no capture cycle; --host-config's are used without it)")
+    parser.add_argument("--family", default=None,
+                        help="the question family the Ask names (default: QUESTION_FAMILY "
+                             "for the default question, none for another)")
     parser.add_argument("--host-config", type=Path, default=None,
                         help="run one host capture cycle into --state-dir first")
     parser.add_argument("--order", action="append", default=[],
@@ -809,10 +948,18 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     if not 1 <= args.orders <= MAX_ORDERS or len(args.order) > MAX_ORDERS:
         parser.error(f"at most {MAX_ORDERS} orders")
     env = os.environ if environ is None else environ
-    as_of = args.as_of or datetime.now(timezone.utc).date()
+    as_of = args.as_of or po_lateness.business_today()   # the oracle's ET day
+    policy = args.host_policy or args.host_config
+    try:
+        granted = granted_markings(policy, args.principal) if policy is not None else set()
+    except (OSError, ValueError) as error:
+        parser.error(f"host policy is invalid: {type(error).__name__}: {error}"[:200])
+    markings = sorted(set(args.marking) | granted)
+    family = args.family or (QUESTION_FAMILY if args.question == QUESTION else None)
     summary: dict[str, Any] = {"schema": SCHEMA, "evidence": live.MIRROR_EVIDENCE["label"],
                                "as_of": as_of.isoformat(), "question": args.question,
-                               "capture": None, "sent": 0}
+                               "capture": None, "sent": 0, "markings": markings,
+                               "family": family}
     if args.host_config is not None:
         code, summary["capture"] = live._host_cycle(args, env, host_options or {})
         if code != 0:
@@ -834,14 +981,20 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
                 bc_sender=(host_options or {}).get("sender"))
         except IngestError as error:
             parser.error(f"live source audience is invalid: {error.code}")
-    workspace, close = workspace_for(
-        args.state_dir.resolve(), args.mirror_audience, args.tenant, args.principal,
-        args.clearance, work_dir=(args.work_dir or args.state_dir / "flagship").resolve(),
-        planner=planner, live=readers_live, markings=args.marking)
+    try:
+        workspace, close, summary["projection"] = workspace_for(
+            args.state_dir.resolve(), args.mirror_audience, args.tenant, args.principal,
+            args.clearance, work_dir=(args.work_dir or args.state_dir / "flagship").resolve(),
+            planner=planner, live=readers_live, markings=markings)
+    except live.ProjectionDiskLow as error:
+        summary["projection"] = {"source": "private", "reason": error.code,
+                                 "free_bytes": error.free, "needed_bytes": error.needed}
+        print(json.dumps(summary, indent=1, sort_keys=True))
+        return 1
     try:
         summary.update(run(workspace, args.order, count=args.orders, as_of=as_of,
                            question=args.question, identify=args.identify,
-                           ask=not args.no_ask))
+                           ask=not args.no_ask, family=family))
     finally:
         close()
     print(json.dumps(summary, indent=1, sort_keys=True, default=str))

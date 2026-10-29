@@ -6,7 +6,7 @@
  "object_types": [
   {
    "id": "TeamsChannelMessage",
-   "description": "One captured Teams channel message or reply version (Graph chatMessage; lineage mail until the Teams lineage decision, docs/decisions/2026-10-07-ovs-teams-capture.md item 1). Readers are trimmed per channel and by the channel's captured membership. Source text is untrusted; the body is cited, not projected.",
+   "description": "One captured Teams channel message or reply version (Graph chatMessage; lineage mail until the Teams lineage decision, devloop/DECISIONS/2026-10-07-ovs-teams-capture.md item 1). Readers are trimmed per channel and by the channel's captured membership. Source text is untrusted; the body is cited, not projected.",
    "availability": {
     "state": "served"
    },
@@ -379,7 +379,7 @@
   },
   {
    "id": "TeamsChatMessage",
-   "description": "One captured Teams chat message version (Graph chatMessage; lineage mail, docs/decisions/2026-10-07-ovs-teams-capture.md item 1). The chats of every account on the mail allowlist are captured (item 2); readers are trimmed per chat and by the chat's captured membership, and a chat without a captured membership is not projected (docs/decisions/2026-10-10-followup-decisions.md item 6). Source text is untrusted; the body is cited, not projected.",
+   "description": "One captured Teams chat message version (Graph chatMessage; lineage mail, devloop/DECISIONS/2026-10-07-ovs-teams-capture.md item 1). The chats of every account on the mail allowlist are captured (item 2); readers are trimmed per chat and by the chat's captured membership, and a chat without a captured membership is not projected (devloop/DECISIONS/2026-10-10-followup-decisions.md item 6). Source text is untrusted; the body is cited, not projected.",
    "availability": {
     "state": "served"
    },
@@ -731,5 +731,85 @@
    ]
   }
  ],
- "link_types": []
+ "link_types": [
+  {
+   "id": "TeamsChannelMessage.in_channel",
+   "from": "TeamsChannelMessage",
+   "to": "TeamsChannel",
+   "name": "in_channel",
+   "reverse_name": "messages",
+   "cardinality": "N:1",
+   "description": "The channel a captured channel message or reply was posted in (Graph structure: the message's team and channel ids; ontology/schema/domains/teams_conversations.json).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "gen.teams.channel_messages",
+     "to_binding": "teams.channels",
+     "pairs": [
+      {
+       "from": "team_id",
+       "to": "team_id",
+       "compare": "text_id"
+      },
+      {
+       "from": "channel_id",
+       "to": "channel_id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_teams.py",
+       "note": "The capture whose rows these bindings read."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "TeamsChatMessage.in_chat",
+   "from": "TeamsChatMessage",
+   "to": "TeamsChat",
+   "name": "in_chat",
+   "reverse_name": "messages",
+   "cardinality": "N:1",
+   "description": "The chat a captured chat message was posted in (Graph structure: the message's chat id; ontology/schema/domains/teams_conversations.json).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "gen.teams.chat_messages",
+     "to_binding": "teams.chats",
+     "pairs": [
+      {
+       "from": "chat_id",
+       "to": "chat_id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_teams.py",
+       "note": "The capture whose rows these bindings read."
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "evidence_catalog": {
+  "ctx.mentions": {
+   "kind": "context_pack",
+   "ref": "devloop/CONTEXT/07-ONTOLOGY-DESIGN.md#C.2",
+   "note": "Document mentions any object: mention resolution (lead/corroborated)."
+  },
+  "wb.mentions": {
+   "kind": "workbench_code",
+   "path": "ontology/mentions.py",
+   "note": "Identifier mentions extracted by the one identifier grammar from a Teams message's subject and body (ontology/project_graph.py TeamsCaptures.documents) and resolved through the identifier index; stored as lead links (store_mention_links)."
+  }
+ }
 }

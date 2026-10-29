@@ -12,6 +12,8 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -41,9 +43,155 @@ class RecordAndReplayTests(Temp):
         prompt = runner.build_prompt(item, item["question"]["text"])
         self.assertIn(item["question"]["text"], prompt)
         self.assertIn(fx.GEN, prompt)
+        # A whole-source gap is stated once per answer, never per value (full173).
+        self.assertIn("give it once, without \"concerns\"", prompt)
+        # The quote rule is the gate's and the scorer's: on any cited text field, it holds
+        # the value, it never replaces the value check.
+        self.assertIn("Any citation may add \"quote\"", prompt)
+        self.assertIn("never replaces the value check", prompt)
+        for stale in ("counts only on an original", "never through a quote"):
+            self.assertNotIn(stale, prompt)
         for leaked in ("2400", "2350", "oracle:", "known_outcome", "so-t1", "F3",
                        "public.app_sales_order", "not_served"):
             self.assertNotIn(leaked, prompt)
+
+    def test_prompt_and_planner_page_a_named_document_whole_and_state_its_conflict(self):
+        """v9 RRO-01, RRO-06, RRO-14: the agent read only some windows of a named map (or
+        read both passages and never compared them) and missed that it says it holds the
+        final proforma in one place and that it was not provided in another. Both prompts
+        say to page by text_offset until next_offset is null and to state the conflict;
+        the gate's final instruction says an expression stays a calculation (A01-A11)."""
+        from operating import agent_loop, answer_gate
+        item = fx.item()
+        prompt = runner.build_prompt(item, item["question"]["text"])
+        rule = answer_gate.DOCUMENT_READ_RULE
+        for said in ("named document establishes or leaves unverified",
+                     "text_offset set to the text_window.next_offset",
+                     "until next_offset is null", "is not provided"):
+            self.assertIn(said, rule)
+        self.assertIn(rule + " Then cite both lines and add a gap with state \"unknown\", "
+                      "reason \"conflicting_sources\"", prompt)
+        self.assertIn(rule, agent_loop.PLANNER_RULES)
+        self.assertIn("unknown: conflicting_sources:", agent_loop.PLANNER_RULES)
+        # The paging argument the rule names is the one plx.read takes.
+        contracts = json.dumps(answer_gate.CONTRACTS)
+        self.assertIn("text_offset", contracts)
+        self.assertIn("next_offset", contracts)
+        said = answer_gate.ANSWER_NOT_BLOCKED
+        self.assertIn("an expression claim as a calculation (op expression, the same "
+                      "expression and inputs", said)
+        self.assertIn("only a cited claim as a cited value", said)
+        self.assertNotIn("state each passed claim as a cited value", said)
+
+    def test_prompt_planner_and_repair_say_each_answer_is_quoted_from_the_text(self):
+        """Own-document audit of fresh-data case-card corrects: 14 of 25 rested on a file's
+        content type or name, one side of a change or an uncited sentence, gave a map's
+        worked example as the record, or stated prices or names the card ruled out. The
+        eval prompt, the console planner and every repair say one rule against each."""
+        from operating import agent_loop, answer_gate
+        rule = answer_gate.ANSWER_BACKING
+        for said in ("Each sentence that answers the question is backed by a value claim",
+                     "quotes the text that says it", "A file's name, type, size or date "
+                     "answers nothing", "nor does a sentence no claim states",
+                     "A change states both sides", "worked example",
+                     "stated as that example, never as the record's value",
+                     "no prices, roles only", "no price, no person's name"):
+            self.assertIn(said, rule)
+        item = fx.item()
+        self.assertIn(rule, runner.build_prompt(item, item["question"]["text"]))
+        self.assertIn(rule, agent_loop.PLANNER_RULES)
+        self.assertIn(rule, answer_gate.REPAIR_ANSWER)
+        self.assertIn("a file's name or type is no statement of it",
+                      answer_gate.REPAIR_HINTS["claim_states_no_value"])
+
+    def test_the_document_read_rule_stops_paging_at_its_cap_and_names_find(self):
+        """Paging a document whole stops at ``DOCUMENT_READ_CHARS`` read (the range read is
+        said, the rest a gap), and the rule names plx.read's find, which locates two
+        passages far apart (RRO-06, RRO-14) without paging between them."""
+        from operating import agent_loop, answer_gate
+        rule = answer_gate.DOCUMENT_READ_RULE
+        self.assertEqual(answer_gate.DOCUMENT_READ_CHARS, 150_000)
+        for said in ("until next_offset is null or you have read 150,000 characters",
+                     "say which characters you read", "state the rest as unread, a gap",
+                     "plx.read with find set to a short phrase", "its text_offset"):
+            self.assertIn(said, rule)
+        item = fx.item()
+        self.assertIn(rule, runner.build_prompt(item, item["question"]["text"]))
+        self.assertIn(rule, agent_loop.PLANNER_RULES)
+        read = answer_gate.CONTRACTS["tools"]["plx.read"]["input"]["properties"]
+        self.assertIn("find", read)
+        self.assertLessEqual(len(read["find"]["description"]),
+                             answer_gate.CONTRACTS["limits"]["max_description_chars"])
+
+    def test_prompt_states_the_three_gate_rules_the_planner_states_too(self):
+        """full173 v7: F22-0007 never submitted 386.69 as a calculation (withheld);
+        F22-0009 added an unknown the question did not ask for (demoted to partial);
+        F23-0010 dropped its refused claim (ended answerable). The eval prompt and the
+        console planner's rules (``agent_loop.PLANNER_RULES``) say the same."""
+        from operating import agent_loop
+        item = fx.item()
+        prompt = runner.build_prompt(item, item["question"]["text"])
+        self.assertIn(runner.ANSWER_GATE_RULE, prompt)
+        for rule in ("A count or sum you computed over cited records is one value claim, "
+                     "never a bare value",
+                     '"op": "count" or "sum", "of": [{"citation"',
+                     "The gate checks no other computation",
+                     "Add an unknown only for a value the question asks for",
+                     "a claim it refused stays as an unknown",
+                     "keeps each value with only the quote, unit and currency the gate "
+                     "checked, and withholds a value whose role the gate did not check",
+                     '"quote": "<its quote>", "role": "<its quantity_role>"',
+                     "never dropped"):
+            self.assertIn(rule, runner.ANSWER_GATE_RULE)
+        self.assertIn("never an unknown and never makes the answer partial", prompt)
+        # A unit or currency only where the cited text prints it (the gate verifies no
+        # other); no computation but a count or a sum over cited records (c6ce3d44b6), or
+        # an expression over figures the gate verifies on cited texts (v8: A01, A05, A07).
+        self.assertIn("State a unit only when the cited text prints it beside the figure",
+                      prompt)
+        self.assertIn("a unit or currency only where the cited text prints it", prompt)
+        self.assertIn("so any other result is null with a gap", prompt)
+        # a role on a page or prose figure is refused by the gate (claim_role_unverified)
+        self.assertIn("a figure on a page or in free text has none: the gate refuses one "
+                      "there", prompt)
+        self.assertIn("omit it for non-quantities and for a figure on a page", prompt)
+        from operating import claim_checks
+        checked = claim_checks._check_text_figure(
+            {"value": "68160", "role": "produced"}, {}, "Total 68,160", "page 11")
+        self.assertEqual(checked.get("code"), "claim_role_unverified")
+        self.assertNotIn("sum|count|equal", prompt)
+        for said in ('"op": "expression", "expression": "x0 - x1", "of": [{"citation"',
+                     '"field": "text", "value": "<the figure as printed>", "quote"'):
+            self.assertIn(said, runner.ANSWER_GATE_RULE)
+        for said in ('"calculation": {"op": "expression", "expression": "x0 - x1"',
+                     "round_to_cents(...) around the whole", "no number of its own"):
+            self.assertIn(said, prompt)
+        # The shapes the rule names are the ones the gate parses; the one it refuses (a
+        # calculation object over page figures) is never asked for.
+        from operating.claim_checks import parse_value_claims
+        from ontology.types import ValidationError
+        rows = ["api://public.t/%7B%22id%22%3A1%7D@1", "api://public.t/%7B%22id%22%3A2%7D@1"]
+        parse_value_claims([{"value": "5", "op": "sum", "of": [
+            {"citation": h, "field": "row.qty"} for h in rows]}], rows, [])
+        parse_value_claims([{"value": "2", "op": "count", "of": [
+            {"citation": h} for h in rows]}], rows, [])
+        page = "original://co-1#page=11"
+        parse_value_claims([{"value": "386.69", "op": "expression", "expression": "x0 - x1",
+                             "of": [{"citation": page, "field": "text", "value": figure,
+                                     "quote": quote} for figure, quote in (
+                                 ("18,901.08", "$18,901.08 received"),
+                                 ("18514.39", "is $18,514.39"))]}], [page], [])
+        with self.assertRaises((ValidationError, ValueError)):
+            parse_value_claims([{"value": "386.69", "calculation": {
+                "op": "expression", "expression": "x0-x1", "inputs": []}}], rows, [])
+        self.assertNotIn('"calculation": <', runner.ANSWER_GATE_RULE)
+        rules = agent_loop.PLANNER_RULES
+        for rule in ("A value you computed is a claim only as such a count or sum",
+                     "never as a bare value",
+                     "list an unknown only for a part the question asks for",
+                     ("a claim it refused that you cannot fix stays as an unknown, never "
+                      "dropped")):
+            self.assertIn(rule, rules)
 
     def test_recorded_transcript_replays_to_an_identical_score(self):
         items = [fx.item()]
@@ -375,6 +523,253 @@ STREAM = [
 ]
 
 
+PIN_HEX = "ab" * 32
+
+
+def card_item(**changes):
+    """A proposal card's item shape: a rubric with no expected value, pinned by its card
+    set's digest, whose oracle names one pinned original by a cited line range."""
+    return fx.item(**{
+        "id": "dev-F23-0901-exposed",
+        "known_outcome": {"answerability": "partial", "values": [], "gaps": []},
+        "as_known_at": {"time": "2026-10-05T21:04:46Z",
+                        "l1_generations": {"case_cards": "c" * 64}},
+        "oracle": {"id": "oracle:proposed-comprehension@x", "interface": "plx-eval-oracle/v1",
+                   "derived_from": ["card:batch/AT-01",
+                                    f"original://sha256/{PIN_HEX}#L3-L9", "co-2b32fe4f123c"],
+                   "computed_at": "2026-10-27T00:00:00Z"},
+        "label": {"status": "oracle_only", "note": "PROPOSED card: a rubric, never gold."},
+        "scoring": {"citations_required": True, "gap_honesty": True}, **changes})
+
+
+# A failed abstention on a card: it names no gap subject, so it is never justified
+# (scorer /20: a blocked abstention naming its gap is justified, held or not); what the
+# host held decides whether it is the state's gap (blocked) or the agent's (wrong).
+ABSTAIN = {"format": sc.ANSWER_FORMAT, "answerability": "blocked",
+           "text": "Not in the record.", "values": [],
+           "gaps": [{"state": "unknown", "subject": "", "reason": "no_match"}]}
+NAMED = {**ABSTAIN, "gaps": [{"state": "unknown", "subject": "brief", "reason": "no_match"}]}
+STATED = {"format": sc.ANSWER_FORMAT, "answerability": "answerable", "text": "It asks 42.",
+          "values": [{"name": "x", "value": "42", "citations": []}], "gaps": []}
+
+
+class OriginalsHeldTests(Temp):
+    """An abstention while the host did not hold one or more of the bytes an item rests on
+    is the state's gap (blocked ``originals_not_held``), never the agent's; held anywhere
+    the host serves from, or not knowable, it stays wrong; a stated answer is always
+    scored."""
+
+    def empty_store(self):
+        """A host state whose case runtime holds an originals store with nothing in it."""
+        from operating.case_originals import OriginalStore
+        from operating.case_runtime import CASE_RUNTIME_DIR
+        OriginalStore(self.root / "state" / CASE_RUNTIME_DIR)
+
+    class GatedHost(fx.FakeHost):
+        """The fake host whose harness read of a captured original answers as the
+        reader's source gate does: ``opens`` the read, a refusal or a failing check;
+        ``kind`` what the gate says of a refusal (``original_refusal``: ``refused``,
+        ``failed``, ``"raises"``, or ``"absent"``: a host that cannot say)."""
+
+        def __init__(self, opens, kind="refused"):
+            super().__init__()
+            self.opens, self.kind, self.original_reads = opens, kind, []
+
+        def __getattribute__(self, name):
+            if name == "original_refusal" and object.__getattribute__(self, "kind") == "absent":
+                raise AttributeError(name)
+            return object.__getattribute__(self, name)
+
+        def original_refusal(self, citation):
+            if self.kind == "raises":
+                raise RuntimeError("gate check failed")
+            return self.kind
+
+        def read(self, name, arguments):
+            citation = arguments.get("citation", "")
+            if name != "plx.source_citation" or not citation.startswith("original://"):
+                return super().read(name, arguments)
+            self.original_reads.append(citation)
+            if self.opens == "raises":
+                raise runner.RunnerError("live_host_read_timeout")
+            return ({"ok": True, "sha256": PIN_HEX} if self.opens is True else
+                    {"ok": False, "error": "original_not_visible", "citation": citation}
+                    if self.opens is False else
+                    {"ok": False, "error": self.opens, "citation": citation})
+
+    def outcome(self, item, answer, opens=True, kind="refused"):
+        host = self.GatedHost(opens, kind)
+        host.state_dir = self.root / "state"
+        agent = runner.ScriptedAgent(lambda prompt, call: fx.final_text(answer))
+        transcript = runner.record(item, agent, host)
+        result = sc.score(item, transcript)
+        return sc.outcome_of(result), transcript.get("originals"), result["codes"]
+
+    def receipt(self, *, unit=True):
+        from operating import captured_originals as co
+        store = self.root / "state" / co.STORE_DIR
+        (store / "receipts" / "r1").mkdir(parents=True)
+        (store / PIN_HEX).write_bytes(b"brief")
+        (store / "receipts" / "r1" / "co-2b32fe4f123c.json").write_text(json.dumps({
+            "schema": co.RECEIPT_SCHEMA, "entry_id": "co-2b32fe4f123c", "sha256": PIN_HEX,
+            "body_status": "read", "stored": f"{co.STORE_DIR}/{PIN_HEX}",
+            "read_at": "2026-10-27T00:00:00Z",
+            "canonical_source": {"drive_id": "d1", "item_id": "i1"} if unit else {}}))
+
+    def test_a_card_abstention_over_an_original_not_held_is_blocked_never_wrong(self):
+        self.empty_store()
+        self.assertEqual(runner.item_pins(card_item()), [f"original://sha256/{PIN_HEX}"])
+        outcome, held, codes = self.outcome(card_item(), ABSTAIN)
+        self.assertEqual((outcome, held), ("blocked", {"pinned": 1, "missing": 1}))
+        self.assertIn("originals_not_held", codes)
+        # an abstention naming its gap is justified, held or not (scorer /20)
+        self.assertEqual(self.outcome(card_item(), NAMED)[:2],
+                         ("justified_abstention", {"pinned": 1, "missing": 1}))
+        # the same state, a stated answer: scored, and its uncited value stays wrong
+        outcome, held, codes = self.outcome(card_item(), STATED)
+        self.assertEqual(outcome, "wrong")
+        self.assertNotIn("originals_not_held", codes)
+
+    def test_bytes_the_host_holds_anywhere_keep_the_abstention_wrong(self):
+        # captured case original with a source unit that the reader's gate opens
+        self.receipt()
+        self.assertEqual(self.outcome(card_item(), ABSTAIN)[:2],
+                         ("wrong", {"pinned": 1, "missing": 0}))
+
+    def test_a_captured_original_the_readers_gate_refuses_is_not_held(self):
+        # Decision 2026-10-27-card-time-pin (note): held means bytes the host serves to
+        # this reader. The source gate refuses it (a chat the Teams capture does not
+        # hold, or one the reader is no member of): an abstention is blocked.
+        self.receipt()
+        outcome, held, codes = self.outcome(card_item(), ABSTAIN, opens=False)
+        self.assertEqual((outcome, held),
+                         ("blocked", {"pinned": 1, "missing": 1, "not_openable": 1}))
+        self.assertIn("originals_not_held", codes)
+        # a stated answer over the same pin is still scored
+        self.assertEqual(self.outcome(card_item(), STATED, opens=False)[0], "wrong")
+
+    def test_a_failed_reader_check_is_unknown_and_never_excuses_an_abstention(self):
+        self.receipt()
+        # ``original_not_visible`` from a failure inside the gate (an exception, an
+        # undecided people exclusion, a source not configured, an unreadable store) is
+        # unknown too, as is a host that cannot say why or whose check fails.
+        for opens, kind in (("raises", "refused"), ("tool_refused", "refused"),
+                            ("original_integrity_failed", "refused"), (False, "failed"),
+                            (False, None), (False, "absent"), (False, "raises"),
+                            (False, "unexpected")):
+            with self.subTest(opens=opens, kind=kind):
+                outcome, held, codes = self.outcome(card_item(), ABSTAIN, opens=opens,
+                                                    kind=kind)
+                self.assertEqual((outcome, held),
+                                 ("wrong", {"pinned": 1, "missing": 0,
+                                            "unreadable": ["reader_check_failed"]}))
+                self.assertNotIn("originals_not_held", codes)
+
+    def test_a_pin_held_beyond_captured_originals_is_not_gated_here(self):
+        # Bytes the SharePoint capture also holds: held as before, no original read.
+        import sqlite3
+        from integrations import capture_sharepoint
+        self.receipt()
+        path = self.root / "state" / capture_sharepoint.STORE_DIR / capture_sharepoint.DB_FILE
+        path.parent.mkdir(parents=True)
+        with contextlib.closing(sqlite3.connect(path)) as db, db:
+            db.execute("CREATE TABLE items (drive_id, item_id, etag, content_status, "
+                       "content_sha256)")
+            db.execute("INSERT INTO items VALUES (?, ?, ?, ?, ?)",
+                       ("d", "i", "e", "captured", PIN_HEX))
+        host = self.GatedHost(False)
+        host.state_dir = self.root / "state"
+        self.assertEqual(runner.originals_held(card_item(), host.state_dir, reader=host),
+                         {"pinned": 1, "missing": 0})
+        self.assertEqual(host.original_reads, [])
+
+    def test_a_captured_original_served_to_nobody_is_not_held(self):
+        self.receipt(unit=False)  # bytes read, no source ACL: served to nobody
+        self.assertEqual(self.outcome(card_item(), ABSTAIN)[:2],
+                         ("blocked", {"pinned": 1, "missing": 1}))
+
+    def test_sharepoint_and_mail_capture_bytes_count_as_held(self):
+        import sqlite3
+        from integrations import capture_mail, capture_sharepoint
+        for store, sql in (
+                (capture_sharepoint, "CREATE TABLE items (drive_id, item_id, etag, "
+                                     "content_status, content_sha256)"),
+                (capture_mail, "CREATE TABLE attachments (content_status, content_sha256)")):
+            self.empty_store()
+            path = self.root / "state" / store.STORE_DIR / store.DB_FILE
+            path.parent.mkdir(parents=True)
+            with contextlib.closing(sqlite3.connect(path)) as db, db:
+                db.execute(sql)
+                columns = 5 if store is capture_sharepoint else 2
+                db.execute(f"INSERT INTO {sql.split()[2]} VALUES "
+                           f"({', '.join(['?'] * columns)})",
+                           (("d", "i", "e") if columns == 5 else ()) + ("captured", PIN_HEX))
+            self.assertEqual(self.outcome(card_item(), ABSTAIN)[:2],
+                             ("wrong", {"pinned": 1, "missing": 0}), store.__name__)
+            path.unlink()
+            # bytes that failed verification are not held
+            with contextlib.closing(sqlite3.connect(path)) as db, db:
+                db.execute(sql)
+                db.execute(f"INSERT INTO {sql.split()[2]} VALUES "
+                           f"({', '.join(['?'] * columns)})",
+                           (("d", "i", "e") if columns == 5 else ()) + ("mismatch:sha256",
+                                                                        PIN_HEX))
+            self.assertEqual(self.outcome(card_item(), ABSTAIN)[0], "blocked", store.__name__)
+            path.unlink()
+
+    def test_a_store_that_cannot_be_read_never_excuses_an_abstention(self):
+        from operating.case_originals import DB_FILE
+        from operating.case_runtime import CASE_RUNTIME_DIR
+        path = self.root / "state" / CASE_RUNTIME_DIR / DB_FILE
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"not a database, " * 64)
+        outcome, held, _ = self.outcome(card_item(), ABSTAIN)
+        self.assertEqual((outcome, held["missing"], held["unreadable"]),
+                         ("wrong", 0, ["case_runtime_originals"]))
+
+    def test_an_unknown_state_never_excuses_an_abstention(self):
+        # no state directory, a state with no originals store at all, a receipt that
+        # cannot be read: unknown, never "not held"; the abstention stays wrong
+        outcome, held, _ = self.outcome(card_item(), ABSTAIN)
+        self.assertEqual((outcome, held["missing"], held["unreadable"]),
+                         ("wrong", 0, ["state_dir"]))
+        (self.root / "state").mkdir()
+        outcome, held, _ = self.outcome(card_item(), ABSTAIN)
+        self.assertEqual((outcome, held["missing"], held["unreadable"]),
+                         ("wrong", 0, ["originals_store_missing"]))
+        self.receipt(unit=False)   # served to nobody: alone it would be blocked
+        self.assertEqual(self.outcome(card_item(), ABSTAIN)[0], "blocked")
+        from operating import captured_originals as co
+        (self.root / "state" / co.STORE_DIR / "receipts" / "r1" / "co-0123456789ab.json"
+         ).write_text("{not json", encoding="utf-8")
+        outcome, held, _ = self.outcome(card_item(), ABSTAIN)
+        self.assertEqual((outcome, held["missing"], held["unreadable"]),
+                         ("wrong", 0, ["captured_originals"]))
+
+    def test_an_item_naming_no_pinned_original_records_none(self):
+        (self.root / "state").mkdir()
+        item = card_item(oracle={**card_item()["oracle"], "derived_from": [
+            "card:batch/AT-01", "co-2b32fe4f123c", "original://sha256/nothex#L1-L2"]})
+        self.assertEqual(self.outcome(item, ABSTAIN)[:2], ("wrong", None))
+
+
+class TimePinTests(unittest.TestCase):
+    def test_a_card_pinned_by_digest_or_bytes_states_no_time_and_a_capture_pin_does(self):
+        for generations in ({"case_cards": "c" * 64}, {"pinned_original": PIN_HEX}):
+            item = card_item(as_known_at={"time": "2026-10-05T21:04:46Z",
+                                          "l1_generations": generations})
+            prompt = runner.build_prompt(item, item["question"]["text"])
+            self.assertNotIn("2026-10-05", prompt)
+            self.assertNotIn("as known at", prompt)
+            self.assertIn("carries no time pin", prompt)
+        for generations in ({"case_cards_as_of": "c" * 64}, {"portal_api": fx.GEN},
+                            {"case_cards": "c" * 64, "portal_api": fx.GEN}, {}):
+            item = card_item(as_known_at={"time": "2026-10-05T21:04:46Z",
+                                          "l1_generations": generations})
+            prompt = runner.build_prompt(item, item["question"]["text"])
+            self.assertIn("Answer as known at 2026-10-05T21:04:46Z", prompt, generations)
+
+
 class WholeRowEvidenceTests(unittest.TestCase):
     """The harness re-reads a cited row whole: column pages are followed to the end; a
     row with a cut cell is an unreadable citation, never a partial row."""
@@ -468,7 +863,99 @@ class ClaudeCodeAgentTests(Temp):
         self.assertEqual((seen["env"]["PATH"], seen["env"]["LC_ALL"]), ("/usr/bin", "C"))
         self.assertEqual(transcript["events"][0]["name"], "plx.find")
         self.assertEqual(transcript["usage"]["tool_calls"], 1)
-        self.assertTrue(sc.score(fx.item(), transcript)["passed"])
+        # The session submitted nothing to the answer gate: its stated values are withheld
+        # from the scored reply (``gate_final_reply``), never scored as stated.
+        self.assertEqual(transcript["agent"]["final_reply"]["withheld"],
+                         ["ordered_qty", "planned_qty"])
+        result = sc.score(fx.item(), transcript)
+        self.assertFalse(result["passed"] or sc.confident_unsupported(result))
+        # The host's MCP start-up gets its own bound, past Claude Code's default.
+        self.assertEqual(seen["env"]["MCP_TIMEOUT"], str(runner.MCP_STARTUP_MS))
+
+    def test_a_timed_out_session_keeps_its_calls_and_states_no_answer(self):
+        # Reproduced live: 64 card sessions hit the session timeout and their transcripts
+        # held nothing (no call, no time spent), so the cause could not be read. The
+        # stream read before the timeout stays; no answer is taken from it.
+        call = {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "a", "name": "mcp__plx__plx_find",
+             "input": {"query": "late"}}]}}
+        partial = json.dumps(call) + "\n" + json.dumps({"type": "assistant", "message": {
+            "content": [{"type": "text", "text": fx.final_text(fx.good_answer())}]}})
+
+        def spawn(argv, cwd, env, timeout):
+            raise subprocess.TimeoutExpired(argv, timeout, output=partial)
+
+        transcript = runner.record(fx.item(), runner.ClaudeCodeAgent(spawn=spawn),
+                                   fx.FakeHost(), evidence_label="live-captures")
+        self.assertEqual([e["name"] for e in transcript["events"]], ["plx.find"])
+        self.assertEqual((transcript["usage"]["subtype"], transcript["usage"]["is_error"]),
+                         ("timeout", True))
+        self.assertIsNone(transcript["answer"])
+        self.assertEqual(transcript["final_text"], "")
+
+    def test_a_timed_out_session_says_which_call_it_was_waiting_on_and_since_when(self):
+        # Nine cards timed out on every run with no per-call times, so the call that
+        # held the session could not be told from slow model turns. The gate's
+        # wall-clock log (serve_gate --timing) pairs with the stream's calls: a call
+        # answered has both times, the one still waiting at the kill has no end.
+        uses = [("a", {"query": "PO-1"}), ("b", {"query": "PO-1"})]
+        lines = [{"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": n, "name": "mcp__plx__plx_find", "input": a}
+            for n, a in uses]}},
+            {"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "a", "is_error": False,
+                 "content": [{"type": "text", "text": "{}"}]}]}}]
+        partial = "\n".join(json.dumps(line) for line in lines)
+
+        def spawn(argv, cwd, env, timeout):
+            gate = json.loads(Path(argv[argv.index("--mcp-config") + 1]).read_text(
+                encoding="utf-8"))["mcpServers"]["plx"]["args"]
+            log = Path(gate[gate.index("--timing") + 1])
+            log.write_text("".join(json.dumps(entry) + "\n" for entry in (
+                {"event": "start", "id": 7, "name": "plx.find",
+                 "arguments": {"query": "PO-1"}, "at": 1000.0},
+                {"event": "start", "id": 8, "name": "plx.find",
+                 "arguments": {"query": "PO-1"}, "at": 1000.5},
+                {"event": "end", "id": 7, "at": 1002.25})) + "not json\n", encoding="utf-8")
+            raise subprocess.TimeoutExpired(argv, timeout, output=partial)
+
+        transcript = runner.record(fx.item(), runner.ClaudeCodeAgent(spawn=spawn),
+                                   fx.FakeHost(), evidence_label="live-captures")
+        first, second = transcript["events"]
+        self.assertEqual((first["started_at"], first["ended_at"], first["elapsed_ms"]),
+                         ("1970-01-01T00:16:40.000Z", "1970-01-01T00:16:42.250Z", 2250))
+        self.assertEqual((second["started_at"], second["ended_at"], second["elapsed_ms"]),
+                         ("1970-01-01T00:16:40.500Z", None, None))
+        self.assertEqual(transcript["usage"]["subtype"], "timeout")
+
+    @unittest.skipUnless(hasattr(os, "killpg"), "process groups")
+    def test_a_timeout_kills_the_whole_session_group(self):
+        # The session's MCP server (a grandchild) used to outlive the killed session and
+        # keep a query running into the next card's time.
+        with tempfile.TemporaryDirectory() as tmp:
+            pidfile = Path(tmp) / "child.pid"
+            script = (f"import subprocess, sys, time; "
+                      f"c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+                      f"open({str(pidfile)!r}, 'w').write(str(c.pid)); "
+                      f"print('line one', flush=True); time.sleep(60)")
+            with self.assertRaises(subprocess.TimeoutExpired) as expired:
+                runner._spawn([sys.executable, "-c", script], tmp, dict(os.environ), 3)
+            self.assertIn("line one", expired.exception.output)
+            child = int(pidfile.read_text())
+            for _ in range(50):
+                try:
+                    os.kill(child, 0)
+                except ProcessLookupError:
+                    break
+                try:
+                    with open(f"/proc/{child}/stat") as stat:
+                        if stat.read().split()[2] == "Z":   # killed, not yet reaped
+                            break
+                except (FileNotFoundError, ProcessLookupError):
+                    break   # reaped between the existence check and the read: gone
+                time.sleep(0.1)
+            else:
+                self.fail("the session's child outlived the timeout")
 
     def test_case_tools_option_never_allows_an_action_tool(self):
         catalog = [{"name": "plx.find", "read_only": True},
@@ -628,7 +1115,7 @@ class CaseHostInjectedTransportTests(Temp):
                             fixture=True)
 
     def test_runs_never_see_each_others_cases_nor_write_the_source_state(self):
-        # Runs shared the persistent case store.
+        # Review 1657540: runs shared the persistent case store.
         from integrations.source_mirror import AUDIENCE_SCHEMA
         from integrations.tests.test_source_mirror import BASE, KEY, Clock, FakeWorkbench
         from integrations.workbench_read_api import WorkbenchReadApiClient
@@ -762,13 +1249,17 @@ class RealAgentEvalTests(Temp):
                              runner.GATE_REFUSAL)
         self.assertEqual((transcript["usage"]["refused_tool_calls"],
                           transcript["agent"]["gate_refused"]), (2, 2))
+        # Every call through the gate, served or refused, has its wall-clock times.
+        for event in transcript["events"]:
+            self.assertIsInstance(event["elapsed_ms"], int)
+            self.assertLessEqual(event["started_at"], event["ended_at"])
         self.assertIn("--max-turns", agent.argv("p", "c"))
         result = sc.score(item, transcript)
         self.assertEqual(result["action_calls"], 2)
         self.assertEqual(sc.outcome_of(result), "wrong")  # an abstention where it has an answer
 
     def test_each_outcome_class_is_scored_with_coverage_and_the_k1_session_cap(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from scripts import eval_real_agent as era
         blocked_item = fx.item(id="dev-F3-0902", question={"text": "Q blocked?"},
                                known_outcome={"answerability": "blocked", "values": [],
@@ -843,7 +1334,7 @@ class RealAgentEvalTests(Temp):
         self.assertEqual((code, printed["blocked_upstream"][0]["cause"]),
                          (0, "host_misconfiguration"))
         # The daily spec validates, runs this module and counts in the real_agent tier.
-        spec = json.loads((runner.REPO_ROOT / "verify" / "live-checks" /
+        spec = json.loads((runner.REPO_ROOT / "devloop" / "live-checks" /
                            "eval.real_agent.json").read_text(encoding="utf-8"))
         self.assertEqual(lv.validate_spec(spec, stem="eval.real_agent"), [])
         self.assertEqual((spec["cadence"], spec["command"][2], lv.spec_tier(spec),

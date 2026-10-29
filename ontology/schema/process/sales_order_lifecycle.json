@@ -330,7 +330,7 @@
       "ShipRelease.released",
       "ShipRelease.fulfilled"
      ],
-     "note": "The single-order loader reads releases by salesOrderId and adds those whose orderRef is the order's FM id only when none carries that orderRef; the list loader (attachListLifecycles) always unions both, deduplicated by id; here both paths are a union (deduplicated by record), so a release found only through the FM id counts even then. Ship releases exist only as Portal-native rows (lineage gold_native_staging under fulfillment.json), so on today's data a release is a lead: this stage and the release_clears_pick gate are unknown until such rows are confirmed."
+     "note": "The single-order loader reads releases by salesOrderId and adds those whose orderRef is the order's FM id only when none carries that orderRef; the list loader (attachListLifecycles) always unions both, deduplicated by id; here both paths are a union (deduplicated by record), so a release found only through the FM id counts even then. Ship releases exist only as Portal-native rows (lineage gold_native_staging under fulfillment.json), so on today's data a release is a lead: this stage and the release_clears_pick gate are unknown until such rows are confirmed (R1)."
     }
    ]
   },

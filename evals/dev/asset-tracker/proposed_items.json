@@ -5,7 +5,7 @@
  "source": {
   "advisory": {
    "id": "advisory:0abdc81c06d0",
-   "ref": "source-records@083dbe71167c59d93cd9569c37398931e22bd635",
+   "ref": "origin/codex/advisory@083dbe71167c59d93cd9569c37398931e22bd635",
    "path": "context/0abdc81c06d0f93fecf079052a9f7d92509dc473b4703d428848194d3a1c4971.json",
    "record_sha256": "01d824fd3bf1cec69699ddd9377ff8055463a491fe9ba2dc158db2d5b559c725",
    "source_revision": "abc75d0af4e9cbf5859b5c7c21901e75d92ef5b8b802483cf6d1bf32638c63a0",
@@ -13,7 +13,7 @@
   },
   "originals_registry": {
    "path": "examples/case_originals.json",
-   "latest_delta": "source record 470a5d60b982",
+   "latest_delta": "advisory context 470a5d60b982 (origin/codex/advisory@024655debc485e122d3bb9948b985ae5c93e4ae3)",
    "rows": {
     "co-2b32fe4f123c": "the brief, Asset Tracker - Context Ontology Use Case (Capitalize vs Expense).md (pinned, 21,154 bytes)",
     "co-14f12ea167ed": "PetraLabX_Asset & Expense_Tracker.xlsx, current revision 197.0 (pinned), linked from the brief",
@@ -131,6 +131,7 @@
    },
    {
     "id": "AT-03",
+    "anchor_gap": "no committed source names a tracker asset: the brief body is unread (record_body_status not_verified) and its advisory names none",
     "layer": "tracing",
     "question": "Which purchase order or invoice paid for this tracker asset?",
     "criterion": "The brief reports no invoice or Sage key in the tracker, so the asset-to-purchase join is unseen: name it as a gap with the keys tried (Sage PO, BC purchase invoice, Portal PO). A vendor, amount or date coincidence is a candidate, never a match.",
@@ -150,6 +151,7 @@
    },
    {
     "id": "AT-04",
+    "anchor_gap": "no committed source names the purchase: the brief body is unread and its advisory names none",
     "layer": "tracing",
     "question": "Did the purchaser classify this purchase as new, replacement or repair, and who did?",
     "criterion": "Give the purchaser's classification with its source and the person who made it. If no source holds it, say so; never infer it from amount, vendor or G/L account. Keep it separate from the CFO's capital/expense decision.",
@@ -166,6 +168,7 @@
    },
    {
     "id": "AT-05",
+    "anchor_gap": "no committed source names the purchase: the brief body is unread and its advisory names none",
     "layer": "tracing",
     "question": "Did the CFO decide to capitalize or expense this purchase, and when?",
     "criterion": "Give the CFO decision with its decider, date and source. Without a recorded decision the answer is open; never derive it from the purchaser's classification or from a threshold (the threshold is an open question and no accounting rule is encoded).",
@@ -214,6 +217,7 @@
    },
    {
     "id": "AT-08",
+    "own_document_audited": {"date": "2026-10-28", "quotes": ["d435000ad0c1f482796e3ed51414240376517c3a349daa6deb5ce8346eac5134", "97fde1a6cb961a8cccdf43b08ca52c034a1b8b9e048af06f2c293764992011a6"]},
     "layer": "comprehension",
     "question": "Which tracker asset IDs are duplicated, and is each pair the same machine?",
     "criterion": "List duplicate IDs as the brief reports them. Do not merge records on a shared ID: a Portal asset tag or Fiix asset id may disambiguate only where readable, and otherwise identity stays unresolved.",
@@ -232,6 +236,7 @@
    },
    {
     "id": "AT-09",
+    "anchor_gap": "no committed source names a tracker asset: the brief body is unread and its advisory names none",
     "layer": "tracing",
     "question": "Which production line is this asset on, and do the tracker, Fiix and Portal agree?",
     "criterion": "Read the line from each source with its provenance. The Portal asset-to-registry link is a fuzzy match and is labelled weak; tracker-versus-Fiix ownership is open, so a conflict is shown, not resolved.",
@@ -266,6 +271,7 @@
    },
    {
     "id": "AT-11",
+    "anchor_gap": "no committed source names the equipment purchase: the brief body is unread and its advisory names none",
     "layer": "comprehension",
     "question": "Does Sage code this equipment purchase by vendor or by invoice?",
     "criterion": "This is an open question in the brief. Answer that it is unknown and name what would settle it (Sage AP/G-L coding, which the reporting API does not serve); do not guess from the served PO relations.",
@@ -281,6 +287,7 @@
    },
    {
     "id": "AT-12",
+    "anchor_gap": "no committed source names a tracker asset: the brief body is unread and its advisory names none",
     "layer": "comprehension",
     "question": "What is this asset's cost, in-service date and book value?",
     "criterion": "The brief reports these blank in the tracker. Give a cost only from a cited purchase document (Decimal, currency stated); never compute depreciation or book value (a non-goal).",

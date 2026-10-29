@@ -2,7 +2,7 @@
 
 ``operating/action_catalog.json`` (``plx-action-catalog/v1``) declares every action
 type the Workbench knows. This module validates that file and runs its generic
-checks; nothing here names a kind of record or a transaction.
+checks; nothing here names a kind of record or a transaction (10-DECISION item 6).
 
 Two kinds:
 
@@ -22,7 +22,7 @@ Two kinds:
   MC approval gate, dispatch refused for every real owner until a typed write
   surface exists (``goal2-real-capability``), read-back of the owner record.
 
-Parameter traces (parameters trace to cited values or the
+Parameter traces (10-DECISION item 7: parameters trace to cited values or the
 user's objective): ``cited_value`` (equals the trimmed text of a field of a cited,
 unchanged record), ``cited_field`` (a field present in that record), ``citation``
 (a citation handle; for proposals one of the proposal's own, resolving unchanged),

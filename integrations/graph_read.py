@@ -29,8 +29,8 @@ the drive eTag (consumed by ``operating.doc_metadata``).
 ``SharePointReader.library_columns`` reads a whole library's column definitions
 and a newest-first list-item sample (which Portal-taxonomy columns exist, which are
 empty, how often each is filled; counts only), for an actor covering the whole drive.
-They are live-unverified until ``verify/live-checks/graph.sharepoint_listitem.json``
-and ``verify/live-checks/graph.sharepoint_library_columns.json`` pass.
+They are live-unverified until ``devloop/live-checks/graph.sharepoint_listitem.json``
+and ``devloop/live-checks/graph.sharepoint_library_columns.json`` pass.
 
 Mail delta paging: ``GraphMailReader.message_delta`` reads one folder's
 ``messages/delta`` stream page by page with no page cap (``$select``
@@ -39,23 +39,23 @@ every server link and every resumed cursor against the folder's own delta
 collection, and yields ``next_url`` / ``delta_url`` for the caller to store.
 ``integrations.capture_mail`` builds the versioned L1 mail capture on it
 (``python3 -m integrations.graph_read mail-capture ...``; counts only).
-Live-unverified until ``verify/live-checks/graph.mail_capture.json`` passes.
+Live-unverified until ``devloop/live-checks/graph.mail_capture.json`` passes.
 ``integrations.capture_sharepoint`` builds the versioned SharePoint capture on
 ``SharePointReader`` (``... sharepoint-capture ...``; counts only), live-unverified
-until ``verify/live-checks/capture.sharepoint.json`` passes; after a full walk it
+until ``devloop/live-checks/capture.sharepoint.json`` passes; after a full walk it
 follows the drive's change feed (``SharePointReader.drive_delta``). ``SharePointSites``
 enumerates the sites and document libraries the app may read for its estate discovery.
 ``integrations.capture_breadth`` runs both over the whole capture scope
 (``... capture-breadth ...``), live-unverified until
-``verify/live-checks/capture.breadth.json`` passes.
+``devloop/live-checks/capture.breadth.json`` passes.
 ``integrations.capture_teams`` captures Teams channel and chat messages on the
 same ``SourceApi`` (``... teams-capture ...``; counts and blocked parts only),
-live-unverified until ``verify/live-checks/graph.teams_capture.json`` passes.
+live-unverified until ``devloop/live-checks/graph.teams_capture.json`` passes.
 ``integrations.capture_sharepoint_lists`` captures the items of the SharePoint lists its
 scope names (``... sharepoint-list-capture ...``; counts and blocked parts only),
-live-unverified until ``verify/live-checks/capture.sharepoint_list_items.json`` passes.
+live-unverified until ``devloop/live-checks/capture.sharepoint_list_items.json`` passes.
 
-Probe (operator shape check for the credentialed live check; prints counts, key
+Probe (operator shape check for the credentialed auditor; prints counts, key
 names and booleans only — no subjects, bodies, names or ids):
 ``python3 -m integrations.graph_read probe [--mailbox UPN] [--content]``; a users or mail
 read Graph refuses for a missing application permission (``probe_block``) is a top-level
@@ -113,6 +113,8 @@ MAX_DELTA_PAGE_SIZE = 200
 # through @odata.nextLink, over at most ATTACHMENT_LIST_PAGES pages.
 MAX_ATTACHMENTS_LISTED = 1000
 ATTACHMENT_LIST_PAGES = 50
+# The folders one mailbox listing follows (``GraphMailReader.list_folders``).
+MAX_FOLDERS = 1000
 
 
 def _addresses(values: Any) -> list[str]:
@@ -192,8 +194,9 @@ class GraphMailReader:
         self._api = api
         self._audience = audience
         # The people-exclusion guard (``build_graph`` attaches it to the api): an
-        # excluded person's mailbox is refused before its lookup, their sent mail
-        # dropped before it is returned; without a usable guard every read refuses.
+        # excluded person's mailbox is refused before its lookup, mail they sent or
+        # receive (To/Cc/Bcc) dropped before it is returned; without a usable guard
+        # every read refuses.
         self.people = people if people is not None else people_exclusion.from_api(api)
         # Directory lookups shared inside a ``directory_cache()`` block only.
         self._directory: dict[str, Any] | None = None
@@ -226,9 +229,16 @@ class GraphMailReader:
         self.people.require()
         self.people.bind(self._api)
 
-    def _sent_by_excluded(self, raw: Mapping[str, Any]) -> bool:
+    def _excluded_party(self, raw: Mapping[str, Any]) -> str | None:
+        """``sender`` when an excluded person sent the message, ``recipient`` when one is
+        a To/Cc/Bcc recipient (the message is kept out of every mailbox's capture, not
+        only theirs), else None."""
         senders = [raw.get(key) for key in ("from", "sender") if isinstance(raw.get(key), Mapping)]
-        return self.people.excluded(_addresses(senders))
+        if self.people.excluded(_addresses(senders)):
+            return "sender"
+        recipients = [entry for key in ("toRecipients", "ccRecipients", "bccRecipients")
+                      if isinstance(raw.get(key), list) for entry in raw[key]]
+        return "recipient" if self.people.excluded(_addresses(recipients)) else None
 
     def _open(self, actor: Actor, mailbox: Any) -> Mailbox:
         if not self._audience.may_read_any(actor, "mail:"):
@@ -411,7 +421,7 @@ class GraphMailReader:
                 if not self._belongs(box, raw, {}, folder_id):
                     dropped += 1
                     continue
-                if self._sent_by_excluded(raw):
+                if self._excluded_party(raw):
                     people_dropped += 1   # never recorded, stored or indexed
                     continue
                 items.append(self._record(box, raw))
@@ -422,6 +432,115 @@ class GraphMailReader:
                    "next_url": None if last else following,
                    "delta_url": following if last else None}
             if last:
+                return
+            url = following
+
+    def list_folders(self, actor: Actor, mailbox: str, *, max_folders: int = MAX_FOLDERS
+                     ) -> dict[str, Any]:
+        """Every mail folder of a readable mailbox (top-level folders and, depth first,
+        their child folders): ``folders`` (``{id, total, parent}``: Graph's
+        ``totalItemCount``, None when absent) and ``complete`` (False when a listing was
+        cut or ``max_folders`` reached: the caller never treats the list as whole).
+        Folder ids only, no names or mail content. Same gate as every message read."""
+        box = self._gate(actor, mailbox)
+        query = {"$select": "id,totalItemCount,childFolderCount", "$top": "100"}
+        found: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        complete = True
+        pending: list[tuple[str | None, str]] = [(None, grammar.url(
+            "graph.mail_folders", query, user=box.object_id))]
+        while pending:
+            parent, url = pending.pop(0)
+            try:
+                raws, completeness = self._api.get_pages(url, max_pages=20, max_items=2000,
+                                                         headers=_IMMUTABLE)
+            except SourceNotFound:
+                complete = False   # a folder gone between two listings
+                continue
+            complete = complete and bool(completeness.get("complete"))
+            for raw in raws:
+                fid = raw.get("id") if isinstance(raw, Mapping) else None
+                if not grammar.TYPES["mail_id"].valid(fid) or fid.lower() in seen:
+                    continue
+                if len(found) >= max_folders:
+                    complete = False
+                    break
+                seen.add(fid.lower())
+                total = raw.get("totalItemCount")
+                found.append({"id": fid, "parent": parent,
+                              "total": total if isinstance(total, int)
+                              and not isinstance(total, bool) else None})
+                children = raw.get("childFolderCount")
+                if not isinstance(children, int) or children > 0:
+                    pending.append((fid, grammar.url("graph.mail_child_folders", query,
+                                                     user=box.object_id, folder=fid)))
+        return {"mailbox": box.object_id, "folders": found, "complete": complete}
+
+    def message_pages(self, actor: Actor, mailbox: str, folder_id: str, *,
+                      before: str, cursor: str | None = None, page_size: int = 50
+                      ) -> Iterator[dict[str, Any]]:
+        """A folder's messages received before ``before``, newest first, page by page
+        (the history a windowed delta round never lists): ``$orderby receivedDateTime
+        desc`` with ``receivedDateTime lt <before>``. ``cursor`` resumes from a stored
+        ``next_url``, which must name this folder's message collection with the same
+        query (``SourceApi.continuation_url``). Each page: ``items`` (records as
+        ``message_delta``), ``provenance_dropped``, ``people_dropped`` (an excluded
+        sender or recipient: never recorded) and ``next_url`` (None at the end). The
+        same gate as every message read before the first page."""
+        if (isinstance(page_size, bool) or not isinstance(page_size, int)
+                or not 1 <= page_size <= MAX_DELTA_PAGE_SIZE):
+            raise ValueError(f"page_size must be 1..{MAX_DELTA_PAGE_SIZE}")
+        if not isinstance(before, str) or _ISO.fullmatch(before) is None:
+            raise ValueError("before must be UTC ISO like 2026-01-01T00:00:00Z")
+        if not grammar.TYPES["mail_id"].valid(folder_id):
+            raise NotVisible()
+        box = self._gate(actor, mailbox)
+        first = grammar.url("graph.folder_messages", {
+            "$select": _MAIL_SELECT, "$top": str(page_size),
+            "$orderby": "receivedDateTime desc",
+            "$filter": f"receivedDateTime lt {before}"}, user=box.object_id, folder=folder_id)
+        if cursor is None:
+            url = first
+        else:
+            url = self._api.continuation_url(first, cursor)
+            if url is None:
+                raise nextlink_refused("graph nextLink escaped the collection (stored cursor)")
+        seen: set[str] = set()
+        while True:
+            if url in seen:
+                raise SourceUnavailable("graph pagination loop")
+            seen.add(url)
+            try:
+                page = self._api.get_json(url, headers=_IMMUTABLE)
+            except SourceNotFound:
+                raise NotVisible() from None
+            except ReadOnlyGuardError:
+                if url == first:
+                    raise
+                raise nextlink_refused("graph nextLink escaped the collection "
+                                       "(refused by the guard)") from None
+            if not isinstance(page, Mapping) or not isinstance(page.get("value"), list):
+                raise SourceUnavailable("graph listing lacks value list")
+            following = None
+            if page.get("@odata.nextLink") is not None:
+                following = self._api.continuation_url(first, page["@odata.nextLink"])
+                if following is None:
+                    raise nextlink_refused("graph nextLink escaped the collection")
+            items, dropped, people_dropped = [], 0, 0
+            for raw in page["value"]:
+                if not isinstance(raw, Mapping):
+                    raise SourceUnavailable("graph listing item invalid")
+                if not self._belongs(box, raw, {}, folder_id):
+                    dropped += 1
+                    continue
+                if self._excluded_party(raw):
+                    people_dropped += 1   # never recorded, stored or indexed
+                    continue
+                items.append(self._record(box, raw))
+            yield {"source": "graph-mail", "mailbox": box.object_id, "folder_id": folder_id,
+                   "items": items, "removed": [], "provenance_dropped": dropped,
+                   "people_dropped": people_dropped, "next_url": following}
+            if following is None:
                 return
             url = following
 
@@ -530,7 +649,7 @@ class GraphMailReader:
             if not self._belongs(box, raw, cache, expected):
                 dropped += 1
                 continue
-            if self._sent_by_excluded(raw):
+            if self._excluded_party(raw):
                 people_dropped += 1
                 continue
             records.append(self._record(box, raw))
@@ -573,8 +692,9 @@ class GraphMailReader:
             raise SourceUnavailable("Graph message read returned another identity")
         if not self._belongs(box, raw, {}, expected_folder_id):
             raise NotVisible()
-        if self._sent_by_excluded(raw):
-            raise people_exclusion.PeopleExcluded("sender")
+        party = self._excluded_party(raw)
+        if party:
+            raise people_exclusion.PeopleExcluded(party)
         body, truncated = None, False
         if include_body:
             content = (raw.get("body") or {}).get("content") if isinstance(raw.get("body"), Mapping) else ""
@@ -713,6 +833,17 @@ def quick_xor_hash(data: bytes) -> str:
     for index, byte in enumerate(len(data).to_bytes(8, "little")):
         digest[12 + index] ^= byte
     return base64.b64encode(bytes(digest)).decode("ascii")
+
+
+def undecided_not_visible(why: str) -> NotVisible:
+    """A ``NotVisible`` the source did not decide: ``why`` is ``not_found`` (HTTP 404: the
+    item is deleted or was never there) or ``acl_unreadable`` (its permission list was not
+    read in full). Same type and message as every ``NotVisible``, so no answer changes;
+    the ``undecided`` attribute tells an in-process caller it is no access refusal
+    (``CaptureCaseHostTools._live_check``). Never part of a tool result."""
+    exc = NotVisible()
+    exc.undecided = why  # type: ignore[attr-defined]
+    return exc
 
 
 def permission_acl(perms: Sequence[Mapping[str, Any]], completeness: Mapping[str, Any]
@@ -894,7 +1025,7 @@ class SharePointReader:
         try:
             raw = self._api.get_json(url)
         except SourceNotFound:
-            raise NotVisible() from None
+            raise undecided_not_visible("not_found") from None
         if not isinstance(raw, Mapping) or raw.get("id") != item_id:
             raise SourceUnavailable("drive item read returned another identity")
         return raw
@@ -1217,7 +1348,10 @@ class SharePointReader:
             raise NotVisible()
         acl = self._permissions(item_id, required=self._audience.source_acl_required_any(keys))
         if not self._audience.visible_all(actor, keys, acl):
-            raise NotVisible()
+            # The audience allowed the path: a permission list not read in full (a
+            # transient 429/5xx/timeout, a 404, a truncated list) denies undecided.
+            raise (undecided_not_visible("acl_unreadable")
+                   if acl.get("status") not in ("read", "derived") else NotVisible())
         return raw, path, acl
 
     def get_item(self, actor: Actor, item_id: str) -> dict[str, Any]:
@@ -2263,7 +2397,7 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
         return 1
     print(json.dumps(result, indent=1, sort_keys=True))
     # A capture whose only failure is typed incomplete scope (blocked_upstream, cause
-    # later_ask) exits 0: the live check records it blocked, not passed.
+    # later_ask) exits 0: the verifier records it blocked, not passed.
     blocked = args.command == "sharepoint-capture" and bool(result.get("blocked_upstream"))
     return 0 if result.get("ok", True) or blocked else 1
 

@@ -11,7 +11,7 @@ in-process ``FakeBc``) holds synthetic posted sales invoices, and
 retired script is the join pick ``pick=SalesInvoice>SalesOrder``: the root reasons it
 recorded (``no_portal_row_for_external_document_number``, ``not_in_served_replica``,
 ...) are the join's typed reasons. Old tests map to these in
-``docs/decisions/2026-10-07-allowlist-3-coverage-map.md``.
+``devloop/DECISIONS/2026-10-07-allowlist-3-coverage-map.md``.
 
 Evidence label: injected-transport (no network, no real PLX data).
 """
@@ -218,7 +218,10 @@ def customer_link(opener: live_ws.CaseOpener, tier: str) -> None:
     accepted link, with its reviewer, time and review id)."""
     import sqlite3
 
-    match = ("link_type LIKE '%same_record_as' AND ? IN (from_object, to_object) "
+    # The stored-key link; the company-name candidate the projector also writes for the
+    # pair is a separate lead this case never decides.
+    match = ("link_type LIKE '%same_record_as' AND binding_kind <> 'text_match' "
+             "AND ? IN (from_object, to_object) "
              "AND 'Customer:bc.customers:' IN (substr(from_object, 1, 22), "
              "substr(to_object, 1, 22))")
     db = sqlite3.connect(opener.projection())
@@ -291,10 +294,17 @@ class OrderCaseGenericTest(unittest.TestCase):
         self.assertFalse({r for r in po["PO100777"] if r[1] in ("po-b", "pol-2", "rc-1")})
         self.assertFalse({r for r in po["PO100888"] if r[1] in ("po-a", "pol-1", "3301")})
         # Quantities in two units are never added up: each line's quantity is its own
-        # cited fact with its own row's unit.
+        # cited fact with its own row's unit, and a total sums only one unit's lines
+        # (both lines here are ea, as the oracle's per-unit sum), stated in that unit.
         statements = [item["statement"] for item in findings(
             world.runtime.cases.get(INVESTIGATOR, cases["SO100201"]["case_id"]))]
-        self.assertFalse([s for s in statements if re.search(r"= 150(\.0)?\b", s)])
+        self.assertLessEqual(
+            {"SalesOrderLine.ordered_quantity = 100.0 ea (quantity role: ordered).",
+             "SalesOrderLine.ordered_quantity = 50 ea (quantity role: ordered)."},
+            set(statements))
+        self.assertEqual([s for s in statements if re.search(r"= 150(\.0)?\b", s)],
+                         ["Ordered, produced and shipped quantities of a sales order: "
+                          "ordered = 150 ea (computed)."])
 
     def test_customer_po_roots_its_order_and_a_name_in_its_field_is_never_echoed(self):
         world = OrderWorld(self)
@@ -541,7 +551,7 @@ class OrderCaseGenericTest(unittest.TestCase):
             live_ws.parse_open("pick=PurchaseOrder>ReceiptLine")
 
     def test_the_pick_turns_around_when_the_newest_invoices_name_no_portal_row(self):
-        """BC and the served replica hold different order populations,
+        """gap-6d35a1af53db: BC and the served replica hold different order populations,
         so the newest PICK_SCAN invoices all name rows the replica never holds while an
         older one is the twin of a Portal order. The pick then starts from the Portal
         orders the projection shows an invoice carrying and decides each through the same
@@ -625,7 +635,7 @@ class OrderCaseGenericTest(unittest.TestCase):
         self.assertNotIn("plx.find", seen)
 
     def test_the_reverse_pick_asks_bc_for_the_portal_orders_the_capture_never_read(self):
-        """Live 2026-10-16: the host's BC capture held two invoices, both
+        """gap-6d35a1af53db, live 2026-10-16: the host's BC capture held two invoices, both
         naming a prefix-setting database's rows, against 800 Portal orders, so no
         projection intersection could join. The reverse direction then asks BC itself,
         GET only through the live reader: for each newest Portal order the investigator
@@ -723,7 +733,7 @@ class OrderCaseGenericTest(unittest.TestCase):
         self.assertEqual((opened["missing"], bc["hits"], bc["scanned"], bc["lookups"],
                           bc["requests"]), ("pick_none_found", 0, 0, 0, 0), opened)
         self.assertFalse([url for _m, url, _h in fake.calls if "$filter" in unquote(url)])
-        # The read policy withholds company 1's invoices from the
+        # Review of 708f1e4f5: the read policy withholds company 1's invoices from the
         # investigator while the live audience allows them. The reverse lookups go
         # through plx.find's one resolver path, so that unit is withheld before any
         # request: no $filter GET to company 1, its twin never found; the others asked.
@@ -755,7 +765,7 @@ class OrderCaseGenericTest(unittest.TestCase):
         self.assertEqual(opened["pick"]["directions"]["reverse"]["bc"]["reader"], False)
 
     def test_the_reverse_pick_keeps_the_join_rules_its_order_and_its_budget(self):
-        """The reverse direction refuses what the forward one refuses
+        """Review of da08575a8: the reverse direction refuses what the forward one refuses
         (a case variant of a customer PO, one number in two BC companies), proposes the
         order-number twins before the customer-PO ones (a PO many orders share, such as
         "VERBAL", never crowds them out of the PICK_SCAN slots), stops at its deadline
@@ -902,7 +912,7 @@ class OrderCaseGenericTest(unittest.TestCase):
         self.assertLess(directions["forward"]["scanned"], len(newer))
 
     def test_a_live_forward_match_is_found_again_over_bc_so_cross_scope_holds(self):
-        """A forward root's plx.find the projection cannot answer asks
+        """Review of 03b9d86de: a forward root's plx.find the projection cannot answer asks
         live only the Portal; when that live find shows the Portal order a company-scoped
         carrier would root on, the find is repeated over every family, so a BC record of
         another company holding the same number still makes the invoice cross_scope,
@@ -1064,11 +1074,11 @@ class OrderCaseGenericTest(unittest.TestCase):
         books map that pins the fixture companies) over the in-process FakeWorkbench and
         FakeBc; its expectations hold on the real summary, which records counts and enums
         only; a Portal answering HTTP 500 at capture meets expect_blocked."""
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from integrations.http import SourceHttpError
         from integrations.tests.test_live_source_adapters import ENV
 
-        spec = json.loads((ROOT / "verify" / "live-checks" / "case.unfamiliar_order.json")
+        spec = json.loads((ROOT / "devloop" / "live-checks" / "case.unfamiliar_order.json")
                           .read_text("utf-8"))
         self.assertEqual(lv.validate_spec(spec, stem="case.unfamiliar_order"), [])
         self.assertEqual(spec["cadence"], "daily")
@@ -1110,7 +1120,7 @@ class OrderCaseGenericTest(unittest.TestCase):
                           {"no_identifier": 4, "scope_unread": 1}))
         for value in ("CPO-7781", "C0001", "Customer One", "so-a", "PSI-"):
             self.assertNotIn(value, text)
-        # Every invoice the pick scans going forward names no Portal row,
+        # gap-6d35a1af53db: every invoice the pick scans going forward names no Portal row,
         # an older one is a Portal order's twin. The pick turns around, the case is cited
         # across both systems and the summary counts each direction (counts only).
         unmatched = [invoice(10 + n, f"SO3{n:05d}", f"{10 + n:02d}") for n in range(3)]
@@ -1164,15 +1174,15 @@ class OrderCaseGenericTest(unittest.TestCase):
                          [], document)
 
     def test_a_disjoint_replica_reads_blocked_source_gap_and_other_causes_still_fail(self):
-        """BC drains from another environment than the served replica,
+        """gap-6d35a1af53db: BC drains from another environment than the served replica,
         so the two share no order. The pick that ran both directions to the end and
         joined nothing (every reason no_portal_row_* / not_in_served_replica, reverse hits
         0) reads blocked source_gap with failed 0; a cut clock, another reason or an
         intersecting fixture does not; month buckets are counts only."""
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from integrations.tests.test_live_source_adapters import ENV
 
-        spec = json.loads((ROOT / "verify" / "live-checks" / "case.unfamiliar_order.json")
+        spec = json.loads((ROOT / "devloop" / "live-checks" / "case.unfamiliar_order.json")
                           .read_text("utf-8"))
         self.assertEqual(lv.validate_spec(spec, stem="case.unfamiliar_order"), [])
         environ = {**ENV, "PLX_WORKBENCH_API_URL": BASE, "PLX_WORKBENCH_API_KEY": KEY}
@@ -1235,11 +1245,11 @@ class OrderCaseGenericTest(unittest.TestCase):
         spec, and the command runs in-process under that env, guarded as ``ENV_GUARD`` guards
         it. Its BC-only live audience builds no Graph reader (``build_live_readers``, the one
         filter), so it passes reading no Graph or SharePoint variable."""
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from integrations.tests.test_live_source_adapters import ENV
         from tests.test_live_readers_filter import GRAPH_PREFIXES, GuardedEnv, Undeclared
 
-        spec = json.loads((ROOT / "verify" / "live-checks" / "case.unfamiliar_order.json")
+        spec = json.loads((ROOT / "devloop" / "live-checks" / "case.unfamiliar_order.json")
                           .read_text("utf-8"))
         self.assertFalse([name for name in (*spec["requires_env"],
                                             *spec.get("optional_env", []))

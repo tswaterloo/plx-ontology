@@ -4,8 +4,8 @@
         --cycle SETS [--cycle SETS ...] [--budget-seconds N] [--sample N] [--bc-books FILE] \
         [--previous-report DAILY.json]
 
-The live proof of two employee-sourced requirements (usability,
-investigate claims) as the employee met them: ``operating.host`` cycles on a
+The live proof of two employee-sourced directives (0e2ad8516c64 usability,
+994e0179c227 investigate claims) as the employee met them: ``operating.host`` cycles on a
 BC-only host configuration (no Portal configured), then the tools the host's ``mcp``
 serves over that state (``Host.served_tools``), called as an authorized MANAGER.
 
@@ -21,7 +21,7 @@ The reader is ``READER`` with the clearance the Portal's MANAGER role bootstraps
 example employee policy (``manager_clearance``), reported with ``clearance_source`` naming that
 example file: an example mapping, never a production clearance. ``OUTSIDER`` holds no grant.
 
-* ``schema`` (usability requirement (a)): ``plx.schema`` paged by its cursor to the end;
+* ``schema`` (directive 0e2ad8516c64 (a)): ``plx.schema`` paged by its cursor to the end;
   every page that says ``truncated`` must carry a ``next_cursor``
   (``truncated_without_cursor``), and the pages together list every declared object, link,
   event and action type once (``sections.*.missing`` / ``duplicates``).
@@ -36,7 +36,7 @@ example file: an example mapping, never a production clearance. ``OUTSIDER`` hol
   (``portal_freshness_gaps``) but its ``source_not_configured`` gap
   (``portal_not_configured_gaps``: the reader holds the Portal relations, so a find that
   matches nothing names the Portal among the sources it searched).
-* ``investigate`` (LOG-09): ``plx.investigate`` on up to
+* ``investigate`` (directive 994e0179c227, LOG-09): ``plx.investigate`` on up to
   ``--sample`` roots per family. The families are the ``ontology/plans`` plans (as the host
   loads them) with a root type the capture holds: one the projection holds or a BC entity
   set of a cycle binds (``plan_families``), so a new plan is run with no edit here. Roots

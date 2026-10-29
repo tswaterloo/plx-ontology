@@ -123,7 +123,7 @@ class PackagingOracleRootTest(unittest.TestCase):
         self.assertNotIn(FM_PO, reads)
 
     def test_a_spelling_plx_find_normalises_is_the_same_row_never_a_gap(self):
-        """The fixture's own spelling PO#5447 is the row
+        """Direction review of d5d78266: the fixture's own spelling PO#5447 is the row
         ``plx.find`` resolves PO5447 to (``ontology.identifiers.normalize``), so the oracle
         reaches a verdict on it: agree on that row, disagree on any other, never a gap."""
         from ontology import identifiers
@@ -205,3 +205,177 @@ class PackagingOracleRootTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OneReaderAcrossCallersTest(unittest.TestCase):
+    """One store read by the three callers of ``po_status.read``: ``plx.process``
+    (process_lateness over ``ContextSource``), the proactive engine's lateness rule
+    (``StoreSource`` over the saved store) and this oracle (``ToolSource`` over the plx
+    tools as one principal calls them) give each PO the same status and verdict: a Portal
+    Complete PO with a fully received BC twin (closed, neither), a late PO and an at-risk
+    PO. A twin link hidden from a restricted reader leaves that reader blind in every
+    caller. Synthetic records over the real schema; evidence label: isolated-fixture."""
+
+    TODAY = "2099-02-01"   # tests.test_ontology_tools_process.NOW
+
+    @classmethod
+    def setUpClass(cls):
+        from ontology.tests import test_po_lateness as pl
+
+        pl.setUpModule()
+        cls.pl = pl
+
+    def po(self, s, key, status, need, ordered=("10", "0"), promise=None):
+        po = self.pl.portal_po(s, key=key, status=status, number=f"PO-{key}", ordered=ordered)
+        s.val(po, "expected_date", "date", need)
+        s.event("PurchaseOrder.expected", po, need)
+        if promise:
+            sc = self.pl.confirm(s, po, f"{key}-sc", promise, "2099-01-02")
+            s.val(sc, "delivery_date", "date", promise)
+        return po
+
+    def world(self, n=1, hidden="[]"):
+        from tests import test_ontology_tools_process as tp
+
+        s = tp.Store()
+        expected = {}
+        for i in range(n):
+            done = self.po(s, f"done-{i}", "Complete", "2099-01-15")
+            twin = self.pl.bc_po(s, key=f"bc-{i}", fully_received="true", status="Open")
+            s.link("PurchaseOrder.same_record_as", done, twin, tier="verified",
+                   kind="same_record")
+            # plx.process measures a received PO on its receipt date: on time, neither
+            self.pl.receipt(s, done, f"rc-{i}", "2099-01-10")
+            late = self.po(s, f"late-{i}", "Pending", "2099-01-20", promise="2099-01-25")
+            risky = self.po(s, f"risk-{i}", "Pending", "2099-02-10", promise="2099-02-20")
+            # a BC order dated only by its open line's expectedReceiptDate, and the Portal
+            # order its number matches capped at lead (bc_company_not_known), as live:
+            # the lead is no twin, so its later header date never governs in any caller
+            bc_late = self.pl.bc_po(s, key=f"bc-late-{i}", fully_received="false")
+            self.pl.line(s, bc_late, f"bc-late-{i}-1", "100", "0",
+                         binding="bc.purchase_order_lines", due="2099-01-12")
+            lead = self.po(s, f"lead-{i}", "Complete", "2099-03-01", ordered=("10", "10"))
+            s.link("PurchaseOrder.same_record_as", lead, bc_late, tier="lead",
+                   kind="same_record")
+            expected.update({done: ("closed", "RECEIVED", "neither"),
+                             late: ("open", "SUBMITTED", "late"),
+                             risky: ("open", "SUBMITTED", "at_risk"),
+                             bc_late: ("open", None, "late")})
+        if hidden != "[]":
+            s.conn.execute("UPDATE links SET markings = ? WHERE link_type = ?",
+                           (hidden, "PurchaseOrder.same_record_as"))
+        return s, expected
+
+    def process(self, s, oid, actor):
+        from datetime import date
+
+        out = self.pl.tools_at(s).process({"from": oid, "process": self.pl.PROCESS},
+                                          actor).result
+        (entry,) = out["lateness"]
+        state = entry["state"]
+        verdict = ("late" if state == "late" else
+                   "at_risk" if entry.get("at_risk") else
+                   "neither" if state in ("not_applicable", "not_due", "on_time") else
+                   "unknown")
+        return verdict, date.fromisoformat(self.TODAY)
+
+    def engine(self, s, path):
+        from datetime import date
+        import sqlite3
+
+        from operating import proactive_engine as pe
+
+        target = sqlite3.connect(path)
+        s.conn.commit()
+        s.conn.backup(target)
+        target.close()
+        st = pe._Store(path)
+        self.addCleanup(st.close)
+        result = pe._late_or_unconfirmed_po(st, date.fromisoformat(self.TODAY))
+        verdicts = {}
+        for gap in result["gaps"]:
+            # an unconfirmed open PO past its need date is late too (its days late stated)
+            late = gap["kind"] == "late_po" or (gap["kind"] == "unconfirmed_po" and (
+                gap.get("follow_up") or {}).get("days_late") is not None)
+            verdicts[gap["object_id"]] = ("at_risk" if "after the need date" in gap["summary"]
+                                          else "late" if late else gap["kind"])
+        return st, result, verdicts
+
+    def oracle_call(self, s, actor):
+        from operating import ontology_tools as ot
+        from operating import ontology_tools_traverse as tt
+
+        base = self.pl.tools_at(s).base if hasattr(self.pl.tools_at(s), "base") else None
+        base = base or ot.OntologyTools(ot.StoreReader(s.conn), self.pl.tp.POLICY,
+                                        schema=self.pl.tp.SCHEMA, contracts=self.pl.CONTRACTS,
+                                        clock=lambda: self.pl.tp.NOW)
+        table: dict = {}
+        ot.register(table, base)
+        tt.register(table, tt.TraverseTools(base))
+        return lambda name, args: table[name]["handler"](args, actor)
+
+    def test_three_callers_one_status_and_verdict(self):
+        import tempfile
+        from datetime import date
+        from pathlib import Path
+        import time
+
+        from operating import po_status
+
+        today = date.fromisoformat(self.TODAY)
+        for n in (1, 10, 60):
+            with self.subTest(n=n), tempfile.TemporaryDirectory() as tmp:
+                started = time.monotonic()
+                s, expected = self.world(n)
+                st, result, gaps = self.engine(s, Path(tmp) / "store.sqlite")
+                src = po_status.StoreSource(st)
+                call = self.oracle_call(s, self.pl.STAFF)
+                self.assertEqual(result["counts"]["classes"]["closed"], 2 * n)
+                self.assertEqual(result["counts"]["classes"]["open"], 3 * n)
+                self.assertEqual((result["counts"]["late"], result["counts"]["at_risk"]),
+                                 (2 * n, n))
+                for oid, (cls, code, verdict) in expected.items():
+                    engine = po_status.read(src, oid, today)
+                    tools = oracle.po_read(call, oid, today)
+                    for read in (engine, tools):
+                        self.assertEqual((read.status.cls, read.status.code, read.verdict[0]),
+                                         (cls, code, verdict), (oid, read))
+                        self.assertFalse(read.blind, oid)
+                    self.assertEqual(self.process(s, oid, self.pl.STAFF)[0], verdict, oid)
+                    self.assertEqual(gaps.get(oid, "neither"), verdict, oid)
+                self.assertLess(time.monotonic() - started, 60, n)
+
+    def test_a_hidden_twin_link_leaves_the_restricted_reader_blind_in_every_caller(self):
+        import json
+
+        s, expected = self.world()
+        late = next(oid for oid, want in expected.items() if want[2] == "late")
+        # the FM copy of the late Portal PO: its header alone has no quantity, the Portal
+        # twin's lines decide; the identity link carries a marking the sales reader lacks
+        fm = s.obj("PurchaseOrder:portal.fm_generated_purchase_order:fm-late", "fm_bronze")
+        s.val(fm, "fm_status", "text", "Pending")
+        s.link("PurchaseOrder.same_record_as", late, fm, tier="verified", kind="same_record")
+        s.conn.execute("UPDATE links SET markings = ? WHERE to_object = ?", ('["finance"]', fm))
+        # the staff reader reads the FM root with its Portal twin: open and late
+        read = oracle.po_read(self.oracle_call(s, self.pl.STAFF), fm, self.today())
+        self.assertEqual((read.status.cls, read.verdict[0], read.blind), ("open", "late", False))
+        self.assertEqual(set(read.members), {fm, late})
+        self.assertEqual(self.process(s, fm, self.pl.STAFF)[0], "late")
+        # the restricted reader may not read the identity link: blind, never decided from
+        # the part it can read, and the twin is not named to it
+        read = oracle.po_read(self.oracle_call(s, self.pl.SALES), fm, self.today())
+        self.assertEqual((read.status.cls, read.verdict, read.blind),
+                         ("unknown", ("unknown", "status_unknown"), True))
+        self.assertEqual(read.members, [fm])
+        out = self.pl.tools_at(s).process({"from": fm, "process": self.pl.PROCESS},
+                                          self.pl.SALES).result
+        (entry,) = out["lateness"]
+        self.assertEqual((entry["state"], entry["late"], entry["gap"]["reason"]),
+                         ("undetermined", None, "status_unknown"))
+        self.assertNotIn("late-0", json.dumps(out))
+        self.assertNotIn("Pending", json.dumps(out))
+
+    def today(self):
+        from datetime import date
+
+        return date.fromisoformat(self.TODAY)

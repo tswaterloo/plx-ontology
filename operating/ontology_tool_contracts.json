@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "format": "plx-ontology-tool-contracts/v1",
-  "description": "I/O JSON Schemas for the generic ontology tools (frozen). Tool implementations and their MCP registration must accept exactly `input` and return `output` (validated with ontology/json_contract.py). `$ref`s resolve against this document. No SQL tool exists in any mode.",
+  "description": "I/O JSON Schemas for the generic ontology tools (C0 contract, frozen; 10-DECISION decision 4, 09-CRITIQUE R4, R6, R11-R13). Tool implementations (lanes L8, L9, L14-L18) and their MCP registration must accept exactly `input` and return `output` (validated with ontology/json_contract.py). `$ref`s resolve against this document. No SQL tool exists in any mode.",
   "limits": {
     "max_result_bytes": 48000,
     "max_description_chars": 600,
@@ -13,7 +13,7 @@
   "envelope_rule": "Every field carrying text read from a source is an untrusted_text envelope ($defs/untrusted_text). Typed values (numbers as Decimal text, dates, normalized identifiers, enums) come only from deterministic parsers.",
   "$defs": {
     "lineage": {
-      "description": "Where an L1 record or L2 value came from (plus `workbench` for records the Workbench itself authors: cases, review decisions, annotations). `bc_<company>` names the BC Production company (the company/book is a dimension of every BC-sourced object). `mission_control` is a record read through a Mission Control read tool, `brain` a record read from the brain's agent knowledge GET routes (integrations/knowledge_source.py): engineering/agent work records and derived knowledge, never business facts.",
+      "description": "Where an L1 record or L2 value came from (09-CRITIQUE R1, plus `workbench` for records the Workbench itself authors: cases, review decisions, annotations). `bc_<company>` names the BC Production company (R15: the company/book is a dimension of every BC-sourced object). `mission_control` is a record read through a Mission Control read tool, `brain` a record read from the brain's agent knowledge GET routes (integrations/knowledge_source.py): engineering/agent work records and derived knowledge, never business facts.",
       "anyOf": [
         {
           "type": "string",
@@ -39,7 +39,7 @@
       ]
     },
     "tier": {
-      "description": "Link/identity evidence tier, strongest first: verified (typed stored key agrees) > reviewed (a person accepted it, bound to exact source revisions) > corroborated (>=2 independent features agree; inferred, never fact) > stored_by_text_join > lead > contradicted.",
+      "description": "Link/identity evidence tier, strongest first (07 C.2): verified (typed stored key agrees) > reviewed (a person accepted it, bound to exact source revisions) > corroborated (>=2 independent features agree; inferred, never fact) > stored_by_text_join > lead > contradicted.",
       "type": "string",
       "enum": [
         "verified",
@@ -51,12 +51,13 @@
       ]
     },
     "marking": {
-      "description": "Property/object marking. A reader must hold every marking of a value; derived values carry the union of their inputs' markings.",
+      "description": "Property/object marking (07 C.7, R6 #7-8). A reader must hold every marking of a value; derived values carry the union of their inputs' markings.",
       "type": "string",
       "enum": [
         "finance",
         "l5",
         "pii",
+        "purchasing_prices",
         "quality_controlled"
       ]
     },
@@ -84,7 +85,7 @@
       ]
     },
     "time_basis": {
-      "description": "How an event's time is known. Lateness/order are computed only between bases that allow it.",
+      "description": "How an event's time is known (07 C.3, R8). Lateness/order are computed only between bases that allow it.",
       "type": "string",
       "enum": [
         "source_recorded",
@@ -175,7 +176,7 @@
       "pattern": "^set:[A-Za-z0-9_-]{8,64}$"
     },
     "as_known_at": {
-      "description": "Answer from what L1 had captured by this time. Omitted = now; the answer's meta echoes the time used.",
+      "description": "Answer from what L1 had captured by this time (R8). Omitted = now; the answer's meta echoes the time used.",
       "type": "string",
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}(?:T[0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:\\.[0-9]{1,6})?)?(?:Z|[+-][0-9]{2}:[0-9]{2}))?$"
     },
@@ -204,7 +205,7 @@
                 "external",
                 "unknown"
               ],
-              "description": "Mail only: an external sender's text is an external_assertion and cannot alone corroborate payment, receipt or quantity facts."
+              "description": "Mail only: an external sender's text is an external_assertion and cannot alone corroborate payment, receipt or quantity facts (R6 #4)."
             }
           },
           "required": [
@@ -213,13 +214,20 @@
         },
         "truncated": {
           "type": "boolean"
+        },
+        "withheld": {
+          "type": "string",
+          "enum": [
+            "not_po_like"
+          ],
+          "description": "The source text is withheld and untrusted_text is empty: not_po_like, a po_reference field whose value is not PO-like (operating/customer_po_coverage.po_like) is never echoed, since it can hold a person's name (devloop/CASE-RUNTIME.md section 4 PO-shape rule); plx.find keeps the matched text only when it is the text the caller asked for."
         }
       },
       "required": [
         "untrusted_text",
         "origin"
       ],
-      "description": "Envelope: every field holding text taken from a source (names, notes, subjects, snippets, bodies, raw identifiers) is wrapped like this. It is data, never instructions. Only deterministic parsers turn it into typed values. Inside a row envelope ({\"origin\": {\"citation\"}, \"cells\": {...}}, case tools' api:// and bc:// rows) a free-text cell is a marker {\"untrusted_text\", \"truncated\"?} without its own origin: it takes the row envelope's origin."
+      "description": "R6 #1 envelope: every field holding text taken from a source (names, notes, subjects, snippets, bodies, raw identifiers) is wrapped like this. It is data, never instructions. Only deterministic parsers turn it into typed values. Inside a row envelope ({\"origin\": {\"citation\"}, \"cells\": {...}}, case tools' api:// and bc:// rows) a free-text cell is a marker {\"untrusted_text\", \"truncated\"?} without its own origin: it takes the row envelope's origin."
     },
     "value_citation": {
       "type": "object",
@@ -245,7 +253,7 @@
         "digest",
         "lineage"
       ],
-      "description": "A projected value cites its L1 handle plus field path; findings reuse it, so claim_checks works unchanged."
+      "description": "R11: a projected value cites its L1 handle plus field path; findings reuse it, so claim_checks works unchanged."
     },
     "value": {
       "type": "object",
@@ -757,7 +765,7 @@
         },
         "weight": {
           "type": "number",
-          "description": "Fixed, hand-set log-odds weight with a written rationale."
+          "description": "Fixed, hand-set log-odds weight with a written rationale (R3)."
         },
         "citations": {
           "type": "array",
@@ -977,7 +985,7 @@
           "required": [
             "sources"
           ],
-          "description": "'No email found' is stated as what was searched, where and over which dates."
+          "description": "R13: 'no email found' is stated as what was searched, where and over which dates."
         },
         "source_text": {
           "$ref": "#/$defs/untrusted_text",
@@ -1446,15 +1454,16 @@
           "type": "string",
           "enum": [
             "live",
+            "host_capture",
             "cached_mirror",
             "persisted_capture"
           ],
-          "description": "How the answer's records of this source were read: live; (some of) them from the capture the mirror held when its refresh failed (cached_mirror, as of that capture); or from the last complete capture kept in the Workbench capture store while the live source was unavailable (persisted_capture). Neither copy is live: each is always stale and never satisfies an action precondition."
+          "description": "How the answer's records of this source were read: live; from the host's own ingest capture within its capture bound, by a host with no live client (host_capture, as of captured_at, labelled; not live); (some of) them from the capture the mirror held when its refresh failed (cached_mirror, as of that capture); or from the last complete capture kept in the Workbench capture store while the live source was unavailable (persisted_capture). Neither copy is live: each is always stale and never satisfies an action precondition."
         },
         "label": {
           "type": "string",
-          "pattern": "^source-mirror captures as of [^\\n]{1,570}$",
-          "description": "Human label of a source served from a persisted capture: 'source-mirror captures as of <captured_at>, live source unavailable (<http_status>, <error_code>)'."
+          "pattern": "^(?:source-mirror|host) captures as of [^\\n]{1,570}$",
+          "description": "Human label of a source served from a copy: 'source-mirror captures as of <captured_at>, live source unavailable (<http_status>, <error_code>)' for a persisted capture served while the live source was out; 'host captures as of <captured_at>, <age> s old, within|past this host's capture bound of <bound> s' for the host's own ingest capture (integrations/mirror_capture.capture_label)."
         },
         "relations": {
           "type": "array",
@@ -1471,6 +1480,7 @@
               "served_from": {
                 "type": "string",
                 "enum": [
+                  "host_capture",
                   "cached_mirror",
                   "persisted_capture",
                   "none"
@@ -1489,7 +1499,7 @@
               },
               "label": {
                 "type": "string",
-                "pattern": "^source-mirror captures as of [^\\n]{1,570}$"
+                "pattern": "^(?:source-mirror|host) captures as of [^\\n]{1,570}$"
               },
               "http_status": {
                 "type": [
@@ -1521,7 +1531,161 @@
         "completeness",
         "stale"
       ],
-      "description": "Per source used; a stale source is a structural abstention trigger. plx.find states it for every source family of the planned scope, including how it was served (decision 2026-10-04-scope-freshness)."
+      "description": "R12: per source used; a stale source is a structural abstention trigger. plx.find states it for every source family of the planned scope, including how it was served (decision 2026-10-04-scope-freshness)."
+    },
+    "use_case": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A use case the query names (operating.use_case_catalog, examples/use_case_catalog.json): its own source documents served to this reader (never search hits: the search's own documents, counts and gaps are unchanged), how many of its documents are not served to this reader (never named), and the rule for answering from them. Documents it needs that no source holds are use_case_document_not_held gaps; a query saying 'use case' that names none is an unknown_use_case gap.",
+      "required": [
+        "id",
+        "title",
+        "documents",
+        "withheld",
+        "note"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+){0,7}$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9 &:,'()/.+-]{0,199}$",
+          "description": "The catalog's own title (examples/use_case_catalog.json), never source text."
+        },
+        "documents": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "citation",
+              "kind",
+              "role",
+              "title"
+            ],
+            "properties": {
+              "citation": {
+                "$ref": "#/$defs/handle"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "sharepoint_file",
+                  "original"
+                ]
+              },
+              "role": {
+                "type": "string",
+                "enum": [
+                  "map",
+                  "readme",
+                  "brief",
+                  "evidence"
+                ]
+              },
+              "title": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/untrusted_text"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "withheld": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 400
+        },
+        "also": {
+          "type": "array",
+          "maxItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "title",
+              "documents",
+              "withheld"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z0-9]+(?:-[a-z0-9]+){0,7}$"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9 &:,'()/.+-]{0,199}$",
+                "description": "The catalog's own title (examples/use_case_catalog.json), never source text."
+              },
+              "documents": {
+                "type": "array",
+                "maxItems": 12,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "citation",
+                    "kind",
+                    "role",
+                    "title"
+                  ],
+                  "properties": {
+                    "citation": {
+                      "$ref": "#/$defs/handle"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "sharepoint_file",
+                        "original"
+                      ]
+                    },
+                    "role": {
+                      "type": "string",
+                      "enum": [
+                        "map",
+                        "readme",
+                        "brief",
+                        "evidence"
+                      ]
+                    },
+                    "title": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/untrusted_text"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  }
+                }
+              },
+              "withheld": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      }
     },
     "withheld": {
       "type": "object",
@@ -1830,6 +1994,89 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 512
+        }
+      }
+    },
+    "agenda_cell": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "citation"
+      ],
+      "description": "One value an agenda line shows, as the primitive gave it (its value an untrusted_text envelope), cited by the record's handle and field: what a claim citing that line re-reads.",
+      "properties": {
+        "citation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "l1_handle",
+            "field_path"
+          ],
+          "properties": {
+            "l1_handle": {
+              "$ref": "#/$defs/handle"
+            },
+            "field_path": {
+              "$ref": "#/$defs/field_path"
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^(?:sha256:)?[0-9a-f]{64}$"
+            }
+          }
+        }
+      }
+    },
+    "agenda_line": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "line",
+        "citations"
+      ],
+      "description": "One agenda line: the record it names, the cited values it shows (at, title, status, owner) and every handle it rests on (citations), the evidence a final answer may cite. status is not declared: a declared status names a read status (answer_gate.RESOLVED_STATUSES), and its handle is among citations.",
+      "properties": {
+        "line": {
+          "type": "string",
+          "pattern": "^L[0-9]{1,6}$"
+        },
+        "at": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/agenda_cell"
+            }
+          ]
+        },
+        "title": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/agenda_cell"
+            }
+          ]
+        },
+        "owner": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/agenda_cell"
+            }
+          ]
+        },
+        "citations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/handle"
+          }
         }
       }
     },
@@ -2393,7 +2640,7 @@
       }
     },
     "plx.find": {
-      "description": "Resolve an identifier (any kind: PO, SO, AO, customer PO, BC number, invoice; normalized, aliases included) or filter objects of one type (a property it does not declare is unknown_property, naming the valid ones). Exact unique match returns it; several matches return ranked candidates with the matched key, binding and reason, never a winner. A query its own eq filter repeats on a reference property lists that property's holders as lead candidates (reason reference_match), never roots. Returns a set handle for chaining.",
+      "description": "Resolve an identifier (any kind: PO, SO, AO, customer PO, BC number, invoice; normalized, aliases included) or filter objects of one type (a property it does not declare is unknown_property, naming the valid ones). Exact unique match returns it; several matches return ranked candidates with the matched key, binding and reason, never a winner. A query its own eq filter repeats on a reference property lists that property's holders as lead candidates (reason reference_match), never roots. Returns a set handle for chaining. object_type alone pages it; a portfolio question ranks all by its plan.",
       "read_only": true,
       "input": {
         "type": "object",
@@ -2449,8 +2696,7 @@
           },
           {
             "required": [
-              "object_type",
-              "filters"
+              "object_type"
             ]
           }
         ]
@@ -2467,7 +2713,8 @@
                   "found",
                   "ambiguous",
                   "not_found",
-                  "home"
+                  "home",
+                  "portfolio"
                 ]
               },
               "candidates": {
@@ -2490,7 +2737,7 @@
               "home": {
                 "type": "object",
                 "additionalProperties": false,
-                "description": "Home mode (a business question such as 'What needs my attention?', matched whole, that names no record): the reader's open gaps from the scheduled engine's inbox (operating.proactive_engine), trimmed by this call's grant, ranked by priority then last seen. inbox not_scheduled/not_configured/unreadable: no gap read, never a clean result.",
+                "description": "Home mode (a business question such as 'What needs my attention?', matched whole, that names no record; and the unscoped late_po portfolio question): the reader's open gaps from the scheduled engine's inbox (operating.proactive_engine), trimmed by this call's grant, ranked by priority then last seen. Nothing is scanned on the question: run_at and age_seconds say when the engine built the inbox. inbox not_scheduled/not_configured/unreadable, or stale (the served projection changed since the build): a named gap (inbox_not_built, inbox_not_configured, inbox_unreadable, inbox_stale), never a clean result.",
                 "required": [
                   "source",
                   "inbox",
@@ -2504,7 +2751,9 @@
                   "returned",
                   "more",
                   "gaps",
-                  "hint"
+                  "hint",
+                  "run_at",
+                  "age_seconds"
                 ],
                 "properties": {
                   "source": {
@@ -2536,10 +2785,13 @@
                         "expired_quote",
                         "conflicting_quantity",
                         "missing_in_record",
-                        "order_at_risk"
+                        "order_at_risk",
+                        "po_impact",
+                        "po_impact_margin",
+                        "systems_disagree"
                       ]
                     },
-                    "maxItems": 10
+                    "maxItems": 13
                   },
                   "as_of": {
                     "type": [
@@ -2554,6 +2806,14 @@
                       "null"
                     ],
                     "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}(?:T[0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:\\.[0-9]{1,6})?)?(?:Z|[+-][0-9]{2}:[0-9]{2}))?$"
+                  },
+                  "age_seconds": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 0,
+                    "description": "Seconds since the engine built this inbox (run_at), at the answer; null: unknown (never built)."
                   },
                   "stale": {
                     "type": "boolean"
@@ -2588,7 +2848,8 @@
                       "required": [
                         "rule",
                         "status",
-                        "not_evaluated"
+                        "not_evaluated",
+                        "reasons"
                       ],
                       "properties": {
                         "rule": {
@@ -2623,6 +2884,15 @@
                             "null"
                           ],
                           "minimum": 0
+                        },
+                        "reasons": {
+                          "type": "array",
+                          "description": "Why the rule did not run or did not finish (typed: the engine's own; reason_not_recorded or not_reported when it gave none); empty when complete.",
+                          "items": {
+                            "type": "string",
+                            "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$"
+                          },
+                          "maxItems": 8
                         }
                       }
                     },
@@ -2683,7 +2953,10 @@
                             "expired_quote",
                             "conflicting_quantity",
                             "missing_in_record",
-                            "order_at_risk"
+                            "order_at_risk",
+                            "po_impact",
+                            "po_impact_margin",
+                            "systems_disagree"
                           ]
                         },
                         "priority": {
@@ -2744,6 +3017,9 @@
                   }
                 }
               },
+              "use_case": {
+                "$ref": "#/$defs/use_case"
+              },
               "withheld": {
                 "$ref": "#/$defs/withheld"
               },
@@ -2752,6 +3028,167 @@
               },
               "meta": {
                 "$ref": "#/$defs/meta"
+              },
+              "portfolio": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Portfolio mode (a question across records, matched whole, that names no record): its plan (ontology/plans) answered for every object of the plan's root type this reader may list, one ranked row each: a one-line reason or the named missing evidence, with citations. late_po rows are the one lateness verdict (operating.status_card.verdict). A row with nothing the reader may cite is not shown (withheld); not_evaluated: listed but not answered, by reason; more: the listing went past the scan cap.",
+                "required": [
+                  "plan",
+                  "family",
+                  "object_type",
+                  "in_scope",
+                  "evaluated",
+                  "not_evaluated",
+                  "not_evaluated_reasons",
+                  "withheld",
+                  "answered",
+                  "missing",
+                  "more",
+                  "returned",
+                  "rows",
+                  "hint"
+                ],
+                "properties": {
+                  "plan": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9_]{0,63}$"
+                  },
+                  "family": {
+                    "type": "string",
+                    "pattern": "^F[0-9]{1,3}$"
+                  },
+                  "object_type": {
+                    "type": "string",
+                    "pattern": "^[A-Z][A-Za-z0-9]{1,63}$"
+                  },
+                  "in_scope": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "evaluated": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "not_evaluated": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "not_evaluated_reasons": {
+                    "type": "array",
+                    "maxItems": 16,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "reason",
+                        "count"
+                      ],
+                      "properties": {
+                        "reason": {
+                          "type": "string",
+                          "pattern": "^[a-z][a-z0-9_]{0,63}$"
+                        },
+                        "count": {
+                          "type": "integer",
+                          "minimum": 1
+                        }
+                      }
+                    }
+                  },
+                  "withheld": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "answered": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "missing": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "more": {
+                    "type": "boolean"
+                  },
+                  "returned": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "rows": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "rank",
+                        "object_id",
+                        "state",
+                        "line",
+                        "missing",
+                        "citations",
+                        "citations_total"
+                      ],
+                      "properties": {
+                        "rank": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "object_id": {
+                          "$ref": "#/$defs/object_id"
+                        },
+                        "label": {
+                          "$ref": "#/$defs/untrusted_text"
+                        },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "late",
+                            "undecided",
+                            "on_time",
+                            "answered",
+                            "missing"
+                          ]
+                        },
+                        "line": {
+                          "$ref": "#/$defs/untrusted_text"
+                        },
+                        "missing": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "pattern": "^[a-z][a-z0-9_]{0,63}$"
+                          },
+                          "maxItems": 8
+                        },
+                        "days_late": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ],
+                          "minimum": 1
+                        },
+                        "citations": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/handle"
+                          },
+                          "minItems": 1,
+                          "maxItems": 5
+                        },
+                        "citations_total": {
+                          "type": "integer",
+                          "minimum": 1
+                        }
+                      }
+                    },
+                    "maxItems": 50
+                  },
+                  "hint": {
+                    "type": "string",
+                    "maxLength": 600
+                  }
+                }
               }
             },
             "required": [
@@ -2836,6 +3273,32 @@
                   "not": {
                     "required": [
                       "home"
+                    ]
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "status": {
+                      "const": "portfolio"
+                    }
+                  }
+                },
+                "then": {
+                  "required": [
+                    "portfolio"
+                  ],
+                  "properties": {
+                    "candidates": {
+                      "maxItems": 0
+                    }
+                  }
+                },
+                "else": {
+                  "not": {
+                    "required": [
+                      "portfolio"
                     ]
                   }
                 }
@@ -4197,7 +4660,7 @@
               "due": {
                 "type": "array",
                 "maxItems": 30,
-                "description": "Single root only: per stage that declares due dates (its graph's `due`), whether it is overdue at as_known_at. Decided only from declared date columns: a reached stage is never overdue; otherwise overdue is null with a gap when the dates are withheld, unproven, absent or disagree, a captured document contradicts them (due_date_conflict: lateness is an evidence conflict, not a fact) or could and is not proven visible, or the stage is undecided. A due date counts as passed once it has ended in every time zone.",
+                "description": "Single root only: per stage that declares due dates (its graph's `due`), whether it is overdue at as_known_at. Decided only from declared date columns: a reached stage is never overdue; otherwise overdue is null with a gap when the dates are withheld, unproven, absent or disagree, a captured document contradicts them (due_date_conflict: lateness is an evidence conflict, not a fact) or could and is not proven visible, or the stage is undecided. A due date counts as passed once it has ended in America/New_York (the business day, ET).",
                 "items": {
                   "type": "object",
                   "additionalProperties": false,
@@ -4362,7 +4825,7 @@
                     },
                     "lines": {
                       "type": "array",
-                      "maxItems": 8,
+                      "maxItems": 10,
                       "items": {
                         "type": "object",
                         "additionalProperties": false,
@@ -4410,6 +4873,37 @@
                       },
                       "maxItems": 8,
                       "description": "Caveats that do not decide the verdict (promises withheld or unproven, lines cut)."
+                    },
+                    "systems_disagree": {
+                      "type": "array",
+                      "maxItems": 3,
+                      "description": "Linked records of two systems (a firm Portal-BC twin, or precedence tiers of the requested-by date) that disagree on receipt_state (fully_received vs open_lines_outstanding), received_quantity (one unit) or expected_date: both values, each side cited as this reader reads it, and who governs (BC governs receipt state and decides the status; the declared precedence governs the requested-by date; null: no side governs and the status is disputed). Never one side silently picked; a side this reader cannot read states no conflict.",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["field", "governs", "sides"],
+                        "properties": {
+                          "field": {"type": "string", "enum": ["receipt_state", "received_quantity", "expected_date"]},
+                          "governs": {"type": ["string", "null"], "pattern": "^[a-z][a-z0-9_+]{0,63}$"},
+                          "unit": {"anyOf": [{"$ref": "#/$defs/unit"}, {"type": "null"}]},
+                          "sides": {
+                            "type": "array",
+                            "minItems": 2,
+                            "maxItems": 2,
+                            "items": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "required": ["system", "records", "value", "values"],
+                              "properties": {
+                                "system": {"type": "string", "pattern": "^[a-z][a-z0-9_+]{0,63}$"},
+                                "records": {"type": "array", "maxItems": 4, "items": {"$ref": "#/$defs/object_id"}},
+                                "value": {"type": "string", "minLength": 1, "maxLength": 200},
+                                "values": {"type": "array", "minItems": 1, "maxItems": 4, "items": {"$ref": "#/$defs/value"}}
+                              }
+                            }
+                          }
+                        }
+                      }
                     },
                     "because": {
                       "type": "array",
@@ -4978,7 +5472,7 @@
                 "required": [
                   "sources"
                 ],
-                "description": "'No email found' is stated as what was searched, where and over which dates."
+                "description": "R13: 'no email found' is stated as what was searched, where and over which dates."
               },
               "gaps": {
                 "type": "array",
@@ -4986,6 +5480,9 @@
                   "$ref": "#/$defs/gap"
                 },
                 "maxItems": 20
+              },
+              "use_case": {
+                "$ref": "#/$defs/use_case"
               },
               "withheld": {
                 "$ref": "#/$defs/withheld"
@@ -5012,7 +5509,7 @@
       }
     },
     "plx.read": {
-      "description": "Resolve any citation for the session employee and return its content: a source row (typed values, untrusted text fields), a mail or document body, or one page (page) of an original or a captured SharePoint PDF (sharepoint://, also #page=<n>). Reports changed, withheld or unresolvable citations instead of guessing. text_offset pages long text (field_path: one field) until text_window.next_offset is null; text_window.sha256 covers the whole text. column_offset pages a wide row. An original lists its extraction versions; a live mail read gives cite_as, the body-pinned citation to cite.",
+      "description": "Resolve a citation for the session employee: a source row (typed values, untrusted text), a mail or document body, or one page (page, or #page=<n>) of an original or captured SharePoint PDF. Reports changed, withheld or unresolvable citations. A page read cites its #page=<n>; pages lists an original text's page citations: cite a figure by its page, field text. text_offset pages long text (field_path: one field) until text_window.next_offset is null; sha256 is the whole text's. column_offset pages a wide row. Originals list extraction versions; live mail gives cite_as, the pinned citation.",
       "read_only": true,
       "input": {
         "type": "object",
@@ -5044,6 +5541,12 @@
             "minimum": 1,
             "maximum": 1000000,
             "description": "Read one line (1-based, lines split at newlines in the whole text) of the content, or of the field named by field_path; exclusive with text_offset. The answer is that line without its line ending, cut at max_chars (text_window.line_cut says so); text_window.first_line and last_line name it."
+          },
+          "find": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 200,
+            "description": "Locate a short phrase (case and white space ignored) in the content, or in the field named by field_path; exclusive with text_offset and line. matches.hits lists the first 50 in text order, each with its line, offset (a text_offset that reads on from it), chars and its snippet of the text, served and quotable as a window is (page_citation and page_offset on an original's page); matches.total_hits counts them all."
           },
           "column_offset": {
             "type": "integer",
@@ -5109,6 +5612,41 @@
               },
               "content": {
                 "$ref": "#/$defs/untrusted_text"
+              },
+              "pages": {
+                "type": "array",
+                "maxItems": 20000,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "page",
+                    "page_citation",
+                    "offset",
+                    "chars"
+                  ],
+                  "properties": {
+                    "page": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "page_citation": {
+                      "$ref": "#/$defs/handle",
+                      "description": "The citation of that page, which plx.read and the answer gate accept."
+                    },
+                    "offset": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Start (characters) of the page in the whole text."
+                    },
+                    "chars": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "description": "Length of the page's text."
+                    }
+                  }
+                },
+                "description": "An original's whole text, or a text_offset window of it: the pages the returned text overlaps, each with its page citation (a page with no text is not listed)."
               },
               "markings": {
                 "$ref": "#/$defs/markings"
@@ -5206,6 +5744,80 @@
                   }
                 },
                 "description": "The slice of the text returned (text_offset); sha256 is over the whole text."
+              },
+              "matches": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "hits",
+                  "total_hits",
+                  "total_chars",
+                  "sha256"
+                ],
+                "properties": {
+                  "hits": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "offset",
+                        "chars",
+                        "line",
+                        "text"
+                      ],
+                      "properties": {
+                        "offset": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "description": "Start (characters, in the whole text) of the snippet: a text_offset that reads on from it."
+                        },
+                        "chars": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "line": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "description": "Line (1-based, in the whole text) the phrase starts on."
+                        },
+                        "text": {
+                          "$ref": "#/$defs/untrusted_text"
+                        },
+                        "page": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "page_citation": {
+                          "$ref": "#/$defs/handle",
+                          "description": "The citation of the original's page the snippet is on, which plx.read and the answer gate accept."
+                        },
+                        "page_offset": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "description": "Start of the snippet in that page's text: a text_offset on the page citation."
+                        }
+                      }
+                    }
+                  },
+                  "total_hits": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "field_path": {
+                    "$ref": "#/$defs/field_path"
+                  },
+                  "total_chars": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  }
+                },
+                "description": "A find read: where the phrase is in the text, each hit's snippet served as a window's text is; sha256 is over the whole text."
               },
               "columns": {
                 "type": "object",
@@ -5343,6 +5955,11 @@
                       "required": [
                         "content"
                       ]
+                    },
+                    {
+                      "required": [
+                        "matches"
+                      ]
                     }
                   ]
                 }
@@ -5420,6 +6037,14 @@
               }
             },
             "description": "Record this answer's gaps that ask a person on case case_id, as the reader, through the action path (ontology_tools_investigate.record_follow_ups): one workbench.follow_up.record per gap and one workbench.draft.record per engine-worded request; workbench-internal, approval none, read back, nothing sent. A gap already on the case is not recorded again; the executor's notes, run limits and the host's own state (source_not_configured, freshness_unknown, projection_not_built) record nothing. Only on the first page (the next pages are asked without it). A host without an action path refuses it (follow_ups_not_configured); a case the reader cannot see is case_not_found, nothing recorded."
+          },
+          "response_format": {
+            "type": "string",
+            "enum": [
+              "concise",
+              "detailed"
+            ],
+            "description": "concise (default): a late_po (F14) run on one record answers in its text content with the record's one lateness verdict (the status card's) in plain words, cited; the structured content is the full result either way. detailed: the text is the full result as JSON."
           }
         },
         "required": [
@@ -5564,7 +6189,7 @@
               "answer": {
                 "type": "array",
                 "maxItems": 200,
-                "description": "The cited answer skeleton (additive): one entry per plan evidence value. property: a source value with its citation, checked by operating/claim_checks.py (check). count: distinct visible objects the plan reached (basis), never zero. select: a value read from a primitive's own result (a verdict such as a three-way match is always the deciding primitive's, never recomputed by the plan), with the cited values it compared (cells); per group of elements when the plan says so. A count lists its records. computed: a value a Workbench engine computed from cited answer entries (inputs), with its arithmetic (steps) and digest; null with gaps while any input is unknown (the model never computes). lead_basis marks an entry resting on lead-tier links. A missing required value is null with a gap.",
+                "description": "The cited answer skeleton (additive, lead-approved for lane plx-investigate): one entry per plan evidence value. property: a source value with its citation, checked by operating/claim_checks.py (check). count: distinct visible objects the plan reached (basis), never zero. select: a value read from a primitive's own result (a verdict such as a three-way match is always the deciding primitive's, never recomputed by the plan), with the cited values it compared (cells); per group of elements when the plan says so. A count lists its records. computed: a value a Workbench engine computed from cited answer entries (inputs), with its arithmetic (steps) and digest; null with gaps while any input is unknown (the model never computes). lead_basis marks an entry resting on lead-tier links. A missing required value is null with a gap.",
                 "items": {
                   "type": "object",
                   "additionalProperties": false,
@@ -5734,6 +6359,10 @@
                         "$ref": "#/$defs/value"
                       },
                       "description": "select: the cited values the deciding primitive compared in the elements this entry was selected from (each element's values, one per citation). Present only when every such element carried at least one."
+                    },
+                    "inputs_cut": {
+                      "const": true,
+                      "description": "Present when the host cut the records or cells this entry's value rests on (a record counted, a cell that holds the value) to fit the response (completeness says result_too_large): the entry is a figure without its inputs and cannot be cited from them."
                     },
                     "review": {
                       "$ref": "#/$defs/value_review",
@@ -6042,6 +6671,122 @@
               },
               "meta": {
                 "$ref": "#/$defs/meta"
+              }
+            }
+          },
+          {
+            "$ref": "#/$defs/error_result"
+          }
+        ]
+      }
+    },
+    "plx.agenda": {
+      "description": "A recurring meeting's agenda from cited records since the previous meeting: open projects and status, changes, blockers, decisions needed and owners, each line cited; missing sources and values are named gaps. agenda: the spec id (ontology/agendas). scope: per lane, the exact values its spec names (a chat id, a list id, an MC bucket); a lane given none uses its spec's default_scope, if any (scope_basis). since: ISO instant with offset; absent: the previous agenda's posting. offset/limit page the lines. Read-only.",
+      "read_only": true,
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "agenda"
+        ],
+        "properties": {
+          "agenda": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,63}$"
+          },
+          "since": {
+            "type": "string",
+            "minLength": 10,
+            "maxLength": 40
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100000
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "scope": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            }
+          }
+        }
+      },
+      "output": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "format",
+              "agenda",
+              "open_projects",
+              "changes",
+              "blockers",
+              "decisions_needed",
+              "gaps",
+              "complete"
+            ],
+            "description": "The agenda (operating/meeting_agenda.py, plx-meeting-agenda-answer/v1): every line cites the records it rests on (its handles count as evidence for the final-answer gate); gaps name what it lacks.",
+            "properties": {
+              "format": {
+                "type": "string",
+                "enum": [
+                  "plx-meeting-agenda-answer/v1"
+                ]
+              },
+              "since": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "properties": {
+                      "cited": {
+                        "$ref": "#/$defs/agenda_cell"
+                      }
+                    }
+                  }
+                ]
+              },
+              "open_projects": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/agenda_line"
+                }
+              },
+              "changes": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/agenda_line"
+                }
+              },
+              "blockers": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/agenda_line"
+                }
+              },
+              "decisions_needed": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/agenda_line"
+                }
+              },
+              "complete": {
+                "type": "boolean"
               }
             }
           },

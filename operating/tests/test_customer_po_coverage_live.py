@@ -1,8 +1,8 @@
 """The ``case.customer_po_coverage`` live-check spec run over injected sources.
 
 Evidence label: ``injected-transport``. Kept apart from ``test_customer_po_coverage``
-(whose fixtures other tests import): this module reads ``verify/live-checks``, so the
-spec's test selection (``verify/affected_tests.py``) runs it without pulling in every
+(whose fixtures other tests import): this module reads ``devloop/live-checks``, so the
+spec's test selection (``devloop/affected_tests.py``) runs it without pulling in every
 importer of those fixtures.
 """
 
@@ -31,7 +31,7 @@ def _refuse_network(*args, **kwargs):
 
 @unittest.skipUnless(_PDF, "the customer PO is a PDF: needs pypdf and reportlab")
 class DocumentCarrierLiveCheckTests(unittest.TestCase):
-    """``verify/live-checks/case.customer_po_coverage.json`` over injected sources: its
+    """``devloop/live-checks/case.customer_po_coverage.json`` over injected sources: its
     own command, its host config copied with the in-process FakeWorkbench (the order
     fixture plus order OR1000888001 holding no PO) and a FakeDrive for the PLXCUSTOMERS
     site whose customer PO names it; the network refused. Evidence: injected-transport."""
@@ -39,7 +39,7 @@ class DocumentCarrierLiveCheckTests(unittest.TestCase):
     SPEC_ID = "case.customer_po_coverage"
 
     def test_the_spec_counts_a_document_po_portal_lacks_and_leaks_no_value(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from integrations.tests import test_capture_sharepoint as tsp
         from operating.tests import order_fixture as fixture
         from operating.tests.test_case_workspace_live import _customer_drive
@@ -51,7 +51,7 @@ class DocumentCarrierLiveCheckTests(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         root = Path(temp.name)
-        spec = json.loads((ROOT / "verify" / "live-checks" / f"{self.SPEC_ID}.json")
+        spec = json.loads((ROOT / "devloop" / "live-checks" / f"{self.SPEC_ID}.json")
                           .read_text("utf-8"))
         self.assertEqual(lv.validate_spec(spec, stem=self.SPEC_ID), [])
         fake = FakeWorkbench()

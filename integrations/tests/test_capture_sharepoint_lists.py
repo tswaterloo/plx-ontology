@@ -22,7 +22,7 @@ import tempfile
 import unittest
 from urllib.parse import parse_qs, unquote, urlencode, urlsplit
 
-from verify import live_verify as lv
+from devloop import live_verify as lv
 from integrations import capture_sharepoint_lists as csl
 from integrations import graph_read
 from integrations.capture_sharepoint import SharePointCaptureStore

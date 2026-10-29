@@ -161,7 +161,7 @@ class MCPServerStdioTests(unittest.TestCase):
         budget = CONTRACTS["limits"]["max_case_host_tools"]
         self.assertLessEqual(len(tools), budget)
         # plx.act holds the slot of the two action tools it retired; plx.investigate the
-        # freed one (decision 2026-10-04).
+        # freed one (lead decision 2026-10-04).
         self.assertIn("plx.act", tools)
         self.assertFalse({"plx.action_get", "plx.action_propose"} & set(tools))
         encoded = json.dumps(listing["result"]["tools"], separators=(",", ":"))
@@ -334,7 +334,7 @@ class OntologyToolsOnTheCaseHostTests(unittest.TestCase):
                              self.runtime, ops, schema).audiences.items() if principals})
 
     def test_a_revoked_grant_applies_to_the_next_call_of_the_same_session(self):
-        # The policy was decided once per session.
+        # Review of ee55df3, M2: the policy was decided once per session.
         import sqlite3
 
         from operating.mcp_server import META_RESERVE_BYTES
@@ -372,7 +372,7 @@ class OntologyToolsOnTheCaseHostTests(unittest.TestCase):
         self.assertIn("object", call("plx.object", {"object_id": self.fixture.SO}))
 
     def test_a_set_with_missing_and_revoked_objects_reports_both_gaps(self):
-        # Only not_in_projection was reported, and the revoked
+        # Review wh-2 (minor 5): only not_in_projection was reported, and the revoked
         # count told the reader how many objects a revocation hid.
         import sqlite3
 
@@ -406,7 +406,7 @@ class OntologyToolsOnTheCaseHostTests(unittest.TestCase):
         self.assertFalse(answer["completeness"]["complete"])
 
     def test_a_filter_find_on_a_host_without_a_projection_is_never_complete(self):
-        # Without --ontology-store the host serves an empty
+        # Review wh-2 (minor 3): without --ontology-store the host serves an empty
         # placeholder store; a filter-only find answered complete=true, total=0.
         from integrations.source_mirror import AUDIENCE_SCHEMA
         from integrations.tests.test_source_mirror import BASE, KEY, Clock, FakeWorkbench
@@ -497,7 +497,7 @@ class OntologyToolsOnTheCaseHostTests(unittest.TestCase):
         self.assertEqual((returned["counts"], returned["currencies"]), ([], {}))
 
     def test_the_session_working_directory_is_removed_when_the_stdio_session_ends(self):
-        # Every session left a /tmp/plx-case-find-* directory.
+        # Review wh-3 (minor): every session left a /tmp/plx-case-find-* directory.
         import io
         from integrations.tests.test_source_mirror import BASE, KEY, Clock, FakeWorkbench
         from integrations.workbench_read_api import WorkbenchReadApiClient

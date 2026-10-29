@@ -500,7 +500,7 @@
   "plx-customer-portal:portal/src/lib/sales-order/order-lifecycle.ts@790256c (MO_DONE, MO_IGNORE, synthesizeFmOrderLifecycle: an FM order is a MAKE lane)",
   "plx-customer-portal:portal/src/lib/sales-order/load-order-lifecycle.ts@59b0548 (manufacturingOrders where deletedAt null)",
   "plx-customer-portal:portal/src/app/mrp/assembly/assembly-queries.ts@b46934a (AO_DETAIL_SQL_FULL: statusqc read from bronze, not served)",
-  "docs/reference/cases-and-artifacts.md (3.2 packet pages, 3.4 FM production rows Setup/Line clearance/Filling/Cleaning)",
+  "devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md (3.2 packet pages, 3.4 FM production rows Setup/Line clearance/Filling/Cleaning)",
   "ontology/schema/domains/manufacturing.json (Batch.quality_status On-Hold/Released/Rejected; AssemblyOrder.status Generated, Allocated, Committed, Realized, Cancelled)",
   "plx-customer-portal:portal/src/lib/policies/seed-rules.ts@48d76e835 (ROUTING_DEPARTMENTS: owner_role is a Portal Department code, what a rule's PolicyApprovalTypeDepartment rows route a WorkItem to, portal/prisma/schema.prisma@48d76e835 :1099, :8467)",
   "seed-rules.ts@48d76e835: Portal routes bulk_qc_release to QC (qc.batch_release_test on batch.entered_testing). Every other stage owner is this graph's declaration pending PLX review."

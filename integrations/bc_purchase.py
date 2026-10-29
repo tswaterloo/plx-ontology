@@ -25,7 +25,7 @@ covers; it is never a claim about a whole entity set (``ontology_tools_process``
 Field mapping mirrors Portal (plx-customer-portal staging @5724575):
 
 * PO line cost is ``directUnitCost``; purchase-invoice line cost is ``unitCost``
-  (``business-central/serializers.ts:1409,1546``; our live probe found
+  (``business-central/serializers.ts:1409,1546``; our live probe at d395ed7 found
   ``directUnitCost`` absent on ``purchaseInvoiceLines``, 7cecf4c).
 * Posted receipts are read back by ``orderNumber eq '<BC PO No.>'``
   (``outbox-drain.ts:1224``; ``bc_receipt_snapshot.order_number``). Unverified
@@ -46,7 +46,7 @@ completeness, so silence is never read as absence. Quantities and money stay
 the exact decimal text BC sent; an absent field is ``None``, never ``0``. BC's
 empty date ``0001-01-01`` is reported as absent.
 
-Probe (credentialed live check; counts, statuses and field-presence only, no
+Probe (credentialed live verifier; counts, statuses and field-presence only, no
 values): ``python3 -m integrations.bc_purchase probe``.
 """
 
@@ -121,8 +121,11 @@ CAVEATS: dict[str, str] = {
         "Documents were found by number equality: a reference, not identity. Portal's "
         "app_bc_entity_map is the identity link between a Portal PO and a BC document."),
     "your_reference_not_exposed": (
-        "The FM PO number is written to BC 'Your Reference' (codeunit 50115), which API "
-        "v2.0 purchaseOrders does not expose; an FM number cannot be checked here."),
+        "BC 'Your Reference' often holds the FM PO number (a map reading of codeunit "
+        "50115, not a rule); API v2.0 purchaseOrders does not expose it; it is on ODataV4 "
+        "Page 50 (PurchaseOrder), which only the BC capture reads (projected as a Portal-BC "
+        "link, firm only when unique and corroborated, else a lead); an FM number cannot "
+        "be checked here."),
     "external_document_no_not_customer_po": (
         "BC External Document No. is never read as a customer PO: the ship-only bridge "
         "overwrites the sales header's External Document No. with the shipment No. "
@@ -433,7 +436,7 @@ def _cost(line: Mapping[str, Any]) -> Decimal | None:
 
 def _price_pairs(company: Mapping[str, Any]) -> dict[str, int]:
     """Counts only: whether a PO line's ``directUnitCost`` and its invoice line's
-    ``unitCost`` differ (docs/decisions/2026-10-08-bc-three-way-price-basis.md, what
+    ``unitCost`` differ (devloop/DECISIONS/2026-10-08-bc-three-way-price-basis.md, what
     would reverse it). An invoice Item line pairs with the one PO Item line of the same
     item No. and unit of measure code (none or several: unpaired); a pair whose costs are
     not both read is ``cost_absent``; the rest are ``equal`` or ``differ`` as Decimals."""

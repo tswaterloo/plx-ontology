@@ -294,7 +294,7 @@
             },
             {
               "kind": "ref",
-              "id": "workbench.bc_company_lineage"
+              "id": "context.critique.r15"
             },
             {
               "kind": "ref",
@@ -335,7 +335,7 @@
                   },
                   {
                     "kind": "ref",
-                    "id": "workbench.lineage_authority"
+                    "id": "context.critique.r1"
                   }
                 ]
               },
@@ -379,7 +379,7 @@
                 "evidence": [
                   {
                     "kind": "ref",
-                    "id": "workbench.lineage_authority"
+                    "id": "context.critique.r1"
                   }
                 ]
               },
@@ -427,7 +427,7 @@
                 "evidence": [
                   {
                     "kind": "ref",
-                    "id": "workbench.lineage_authority"
+                    "id": "context.critique.r1"
                   }
                 ]
               },
@@ -483,7 +483,7 @@
         {
           "name": "status",
           "value_type": "text",
-          "description": "Gold header status (free string): the FileMaker words the gold ETL copies (live capture 2026-10-20: Cancel, Complete, DRAFT, Pending, B.Order, Revised, Generated) or ORDERED once a send marks it; never the derived fulfillment code. Open, closed, draft or unknown is decided by the one definition, operating/po_status.py, from this word and the summed line quantities (docs/decisions/2026-10-21-po-open-sage-fm.md). Other systems' statuses are separate properties: the vocabularies differ.",
+          "description": "Gold header status (free string): the FileMaker words the gold ETL copies (live capture 2026-10-20: Cancel, Complete, DRAFT, Pending, B.Order, Revised, Generated) or ORDERED once a send marks it; never the derived fulfillment code. Open, closed, draft or unknown is decided by the one definition, operating/po_status.py, from this word and the summed line quantities (devloop/DECISIONS/2026-10-21-po-open-sage-fm.md). Other systems' statuses are separate properties: the vocabularies differ.",
           "sources": [
             {
               "binding": "portal.app_purchase_order",
@@ -544,6 +544,18 @@
           ]
         },
         {
+          "name": "bc_prices_include_tax",
+          "value_type": "boolean",
+          "description": "BC pricesIncludeTax: the order's line direct unit costs include tax.",
+          "sources": [
+            {
+              "binding": "bc.purchase_orders",
+              "path": "pricesIncludeTax",
+              "parser": "as_is"
+            }
+          ]
+        },
+        {
           "name": "order_date",
           "value_type": "date",
           "description": "PO date. Gold orderDate is column date_generated; BC orderDate is the gold date pushed by the serializer.",
@@ -579,7 +591,7 @@
                 "evidence": [
                   {
                     "kind": "ref",
-                    "id": "workbench.lineage_authority"
+                    "id": "context.critique.r1"
                   }
                 ]
               },
@@ -646,7 +658,7 @@
                 "evidence": [
                   {
                     "kind": "ref",
-                    "id": "workbench.lineage_authority"
+                    "id": "context.critique.r1"
                   }
                 ]
               },
@@ -750,7 +762,7 @@
                 "evidence": [
                   {
                     "kind": "ref",
-                    "id": "workbench.lineage_authority"
+                    "id": "context.critique.r1"
                   }
                 ]
               },
@@ -795,7 +807,7 @@
           "value_type": "money",
           "description": "PO total. Blank BC currencyCode = BC local currency.",
           "markings": [
-            "finance"
+            "purchasing_prices"
           ],
           "sources": [
             {
@@ -837,7 +849,7 @@
                 "evidence": [
                   {
                     "kind": "ref",
-                    "id": "workbench.lineage_authority"
+                    "id": "context.critique.r1"
                   }
                 ]
               },
@@ -849,7 +861,7 @@
                 "evidence": [
                   {
                     "kind": "ref",
-                    "id": "workbench.lineage_authority"
+                    "id": "context.critique.r1"
                   }
                 ]
               },
@@ -1235,7 +1247,7 @@
                 "evidence": [
                   {
                     "kind": "ref",
-                    "id": "workbench.lineage_authority"
+                    "id": "context.critique.r1"
                   }
                 ]
               },
@@ -1247,7 +1259,7 @@
                 "evidence": [
                   {
                     "kind": "ref",
-                    "id": "workbench.lineage_authority"
+                    "id": "context.critique.r1"
                   }
                 ]
               },
@@ -1310,7 +1322,7 @@
                 "evidence": [
                   {
                     "kind": "ref",
-                    "id": "workbench.lineage_authority"
+                    "id": "context.critique.r1"
                   }
                 ]
               },
@@ -1321,7 +1333,7 @@
                 "evidence": [
                   {
                     "kind": "ref",
-                    "id": "workbench.lineage_authority"
+                    "id": "context.critique.r1"
                   }
                 ]
               },
@@ -1378,7 +1390,7 @@
             "path": "currency"
           },
           "markings": [
-            "finance"
+            "purchasing_prices"
           ],
           "sources": [
             {
@@ -1439,7 +1451,7 @@
             "path": "currency"
           },
           "markings": [
-            "finance"
+            "purchasing_prices"
           ],
           "sources": [
             {
@@ -1474,7 +1486,7 @@
             "path": "currency"
           },
           "markings": [
-            "finance"
+            "purchasing_prices"
           ],
           "sources": [
             {
@@ -1522,7 +1534,7 @@
             "path": "currencyCode"
           },
           "markings": [
-            "finance"
+            "purchasing_prices"
           ],
           "sources": [
             {
@@ -1550,6 +1562,82 @@
             {
               "kind": "ref",
               "id": "portal.bc_serialize_purchase_order"
+            }
+          ]
+        },
+        {
+          "name": "bc_amount_excluding_tax",
+          "value_type": "money",
+          "description": "BC line amount excluding tax: quantity x direct unit cost after the line discount, before tax, whatever the order's pricesIncludeTax says. The net goods value of the line.",
+          "currency_from": {
+            "via_link": "PurchaseOrderLine.line_of",
+            "path": "currencyCode"
+          },
+          "markings": [
+            "purchasing_prices"
+          ],
+          "sources": [
+            {
+              "binding": "bc.purchase_order_lines",
+              "path": "amountExcludingTax",
+              "parser": "decimal_text",
+              "tax_basis": "excl_tax",
+              "evidence": [
+                {
+                  "kind": "ref",
+                  "id": "workbench.bc_query_specs"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "bc_line_discount_amount",
+          "value_type": "money",
+          "description": "BC line discount amount: what directUnitCost x quantity is reduced by on this line.",
+          "currency_from": {
+            "via_link": "PurchaseOrderLine.line_of",
+            "path": "currencyCode"
+          },
+          "markings": [
+            "purchasing_prices"
+          ],
+          "sources": [
+            {
+              "binding": "bc.purchase_order_lines",
+              "path": "discountAmount",
+              "parser": "decimal_text",
+              "tax_basis_from": {
+                "via_link": "PurchaseOrderLine.line_of",
+                "path": "pricesIncludeTax"
+              },
+              "evidence": [
+                {
+                  "kind": "ref",
+                  "id": "workbench.bc_query_specs"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "bc_line_discount_percent",
+          "value_type": "decimal",
+          "description": "BC line discount percent on directUnitCost.",
+          "markings": [
+            "purchasing_prices"
+          ],
+          "sources": [
+            {
+              "binding": "bc.purchase_order_lines",
+              "path": "discountPercent",
+              "parser": "decimal_text",
+              "evidence": [
+                {
+                  "kind": "ref",
+                  "id": "workbench.bc_query_specs"
+                }
+              ]
             }
           ]
         },
@@ -1768,7 +1856,7 @@
             },
             {
               "kind": "ref",
-              "id": "workbench.bc_company_lineage"
+              "id": "context.critique.r15"
             },
             {
               "kind": "ref",
@@ -1804,6 +1892,18 @@
             {
               "binding": "portal.sage_po_receipt_header",
               "path": "rcpnumber",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "currency",
+          "value_type": "text",
+          "description": "Currency the Sage receipt header states (po_receipt_header.currency); never assume CAD. A blank value is absent, not CAD.",
+          "sources": [
+            {
+              "binding": "portal.sage_po_receipt_header",
+              "path": "currency",
               "parser": "trim"
             }
           ]
@@ -1914,7 +2014,7 @@
                 "evidence": [
                   {
                     "kind": "ref",
-                    "id": "workbench.lineage_authority"
+                    "id": "context.critique.r1"
                   }
                 ]
               },
@@ -1957,7 +2057,7 @@
                 "evidence": [
                   {
                     "kind": "ref",
-                    "id": "workbench.lineage_authority"
+                    "id": "context.critique.r1"
                   }
                 ]
               },
@@ -2355,7 +2455,7 @@
                 "evidence": [
                   {
                     "kind": "ref",
-                    "id": "workbench.lineage_authority"
+                    "id": "context.critique.r1"
                   }
                 ]
               },
@@ -2367,7 +2467,7 @@
                 "evidence": [
                   {
                     "kind": "ref",
-                    "id": "workbench.lineage_authority"
+                    "id": "context.critique.r1"
                   }
                 ]
               },
@@ -2424,7 +2524,7 @@
                 "evidence": [
                   {
                     "kind": "ref",
-                    "id": "workbench.lineage_authority"
+                    "id": "context.critique.r1"
                   },
                   {
                     "kind": "ref",
@@ -2478,7 +2578,7 @@
                 "evidence": [
                   {
                     "kind": "ref",
-                    "id": "workbench.lineage_authority"
+                    "id": "context.critique.r1"
                   }
                 ]
               },
@@ -2553,7 +2653,7 @@
                 "evidence": [
                   {
                     "kind": "ref",
-                    "id": "workbench.lineage_authority"
+                    "id": "context.critique.r1"
                   }
                 ]
               },
@@ -2649,11 +2749,32 @@
             },
             {
               "kind": "ref",
-              "id": "workbench.bc_company_lineage"
+              "id": "context.critique.r15"
             },
             {
               "kind": "ref",
               "id": "portal.bc_company_pins"
+            }
+          ]
+        },
+        {
+          "id": "portal.bc_purchase_invoice_snapshot",
+          "source": "portal_api",
+          "relation": "public.bc_purchase_invoice_snapshot",
+          "key": [
+            "bc_system_id"
+          ],
+          "lineage": {
+            "default": "gold_native_staging"
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "context.portal.3.11"
+            },
+            {
+              "kind": "ref",
+              "id": "portal.bc_drain_purchase_invoice"
             }
           ]
         }
@@ -2668,8 +2789,33 @@
               "binding": "bc.purchase_invoices",
               "path": "number",
               "parser": "identifier"
+            },
+            {
+              "binding": "portal.bc_purchase_invoice_snapshot",
+              "path": "number",
+              "parser": "identifier"
             }
-          ]
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context.critique.r1"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "portal.bc_company_pins"
+                  }
+                ]
+              }
+            ]
+          }
         },
         {
           "name": "vendor_invoice_number",
@@ -2680,8 +2826,33 @@
               "binding": "bc.purchase_invoices",
               "path": "vendorInvoiceNumber",
               "parser": "identifier"
+            },
+            {
+              "binding": "portal.bc_purchase_invoice_snapshot",
+              "path": "vendor_invoice_number",
+              "parser": "identifier"
             }
-          ]
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context.critique.r1"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "portal.bc_company_pins"
+                  }
+                ]
+              }
+            ]
+          }
         },
         {
           "name": "order_number",
@@ -2694,6 +2865,11 @@
               "binding": "bc.purchase_invoices",
               "path": "orderNumber",
               "parser": "identifier"
+            },
+            {
+              "binding": "portal.bc_purchase_invoice_snapshot",
+              "path": "order_number",
+              "parser": "identifier"
             }
           ],
           "evidence": [
@@ -2701,7 +2877,27 @@
               "kind": "ref",
               "id": "portal.bc_drain_purchase_invoice"
             }
-          ]
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context.critique.r1"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "portal.bc_company_pins"
+                  }
+                ]
+              }
+            ]
+          }
         },
         {
           "name": "vendor_number",
@@ -2713,8 +2909,33 @@
               "binding": "bc.purchase_invoices",
               "path": "vendorNumber",
               "parser": "identifier"
+            },
+            {
+              "binding": "portal.bc_purchase_invoice_snapshot",
+              "path": "vendor_number",
+              "parser": "identifier"
             }
-          ]
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context.critique.r1"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "portal.bc_company_pins"
+                  }
+                ]
+              }
+            ]
+          }
         },
         {
           "name": "invoice_date",
@@ -2724,8 +2945,33 @@
               "binding": "bc.purchase_invoices",
               "path": "invoiceDate",
               "parser": "iso_date"
+            },
+            {
+              "binding": "portal.bc_purchase_invoice_snapshot",
+              "path": "invoice_date",
+              "parser": "iso_date"
             }
-          ]
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context.critique.r1"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "portal.bc_company_pins"
+                  }
+                ]
+              }
+            ]
+          }
         },
         {
           "name": "posting_date",
@@ -2735,8 +2981,33 @@
               "binding": "bc.purchase_invoices",
               "path": "postingDate",
               "parser": "iso_date"
+            },
+            {
+              "binding": "portal.bc_purchase_invoice_snapshot",
+              "path": "posting_date",
+              "parser": "iso_date"
             }
-          ]
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context.critique.r1"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "portal.bc_company_pins"
+                  }
+                ]
+              }
+            ]
+          }
         },
         {
           "name": "due_date",
@@ -2746,8 +3017,33 @@
               "binding": "bc.purchase_invoices",
               "path": "dueDate",
               "parser": "iso_date"
+            },
+            {
+              "binding": "portal.bc_purchase_invoice_snapshot",
+              "path": "due_date",
+              "parser": "iso_date"
             }
-          ]
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context.critique.r1"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "portal.bc_company_pins"
+                  }
+                ]
+              }
+            ]
+          }
         },
         {
           "name": "status",
@@ -2757,8 +3053,33 @@
               "binding": "bc.purchase_invoices",
               "path": "status",
               "parser": "trim"
+            },
+            {
+              "binding": "portal.bc_purchase_invoice_snapshot",
+              "path": "status",
+              "parser": "trim"
             }
-          ]
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context.critique.r1"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "portal.bc_company_pins"
+                  }
+                ]
+              }
+            ]
+          }
         },
         {
           "name": "currency",
@@ -2769,6 +3090,11 @@
               "binding": "bc.purchase_invoices",
               "path": "currencyCode",
               "parser": "trim"
+            },
+            {
+              "binding": "portal.bc_purchase_invoice_snapshot",
+              "path": "currency_code",
+              "parser": "trim"
             }
           ],
           "evidence": [
@@ -2776,7 +3102,27 @@
               "kind": "ref",
               "id": "portal.bc_transaction_currency"
             }
-          ]
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context.critique.r1"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "portal.bc_company_pins"
+                  }
+                ]
+              }
+            ]
+          }
         },
         {
           "name": "subtotal",
@@ -2791,8 +3137,35 @@
               "path": "totalAmountExcludingTax",
               "parser": "decimal_text",
               "tax_basis": "excl_tax"
+            },
+            {
+              "binding": "portal.bc_purchase_invoice_snapshot",
+              "path": "amount_excluding_tax",
+              "parser": "decimal_text",
+              "tax_basis": "excl_tax",
+              "currency_from": "currency_code"
             }
-          ]
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context.critique.r1"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "portal.bc_company_pins"
+                  }
+                ]
+              }
+            ]
+          }
         },
         {
           "name": "total_tax",
@@ -2807,8 +3180,35 @@
               "path": "totalTaxAmount",
               "parser": "decimal_text",
               "tax_basis": "tax_only"
+            },
+            {
+              "binding": "portal.bc_purchase_invoice_snapshot",
+              "path": "total_tax_amount",
+              "parser": "decimal_text",
+              "tax_basis": "unknown",
+              "currency_from": "currency_code"
             }
-          ]
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context.critique.r1"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "portal.bc_company_pins"
+                  }
+                ]
+              }
+            ]
+          }
         },
         {
           "name": "total_amount",
@@ -2824,6 +3224,13 @@
               "path": "totalAmountIncludingTax",
               "parser": "decimal_text",
               "tax_basis": "incl_tax"
+            },
+            {
+              "binding": "portal.bc_purchase_invoice_snapshot",
+              "path": "amount_including_tax",
+              "parser": "decimal_text",
+              "tax_basis": "incl_tax",
+              "currency_from": "currency_code"
             }
           ],
           "evidence": [
@@ -2831,7 +3238,27 @@
               "kind": "ref",
               "id": "portal.bc_transaction_currency"
             }
-          ]
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context.critique.r1"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "portal.bc_company_pins"
+                  }
+                ]
+              }
+            ]
+          }
         },
         {
           "name": "remaining_amount",
@@ -2842,13 +3269,20 @@
             "finance"
           ],
           "availability": "not_served",
-          "availability_reason": "BC does not serve remainingAmount on purchaseInvoices: the live api/v2.0 $metadata (sha256 09a82605, read 2026-10-13, the committed pin) declares no such property, so no captured value is read and the amount still owed is a gap, never zero; the live check schema.bc_metadata_drift reports it now_served if BC starts serving it. status Paid decides the payment stage (docs/decisions/2026-10-07-bc-finance-2-payment-ledger.md).",
+          "availability_reason": "BC does not serve remainingAmount on purchaseInvoices: the live api/v2.0 $metadata (sha256 09a82605, read 2026-10-13, the committed pin) declares no such property, so no captured value is read and the amount still owed is a gap, never zero; the live check schema.bc_metadata_drift reports it now_served if BC starts serving it. status Paid decides the payment stage (devloop/DECISIONS/2026-10-07-bc-finance-2-payment-ledger.md).",
           "sources": [
             {
               "binding": "bc.purchase_invoices",
               "path": "remainingAmount",
               "parser": "decimal_text",
               "tax_basis": "incl_tax"
+            },
+            {
+              "binding": "portal.bc_purchase_invoice_snapshot",
+              "path": "remaining_amount",
+              "parser": "decimal_text",
+              "tax_basis": "unknown",
+              "currency_from": "currency_code"
             }
           ],
           "evidence": [
@@ -2860,7 +3294,27 @@
               "kind": "ref",
               "id": "portal.bc_transaction_currency"
             }
-          ]
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context.critique.r1"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "portal.bc_company_pins"
+                  }
+                ]
+              }
+            ]
+          }
         }
       ],
       "identity_keys": [
@@ -3081,7 +3535,7 @@
             },
             {
               "kind": "ref",
-              "id": "workbench.bc_company_lineage"
+              "id": "context.critique.r15"
             },
             {
               "kind": "ref",
@@ -3344,7 +3798,7 @@
           "value_type": "quantity",
           "unit_from": "unitOfMeasureCode",
           "quantity_role": "returned",
-          "description": "The quantity credited. On an Item line posting ships it back to the vendor (role returned, as SalesCreditMemoLine.credited_quantity, docs/decisions/2026-10-07-bc-credit-memo-quantity-role.md); on Charge/Account lines it is no goods: read line_type first.",
+          "description": "The quantity credited. On an Item line posting ships it back to the vendor (role returned, as SalesCreditMemoLine.credited_quantity, devloop/DECISIONS/2026-10-07-bc-credit-memo-quantity-role.md); on Charge/Account lines it is no goods: read line_type first.",
           "sources": [
             {
               "binding": "bc.purchase_credit_memo_lines",
@@ -3516,7 +3970,7 @@
           "name": "evidence",
           "value_type": "json",
           "markings": [
-            "finance"
+            "purchasing_prices"
           ],
           "description": "The extraction (ontology/document_fields.py extract_fields): class cue, every field with its citations (byte-pinned handle, source_sha256, page, start/end in that page's extracted text, literal), every gap with its reason, and the identifier references. Untrusted document text.",
           "sources": [
@@ -5064,6 +5518,30 @@
               "id": "workbench.bc_same_company_scope"
             }
           ]
+        },
+        {
+          "kind": "text_match",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.bc_purchase_invoice_snapshot",
+          "to_binding": "portal.app_purchase_order",
+          "pairs": [
+            {
+              "from": "order_number",
+              "to": "po_number",
+              "compare": "identifier",
+              "identifier_kind": "bc_document_no"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "portal.bc_po_finance_invoice_match"
+            },
+            {
+              "kind": "ref",
+              "id": "portal.bc_serialize_purchase_order"
+            }
+          ]
         }
       ]
     },
@@ -5132,6 +5610,26 @@
             {
               "kind": "ref",
               "id": "workbench.bc_same_company_scope"
+            }
+          ]
+        },
+        {
+          "kind": "text_match",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.bc_purchase_invoice_snapshot",
+          "to_binding": "portal.app_supplier",
+          "pairs": [
+            {
+              "from": "vendor_number",
+              "to": "code",
+              "compare": "identifier",
+              "identifier_kind": "supplier_code"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "context.portal.3.11"
             }
           ]
         }
@@ -6331,39 +6829,39 @@
       "note": "sage.po_receipt_header is served (rcphseq, rcpnumber, porhseq, ponumber, date, currency, invnumber).",
       "lines": "3313"
     },
-    "workbench.lineage_authority": {
-      "kind": "workbench_code",
-      "path": "ontology/schema.py",
-      "note": "Authority by era: FM/Sage bronze outranks the gold ETL copy; BC is authority for posted documents and money; gold_native_staging is never authority until a human confirms it."
+    "context.critique.r1": {
+      "kind": "context_pack",
+      "ref": "devloop/CONTEXT/09-CRITIQUE.md#R1",
+      "note": "Authority by era: FM/Sage bronze outranks the gold ETL copy; BC is authority for posted documents and money; gold_native_staging is never authority until a human confirms it (Q1)."
     },
-    "workbench.bc_company_lineage": {
-      "kind": "workbench_code",
-      "path": "ontology/schema.py",
+    "context.critique.r15": {
+      "kind": "context_pack",
+      "ref": "devloop/CONTEXT/09-CRITIQUE.md#R15",
       "note": "BC company/book is a dimension of every BC-sourced object."
     },
     "context.live_sources": {
       "kind": "context_pack",
-      "ref": "docs/reference/live-sources.md",
+      "ref": "devloop/CONTEXT/06-LIVE-SOURCES.md",
       "note": "BC Production, GET only; companies My Company, PLX Consol, PLX Distribution."
     },
     "context.ontology_design.c1": {
       "kind": "context_pack",
-      "ref": "docs/reference/ontology-design.md#C.1",
+      "ref": "devloop/CONTEXT/07-ONTOLOGY-DESIGN.md#C.1",
       "note": "Object/link catalogue for orders and purchasing (C.1, C.2) and the O2C/P2P event table (C.3)."
     },
     "context.portal.3.5": {
       "kind": "context_pack",
-      "ref": "docs/reference/portal-code-map.md#3.5",
+      "ref": "devloop/CONTEXT/03-PORTAL.md#3.5",
       "note": "PurchaseOrder/Receipt models, number series, renumbering, receiving flow, BC push rules."
     },
     "context.portal.4.10": {
       "kind": "context_pack",
-      "ref": "docs/reference/portal-code-map.md#4.10",
+      "ref": "devloop/CONTEXT/03-PORTAL.md#4.10",
       "note": "BC sync: entity map, outbox, two books (ERP-D-012), freight/duty expensed (ERP-D-015)."
     },
     "context.portal.6": {
       "kind": "context_pack",
-      "ref": "docs/reference/portal-code-map.md#6",
+      "ref": "devloop/CONTEXT/03-PORTAL.md#6",
       "note": "Reporting API traps: money/quantities are float-formatted strings; app_*.updated_at bumped by ETL; FM ids >= 900000 Portal-minted; po_reference mixes real POs and FM reference text."
     },
     "live.portal_relation_keys": {
@@ -6396,7 +6894,7 @@
       "commit": "b46934a",
       "symbol": "fetchPurchaseOrderFinance",
       "lines": "276-330",
-      "note": "A PO's BC purchase invoices are those whose TRIM(order_number) equals the trimmed Portal PO number (or its BC PO number), or whose vendor_invoice_number is one recorded on the PO's receipts; the snapshot query has no company filter. Unchanged at c3ffda3 (line 326, at the repo pin 549f6f0e)."
+      "note": "A PO's BC purchase invoices are those whose TRIM(order_number) equals the trimmed Portal PO number (or its BC PO number), or whose vendor_invoice_number is one recorded on the PO's receipts; the snapshot query has no company filter. Unchanged at c3ffda3 (line 326, as the lane cites it at the repo pin 549f6f0e)."
     },
     "portal.bc_drain_purchase_invoice": {
       "kind": "upstream_code",
@@ -6624,7 +7122,7 @@
     "workbench.bc_same_company_scope": {
       "kind": "workbench_code",
       "path": "ontology/schema.py",
-      "note": "Both ends are BC captures: compare only within one BC company (bc_<book> equal on both ends). BC numbers are unique per company only; masters synced to several books and consolidation copies reuse them (SO vs DSO series: outbox-drain.ts:880-890 @b46934a). Machine-readable today as ontology.schema.link_company_scope / CompiledSchema.company_scope; a C0 field is asked in bc-link-company-scope."
+      "note": "Both ends are BC captures: compare only within one BC company (bc_<book> equal on both ends). BC numbers are unique per company only; masters synced to several books and consolidation copies reuse them (SO vs DSO series: outbox-drain.ts:880-890 @b46934a). Machine-readable today as ontology.schema.link_company_scope / CompiledSchema.company_scope; a C0 field is asked in devloop/OPEN-DECISIONS.md bc-link-company-scope."
     },
     "allowlist.sage.po_receipt_header.multipor": {
       "kind": "upstream_code",
@@ -6633,7 +7131,7 @@
       "commit": "b46934a",
       "symbol": "sage.po_receipt_header",
       "lines": "3347-3351",
-      "note": "Sage receipt headers serve multipor/pors: one receipt can cover several POs, while the header porhseq/ponumber name only one of them, and the served receipt detail carries no PO key (rcphseq/rcplseq only). The header pair is therefore capped at corroborated: never a fact that this is the receipt's only PO, and a multi-PO receipt's totals must not be attributed to it. C0 cannot condition a link tier on multipor."
+      "note": "Sage receipt headers serve multipor/pors: one receipt can cover several POs, while the header porhseq/ponumber name only one of them, and the served receipt detail carries no PO key (rcphseq/rcplseq only). The header pair is therefore capped at corroborated: never a fact that this is the receipt's only PO, and a multi-PO receipt's totals must not be attributed to it. C0 cannot condition a link tier on multipor (devloop/OPEN-DECISIONS.md sage-multi-po-receipts)."
     },
     "workbench.bc_line_price_uom": {
       "kind": "workbench_code",
@@ -6684,11 +7182,11 @@
     "workbench.bc_purchase_credit_memos": {
       "kind": "workbench_code",
       "path": "integrations/live_source_grammar.py",
-      "note": "BC_QUERY_SPECS purchaseCreditMemos / purchaseCreditMemoLines: field names from the BC API v2.0 purchaseCreditMemo and purchaseCreditMemoLine resources (MicrosoftDocs dynamics365smb-devitpro-pb api-reference/v2.0); invoiceId / invoiceNumber name the invoice the memo is applied to. Captured by integrations.bc_read.BcCapture (lines by nested navigation); unverified live until verify/live-checks/bc.capture_full.json records the units complete."
+      "note": "BC_QUERY_SPECS purchaseCreditMemos / purchaseCreditMemoLines: field names from the BC API v2.0 purchaseCreditMemo and purchaseCreditMemoLine resources (MicrosoftDocs dynamics365smb-devitpro-pb api-reference/v2.0); invoiceId / invoiceNumber name the invoice the memo is applied to. Captured by integrations.bc_read.BcCapture (lines by nested navigation); unverified live until devloop/live-checks/bc.capture_full.json records the units complete."
     },
     "workbench.bc_payment_state_decision": {
       "kind": "workbench_code",
-      "path": "docs/decisions/2026-10-07-bc-finance-2-payment-ledger.md",
+      "path": "devloop/DECISIONS/2026-10-07-bc-finance-2-payment-ledger.md",
       "note": "Cites plx-customer-portal@790256c portal/src/lib/business-central/inbound.ts (projectPurchaseInvoice, read at that commit, not at this domain's b46934a pin): the Portal's BC inbound snapshot reads remainingAmount on purchase invoices when BC serves it ('purchaseInvoices may omit remainingAmount; status=Paid is authoritative'); customer/vendor ledger entries are optional collections it skips on 404 (shouldSkipMissingPostedCollection)."
     },
     "workbench.bc_company_local_currency": {
@@ -6698,8 +7196,13 @@
     },
     "workbench.bc_prices_include_tax": {
       "kind": "workbench_code",
-      "path": "docs/decisions/2026-10-08-bc-three-way-price-basis.md",
+      "path": "devloop/DECISIONS/2026-10-08-bc-three-way-price-basis.md",
       "note": "BC API v2.0 purchaseOrder / purchaseInvoice pricesIncludeTax (Edm.Boolean, nullable; pinned $metadata ontology/schema/generated/meta/bc_metadata.json) states whether the document's line prices include tax; the capture reads it on the header (integrations/bc_read.py reads every field; integrations/bc_purchase.py selects it). A line price reads it through its header: true is incl_tax, false excl_tax, null unknown. Caveat: the PO line compares directUnitCost and the invoice line unitCost, which may include indirect cost. Live-unverified."
+    },
+    "context.portal.3.11": {
+      "kind": "context_pack",
+      "ref": "devloop/CONTEXT/03-PORTAL.md#3.11",
+      "note": "BC tables are outside the pinned reporting-API manifest; the live catalog (GET /v1/relations, 2026-10-26) lists public.bc_purchase_invoice_snapshot, so its rows are Portal copies of BC invoices with no company column."
     }
   }
 }

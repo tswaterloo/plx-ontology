@@ -137,17 +137,17 @@
   "invent_absent_value"
  ],
  "oracle": {
-  "id": "oracle:f1_chain@1c117db7f628",
+  "id": "oracle:f1_chain@305211c73a11",
   "interface": "plx-eval-oracle/v1",
   "derived_from": [
-   "docs/reference/portal-code-map.md#3.8 app_manufacturing_order.mo_code = FM assembly_order.nameamo_c",
-   "docs/reference/portal-code-map.md#3.8 app_manufacturing_order.sales_order_line_id -> app_sales_order_line.id (P:prisma/schema.prisma:2507)",
-   "docs/reference/portal-code-map.md#3.8 app_manufacturing_order.mo_code = FM assembly_order.nameamo_c (etlManufacturingOrders)",
-   "docs/reference/portal-code-map.md#3.2 app_sales_order_line.sales_order_id -> app_sales_order.id (P:prisma/schema.prisma:3720)",
-   "docs/reference/portal-code-map.md#3.2 app_sales_order_line.product_id -> app_product.id",
-   "docs/reference/portal-code-map.md#3.1 app_sales_order.customer_id -> app_customer.id (P:prisma/schema.prisma:3665)",
-   "docs/reference/portal-code-map.md#3.2 app_sales_order.custom_fields.sageOrdUniq = sage.oe_order_header.orduniq",
-   "docs/reference/portal-code-map.md#3.8 canonicalizeStatus Realized or date_realized, not deleted"
+   "devloop/CONTEXT/03-PORTAL.md#3.8 app_manufacturing_order.mo_code = FM assembly_order.nameamo_c",
+   "devloop/CONTEXT/03-PORTAL.md#3.8 app_manufacturing_order.sales_order_line_id -> app_sales_order_line.id (P:prisma/schema.prisma:2507)",
+   "devloop/CONTEXT/03-PORTAL.md#3.8 app_manufacturing_order.mo_code = FM assembly_order.nameamo_c (etlManufacturingOrders)",
+   "devloop/CONTEXT/03-PORTAL.md#3.2 app_sales_order_line.sales_order_id -> app_sales_order.id (P:prisma/schema.prisma:3720)",
+   "devloop/CONTEXT/03-PORTAL.md#3.2 app_sales_order_line.product_id -> app_product.id",
+   "devloop/CONTEXT/03-PORTAL.md#3.1 app_sales_order.customer_id -> app_customer.id (P:prisma/schema.prisma:3665)",
+   "devloop/CONTEXT/03-PORTAL.md#3.2 app_sales_order.custom_fields.sageOrdUniq = sage.oe_order_header.orduniq",
+   "devloop/CONTEXT/03-PORTAL.md#3.8 canonicalizeStatus Realized or date_realized, not deleted"
   ],
   "computed_at": "2099-01-02T04:00:00Z",
   "query_digest": "841cbcbabc59efdab92b19149fefcfcf58d317ecf00431994d6d95f3d9e94b25"

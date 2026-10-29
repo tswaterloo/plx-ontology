@@ -5,7 +5,7 @@ real GET-only ``BcCapture`` from the in-process fake of ``integrations/tests/tes
 and projected alone (no Portal mirror: the plan answers while the Portal API is down); the
 generic tools, ``plx.investigate`` and a per-reader citation resolver over the capture store run
 their real code. Two companies reuse every number. Every output is validated against the tool
-contract. The oracle (``evals/oracle/order_margin.py``) scores the same world in
+contract. The oracle lane (``evals/oracle/order_margin.py``) scores the same world in
 ``tests/test_eval_order_margin.py``. Evidence label: isolated-fixture (synthetic records over an
 injected transport, never live PLX data).
 """
@@ -176,7 +176,7 @@ class OrderMarginTests(unittest.TestCase):
         self.assertEqual(gap["state"], "not_ingested")
 
     def test_a_lead_tier_invoice_never_enters_a_sum(self):
-        """The finance-sum rule (decisions 2026-10-02): the same order with
+        """The finance-sum rule (10-DECISION lead decisions 2026-10-02): the same order with
         its invoice lines resting on a lead (as a Portal-rooted text match would) gets no
         revenue, margin or total."""
         def leads(args, evidence, *rest, **kw):

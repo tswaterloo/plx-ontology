@@ -9,7 +9,7 @@ and product, its FM twin), then ``operating.case_workspace_live.CaseOpener`` ope
 ``plx.investigate``, and ``scripts/eval_packaging_oracle_check.py`` checks that case against the
 evaluation oracle's own reading. Behaviour that lived only in the script (its draft
 playbook, landed-cost arithmetic, original-document roles) is covered where it lives now;
-``docs/decisions/2026-10-07-allowlist-3-coverage-map.md`` maps every old test.
+``devloop/DECISIONS/2026-10-07-allowlist-3-coverage-map.md`` maps every old test.
 
 Evidence label: injected-transport (no network, no real PLX data).
 """
@@ -163,14 +163,14 @@ class PackagingCaseGenericTest(unittest.TestCase):
         """Acceptance (allowlist-3): before case.packaging_case_script retires, the generic
         path reproduces the oracle's root and its 4 lines, or reports a typed gap; the
         committed spec's own command meets its expectations on the real summary."""
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
 
-        spec = json.loads((ROOT / "verify" / "live-checks" / "case.packaging_oracle.json")
+        spec = json.loads((ROOT / "devloop" / "live-checks" / "case.packaging_oracle.json")
                           .read_text("utf-8"))
         self.assertEqual(lv.validate_spec(spec, stem="case.packaging_oracle"), [])
         # The fixture's own spelling (PO#5447): the oracle compares the number in the
         # normal form plx.find searches by, so it finds the row plx.find rooted the case on
-        # and reaches a verdict (never a gap forever).
+        # and reaches a verdict (direction review of d5d78266: never a gap forever).
         world = PackagingWorld(self)
         command = list(spec["command"])
         self.assertEqual(command[:3], ["python3", "-m", "scripts.eval_packaging_oracle_check"])
@@ -221,13 +221,13 @@ class PackagingCaseGenericTest(unittest.TestCase):
                          "requested_po_not_in_portal")
 
     def test_a_portal_outage_at_ingestion_is_blocked_upstream_never_absence(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from integrations.http import SourceHttpError
 
         def portal_down(url, headers, *, max_bytes):
             raise SourceHttpError("HTTP 500", status=500, error_code="internal")
 
-        spec = json.loads((ROOT / "verify" / "live-checks" / "case.packaging_oracle.json")
+        spec = json.loads((ROOT / "devloop" / "live-checks" / "case.packaging_oracle.json")
                           .read_text("utf-8"))
         world = PackagingWorld(self)
         with tempfile.TemporaryDirectory() as temp:
@@ -237,19 +237,19 @@ class PackagingCaseGenericTest(unittest.TestCase):
         self.assertEqual(document["case"]["missing"], live_ws.BLOCKED_UPSTREAM)
         self.assertTrue(lv.blocked_parts(document))
         self.assertNotEqual(lv.check_expectations(spec, code, document), [])
-        # Accepted trade-off: expect_blocked checks what still ran, so an
+        # Accepted trade-off (gap-050f0faa80e2): expect_blocked checks what still ran, so an
         # outage that stops the case from opening fails, never passes.
         self.assertEqual(code, 3)
         self.assertIn("exit_code 3 != 0",
                       lv.check_expectations(spec, code, document, spec["expect_blocked"]))
 
     def test_an_unavailable_sage_relation_blocks_while_the_case_and_oracle_still_agree(self):
-        """sage.po_header / sage.po_receipt_header unavailable at
+        """gap-050f0faa80e2: sage.po_header / sage.po_receipt_header unavailable at
         ingestion are blocked_upstream parts, the case still opens and the oracle agrees:
         the real summary meets expect_blocked (the verifier records blocked, never pass)."""
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
 
-        spec = json.loads((ROOT / "verify" / "live-checks" / "case.packaging_oracle.json")
+        spec = json.loads((ROOT / "devloop" / "live-checks" / "case.packaging_oracle.json")
                           .read_text("utf-8"))
         world = PackagingWorld(self, unavailable=("sage.po_header", "sage.po_receipt_header"))
         with tempfile.TemporaryDirectory() as temp:

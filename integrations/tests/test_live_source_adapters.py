@@ -904,7 +904,8 @@ class ClosedGrammarTests(unittest.TestCase):
              "site_name": "AGENTS", "teams_thread": "19:a1B2-c_3@thread.tacv2",
              "teams_message_id": "1616965872395", "search_text": "PO#12345",
              "share_id": "u!aHR0cHM6Ly9wZXRyYWxhYnguc2hhcmVwb2ludC5jb20vOmI6L3MvUUMvRWFC",
-             "freightcom_id": "fc-Test_1", "amazon_shipment_id": "FBA1TEST0001"}
+             "freightcom_id": "fc-Test_1", "amazon_shipment_id": "FBA1TEST0001",
+             "bc_company_name": "My Company"}
     # External operations whose closed query grammar requires parameters
     # (live_source_grammar.SP_QUERIES): a valid query, so only the path is under test.
     VALID_QUERY = {
@@ -920,6 +921,9 @@ class ClosedGrammarTests(unittest.TestCase):
                           "interval": "2026-09-19T00:00:00Z--2026-10-19T00:00:00Z"}}
 
     def valid_query(self, op: str) -> dict:
+        if op == "bc.odata_purchase_orders":  # its closed grammar requires the fixed $select
+            from integrations import live_source_grammar as g
+            return g.bc_odata_purchase_order_query()
         return self.VALID_QUERY.get(op.rsplit(".", 1)[-1], {}) if op.startswith("sp_api.") \
             else {}
     GENERIC_BAD = ("", "/", "a/b", "..", "../../x", "%2e%2e", "a%b", "a%2Fb", "a\\b",
@@ -949,6 +953,8 @@ class ClosedGrammarTests(unittest.TestCase):
                          "19:a@thread.tacv2:x", "19:@thread.v2", "19:a@thread.v2/messages",
                          "19:a@thread.v2'"),
         "teams_message_id": ("1.2", "1 2", "1+2", "1:2"),
+        # Not in the pinned map, doubled space, quote, parentheses.
+        "bc_company_name": ("CRONUS Canada", "My  Company", "My Company'", "a(b)"),
         # s! token, raw id, padding, non-https or space in the decoded URL, '+' / '/'
         # (base64, not base64url), a non-canonical last character.
         "share_id": ("s!AbCd", "AbCd", "u!", "u!aHR0cHM6Ly94LmNvbQ==", "u!aHR0cDovL3guY29t",
@@ -1019,8 +1025,8 @@ class ClosedGrammarTests(unittest.TestCase):
 
 
 class AliasAndProvenanceTests(unittest.TestCase):
-    """Caller-shaped input reaching a
-    resource the audience did not decide on."""
+    """Reviewer repros of round 3 (same family: caller-shaped input reaching a
+    resource the audience did not decide on)."""
 
     def setUp(self):
         self.pages = {
@@ -1228,7 +1234,7 @@ class ProbeCliTests(unittest.TestCase):
         # The Graph reads answered below 400, as the live check records them for the
         # registry; the content arrives through the pre-authenticated download, so no
         # ``/content`` operation is named.
-        from verify import live_verify
+        from devloop import live_verify
         with open(f"{live_verify.ROOT}/{live_verify.SPECS_DIR_NAME}/"
                   "graph.adapter_probe_content.json", encoding="utf-8") as fh:
             spec = json.load(fh)

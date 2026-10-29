@@ -20,7 +20,14 @@ serves. The steps, each writing into the generation being built
 * ``twins``: a Portal-BC purchase-order pair the schema joins only on the number text,
   corroborated by its supplier and its date or total, as a ``corroborated`` same-record
   link beside the lead (``ontology.identity_scoring.twin_step``; after ``reviews``, so a
-  pair a person rejected is never raised).
+  pair a person rejected is never raised);
+* ``your_reference``: a BC purchase order's ``Your Reference`` (ODataV4 Page 50, the
+  captured field page ``purchaseOrderReferences``) naming a Portal order's FM PO number,
+  as a ``corroborated`` same-record link when the match is unique and the supplier or
+  order date corroborates it, else as a ``lead``
+  (``ontology.identity_scoring.your_reference_verdict``)
+  (``ontology.identity_scoring.your_reference_step``; after ``twins`` and ``reviews``, so a
+  rejected, firm or already corroborated pair is never linked again).
 
 ``mentions`` and ``document_fields`` resolve a mention through the generation's identifier
 index and the reviewed aliases of the review store (``ontology.reviews.BuildAliases``):
@@ -55,7 +62,7 @@ import threading
 from typing import Any, Callable
 
 from ontology import reviews
-from ontology.identity_scoring import twin_step
+from ontology.identity_scoring import twin_step, your_reference_step
 from ontology.document_fields import store_document_links
 from ontology.mentions import store_mention_links
 from ontology.text_index import store_text_index
@@ -198,7 +205,8 @@ def post_project(state_dir: str | Path, tenant: str, *, scratch: str | Path | No
     return {"confirmations": confirmations,
             "document_fields": document_fields, "mentions": mentions,
             "reviews": reviews.link_step(review_store, tenant),
-            "text_index": store_text_index, "twins": twin_step}
+            "text_index": store_text_index, "twins": twin_step,
+            "your_reference": your_reference_step}
 
 
 def _on_copy(store: Path, scratch: Path, tenant: str, review_store: Any) -> Step:

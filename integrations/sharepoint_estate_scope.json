@@ -1,8 +1,9 @@
 {
  "schema": "plx-sharepoint-capture-scope/v1",
- "note": "SharePoint estate scope: every document library of every site the application can read on the configured SHAREPOINT_SITE_ID host, discovered at run time by GET only (graph.sites_all, then graph.site_drives per site), each captured from its root '/' into the same SharePoint capture store: a full walk first, then the drive's change feed, a full walk again every full_walk_hours. Item permissions are read for every item and every reader is re-gated per item. Personal sites on the configured tenant's OneDrive host (<tenant>-my.sharepoint.com, the second host the read guard downloads from) are in scope the same way: each OneDrive library is walked from its root and every item is re-gated per reader on its item permissions, so a reader granted the library sees only the files shared with them. Sites on any other host are out of scope and counted (sites_other_host). A site listing that fails or is cut, a site whose libraries cannot be listed, and a library the capture principal may not read are incomplete-source gaps with a reason, never dropped. 'exclude' is the data-driven exclusion list (site URL name, library name, or both); the entries below are SharePoint system libraries (page and asset storage, retention copies), not business documents. This file grants nothing. Read-only: nothing is ever written to SharePoint. Library classes (library_security_classes): the PLX site plan's restricted libraries (plx-customer-portal docs/projects/plx-sharepoint-site/README.md@6e76a5b:85-90) by library name on every site: Finance is read by Finance and Executive, Business Central by Finance, Executive and IT, Staff Scratch by its owner only (operating/employee_permissions.py file clearance). A library whose name says it is one of these but that no entry classifies (for example 'PLX Finance') is refused, never walked, and reported as the gap restricted_library_unclassified until an entry classifies or excludes it. list_item_columns 'portal_taxonomy': each new version's Portal-taxonomy columns (operating/doc_metadata_taxonomy.py COLUMNS, the one column list) are kept with it (GET listItem), so the Finance-category rule can fire and SharePointFile.portal_metadata states what the Portal filled.",
+ "note": "SharePoint estate scope (lane sp-estate; owner decision 5be438765457, ING-03/ING-16): every document library of every site the application can read on the configured SHAREPOINT_SITE_ID host, discovered at run time by GET only (graph.sites_all, then graph.site_drives per site), each captured from its root '/' into the same SharePoint capture store: a full walk first, then the drive's change feed, a full walk again every full_walk_hours. Item permissions are read for every item and every reader is re-gated per item. Personal sites on the configured tenant's OneDrive host (<tenant>-my.sharepoint.com, the second host the read guard downloads from) are in scope the same way: each OneDrive library is walked from its root and every item is re-gated per reader on its item permissions, so a reader granted the library sees only the files shared with them. Sites on any other host are out of scope and counted (sites_other_host). A site listing that fails or is cut, a site whose libraries cannot be listed, and a library the capture principal may not read are incomplete-source gaps with a reason, never dropped. 'exclude' is the data-driven exclusion list (site URL name, library name, or both). It is empty: the owner rule is everything (2026-10-27), so no library is left out by default, the SharePoint system libraries (page and asset storage, retention copies) included; an entry is added only by a recorded decision. This is the host's SharePoint scope (examples/ingest_all_sources.json): the estate outlasts one cycle's budget, so each cycle resumes every root from its walk position or change feed and gives each root a fair slice (module docstring, Estate progress), and a root a bound or the budget cuts stays a named gap, never read. This file grants nothing. Read-only: nothing is ever written to SharePoint. Library classes (library_security_classes): the PLX site plan's restricted libraries (plx-customer-portal docs/projects/plx-sharepoint-site/README.md@6e76a5b:85-90) by library name on every site: Finance is read by Finance and Executive, Business Central by Finance, Executive and IT, Staff Scratch by its owner only (operating/employee_permissions.py file clearance). A library whose name says it is one of these but that no entry classifies (for example 'PLX Finance') is refused, never walked, and reported as the gap restricted_library_unclassified until an entry classifies or excludes it. list_item_columns 'portal_taxonomy': each new version's Portal-taxonomy columns (operating/doc_metadata_taxonomy.py COLUMNS, the one column list) are kept with it (GET listItem), so the Finance-category rule can fire and SharePointFile.portal_metadata states what the Portal filled.",
  "max_content_bytes": 20000000,
  "full_walk_hours": 24,
+ "permission_reread_hours": 24,
  "targets": [],
  "library_security_classes": [
   {"library": "Finance", "class": "FINANCE"},
@@ -11,17 +12,10 @@
  ],
  "list_item_columns": "portal_taxonomy",
  "discover": {
-  "max_sites": 500,
-  "max_libraries_per_site": 50,
-  "max_depth": 8,
+  "max_sites": 5000,
+  "max_libraries_per_site": 500,
+  "max_depth": 20,
   "max_folders": 5000,
-  "exclude": [
-   {"library": "Site Assets"},
-   {"library": "Site Pages"},
-   {"library": "Style Library"},
-   {"library": "Form Templates"},
-   {"library": "Preservation Hold Library"},
-   {"library": "Teams Wiki Data"}
-  ]
+  "exclude": []
  }
 }

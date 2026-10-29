@@ -15,7 +15,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from verify import live_verify
+from devloop import live_verify
 from operating import session_identity
 from operator_ui import console_ticket, session_journal
 from operator_ui.session_journal import SessionJournal
@@ -24,7 +24,7 @@ TENANT = "00000000-0000-4000-8000-0000000000f1"
 EMPLOYEE = "00000000-0000-4000-8000-0000000000a1"
 EVAL = "00000000-0000-4000-8000-0000000000e1"
 EMAIL = "employee@example.test"
-SPEC = json.loads(Path("verify/live-checks/session.employee_recorded.json")
+SPEC = json.loads(Path("devloop/live-checks/session.employee_recorded.json")
                   .read_text("utf-8"))
 FULL_VIEW = {"timeline": 3, "originals": 1, "gaps": 0, "conflicts": 2}
 CITED = {"claims": 2, "citations": 2}
@@ -100,7 +100,7 @@ class EmployeeRecordedTest(unittest.TestCase):
 
     def check(self, state=None, environ=None):
         """The spec's own command path: ``main(["check"])`` over the environment, then
-        the live-check expectations on its printed document."""
+        the live verifier's expectations on its printed document."""
         env = {"PLX_WORKBENCH_STATE_DIR": str(self.state if state is None else state),
                "PLX_EVAL_READER": json.dumps(self.reader),
                session_journal.ENTRA_RESOURCE_ENV: str(self.registration), **(environ or {})}

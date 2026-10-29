@@ -3,7 +3,7 @@
   "format": "plx-ontology-domain/v1",
   "domain": "catalog_parties",
   "origin": "curated",
-  "description": "Items/products (code = BC Item No., erp_code = Sage IC No.), customers, customer locations, suppliers/vendors, manufacturers, supplier offers and contacts across Portal gold, FM bronze, Sage and BC. Records are never merged: same_record_as links carry the evidence.",
+  "description": "Items/products (code = BC Item No., erp_code = Sage IC No.), customers, customer locations, suppliers/vendors, manufacturers, supplier offers and contacts across Portal gold, FM bronze, Sage and BC. Records are never merged: same_record_as links carry the evidence. Lane L5b.",
   "upstream_pins": {
     "plx-customer-portal": "b46934a"
   },
@@ -334,7 +334,7 @@
                 ]
               }
             ],
-            "note": "The FM/Sage record a gold row was copied from wins; BC cards are created from the gold code and are downstream. Portal-native (gold_native_staging) rows have no confirmed authority."
+            "note": "The FM/Sage record a gold row was copied from wins; BC cards are created from the gold code and are downstream. Portal-native (gold_native_staging) rows have no confirmed authority (Q1)."
           },
           "evidence": [
             {
@@ -440,7 +440,7 @@
                 ]
               }
             ],
-            "note": "The FM/Sage record a gold row was copied from wins; BC cards are created from the gold code and are downstream. Portal-native (gold_native_staging) rows have no confirmed authority."
+            "note": "The FM/Sage record a gold row was copied from wins; BC cards are created from the gold code and are downstream. Portal-native (gold_native_staging) rows have no confirmed authority (Q1)."
           }
         },
         {
@@ -3614,6 +3614,74 @@
               "parser": "trim"
             }
           ]
+        },
+        {
+          "name": "tariff_rate",
+          "value_type": "text",
+          "description": "Duty rate as FileMaker records it on the supplier row (tariff_c), kept as text: FM stores it unit-less and the Portal copies it as text, so the landed-cost estimate applies it only when it is written with its unit (for example 4%). A blank tariff_c is absent, not a zero rate.",
+          "markings": [
+            "finance"
+          ],
+          "sources": [
+            {
+              "binding": "portal.fm_raw_material_supplier",
+              "path": "tariff_c",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.fm_packaging_supplier",
+              "path": "tariff_c",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlsupplierproducts.ee2e9d"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "hs_code",
+          "value_type": "text",
+          "availability": "not_served",
+          "availability_reason": "FM hscode and countryoforigin on the supplier rows are discovered columns the reporting API does not serve (later_ask portal-landed-cost-serve); the estimate states the HS code as a typed gap until they are served.",
+          "sources": [
+            {
+              "binding": "portal.fm_raw_material_supplier",
+              "path": "hscode",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.fm_packaging_supplier",
+              "path": "hscode",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlsupplierproducts.ee2e9d"
+                  }
+                ]
+              }
+            ]
+          }
         }
       ],
       "display": [
@@ -3787,7 +3855,7 @@
       "name": "same_record_as",
       "reverse_name": "same_record_as",
       "cardinality": "N:M",
-      "description": "Records of one item in different systems. Codes are stored copies (FM->gold ETL, gold->BC serializer), so a code match is verified but non-unique codes yield candidates, never a merge. The gold external_id -> FM id link (fm-<family>-{id}) needs a prefixed-id compare the format lacks.",
+      "description": "Records of one item in different systems. Codes are stored copies (FM->gold ETL, gold->BC serializer), so a code match is verified but non-unique codes yield candidates, never a merge. The gold external_id -> FM id link (fm-<family>-{id}) needs a prefixed-id compare the format lacks (devloop/OPEN-DECISIONS.md).",
       "bindings": [
         {
           "kind": "same_record",
@@ -4124,6 +4192,29 @@
               "id": "upstream-code.silvercustomers.code"
             }
           ]
+        },
+        {
+          "kind": "text_match",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.app_customer",
+          "to_binding": "bc.customers",
+          "pairs": [
+            {
+              "from": "company_name",
+              "to": "displayName",
+              "compare": "text"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.resolvecustomerbcnumber.07a6e9"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench-code.live-source-grammar-py.4afed4"
+            }
+          ]
         }
       ]
     },
@@ -4324,6 +4415,33 @@
             {
               "kind": "ref",
               "id": "upstream-code.etlsuppliers.2e0828"
+            }
+          ]
+        },
+        {
+          "kind": "text_match",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.app_supplier",
+          "to_binding": "bc.vendors",
+          "pairs": [
+            {
+              "from": "name",
+              "to": "displayName",
+              "compare": "text"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.serializevendor.7acf77"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.issagestylevendorcode.serializers"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench-code.live-source-grammar-py.4afed4"
             }
           ]
         }
@@ -4636,27 +4754,27 @@
   "evidence_catalog": {
     "context-pack.03-portal-md-3-1.d6d515": {
       "kind": "context_pack",
-      "ref": "docs/reference/portal-code-map.md#3.1",
+      "ref": "devloop/CONTEXT/03-PORTAL.md#3.1",
       "note": "Customer identity: id mixes cuid and fm-cust-N; erp_code = Sage IDCUST = BC No. (not unique); external_id forms fm-cust-, local-cust-, sage-cust-."
     },
     "context-pack.03-portal-md-3-5.5e11bc": {
       "kind": "context_pack",
-      "ref": "docs/reference/portal-code-map.md#3.5",
+      "ref": "devloop/CONTEXT/03-PORTAL.md#3.5",
       "note": "Supplier, SupplierProduct, FM raw_material_supplier / packaging_supplier."
     },
     "context-pack.03-portal-md-3-6.9db86c": {
       "kind": "context_pack",
-      "ref": "docs/reference/portal-code-map.md#3.6",
+      "ref": "devloop/CONTEXT/03-PORTAL.md#3.6",
       "note": "Item identifiers: code = BC Item No., erpCode = Sage IC item No., externalId not unique; standard_cost/unit_cost are not served."
     },
     "context-pack.03-portal-md-5.3be8d0": {
       "kind": "context_pack",
-      "ref": "docs/reference/portal-code-map.md#5",
+      "ref": "devloop/CONTEXT/03-PORTAL.md#5",
       "note": "Contact names, emails, phones and costs ARE served (D3 decision kept them): the Workbench must trim them per actor (pii / finance markings)."
     },
     "live-trace.latest-json-bc-case-entities-live-2026-1.a185c0": {
       "kind": "live_trace",
-      "ref": "claude/verify-live:results/latest.json#bc.case_entities (live-2026-10-01T19:39:24Z)",
+      "ref": "claude/devloop-live:results/latest.json#bc.case_entities (live-2026-10-01T19:39:24Z)",
       "note": "Live read-only probe of purchaseOrders, purchaseReceipts, purchaseInvoices, salesOrders, salesInvoices, items, vendors and customers (+ document lines) in the 3 Production companies: select_allowlist_absent and filter_fields_absent were empty, so every field in BC_QUERY_SPECS exists live."
     },
     "upstream-code.bcbookkey.e32697": {
@@ -4919,12 +5037,12 @@
       "commit": "b46934a",
       "symbol": "isSageStyleVendorCode",
       "lines": "150-214",
-      "note": "The Portal sends app_supplier.code as the BC Vendor No. only when it is Sage-style (has a letter, not pure digits); pure-digit FM codes are omitted and BC auto-numbers the vendor. A pure-digit code equal to a BC vendor No. is a coincidence. The C0 pair/predicate grammar cannot express 'Sage-style', so the pair is capped at lead until an identifier kind does."
+      "note": "The Portal sends app_supplier.code as the BC Vendor No. only when it is Sage-style (has a letter, not pure digits); pure-digit FM codes are omitted and BC auto-numbers the vendor. A pure-digit code equal to a BC vendor No. is a coincidence. The C0 pair/predicate grammar cannot express 'Sage-style', so the pair is capped at lead until an identifier kind does (devloop/OPEN-DECISIONS.md supplier-code-bc-vendor)."
     },
     "workbench.bc_same_company_scope": {
       "kind": "workbench_code",
       "path": "ontology/schema.py",
-      "note": "Both ends are BC captures: compare only within one BC company (bc_<book> equal on both ends). BC numbers are unique per company only; masters synced to several books and consolidation copies reuse them (SO vs DSO series: outbox-drain.ts:880-890 @b46934a). Machine-readable today as ontology.schema.link_company_scope / CompiledSchema.company_scope; a C0 field is asked in bc-link-company-scope."
+      "note": "Both ends are BC captures: compare only within one BC company (bc_<book> equal on both ends). BC numbers are unique per company only; masters synced to several books and consolidation copies reuse them (SO vs DSO series: outbox-drain.ts:880-890 @b46934a). Machine-readable today as ontology.schema.link_company_scope / CompiledSchema.company_scope; a C0 field is asked in devloop/OPEN-DECISIONS.md bc-link-company-scope."
     },
     "upstream-code.silvercustomers.code": {
       "kind": "upstream_code",

@@ -116,13 +116,13 @@
   "invent_absent_value"
  ],
  "oracle": {
-  "id": "oracle:f2_customer_po_status@1c117db7f628",
+  "id": "oracle:f2_customer_po_status@305211c73a11",
   "interface": "plx-eval-oracle/v1",
   "derived_from": [
-   "docs/reference/portal-code-map.md#3.3 app_sales_order.po_reference (exact, untrimmed, not unique)",
-   "docs/reference/portal-code-map.md#3.2 normalizeSalesOrderStatus (P:src/lib/sales-order/status.ts:8)",
-   "docs/reference/portal-code-map.md#3.10 shipment lines of SHIPPED/DELIVERED shipments (P@59b0548:src/lib/assembly-bom/pack-out-history.ts:274; ShipmentStatus prisma/schema.prisma:372)",
-   "docs/reference/portal-code-map.md#3.3 sage.oe_order_header.ponumber (exact)",
+   "devloop/CONTEXT/03-PORTAL.md#3.3 app_sales_order.po_reference (exact, untrimmed, not unique)",
+   "devloop/CONTEXT/03-PORTAL.md#3.2 normalizeSalesOrderStatus (P:src/lib/sales-order/status.ts:8)",
+   "devloop/CONTEXT/03-PORTAL.md#3.10 shipment lines of SHIPPED/DELIVERED shipments (P@59b0548:src/lib/assembly-bom/pack-out-history.ts:274; ShipmentStatus prisma/schema.prisma:372)",
+   "devloop/CONTEXT/03-PORTAL.md#3.3 sage.oe_order_header.ponumber (exact)",
    "SO closed: SHIPPED/COMPLETE, FM text complet/closed/realiz (P@c3ffda3:src/lib/wms/source-status.ts:24) or Sage header complete 1/Y (etl-sage-distribution-gold.mjs:1393)"
   ],
   "computed_at": "2099-01-02T04:00:00Z",

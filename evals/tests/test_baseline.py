@@ -175,6 +175,7 @@ class InvestigatorTests(unittest.TestCase):
                 if name == "plx.find":
                     self.calls.append((name, dict(arguments)))
                     return {"status": "found", "candidates": [{"object": {"object_id": OBJ},
+                            "reason": "exact_identifier",
                             "matched": {"identifier_kind": "so_number",
                                         "normalized": "SO-TEST-77"}}]}
                 if name != "plx.investigate":
@@ -238,6 +239,78 @@ class InvestigatorTests(unittest.TestCase):
         self.assertEqual(bl.eval_block([row, chain], split="dev", evidence_label="x",
                                        run_id="r", items_digest="d")["plans"],
                          {"None": 1, "chain": 1})
+
+    def test_a_plan_total_over_cited_lines_is_a_sum_the_scorer_recomputes(self):
+        """Failing first on fb57f04: a plan's computed total over the cited line values it
+        read (F3 ordered over an order's lines) was an uncited figure and the line values
+        were stated one by one (``ordered_1..n``, each ``cited_other_row``). The total is a
+        ``sum`` calculation over the lines it consumed, which are not stated again; a total
+        its inputs do not add up to, or one resting on a lead or a failed check, is never
+        stated as one."""
+        def line(name, handle, **extra):
+            return {"name": name, "kind": "property", "value": "2400", "unit": "ea",
+                    "quantity_role": "ordered", "object_id": handle, "property": "qty",
+                    "check": "passed",
+                    "citation": {"l1_handle": handle, "field_path": "row.qty"}, **extra}
+
+        def total(value="4800", **extra):
+            return {"name": "ordered", "kind": "computed", "value": value, "unit": "ea",
+                    "quantity_role": "ordered", "inputs": ["ordered_1", "ordered_2"],
+                    "steps": ["ordered = ordered_1 2400 + ordered_2 2400 = 4800 ea"],
+                    "check": "not_applicable", **extra}
+
+        def answer(entries):
+            return bl.DeterministicInvestigator.plan_answer({
+                "procedure": "procedure:order_quantities@0123456789ab",
+                "answerability": {"state": "answerable", "reasons": []},
+                "answer": entries, "gaps": [], "conflicts": []})
+        stated, uncited = answer([line("ordered_1", fx.H_LINE), line("ordered_2", fx.H_LINE_B),
+                                  total()])
+        self.assertEqual(uncited, 0)
+        self.assertEqual(stated["values"], [{
+            "name": "ordered", "value": "4800", "unit": "ea", "quantity_role": "ordered",
+            "calculation": {"op": "sum", "inputs": [
+                {"l1_handle": h, "field_path": "row.qty", "unit": "ea",
+                 "quantity_role": "ordered"} for h in (fx.H_LINE, fx.H_LINE_B)]}}])
+        self.assertEqual(stated["answerability"], "answerable")
+
+        class Planned(FakeTools):
+            def tools(self):
+                return super().tools() + [{"name": "plx.investigate", "read_only": True}]
+
+            def call(self, name, arguments):
+                if name == "plx.source_citation":
+                    found = fx.ROWS[arguments["citation"]]
+                    return {"ok": True, "relation": found[0], "key": found[1],
+                            "row": dict(found[2])}
+                if name != "plx.investigate":
+                    return super().call(name, arguments)
+                return {"procedure": "procedure:order_quantities@0123456789ab",
+                        "answerability": {"state": "answerable", "reasons": []},
+                        "answer": [line("ordered_1", fx.H_LINE),
+                                   line("ordered_2", fx.H_LINE_B), total()],
+                        "gaps": [], "conflicts": []}
+        item = fx.item(known_outcome={
+            "answerability": "answerable", "gaps": [],
+            "values": [{"name": "ordered", "value": "4800", "quantity_role": "ordered",
+                        "unit": "ea", "citations": [
+                            {"l1_handle": h, "field_path": "row.qty"}
+                            for h in (fx.H_LINE, fx.H_LINE_B)]}]})
+        row = bl.run_item(item, bl.DeterministicInvestigator(), Planned(), run_pin=None,
+                          evidence_label="isolated-fixture")
+        self.assertEqual({v["name"]: (v["passed"], v["codes"]) for v in row["score"]["values"]},
+                         {"ordered": (True, [])}, row["score"])
+        # Not a sum of its inputs, or on a lead or a failed check: never stated as one.
+        for lines, figure in (
+                ([line("ordered_1", fx.H_LINE), line("ordered_2", fx.H_LINE_B)], total("5000")),
+                ([line("ordered_1", fx.H_LINE, lead_basis=True), line("ordered_2", fx.H_LINE_B)],
+                 total(lead_basis=True)),
+                ([line("ordered_1", fx.H_LINE, check="failed"), line("ordered_2", fx.H_LINE_B)],
+                 total()),
+                ([line("ordered_1", fx.H_LINE), line("ordered_2", fx.H_LINE_B, unit="kg")],
+                 total())):
+            stated, _ = answer(lines + [figure])
+            self.assertNotIn("calculation", json.dumps(stated["values"]), stated)
 
     def test_plan_counts_and_verdicts_are_calculations_the_scorer_recomputes(self):
         """A count citing each counted record is a ``count`` calculation and a verdict over
@@ -316,6 +389,31 @@ class InvestigatorTests(unittest.TestCase):
         match = next(v for v in row["score"]["values"] if v["name"] == "match_1")
         self.assertIn("calculation_mismatch", match["codes"])
         self.assertEqual(row["outcome"], "fail")
+
+    def test_a_typed_identifier_binds_the_plan_root_and_free_text_never_does(self):
+        """The plan's root is the typed identifier plx.find bound (a root reason), wherever
+        it ranks; candidates sharing only free text bind nothing, so the plan resolves the
+        question itself and two such stay ambiguous."""
+        def cand(reason, kind, value):
+            return {**({"reason": reason} if reason else {}), "tier": "lead" if reason not in (
+                "exact_identifier", "alias_match") else "verified",
+                "matched": {"identifier_kind": kind, "normalized": value}}
+        question = "Which records are linked to purchase order PO100192?"
+        typed = {"status": "ambiguous", "candidates": [
+            cand("display_text", "display_text", "PO100192 TOTAL PAC"),
+            cand("exact_identifier", "petra_po", "PO100192"),
+            cand("exact_identifier", "petra_po", "PO100192")]}
+        self.assertEqual(bl.DeterministicInvestigator.plan_root(typed, question),
+                         {"identifier": "PO100192", "identifier_kind": "petra_po"})
+        # A lead, or a candidate stating no reason (an unknown shape), binds nothing.
+        for reason, kind in (("display_text", "display_text"),
+                             ("secondary_reading", "petra_po"),
+                             ("document_text", "display_text"),
+                             (None, "petra_po")):
+            free = {"status": "ambiguous", "candidates": [cand(reason, kind, "TOTAL PAC"),
+                                                          cand(reason, kind, "TOTAL PAC")]}
+            self.assertEqual(bl.DeterministicInvestigator.plan_root(free, question),
+                             {"identifier": question}, reason)
 
     def test_unresolved_root_is_a_blocked_answer_scored_as_a_failure(self):
         class NotFound(FakeTools):
@@ -441,7 +539,7 @@ class MirrorPinReaderTests(unittest.TestCase):
 
 
 class RunPinTests(unittest.TestCase):
-    """docs/decisions/2026-10-02-oracle-pinning.md: the runner pins mirror captures."""
+    """devloop/DECISIONS/2026-10-02-oracle-pinning.md: the runner pins mirror captures."""
 
     ORACLE_GEN = "0123456789abcdef"
 
@@ -747,13 +845,12 @@ class FixtureBaselineTests(unittest.TestCase):
             if "cited_other_row" in codes:
                 other_row.add(score["item_id"])
         rows = [r for r in self.result["items"] if r["family"] == "F3"]
-        # The order_quantities plan cites the manufacturing order's yield where the oracle
-        # derives produced from the status entries (the mixed-unit orders): a measured
-        # disagreement, published in the item's reasons, never hidden.
-        self.assertEqual(len(other_row), 2, other_row)
-        self.assertEqual({(r["item_id"], r["outcome"]) for r in rows
-                          if "value:cited_other_row" in r["reasons"]},
-                         {(item_id, "fail") for item_id in other_row})
+        # The order_quantities plan states produced as the oracle derives it, from the FM
+        # status entries where they carry a value (``prefer``), so the plan cites the row
+        # the oracle cites: the earlier yield-versus-status disagreement is gone.
+        self.assertEqual(other_row, set())
+        self.assertFalse([r["item_id"] for r in rows
+                          if "value:cited_other_row" in r["reasons"]])
         self.assertTrue(all(r["root"] == "found" and r["pin"] == "pinned" for r in rows), rows)
         # Replaying the recorded transcripts scores them identically.
         replayed = runner.replay(self.items, self.transcripts)
@@ -799,7 +896,7 @@ class LiveSpecTests(unittest.TestCase):
     verifier's recording and eval-block lifting (injected-transport, not live)."""
 
     def test_live_run_emits_an_eval_block_the_verifier_lifts_and_status_prints(self):
-        from verify import live_verify
+        from devloop import live_verify
         from scripts import eval_dev_baseline as script
         from scripts import eval_oracle_dev as dev
         from scripts import eval_status
@@ -807,7 +904,7 @@ class LiveSpecTests(unittest.TestCase):
         def build(env, args, *, guard):
             sources, documents, configured, _ = dev.build_fixture(dev.eval_world())
             return sources, documents, configured
-        spec = json.loads((ROOT / "verify" / "live-checks" / "eval.dev_baseline.json")
+        spec = json.loads((ROOT / "devloop" / "live-checks" / "eval.dev_baseline.json")
                           .read_text())
         live_verify.validate_spec(spec)
         self.assertEqual(spec["cadence"], "daily")
@@ -830,7 +927,7 @@ class LiveSpecTests(unittest.TestCase):
         self.assertGreaterEqual(document["eval"]["items"], 4)
         self.assertEqual(document["eval"]["pin_drift"], 0, document["eval"])
         # The spec on this real output: the item floor this short run is under and the
-        # deterministic baseline's miss of the accuracy bar fail.
+        # deterministic baseline's miss of ROADMAP B1's accuracy bar fail.
         self.assertEqual(live_verify.check_expectations(spec, code, document),
                          ["eval.items < 20", "eval.answer.accuracy_rate < 0.8"])
         tripped = copy.deepcopy(document)
@@ -842,7 +939,7 @@ class LiveSpecTests(unittest.TestCase):
         self.assertEqual(fields["eval"]["dev_set"], document["eval"]["dev_set"])
         self.assertEqual(fields["eval"]["by_family"], document["eval"]["by_family"])
         lifted = live_verify.eval_blocks([{"id": "eval.dev_baseline", "result": "pass",
-                                           "spec": "verify/live-checks/eval.dev_baseline.json",
+                                           "spec": "devloop/live-checks/eval.dev_baseline.json",
                                            "exit_code": 0, "detail": {"fields": fields}}])
         line = eval_status.status({"eval": lifted})["line"]
         self.assertTrue(line.startswith("eval.dev_baseline: dev_set "
@@ -851,11 +948,11 @@ class LiveSpecTests(unittest.TestCase):
 
 
 class LiveOutageAndPartitionTests(unittest.TestCase):
-    """Injected transport, not live: with the Portal answering
+    """Directive 2db2fe9bf1f8 PT2 (injected transport, not live): with the Portal answering
     500 the live baseline still measures on the product's own BC capture, its Portal parts
     blocked; a dev item related to a frozen held-out set moves out of the dev run."""
 
-    SPEC = ROOT / "verify" / "live-checks" / "eval.dev_baseline.json"
+    SPEC = ROOT / "devloop" / "live-checks" / "eval.dev_baseline.json"
 
     def run_live(self, tmp: str, *, outage: bool) -> tuple[int, dict]:
         from evals.oracle import BcReads, PortalReads, Sources
@@ -898,7 +995,7 @@ class LiveOutageAndPartitionTests(unittest.TestCase):
         return code, json.loads(out.getvalue())
 
     def test_a_portal_500_blocks_parts_and_the_rest_measures_on_the_bc_capture(self):
-        from verify import live_verify
+        from devloop import live_verify
         spec = json.loads(self.SPEC.read_text())
         # Its requires are its session producers only: an outage upstream never blocks it.
         specs = live_verify.valid_specs(live_verify.load_specs(
@@ -924,7 +1021,7 @@ class LiveOutageAndPartitionTests(unittest.TestCase):
             "correct", "wrong", "abstain_ok", "missed")))
         live = dict(document, evidence_label="live-read")
         self.assertTrue(live_verify.check_expectations(spec, 0, live))  # never a full pass
-        # the items that ran are judged on the accuracy bar: every one abstained (missed),
+        # the items that ran are judged on ROADMAP B1's bar: every one abstained (missed),
         # so nothing is answered: coverage 0 and null accuracy and unsupported rates, each a
         # failure (decision 2026-10-19-b1-one-answer-rate), never a pass
         self.assertEqual((answer["answered"], answer["coverage_rate"], answer["accuracy_rate"]),

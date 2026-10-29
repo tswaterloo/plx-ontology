@@ -1,4 +1,4 @@
-"""Mirror completeness: full sync of every served relation, resumable
+"""Mirror completeness (09 lane L1): full sync of every served relation, resumable
 paging, Retry-After, key-only absence scans, batch citation resolve, SQL-side
 filters, lineage and per-relation completeness counts.
 
@@ -20,10 +20,12 @@ from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlsplit
 
 from integrations.http import SourceHttpError, SourceUnavailable, get_json, retry_after_seconds
-from integrations.source_mirror import (LINEAGES, MirrorError, SourceMirror,
-    _matches, _sql_prefilter, full_coverage_probe, load_ingest_config, make_citation)
+from integrations.source_mirror import (LINEAGES, MAX_ROWS_PER_RELATION_CAP, MirrorError,
+    SourceMirror, _matches, _sql_prefilter, full_coverage_probe, load_ingest_config,
+    make_citation, mirror_options)
 from integrations.tests.test_source_mirror import (ALL, BASE, KEY, OPS, OUTSIDER, FakeWorkbench,
     MirrorTestCase)
+from integrations.capture_store import wal_bytes
 from integrations.workbench_read_api import WorkbenchReadApiClient
 from ontology.core import Actor
 
@@ -222,7 +224,7 @@ class FullSyncTests(SyncTestCase):
         self.assertEqual(states[1], "complete")
 
     def test_a_failure_after_the_last_page_resumes_into_finish(self):
-        """Health failing after the last committed page must not
+        """Review a7b5bd9 F1: health failing after the last committed page must not
         wedge the relation; the next sync (also full=True) finishes without re-reading."""
         generated_relation(self.fake, "public.big", 6)
         mirror = self.mirror(page_size=2)
@@ -252,7 +254,7 @@ class FullSyncTests(SyncTestCase):
         self.assertEqual(len(self.fake.queries_for("public.big")), reads)
 
     def test_an_interrupted_retraversal_is_never_served(self):
-        """Pages of an unfinished re-read are staged, not served."""
+        """Review a7b5bd9 F2: pages of an unfinished re-read are staged, not served."""
         generated_relation(self.fake, "public.big", 6, since=False)
         mirror = self.mirror(page_size=2)
         before = self.by_id(mirror.rows(OPS, "public.big"))
@@ -310,6 +312,43 @@ class FullSyncTests(SyncTestCase):
         self.assertTrue(self.covered(mirror, "public.big")["complete"])
         self.assertEqual(self.covered(mirror, "public.big")["rows_current"], 9)
         self.assertEqual(report["coverage"]["rows_current_total"], 11)
+
+    def test_the_row_bound_counts_the_whole_traversal_across_budget_cut_runs(self):
+        # A relation larger than one run's budget resumes run after run; the bound is
+        # on the traversal's rows, so one exactly at it completes and one row more is
+        # a row_bound even though no single run read more than two pages.
+        for bound, outcome in ((15, "captured"), (14, "failed")):
+            with self.subTest(bound=bound):
+                self.path.unlink(missing_ok=True)
+                generated_relation(self.fake, "public.big", 15)
+                ticks = iter(range(10_000))
+                mirror = self.mirror(page_size=3, max_rows_per_relation=bound,
+                                     monotonic=lambda: next(ticks))
+                runs = []
+                for _ in range(6):
+                    run = mirror.sync(OPS, relations=["public.big"],
+                                      budget_seconds=3)["runs"][0]
+                    runs.append(run)
+                    if run["outcome"] != "budget_exhausted":
+                        break
+                # Every run but the last stopped on the budget, never on the bound.
+                self.assertEqual([r["outcome"] for r in runs[:-1]],
+                                 ["budget_exhausted"] * (len(runs) - 1), runs)
+                self.assertGreaterEqual(len(runs), 3, runs)
+                self.assertEqual(runs[-1]["outcome"], outcome, runs[-1])
+                if outcome == "captured":
+                    self.assertTrue(runs[-1]["resumed"])
+                    self.assertEqual(self.covered(mirror, "public.big")["rows_current"], 15)
+                    self.assertIsNone(self.covered(mirror, "public.big")["sync_in_progress"])
+                else:
+                    self.assertEqual(runs[-1]["failure_class"], "row_bound", runs[-1])
+                    self.assertEqual(runs[-1]["rows_received"], 12)
+                    # Abandoned, never left to resume into a stitched capture.
+                    self.assertEqual(self.db().execute(
+                        "SELECT COUNT(*) FROM sync_progress").fetchone()[0], 0)
+                    self.assertEqual(self.db().execute(
+                        "SELECT COUNT(*) FROM stage_row").fetchone()[0], 0)
+                mirror.close()
 
     def test_retry_after_is_honoured_on_429_and_503(self):
         mirror = self.mirror(retry_delay_seconds=0.5)
@@ -374,7 +413,7 @@ class FullSyncTests(SyncTestCase):
         self.assertEqual(result["row_count"], 7)  # stored rows are still served, stale
 
     def test_http_500_halves_the_page_until_it_fits(self):
-        """An HTTP 500 on a page is split like a statement
+        """Lane mirror-coverage: an HTTP 500 on a page is split like a statement
         timeout (same cursor, half the page, down to the floor)."""
         generated_relation(self.fake, "public.big", 7)
         server_error = SourceHttpError("read-only source GET failed: HTTPError", status=500,
@@ -711,8 +750,18 @@ class LineageTests(SyncTestCase):
         config = load_ingest_config()
         self.assertEqual(config["sync"]["page_size"], 5000)
         self.assertTrue({rule["lineage"] for rule in config["lineage_rules"]} <= LINEAGES)
+        # The row bound clears the largest relation measured live on 2026-10-29
+        # (public.app_manufacturing_order_line, 31,658,270 rows), and a mirror accepts it.
+        bound = config["sync"]["max_rows_per_relation"]
+        self.assertGreater(bound, 31_658_270)
+        self.assertLessEqual(bound, MAX_ROWS_PER_RELATION_CAP)
+        self.mirror(**mirror_options(config)).close()
+        with self.assertRaises(ValueError):
+            self.mirror(max_rows_per_relation=MAX_ROWS_PER_RELATION_CAP + 1)
         for bad in ({"schema": "x"}, {"schema": "plx-source-mirror-ingest/v1",
                                        "sync": {"page_size": 9000}},
+                    {"schema": "plx-source-mirror-ingest/v1",
+                     "sync": {"max_rows_per_relation": MAX_ROWS_PER_RELATION_CAP + 1}},
                     {"schema": "plx-source-mirror-ingest/v1",
                      "lineage_rules": [{"id": "a", "relations": ["public.*"],
                                         "lineage": "production"}]}):
@@ -777,6 +826,143 @@ class LineageTests(SyncTestCase):
         resolved = reopened.resolve_citation(citation, OPS)
         self.assertTrue(resolved["ok"])
         self.assertEqual(resolved["lineage"], "fm_bronze")
+
+
+class UnchangedRowsTests(SyncTestCase):
+    """Live 2026-10-27: the mirror (248 relations, 3.7 GB) wrote about 4.6 GB of WAL in 25
+    minutes, a rewrite of every row each round: every full traversal staged each row and
+    updated each unchanged one for its sighting. A row seen unchanged is now not written;
+    its sighting is the relation's (``seen_through_*``)."""
+
+    def fill(self, n: int, *, since: bool = False):
+        self.fake.catalog, self.fake.tables = {}, {}
+        generated_relation(self.fake, "public.wide", n, since=since)
+        for index, row in enumerate(self.fake.tables["public.wide"]):
+            row["pad"] = "x" * 300
+            row["updated_at"] = f"2026-09-{1 + index % 27:02d}T{index % 24:02d}:00:00Z"
+        self.fake.catalog["public.wide"]["columns"].append("pad")
+        mirror = self.mirror()
+        mirror.sync(OPS)
+        return mirror
+
+    def writes(self, mirror, run) -> tuple[int, int]:
+        """(row_current and row_version rows written, WAL bytes) of ``run()``: a reader's
+        snapshot held over it keeps every WAL frame it wrote."""
+        db = mirror._db
+        db.execute("CREATE TEMP TABLE IF NOT EXISTS row_writes (n INTEGER)")
+        db.execute("DELETE FROM temp.row_writes")
+        for table in ("row_current", "row_version"):
+            for event in ("INSERT", "UPDATE", "DELETE"):
+                db.execute(f"CREATE TEMP TRIGGER IF NOT EXISTS w_{table}_{event} AFTER "
+                           f"{event} ON main.{table} BEGIN INSERT INTO row_writes "
+                           "VALUES (1); END")
+        db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        reader = sqlite3.connect(self.path)
+        self.addCleanup(reader.close)
+        reader.execute("BEGIN")
+        reader.execute("SELECT COUNT(*) FROM row_current").fetchone()
+        try:
+            run()
+            wal = wal_bytes(self.path)
+        finally:
+            reader.execute("COMMIT")
+        return db.execute("SELECT COUNT(*) FROM temp.row_writes").fetchone()[0], wal
+
+    def test_an_identical_full_traversal_writes_no_row_at_any_cardinality(self):
+        for n in (1, 10, 60, 600):
+            with self.subTest(rows=n):
+                self.path = Path(self.directory.name) / f"wide-{n}" / "mirror.sqlite"
+                mirror = self.fill(n)
+                filled = self.writes(mirror, lambda: mirror.refresh(OPS, "public.wide",
+                                                                    full=True))
+                self.clock.advance(60)
+                fill_rows, _ = filled
+                again_rows, again_wal = self.writes(
+                    mirror, lambda: mirror.refresh(OPS, "public.wide", full=True))
+                self.assertEqual(fill_rows, 0)
+                self.assertEqual(again_rows, 0)
+                ids = [json.loads(k)["id"] for (k,) in mirror._db.execute(
+                    "SELECT key_json FROM row_current WHERE relation = 'public.wide' AND "
+                    "absent_since_capture IS NULL")]
+                self.assertEqual(sorted(ids), list(range(n)))   # none lost or duplicated
+                self.assertEqual(mirror._db.execute(
+                    "SELECT COUNT(*) FROM row_version").fetchone()[0], 0)
+                if n == 600:
+                    # Against the first fill of the same rows: a whole rewrite before.
+                    fresh = Path(self.directory.name) / "fresh" / "mirror.sqlite"
+                    self.path = fresh
+                    first = self.mirror()
+                    _, fill_wal = self.writes(first, lambda: first.sync(OPS))
+                    # What is left is per page (progress, capture) and per key (stage_seen).
+                    self.assertLess(again_wal, fill_wal / 5, (again_wal, fill_wal))
+
+    def test_sightings_absences_and_versions_stay_exact_without_row_writes(self):
+        from ontology.project import MirrorCaptures
+
+        mirror = self.fill(5)
+        citation = mirror.rows(OPS, "public.wide")["rows"][2]["citation"]
+        self.clock.advance(3600)
+        mirror.refresh(OPS, "public.wide", full=True)     # every row seen unchanged
+        seen_at = mirror._state("public.wide")["seen_through_at"]
+        resolved = mirror.resolve_citation(citation, OPS)
+        self.assertEqual((resolved["content_last_seen_at"], resolved["upstream_presence"]),
+                         (seen_at, "observed_in_latest_full_traversal"))
+        with MirrorCaptures(self.path) as captures:
+            before = captures.records(["public.wide"])
+            current = {r.row["id"]: r for r in before["public.wide"]}
+            self.assertEqual({r.last_seen_at for r in current.values()}, {seen_at})
+            print_before = captures.fingerprint(["public.wide"])
+        # One row changes, one leaves the source; three stay as they were.
+        table = self.fake.tables["public.wide"]
+        table[2]["qty"] = "changed"
+        gone = table.pop(4)
+        self.clock.advance(3600)
+        changes, _ = self.writes(mirror, lambda: mirror.refresh(OPS, "public.wide", full=True))
+        self.assertLessEqual(changes, 4)   # the changed row: version, delete, insert; the absent row
+        superseded = mirror.resolve_citation(citation, OPS)
+        self.assertTrue(superseded["changed_since"])
+        # The superseded content was last seen by the traversal that saw it unchanged.
+        self.assertEqual(superseded["content_last_seen_at"], seen_at)
+        missing = mirror.rows(OPS, "public.wide", include_missing=True)["rows"]
+        absent = [r for r in missing if r["row"]["id"] == gone["id"]]
+        self.assertEqual(len(absent), 1)
+        self.assertIn("missing_from_source_since", absent[0])
+        latest = mirror._state("public.wide")["seen_through_at"]
+        with MirrorCaptures(self.path) as captures:
+            after = captures.records(["public.wide"])
+            records = list(after["public.wide"])
+            self.assertNotEqual(captures.fingerprint(["public.wide"]), print_before)
+        old = [r for r in records if r.row["id"] == 2 and r.superseded_at]
+        self.assertEqual([r.last_seen_at for r in old], [seen_at])
+        kept = [r for r in records if r.superseded_at is None and r.row["id"] in (0, 1, 3)]
+        self.assertEqual({r.last_seen_at for r in kept}, {latest})
+        gone_record = [r for r in records if r.row["id"] == gone["id"]]
+        self.assertEqual([r.last_seen_at for r in gone_record], [seen_at])
+        # Back again unchanged: its absence is lifted and it is seen by that traversal.
+        table.append(gone)
+        self.clock.advance(3600)
+        mirror.refresh(OPS, "public.wide", full=True)
+        back = mirror.resolve_citation(absent[0]["citation"], OPS)
+        self.assertNotIn("missing_from_source_since", back)
+        self.assertEqual(back["content_last_seen_at"],
+                         mirror._state("public.wide")["seen_through_at"])
+
+    def test_a_key_scan_lifting_an_absence_never_claims_the_traversal_saw_the_row(self):
+        mirror = self.fill(3)
+        table = self.fake.tables["public.wide"]
+        gone = table.pop(1)
+        self.clock.advance(60)
+        mirror.refresh(OPS, "public.wide", full=True)   # marks it absent
+        marked_at = mirror._state("public.wide")["seen_through_at"]
+        citation = mirror.rows(OPS, "public.wide", include_missing=True)["rows"][1]["citation"]
+        before = mirror.resolve_citation(citation, OPS)["content_last_seen_at"]
+        self.assertLess(before, marked_at)
+        table.insert(1, gone)
+        self.clock.advance(60)
+        mirror.scan_absence(OPS, "public.wide")         # the key is back, content unread
+        lifted = mirror.resolve_citation(citation, OPS)
+        self.assertNotIn("missing_from_source_since", lifted)
+        self.assertEqual(lifted["content_last_seen_at"], before)
 
 
 class ProbeTests(SyncTestCase):
@@ -848,7 +1034,7 @@ class ProbeTests(SyncTestCase):
         self.assertEqual(json.loads(err.getvalue())["error"], "LookupError")
 
     def test_spec_is_valid_get_only_and_counts_only(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         spec = json.loads((lv.ROOT / lv.SPECS_DIR_NAME / "mirror.full_coverage.json")
                           .read_text())
         self.assertEqual(lv.validate_spec(spec), [])

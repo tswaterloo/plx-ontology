@@ -18,6 +18,7 @@
   },
   "title": {"type": "string", "minLength": 1, "maxLength": 200},
   "description": {"type": "string", "minLength": 1, "maxLength": 2000},
+  "requires_markings": {"type": "array", "description": "Store markings (ontology/store_ddl.py MARKINGS) the reader must hold to ask this plan at all: plx.investigate refuses it (scope_not_held) before resolving the root, and a host that cannot say which markings the reader holds refuses it too.", "items": {"enum": ["finance", "l5", "pii", "purchasing_prices", "quality_controlled"]}, "minItems": 1, "maxItems": 5, "uniqueItems": true},
   "root": {
    "type": "object",
    "additionalProperties": false,
@@ -106,7 +107,7 @@
     "properties": {"type": "array", "items": {"$ref": "#/$defs/name"}, "minItems": 1, "maxItems": 4, "uniqueItems": true},
     "quantity_role": {"$ref": "#/$defs/quantity_role"},
     "single": {"type": "boolean", "description": "Distinct values across objects are a value_disagreement conflict."},
-    "omit_empty": {"type": "boolean", "description": "property only, never with required: an empty value is no entry and no value_empty gap (an optional item only an engine reads, whose own gaps name what it searched)."},
+    "omit_empty": {"type": "boolean", "description": "property or select, never with required: an empty value is no entry and no value_empty gap (an optional item only an engine reads, whose own gaps name what it searched); a select with per lists only the groups that hold a value."},
     "canonical_unit": {"type": "boolean", "description": "property only: the entry states its unit in the one Workbench unit vocabulary (ontology/units.py unit_token: each -> ea, pcs -> ea), never converted; the claim gate still checks the cited cell in its own spelling."},
     "if_no_object": {"$ref": "#/$defs/gap_state"},
     "zero": {"const": "complete_search", "description": "count of named bindings only: the count is of the records of its bindings that carry the root identifier, so when none is reached it is 0 (with its proof) only when the root's identifier search answered complete, each binding's relation carries that identifier kind and holds no candidate of the search, and the host proves the relation wholly captured and readable by this reader now; otherwise nothing reached stays a no_object_reached gap, never a count of zero."},
@@ -121,6 +122,9 @@
     "distinct": {"const": "content", "description": "count only: objects whose record citation pins the same whole-document bytes (a mailed and a filed copy of one file) count once, as the copy a root is joined to by evidence-tier links when one is; an object without such a citation counts on its own (copies are never merged without their bytes). The count may then name several bindings of its type."},
     "from": {"$ref": "#/$defs/name", "description": "count only: count the objects of this collection (root, or a step id) instead of every reached object of object_type (object_type, bindings then narrow it), e.g. how many roots the question resolved to."},
     "numbering": {"const": "value", "description": "property only: entries are always numbered (name_1 even for one) in the order of their values, then object id, so a list of items reads the same however its records are keyed."},
+    "total": {"const": "sum", "description": "property only, with quantity_role, never with numbering or single: per unit (as spelled), the sum of the reached objects' values as one computed entry over the cited lines (name_line_<n>); a unit of one line is that line's entry; entries are name, or name_<n> per unit. An object unread or with no one value, a non-number or an incomplete run leaves it an unknown gap, never a partial total."},
+    "prefer": {"type": "object", "additionalProperties": false, "required": ["object_type", "property", "via"], "description": "with total: per reached object, the valued sum of these records of it (reached along via, link type by link type, either direction) replaces its own value when any carries one; a first hop reaching several records leaves the total unknown (prefer_not_unique).", "properties": {"object_type": {"$ref": "#/$defs/type_id"}, "property": {"$ref": "#/$defs/name"}, "via": {"type": "array", "minItems": 1, "maxItems": 3, "items": {"type": "string", "pattern": "^[A-Z][A-Za-z0-9]*\\.[a-z_][a-z0-9_]*$"}}}},
+    "cells_only": {"type": "array", "items": {"$ref": "#/$defs/name"}, "minItems": 1, "maxItems": 6, "uniqueItems": true, "description": "select only: the entry shows the cited values of these properties only (the value it states and what it needs), not every value its elements compared; the entry's value must come from one of them."},
     "per": {"$ref": "#/$defs/name", "description": "select only (a path with `*`): one entry per distinct value of this key of the elements the first `*` keeps (e.g. a quantity check's group), each reduced alone and named name_<n>; elements without it are a not_grouped gap."},
     "number_as": {"$ref": "#/$defs/name", "description": "with per: a property item listed before; the entry of group object G is numbered as that item's entry of G (groups it has no entry for come after, by key)."}
    },
@@ -129,7 +133,7 @@
     {"if": {"properties": {"kind": {"const": "count"}}}, "then": {"anyOf": [{"required": ["object_type"]}, {"required": ["from"]}]}},
     {"if": {"properties": {"kind": {"const": "select"}}}, "then": {"required": ["step", "path", "reduce"]}},
     {"if": {"properties": {"kind": {"const": "compute"}}}, "then": {"required": ["engine", "engine_args"]}},
-    {"if": {"properties": {"omit_empty": {"const": true}}, "required": ["omit_empty"]}, "then": {"properties": {"kind": {"const": "property"}, "required": {"const": false}}}},
+    {"if": {"properties": {"omit_empty": {"const": true}}, "required": ["omit_empty"]}, "then": {"properties": {"kind": {"enum": ["property", "select"]}, "required": {"const": false}}}},
     {"if": {"required": ["canonical_unit"]}, "then": {"properties": {"kind": {"const": "property"}}}}
    ]
   }

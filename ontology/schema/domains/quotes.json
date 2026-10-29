@@ -3,7 +3,7 @@
  "format": "plx-ontology-domain/v1",
  "domain": "quotes",
  "origin": "curated",
- "description": "Portal quotes and their offer lines. Quotes are Portal-native (gold_native_staging); money is Decimal text with the tax basis of lib/quote/totals.ts; the soft stdCost declares unknown currency and denominator. Links: customer, the sales order an accepted quote converted to, lines and the picked product. BC salesQuotes are not bound: the GET-only BC grammar does not read that entity set.",
+ "description": "Portal quotes and their offer lines (schema-coverage lane, directive 612e1dd724f7). Quotes are Portal-native (gold_native_staging); money is Decimal text with the tax basis of lib/quote/totals.ts; the soft stdCost declares unknown currency and denominator. Links: customer, the sales order an accepted quote converted to, lines and the picked product. BC salesQuotes are not bound: the GET-only BC grammar does not read that entity set.",
  "upstream_pins": {
   "plx-customer-portal": "790256ca43"
  },
@@ -606,7 +606,7 @@
        "parser": "decimal_text",
        "tax_basis": "unknown",
        "currency_unknown": {
-        "reason": "stdCost is a soft JSON number with no currency field (portal-code-map.md 3.12).",
+        "reason": "stdCost is a soft JSON number with no currency field (03-PORTAL 3.12).",
         "evidence": [
          {
           "kind": "ref",
@@ -1085,12 +1085,12 @@
   },
   "context.portal.3.12": {
    "kind": "context_pack",
-   "ref": "docs/reference/portal-code-map.md#3.12",
+   "ref": "devloop/CONTEXT/03-PORTAL.md#3.12",
    "note": "Quote/QuoteLine, mutable projectId (TASK-2182), stdCost is a soft JSON field with no currency, cost unit or source tag; matrix fallback (TASK-2175)."
   },
   "context.portal.4.2": {
    "kind": "context_pack",
-   "ref": "docs/reference/portal-code-map.md#4.2",
+   "ref": "devloop/CONTEXT/03-PORTAL.md#4.2",
    "note": "Quote totals mirror lib/quote/totals.ts."
   }
  }

@@ -22,6 +22,7 @@ import argparse
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import re
 import sys
@@ -37,8 +38,8 @@ from operating.tests import test_host as th
 from scripts import eval_real_agent as era
 
 ROOT = Path(__file__).resolve().parents[1]
-SPEC = ROOT / "verify" / "live-checks" / "eval.real_agent.json"
-ASK_SPEC = ROOT / "verify" / "live-checks" / "eval.ask_agent.json"
+SPEC = ROOT / "devloop" / "live-checks" / "eval.real_agent.json"
+ASK_SPEC = ROOT / "devloop" / "live-checks" / "eval.ask_agent.json"
 ABSTAIN = "```json\n" + json.dumps({"format": sc.ANSWER_FORMAT, "answerability": "blocked",
                                     "text": "Not established.", "values": [],
                                     "gaps": []}) + "\n```"
@@ -78,7 +79,7 @@ def refuse_reads(environ, namespace, *, guard):
 
 def scripted_ask(cited, value, asked):
     """An Ask planner: escalates when the question says so, else reads the first record
-    a ``plx.find`` of ``identifier`` names (as the agent loop showed it) and answers
+    a ``plx.find`` of ``identifier`` names (as the loop showed it) and answers
     ``value(question)`` from it; ``asked`` collects each question it planned for."""
     import re
 
@@ -226,6 +227,15 @@ class LivePartTests(unittest.TestCase):
                              (READER["entraObjectId"], si.AUTHOR_AGENT))
         self.assertEqual(len(set(tickets)), 3)
         self.assertNotIn("reader@", json.dumps(info) + json.dumps(blocked))
+        # The people-exclusion guard's settings reach both servers (without them the host
+        # withholds every mailbox); a credential the config does not ask for never does.
+        with mock.patch.dict(os.environ, {"PLX_EXCLUDED_PEOPLE_OIDS": "oid-x",
+                                          "MICROSOFT_GRAPH_CLIENT_SECRET": "s3cret"}):
+            for server in (host.mcp_server(), host.harness_server()):
+                self.assertEqual(server["env"]["PLX_EXCLUDED_PEOPLE_OIDS"], "oid-x")
+                self.assertNotIn("MICROSOFT_GRAPH_CLIENT_SECRET", server["env"])
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(set(era.EXCLUSION_ENV) & set(host.mcp_server()["env"]))
 
     def test_roots_resolve_over_the_live_host_wire_and_too_few_block_the_part(self):
         """The fixture stdio case host stands in for ``operating.host mcp`` (its real
@@ -291,7 +301,7 @@ class LivePartTests(unittest.TestCase):
                                  [(era.LIVE_PART, code, "host_misconfiguration")])
 
     def test_tiers_stay_apart_and_an_unresolved_root_is_never_the_agents_failure(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from evals.oracle.fixture_world import COMPANIES
         from operating import host as plx_host
         from scripts import eval_oracle_dev as dev
@@ -361,7 +371,7 @@ class LivePartTests(unittest.TestCase):
         self.assertTrue(lv.check_expectations(spec, code, report))
 
     def test_the_daily_check_reads_as_the_eval_principal_and_still_measures_fixture_parts(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         agent = runner.ScriptedAgent(lambda prompt, call: ABSTAIN, name="injected")
         spec = json.loads(SPEC.read_text(encoding="utf-8"))
         self.assertEqual(lv.validate_spec(spec, stem="eval.real_agent"), [])
@@ -396,13 +406,13 @@ class LivePartTests(unittest.TestCase):
 
     def test_the_verifier_provisioned_host_runs_the_live_part_and_names_what_it_was_given(
             self):
-        """The three host settings provisioned as verify/live_verify.py ``agent_host``
+        """The three host settings provisioned as devloop/live_verify.py ``agent_host``
         provisions them (no PLX_EVAL_READER, as on the verifier; a fresh random secret, a
         state directory, a host config, and the names in ``AGENT_PROVISIONED_ENV``): the
         live part runs as the eval principal instead of ``session_secret_missing``, and
         the result names which settings were provisioned, never the secret."""
         import os
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from evals.oracle.fixture_world import COMPANIES
         from operating.tests import test_session_identity as tsi
         from scripts import eval_oracle_dev as dev
@@ -485,7 +495,7 @@ class LivePartTests(unittest.TestCase):
         """The real ``operating.host mcp`` start-up: an inactive employee's ticket verifies
         (the session secret signs for anyone) but the host's resolver refuses the reader;
         the check is blocked, never exit 1, and no source is read."""
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from operating.tests import test_session_identity as tsi
         reader = {"uid": "u-a", "email": tsi.EMAIL_A, "entraTenantId": tsi.TID,
                   "entraObjectId": tsi.OID_A}
@@ -536,13 +546,39 @@ class LivePartTests(unittest.TestCase):
                          {"error": "RunnerError",
                           "code": "live_host_identity_refused:tenant_mismatch"})
 
+    def test_an_ended_host_session_names_its_start_up_code_only(self):
+        """A host that exits at start-up with a ``HostError`` code names it in the blocked
+        reason; any other stderr text (a secret, a traceback) is never reported."""
+        class Done:
+            def wait(self, timeout=None):
+                return 2
+
+        host = era.LiveHost(self.root / "state", self.config, READER, SECRET, tenant="plx")
+        host._proc = Done()
+        for text, expected in (
+                (b'{"error": "host_config_invalid:employee_policy"}\n',
+                 "live_host_start_refused:host_config_invalid:employee_policy"),
+                (b"session identity refused: tenant_mismatch\n",
+                 "live_host_identity_refused:tenant_mismatch"),
+                (b"Traceback: boom " + SECRET.encode() + b"\n", "live_host_session_ended"),
+                (b"harness_reads.py: error: employee policy is invalid: "
+                 b"employee_policy_data_key_unknown\n",
+                 "live_host_start_refused:employee_policy_data_key_unknown"),
+                (b"harness_reads.py: error: bad value: " + SECRET.encode() + b"\n",
+                 "live_host_session_ended"),
+                (b'{"error": "x y z secret"}\n', "live_host_session_ended")):
+            with tempfile.TemporaryFile() as stderr:
+                stderr.write(text)
+                host._stderr = stderr
+                self.assertEqual(host._ended(), expected)
+
     def test_the_ask_refuses_a_foreign_store_at_start_up(self):
         """The Ask checks each projection store at start-up, as the console does
         (``case_console.checked_store_status``): the live host's store projected from
         another mirror generation blocks the live part before any source is read or any
         session starts; the fixture sample's sessions run, each workspace checking its
         store again as the console checks each workspace it builds."""
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from integrations.source_mirror import AUDIENCE_SCHEMA, SourceMirror
         from operating.case_runtime import CASE_RUNTIME_DIR, MIRROR_FILE
         from operating.host import projection_path
@@ -747,7 +783,7 @@ class LivePartTests(unittest.TestCase):
         and a root the reader cannot see gets no session (blocked, never wrong). Each
         session record carries the effective agent definition's stamp and its stop."""
         import copy
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from operating import agent_definitions
         base = next(i for i in era.sample_items()["fixture_sample"]
                     if i["id"] == "dev-F3-0006-fixture")
@@ -1073,7 +1109,7 @@ class LivePartTests(unittest.TestCase):
         """Claude Code starts but answers nothing usable (an ``is_error`` result: not
         logged in): every Ask session is blocked, the run reports every_session_failed and
         the daily check can only record it blocked, never pass it."""
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from operating import agent_loop
         failed = json.dumps({"type": "result", "subtype": "success", "is_error": True,
                              "result": "Invalid API key - Please run /login"})
@@ -1115,7 +1151,7 @@ SYNTHETIC_MAIL_HARNESS = (
 
 class AskAnswerTests(unittest.TestCase):
     def test_an_ask_count_claim_is_scored_as_the_count_the_scorer_recomputes(self):
-        """A count claim the Ask's gate passed reaches the scorer
+        """Directive 24e7aa78f585: a count claim the Ask's gate passed reaches the scorer
         as a calculated value, recomputed from the harness's re-reads (isolated-fixture)."""
         from evals.tests import test_score as ts
         claim = {"text": "The invoice has 2 lines.", "citations": [ts.BC_A, ts.BC_B],
@@ -1167,7 +1203,7 @@ class AskAnswerTests(unittest.TestCase):
         self.assertEqual((summary["wrong_cited"], summary["confident_unsupported"]), (1, 1))
 
     def test_an_ask_sum_claim_carries_its_currency_to_the_scorer(self):
-        """A sum claim the Ask's gate passed in USD is scored
+        """Directive 2aafc4270e73 item 3: a sum claim the Ask's gate passed in USD is scored
         as a USD total; one stating no currency is a currency mismatch (isolated-fixture)."""
         from evals.tests import test_score as ts
         claimed = {"value": "1260.50", "kind": "number", "op": "sum", "currency": "USD",
@@ -1407,6 +1443,44 @@ class LiveHostCitationTests(th.HostCase):
         live = report["eval"][era.LIVE_PART]
         self.assertEqual((live["runs"], live["correct"], live["read_gap"],
                           live["unreadable_citations"]), (1, 1, 0, {}), live)
+
+    def test_a_card_session_runs_the_investigate_agent_and_lists_the_agenda(self):
+        """The case-card runner's host (``eval_case_cards.live_host``) starts both sessions
+        with the investigate agent: the harness's catalog (what the runner's tool gate
+        admits) lists ``plx.agenda`` read-only, which the default agent's lacks; the agent's
+        own server runs the same definition. An unknown agent refuses the session start-up,
+        never falls back to the default (isolated-fixture)."""
+        import argparse
+        from operating import session_identity as si
+        from scripts import eval_case_cards as ecc
+
+        def catalog(host):
+            server = host.harness_server()
+            host.harness_server = lambda: {**server, "args": [
+                "-c", SYNTHETIC_MAIL_HARNESS, *server["args"][2:]], "env": {
+                **server["env"], era.TICKET_ENV: host.ticket()}}
+            self.addCleanup(host.close)
+            return {tool["name"]: tool["read_only"] for tool in host.tools()}
+        environ = {si.SESSION_TICKET_SECRET_ENV: th.SECRET, era.STATE_ENV: str(self.state)}
+        make, blocked = ecc.live_host(environ, argparse.Namespace(host_config=str(self.config)),
+                                      self.owner)
+        self.assertIsNone(blocked)
+        card_host = make()
+        args = card_host.mcp_server()["args"]
+        self.assertEqual(args[args.index("--agent") + 1], "plx.agent.investigate")
+        cards = catalog(card_host)
+        default = catalog(era.LiveHost(self.state, self.config, self.owner, th.SECRET,
+                                       tenant="plx"))
+        self.assertIs(cards.get("plx.agenda"), True)
+        self.assertNotIn("plx.agenda", default)
+        self.assertIn("plx.agenda", runner.allowed_tools(
+            [{"name": n, "read_only": r} for n, r in cards.items()])[0])
+        # Every read-only tool the default session lists stays listed to the card session.
+        self.assertLessEqual({n for n, r in default.items() if r}, set(cards))
+        with self.assertRaises(runner.RunnerError) as refused:
+            catalog(era.LiveHost(self.state, self.config, self.owner, th.SECRET,
+                                 tenant="plx", agent="plx.agent.nobody"))
+        self.assertIn("agent_unknown", str(refused.exception))
 
     def test_the_ask_session_is_the_hosts_own_server_for_the_named_reader(self):
         """The Ask on the persistent host's own state: the harness's ``plx.find`` roots the

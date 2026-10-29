@@ -216,23 +216,23 @@
   "invent_absent_value"
  ],
  "oracle": {
-  "id": "oracle:f4_three_way_match@1c117db7f628",
+  "id": "oracle:f4_three_way_match@305211c73a11",
   "interface": "plx-eval-oracle/v1",
   "derived_from": [
-   "docs/reference/portal-code-map.md#3.5 app_purchase_order.po_number (unique)",
-   "docs/reference/portal-code-map.md#3.5 app_purchase_order_line.quantity (purchase UoM)",
-   "docs/reference/portal-code-map.md#3.5 app_receipt_line.quantity by receipt of the PO",
-   "docs/reference/portal-code-map.md#3.6 app_product.code = BC Item No.; BC purchaseInvoiceLines.quantity by lineObjectNumber",
-   "docs/reference/portal-code-map.md#4.5 normalizeProductUom + PRODUCT_UOM_OPTIONS bcCode (P:src/lib/mrp/product-uom.ts:30)",
-   "docs/reference/portal-code-map.md#3.5 app_purchase_order_line.purchase_order_id -> app_purchase_order.id (P:prisma/schema.prisma:3449)",
-   "docs/reference/portal-code-map.md#3.5 app_receipt.purchase_order_id -> app_purchase_order.id (P:prisma/schema.prisma:3565)",
-   "docs/reference/portal-code-map.md#3.5 app_receipt_line.receipt_id -> app_receipt.id (P:prisma/schema.prisma:3620)",
-   "docs/reference/portal-code-map.md#3.11 BC purchase invoices by orderNumber (document-finance-queries.ts)",
+   "devloop/CONTEXT/03-PORTAL.md#3.5 app_purchase_order.po_number (unique)",
+   "devloop/CONTEXT/03-PORTAL.md#3.5 app_purchase_order_line.quantity (purchase UoM)",
+   "devloop/CONTEXT/03-PORTAL.md#3.5 app_receipt_line.quantity by receipt of the PO",
+   "devloop/CONTEXT/03-PORTAL.md#3.6 app_product.code = BC Item No.; BC purchaseInvoiceLines.quantity by lineObjectNumber",
+   "devloop/CONTEXT/03-PORTAL.md#4.5 normalizeProductUom + PRODUCT_UOM_OPTIONS bcCode (P:src/lib/mrp/product-uom.ts:30)",
+   "devloop/CONTEXT/03-PORTAL.md#3.5 app_purchase_order_line.purchase_order_id -> app_purchase_order.id (P:prisma/schema.prisma:3449)",
+   "devloop/CONTEXT/03-PORTAL.md#3.5 app_receipt.purchase_order_id -> app_purchase_order.id (P:prisma/schema.prisma:3565)",
+   "devloop/CONTEXT/03-PORTAL.md#3.5 app_receipt_line.receipt_id -> app_receipt.id (P:prisma/schema.prisma:3620)",
+   "devloop/CONTEXT/03-PORTAL.md#3.11 BC purchase invoices by orderNumber (document-finance-queries.ts)",
    "BC number matches trim both sides like Portal (P:src/lib/business-central/document-finance-queries.ts:326-327)",
-   "docs/reference/portal-code-map.md#3.5 app_receipt.vendor_invoice_number = BC purchase invoice vendorInvoiceNumber (document-finance-queries.ts:290-300)",
-   "docs/reference/source-notes.md BC number lookups are leads; identity needs one company and, for purchase invoices, the PO's vendor",
-   "docs/reference/portal-code-map.md#3.5 BC Vendor No. = app_supplier.code when Sage-style (P:src/lib/business-central/serializers.ts:156,208)",
-   "docs/reference/portal-code-map.md#3.5 derivePoFulfillmentCode over header + summed lines = RECEIVED, or closed_at (P@59b0548:src/lib/mrp/po-fulfillment-status.ts:12, apply-po-line-receive.ts:298)"
+   "devloop/CONTEXT/03-PORTAL.md#3.5 app_receipt.vendor_invoice_number = BC purchase invoice vendorInvoiceNumber (document-finance-queries.ts:290-300)",
+   "devloop/SOURCE-NOTES.md BC number lookups are leads; identity needs one company and, for purchase invoices, the PO's vendor",
+   "devloop/CONTEXT/03-PORTAL.md#3.5 BC Vendor No. = app_supplier.code when Sage-style (P:src/lib/business-central/serializers.ts:156,208)",
+   "devloop/CONTEXT/03-PORTAL.md#3.5 derivePoFulfillmentCode over header + summed lines = RECEIVED, or closed_at (P@59b0548:src/lib/mrp/po-fulfillment-status.ts:12, apply-po-line-receive.ts:298)"
   ],
   "computed_at": "2099-01-02T04:00:00Z",
   "query_digest": "ebc1a51f80c4c30fb8816b06ee55536f3988d4c71bc141266b85b62a8f1fcd07"

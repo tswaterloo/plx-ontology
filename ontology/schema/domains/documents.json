@@ -3,7 +3,7 @@
  "format": "plx-ontology-domain/v1",
  "domain": "documents",
  "origin": "curated",
- "description": "Captured documents (decision 2026-10-02-mail-and-mentions-store): Email and Attachment from the versioned mail capture (integrations/capture_mail.py, source graph_mail, cited graph-mail://), SharePointFile from the versioned SharePoint capture (integrations/capture_sharepoint.py, source sharepoint, cited sharepoint://<drive>/<item>@<eTag>). Documents are evidence, never business truth by themselves; every reader is re-gated per mailbox (audience mail:<mailbox>) or per SharePoint item (audience sharepoint:<drive>, then the item's path keys and permissions recorded at capture). Mentions of identifiers in a document are stored lead links (Email.mentions_<type>, Attachment.mentions_<type> from an attachment's own extracted text, a PDF cited by page, and SharePointFile.mentions_<type>, binding kind mention, written by ontology/mentions.py into the same store generation); the loader generates one such link type per served type with an identifier property from one rule per document type (ontology/schema.py MENTION_LINK_RULES, evidence wb.mentions and ctx.mentions below); ambiguous candidates are kept, never merged. Copies: an Email's internet_message_id (with equal headers and body preview, so a forged Message-ID groups nothing) and a captured file's content_sha256 are verified identifier kinds whose equal values name copies (ontology/schema/identifiers.json copies): one message in several mailboxes, one file attached, stored or packed in a container. A copy identity is never read from text, so no mention link type targets a document type (ontology/schema.py mention_links). Copies stay separate objects with their own permissions; evidence they carry counts once (ontology/mentions.py confirmation_support).",
+ "description": "Captured documents (07 C.0 #5, C.2; decision 2026-10-02-mail-and-mentions-store): Email and Attachment from the versioned mail capture (integrations/capture_mail.py, source graph_mail, cited graph-mail://), SharePointFile from the versioned SharePoint capture (integrations/capture_sharepoint.py, source sharepoint, cited sharepoint://<drive>/<item>@<eTag>). Documents are evidence, never business truth by themselves; every reader is re-gated per mailbox (audience mail:<mailbox>) or per SharePoint item (audience sharepoint:<drive>, then the item's path keys and permissions recorded at capture). Mentions of identifiers in a document are stored lead links (Email.mentions_<type>, Attachment.mentions_<type> from an attachment's own extracted text, a PDF cited by page, and SharePointFile.mentions_<type>, binding kind mention, written by ontology/mentions.py into the same store generation); the loader generates one such link type per served type with an identifier property from one rule per document type (ontology/schema.py MENTION_LINK_RULES, evidence wb.mentions and ctx.mentions below); ambiguous candidates are kept, never merged. Copies: an Email's internet_message_id (with equal headers and body preview, so a forged Message-ID groups nothing) and a captured file's content_sha256 are verified identifier kinds whose equal values name copies (ontology/schema/identifiers.json copies): one message in several mailboxes, one file attached, stored or packed in a container. A copy identity is never read from text, so no mention link type targets a document type (ontology/schema.py mention_links). Copies stay separate objects with their own permissions; evidence they carry counts once (ontology/mentions.py confirmation_support).",
  "object_types": [
   {
    "id": "Email",
@@ -1230,12 +1230,12 @@
   },
   "ctx.documents": {
    "kind": "context_pack",
-   "ref": "docs/reference/ontology-design.md#C.2",
+   "ref": "devloop/CONTEXT/07-ONTOLOGY-DESIGN.md#C.2",
    "note": "Document interface (Email, Attachment, SharePointFile); Document attached_to Email."
   },
   "ctx.mentions": {
    "kind": "context_pack",
-   "ref": "docs/reference/ontology-design.md#C.2",
+   "ref": "devloop/CONTEXT/07-ONTOLOGY-DESIGN.md#C.2",
    "note": "Document mentions any object: mention resolution (lead/corroborated)."
   },
   "wb.kind_confirmation": {

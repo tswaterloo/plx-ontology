@@ -1,5 +1,5 @@
 """Live check ``ontology.document_fields_sharepoint``: the document-class measure plus the
-exposed extraction items scored against the same capture (P2/P8).
+exposed extraction items scored against the same capture (directive P2/P8).
 
 Runs ``operating.sharepoint_host_check --document-class`` (one GET-only SharePoint
 capture into the check's state, its projection and the class counts) and adds, over that
@@ -55,7 +55,7 @@ capture store and report (``evaluate``; eval tooling calls the product, never th
   against the runtime reader (``evals.document_fields``). Until such an item exists it is
   ``{"status": "no_operator_items"}``: never measured against a curator's or the
   oracle's reading. ``exposed_items`` / ``exposed_fields`` are the agreement with the
-  curated (oracle-only) P2/P8 bundle (correct / wrong / abstain / blocked, recorded;
+  Dot's curated (oracle-only) P2/P8 bundle (correct / wrong / abstain / blocked, recorded;
   the live check wants wrong 0), not accuracy.
 
 * **Funnel** (``funnel``): where every current captured document stopped, from the host
@@ -67,7 +67,12 @@ capture store and report (``evaluate``; eval tooling calls the product, never th
   ``recognize_exit``, ``tool_signal``; ``tool_exit``: the macOS helper), ``output_bound``,
   ``render_mismatch``, ``image_page_bound``, ``page_bound``,
   ``page_count``, ``ocr_output_invalid``; ``untyped`` stored before causes were typed,
-  ``unknown`` any other; counts only, summing to ``ocr_failed``),
+  ``unknown`` any other; counts only, summing to ``ocr_failed``; a PDF poppler refuses
+  and pypdf cannot read is typed by its bytes, ``not_a_pdf``, ``pdf_truncated`` or
+  ``pdf_stub`` (whole, no stream: a placeholder), else
+  ``pdf_unreadable``), ``ocr_failed_by_portal`` (the same causes crossed with what the
+  Portal states on the file: ``portal_stated`` / ``portal_empty`` / ``portal_unread``;
+  ``ocr_failed_by_portal_sums``: its cells sum to ``ocr_failed_by``),
   ``classified`` per document class (every class, the measured one included),
   ``excluded`` by reason (the stage reasons, ``other_class``: classified as another
   class, ``not_projected``: of this class but not projected), ``evaluated`` (the
@@ -96,7 +101,13 @@ capture store and report (``evaluate``; eval tooling calls the product, never th
   (``excluded.ocr_unavailable``) are a counted gap (``unevaluated.ocr_unavailable``); the
   documents that were evaluated are still scored. Only when none was evaluated and some
   were left unread so is the run ``blocked`` with ``ocr_unavailable``: never a pass and
-  never "no documents" (``blocked_when``); the counts are still printed.
+  never "no documents" (``blocked_when``); the counts are still printed. When every
+  document was read and none is of the class (``no_class_document``: no title signal,
+  each one read as another class, no class, the own party's, or a stub: a ``pdf_stub``
+  OCR failure, a file under ``TINY_FILE_BYTES`` with no OCR text, a tiny unsupported
+  image), the run is ``blocked`` with ``no_class_document``, a source gap: the folder
+  holds no document of the class to read. Only over a whole capture
+  (``capture_complete``); a cut capture, or any file that may hide one, keeps the fail.
 
 Links (``--links``, live check ``ontology.document_links``, QA-04): whether a captured
 document links to the right Portal/BC record. The same GET-only SharePoint capture, plus
@@ -202,7 +213,7 @@ from typing import Any, Callable, Iterable, Mapping
 
 from evals import document_fields as scoring
 from integrations.captured_text import (OCR_FAILED, OCR_NO_TEXT, OCR_UNAVAILABLE, TEXT_OCR,
-                                        TEXT_READ)
+                                        TEXT_READ, text_status_kind)
 from evals.runner import VISIBLE_ITEM_DIRS, load_items
 from ontology import document_fields
 from operating import sharepoint_host_check as check
@@ -483,16 +494,98 @@ def no_candidate(report: Mapping[str, Any], out: Mapping[str, Any]) -> dict[str,
             else None}
 
 
+PORTAL_STATES = ("portal_stated", "portal_empty", "portal_unread")
+
+
+def ocr_failed_by_portal(store: Any) -> dict[str, dict[str, int]]:
+    """The failed OCR runs of the capture's current files by typed cause and by what the
+    Portal states on the file: ``portal_stated`` (a Portal-taxonomy column is filled: the
+    Portal uploaded or tagged it), ``portal_empty`` (its columns were read, none stated),
+    ``portal_unread`` (no column snapshot bound to the version). Counts only."""
+    from integrations.captured_text import ocr_failure_cause
+    from operating import doc_metadata_taxonomy as taxonomy
+    out: dict[str, dict[str, int]] = {}
+    rows = store.db.execute("SELECT text_status, record FROM items WHERE "
+                            "superseded_at IS NULL AND text_status LIKE 'ocr_failed%'")
+    for row in rows.fetchall():
+        cause = ocr_failure_cause(str(row["text_status"]))
+        if cause is None:
+            continue
+        stated = taxonomy.stated_metadata(json.loads(row["record"]))
+        state = ("portal_unread" if stated is None else
+                 "portal_stated" if stated["columns"] else "portal_empty")
+        cell = out.setdefault(cause, {})
+        cell[state] = cell.get(state, 0) + 1
+    return {cause: dict(sorted(cell.items())) for cause, cell in sorted(out.items())}
+
+
+NO_CLASS_DOCUMENT = "no_class_document"
+# What a document left out of the class may have been read as for the source to hold none:
+# its class read (another, none, the own party's), or a stub (below): OCR failed on a
+# ``pdf_stub``, OCR read no text of a tiny file, an unsupported file is a tiny image.
+# Anything else (unreadable, ambiguous_class, content_*, reread_*, not_projected, another
+# OCR cause, a larger file) may hide one of the class.
+READ_EMPTY = ("other_class", "unclassified", document_fields.OWN_ISSUED, OCR_NO_TEXT,
+              OCR_FAILED, "unsupported")
+TINY_FILE_BYTES = 1024   # under this no file holds a legible page: a scan's image is larger
+
+
+def stub_files(store: Any) -> dict[str, tuple[int, int]]:
+    """The capture's current files stored ``ocr_no_text`` or ``unsupported``, per status:
+    (all, tiny), tiny being under ``TINY_FILE_BYTES`` (an unsupported one an image too)."""
+    out = {OCR_NO_TEXT: (0, 0), "unsupported": (0, 0)}
+    rows = store.db.execute(
+        "SELECT text_status, record FROM items WHERE superseded_at IS NULL AND "
+        "(text_status LIKE 'unsupported%' OR text_status LIKE 'ocr_no_text%')")
+    for row in rows.fetchall():
+        status = text_status_kind(str(row["text_status"]))
+        if status not in out:
+            continue
+        record = json.loads(row["record"])
+        size = record.get("size")
+        tiny = isinstance(size, int) and not isinstance(size, bool) and \
+            0 <= size < TINY_FILE_BYTES and (status == OCR_NO_TEXT or str(
+                record.get("mime_type") or "").startswith("image/"))
+        every, small = out[status]
+        out[status] = (every + 1, small + tiny)
+    return out
+
+
+def no_class_document(out: Mapping[str, Any], stubs: Mapping[str, tuple[int, int]]) -> bool:
+    """The funnel ``out`` read every document through and none is of the class: none was
+    evaluated, the class's title is on no text (``title_signals`` 0, a classification or
+    class drop), and each excluded document was read as empty of it (``READ_EMPTY``):
+    every failed OCR run on a ``pdf_stub``, and every ``ocr_no_text`` or unsupported one
+    a tiny file (``stubs``: :func:`stub_files`). A source gap, never a fail (module
+    docstring, Unevaluated)."""
+    excluded, why = out["excluded"], out["no_candidate"]
+    return not out["evaluated"] and not out["truncated"] and why is not None and \
+        why["stage"] in ("classification", "class") and why["title_signals"] == 0 and \
+        not out["ocr_unavailable"] and set(excluded) <= set(READ_EMPTY) and \
+        set(out["ocr_failed_by"]) <= {"pdf_stub"} and \
+        all(excluded.get(status, 0) == every == tiny
+            for status, (every, tiny) in stubs.items())
+
+
 def evaluate(store: Any, report: Mapping[str, Any],
              floors: Mapping[str, Decimal] | None = None) -> dict[str, Any]:
     """What this live entry adds to the host check's ``--document-class`` report;
     ``floors`` (``--floor``): :func:`floor_outcome`."""
     out = {**score_exposed(store), **denominators(report), "accuracy": accuracy(store),
            "funnel": funnel(report)}
+    crosstab = ocr_failed_by_portal(store)
+    out["funnel"]["ocr_failed_by_portal"] = crosstab
+    out["funnel"]["ocr_failed_by_portal_sums"] = (
+        {cause: sum(cell.values()) for cause, cell in crosstab.items()}
+        == out["funnel"]["ocr_failed_by"])
     unread = out["funnel"]["excluded"].get(OCR_UNAVAILABLE, 0)
     out["unevaluated"] = {OCR_UNAVAILABLE: unread}
     if unread and not out["funnel"]["evaluated"]:
         out["blocked"] = OCR_UNAVAILABLE
+    elif report.get("capture_complete") is True and \
+            no_class_document(out["funnel"], stub_files(store)):
+        # only over a whole capture: a root the budget cut may hold one never read
+        out["blocked"] = NO_CLASS_DOCUMENT
     elif out["funnel"]["evaluated"] and \
             (floor := floor_outcome(out["field_outcomes"], floors or {})) is not None:
         out["floors"] = floor["fields"]
@@ -1482,7 +1575,7 @@ def lot_trace_main(argv: list[str], *, environ: Mapping[str, str] | None = None,
                    sender: Any = None, portal_client: Any = None,
                    monotonic: Callable[[], float] | None = None) -> int:
     """``--lot-trace``: the supplier-lot trace (``scripts/eval_lot_trace.py``), run from this
-    module so its live check names a module ``verify/live_verify.py`` already allows."""
+    module so its live check names a module ``devloop/live_verify.py`` already allows."""
     from scripts import eval_lot_trace
 
     parser = argparse.ArgumentParser(prog="python3 -m scripts.eval_document_fields_live",

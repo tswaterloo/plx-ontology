@@ -568,7 +568,7 @@ class AggregateTests(_Base):
         self.assertEqual(self.agg(STAFF, [L1, R1], {"op": "count"})["groups"][0]["value"], "2")
 
     def test_plain_decimals_without_a_unit_never_sum_rank_or_compare(self):
-        # A decimal records no currency or unit, so USD 10000 + CNY 10000 summed
+        # Review p0-b: a decimal records no currency or unit, so USD 10000 + CNY 10000 summed
         # to a complete 20000 and the two compared equal.
         pr1, pr2 = ("PurchaseRequisitionLine:portal.app_pr_line_item:" + n for n in "xy")
         for oid, quantity in ((pr1, "4"), (pr2, "6")):
@@ -770,7 +770,8 @@ class MissingFromSourceTests(_Base):
 
 
 class AsKnownAtTests(_Base):
-    """Members, values and absence as known at T from the versioned captures: a record first captured after T is not counted at T, one live at T is, and a
+    """Members, values and absence as known at T from the versioned captures (10-DECISION
+    5): a record first captured after T is not counted at T, one live at T is, and a
     capture history that cannot show the traversal known at T answers unknown, never
     absent_in_source (absent is not missing; unreadable is not empty)."""
 

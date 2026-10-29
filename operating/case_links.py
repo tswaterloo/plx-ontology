@@ -1,4 +1,4 @@
-"""Workbench-checked links between two cited source-mirror rows.
+"""Workbench-checked links between two cited source-mirror rows (convergence slice 2).
 
 A relationship claim such as "AO-26005B is linked by order line 1140 to sales
 order 351" used to be checked in client code (the former AO case script)
@@ -11,8 +11,8 @@ records the outcome with both citations, the contract id and digest and the
 evaluated values; ``plx.case_add_finding`` link mode is the MCP tool.
 
 Link contracts (``operating/link_contracts.json``, ``plx-case-link-contracts/v1``)
-are declarative and carry their evidence (Portal ``path@commit``,
-live traces). Three match kinds:
+are declarative and carry their evidence (Portal ``path@commit`` from the
+context pack, live traces). Three match kinds:
 
 * ``fk``: one or more column pairs are equal (``from.idassembly == to.id``);
 * ``json_path``: the same, where a side reads one key of a JSON-object column

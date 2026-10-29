@@ -1,7 +1,7 @@
 """Read-back verification of a case proposal's expected effect (never dispatch).
 
 The case runtime records proposals; approval and execution belong to Portal and
-Mission Control (the Workbench keeps only read-back
+Mission Control (devloop/UPSTREAM-MAP.md: the Workbench keeps only read-back
 verification observations). This module is that read-back: for a proposal that
 declared an ``expected_effect`` on one cited source row, re-read that row for
 the calling actor through the audience-checked source mirror (refreshed when it

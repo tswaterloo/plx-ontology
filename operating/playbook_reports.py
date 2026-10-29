@@ -1,4 +1,4 @@
-"""Append-only, hash-chained store of playbook evaluation reports.
+"""Append-only, hash-chained store of playbook evaluation reports (M3-B).
 
 An evaluation report (``playbook_eval.evaluate``) is evidence. This store keeps each one exactly as
 produced, in a SQLite table that cannot be updated or deleted (triggers) and whose rows are chained

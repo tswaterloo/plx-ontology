@@ -1,4 +1,4 @@
-"""Store layout v6 at its boundary: the ``object_values`` and ``links`` views read back
+"""Store layout v6/v10 at its boundary: the ``object_values`` and ``links`` views read back
 exactly what was written, whichever way it was written (the builder's packed path, a
 direct write through the view's triggers, an update, a delete), and a text the packed
 layout cannot hold byte for byte is stored as written or refused like v5 refused it.
@@ -78,12 +78,21 @@ class StoreLayoutTests(unittest.TestCase):
                     self.assertEqual(conn.execute("SELECT value FROM store_meta WHERE key = "
                                                   "'format'").fetchone()[0], store_ddl.FORMAT)
                     self.assertEqual(content_digest(conn), report["content_digest"])
-                    # the row numbers a keyset pager uses are unique and complete
+                    # the row numbers a keyset pager uses are unique and cover every cell;
+                    # the rest are values of packed bindings (v10), there in the view too
                     numbers = [r[0] for r in conn.execute(
                         "SELECT row_no FROM object_values_numbered")]
                     self.assertEqual(len(numbers), len(set(numbers)))
                     self.assertNotIn(None, numbers)
-                    self.assertEqual(len(numbers), len(recorded.rows["object_values"]))
+                    packed = {b["id"] for t in schema().object_types.values()
+                              for b in t.get("bindings", []) if b.get("value_storage") == "packed"}
+                    at = store_ddl.VALUE_COLUMNS.index("binding_id")
+                    in_packs = [r for r in recorded.rows["object_values"] if r[at] in packed]
+                    self.assertTrue(in_packs)
+                    self.assertEqual(len(numbers) + len(in_packs), len(recorded.rows["object_values"]))
+                    self.assertEqual(conn.execute("SELECT count(*) FROM value_cells WHERE field "
+                                                  "IS NULL").fetchone()[0],
+                                     len({(r[0], r[9]) for r in in_packs}))
                     # iter_rows reads values in object order over its chunks, all of them
                     with mock.patch("ontology.store._CHUNK_OBJECTS", 3):
                         chunked = list(iter_rows(conn, "object_values"))
@@ -306,6 +315,95 @@ class ValueWriteTests(unittest.TestCase):
                 conn.execute("DELETE FROM object_values")
                 self.assertEqual(conn.execute("SELECT count(*) FROM value_sources").fetchone()[0], 0)
                 self.assertEqual(builder.check(), [])
+            finally:
+                builder.abort()
+
+
+class PackedValueTests(unittest.TestCase):
+    """v10 packed records: a ``value_storage: packed`` binding's values read back exactly,
+    are not word-indexed, keep one field per source, and a direct write unpacks them."""
+
+    def builder(self, tmp: str) -> StoreBuilder:
+        builder = ValueWriteTests.builder(ValueWriteTests(), tmp)
+        builder.packed_bindings = frozenset({"b"})
+        return builder
+
+    ROWS = [dict(VALUE, property=f"p{n}", field_path=f"row.p{n}", value=value, superseded_at=LATER)
+            for n, value in enumerate(["v", None, "  padded  ", "0", "-7.700", "é \"quoted\" [x]",
+                                       "", "line\nbreak"])]
+
+    def test_a_record_reads_back_every_value_and_is_never_word_indexed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            builder = self.builder(tmp)
+            try:
+                conn = builder.connection
+                money = dict(VALUE, property="amt", field_path="row.amt", value_type="money",
+                             superseded_at=LATER,
+                             value="12.50", currency="CAD", parser="decimal_text")
+                builder.add("object_values", self.ROWS + [money])
+                self.assertEqual(logical(conn, "object_values"), collections.Counter(
+                    tuple(r.get(c) for c in store_ddl.VALUE_COLUMNS) for r in self.ROWS + [money]))
+                self.assertEqual(conn.execute("SELECT count(*) FROM value_cells WHERE field IS NULL"
+                                              ).fetchone()[0], 1)
+                # the currency-bearing value is a cell; nothing of the record is in the index
+                self.assertEqual([r[0] for r in conn.execute(
+                    "SELECT property FROM object_values_numbered")], ["amt"])
+                for word in ("padded", "quoted", "line"):
+                    self.assertEqual(conn.execute("SELECT count(*) FROM value_text WHERE "
+                                                  "value_text MATCH ?", (word,)).fetchone()[0], 0)
+                # read by object, by property and by version, as every reader does
+                self.assertEqual(conn.execute("SELECT value FROM object_values WHERE object_id = ? "
+                                              "AND property = 'p4'", ("A:b:1",)).fetchone(),
+                                 ("-7.700",))
+                self.assertEqual(conn.execute("SELECT count(*) FROM object_values WHERE property "
+                                              "= 'p1' AND value IS NULL").fetchone()[0], 1)
+                self.assertEqual(builder.check(), [])
+            finally:
+                builder.abort()
+
+    def test_one_field_per_source_whether_packed_or_a_cell(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            builder = self.builder(tmp)
+            try:
+                with self.assertRaisesRegex(sqlite3.IntegrityError, "UNIQUE"):
+                    builder.add("object_values", [self.ROWS[0], dict(self.ROWS[0], value="x")])
+            finally:
+                builder.abort()
+        with tempfile.TemporaryDirectory() as tmp:
+            builder = self.builder(tmp)
+            try:
+                builder.add("object_values", self.ROWS)
+                for write in (lambda: builder.add("object_values", [dict(self.ROWS[3], value="1")]),
+                              lambda: ValueWriteTests.insert(ValueWriteTests(), builder.connection,
+                                                             dict(self.ROWS[3], value="1"))):
+                    with self.assertRaisesRegex(sqlite3.IntegrityError, "UNIQUE"):
+                        write()
+                self.assertEqual(builder.check(), [])
+            finally:
+                builder.abort()
+
+    def test_update_and_delete_through_the_view_unpack_the_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            builder = self.builder(tmp)
+            try:
+                conn = builder.connection
+                builder.add("object_values", self.ROWS)
+                before = logical(conn, "object_values")
+                conn.execute("UPDATE object_values SET value = 'changed' WHERE property = 'p2'")
+                expect = collections.Counter(
+                    tuple(r.get(c) for c in store_ddl.VALUE_COLUMNS) for r in
+                    [dict(r, value="changed") if r["property"] == "p2" else r for r in self.ROWS])
+                self.assertEqual(logical(conn, "object_values"), expect)
+                self.assertNotEqual(logical(conn, "object_values"), before)
+                self.assertEqual(conn.execute("SELECT count(*) FROM value_cells WHERE field IS NULL"
+                                              ).fetchone()[0], 0)
+                conn.execute("DELETE FROM object_values WHERE property = 'p5'")
+                self.assertEqual(sorted(r[0] for r in conn.execute(
+                    "SELECT property FROM object_values")),
+                    sorted(r["property"] for r in self.ROWS if r["property"] != "p5"))
+                self.assertEqual(builder.check(), [])
+                conn.execute("DELETE FROM object_values")
+                self.assertEqual(conn.execute("SELECT count(*) FROM value_sources").fetchone()[0], 0)
             finally:
                 builder.abort()
 

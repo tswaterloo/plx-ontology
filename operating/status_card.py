@@ -28,7 +28,7 @@ console's access decision) drops citations the reader may not open, and any clai
 uncited, with one unknown saying so.
 
 ``python3 -m operating.status_card`` is the live check's command
-(``verify/live-checks/case.po_status.json``): one host capture cycle into a state
+(``devloop/live-checks/case.po_status.json``): one host capture cycle into a state
 directory, then cards for up to ``--limit`` records of ``--object-type`` offline as
 ``operating.proactive_gaps`` does; counts only, never an identifier or a value. Evidence
 label: that of the captures it reads (live-unverified until the verifier runs it).
@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
-from datetime import date, datetime, timezone
+from datetime import date
 from decimal import Decimal, InvalidOperation
 import functools
 import json
@@ -48,7 +48,7 @@ import re
 import sys
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
-from . import answerers
+from . import answerers, po_status
 from .explanations import field_words, reason_words, type_words
 
 SCHEMA = "plx-status-card/v1"
@@ -187,6 +187,20 @@ def _date(raw: Any) -> date | None:
         return None
 
 
+# A systems-disagree fact's words (``process_lateness.systems_disagree``).
+DISAGREE_WORDS = {"receipt_state": "whether it is fully received",
+                  "received_quantity": "the quantity received",
+                  "expected_date": "the requested-by date"}
+STATE_WORDS = {"fully_received": "fully received",
+               "open_lines_outstanding": "open lines still outstanding"}
+SYSTEM_LABELS = {"portal": "the Portal", "bc": "Business Central"}
+
+
+def system_label(system: Any) -> str:
+    return " and ".join(SYSTEM_LABELS.get(part, part)
+                        for part in str(system or "a system").split("+"))
+
+
 class _Copy:
     """One read record: the root or a same-record copy."""
 
@@ -217,6 +231,8 @@ class _Card:
         self.facts: list[dict[str, Any]] = []
         self.unknowns: dict[str, list[dict[str, str]]] = {}
         self.invoice_reads = 0
+        # Citations of each due-dated stage the process decided is not late (``due``).
+        self.on_time: list[dict[str, str]] = []
 
     def unknown(self, text: str | None, citations: Sequence[Mapping[str, str]] = ()) -> None:
         if text:
@@ -294,7 +310,7 @@ class _Card:
                                                    "process": graph["id"]})
                 if not answer.get("error"):
                     results.setdefault(graph["id"], []).append((copy, answer))
-        need = self.need_date(type_id, copies)
+        need = self.need_date(type_id, copies, due=not _not_due(results.values()))
         undecided_qty = False
         for graph in graphs:
             runs = results.get(graph["id"]) or []
@@ -384,6 +400,8 @@ class _Card:
         decided: set[str] = set()
         undecided: dict[str, set[str]] = {}
         for _copy, answer in runs:
+            for entry in answer.get("lateness") or ():
+                self.disagree(entry)
             judged = {e.get("stage") for e in answer.get("lateness") or ()}
             verdicts = [(e, e.get("late"), _governing(e), e.get("days_late"))
                         for e in answer.get("lateness") or ()]
@@ -399,6 +417,9 @@ class _Card:
                     decided.add(stage["id"])
                 if late is True:
                     self.late(stage, entry, dated, days)
+                elif late is False:
+                    self.on_time = _unique([*self.on_time,
+                                            *(c for v in dated for c in _cite(v.get("citation")))])
                 elif late is None and entry.get("state") != "not_applicable":
                     reason = (entry.get("gap") or {}).get("reason")
                     undecided.setdefault(stage["id"], set()).add(str(reason))
@@ -413,6 +434,35 @@ class _Card:
             elif need_known:
                 self.unknown(f"Whether the {label} is late is not established from the "
                              "records you can read.")
+
+    def disagree(self, entry: Mapping[str, Any]) -> None:
+        """One fact per named conflict of a lateness entry (``systems_disagree``): both
+        systems' values, each with its own citations, and the one that governs. Shown only
+        while both sides stay cited for the reader (``_restrict``)."""
+        for conflict in entry.get("systems_disagree") or ():
+            field = conflict.get("field")
+            sides = [s for s in conflict.get("sides") or () if isinstance(s, Mapping)]
+            cites = [[c for v in s.get("values") or () for c in _cite(v.get("citation"))]
+                     for s in sides]
+            if field not in DISAGREE_WORDS or len(sides) != 2 or not all(cites):
+                continue
+            if any(f.get("_key") == (field, tuple(s.get("value") for s in sides))
+                   for f in self.facts):
+                continue
+            unit = f" {conflict['unit']}" if conflict.get("unit") else ""
+            said = [f"{system_label(s.get('system'))} says "
+                    + (STATE_WORDS.get(s.get("value"), str(s.get("value")))
+                       if field == "receipt_state" else f"{s.get('value')}{unit}")
+                    for s in sides]
+            governs = conflict.get("governs")
+            rule = ("Business Central's lines govern" if governs and field != "expected_date"
+                    else "the declared date precedence governs" if governs
+                    else "no system governs, so it is not decided")
+            self.fact(f"Systems disagree on {DISAGREE_WORDS[field]}: " + "; ".join(said)
+                      + f" ({rule}).", {"governs": governs, "values": [
+                          s.get("value") for s in sides]},
+                      [c for side in cites for c in side], _sides=cites,
+                      _key=(field, tuple(s.get("value") for s in sides)))
 
     def late(self, stage: Mapping[str, Any], entry: Mapping[str, Any],
              dated: Sequence[Mapping[str, Any]], days: Any) -> None:
@@ -435,9 +485,11 @@ class _Card:
             f"Find out why the {label.lower()} came late and tell the supplier.",
             _late=spec)
 
-    def need_date(self, type_id: str, copies: Sequence[_Copy]) -> bool:
+    def need_date(self, type_id: str, copies: Sequence[_Copy], due: bool = True) -> bool:
         """The due-date fields of ``type_id``'s due-dated stages: a cited fact when any copy
-        holds one, else a ``no_need_date`` blocker. ``False`` when none is held."""
+        holds one, else a ``no_need_date`` blocker unless ``due`` is false (the process says
+        nothing is due: a cancelled, completed-short or draft PO). ``False`` when none is
+        held."""
         props = _props(type_id)
         events = _schema().event_types
         wanted: list[str] = []
@@ -462,7 +514,7 @@ class _Card:
                 self.fact(f"{_cap(field_words(prop))} in {copy.system}",
                           _plain(value["value"]), _cite(value.get("citation")))
             empty = [(c, v) for c in copies for v in c.empty(prop)]
-            if not values and empty:
+            if not values and empty and due:
                 self.blocker(
                     "no_need_date", prop, f"No {field_words(prop)} recorded",
                     f"The {field_words(prop)} is empty in {_and([c.system for c, _ in empty])}, "
@@ -685,7 +737,7 @@ def card(call: Callable[[str, dict[str, Any]], dict[str, Any]], object_id: Any, 
          readable: Callable[[Sequence[str]], Any] | None = None) -> dict[str, Any]:
     """The status card of ``object_id`` read through ``call`` (module doc). A record the
     reader cannot read and one that does not exist read the same (``not_found``)."""
-    day = as_of or datetime.now(timezone.utc).date()
+    day = as_of or po_status.business_today()
     base = {"schema": SCHEMA, "object_id": object_id, "as_of": day.isoformat()}
     if not isinstance(object_id, str) or not object_id or len(object_id) > 700:
         return {**base, "status": "invalid_input"}
@@ -733,9 +785,19 @@ def card(call: Callable[[str, dict[str, Any]], dict[str, Any]], object_id: Any, 
            "unknowns": [{"text": t, "citations": c} for t, c in work.unknowns.items()],
            "questions": _questions(type_id)}
     _restrict(out, readable)
+    keys = []
     for blocker in out["blockers"]:
-        blocker.pop("key")
+        keys.append((blocker.pop("key"), _late_days(blocker.get("_late"), blocker["citations"])))
         _render(blocker)
+    # The record itself stands behind a verdict nothing else decided: its label's
+    # citation, else (a record with no label, e.g. a draft PO without a number) its own
+    # status values, so a readable record is never withheld as having nothing to cite.
+    root_cites = root.citations or _unique(
+        c for name in root.values if name == "status" or str(name).endswith("_status")
+        for v in root.present(name) for c in _cite(v.get("citation")))
+    out["verdict"] = _verdict(out["blockers"], keys,
+                              work.on_time if type_id in order_types() else [],
+                              root_cites, readable)
     out["more_blockers"] = max(0, len(out["blockers"]) - MAX_BLOCKERS)
     out["blockers"] = out["blockers"][:MAX_BLOCKERS]
     out["next_step"] = out["blockers"][0]["next_step"] if out["blockers"] else None
@@ -760,7 +822,7 @@ def card_for_reference(call: Callable[[str, dict[str, Any]], dict[str, Any]],
     ``ambiguous`` with the count and no card, never a pick."""
     from operating.ontology_tools import _IDENTITY_TIERS, ROOT_REASONS
 
-    day = as_of or datetime.now(timezone.utc).date()
+    day = as_of or po_status.business_today()
     base = {"schema": SCHEMA, "reference": reference, "as_of": day.isoformat()}
     if (not isinstance(object_type, str) or not isinstance(reference, str)
             or not reference.strip() or len(reference) > 200):
@@ -828,6 +890,13 @@ def _restrict(out: dict[str, Any], readable: Callable[[Sequence[str]], Any] | No
         blocker["citations"] = _unique([c for r in records
                                         for c in (*r["citations"], *r["label_citations"])])
     out["blockers"] = [b for b in out["blockers"] if b["citations"]]
+    for fact in out["facts"]:
+        # a two-sided claim (systems disagree) stands only while each side stays cited
+        sides = fact.pop("_sides", None)
+        fact.pop("_key", None)
+        if sides is not None and not all(any(c["handle"] in allowed for c in side)
+                                         for side in sides):
+            fact["citations"] = []
     out["facts"] = [f for f in out["facts"] if f["citations"]]
     if out["copies"] and not out["copies"]["citations"]:
         out["copies"] = None
@@ -835,6 +904,85 @@ def _restrict(out: dict[str, Any], readable: Callable[[Sequence[str]], Any] | No
         out["unknowns"].append({"text": WITHHELD_TEXT, "citations": []})
     if uncited:
         out["unknowns"].append({"text": UNCITED_TEXT, "citations": []})
+
+
+VERDICT_STATES = ("late", "undecided", "on_time")
+ON_TIME_TEXT = "Not late against its due date in the records you can read."
+UNDECIDED_TEXT = "Whether it is late is not established from the records you can read."
+
+
+def _late_days(spec: Mapping[str, Any] | None, kept: Sequence[Mapping[str, str]]
+               ) -> int | None:
+    """The days late a late blocker's words show (``_late_words``): only with the due
+    date's own citation kept."""
+    if not spec:
+        return None
+    keep = {(c["handle"], c.get("field", "")) for c in kept}
+    dated = any((c["handle"], c.get("field", "")) in keep
+                for d in spec["dates"] for c in d["citations"])
+    return spec["days"] if dated else None
+
+
+def _not_due(runs: Iterable[Sequence[tuple[Any, Mapping[str, Any]]]]) -> bool:
+    """Every lateness verdict the process gave is ``not_applicable`` (po_status: nothing is
+    due, so an empty need date blocks nothing); false when it gave none or any other."""
+    states = [entry.get("state") for graph in runs for _copy, answer in graph
+              for entry in answer.get("lateness") or ()]
+    return bool(states) and all(state == "not_applicable" for state in states)
+
+
+def _verdict(blockers: Sequence[Mapping[str, Any]],
+             keys: Sequence[tuple[str, int | None]], on_time: Sequence[Mapping[str, str]],
+             root: Sequence[Mapping[str, str]],
+             readable: Callable[[Sequence[str]], Any] | None) -> dict[str, Any]:
+    """The one lateness verdict of a card (``verdict``; plx.investigate F14's readable
+    answer and plx.find's late_po portfolio rows read it, so they never disagree with the
+    card): ``late`` from the first late blocker the reader may cite; else ``undecided``
+    naming the due-date field(s) empty on every copy (``missing``); else ``on_time`` when
+    the process decided a due-dated stage is not late on dates the reader may cite; else
+    ``undecided`` with nothing named. ``line``: one plain sentence; ``citations``: what
+    the reader may open behind it (none: nothing it may cite stands behind the line)."""
+    def allowed(citations: Sequence[Mapping[str, str]]) -> list[dict[str, str]]:
+        citations = _unique(citations)
+        if readable is None or not citations:
+            return citations
+        kept = set(readable(sorted({c["handle"] for c in citations})))
+        return [c for c in citations if c["handle"] in kept]
+
+    late = [(b, days) for b, (_key, days) in zip(blockers, keys) if b["kind"] == "late"]
+    if late:
+        blocker, days = late[0]
+        return {"state": "late", "line": blocker["why"], "missing": [],
+                "days_late": days, "citations": list(blocker["citations"])}
+    unset = [(b, key) for b, (key, _days) in zip(blockers, keys) if b["kind"] == "no_need_date"]
+    if unset:
+        return {"state": "undecided", "line": unset[0][0]["why"],
+                "missing": list(dict.fromkeys(key.rsplit("|", 1)[-1] for _b, key in unset)),
+                "days_late": None,
+                "citations": _unique(c for b, _key in unset for c in b["citations"])}
+    dated = allowed(on_time)
+    if dated:
+        return {"state": "on_time", "line": ON_TIME_TEXT, "missing": [], "days_late": None,
+                "citations": dated}
+    return {"state": "undecided", "line": UNDECIDED_TEXT, "missing": [], "days_late": None,
+            "citations": allowed(root)}
+
+
+def verdict(call: Callable[[str, dict[str, Any]], dict[str, Any]], object_id: Any, *,
+            as_of: date | None = None,
+            readable: Callable[[Sequence[str]], Any] | None = None) -> dict[str, Any]:
+    """``object_id``'s lateness verdict for this reader: its card's ``verdict`` (``card``,
+    the console's /api/status-card), with the record's label only where the reader may
+    cite it. A record the reader cannot read has no verdict (``status`` not ``read``)."""
+    found = card(call, object_id, as_of=as_of, readable=readable)
+    out = {"status": found["status"], "object_id": object_id, "as_of": found["as_of"]}
+    if found["status"] != "read":
+        return out
+    labelled = [f for f in found["facts"][:1] if f["value"] == found["label"]]
+    return {**out, "object_type": found["object_type"], "type_label": found["type_label"],
+            "label": found["label"] if labelled and isinstance(found["label"], str) else None,
+            "label_citations": labelled[0]["citations"] if labelled else [],
+            **found["verdict"]}
 
 
 def _governing(entry: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -980,7 +1128,7 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
         parser.error("--limit must be 1..60")
     from ontology.core import Actor
 
-    as_of = args.as_of or datetime.now(timezone.utc).date()
+    as_of = args.as_of or po_status.business_today()
     summary: dict[str, Any] = {"schema": SCHEMA, "evidence": live.MIRROR_EVIDENCE["label"],
                                "as_of": as_of.isoformat(), "capture": None}
     if args.host_config is not None:

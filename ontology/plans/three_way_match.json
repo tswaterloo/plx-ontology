@@ -6,7 +6,7 @@
   "F4"
  ],
  "title": "Purchase order, receipt and supplier invoice agreement",
- "description": "Ordered (PO lines), received (receipt lines of the PO's receipts) and invoiced (BC purchase invoice lines of the PO itself when it is a BC purchase order, else of its BC twin, and of the BC invoices naming its number: PurchaseInvoice.names_order, a lead) quantities per item, each a cited source value, as context. Every match verdict is plx.process purchase_to_invoice's own (ontology/schema/process/purchase_to_invoice.json: unit equivalence, summed receipts, ignored drafts, one system of record, leads never counted); the plan never compares quantities itself, and when the host does not serve plx.process the verdicts are step_unavailable gaps. Upstream: docs/reference/portal-code-map.md 3.5, 3.6, 3.11.",
+ "description": "Ordered (PO lines), received (receipt lines of the PO's receipts) and invoiced (BC purchase invoice lines of the PO itself when it is a BC purchase order, else of its BC twin, and of the BC invoices naming its number: PurchaseInvoice.names_order, a lead) quantities per item, each a cited source value, as context. Every match verdict is plx.process purchase_to_invoice's own (ontology/schema/process/purchase_to_invoice.json: unit equivalence, summed receipts, ignored drafts, one system of record, leads never counted); the plan never compares quantities itself, and when the host does not serve plx.process the verdicts are step_unavailable gaps. Upstream: devloop/CONTEXT/03-PORTAL.md 3.5, 3.6, 3.11.",
  "root": {
   "object_types": [
    "PurchaseOrder"
@@ -300,7 +300,7 @@
    "tool": "plx.around",
    "from": "root",
    "bind": "from",
-   "description": "Invoice lines of the BC purchase invoices that name the root's PO number (PurchaseInvoice.names_order, the way the Portal finds a PO's invoices: TRIM(order_number)). BC deletes a fully invoiced PO once posted, so a closed Portal PO has no BC PO and no BC twin left and is reached only so. The link is a lead (the Portal row does not carry the BC company): its lines are cited context labelled lead_basis; plx.process counts it only through company_by_reader and keeps its cross_system_unchecked label (docs/decisions/2026-10-05-bc-only-portal-hops.md).",
+   "description": "Invoice lines of the BC purchase invoices that name the root's PO number (PurchaseInvoice.names_order, the way the Portal finds a PO's invoices: TRIM(order_number)). BC deletes a fully invoiced PO once posted, so a closed Portal PO has no BC PO and no BC twin left and is reached only so. The link is a lead (the Portal row does not carry the BC company): its lines are cited context labelled lead_basis; plx.process counts it only through company_by_reader and keeps its cross_system_unchecked label (devloop/DECISIONS/2026-10-05-bc-only-portal-hops.md).",
    "args": {
     "path": [
      {

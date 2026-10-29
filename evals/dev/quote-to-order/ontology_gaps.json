@@ -1,7 +1,7 @@
 {
  "format": "plx-case-ontology-gaps/v1",
  "case": "quote-to-order",
- "status": "What the ontology lacks to answer evals/dev/quote-to-order/proposed_items.json: one entry per ranked gap of the Quote-to-Order Map (map_rank 1-16, the map's order). Sources are named, never read here; Portal refs are at the repo pin d4d1bb247708 (verify/upstream-pins.json), not the map's unstated staging commit. 'source unknown' carries the question that would find one. OntologyProject refs on context/ paths are source records.",
+ "status": "What the ontology lacks to answer evals/dev/quote-to-order/proposed_items.json: one entry per ranked gap of the Quote-to-Order Map (map_rank 1-16, the map's order). Sources are named, never read here; Portal refs are at the repo pin d4d1bb247708 (devloop/upstream-pins.json), not the map's unstated staging commit. 'source unknown' carries the Dot question that would find one. OntologyProject refs on context/ paths are records of the codex/advisory branch.",
  "advisory": "advisory:72bf7b7ae3f6",
  "gaps": [
   {
@@ -79,7 +79,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Where are a customer's agreed per-SKU tier prices kept after a quote is won (BC price list, Sage price code or the quote workbook), and who updates them on a reorder?"
+   "dot_question": "Where are a customer's agreed per-SKU tier prices kept after a quote is won (BC price list, Sage price code or the quote workbook), and who updates them on a reorder?"
   },
   {
    "id": "QTO-GAP-04",
@@ -102,7 +102,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Where are signed MSAs and supply agreements stored, and who records their payment terms and deposit rules against the customer?"
+   "dot_question": "Where are signed MSAs and supply agreements stored, and who records their payment terms and deposit rules against the customer?"
   },
   {
    "id": "QTO-GAP-05",
@@ -153,7 +153,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Who builds the workback schedule today, from which workbook sheet, and is it saved anywhere outside the quote workbook?"
+   "dot_question": "Who builds the workback schedule today, from which workbook sheet, and is it saved anywhere outside the quote workbook?"
   },
   {
    "id": "QTO-GAP-07",
@@ -199,7 +199,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Which mailbox and folder hold the quote send and reply emails for each customer, and may an agent read them?"
+   "dot_question": "Which mailbox and folder hold the quote send and reply emails for each customer, and may an agent read them?"
   },
   {
    "id": "QTO-GAP-09",
@@ -221,7 +221,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Which overhead standard is in force for quotes issued now, ERP-D-022 or OD-14, and who decides?"
+   "dot_question": "Which overhead standard is in force for quotes issued now, ERP-D-022 or OD-14, and who decides?"
   },
   {
    "id": "QTO-GAP-10",
@@ -346,7 +346,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Who approves a quote before it is sent, and where is that approval recorded today?"
+   "dot_question": "Who approves a quote before it is sent, and where is that approval recorded today?"
   },
   {
    "id": "QTO-GAP-15",
@@ -391,7 +391,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Which FileMaker layouts and Sage screens are still used to price quotes or enter orders for Sahajan, G2 Beauty and Soapbox?"
+   "dot_question": "Which FileMaker layouts and Sage screens are still used to price quotes or enter orders for Sahajan, G2 Beauty and Soapbox?"
   }
  ]
 }

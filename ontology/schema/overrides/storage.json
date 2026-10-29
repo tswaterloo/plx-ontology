@@ -1,0 +1,24 @@
+{
+ "format": "plx-generator-overrides/v1",
+ "kind": "storage",
+ "description": "How the generated binding of a raw relation stores its values in the projection (ontology/store_ddl.py layout v10, binding value_storage). packed: every currency-free value of one source record is one packed record (a JSON array under a shared layout) instead of one row per value, and those values are not word-indexed: plx.find reaches the records by object type and property filters, by their key and by their links; plx.object, plx.read, plx.around and every value reader read them as before. For wide, high-volume ledger and line relations whose cells are mostly codes, zeros and blank padding, where one row per value cost about 65 bytes and three B-tree inserts each. A relation not listed stores cells (word-indexed text). A listed relation that is not a generated binding of its source fails the generation, so a typo never silently changes nothing.",
+ "evidence": "Measured on the live projection, generation 00000015 (2026-10-27, 248 Portal relations, 9.47 GB): 74,591,972 value cells took 4.9 GB (value_cells 1,988 MB, object_values_by_property 1,607 MB, its unique index 1,355 MB); the 14 Sage AP relations below held 70.3M of them (counts per relation in its entry: records, value cells). Text search over them (value_text) held 99 MB in all: the words are codes, zeros and padding.",
+ "sources": {
+  "portal_api": [
+   {"relation": "sage.ap_ibd", "value_storage": "packed", "evidence": "104,606 records, 17,469,202 value cells (167 columns)"},
+   {"relation": "sage.ap_pjd", "value_storage": "packed", "evidence": "257,028 records, 14,393,568 value cells"},
+   {"relation": "sage.ap_open_document", "value_storage": "packed", "evidence": "72,935 records, 10,648,510 value cells (146 columns)"},
+   {"relation": "sage.ap_ibh", "value_storage": "packed", "evidence": "48,408 records, 9,245,928 value cells (191 columns)"},
+   {"relation": "sage.ap_oblj", "value_storage": "packed", "evidence": "106,777 records, 8,008,275 value cells"},
+   {"relation": "sage.ap_obp", "value_storage": "packed", "evidence": "104,870 records, 3,460,710 value cells"},
+   {"relation": "sage.ap_obs", "value_storage": "packed", "evidence": "72,935 records, 2,260,985 value cells"},
+   {"relation": "sage.ap_pjdo", "value_storage": "packed", "evidence": "102,338 records, 1,637,408 value cells"},
+   {"relation": "sage.ap_ibho", "value_storage": "packed", "evidence": "67,080 records, 939,120 value cells"},
+   {"relation": "sage.ap_oblo", "value_storage": "packed", "evidence": "66,854 records, 869,102 value cells"},
+   {"relation": "sage.ap_ibs", "value_storage": "packed", "evidence": "48,408 records, 629,304 value cells"},
+   {"relation": "sage.ap_bta", "value_storage": "packed", "evidence": "8,996 records, 305,864 value cells"},
+   {"relation": "sage.ap_aged", "value_storage": "packed", "evidence": "3,792 records, 219,936 value cells"},
+   {"relation": "sage.ap_ibc", "value_storage": "packed", "evidence": "7,755 records, 139,590 value cells"}
+  ]
+ }
+}

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""PLX source registry: every PLX system and connection, and how far the
+"""PLX source registry (lane PT6): every PLX system and connection, and how far the
 ontology covers each of them.
 
 The registry, ``ontology/source_registry.json`` (format ``plx-source-registry/v1``), is
 extracted from the upstream repositories at the repo-level pins of
-``verify/upstream-pins.json`` (``repo_pins``) with local git reads only. Nothing in it is
+``devloop/upstream-pins.json`` (``repo_pins``) with local git reads only. Nothing in it is
 typed by hand: regenerating at the same pins reproduces it byte for byte. Entry kinds:
 
 * ``portal`` ``api_route``: every Next.js route handler of the Portal repo (id = its
@@ -85,7 +85,7 @@ recorded as ``bound_data_read`` and credits nothing). A route's
 stages are those of its data: each holds only when it holds for every model and relation.
 An entry's ``status`` is the highest stage whose predecessors all hold, or a terminal
 status (``TERMINAL``): ``out_of_scope`` (``ontology/source_scope.json`` names its entry id,
-or its ``<system>.<kind>``, with the decided ``docs/decisions`` record behind it; the
+or its ``<system>.<kind>``, with the decided ``devloop/DECISIONS`` record behind it; the
 entry id wins), ``not_a_data_source`` (a route that names no data and reaches neither data
 nor a data client, not even through the shared layer) or ``auth_layer_only`` (a route whose
 only data is the shared auth layer's, which stays tracked as its ``prisma_model`` entries:
@@ -95,7 +95,7 @@ route with data and an unresolved table stops at declared with reason
 or ``not_resolvable`` when no pinned catalog describes the client's database (ahead of ``reaches_data_client``; behind ``unresolved_relation`` when it has data keys). An entry whose only data keys are action types, each on a served
 target, is terminal ``bound_action``: an action is verified by read-back on each call
 (its action type's ``verification``), never captured or evaluated as data
-(``docs/decisions/2026-10-08-gen-mc-registry-mcp-coverage.md``); an entry with data
+(``devloop/DECISIONS/2026-10-08-gen-mc-registry-mcp-coverage.md``); an entry with data
 keys too goes through the data stages on those keys alone. A terminal entry is not a gap
 and not in the coverage denominator: the entries of the kinds with an ontology schema (``SCHEMA_KINDS``: data a
 source family binds); MCP tools, hosts, environment groups, SDKs and web-service actions
@@ -128,15 +128,15 @@ Commands (repository root; local git only, no network):
 Checkouts: ``--checkout``, env ``PLX_DRIFT_CHECKOUT_<REPO>``, else the pin file's
 ``repos.<REPO>.default_checkout`` (``ontology/upstream.checkout_for``); a
 shallow checkout needs the pinned commit fetched (``git fetch --depth 1 origin <sha>``).
-``--check`` (the CI check) exits 1 when a repo-level pin moved without regeneration, when the
+``--check`` (the gate) exits 1 when a repo-level pin moved without regeneration, when the
 entries were edited by hand, or, where every checkout holds its pinned commit, when a
 regeneration differs; a missing checkout skips only that last comparison. Live results
 default to ``results/latest.json`` and ``results/daily/latest.json`` of
-the live-check results branch (the newer run of a check wins); ``--live`` reads files.
+``origin/claude/devloop-live`` (the newer run of a check wins); ``--live`` reads files.
 
-Gaps: ``gaps(registry, live,
+Gaps for ``devloop/gaps.py`` (the gap ledger's one coverage path): ``gaps(registry, live,
 RepoFacts(root))`` in process, where ``root`` holds the ``FACT_INPUTS`` files read from Git at
-a ref, or ``gaps --out FILE``; format ``plx-source-gaps/v1``:
+the ledger's ref, or ``gaps --out FILE``; format ``plx-source-gaps/v1``:
 
 * ``registry``: ``path``, ``entries_digest``, ``upstream`` (repo -> pinned commit);
 * ``live``: the result documents read (``from``, ``run``, ``generated_at``), [] if none;
@@ -194,15 +194,16 @@ from ontology.upstream import checkout_for, is_product  # noqa: E402
 FORMAT = "plx-source-registry/v1"
 GAPS_FORMAT = "plx-source-gaps/v1"
 REGISTRY_PATH = ROOT / "ontology" / "source_registry.json"
-PINS_PATH = ROOT / "verify" / "upstream-pins.json"
-LIVE_REF = "origin/verify-live"
+PINS_PATH = ROOT / "devloop" / "upstream-pins.json"
+LIVE_REF = "origin/claude/devloop-live"
 LIVE_FILES = ("results/latest.json", "results/daily/latest.json")
 GRAPH_ENDPOINTS = "ontology/schema/generated/meta/graph_endpoints.json"
+PORTAL_CATALOG_PATH = ROOT / "ontology" / "schema" / "generated" / "meta" / "portal_catalog.json"
 STAGES = ("declared", "bound", "captured", "queryable", "fixture_queryable", "evaluated")
 TERMINAL = ("out_of_scope", "not_a_data_source", "auth_layer_only", "bound_action")
 # The decided record behind ``auth_layer_only``; while it is missing or not decided such a
 # route stays declared with reason ``models_via_shared``.
-AUTH_LAYER_DECISION = "docs/decisions/2026-10-07-portal-route-auth-only.md"
+AUTH_LAYER_DECISION = "devloop/DECISIONS/2026-10-07-portal-route-auth-only.md"
 ACTION = "action"   # the data-key family of an action type that declares a registry entry
 REASONS = {
     "no_source_family": "no ontology binding or action type declares it",
@@ -246,7 +247,7 @@ REASONS = {
 # A reason split out of earlier ones -> those reasons: its entries were reported under them
 # before, so the gap ledger keeps their gap ids as aliases (``former``) of its re-keyed gap.
 REASON_FORMER = {"not_resolvable": ("search_path_unresolved",)}
-SPECS_DIR = ROOT / "verify" / "live-checks"
+SPECS_DIR = ROOT / "devloop" / "live-checks"
 UNEXERCISED = "unexercised"   # a name a check's registry_names.unexercised fields carry
 MAX_EVIDENCE = 5
 # Entry kinds with an ontology schema (the coverage denominator) -> the source family an
@@ -360,7 +361,7 @@ _DATA_CLIENT = re.compile(r"""@prisma/client|\bnew\s+PrismaClient\b|\bfrom\s+["'
                           r"""\brequire\(\s*["']pg["']\s*\)|graph\.microsoft\.com|""" + _BC_FILE.pattern)
 _SDK = re.compile(r"(?:^|[@/-])(?:sdk|client|api)(?:$|[/-])")
 
-# Live-check ``source`` tokens (``verify/live-checks/*.json``) -> the registry systems and
+# Live-check ``source`` tokens (``devloop/live-checks/*.json``) -> the registry systems and
 # binding source families whose names their results can carry; ``LiveIndex`` adds the
 # families the bindings declaring those systems' entries read (``RepoFacts.system_families``).
 LIVE_SOURCES = {
@@ -1158,14 +1159,58 @@ def build(trees: Mapping[str, Tree], pins: Mapping[str, Mapping[str, str]]) -> d
         bc_entries(inv, tree, code)
         graph_entries(inv, tree, code)
         external_entries(inv, tree, code)
-    entries = inv.finish()
+    return with_live_relations(_document(inv.finish(), trees, pins))
+
+
+def live_relation_entries(catalog: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Registry entries of the relations the pinned catalog records as ``live_added``: served
+    by the live ``GET /v1/relations`` but absent from the pinned manifest. Each cites the
+    live read (never a manifest line) and carries only names: schema and domain."""
+    block = catalog.get("live_added") or {}
+    by_name = {row["name"]: row for row in catalog.get("relations", ())}
+    out = []
+    for name in sorted(block.get("relations", ())):
+        row = by_name[name]
+        entry = {"id": f"portal-reporting-api.relation:{name}", "system": "portal-reporting-api",
+                 "kind": "relation", "name": name, "schema": row["schema"]}
+        if row.get("domain"):
+            entry["domain"] = row["domain"]
+        entry["evidence"] = [f"{PORTAL}:{block['ref']} (read-only catalog; not in the pinned "
+                             f"allowlist.json@{catalog['source']['commit']})"]
+        out.append(entry)
+    return out
+
+
+def with_live_relations(registry: Mapping[str, Any],
+                        catalog_path: Path = PORTAL_CATALOG_PATH) -> dict[str, Any]:
+    """``registry`` plus the live-added relations of the pinned catalog (idempotent): its
+    entries, counts and digest are recomputed. ``build`` ends here, so a regeneration at the
+    pins and this step run on the committed registry give the same document."""
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    live = live_relation_entries(catalog)
+    ids = {e["id"] for e in live}
+    entries = sorted([e for e in registry["entries"] if e["id"] not in ids] + live,
+                     key=lambda e: e["id"])
+    counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for entry in entries:
+        counts[entry["system"]][entry["kind"]] += 1
+    out = dict(registry)
+    out["counts"] = {"entries": len(entries),
+                     "by_system": {s: dict(sorted(k.items())) for s, k in sorted(counts.items())}}
+    out["entries_digest"] = entries_digest(entries)
+    out["entries"] = entries
+    return out
+
+
+def _document(entries: Sequence[Mapping[str, Any]], trees: Mapping[str, Tree],
+              pins: Mapping[str, Mapping[str, str]]) -> dict[str, Any]:
     counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     for entry in entries:
         counts[entry["system"]][entry["kind"]] += 1
     return {
         "format": FORMAT,
         "_usage": ("Generated by `python3 -m scripts.source_registry generate` from the repo-level "
-                   "pins (verify/upstream-pins.json repo_pins); never edit by hand. Coverage "
+                   "pins (devloop/upstream-pins.json repo_pins); never edit by hand. Coverage "
                    "(declared -> bound -> captured -> queryable -> evaluated) is computed on read: "
                    "`python3 -m scripts.source_registry status|gaps`. Fields and gap format: "
                    "scripts/source_registry.py docstring."),
@@ -1221,7 +1266,7 @@ def open_trees(pins_doc: Mapping[str, Any], overrides: Mapping[str, str]
 
 def check(registry_path: Path = REGISTRY_PATH, pins_path: Path = PINS_PATH,
           overrides: Mapping[str, str] | None = None) -> dict[str, Any]:
-    """The check: is the committed registry what the current pins generate?"""
+    """The gate: is the committed registry what the current pins generate?"""
     pins_doc = json.loads(pins_path.read_text(encoding="utf-8"))
     text = registry_path.read_text(encoding="utf-8") if registry_path.is_file() else None
     if text is None:
@@ -1257,7 +1302,7 @@ def check(registry_path: Path = REGISTRY_PATH, pins_path: Path = PINS_PATH,
 # The data files ``RepoFacts`` reads under its root (a prefix ending in ``/`` is a directory);
 # the capture code constants come from the running checkout.
 FACT_INPUTS = ("ontology/schema/", "ontology/source_registry.json", "ontology/source_scope.json",
-               "docs/decisions/", "integrations/sharepoint_capture_scope.json",
+               "devloop/DECISIONS/", "integrations/sharepoint_capture_scope.json",
                "integrations/sharepoint_estate_scope.json", "operating/link_contracts.json")
 
 
@@ -1272,7 +1317,7 @@ def _registry_entries(owner: str, item: Mapping[str, Any]) -> list[str]:
 class RepoFacts:
     """What this repository's code holds, for the stage predicates. ``root``: a directory
     holding the ``FACT_INPUTS`` files (default this checkout), so a caller can judge the
-    data of another commit; its schema is format-checked by CI where it was committed."""
+    data of another commit; its schema is format-checked by the gate where it was committed."""
 
     def __init__(self, root: Path = ROOT) -> None:
         from integrations import bc_read
@@ -1546,7 +1591,7 @@ def _strings(value: Any, out: set[str]) -> set[str]:
 
 
 def registry_names(specs_dir: Path = SPECS_DIR) -> dict[str, Mapping[str, Sequence[str]]]:
-    """Check id -> its spec's ``registry_names`` (``verify/live_verify.py`` validates it)."""
+    """Check id -> its spec's ``registry_names`` (``devloop/live_verify.py`` validates it)."""
     out = {}
     for path in sorted(specs_dir.glob("*.json")):
         spec = json.loads(path.read_text(encoding="utf-8"))
@@ -1837,10 +1882,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                    metavar="REPO=PATH")
     g.add_argument("--check", action="store_true", dest="generate_check",
                    help="the top-level --check: write nothing")
+    sub.add_parser("add-live-relations", help="add the pinned catalog's live-added relations to "
+                   "the committed registry (no Portal checkout; what generate ends with)")
     for name in ("status", "gaps"):
         p = sub.add_parser(name, help=f"computed coverage ({name})")
         p.add_argument("--live", action="append", type=Path, metavar="FILE",
-                       help="a live result document (default: the latest live-check results)")
+                       help="a live result document (default: the latest on claude/devloop-live)")
         p.add_argument("--no-live", action="store_true", help="read no live results")
         if name == "status":
             p.add_argument("--json", action="store_true", help="every entry with its stages")
@@ -1851,6 +1898,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         report = check(overrides=_overrides(args.checkout + getattr(args, "generate_checkout", [])))
         print(json.dumps(report, indent=1))
         return 0 if report["ok"] else 1
+    if args.command == "add-live-relations":
+        registry = with_live_relations(load_registry())
+        REGISTRY_PATH.write_text(render(registry), encoding="utf-8")
+        print(json.dumps({"ok": True, "counts": registry["counts"]}, indent=1))
+        return 0
     if args.command == "generate":
         pins_doc = json.loads(PINS_PATH.read_text(encoding="utf-8"))
         trees, missing = open_trees(pins_doc, _overrides(args.checkout + args.generate_checkout))

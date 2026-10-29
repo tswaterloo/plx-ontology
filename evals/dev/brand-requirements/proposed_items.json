@@ -1,11 +1,11 @@
 {
  "format": "plx-eval-case-card-proposals/v1",
- "status": "PROPOSED dev cards for lead triage, never gold. Laura Abate's Customer Brand Requirements map (Draft 6, 16 Oct 2026; 12 stages and 15 rules that are stakeholder proposals, not approved decisions or verified implementation; cards BR-*). The record states the draft was made without a portal code audit. The map body is read through its source record only: this file pins its four members by SHA-256 and holds no stage or rule text beyond the record's facts. The Three Ships example is an attributed Regulatory account, not a verified incident. The map's four failing checks and one open check are source assertions, not runtime results.",
+ "status": "PROPOSED dev cards for lead triage, never gold. Laura Abate's Customer Brand Requirements map (Draft 6, 16 Oct 2026; 12 stages and 15 rules that are stakeholder proposals, not approved decisions or verified implementation; cards BR-*). The record states the draft was made without a portal code audit. The map body is read through its advisory record only: this file pins its four members by SHA-256 and holds no stage or rule text beyond the record's facts. The Three Ships example is an attributed Regulatory account, not a verified incident. The map's four failing checks and one open check are source assertions, not runtime results.",
  "case": "brand-requirements",
  "source": {
   "advisory": {
    "id": "advisory:51cf697a454b",
-   "ref": "source-records@3d9269e8012b530ce9c5e0a389130838ed583586",
+   "ref": "origin/codex/advisory@3d9269e8012b530ce9c5e0a389130838ed583586",
    "path": "context/51cf697a454be593964566fa4ad4b43be95c8d8583775fd1444cee1aed9066fe.json",
    "record_sha256": "b1f2c4fa840b5497d3d0b6b0e61c685997e6593b62dfe0934210b6a25e05e23e",
    "source_revision": "sha256:1c081e639484c04ad5a82dc16244caa917cf3ae33889fb1848ab92cf02afd6d9",
@@ -47,7 +47,7 @@
      "role": "map: relations"
     }
    ],
-   "note": "The ZIP of Laura Abate's Teams message (15:43Z 19 Oct 2026), pinned from the source record: source_id, source_revision hash, size and the four member hashes. Name and hash only, no contents. Laura's Teams Chat Files folder is not a watched folder of the originals registry, so these pins are not registry rows; no read receipt exists."
+   "note": "The ZIP of Laura Abate's Teams message (15:43Z 19 Oct 2026), pinned from the advisory record: source_id, source_revision hash, size and the four member hashes. Name and hash only, no contents. The ZIP is registered as row co-eb9a6a206832 (origin card, examples/case_originals_card_sources.json: a Teams chat attachment pinned by that advisory record), read by scripts.case_originals read through its content URL and served behind the chat message's gate; named by BR-01 to BR-08 (the map's comprehension cards) and BR-15, so their abstention scores originals_not_held when the host does not hold these bytes."
   }
  },
  "map_counts": {
@@ -59,7 +59,7 @@
   "checks": 5,
   "checks_marked_fail": 4,
   "checks_marked_open": 1,
-  "basis": "the source record's facts, source assertions"
+  "basis": "the advisory record's facts, source assertions"
  },
  "missing_originals": [
   {
@@ -81,13 +81,13 @@
   {
    "id": "MO-03",
    "kind": "read_receipt",
-   "item": "An original-read receipt for the four members (the record states none exists)",
+   "item": "A Claude original-read receipt for the four members (the record states none exists)",
    "example": "map",
    "state": "to_come",
    "gap": "BR-GAP-09"
   }
  ],
- "missing_originals_note": "Typed here because the registry generator makes rows only from the baseline and delta source-pin records. not_provided: the example names it but no copy was supplied; link_pending: a link exists and was not opened; to_come: a read not yet done. None was read; a card never quotes from them.",
+ "missing_originals_note": "Typed here because the registry generator makes rows only from the Dot's baseline and delta source-pin records. not_provided: the example names it but no copy was supplied; link_pending: a link exists and was not opened; to_come: a read not yet done. None was read; a card never quotes from them.",
  "live_sources": [
   {
    "id": "portal.app_customer_requirement",
@@ -200,7 +200,9 @@
     "layer": "comprehension",
     "question": "What does the Customer Brand Requirements map cover, and what is its status?",
     "criterion": "Attribute to Draft 6 (16 Oct 2026), Laura Abate's Customer Brand Requirements map: regulatory requirements, material-change review and claim substantiation, 12 stages and 15 stated rules. State that the stages and rules are stakeholder proposals, not approved decisions or verified current implementation, and that the draft was made without a portal code audit. A card answer that treats a rule as decided or implemented fails.",
-    "originals": [],
+    "originals": [
+     "co-eb9a6a206832"
+    ],
     "live_sources": [],
     "cites": [
      "advisory:51cf697a454b"
@@ -211,7 +213,9 @@
     "layer": "comprehension",
     "question": "Who enters a customer's brand requirements and who reviews them, and how is a requirement scoped?",
     "criterion": "State the map's proposal (not decided): requirements are scoped to customer, brand/product line and product exceptions, with category, source document, date, contact and completeness/currentness; account managers enter them and Regulatory reviews or is notified. Attribute to the map; say whether the Portal holds this today is unverified.",
-    "originals": [],
+    "originals": [
+     "co-eb9a6a206832"
+    ],
     "live_sources": [
      "portal.app_customer_requirement",
      "portal.app_project_requirement"
@@ -227,7 +231,9 @@
     "layer": "comprehension",
     "question": "What does the map say a compliance document is attached to, and what must it record?",
     "criterion": "State the proposal: compliance documents attach to supplier-specific raw-material R numbers, with type, supported claims, issue/expiry dates and reviewer. Attribute to the map; do not state that the CoA fields already hold the claims or reviewer.",
-    "originals": [],
+    "originals": [
+     "co-eb9a6a206832"
+    ],
     "live_sources": [
      "graph_mail.certificates_of_analysis",
      "portal.fm_raw_material"
@@ -243,7 +249,9 @@
     "layer": "comprehension",
     "question": "What does the map say happens when a supplier or material is switched on a product?",
     "criterion": "State the proposal: a supplier/material switch opens a Regulatory review and notifies Quality, including customer-supplied materials, and does not block the PO. Attribute to the map; the answer must not say the PO is blocked.",
-    "originals": [],
+    "originals": [
+     "co-eb9a6a206832"
+    ],
     "live_sources": [
      "portal.app_supplier_product",
      "portal.app_customer_supplied_item"
@@ -259,7 +267,9 @@
     "layer": "comprehension",
     "question": "Which document conditions does the map say gate a batch, and which do not?",
     "criterion": "State the proposal: documents must be reviewed before batching; expiry alerts alone do not block batching. Keep the difference between a reviewed document and an expired one and attribute to the map; not an approved rule.",
-    "originals": [],
+    "originals": [
+     "co-eb9a6a206832"
+    ],
     "live_sources": [
      "graph_mail.certificates_of_analysis"
     ],
@@ -273,7 +283,9 @@
     "layer": "comprehension",
     "question": "What does the map say about formula and artwork approval versions and about claim-affecting changes?",
     "criterion": "State the proposal: pending and final formulas need ingredient lines, allergen notes and supersedes links; derived substantiation is claim by product by material; formula and artwork approvals bind exact versions; claim-affecting material changes reopen formula approval; a pre-production Regulatory review is proposed; CNF tracking is informational and case pack and best-before format are out of scope. Attribute to the map.",
-    "originals": [],
+    "originals": [
+     "co-eb9a6a206832"
+    ],
     "live_sources": [
      "portal.app_formulation",
      "portal.app_formulation_ingredient",
@@ -291,7 +303,9 @@
     "layer": "comprehension",
     "question": "What is the Three Ships example in the map, and how reliable is it?",
     "criterion": "Report it as an attributed Regulatory account: a supplier switch is said to have introduced animal-derived content into a vegan product, found through a later RSPO-document request, with approximate dates and no supporting source bundle. It is not an independently verified incident; the answer must not state it as fact or name a date as exact.",
-    "originals": [],
+    "originals": [
+     "co-eb9a6a206832"
+    ],
     "live_sources": [],
     "cites": [
      "advisory:51cf697a454b"
@@ -302,7 +316,9 @@
     "layer": "comprehension",
     "question": "What do the map's own consistency checks show, and are they test results?",
     "criterion": "State that the companion data model has 12 states, 15 rules, 17 records, 11 relations, 8 identifiers and 5 checks, four marked fail and one open by the draft. These are source assertions by the draft, not fresh runtime evaluations; the answer must not report them as a run of this product.",
-    "originals": [],
+    "originals": [
+     "co-eb9a6a206832"
+    ],
     "live_sources": [],
     "cites": [
      "advisory:51cf697a454b"
@@ -310,6 +326,7 @@
    },
    {
     "id": "BR-09",
+    "anchor_gap": "the map is read through its advisory only, which names no customer X, brand Y or product Z (Three Ships is a brand in an attributed account, not a record)",
     "layer": "tracing",
     "question": "Which brand requirements apply to customer X, brand Y and product Z, and are they current?",
     "criterion": "Join Customer, brand/product line, product exceptions and the requirement rows, with date, source document and completeness. Give each requirement with its source and date, or a gap naming the missing link; never a requirement from a different customer or brand, and no currentness claim without a date.",
@@ -328,6 +345,7 @@
    },
    {
     "id": "BR-10",
+    "anchor_gap": "the map is read through its advisory only, which names no claim C or R number (Three Ships is a brand in an attributed account, not a record)",
     "layer": "tracing",
     "question": "Which compliance documents on raw-material R numbers support claim C, and when do they expire?",
     "criterion": "Join claim C to the products and materials that make it, the R numbers and supplier-specific documents with type, supported claims, issue and expiry dates. Name each document with its dates and source, or a gap; a CoA is not a claim-support document unless a record links it.",
@@ -348,6 +366,7 @@
    },
    {
     "id": "BR-11",
+    "anchor_gap": "the map is read through its advisory only, which names no product P (Three Ships is a brand in an attributed account, not a record)",
     "layer": "tracing",
     "question": "Did a supplier or material switch on product P open a Regulatory review and notify Quality?",
     "criterion": "Trace the product's supplier-product change, the Regulatory review it should open and the Quality notification. Report the review and notification if they exist with their records, else the missing link as a gap; no inference that one occurred from the switch alone. The PO is not blocked by the switch.",
@@ -364,6 +383,7 @@
    },
    {
     "id": "BR-12",
+    "anchor_gap": "the map is read through its advisory only, which names no batch B (Three Ships is a brand in an attributed account, not a record)",
     "layer": "tracing",
     "question": "May batch B run, given the review state and expiry of its materials' compliance documents?",
     "criterion": "Trace batch B to its materials, their compliance documents and review status. State per material whether the document is reviewed; an expiry alert is shown but does not by itself block. Where a document, review or link is unseen, report the gap and make no release decision; the product does not release a batch.",
@@ -382,6 +402,7 @@
    },
    {
     "id": "BR-13",
+    "anchor_gap": "the map is read through its advisory only, which names no product P (Three Ships is a brand in an attributed account, not a record)",
     "layer": "tracing",
     "question": "Which formula and artwork versions are approved for product P, and which versions did they supersede?",
     "criterion": "Trace the approved formula and artwork versions with approval record and supersedes chain. Name each by exact version and approver, or the gap; an approval binds one exact version, never 'latest'.",
@@ -400,6 +421,7 @@
    },
    {
     "id": "BR-14",
+    "anchor_gap": "the map is read through its advisory only, which names no product P (Three Ships is a brand in an attributed account, not a record)",
     "layer": "actual_case_answerability",
     "question": "Which claims does a material change on product P reopen for formula approval?",
     "criterion": "Can the product answer today: list the claims the changed material supports (claim by product by material) and whether formula approval is reopened. Expected: abstain with the named gaps (claim substantiation, material-change link, reopen rule) unless they exist; never present the map's proposed rule as a fact.",
@@ -421,7 +443,9 @@
     "layer": "actual_case_answerability",
     "question": "Was the Three Ships supplier switch reviewed, and was Quality told, before the product shipped?",
     "criterion": "Can the product answer from the originals of the Three Ships case today: no, the account has no supporting source bundle. Expected: abstain, attribute the account to Regulatory, and list the missing originals; do not confirm or date the incident.",
-    "originals": [],
+    "originals": [
+     "co-eb9a6a206832"
+    ],
     "live_sources": [
      "portal.app_supplier_product"
     ],

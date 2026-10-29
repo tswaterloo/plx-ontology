@@ -1,4 +1,4 @@
-"""The live checks' warm store (``operating.warm_store``): two verifier sessions over one
+"""The live verifier's warm store (``operating.warm_store``): two verifier sessions over one
 ``PLX_WORKBENCH_STATE_DIR`` carry the session mirror and projection, so the second
 session's producer applies a changed source row incrementally (digest equal to a cold
 build) and its consumer opens that generation instead of building; without the setting the
@@ -16,7 +16,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from verify import live_verify
+from devloop import live_verify
 from integrations.workbench_read_api import WorkbenchReadApiClient
 from ontology.tests.test_projection import BASE, KEY, FakeWorkbench
 from operating import host, warm_store
@@ -25,7 +25,7 @@ from scripts import ontology_projection_probe as probe
 from scripts.mirror_measure import ordered_full_coverage
 
 ROOT = Path(__file__).resolve().parents[2]
-SPECS = {name: json.loads((ROOT / "verify" / "live-checks" / f"{name}.json").read_text())
+SPECS = {name: json.loads((ROOT / "devloop" / "live-checks" / f"{name}.json").read_text())
          for name in ("mirror.full_coverage", "ontology.session_projection")}
 MIRROR, PRODUCER = SPECS["mirror.full_coverage"], SPECS["ontology.session_projection"]
 FILLED = {"result": "pass", "exit_code": 0, "detail": {"fields": {}}}
@@ -204,7 +204,7 @@ class KilledRunTest(unittest.TestCase):
             # The next run restores both warm; a consumer adopts them, no producer runs.
             warm, detail = WarmStore.open(environ, clock=lambda: later)
             session = live_verify.SessionState(ROOT, warm=warm, environ=environ)
-            consumer = json.loads((ROOT / "verify" / "live-checks" /
+            consumer = json.loads((ROOT / "devloop" / "live-checks" /
                                    "ontology.projection.json").read_text())
             specs = {**SPECS, "ontology.projection": consumer}
             plan = session.plan(consumer, specs)
@@ -273,7 +273,7 @@ class RefusalTest(unittest.TestCase):
                          (None, {"status": "state_dir_unset", "setting": STATE_ENV}))
         self.assertEqual(WarmStore.open({STATE_ENV: "relative/dir"})[1]["status"],
                          "state_dir_not_absolute")
-        self.assertEqual(WarmStore.open({STATE_ENV: str(ROOT / "verify")})[1]["status"],
+        self.assertEqual(WarmStore.open({STATE_ENV: str(ROOT / "devloop")})[1]["status"],
                          "state_dir_inside_git_tree")
         err = io.StringIO()
         with contextlib.redirect_stderr(err):

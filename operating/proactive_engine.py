@@ -17,6 +17,11 @@ read at a time), so ``scanned`` is the whole store; each says ``complete``, ``tr
   (when not already late), two need dates or two statuses across one order's settled
   identities are counted ``not_evaluated``, never raised; the result's ``counts`` (and
   the run summary's ``po_lateness``) say how many were evaluated, late and at risk;
+* ``systems_disagree`` (raised by ``late_or_unconfirmed_po``): two linked records of one
+  purchase order disagree (``po_status.read``'s conflicts: receipt state, received
+  quantity, requested-by date), ONE gap per pair and field naming both values and who
+  governs; each side's citations are their own group, so a reader of one side never
+  sees it. A BC side that governs receipt state also joins the late gap's evidence;
 * ``po_receipt_quantity_mismatch``: the received quantity of a PO line (its receipt
   lines through settled ``receives_line`` links, one quantity per receipt line identity)
   above the ordered one, or below it on an order recorded as fully received (closed
@@ -66,8 +71,14 @@ granted, at markings it holds, and pass the host's per-item decision (a gap of a
 granted; none recorded: never shown); the counts it
 returns are over what that reader may read.
 
+``refresh`` is the full scheduled run (every detector: the customer PO coverage scan and
+the tool caller's ``plx.process``/``plx.object`` reads as the run principal), shared by
+``main`` and the host's post-build hook (``after_build(scheduled=)``), within a time
+budget (``REFRESH_BUDGET_SECONDS``): a detector the budget stops is ``truncated`` with
+reason ``time_budget``, never ``complete``, and leaves its gaps as they were.
+
 ``python3 -m operating.proactive_engine`` is the live check's command
-(``verify/live-checks/case.proactive_engine.json``): one host capture cycle, the engine
+(``devloop/live-checks/case.proactive_engine.json``): one host capture cycle, the engine
 over its projection, then the inbox read per reader; counts and enums only. Evidence
 label: that of the captures it reads (live-unverified until the verifier runs it).
 """
@@ -86,6 +97,7 @@ import os
 from pathlib import Path
 import sqlite3
 import sys
+import time
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from ontology import store as ostore
@@ -98,7 +110,13 @@ SCHEMA = "plx-proactive-engine/v1"
 INBOX_SCHEMA = "plx-gap-inbox/v1"
 MAX_SHOWN = 100
 CARD_BOUND = 500
+VALUES_CHUNK = 500   # object ids per value read (``_Store.values``)
 KEEP_RUNS = 100
+# The host cycle's full refresh (``after_build(scheduled=)``) starts no detector and makes
+# no tool call after this many seconds: the cycle lock is not held unboundedly. Sized for a
+# ~2.5M-object store (store-only detectors alone ~4 min there) next to a 1-4 h build.
+REFRESH_BUDGET_SECONDS = 1500
+TIME_BUDGET = "time_budget"
 SETTLED = ("verified", "reviewed")
 CONFIRMING = ("verified", "reviewed", "corroborated")
 QC_TYPES = ("RelPublicAppIncomingQcRecord", "QualityRecord")
@@ -111,11 +129,14 @@ STATES = ("open", "acknowledged", "resolved")
 # Detectors whose claim rests on what sources do not hold (an absence), so on the run
 # principal's grant: their gaps show only to a reader granted every recorded audience.
 REQUIRES_GRANT = frozenset({"orders_at_risk"})
+# Gap kinds whose wording sums over the whole run (money at stake): an open one is reworded
+# only by a ``complete`` run of its detector.
+WHOLE_ONLY = frozenset({"po_impact_margin"})
 LATENESS_GRAPH = Path(__file__).resolve().parents[1] / "ontology" / "schema" / "process" \
     / "po_delivery_window.json"
 UNREADABLE = '["unreadable"]'   # a markings value no reader holds (fail closed)
 CONFIRMATION_TYPE = "SupplierConfirmation"
-CONFIRMATION_LINK = "SupplierConfirmation.confirms"   # confirmation -> the order it confirms
+CONFIRMATION_LINK = po_status.CONFIRMS   # confirmation -> the order it confirms
 CONFIRMED_DATE = "delivery_date"
 DRAFT_LABEL = "Draft supplier message (not sent)"
 DRAFT_STATUS = "draft_not_sent"
@@ -136,6 +157,9 @@ class _Store:
             raise ostore.StoreError("store_missing")
         self.conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
+        # No query of a detector may build a transient index over a whole table: on a
+        # store of millions of value cells that index is a multi-GB temp file and minutes.
+        self.conn.execute("PRAGMA automatic_index = OFF")
         problem = ostore.format_problem(self.conn)
         if problem is not None:
             self.conn.close()
@@ -150,24 +174,38 @@ class _Store:
 
     def values(self, types: Sequence[str], props: Sequence[str] | None = None, *,
                objects: Sequence[str] | None = None) -> dict[str, dict[str, Any]]:
-        """object_id -> {"type", "props": {property: [row, ...]}}; ``objects``: only these."""
+        """object_id -> {"type", "props": {property: [row, ...]}}; ``objects``: only these.
+
+        Object first, in chunks of ``VALUES_CHUNK`` ids: the records of the types (not
+        removed) are listed by the type index, then each chunk's values are read by object
+        id (version, source, cell). One query over a whole type let the planner start from
+        the property instead and index every value cell of the store on the fly (a
+        multi-GB temp file; the home's engine run took 23 minutes on 2.5M objects)."""
+        params: dict[str, Any] = {"types": json.dumps(list(types))}
+        listed = ("SELECT o.object_id FROM objects o "
+                  "WHERE o.object_type IN (SELECT value FROM json_each(:types)) AND NOT "
+                  + ostore.removed_at_sql("o.object_id"))
+        if objects is not None:
+            listed += " AND o.object_id IN (SELECT value FROM json_each(:objects))"
+            params["objects"] = json.dumps(list(objects))
+        ids = [row[0] for row in self.conn.execute(listed + " ORDER BY o.object_id", params)]
         sql = ("SELECT o.object_id, o.object_type, v.property, v.value_type, v.value, v.unit, "
                "v.quantity_role, v.l1_handle, v.markings FROM objects o "
                "JOIN object_values v ON v.object_id = o.object_id "
-               "WHERE o.object_type IN (SELECT value FROM json_each(:types)) "
-               "AND v.superseded_at IS NULL AND NOT " + ostore.removed_at_sql("o.object_id"))
-        params: dict[str, Any] = {"types": json.dumps(list(types))}
+               "WHERE o.object_id IN (SELECT value FROM json_each(:chunk)) "
+               "AND v.superseded_at IS NULL")
+        chunk_params: dict[str, Any] = {}
         if props is not None:
             sql += " AND v.property IN (SELECT value FROM json_each(:props))"
-            params["props"] = json.dumps(list(props))
-        if objects is not None:
-            sql += " AND o.object_id IN (SELECT value FROM json_each(:objects))"
-            params["objects"] = json.dumps(list(objects))
+            chunk_params["props"] = json.dumps(list(props))
+        sql += " ORDER BY o.object_id, v.property, v.l1_handle"
         out: dict[str, dict[str, Any]] = {}
-        for row in self.conn.execute(sql + " ORDER BY o.object_id, v.property, v.l1_handle",
-                                     params):
-            entry = out.setdefault(row["object_id"], {"type": row["object_type"], "props": {}})
-            entry["props"].setdefault(row["property"], []).append(dict(row))
+        for start in range(0, len(ids), VALUES_CHUNK):
+            chunk_params["chunk"] = json.dumps(ids[start:start + VALUES_CHUNK])
+            for row in self.conn.execute(sql, chunk_params):
+                entry = out.setdefault(row["object_id"],
+                                       {"type": row["object_type"], "props": {}})
+                entry["props"].setdefault(row["property"], []).append(dict(row))
         return out
 
     def links(self, types: Sequence[str], tiers: Sequence[str] | None = None
@@ -239,22 +277,7 @@ def _cites(rows: Iterable[Mapping[str, Any]], *extra_markings: str | None) -> li
     return list(out.values())
 
 
-def _clusters(pairs: Iterable[tuple[str, str]], members: Iterable[str]) -> dict[str, str]:
-    """member -> its cluster's least object id, joining the pairs (settled identities)."""
-    parent: dict[str, str] = {m: m for m in members}
-
-    def find(x: str) -> str:
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    for a, b in pairs:
-        if a in parent and b in parent:
-            ra, rb = find(a), find(b)
-            if ra != rb:
-                parent[max(ra, rb)] = min(ra, rb)
-    return {m: find(m) for m in parent}
+_clusters = po_status.clusters   # member -> its settled cluster's least object id
 
 
 def _day(raw: Any) -> date | None:
@@ -266,7 +289,12 @@ def _day(raw: Any) -> date | None:
 
 def _gap(kind: str, detector: str, object_id: str, object_type: str, key: str, *,
          summary: str, missing: str, why: str, priority: str, about: tuple[str, str],
-         groups: Sequence[Sequence[Cite]], extra: Sequence[Cite] = ()) -> dict[str, Any] | None:
+         groups: Sequence[Sequence[Cite]], extra: Sequence[Cite] = (),
+         days_late: int | None = None) -> dict[str, Any] | None:
+    """``days_late``: the days a purchase order open by the one status definition is past its
+    requested-by date (None: not late; ``late_order``'s line-level lateness is another gap
+    kind and never carries it); the inbox lists every late purchase order first, longest late
+    first, whatever its kind's priority."""
     groups = [list(group) for group in groups]
     if not groups or not all(groups):
         return None   # a claim with an uncited part is not raised
@@ -279,7 +307,8 @@ def _gap(kind: str, detector: str, object_id: str, object_type: str, key: str, *
             "groups": groups, "extra": list(extra),
             "follow_up": {"object_id": object_id, "missing": pg._clip(missing, 480),
                           "why": why, "who_can_answer": who, "state": "unknown",
-                          "priority": priority}}
+                          "priority": priority,
+                          **({"days_late": days_late} if days_late is not None else {})}}
 
 
 Part = tuple  # (object_id, canonical markings): one record a skip's cause reads
@@ -359,114 +388,68 @@ def declared_qc_links() -> tuple[str, ...]:
 # --------------------------------------------------------------------------- detectors
 
 PO_STATUS_PROPS = tuple(po_status.SOURCE_OF)
-
-
-def _line_quantities(st: _Store, lines_of: Mapping[str, list[tuple[str, str]]],
-                     members: Iterable[str]) -> dict[str, tuple[list, list[dict[str, Any]],
-                                                              list[str]]]:
-    """Per PO record its own lines' ``(ordered, received, unit)`` for ``po_status``, the
-    quantity rows read and the marks of the links that reach them. A line whose quantity
-    rows disagree or a received unit other than the ordered one is ``UNREAD``."""
-    wanted = sorted({line for m in members for line, _ in lines_of.get(m, [])})
-    lines = st.values(("PurchaseOrderLine",), ("ordered_quantity", "received_quantity"),
-                      objects=wanted) if wanted else {}
-    out = {}
-    for member in members:
-        triples, read, marks = [], [], []
-        for line_id, link_marks in lines_of.get(member, []):
-            props = (lines.get(line_id) or {"props": {}})["props"]
-            want = _one_quantity(props.get("ordered_quantity", []))
-            got = _one_quantity(props.get("received_quantity", []))
-            read += props.get("ordered_quantity", []) + props.get("received_quantity", [])
-            marks.append(link_marks)
-            if po_status.UNREAD in (want, got) or (want and got and want[1] != got[1]):
-                triples.append((po_status.UNREAD,) * 3)
-            else:
-                triples.append((want[0] if want else None, got[0] if got else None,
-                                want[1] if want else None))
-        out[member] = (triples, read, marks)
-    return out
-
-
-def _one_quantity(rows: Sequence[Mapping[str, Any]]) -> Any:
-    """The one (number, unit) the rows state (unit None when none is recorded); None: no
-    row, or only rows whose value is null (the Portal stores a null received quantity
-    until a receipt posts, and its own sum counts that as 0, which ``po_status`` does for
-    a None received); ``UNREAD``: a non-null value that does not parse, or disagreeing."""
-    found = {(pg._decimal(r["value"]), unit_token(r["unit"]))
-             for r in rows if r["value"] is not None}
-    if not found:
-        return None
-    if len(found) > 1 or any(number is None for number, _ in found):
-        return po_status.UNREAD
-    return found.pop()
-
-
-def _po_clusters(st: _Store, props: Sequence[str]) -> tuple[
-        dict[str, dict[str, Any]], dict[str, list[str]], dict[str, list[str]]]:
-    """PurchaseOrder records with ``props``, their settled identity clusters (root ->
-    members) and each cluster's identity link marks."""
-    pos = st.values(("PurchaseOrder",), props)
-    same = st.links(("PurchaseOrder.same_record_as",), SETTLED)
-    root = _clusters(((l["from_object"], l["to_object"]) for l in same), pos)
-    identity: dict[str, list[str]] = defaultdict(list)
-    for link in same:
-        if link["from_object"] in root:
-            identity[root[link["from_object"]]].append(link["markings"])
-    clusters: dict[str, list[str]] = defaultdict(list)
-    for object_id, top in root.items():
-        clusters[top].append(object_id)
-    return pos, clusters, identity
-
-
-def _po_state(pos: Mapping[str, Mapping[str, Any]], members: Sequence[str],
-              quantities: Mapping[str, tuple[list, list[dict[str, Any]], list[str]]]
-              ) -> tuple[po_status.PoStatus, list[dict[str, Any]], list[str]]:
-    """One PO across its settled records by the shared definition
-    (``po_status.record`` per record, ``combine`` across them), the status and line
-    quantity rows it rests on and the marks of the line links read."""
-    statuses, rows, marks = [], [], []
-    for member in members:
-        props = pos[member]["props"]
-        triples, read, line_marks = quantities.get(member, ([], [], []))
-        status = po_status.record(
-            {prop: [r["value"] for r in props.get(prop, [])] for prop in PO_STATUS_PROPS},
-            triples)
-        statuses.append(status)
-        rows += [r for prop in PO_STATUS_PROPS for r in props.get(prop, [])]
-        if props.get("status"):   # the Portal record's lines decided its quantities
-            rows += read
-            marks += line_marks
-    return po_status.combine(statuses), rows, marks
+# the follow-up field naming the order an item is about (its key and its record's rank):
+# never shown, read by ``read_inbox`` to list one item per order for each reader
+_ORDER = "order"
 
 
 def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
+    """Each settled PO read by the one purchase-order reader (``po_status.read`` over
+    ``po_status.StoreSource``: status, lines, FM QC log, ranked need date, promise and
+    verdict); this rule adds only its counts, skips, citations and gaps."""
     name = "late_or_unconfirmed_po"
-    pos, clusters, identity = _po_clusters(st, (*PO_STATUS_PROPS, "expected_date",
-                                                "po_number"))
-    confirmations = st.values(("SupplierConfirmation",), ("delivery_date",))
-    lines_of: dict[str, list[tuple[str, str]]] = defaultdict(list)
-    for link in st.links(("PurchaseOrderLine.line_of",), CONFIRMING):
-        lines_of[link["to_object"]].append((link["from_object"], link["markings"]))
-    confirms_of: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for link in st.links(("SupplierConfirmation.confirms",)):
-        confirms_of[link["to_object"]].append(link)
-    quantities = _line_quantities(st, lines_of, [m for m in pos if pos[m]["props"].get(
-        "status")])
+    src = po_status.StoreSource(st)
     skipped = _Skips()
     counts: Counter = Counter()
     classes: Counter = Counter()
     gaps = []
-    for top, members in sorted(clusters.items()):
+    disagreeing: set[tuple[str, frozenset]] = set()
+    # one order across systems: a settled cluster and every record it is compared with
+    # (``po_status.compared_twin``), joined transitively (one BC order, two Portal twins:
+    # one order). Each record's late or unconfirmed item is kept with its order key and
+    # rank; ``read_inbox`` shows one per order among those its reader may open (``_ORDER``)
+    reads = [po_status.read(src, top, as_of) for top, _ in sorted(src.clusters.items())]
+    joined = [(po.members[0], other) for po in reads
+              for other in (*po.members[1:], *po.date_twins)]
+    root = po_status.clusters(joined, [m for po in reads
+                                       for m in (*po.members, *po.date_twins)])
+    counted: dict[str, set[str]] = defaultdict(set)
+    order_class: dict[str, tuple[list, str]] = {}
+    for po in reads:
+        members = po.members
+        order = root.get(members[0], members[0])
+        # BC's record governs; among others the least record id, so the choice is pinned
+        rank = [0 if any(po_status.system_of(m) == po_status.RECEIPT_AUTHORITY
+                         for m in members) else 1, min(members)]
+
+        def order_gap(gap: Any, _order: str = order, _rank: list = rank) -> None:
+            if gap is not None:
+                gap["follow_up"][_ORDER] = {"key": _order, "rank": _rank}
+                gaps.append(gap)
+
+        def count(key: str, _order: str = order) -> int:
+            if key in counted[_order]:
+                return 0
+            counted[_order].add(key)
+            return 1
+        marks = po.identity_marks
+        state = po.status
+        # one class per order: its governing record's (BC first, else the least id)
+        if order not in order_class or rank < order_class[order][0]:
+            order_class[order] = (rank, state.cls)
+        for conflict in po.conflicts:
+            records = frozenset(r for side in conflict["sides"] for r in side["records"])
+            if not records or (conflict["field"], records) in disagreeing:
+                continue   # the same disagreement read again from the other record's side
+            disagreeing.add((conflict["field"], records))
+            gaps.append(_systems_disagree(name, conflict, records, [*marks, *po.marks]))
+
         def rows(prop: str) -> list[dict[str, Any]]:
-            return [r for m in members for r in pos[m]["props"].get(prop, [])]
-        marks = identity.get(top, [])
-        state, state_rows, line_marks = _po_state(pos, members, quantities)
-        classes[state.cls] += 1
+            return [r for m in members for r in src.props(m).get(prop, [])]
         # what every skip of this order read: its records and the identity links joining
         # them, their status, line quantity and date values (``skip``'s cause)
         read: list[Part] = [(m, _markings(*marks)) for m in members] + _parts(
-            [*state_rows, *rows("expected_date")], *marks, *line_marks)
+            [*po.evidence, *rows("expected_date")], *marks, *po.marks)
 
         def skip(reason: str, *more: Part) -> None:
             skipped.note(reason, members, [*read, *more])
@@ -475,38 +458,36 @@ def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
             continue
         if state.cls != po_status.OPEN:
             continue
-        rep = min(m for m in members if any(pos[m]["props"].get(p) for p in PO_STATUS_PROPS))
-        need_rows: dict[date, list[dict[str, Any]]] = defaultdict(list)
-        for row in rows("expected_date"):
-            day = _day(row["value"])
-            if day is None:
-                skip("date_unparseable")
-                continue
-            need_rows[day].append(row)
-        if len(need_rows) > 1:
-            skip("need_date_disputed")
-            continue
-        if not need_rows:
+        rep = min(m for m in members if any(src.props(m).get(p) for p in PO_STATUS_PROPS))
+        for _ in po.need.unparseable:
+            skip("date_unparseable")
+        verdict, why = po.verdict
+        if why == "no_requested_date":
             # the requested-by date is the reference or it is missing: never a line's or
             # the supplier's date in its place
             skip("no_need_date")
             continue
-        (need, need_found), = need_rows.items()
-        need_cites = _cites(need_found, *marks)
+        if why == "need_date_disputed":
+            skip("need_date_disputed")
+            continue
+        need = po.need.hi
+        need_cites = _cites(po.need.governing, *marks)
         # every status record and line quantity the verdict rests on is its own evidence:
         # a reader who may not open one of them sees no gap (none is an alternative)
-        status_cites = [[cite] for cite in _cites(state_rows, *marks, *line_marks)] or [[]]
-        number = _cites(rows("po_number"), *marks)
-        links = [link for m in members for link in confirms_of.get(m, [])]
+        status_cites = [[cite] for cite in _cites(po.evidence, *marks, *po.marks)] or [[]]
+        number = _cites(rows("po_number"), *marks) + _cites(
+            [r for t in po.date_twins for r in src.props(t).get("po_number", [])],
+            *marks, *po.marks)
+        links = src.confirm_links(members)
         linked = [(link["from_object"], _markings(link["markings"], *marks)) for link in links]
-        late_now = po_status.lateness_verdict(state, need, None, as_of)[0] == po_status.LATE
+        late_now = verdict == po_status.LATE
         if late_now or not links:   # decided without a confirmation (none is at risk)
-            counts["evaluated"] += 1
-            counts["late"] += late_now
+            counts["evaluated"] += count("evaluated")
+            counts["late"] += count("late") if late_now else 0
         if not links:
             if need <= as_of:
-                counts["unconfirmed"] += 1
-                gaps.append(_gap(
+                counts["unconfirmed"] += count("unconfirmed")
+                order_gap(_gap(
                     "unconfirmed_po", name, rep, "PurchaseOrder", "unconfirmed",
                     summary=f"An open purchase order needed by {need.isoformat()} has no "
                             "supplier confirmation",
@@ -515,38 +496,35 @@ def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
                     why="The order is open, its need date has come and no supplier "
                         "confirmation is linked to it in the store.",
                     priority="high", about=("PurchaseOrder", "expected_date"),
-                    groups=[need_cites, *status_cites], extra=number))
+                    groups=[need_cites, *status_cites], extra=number,
+                    days_late=(as_of - need).days if late_now else None))
             continue
         if late_now:   # late on the requested-by date alone, whatever was confirmed
-            gaps.append(_gap(
+            order_gap(_gap(
                 "late_po", name, rep, "PurchaseOrder", "overdue",
                 summary=f"An open purchase order is past its need date {need.isoformat()}",
                 missing=f"When will the purchase order needed by {need.isoformat()} be "
                         "received?",
                 why="The order is still open after its need date.",
                 priority="medium", about=("PurchaseOrder", "expected_date"),
-                groups=[need_cites, *status_cites], extra=number))
+                groups=[need_cites, *status_cites], extra=number,
+                days_late=(as_of - need).days))
             continue
         if any(link["tier"] not in CONFIRMING for link in links):
             skip("confirmation_unsettled", *linked)
             continue   # a lead may be the confirmation: at risk or not is not known
-        late, undated = [], False
-        for link in links:
-            dated = [(d, r) for r in (confirmations.get(link["from_object"]) or {"props": {}})
-                     ["props"].get("delivery_date", []) if (d := _day(r["value"])) is not None]
-            if not dated:
-                undated = True
-                continue
-            last = max(d for d, _ in dated)
-            if po_status.lateness_verdict(state, need, last, as_of)[0] == po_status.AT_RISK:
-                late.append((last, _cites([r for d, r in dated if d == last],
-                                          link["markings"])))
-        if late or not undated:
-            counts["evaluated"] += 1
-        if late:
-            counts["at_risk"] += 1
-            shown = max(d for d, _ in late).isoformat()
-            gaps.append(_gap(
+        dated = {id(link) for _, link in po.promise.items}
+        undated = any(id(link) not in dated for link in links)
+        if verdict == po_status.AT_RISK:
+            counts["evaluated"] += count("evaluated")
+            counts["at_risk"] += count("at_risk")
+            shown = po.promise.latest.isoformat()
+            by_link: dict[int, tuple[dict[str, Any], list]] = {}
+            for row, link in po.promise.items:
+                if row["value"] is not None and po_status.day_of(row["value"]) \
+                        == po.promise.latest:
+                    by_link.setdefault(id(link), (link, []))[1].append(row)
+            order_gap(_gap(
                 "late_po", name, rep, "PurchaseOrder", "confirmed_after_need_date",
                 summary=f"The supplier confirmed delivery on {shown}, after the need date "
                         f"{need.isoformat()}",
@@ -555,16 +533,64 @@ def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
                 why="A linked supplier confirmation states a delivery date later than the "
                     "order's need date.",
                 priority="high", about=("PurchaseOrder", "expected_date"),
-                groups=[need_cites, *status_cites, *[cites for _, cites in late]],
+                groups=[need_cites, *status_cites,
+                        *[_cites(found, link["markings"]) for link, found in by_link.values()]],
                 extra=number))
         elif undated:
             skip("confirmation_undated", *linked)
+        elif po.promise.reason == "promises_disagree":
+            # the confirmations' dates disagree and no document date orders them
+            skip("promises_disagree", *linked)
+        else:
+            counts["evaluated"] += count("evaluated")
     result = _result(gaps, not_evaluated=skipped)
-    result["counts"] = {"pos": len(clusters),
+    classes.update(cls for _rank, cls in order_class.values())
+    result["counts"] = {"pos": len(order_class),
                         "classes": {cls: classes.get(cls, 0) for cls in po_status.CLASSES},
                         **{key: counts.get(key, 0) for key in (
                             "evaluated", "late", "at_risk", "unconfirmed")}}
     return result
+
+
+_FIELD_WORDS = {"receipt_state": "whether it is fully received",
+                "received_quantity": "the quantity received",
+                "expected_date": "the requested-by date"}
+_STATE_WORDS = {po_status.FULLY_RECEIVED: "fully received",
+                po_status.OPEN_LINES: "open lines still outstanding"}
+
+
+def _systems_disagree(name: str, conflict: Mapping[str, Any], records: Iterable[str],
+                      marks: Sequence[str]) -> dict[str, Any] | None:
+    """A ``systems_disagree`` gap: two linked records of one purchase order state different
+    values (``po_status.read``'s conflict). Each side's cited records are their own
+    evidence group, so a reader who may not open either side sees no gap; the summary
+    names both values and who governs, never one picked silently."""
+    field, governs = conflict["field"], conflict["governs"]
+    sides = conflict["sides"]
+    unit = f" {conflict['unit']}" if conflict.get("unit") else ""
+
+    def said(side: Mapping[str, Any]) -> str:
+        value = side["value"]
+        return (_STATE_WORDS.get(value, value) if field == "receipt_state"
+                else f"{value}{unit}")
+    groups = [_cites(side["items"], *marks, *conflict.get("marks", ())) for side in sides]
+    rule = ("BC lines govern receipt state" if field != "expected_date" and governs
+            else "the declared date precedence governs" if governs else "no system governs")
+    subject = next((side["records"][0] for side in sides
+                    if side["system"] == governs and side["records"]), min(records))
+    return _gap(
+        "systems_disagree", name, subject, "PurchaseOrder",
+        f"{field}|{'|'.join(sorted(records))}",
+        summary=(f"Systems disagree on {_FIELD_WORDS[field]} of a purchase order: "
+                 + "; ".join(f"{side['system']} says {said(side)}" for side in sides)
+                 + f" ({rule})"),
+        missing=f"Which record of this purchase order is right about {_FIELD_WORDS[field]}, "
+                "and can the other one be corrected?",
+        why="Two linked records of the same purchase order state different values; the "
+            "answer cites both and names the one that governs.",
+        priority="medium",
+        about=("PurchaseOrder", "expected_date" if field == "expected_date" else "status"),
+        groups=groups)
 
 
 def _quantity(rows: Sequence[Mapping[str, Any]]) -> tuple[Decimal, str] | None | bool:
@@ -584,12 +610,7 @@ def _po_receipt_quantity_mismatch(st: _Store, as_of: date) -> dict[str, Any]:
     name = "po_receipt_quantity_mismatch"
     ordered = st.values(("PurchaseOrderLine",), ("ordered_quantity",))
     received = st.values(("ReceiptLine",), ("received_quantity",))
-    pos = st.values(("PurchaseOrder",), PO_STATUS_PROPS)
-    po_of = defaultdict(list)
-    lines_of: dict[str, list[tuple[str, str]]] = defaultdict(list)
-    for link in st.links(("PurchaseOrderLine.line_of",), CONFIRMING):
-        po_of[link["from_object"]].append(link["to_object"])
-        lines_of[link["to_object"]].append((link["from_object"], link["markings"]))
+    src = po_status.StoreSource(st)
     twins = st.links(("ReceiptLine.same_record_as",), SETTLED)
     root = _clusters(((l["from_object"], l["to_object"]) for l in twins), received)
     identity: dict[str, list[str]] = defaultdict(list)
@@ -673,13 +694,14 @@ def _po_receipt_quantity_mismatch(st: _Store, as_of: date) -> dict[str, Any]:
         if got == want[0]:
             continue
         closed = []
-        for po in po_of.get(line, []):
-            if po not in pos:
+        for po in src.po_of.get(line, []):
+            if po not in src.pos:
                 continue
-            state, rows_read, marks = _po_state(
-                pos, [po], _line_quantities(st, lines_of, [po]))
-            if state == po_status.PoStatus(po_status.CLOSED, po_status.RECEIVED):
-                closed += [[cite] for cite in _cites(rows_read, *marks)]
+            # the order by the one reader: its settled twins' status, lines and FM QC log
+            found = po_status.read(src, po, dates=False)
+            if found.status == po_status.PoStatus(po_status.CLOSED, po_status.RECEIVED):
+                closed += [[cite] for cite in _cites(found.evidence, *found.identity_marks,
+                                                     *found.marks)]
         if not closed:
             continue   # still receiving (or not known closed): not yet a gap
         gaps.append(_gap(
@@ -746,7 +768,7 @@ def _order_without_customer_po(st: _Store, coverage: Mapping[str, Any] | None
                                ) -> dict[str, Any]:
     name = "order_without_customer_po"
     if coverage is None:
-        return _result([], status="not_configured")
+        return _result([], status="not_configured", reasons=["coverage_not_given"])
     completeness = coverage.get("completeness") or {}
     versions = st.versions("SalesOrder")
     exact = {v["l1_handle"]: v for v in versions}
@@ -799,12 +821,31 @@ def _expired_quote(st: _Store, as_of: date) -> dict[str, Any]:
     return _result(gaps)
 
 
-def _conflicting_quantity(st: _Store, as_of: date) -> dict[str, Any]:
-    rows = st.conn.execute(
-        "SELECT o.object_id, o.object_type, v.property, v.value, v.unit, v.quantity_role, "
-        "v.l1_handle, v.markings FROM objects o JOIN object_values v ON v.object_id = o.object_id "
-        "WHERE v.value_type = 'quantity' AND v.superseded_at IS NULL AND NOT "
+def _quantity_rows(st: _Store) -> list[dict[str, Any]]:
+    """Every current quantity value of a record not removed: the ``object_values`` view's
+    rows of ``value_type`` quantity, read from its tables quantity kind first (the
+    layouts that hold a quantity, then their cells by layout). Through the view the
+    planner scanned every value source of the store (51 s on 2.8M). The order is the
+    view's scan order: value source, then cell, then the field's place in its layout."""
+    found = st.conn.execute(
+        "SELECT s.src, c.field AS cell_field, lf.pos, v.object_id, o.object_type, "
+        "f.property, CASE WHEN c.field IS NULL THEN json_extract(c.value, lf.path) "
+        "ELSE c.value END AS value, k.unit, k.quantity_role, v.l1_handle, k.markings "
+        "FROM value_kinds k CROSS JOIN value_layout_fields lf ON lf.kind = k.kind "
+        "CROSS JOIN value_cells c ON c.layout = lf.layout "
+        "JOIN value_sources s ON s.src = c.src JOIN object_versions v ON v.rowid = s.ver "
+        "JOIN objects o ON o.object_id = v.object_id JOIN value_fields f ON f.field = lf.field "
+        "WHERE k.value_type = 'quantity' AND s.superseded_at IS NULL AND NOT "
         + ostore.removed_at_sql("o.object_id")).fetchall()
+    found.sort(key=lambda r: (r["src"], r["cell_field"] is not None, r["cell_field"] or 0,
+                              r["pos"]))
+    keep = ("object_id", "object_type", "property", "value", "unit", "quantity_role",
+            "l1_handle", "markings")
+    return [{key: row[key] for key in keep} for row in found]
+
+
+def _conflicting_quantity(st: _Store, as_of: date) -> dict[str, Any]:
+    rows = _quantity_rows(st)
     objects = {row["object_id"] for row in rows}
     identity = [link for link in st.links(_identity_link_types(), SETTLED)
                 if link["from_object"] in objects and link["to_object"] in objects]
@@ -1102,7 +1143,7 @@ def _late_order(st: _Store, as_of: date) -> dict[str, Any]:
     name = "late_order"
     found = _late_orders(st, as_of)
     if found is None:
-        return _result([], status="not_configured")
+        return _result([], status="not_configured", reasons=["rule_not_declared"])
     orders, skipped = found
     gaps = []
     for facts in orders:
@@ -1239,24 +1280,44 @@ def _lateness_audiences(st: _Store) -> list[str]:
 
 def _orders_at_risk(st: _Store, as_of: date, call: Callable | None, bound: int
                     ) -> dict[str, Any]:
-    """``orders_at_risk``: one gap per customer order a late PO puts at risk."""
+    """``orders_at_risk``: one gap per customer order a late PO puts at risk, and per late
+    PO one ``po_impact`` gap (the orders at risk it feeds, never money) and, when every one
+    of those orders has a stated margin in one currency, one ``po_impact_margin`` gap with
+    the margin at stake whose every figure is its own finance-marked citation group (only a
+    reader holding finance, who may open every figure, sees it)."""
     if call is None:
-        return _result([], status="not_configured")
+        return _result([], status="not_configured", reasons=["tool_caller_not_given"])
     from . import impact_chain as ic
 
-    found = ic.scan(st, call, bound=bound)
+    found = ic.scan(st, call, bound=bound, margin_values=ic.store_margin_values(st),
+                    landed_values=ic.investigate_landed_values(call))
     risky = found["assessment"].at_risk
     requires = _lateness_audiences(st) if risky else []
     late = found["late"]
     handles = {v["citation"]["l1_handle"] for order in risky
                for v in late[order.worst].cites}
     handles |= {ref for order in risky for ref in order.required_from}
-    held = {v["l1_handle"]: v for v in st.versions(handles=handles)}
     records = {r for order in risky for chain in order.chains if chain.po == order.worst
                for r in chain.records}
     by_object: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for version in st.versions(objects=records):
-        by_object[version["object_id"]].append(version)
+    impact_versions: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for version in st.versions(objects=records | {r for order in risky for chain in order.chains
+                                                  for r in chain.records}):
+        impact_versions[version["object_id"]].append(version)
+        if version["object_id"] in records:
+            by_object[version["object_id"]].append(version)
+    handles |= {v["citation"]["l1_handle"] for order in risky for chain in order.chains
+                for v in late[chain.po].cites}
+    handles |= {r for margin in found["margins"].values() for f in margin.figures
+                for r in (f.refs or (f.ref,))}
+    held = {v["l1_handle"]: v for v in st.versions(handles=handles)}
+
+    def cite_value(fig: Any) -> Cite:
+        """A margin figure's citation at its value's own markings (finance) joined with its
+        record's: a reader who does not hold finance never sees the money claim."""
+        version = held.get(fig.ref)   # a handle the store does not hold: shown to nobody
+        return ((fig.ref, version["object_id"], _markings(version["markings"], fig.markings))
+                if version else (fig.ref, None, UNREADABLE))
 
     def cite(handle: str) -> Cite:
         version = held.get(handle)   # a handle the store does not hold: shown to nobody
@@ -1297,6 +1358,64 @@ def _orders_at_risk(st: _Store, as_of: date, call: Callable | None, bound: int
         else:
             gap["requires"] = requires
             gaps.append(gap)
+    by_key = {order.key: order for order in risky}
+    for impact in found["po_impacts"]:
+        orders = [by_key[k] for k in impact["orders"]]
+        if not orders:
+            continue
+        po = impact["po"]
+        # the PO's lateness values, then every record of each chain from it, each its own
+        # group: a reader who may not open one never sees the claim
+        groups = [[cite(v["citation"]["l1_handle"])] for v in late[po].cites]
+        for order in orders:
+            chain = next(c for c in order.chains if c.po == po)
+            into: dict[str, list[str]] = defaultdict(list)
+            for edge in chain.edges:
+                into[edge.frm].append(edge.markings)
+                into[edge.to].append(edge.markings)
+            groups += [[(v["l1_handle"], record, _markings(v["markings"], *into[record]))
+                        for v in impact_versions.get(record, ())] for record in chain.records]
+            groups.append([cite(ref) for ref in order.required_from])
+        n = len(orders)
+        noun = "sales order" if n == 1 else "sales orders"
+        worst = max(o.days for o in orders)
+        missing = ("Confirm when the late purchase order's material will arrive, or whether "
+                   "the sales orders' required dates still hold")
+        why = pg._clip(f"An item of this purchase order is consumed by assembly orders made or "
+                       f"allocated for {n} {noun} at risk (recorded links, each cited); the "
+                       f"worst is {worst} days at risk (a lower bound: no assembly lead time is "
+                       "recorded).")
+        priority = "high" if worst >= 7 else "medium"
+        plain = _gap("po_impact", "orders_at_risk", po, "PurchaseOrder", "impact",
+                     summary=f"affects {n} {noun}, worst {worst} days at risk",
+                     missing=missing, why=why, priority=priority,
+                     about=("PurchaseOrder", "lateness"), groups=groups)
+        if plain is None:
+            skipped["po_impact_uncited"] += 1
+            continue
+        plain["requires"] = requires
+        gaps.append(plain)
+        margin = impact["margin"]
+        if margin is None or impact["orders_with_margin"] != n:
+            continue   # the money claim needs every order's margin: never a part as the whole
+        figures = [f for order in orders for f in found["margins"][order.key].figures]
+        # a landed-cost engine figure: each cited value it was computed from is its own
+        # finance-marked group (a reader who may not open one never sees the claim)
+        value_groups = [[cite_value(f)] if not f.refs else [cite_value(ic.Figure(
+            f.amount, f.currency, f.unit, ref, f.object_id, f.markings))] for f in figures
+            for ref in (f.refs or (f.ref,))]
+        money = _gap("po_impact_margin", "orders_at_risk", po, "PurchaseOrder", "margin",
+                     summary=f"affects {n} {noun}, {margin['amount']} {margin['currency']} "
+                             f"margin at stake ({margin['basis']}), worst {worst} days at "
+                             "risk",
+                     missing=missing, why=pg._clip(why + " " + ic.MARGIN_BASIS + "."),
+                     priority=priority, about=("PurchaseOrder", "lateness"),
+                     groups=groups + value_groups)
+        if money is None:
+            skipped["po_impact_margin_uncited"] += 1
+        else:
+            money["requires"] = requires
+            gaps.append(money)
     if found["lateness_undetermined"]:
         skipped["lateness_undetermined"] = found["lateness_undetermined"]
     if found["pos_not_checked"]:
@@ -1314,7 +1433,7 @@ def _orders_at_risk(st: _Store, as_of: date, call: Callable | None, bound: int
 def _card_rules(st: _Store, as_of: date, call: Callable | None, bound: int) -> dict[str, Any]:
     """``missing_in_record`` and attested conflicts on the attesting documents' cards."""
     if call is None:
-        return _result([], status="not_configured")
+        return _result([], status="not_configured", reasons=["tool_caller_not_given"])
     documents = [name for name, _field in pg._roster()[0]]
     ids = [row[0] for row in st.conn.execute(
         "SELECT o.object_id FROM objects o WHERE o.object_type IN (SELECT value FROM "
@@ -1419,14 +1538,55 @@ def _open_inbox(path: Path) -> sqlite3.Connection:
     return conn
 
 
-def run(store_path: Any, inbox: Any, as_of: date, *, coverage: Mapping[str, Any] | None = None,
+class TimeBudgetSpent(Exception):
+    """A tool call refused because the run's time budget is spent."""
+
+
+class Budget:
+    """A run's time budget (``seconds`` from now on ``monotonic``): ``guard`` wraps a tool
+    caller so that once it is spent every call raises ``TimeBudgetSpent`` and is noted
+    (``refused``), so a detector that swallows a failing call is still not complete."""
+
+    def __init__(self, seconds: float, monotonic: Callable[[], float] = time.monotonic
+                 ) -> None:
+        self.monotonic = monotonic
+        self.deadline = monotonic() + seconds
+        self.refused = 0
+
+    def spent(self) -> bool:
+        return self.monotonic() >= self.deadline
+
+    def guard(self, call: Callable | None) -> Callable | None:
+        if call is None:
+            return None
+
+        def guarded(tool: str, arguments: dict) -> Any:
+            if self.spent():
+                self.refused += 1
+                raise TimeBudgetSpent(tool)
+            return call(tool, arguments)
+        return guarded
+
+
+def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
+        coverage: Mapping[str, Any] | Callable[[], Mapping[str, Any]] | None = None,
         call: Callable | None = None, card_bound: int = CARD_BOUND,
-        qc_link_types: Sequence[str] | None = None,
+        qc_link_types: Sequence[str] | None = None, budget: Budget | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> dict[str, Any]:
     """Run every detector over the store and fold the gaps into the inbox; the summary
     (counts and enums only). A detector that fails is ``failed`` and leaves its gaps as
-    they were; only a ``complete`` detector resolves the gaps it no longer finds."""
-    run_at = clock().isoformat()
+    they were; only a ``complete`` detector resolves the gaps it no longer finds. The
+    run's day (``as_of``, what late and days late are counted to) defaults to the
+    business day (ET) of ``clock()`` (``po_status.business_today``), never its UTC day.
+    ``coverage`` may be a callable, scanned at its detector's turn (its failure fails that
+    detector alone). With a ``budget``, a detector not started before it is spent, or one
+    whose tool call it refused, is ``truncated`` (``time_budget``)."""
+    moment = clock()
+    as_of = po_status.business_today(moment) if as_of is None else as_of
+    if type(as_of) is not date:   # a datetime or text is no day: refused, never coerced
+        raise TypeError("as_of_must_be_a_date")
+    run_at = moment.isoformat()
+    call = call if budget is None else budget.guard(call)
     st = _Store(Path(store_path))
     try:
         steps: dict[str, Callable[[], dict[str, Any]]] = {
@@ -1434,7 +1594,8 @@ def run(store_path: Any, inbox: Any, as_of: date, *, coverage: Mapping[str, Any]
             "po_receipt_quantity_mismatch": lambda: _po_receipt_quantity_mismatch(st, as_of),
             "receipt_without_qc": lambda: _receipt_without_qc(
                 st, as_of, declared_qc_links() if qc_link_types is None else qc_link_types),
-            "order_without_customer_po": lambda: _order_without_customer_po(st, coverage),
+            "order_without_customer_po": lambda: _order_without_customer_po(
+                st, coverage() if callable(coverage) else coverage),
             "expired_quote": lambda: _expired_quote(st, as_of),
             "conflicting_quantity": lambda: _conflicting_quantity(st, as_of),
             "late_order": lambda: _late_order(st, as_of),
@@ -1442,10 +1603,22 @@ def run(store_path: Any, inbox: Any, as_of: date, *, coverage: Mapping[str, Any]
             "card_rules": lambda: _card_rules(st, as_of, call, card_bound)}
         results: dict[str, dict[str, Any]] = {}
         for name in DETECTORS:
+            if budget is not None and budget.spent():
+                results[name] = _result([], status="truncated", reasons=[TIME_BUDGET])
+                continue
+            refused = budget.refused if budget is not None else 0
             try:
                 results[name] = steps[name]()
+            except TimeBudgetSpent:
+                results[name] = _result([], status="truncated", reasons=[TIME_BUDGET])
             except Exception as error:  # noqa: BLE001 - one detector fails alone, typed
                 results[name] = _result([], status="failed", reasons=[type(error).__name__])
+            if budget is not None and budget.refused > refused \
+                    and results[name]["status"] != "failed":
+                # a call it made was refused: what it found stands, never all it would find
+                results[name]["status"] = "truncated"
+                if TIME_BUDGET not in results[name]["reasons"]:
+                    results[name]["reasons"].append(TIME_BUDGET)
         scope = st.scope()
         digest = st.meta("content_digest")
     finally:
@@ -1522,6 +1695,12 @@ def _fold(conn: sqlite3.Connection, results: Mapping[str, Mapping[str, Any]],
         before = conn.execute("SELECT state FROM gaps WHERE gap_id = ?", (gap["id"],)).fetchone()
         if before is not None and before["state"] == "resolved":
             conn.execute("DELETE FROM acks WHERE gap_id = ?", (gap["id"],))   # reopened
+        elif before is not None and gap["kind"] in WHOLE_ONLY \
+                and results[gap["detector"]]["status"] != "complete":
+            # a money claim summed over a run that did not finish may be a part: the open
+            # gap keeps the wording and citations of the last run that did
+            conn.execute("UPDATE gaps SET last_seen = ? WHERE gap_id = ?", (run_at, gap["id"]))
+            continue
         conn.execute(
             "INSERT INTO gaps VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, NULL) "
             "ON CONFLICT (gap_id) DO UPDATE SET summary = excluded.summary, follow_up = "
@@ -1665,6 +1844,8 @@ def _rule_coverage(conn: sqlite3.Connection, params: Mapping[str, str],
             + ")) GROUP BY u.detector", params)}
     counted = {row[0]: row[1] for row in conn.execute(
         "SELECT detector, not_evaluated FROM detector_runs")}
+    said = {row[0]: row[1] for row in conn.execute(
+        "SELECT detector, reasons FROM detector_runs")}
     out = []
     for name in DETECTORS:
         try:
@@ -1675,8 +1856,13 @@ def _rule_coverage(conn: sqlite3.Connection, params: Mapping[str, str],
             shown = None if skips else 0
         else:
             shown = None if recorded[name] else visible.get(name, 0)
+        try:
+            given = json.loads(said.get(name) or "[]")
+            reasons = [r for r in given if isinstance(r, str)] if isinstance(given, list) else []
+        except (ValueError, TypeError):
+            reasons = []    # unreadable: no reason is said, never a made-up one
         out.append({"rule": name, "status": detectors.get(name, "not_run"),
-                    "not_evaluated": shown})
+                    "not_evaluated": shown, "reasons": reasons})
     return out
 
 
@@ -1684,7 +1870,8 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
                held: Iterable[str], decide: Callable[[Sequence[str]], Mapping[str, Any]],
                states: Sequence[str] = ("open", "acknowledged"),
                limit: int = MAX_SHOWN) -> dict[str, Any]:
-    """The gaps one reader may see, trimmed, newest-priority first; what the last run
+    """The gaps one reader may see, trimmed: every late order first (longest late first), then
+    by priority; what the last run
     covered of what this reader may read. ``may_read(audience_key)``, ``held`` (the
     markings the reader holds) and ``decide(handles)`` (None per handle it may open)
     are the reader's grant; anything they refuse is never shown nor counted. ``complete``
@@ -1716,13 +1903,16 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
         global_states = json.dumps(sorted(stored))
         shown: list[dict[str, Any]] = []
         more = False
+        orders: dict[str, tuple[Any, dict[str, Any]]] = {}   # order key -> (rank, entry)
         offset, page = 0, max(limit + 1, 200)
         while not more:
             rows = conn.execute(
                 "SELECT g.*, (SELECT at FROM acks a WHERE a.gap_id = g.gap_id AND a.reader = "
                 ":reader) AS acked FROM gaps g WHERE g.state IN (SELECT value FROM "
                 "json_each(:states)) AND " + _OBJECT_VISIBLE.format(o="g.object_id")
-                + " ORDER BY g.priority, g.last_seen DESC, g.gap_id LIMIT :page OFFSET :offset",
+                + " ORDER BY json_extract(g.follow_up, '$.days_late') IS NULL, "
+                "json_extract(g.follow_up, '$.days_late') DESC, "
+                "g.priority, g.last_seen DESC, g.gap_id LIMIT :page OFFSET :offset",
                 {**params, "reader": reader, "states": global_states, "page": page,
                  "offset": offset}).fetchall()
             if not rows:
@@ -1733,20 +1923,24 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
                          else "acknowledged" if row["acked"] else "open")
                 if state not in states:
                     continue
+                follow_up = json.loads(row["follow_up"])
+                order = follow_up.pop(_ORDER, None)
+                held = orders.get(order["key"]) if isinstance(order, dict) else None
+                if held is not None:
+                    # this order is listed: its governing record's item replaces a twin's,
+                    # never a second item (each was decided visible to this reader)
+                    if order["rank"] < held[0]:
+                        index = next(i for i, g in enumerate(shown) if g is held[1])
+                        shown[index] = entry = _shown(row, citations, state, follow_up)
+                        orders[order["key"]] = (order["rank"], entry)
+                    continue
                 if len(shown) >= limit:
                     more = True
                     break
-                follow_up = json.loads(row["follow_up"])
-                draft = follow_up.get("draft")
-                if isinstance(draft, dict) and not set(draft.get("citations") or ()
-                                                       ) <= set(citations):
-                    follow_up.pop("draft")   # a fact it states is not this reader's to open
-                shown.append({"id": row["gap_id"], "kind": row["kind"],
-                              "object_id": row["object_id"], "object_type": row["object_type"],
-                              "summary": row["summary"], "citations": citations,
-                              "detected_by": "rule", "state": state,
-                              "first_seen": row["first_seen"], "last_seen": row["last_seen"],
-                              "follow_up": follow_up})
+                entry = _shown(row, citations, state, follow_up)
+                shown.append(entry)
+                if isinstance(order, dict):
+                    orders[order["key"]] = (order["rank"], entry)
         rules = _rule_coverage(conn, params, detectors)
     failed = sorted(name for name, status in detectors.items() if status == "failed")
     truncated = any(status == "truncated" for status in detectors.values())
@@ -1763,6 +1957,22 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
             "detectors": detectors, "not_run": not_run, "rules": rules,
             "complete": not (truncated or failed or not_run),
             "gaps": shown, "more": more, "limit": limit}
+
+
+def _shown(row: Mapping[str, Any], citations: Sequence[str], state: str,
+           follow_up: dict[str, Any]) -> dict[str, Any]:
+    """One inbox row as its reader sees it (``follow_up`` without the order field)."""
+    days_late = follow_up.pop("days_late", None)
+    draft = follow_up.get("draft")
+    if isinstance(draft, dict) and not set(draft.get("citations") or ()) <= set(citations):
+        follow_up.pop("draft")   # a fact it states is not this reader's to open
+    return {"id": row["gap_id"], "kind": row["kind"],
+            "object_id": row["object_id"], "object_type": row["object_type"],
+            "summary": row["summary"], "citations": citations,
+            "detected_by": "rule", "state": state,
+            "first_seen": row["first_seen"], "last_seen": row["last_seen"],
+            **({"days_late": days_late} if days_late is not None else {}),
+            "follow_up": follow_up}
 
 
 def acknowledge(inbox: Any, store: Any, gap_id: str, *, reader: str,
@@ -1788,14 +1998,54 @@ def acknowledge(inbox: Any, store: Any, gap_id: str, *, reader: str,
     return {"id": gap_id, "state": "acknowledged"}
 
 
-def after_build(store_path: Any, *, as_of: date) -> dict[str, Any]:
-    """The host's hook after a projection build: the store-only detectors (no mirror
-    scan, no cards), never raising; counts and enums only."""
+def refresh(runtime: Any, investigator: Any, audience: Any, projection: Path, as_of: date,
+            *, captures: Path | None, scan_coverage: bool = True,
+            budget: Budget | None = None,
+            clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
+            ) -> dict[str, Any]:
+    """The full scheduled run over ``projection`` into its inbox, as ``investigator``: the
+    customer PO coverage scan of the runtime's mirror (``scan_coverage``; its order
+    statuses ``absent_in_this_source``) and a case session over the projection and the
+    state directory's captures as the tool caller (``orders_at_risk``, ``card_rules``).
+    The inbox stores each gap with its citations' audiences; ``read_inbox`` trims it per
+    reader. Shared by ``main`` and the host's ``after_build(scheduled=)``."""
+    from . import case_workspace_live as live
+    from . import customer_po_coverage
+
+    def coverage() -> Mapping[str, Any]:
+        return customer_po_coverage.coverage(runtime.mirror, investigator,
+                                             statuses=("absent_in_this_source",))
+
+    session = live._Session(runtime, investigator, audience, projection, captures=captures)
     try:
-        found = run(store_path, inbox_path(store_path), as_of)
+        return run(projection, inbox_path(projection), as_of,
+                   coverage=coverage if scan_coverage else None, call=session,
+                   budget=budget, clock=clock)
+    finally:
+        session.close()
+
+
+def after_build(store_path: Any, *, as_of: date | None = None,
+                clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+                scheduled: Callable[[date, Budget], Mapping[str, Any]] | None = None,
+                budget_seconds: float | None = None,
+                monotonic: Callable[[], float] = time.monotonic) -> dict[str, Any]:
+    """The host's hook after a projection build, never raising; counts and enums only.
+    ``scheduled(as_of, budget)``: the full run (``refresh``) within a ``budget_seconds``
+    budget; without it the store-only detectors (no mirror scan, no cards). Judged on
+    ``as_of``, else the business day (ET) of ``clock()``."""
+    try:
+        if scheduled is None:
+            found = run(store_path, inbox_path(store_path), as_of, clock=clock)
+        else:
+            found = scheduled(po_status.business_today(clock()) if as_of is None else as_of,
+                              Budget(REFRESH_BUDGET_SECONDS if budget_seconds is None
+                                     else budget_seconds, monotonic))
     except Exception as error:  # noqa: BLE001 - detection never fails a capture cycle
         return {"state": "failed", "error": type(error).__name__}
-    return {"state": "ran", "gaps_found": found["gaps_found"], "detectors": found["detectors"]}
+    return {"state": "ran", "gaps_found": found["gaps_found"], "detectors": found["detectors"],
+            **({"detector_reasons": found["detector_reasons"]}
+               if found.get("detector_reasons") else {})}
 
 
 # --------------------------------------------------------------------------- live command
@@ -1807,7 +2057,6 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     from operator_ui.object_workspace import HostAccess
 
     from . import case_workspace_live as live
-    from . import customer_po_coverage
 
     parser = argparse.ArgumentParser(prog="python3 -m operating.proactive_engine",
                                      description=__doc__.split("\n\n")[0])
@@ -1832,7 +2081,7 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
         parser.error(f"invalid input: {type(error).__name__}")
     if audience.tenant != args.tenant:
         parser.error("mirror audience tenant must equal --tenant")
-    as_of = args.as_of or datetime.now(timezone.utc).date()
+    as_of = args.as_of or po_status.business_today()
     summary: dict[str, Any] = {"schema": SCHEMA, "evidence": live.MIRROR_EVIDENCE["label"],
                                "as_of": as_of.isoformat(), "capture": None}
     if args.host_config is not None:
@@ -1859,14 +2108,8 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     try:
         live.project_state(args.state_dir, projection, tenant=args.tenant)
         summary["blocked_upstream"] = live.upstream_parts(live.portal_upstream(args.state_dir))
-        coverage = customer_po_coverage.coverage(runtime.mirror, investigator,
-                                                 statuses=("absent_in_this_source",))
-        session = live._Session(runtime, investigator, audience, projection,
-                                captures=args.state_dir)
-        try:
-            summary.update(run(projection, inbox, as_of, coverage=coverage, call=session))
-        finally:
-            session.close()
+        summary.update(refresh(runtime, investigator, audience, projection, as_of,
+                               captures=args.state_dir))
         for actor in (investigator, *readers):
             session = live._Session(runtime, actor, audience, projection,
                                     captures=args.state_dir)

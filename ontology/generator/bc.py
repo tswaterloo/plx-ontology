@@ -34,7 +34,7 @@ convention (corroborated), both compared as ``bc_system_id``. Money: ``money.jso
 properties stay text with their members described: an enum's JSON spelling is not pinned.
 
 Drift (``drift``): a live document against the pin and the compiled schema, for the live
-check ``verify/live-checks/schema.bc_metadata_drift.json``; a ``MetadataError`` carries a
+check ``devloop/live-checks/schema.bc_metadata_drift.json``; a ``MetadataError`` carries a
 fixed ``code`` that check publishes (its message may name the document's types, so it does
 not). Commands (offline)::
 

@@ -5,7 +5,7 @@ bound_action). The Portal's runBcSync also calls both actions on every run, fail
 human and no MC approval (plx-customer-portal@f3e3a5399d42 sync-runner.ts), and each action
 type cites those calls: the purchase order action on the Setup Order Nos., the customer series
 of the company and of the Distribution company (sync-runner.ts:272) and the S-ORD sales-series
-fallback. Every such citation is pinned in verify/upstream-pins.json with the sha256 of its
+fallback. Every such citation is pinned in devloop/upstream-pins.json with the sha256 of its
 lines, so it is checked without the Portal checkout; only the comparison with the checked-out
 file skips. The Workbench reads no No. Series record, so both verify by person_check, never
 read_back. Over every action type, a ``read_back`` targets a type some source serves (the

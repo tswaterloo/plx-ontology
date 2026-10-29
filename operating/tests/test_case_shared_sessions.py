@@ -1,4 +1,4 @@
-"""Shared case sessions on the real case store: sessions working one case at
+"""Shared case sessions (ROADMAP B5) on the real case store: sessions working one case at
 once record a finding once, keep their distinct findings, lose no write in a real
 multi-process race, and a session opening the case reads the journal tail and what the
 others wrote since its last open. Synthetic fixtures only."""
@@ -13,7 +13,7 @@ import subprocess
 import time
 import unittest
 
-from verify import live_verify
+from devloop import live_verify
 from ontology.core import Actor, ValidationError
 from operating.cases import CaseNotFound, CaseStore, finding_key, supersede_refusal
 from operating.tests.test_cases import AO, ENG, ENG_OPS, PACK, CaseTestBase
@@ -161,7 +161,7 @@ class SharedCaseSessionsTest(CaseTestBase):
             self.store.read_tail(ENG_OPS, "case-missing", "s3")
 
     def test_live_check_argv_passes_its_expectations_on_its_real_output(self):
-        spec = json.loads(Path("verify/live-checks/session.shared_case.json").read_text("utf-8"))
+        spec = json.loads(Path("devloop/live-checks/session.shared_case.json").read_text("utf-8"))
         done = subprocess.run(spec["command"], capture_output=True, text=True, timeout=120)
         document = json.loads(done.stdout)
         self.assertEqual(live_verify.check_expectations(spec, done.returncode, document), [])

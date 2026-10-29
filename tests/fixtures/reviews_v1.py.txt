@@ -1,6 +1,6 @@
 """Human review decisions over the ontology: an append-only store and their projection.
 
-A person's correction survives a
+Directive dd40ff1bf83f P3 (amendment bb664f58910f §1): a person's correction survives a
 restart and changes the next investigation. Four decisions, each by one authenticated
 employee, timestamped, citing the exact record versions (L1 handle and content digest)
 the person reviewed:

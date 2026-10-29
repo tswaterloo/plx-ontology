@@ -1,4 +1,4 @@
-"""Directory-wide mail capture over an injected Graph.
+"""Directory-wide mail capture (owner directive c75dfaba0f8e) over an injected Graph.
 
 Every mailbox in the tenant directory except the excluded people's and the HR / payroll
 deny list (``integrations.mail_directory_scope``), captured by the existing resumable
@@ -20,7 +20,7 @@ import tempfile
 import unittest
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from verify import live_verify as lv
+from devloop import live_verify as lv
 from integrations import graph_read
 from integrations import mail_directory_scope as mds
 from integrations.capture_mail import CaptureError, MailCaptureStore
@@ -30,7 +30,7 @@ from integrations.tests.test_capture_mail import ENV, FakeGraph, file_attachment
 from ontology.types import Actor
 
 ROOT = Path(__file__).resolve().parents[2]
-SPEC = json.loads((ROOT / "verify/live-checks/graph.mail_all_mailboxes.json")
+SPEC = json.loads((ROOT / "devloop/live-checks/graph.mail_all_mailboxes.json")
                   .read_text(encoding="utf-8"))
 AUDIENCE = ROOT / "examples/mail_all_mailboxes_audience.live-check.json"
 EXCLUDED = ENV["PLX_EXCLUDED_PEOPLE_OIDS"]
@@ -364,6 +364,114 @@ class MarkingAndResumeTests(AllMailboxesCase):
         self.assertEqual({f["resumed_from"] for m in later["runs"][-1]["mailboxes"]
                           for f in m["folders"]}, {"delta_url"})
         self.assertEqual(lv.completeness(SPEC, later), {"complete": True})
+
+
+
+class BudgetEndTests(AllMailboxesCase):
+    """gap-86a8a6debd2e: the whole command, enumeration, runs and read-back probes, ends
+    within ``--budget-seconds`` (the verifier's timeout never kills it); a run cut by
+    the budget over a store this invocation did not find kept is blocked later_ask
+    live-host-persistent-state-dir, never an untyped fail. Fake clocks: one second per
+    request (and, in the probe test, per probe step)."""
+
+    BUDGET = 40
+
+    def shares(self):
+        from unittest.mock import patch
+        from integrations import capture_mail as cm
+        seen: list[tuple[float, float | None]] = []
+        real = cm.MailCapture
+
+        class Recorded(real):
+            def __init__(inner, *a, budget_seconds=None, monotonic=None, **k):
+                seen.append((monotonic(), budget_seconds))
+                super().__init__(*a, budget_seconds=budget_seconds, monotonic=monotonic, **k)
+        return seen, patch.object(cm, "MailCapture", Recorded)
+
+    def test_two_runs_and_their_probes_end_by_the_budget_cold_cut_blocked(self):
+        from devloop.tests.spec_verdict import verdict
+        graph = DirectoryGraph(members=6, messages=7)
+
+        def clock() -> int:
+            return len(graph.calls)
+
+        seen, patched = self.shares()
+        with patched:
+            report = self.run_cli(graph, "--runs", "2", "--budget-seconds", str(self.BUDGET),
+                                  monotonic=clock)
+        stamps = list(range(len(graph.calls)))     # request k starts at second k
+        # No request starts at or after the budget. Past the capture's share only the
+        # read a page's first message makes (each page captures one message at least,
+        # so a cut run still moves on) starts: never a page, mailbox or folder lookup;
+        # the probes' reserve covers it.
+        self.assertTrue(stamps)
+        self.assertLess(stamps[-1], self.BUDGET)
+        capture_end = self.BUDGET - self.BUDGET * mds.PROBE_RESERVE_SHARE
+        late = [urlsplit(u).path for k, (_m, u, _h) in enumerate(graph.calls)
+                if k >= capture_end]
+        self.assertLessEqual(len(late), 1, late)
+        self.assertTrue(all("/messages/" in p and "/delta" not in p for p in late), late)
+        # The second run gets only what the first left of the capture share.
+        self.assertEqual(len(report["runs"]), 2)
+        (t1, share1), (t2, share2) = seen
+        self.assertAlmostEqual(share1, (capture_end - t1) / 2)
+        self.assertAlmostEqual(share2, capture_end - t2)
+        self.assertGreaterEqual(t2, t1)
+        # The probes ran to the end inside the reserve: nothing null.
+        self.assertFalse(report["probes_cut"])
+        self.assertEqual(report["leak_check"], {
+            "withheld_actor_mailboxes": 0, "withheld_actor_rows": 0,
+            "withheld_actor_counts": 0, "withheld_actor_resolved": 0})
+        # Progress shown: what the runs captured before the cut.
+        self.assertGreater(report["summary"]["messages_current"], 0)
+        # Cut over a store nothing carried: blocked later_ask, never an untyped fail.
+        self.assertFalse(report["runs"][-1]["complete"])
+        self.assertFalse(report["ok"])
+        self.assertTrue(report["blocked_upstream"])
+        self.assertEqual({(p["cause"], p["later_ask"]) for p in report["blocked_upstream"]},
+                         {("later_ask", "live-host-persistent-state-dir")})
+        self.assertEqual(verdict(SPEC, 1, report), ("blocked", []))
+
+    def test_probes_the_budget_cuts_are_null_and_fail_never_blocked(self):
+        from unittest.mock import patch
+        from devloop.tests.spec_verdict import verdict
+        graph = DirectoryGraph(members=6, messages=1)
+        probing = {"on": False, "ticks": 0}
+
+        def clock() -> int:
+            if probing["on"]:
+                probing["ticks"] += 1     # each probe step takes a second
+            return len(graph.calls) + probing["ticks"]
+
+        real = mds._probes
+
+        def probes(*a, **k):
+            probing["on"] = True
+            try:
+                return real(*a, **k)
+            finally:
+                probing["on"] = False
+        # The capture's own requests, measured on a twin graph and store: the budget
+        # leaves the capture its share and the probes fewer seconds than their steps.
+        twin = DirectoryGraph(members=6, messages=1)
+        self.run_cli(twin, "--runs", "1", state=Path(self.tmp.name) / "twin")
+        budget = int(len(twin.calls) / (1 - mds.PROBE_RESERVE_SHARE)) + 2
+        with patch.object(mds, "_probes", probes):
+            report = self.run_cli(graph, "--runs", "1", "--budget-seconds", str(budget),
+                                  monotonic=clock)
+        self.assertEqual(len(graph.calls), len(twin.calls))
+        self.assertTrue(report["runs"][-1]["complete"])
+        self.assertLessEqual(clock(), budget + 1)   # the step that found it spent
+        self.assertTrue(report["probes_cut"])
+        # An unfinished probe is null, never a clean zero.
+        self.assertIn(None, [*report["leak_check"].values(),
+                             *report["exclusion_check"].values(),
+                             *report["resolve_check"].values()])
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["blocked_upstream"], [])
+        result, failures = verdict(SPEC, 1, report)
+        self.assertEqual(result, "fail")
+        self.assertTrue(failures)
 
 
 class CardinalityTests(AllMailboxesCase):

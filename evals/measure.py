@@ -253,7 +253,7 @@ def _spread(values: Sequence[int | None]) -> dict[str, Any]:
 def summarize(measures: Iterable[Mapping[str, Any] | None]) -> dict[str, Any]:
     """Resolution counts (the unanswered questions beside coverage), unsupported assertions,
     review burden, tool calls and the two wall times (median and max over the runs that
-    recorded them; the rest are counted ``unmeasured``). Flat, so the live checks'
+    recorded them; the rest are counted ``unmeasured``). Flat, so the live verifier's
     counts-only record keeps every number."""
     rows = [m for m in measures if isinstance(m, Mapping)]
     out: dict[str, Any] = {"runs": len(rows), **dict.fromkeys(RESOLUTIONS, 0), "blocked": 0}

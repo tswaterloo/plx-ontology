@@ -27,7 +27,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from verify import live_verify as lv
+from devloop import live_verify as lv
 from integrations.tests import test_capture_mail as mail_t
 from integrations.tests.test_source_mirror import BASE
 from ontology import identifiers, reviews, store_ddl
@@ -113,7 +113,7 @@ class HostOneBuildTests(HostCase):
             "ORDER BY object_id", (object_type, f"%{text}%"))]
 
     def test_the_host_builds_document_links_reviews_and_reviewed_aliases(self):
-        spec = json.loads((ROOT / "verify/live-checks/host.cycles.json").read_text())
+        spec = json.loads((ROOT / "devloop/live-checks/host.cycles.json").read_text())
         self.probe_dir(self.state)
         code, out, err = self.main("check", "--state-dir", str(self.state),
                                    "--config", str(self.config),
@@ -124,7 +124,7 @@ class HostOneBuildTests(HostCase):
         recorded = lv._recorded(spec, document)
         self.assertEqual([sorted(s) for s in recorded["cycles[*].projection.steps"]],
                          [["confirmations", "document_fields", "mentions", "reviews",
-                           "text_index", "twins"]] * 2)
+                           "text_index", "twins", "your_reference"]] * 2)
         steps = document["cycles"][-1]["projection"]["steps"]
         self.assertGreaterEqual(steps["document_fields"]["links"], 1, steps)
 

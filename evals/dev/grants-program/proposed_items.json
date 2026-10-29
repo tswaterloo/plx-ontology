@@ -5,7 +5,7 @@
  "source": {
   "advisory": {
    "id": "advisory:4db485a7f2e6",
-   "ref": "source-records@cf368716f54543848b4d5499b53781cb5d3eb88b",
+   "ref": "origin/codex/advisory@cf368716f54543848b4d5499b53781cb5d3eb88b",
    "path": "context/4db485a7f2e63ce6ab2d57e451f625fc3630e0ab2a7b1bcbe6d8ca448a86572d.json",
    "record_sha256": "9c4f090903fc315d43c059bce96d188db15e2d6be3ad4f1cc729e7786f8415b7",
    "source_revision": "a2f2250e52a7649bac30fe3285d27da0c10d108001bbd121ce4bba94cdfc0979",
@@ -14,7 +14,7 @@
   "originals_registry": {
    "path": "examples/case_originals.json",
    "rows": {
-    "co-81d7ee151c6e": "the brief, Grants Program - Context Ontology Use Case (NGen, FedDev, AMIC).md (pinned, 21,488 bytes; sha256 equals the source_revision)",
+    "co-81d7ee151c6e": "the brief, Grants Program - Context Ontology Use Case (NGen, FedDev, AMIC).md (pinned, 21,488 bytes; sha256 equals the advisory source_revision)",
     "co-2b32fe4f123c": "Stephen's Asset Tracker brief, which defines the shared Purchase / Cost Line entity the grants brief reuses"
    }
   }
@@ -67,7 +67,7 @@
    "system": "microsoft-graph",
    "relation": "mail (app-only, read only); which mailbox holds funder correspondence is unknown",
    "reader": "served",
-   "evidence": "OntologyProject:docs/reference/live-sources.md@2003e14a91ee:19"
+   "evidence": "OntologyProject:devloop/CONTEXT/06-LIVE-SOURCES.md@2003e14a91ee:19"
   }
  ],
  "layers": {
@@ -126,6 +126,7 @@
    },
    {
     "id": "GP-03",
+    "anchor_gap": "no committed source names the cost row: the brief body is unread and its advisory names only project NGen 14091 (269 cost rows), not one row",
     "layer": "tracing",
     "question": "Which invoice and which payment proof support this NGen cost row?",
     "criterion": "Link the cost row to its invoice and payment proof only on a named key (BC purchase invoice, BC vendor payment, Sage PO or receipt, Portal PO), citing each record and the original PDF in place, never a copy. A vendor, amount or date coincidence is a candidate, never a match; a join not seen is reported as a gap with the keys tried. Amounts are Decimal with currency stated.",
@@ -146,6 +147,7 @@
    },
    {
     "id": "GP-04",
+    "anchor_gap": "no committed source names the invoice line: the brief body is unread and its advisory names only project NGen 14091 (269 cost rows), not one row",
     "layer": "tracing",
     "question": "Is this invoice line eligible under NGen, and which ruling says so?",
     "criterion": "Give eligibility only with a cited ruling: who ruled, when and in which source. Without a recorded ruling the answer is open. Never infer eligibility from an expense category, amount, vendor or a rule (inferred or hard-coded eligibility rules are a boundary of the brief).",
@@ -192,6 +194,7 @@
    },
    {
     "id": "GP-07",
+    "anchor_gap": "no committed source names the cost: the brief body is unread and its advisory names only project NGen 14091 (269 cost rows), not one row",
     "layer": "tracing",
     "question": "Under which funder claims was this cost claimed, and how much was claimed and reimbursed in each?",
     "criterion": "Per the brief one cost can carry several funder claims, each with its own claimed and reimbursed amount. List each claim separately with its source, Decimal amounts and currency; never merge claims or sum across funders. Without a claim record the answer is open.",
@@ -222,6 +225,7 @@
    },
    {
     "id": "GP-09",
+    "anchor_gap": "no committed source names the cost or hours: the brief body is unread and its advisory names only project NGen 14091 (269 cost rows), not one row",
     "layer": "tracing",
     "question": "Which deliverable or partner delivery does this cost or these hours support?",
     "criterion": "The brief asks for stable links from costs and hours to deliverables. Give the link only with its source; a link not recorded anywhere is a gap, never inferred from dates, vendor or description.",

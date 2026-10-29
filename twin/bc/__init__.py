@@ -1,4 +1,4 @@
-"""The Business Central write twin, test mode only.
+"""The Business Central write twin (owner directive 746d96497341), test mode only.
 
 * ``twin.bc.odata.BcTwin``: BC's API v2.0 (OData) per company, with etags, generated from
   gen-bc's pinned ``$metadata``; its records are typed relations of its own isolated owner,

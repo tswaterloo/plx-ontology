@@ -1,0 +1,581 @@
+{
+ "$schema": "_plan.schema.json",
+ "format": "plx-investigate-plan/v1",
+ "id": "people_on_record",
+ "families": [
+  "F18"
+ ],
+ "title": "Who works on a record, and who to ask about it",
+ "description": "The people of ours who worked on one record (an order, a supplier, a customer, an item: any record mail can name), ranked, each cited: the senders and recipients of the mail naming it, the owners, assignees and reporters of the Mission Control tasks naming it, the deciders and requesters of their approval gates and the actors of their history; for an item also those of the purchase and sales orders that carry it, and for every root its same-record twins. The authors of the Teams channel and chat messages naming it, and the participants of the chats those messages were posted in, join as Entra object ids. A person is one only by a shared key (an Entra object id or a mail address through the captured directory); a name alone is a lead, never a merge (operating/people_graph.py). The people exclusion is applied to every participant first and fails closed: an excluded or undecidable person is never named and the entry naming them is withheld. What this reader may not read is withheld by the primitives, so no person is linked through a conversation the reader cannot see. Mentions are lead links, so the people carry lead_basis.",
+ "root": {
+  "links": [
+   "mentioned_in_email"
+  ]
+ },
+ "step_budget": 128,
+ "max_each": 25,
+ "steps": [
+  {
+   "id": "root_read",
+   "tool": "plx.object",
+   "from": "root",
+   "bind": "object_id",
+   "required": true
+  },
+  {
+   "id": "twins",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "description": "The same record in another system (every same-record link the schema declares at its type).",
+   "links": {
+    "binding_kind": "same_record",
+    "direction": "forward"
+   },
+   "args": {
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "twins_of",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "links": {
+    "binding_kind": "same_record",
+    "direction": "reverse"
+   },
+   "args": {
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "item_purchases",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "twins",
+    "twins_of"
+   ],
+   "bind": "from",
+   "description": "For an item: the purchase orders whose lines carry it.",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrderLine.for_item",
+      "direction": "reverse"
+     },
+     {
+      "link_type": "PurchaseOrderLine.line_of",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "item_sales",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "twins",
+    "twins_of"
+   ],
+   "bind": "from",
+   "description": "For an item: the sales orders whose lines carry it.",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrderLine.for_item",
+      "direction": "reverse"
+     },
+     {
+      "link_type": "SalesOrderLine.line_of",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "mentions",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "twins",
+    "twins_of",
+    "item_purchases",
+    "item_sales"
+   ],
+   "bind": "from",
+   "description": "Every captured message, file, task and gate whose text names one of them (every mention link the schema declares into its type: a lead).",
+   "links": {
+    "binding_kind": "mention",
+    "direction": "reverse"
+   },
+   "args": {
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "attachment_mail",
+   "tool": "plx.around",
+   "from": "mentions",
+   "bind": "from",
+   "description": "The mail an attachment naming the record came with.",
+   "object_types": [
+    "Attachment"
+   ],
+   "args": {
+    "path": [
+     {
+      "link_type": "Attachment.attached_to",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   }
+  },
+  {
+   "id": "mail_reads",
+   "tool": "plx.object",
+   "from": [
+    "mentions",
+    "attachment_mail"
+   ],
+   "bind": "object_id",
+   "object_types": [
+    "Email"
+   ],
+   "max_each": 40
+  },
+  {
+   "id": "teams_reads",
+   "tool": "plx.object",
+   "from": "mentions",
+   "bind": "object_id",
+   "object_types": [
+    "TeamsChannelMessage",
+    "TeamsChatMessage"
+   ],
+   "max_each": 40
+  },
+  {
+   "id": "teams_chats",
+   "tool": "plx.around",
+   "from": "mentions",
+   "bind": "from",
+   "description": "The chat each chat message naming the record was posted in (its participants are read from it).",
+   "object_types": [
+    "TeamsChatMessage"
+   ],
+   "args": {
+    "path": [
+     {
+      "link_type": "TeamsChatMessage.in_chat",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   }
+  },
+  {
+   "id": "chat_reads",
+   "tool": "plx.object",
+   "from": "teams_chats",
+   "bind": "object_id",
+   "object_types": [
+    "TeamsChat"
+   ],
+   "max_each": 40
+  },
+  {
+   "id": "task_reads",
+   "tool": "plx.object",
+   "from": "mentions",
+   "bind": "object_id",
+   "object_types": [
+    "MCTask"
+   ]
+  },
+  {
+   "id": "approval_reads",
+   "tool": "plx.object",
+   "from": "mentions",
+   "bind": "object_id",
+   "object_types": [
+    "MCApproval"
+   ]
+  },
+  {
+   "id": "task_history",
+   "tool": "plx.around",
+   "from": "mentions",
+   "bind": "from",
+   "description": "The history of the Mission Control tasks naming the record.",
+   "object_types": [
+    "MCTask"
+   ],
+   "args": {
+    "path": [
+     {
+      "link_type": "MCTaskEvent.event_of",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   }
+  },
+  {
+   "id": "event_reads",
+   "tool": "plx.object",
+   "from": "task_history",
+   "bind": "object_id",
+   "object_types": [
+    "MCTaskEvent"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "name": "mail_sent_at",
+   "kind": "property",
+   "object_type": "Email",
+   "properties": [
+    "sent_at",
+    "received_at"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "mail_sender",
+   "kind": "property",
+   "object_type": "Email",
+   "properties": [
+    "sender"
+   ],
+   "description": "The From address; the recipients (row.to, row.cc) are re-read from the message's citation for the reader by the engine, never listed.",
+   "omit_empty": true
+  },
+  {
+   "name": "channel_at",
+   "kind": "property",
+   "object_type": "TeamsChannelMessage",
+   "properties": [
+    "created_at"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "channel_from",
+   "kind": "property",
+   "object_type": "TeamsChannelMessage",
+   "properties": [
+    "from"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "chat_at",
+   "kind": "property",
+   "object_type": "TeamsChatMessage",
+   "properties": [
+    "created_at"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "chat_from",
+   "kind": "property",
+   "object_type": "TeamsChatMessage",
+   "properties": [
+    "from"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "chat_active_at",
+   "kind": "property",
+   "object_type": "TeamsChat",
+   "properties": [
+    "last_activity_at",
+    "created_at"
+   ],
+   "omit_empty": true,
+   "description": "When the chat was last active; the participants (Entra object id, display name, work address) are re-read from the chat's citation for the reader by the engine, never listed."
+  },
+  {
+   "name": "task_updated_at",
+   "kind": "property",
+   "object_type": "MCTask",
+   "properties": [
+    "updated_at",
+    "created_at"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "task_owner",
+   "kind": "property",
+   "object_type": "MCTask",
+   "properties": [
+    "accountable_owner"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "task_assignee",
+   "kind": "property",
+   "object_type": "MCTask",
+   "properties": [
+    "assignee"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "task_reporter",
+   "kind": "property",
+   "object_type": "MCTask",
+   "properties": [
+    "reporter"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "approval_at",
+   "kind": "property",
+   "object_type": "MCApproval",
+   "properties": [
+    "decided_at",
+    "requested_at"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "approval_decided_by",
+   "kind": "property",
+   "object_type": "MCApproval",
+   "properties": [
+    "decided_by"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "approval_requested_by",
+   "kind": "property",
+   "object_type": "MCApproval",
+   "properties": [
+    "requested_by"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "event_at",
+   "kind": "property",
+   "object_type": "MCTaskEvent",
+   "properties": [
+    "at"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "event_actor",
+   "kind": "property",
+   "object_type": "MCTaskEvent",
+   "properties": [
+    "actor"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "people",
+   "kind": "compute",
+   "required": true,
+   "engine": "people_on_record",
+   "description": "The people of ours behind the records reached, ranked by role and latest activity, each with the cited entries every role rests on and its identity resolution (operating/people_graph.py); a name alone is a lead; nobody found is a typed gap.",
+   "engine_args": {
+    "records": [
+     {
+      "label": "mail",
+      "time": [
+       "mail_sent_at"
+      ],
+      "people": [
+       {
+        "role": "sender",
+        "items": [
+         "mail_sender"
+        ],
+        "identity": "address"
+       },
+       {
+        "role": "recipient",
+        "reread": [
+         "row.to",
+         "row.cc"
+        ],
+        "identity": "address"
+       }
+      ]
+     },
+     {
+      "label": "teams_channel",
+      "time": [
+       "channel_at"
+      ],
+      "people": [
+       {
+        "role": "author",
+        "items": [
+         "channel_from"
+        ],
+        "identity": "teams_party"
+       }
+      ]
+     },
+     {
+      "label": "teams_chat",
+      "time": [
+       "chat_at"
+      ],
+      "people": [
+       {
+        "role": "author",
+        "items": [
+         "chat_from"
+        ],
+        "identity": "teams_party"
+       }
+      ]
+     },
+     {
+      "label": "teams_chat_members",
+      "time": [
+       "chat_active_at"
+      ],
+      "people": [
+       {
+        "role": "participant",
+        "reread": [
+         "row.participants"
+        ],
+        "identity": "teams_members"
+       }
+      ]
+     },
+     {
+      "label": "mc_task",
+      "time": [
+       "task_updated_at"
+      ],
+      "people": [
+       {
+        "role": "owner",
+        "items": [
+         "task_owner"
+        ],
+        "identity": "mixed"
+       },
+       {
+        "role": "assignee",
+        "items": [
+         "task_assignee"
+        ],
+        "identity": "mixed"
+       },
+       {
+        "role": "reporter",
+        "items": [
+         "task_reporter"
+        ],
+        "identity": "mixed"
+       }
+      ]
+     },
+     {
+      "label": "mc_approval",
+      "time": [
+       "approval_at"
+      ],
+      "people": [
+       {
+        "role": "approver",
+        "items": [
+         "approval_decided_by"
+        ],
+        "identity": "mixed"
+       },
+       {
+        "role": "requester",
+        "items": [
+         "approval_requested_by"
+        ],
+        "identity": "mixed"
+       }
+      ]
+     },
+     {
+      "label": "mc_task_event",
+      "time": [
+       "event_at"
+      ],
+      "people": [
+       {
+        "role": "actor",
+        "items": [
+         "event_actor"
+        ],
+        "identity": "mixed"
+       }
+      ]
+     }
+    ]
+   }
+  }
+ ]
+}

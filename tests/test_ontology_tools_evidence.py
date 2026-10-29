@@ -451,6 +451,41 @@ class DocumentsTests(unittest.TestCase):
             self.assertTrue(mention["external_assertion"])
         self.assertEqual(out["searched"]["sources"], ["graph_mail"])
 
+    def test_exact_unit_grants_cover_a_source_only_when_every_listed_unit_is_granted(self):
+        # A host that grants mail by exact per-unit keys (no mail:* pattern) and lists
+        # every unit the store holds: a reader granted all of them reads the whole
+        # source (no gap, nothing withheld); one granted some is told how many it lacks.
+        units = ("mail:mbx-a", "mail:mbx-b")
+        both = Actor("plx", frozenset({"both"}))
+        self.tools.base.policy = ot.ReadPolicy(
+            tenant="plx", audiences={"api:*": {"ops", "both"}, "mail:mbx-a": {"ops", "both"},
+                                     "mail:mbx-b": {"both"}},
+            units={"mail": units})
+        full = ok(self, "plx.documents", self.call(both, object_id=P1, sources=["graph_mail"]))
+        self.assertNotIn("audience_not_granted", [g["reason"] for g in full["gaps"]])
+        self.assertNotIn("withheld", full)
+        self.assertIn(M2_H, {d["citation"] for d in full["documents"]})
+        part = ok(self, "plx.documents", self.call(object_id=P1, sources=["graph_mail"]))
+        (gap,) = [g for g in part["gaps"] if g["reason"] == "audience_not_granted"]
+        self.assertTrue(gap["detail"].startswith("1 captured unit(s)"), gap["detail"])
+        self.assertNotIn(M2_H, json.dumps(part))
+        self.assertNotIn("mbx-b", json.dumps(part))
+        self.assertFalse(part["completeness"]["complete"])
+        # Without the list, exact grants never cover the source (the count is unknown).
+        self.tools.base.policy = ot.ReadPolicy(
+            tenant="plx", audiences=dict(self.tools.base.policy.audiences))
+        unlisted = ok(self, "plx.documents", self.call(both, object_id=P1,
+                                                       sources=["graph_mail"]))
+        (gap,) = [g for g in unlisted["gaps"] if g["reason"] == "audience_not_granted"]
+        self.assertIn("do not cover every unit", gap["detail"])
+        # Another tenant, a unit outside its family or a wildcard unit: refused.
+        self.assertIsNone(ot.ReadPolicy("plx", {}, units={"mail": units}).ungranted_units(
+            Actor("other", frozenset({"both"})), "mail"))
+        for bad in ({"mail": ("sharepoint:x",)}, {"mail": ("mail:*",)}, {"mail:": ()},
+                    {"mail": "mail:mbx-a"}):
+            with self.subTest(units=bad), self.assertRaises(ValueError):
+                ot.ReadPolicy("plx", {}, units=bad)
+
     def test_reader_without_the_mailbox_audience_sees_withheld_not_content(self):
         ops = ok(self, "plx.documents", self.call(object_id=P1, sources=["graph_mail"]))
         self.assertNotIn(M2_H, json.dumps(ops))
@@ -490,6 +525,46 @@ class DocumentsTests(unittest.TestCase):
         self.assertEqual(gap["searched"]["since"], "2099-01-01")
         self.assertNotIn("absent_in_source", {g["state"] for g in out["gaps"]})
 
+    def test_a_search_older_than_the_first_capture_says_so_not_no_match(self):
+        # Every version here was recorded at T0 (2099-01-01): nothing captured is older.
+        early = ok(self, "plx.documents", self.call(query="packing list",
+                                                    sources=["graph_mail"],
+                                                    as_known_at="2098-12-31"))
+        self.assertEqual(early["documents"], [])
+        reasons = [g["reason"] for g in early["gaps"]]
+        self.assertNotIn("no_match", reasons)
+        gap = next(g for g in early["gaps"] if g["reason"] == "before_first_capture")
+        self.assertEqual((gap["state"], gap["subject"]), ("not_ingested", "source:graph_mail"))
+        self.assertIn("2099-01-01", gap["detail"])
+        self.assertFalse(early["completeness"]["complete"])
+        # At or after the first capture a search that finds nothing is a plain no_match.
+        later = ok(self, "plx.documents", self.call(query="nothing like this here",
+                                                    sources=["graph_mail"],
+                                                    as_known_at="2099-01-02"))
+        reasons = [g["reason"] for g in later["gaps"]]
+        self.assertIn("no_match", reasons)
+        self.assertNotIn("before_first_capture", reasons)
+        found = ok(self, "plx.documents", self.call(query="packing list",
+                                                    sources=["graph_mail"],
+                                                    as_known_at="2099-01-02"))
+        self.assertEqual([d["citation"] for d in found["documents"]], [A1_H])
+
+    def test_an_original_is_found_by_the_words_of_its_text(self):
+        # "AO packet scan.pdf" names neither word; its extracted text holds both.
+        out = ok(self, "plx.documents", self.call(FULL, query="purchase order line",
+                                                  sources=["original"]))
+        self.assertEqual([d["citation"] for d in out["documents"]], ["original://orig-1"])
+        snippet = out["documents"][0]["snippet"]
+        self.assertIn("Purchase order", snippet["untrusted_text"])
+        self.assertEqual(snippet["origin"]["citation"], "original://orig-1#page=1")
+        # A word in neither: no match. A reader the store lists nothing for: nothing.
+        self.assertEqual(ok(self, "plx.documents", self.call(
+            FULL, query="purchase zeppelin", sources=["original"]))["documents"], [])
+        restricted = ok(self, "plx.documents", self.call(query="purchase order line",
+                                                         sources=["original"]))
+        self.assertEqual(restricted["documents"], [])
+        self.assertNotIn("orig-1", json.dumps(restricted))
+
     def test_date_window_filters_and_partial_bindings_are_named(self):
         out = ok(self, "plx.documents", self.call(FULL, object_id=P1, since="2099-01-18"))
         self.assertEqual([d["citation"] for d in out["documents"]], [M2_H])
@@ -511,6 +586,31 @@ class DocumentsTests(unittest.TestCase):
         ops = ok(self, "plx.documents", self.call(object_id=P1, sources=["original"]))
         self.assertEqual(ops["documents"], [])
 
+    def test_original_mentions_are_those_of_the_text_read_in_each_call(self):
+        # The extraction of an original's text is remembered by the text's digest: the
+        # same text answers alike, and a text that changed is read anew in each call.
+        def listed():
+            out = ok(self, "plx.documents", self.call(FULL, object_id=P1,
+                                                      sources=["original"]))
+            return out["documents"]
+
+        first = listed()
+        self.assertEqual([m["span"]["untrusted_text"] for m in first[0]["mentions"]],
+                         [NUMBER])
+        self.assertEqual(listed(), first)
+        moved = f"Packet\nfiller line\nPurchase order {NUMBER} line 1\n"
+        with mock.patch.object(StubReader, "original_text", lambda _s, _h, _a: {
+                "text": moved, "pages": [{"page": 1, "start": 0, "end": 19},
+                                         {"page": 2, "start": 19, "end": len(moved)}]}):
+            (doc,) = listed()
+            self.assertEqual([(m["span"]["untrusted_text"], m["span"]["origin"]["citation"])
+                              for m in doc["mentions"]],
+                             [(NUMBER, "original://orig-1#page=2")])
+        with mock.patch.object(StubReader, "original_text", lambda _s, _h, _a: {
+                "text": "Packet without a number", "pages": []}):
+            self.assertEqual(listed(), [])
+        self.assertEqual(listed(), first)
+
     def test_paging_with_a_cursor(self):
         first = ok(self, "plx.documents", self.call(FULL, object_id=P1, limit=1))
         self.assertTrue(first["completeness"]["truncated"])
@@ -526,6 +626,85 @@ class DocumentsTests(unittest.TestCase):
         out = ok(self, "plx.documents", self.call(FULL, object_id=P1))
         self.assertEqual(injection_guard.bare_text_leaks(out, "Private thread"), [])
         self.assertEqual(injection_guard.bare_text_leaks(out, "IGNORE PREVIOUS"), [])
+
+    def test_a_word_search_narrowed_to_cell_spans_finds_the_same(self):
+        # Portal, mail (two mailboxes, one this reader's) and SharePoint values share the
+        # words, their cells interleaved. Narrowing the word index to the asked families'
+        # cell spans answers every reader, source, word and cap as the unnarrowed search.
+        def extend(store):
+            for n in range(4):
+                po = f"PurchaseOrder:portal.app_purchase_order:w-{n}"
+                store.obj(po, "api:public.app_purchase_order",
+                          f"api://public.app_purchase_order/w-{n}@0000000000000001-1",
+                          "gold_etl_from_fm")
+                store.val(po, "note", "text", f"Pallet shipment note {n}")
+                box = "mbx-a" if n % 2 else "mbx-b"
+                oid = f"Email:graph_mail.messages:w-{n}"
+                store.obj(oid, f"mail:{box}", f"graph-mail://{box}/w-{n}@ck1", "mail")
+                store.val(oid, "subject", "text", f"Pallet shipment {n}")
+            oid = "SharePointFile:sharepoint.items:w-f"
+            store.obj(oid, "sharepoint:drive-1", "sharepoint://drive-1/w-f@e1", "sharepoint")
+            store.val(oid, "name", "text", "Pallet shipment plan.md")
+
+        def answers(t):
+            return [t.call("plx.documents", {"query": query, **sources}, actor)
+                    for actor in (FULL, OPS) for query in ("pallet shipment", "shipping")
+                    for sources in ({}, {"sources": ["graph_mail"]},
+                                    {"sources": ["sharepoint"]})]
+
+        first = {}
+        for extended in (extend, None):   # None: a store with no SharePoint cell at all
+            t = tools(self.reader, extended)
+            spans = t._cell_spans(ev.STORE_DOCUMENT_FAMILIES)
+            self.assertEqual(len(spans), 2 if extended else 1)
+            for cap in (ev.DOC_SCAN_CAP, 2):
+                with mock.patch.object(ev, "DOC_SCAN_CAP", cap):
+                    narrowed = answers(t)
+                    with mock.patch.object(ev.EvidenceTools, "_cell_spans",
+                                           return_value=None):
+                        self.assertEqual(narrowed, answers(t))
+                first.setdefault(extended, narrowed)
+        full, ops = first[extend][0], json.dumps(first[extend][6:])
+        self.assertLessEqual({"graph-mail://mbx-a/w-1@ck1", "graph-mail://mbx-b/w-0@ck1",
+                              "sharepoint://drive-1/w-f@e1"},
+                             {d["citation"] for d in full["documents"]})
+        self.assertIn("graph-mail://mbx-a/w-1@ck1", ops)
+        self.assertNotIn("graph-mail://mbx-b/", ops)
+        self.assertNotIn("sharepoint://drive-1/w-f@e1", ops)
+
+    def test_a_word_query_reads_only_the_requested_sources(self):
+        # More mail values than the scan cap hold the word: a SharePoint file that holds
+        # it too is still found when SharePoint is asked for, and no mail row is put
+        # through the item gate (another source's rows never take the cap or its cost).
+        gated: list[str] = []
+
+        def extend(store):
+            for n in range(6):
+                oid = f"Email:graph_mail.messages:q-{n}"
+                store.obj(oid, "mail:mbx-a", f"graph-mail://mbx-a/q-{n}@ck1", "mail")
+                store.val(oid, "subject", "text", f"Quarterly replenishment plan {n}")
+            oid = "SharePointFile:sharepoint.items:f-1"
+            store.obj(oid, "sharepoint:drive-1", "sharepoint://drive-1/f-1@e1", "sharepoint")
+            store.val(oid, "name", "text", "Quarterly replenishment map.md")
+
+        self.tools = tools(self.reader, extend)
+        self.tools.base.item_gate = lambda actor, handle: gated.append(handle) or True
+        with mock.patch.object(ev, "DOC_SCAN_CAP", 3):
+            out = ok(self, "plx.documents", self.call(FULL, query="quarterly replenishment",
+                                                      sources=["sharepoint"]))
+            mail = ok(self, "plx.documents", self.call(FULL, query="quarterly replenishment",
+                                                       sources=["graph_mail"]))
+        self.assertEqual([d["citation"] for d in out["documents"]],
+                         ["sharepoint://drive-1/f-1@e1"])
+        self.assertFalse([h for h in gated[:gated.index("sharepoint://drive-1/f-1@e1") + 1]
+                          if h.startswith("graph-mail://")], gated)
+        # The mail search itself is unchanged: capped at the scan bound, never empty.
+        self.assertTrue(mail["documents"])
+        self.assertTrue(all(d["citation"].startswith("graph-mail://")
+                            for d in mail["documents"]))
+        # A reader without the SharePoint audience finds nothing there.
+        self.assertEqual(ok(self, "plx.documents", self.call(
+            OPS, query="quarterly replenishment", sources=["sharepoint"]))["documents"], [])
 
 
 class BareIdentifierTests(unittest.TestCase):
@@ -755,6 +934,8 @@ class ReadTests(unittest.TestCase):
         self.assertEqual(len(out["content"]["untrusted_text"]), 200)
         self.assertTrue(out["content"]["truncated"])
         self.assertEqual(out["content"]["origin"]["citation"], "original://o-1#page=2")
+        # The read cites the page it returned, never the file for the page's text.
+        self.assertEqual(out["citation"], "original://o-1#page=2")
         self.assertTrue(out["completeness"]["truncated"])
         self.assertIn("ocr_text_unconfirmed", [g["reason"] for g in out["gaps"]])
         missing = ok(self, "plx.read", self.call(FULL, citation="original://o-1", page=9))
@@ -826,6 +1007,55 @@ class _Live:
         self.bc = None
 
 
+class PageListBoundTests(unittest.TestCase):
+    """A page list that does not fit the answer is never cut silently (``with_pages``)."""
+
+    FILE = "original://orig-" + "a" * 32
+
+    def result(self, text: str, gaps: int) -> dict:
+        return {"citation": self.FILE, "status": "resolved", "content": {
+            "untrusted_text": text, "origin": {"citation": self.FILE}},
+            "gaps": [{"state": "stale", "reason": f"gap_{n}", "subject": self.FILE,
+                      "detail": "kept"} for n in range(gaps)],
+            "completeness": ot._completeness(1, None, False, None, None)}
+
+    def pages(self, count: int) -> list:
+        return ev.covered_pages(self.FILE, [{"page": n, "start": 10 * (n - 1),
+                                             "end": 10 * n - 1} for n in range(1, count + 1)],
+                                0, 10 * count)
+
+    def test_a_cut_list_says_so_with_a_full_gap_list_and_without_room_for_the_gap(self):
+        pages = self.pages(400)
+        for gaps in (0, ev.MAX_GAPS):
+            with self.subTest(gaps=gaps):
+                result = self.result("x" * 4000, gaps)
+                bound = ot._envelope_bytes(result) + 8000
+                out = ev.with_pages(result, pages, bound)
+                self.assertLessEqual(ot._envelope_bytes(out), bound)
+                listed = out["pages"]
+                self.assertEqual(listed, pages[:len(listed)])
+                self.assertLess(len(listed), len(pages))
+                self.assertEqual(len(out["gaps"]), max(gaps, 1))
+                said = out["gaps"][-1]
+                if gaps:   # the last gap is kept and says the cut too
+                    self.assertEqual((said["reason"], said["state"]),
+                                     (f"gap_{gaps - 1}", "stale"))
+                    self.assertIn(f"from page {len(listed) + 1} on", said["detail"])
+                else:
+                    self.assertEqual((said["reason"], said["subject"]),
+                                     ("page_citations_cut", pages[len(listed)]["page_citation"]))
+                self.assertEqual(out["content"]["untrusted_text"], "x" * 4000)
+        # No room even for the gap: the text is cut (said truncated) and the gap shown.
+        result = self.result("x" * 4000, 0)
+        out = ev.with_pages(result, pages, ot._envelope_bytes(result) + 10)
+        self.assertLessEqual(ot._envelope_bytes(out), ot._envelope_bytes(result) + 10)
+        self.assertNotIn("pages", out)
+        self.assertEqual(out["gaps"][0]["reason"], "page_citations_cut")
+        self.assertTrue(out["content"]["truncated"])
+        self.assertTrue(out["completeness"]["truncated"])
+        self.assertLess(len(out["content"]["untrusted_text"]), 4000)
+
+
 class RuntimeCitationsTests(unittest.TestCase):
     ROW = {"ok": True, "status": "current", "relation": "public.app_purchase_order",
            "key": {"id": "po-1"}, "capture": {"capture_id": 1}, "changed_since": False,
@@ -874,8 +1104,54 @@ class RuntimeCitationsTests(unittest.TestCase):
         hidden = ev.RuntimeCitations(_Runtime()).read("original://o-1", FULL)
         self.assertEqual(hidden["status"], "unresolvable")
 
+    def test_an_original_without_extracted_text_is_a_gap_never_a_complete_empty_read(self):
+        """An original (or one page of it) whose extraction holds no text reads as a
+        ``text_not_extracted`` gap with the extraction's reason, never complete."""
+
+        class Runtime(_Runtime):
+            def __init__(self, text, extraction, page=True):
+                super().__init__(original=text)
+                self.extraction, self.paged = extraction, page
+                self.originals = mock.Mock(**{"text_document.return_value": {
+                    "text": text, "pages": []}})
+
+            def read_original(self, handle, actor):
+                view = super().read_original(handle, actor)
+                view["extraction"] = self.extraction
+                if not self.paged:
+                    view.pop("page")
+                return view
+
+        unsupported = {"status": "unsupported", "page_count": 0,
+                       "warnings": ["unsupported_mime_type:image/heic"]}
+        for runtime, page, reason in (
+                (Runtime("", unsupported, page=False), None,
+                 "unsupported:unsupported_mime_type:image/heic"),
+                (Runtime("  \n", {"status": "extracted", "page_count": 2}), 2, "no_text")):
+            with self.subTest(reason=reason):
+                read_tools = tools(ev.RuntimeCitations(runtime))
+                arguments = {"citation": "original://o-1"}
+                if page is not None:
+                    arguments["page"] = page
+                out = ok(self, "plx.read", read_tools.call("plx.read", arguments, FULL))
+                self.assertEqual(out["status"], "resolved")
+                self.assertNotIn("content", out)
+                gap = next(g for g in out["gaps"] if g["reason"] == "text_not_extracted")
+                self.assertIn(f"({reason})", gap["detail"])
+                self.assertEqual(out["completeness"],
+                                 {**out["completeness"], "complete": False,
+                                  "reason": "text_not_extracted"})
+                self.assertEqual(out["fields"]["row.filename"]["untrusted_text"], "scan.pdf")
+        # With text, the same read is complete and has no such gap.
+        read_tools = tools(ev.RuntimeCitations(Runtime(INJECTION, {"status": "extracted"},
+                                                       page=False)))
+        whole = ok(self, "plx.read", read_tools.call("plx.read", {"citation": "original://o-1"},
+                                                     FULL))
+        self.assertTrue(whole["completeness"]["complete"])
+        self.assertNotIn("text_not_extracted", [g["reason"] for g in whole["gaps"]])
+
     def test_a_bc_capture_read_leaves_the_output_boundary_in_contract_and_citable(self):
-        # The boundary turned plx.read's bc:// ``fields`` into a
+        # Directive 24e7aa78f585: the boundary turned plx.read's bc:// ``fields`` into a
         # row envelope ({origin, cells}), failing the tool's own contract, so the Ask loop
         # found no evidence handle in the read and could not cite the record.
         from integrations.live_source_guard import LiveSourceAudience
@@ -1250,6 +1526,74 @@ class MailCaptureReadTests(unittest.TestCase):
                          ("mailbox_not_captured", f"mail:{box_c}"))
         self.assertEqual(gap(mail_citation(cm.BOX_A, "MSG-OLD", "CK-0"), cm.READER_A)[:2],
                          ("not_in_captured_folders", f"mail:{cm.BOX_A}"))
+
+    def test_an_attachment_or_member_read_whole_serves_its_text_or_says_none_was_read(self):
+        """An attachment read without a page gave its metadata alone, a complete read
+        with nothing of the file in it; it now serves the text a page read cites (HTML
+        and a zip's JSON member included), and a file with none is ``text_not_extracted``."""
+        import base64
+        import tempfile
+
+        from integrations.captured_text import container_members, member_handle
+        from ontology.tests.test_container_members import zipped
+        cm = self.cm
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        state = Path(temp.name) / "state"
+        spec = b'{"rule": "look-ahead window", "rate": 1.10}'
+
+        def attachment(aid, name, mime, content):
+            return {"id": aid, "@odata.type": "#microsoft.graph.fileAttachment",
+                    "name": name, "contentType": mime, "size": len(content) + 300,
+                    "isInline": False, "lastModifiedDateTime": "2026-09-30T10:00:00Z",
+                    "contentBytes": base64.b64encode(content).decode()}
+        graph = cm.FakeGraph()
+        graph.put(cm.BOX_A, "MSG-1", "CK-1-1", attachments=[
+            attachment("ATT-H", "map.html", "text/html",
+                       b"<p>A 30-day extension<script>SCRIPTONLY</script></p>"),
+            attachment("ATT-Z", "map.zip", "application/zip",
+                       zipped([("data/map-spec.json", spec)])),
+            attachment("ATT-B", "label.bin", "application/octet-stream", b"\x00\x01")])
+        store = cm.capture_mail.MailCaptureStore(state, clock=cm.Clock())
+        api, _transport = cm.graph_read.build_graph(cm.ENV, sender=graph)
+        cm.MailCapture(store, cm.GraphMailReader(api, cm.capture_audience()), cm.CAPTURE,
+                       sleep=lambda _s: None).run(cm.SCOPE)
+        rows = {json.loads(meta)["name"]: (handle, json.loads(meta), digest)
+                for handle, meta, digest in store.db.execute(
+                    "SELECT l1_handle, metadata, content_sha256 FROM attachments")}
+        zip_handle, zip_meta, zip_digest = rows["map.zip"]
+        (spec_member,) = container_members(store.blobs, {**zip_meta,
+                                                         "content_sha256": zip_digest}).members
+        store.close()
+        reader = ev.RuntimeCitations(self.runtime(None), mail_capture_dir=state)
+        read_tools = ev.EvidenceTools(tools().base, reader=reader)
+
+        def read(citation, actor=cm.READER_A, **arguments):
+            return ok(self, "plx.read", read_tools.call(
+                "plx.read", {"citation": citation, **arguments}, actor))
+        member = member_handle(zip_handle, spec_member.path, spec_member.sha256)
+        for citation, text in ((rows["map.html"][0], "A 30-day extension"),
+                               (member, spec.decode())):
+            with self.subTest(citation=citation):
+                out = read(citation)
+                self.assertEqual(out["status"], "resolved")
+                self.assertEqual(out["content"]["untrusted_text"], text)
+                self.assertEqual(out["content"]["origin"]["field_path"], "row.content_text")
+                self.assertTrue(out["completeness"]["complete"])
+        blob = rows["label.bin"][0]
+        out = read(blob)
+        self.assertNotIn("content", out)
+        self.assertEqual([(g["reason"], g["state"]) for g in out["gaps"]],
+                         [("text_not_extracted", "not_ingested")])
+        self.assertIn("unsupported", out["gaps"][0]["detail"])
+        self.assertEqual(out["completeness"]["reason"], "text_not_extracted")
+        self.assertFalse(out["completeness"]["complete"])
+        # A reader the mailbox audience withholds gets neither text nor gap.
+        for citation in (rows["map.html"][0], member, blob):
+            hidden = read(citation, cm.OUTSIDER)
+            self.assertNotEqual(hidden["status"], "resolved")
+            self.assertNotIn("30-day", json.dumps(hidden))
+            self.assertNotIn("text_not_extracted", json.dumps(hidden))
 
     def test_capture_applies_the_employee_mailbox_acl(self):
         out = ev.RuntimeCitations(self.runtime("employee_acl_denied"),

@@ -97,7 +97,7 @@ def generate(facts: Mapping[str, Any], link_contracts: Mapping[str, Any],
              overrides: Overrides) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return ({file name: domain document}, report). Deterministic.
 
-    The report holds ``type_of_relation``, ``excluded``, ``bound_elsewhere`` (relation ->
+    The report holds ``type_of_relation``, ``excluded``, ``storage``, ``bound_elsewhere`` (relation ->
     the curated ``object_type`` and ``binding`` standing for it), ``not_served`` (unserved
     relation -> ``object_type``, ``upstream_name`` and ``declared_by``: ``generated`` or
     the curated file), ``links_not_bound`` (a link whose target relation is not served
@@ -115,6 +115,7 @@ def generate(facts: Mapping[str, Any], link_contracts: Mapping[str, Any],
     bound_elsewhere: dict[str, dict[str, str]] = {}
     prop_of: dict[tuple[str, str], str] = {}
     identity = overrides.identity
+    storage = overrides.storage.get(facts["source"], {})
     for name in sorted(relations):
         rel = relations[name]
         if rel["excluded"]:
@@ -156,8 +157,11 @@ def generate(facts: Mapping[str, Any], link_contracts: Mapping[str, Any],
                 "lineage": dict(lineage),
                 "evidence": rel["evidence"] + [key_evidence],
                 "note": rel.get("note") or overrides.lineage_note,
+                **({"value_storage": storage[name]} if name in storage else {}),
             }],
             "properties": properties,
+            **({"markings": sorted(overrides.domain_markings[rel["domain"]])}
+               if rel.get("domain") in overrides.domain_markings else {}),
             "identity_keys": [{
                 "name": identity["key_name"],
                 "properties": [prop_of[(name, c)] for c in rel["key"]],
@@ -225,6 +229,11 @@ def generate(facts: Mapping[str, Any], link_contracts: Mapping[str, Any],
         "bound_elsewhere": bound_elsewhere, "not_served": not_served,
         "links_not_bound": sorted(skipped, key=lambda r: (r["from"], r["field"])),
         "link_contracts": contract_report, "fm_source_fk": fk_report,
+        # storage.json: the relations whose generated binding stores packed values, and
+        # those it lists that these facts do not generate (the full catalog's build
+        # refuses any: scripts/gen_ontology_skeleton.build).
+        "storage": {"packed": sorted(r for r in storage if r in type_of_relation),
+                    "unbound": sorted(set(storage) - set(type_of_relation))},
         "unit_contracts": unit_report, "money": money_report,
         "counts": {"object_types": len(types), "link_types": len(links),
                    "properties": sum(len(t["properties"]) for t in types.values()),
@@ -561,6 +570,10 @@ def _mark_by_name(overrides: Overrides, family: str,
             if (relation, column) in rule.exceptions:
                 report[key] = f"{rule.exception_label}: {rule.exceptions[(relation, column)]}"
                 continue
-            p["markings"] = sorted(set(p.get("markings", ())) | {rule.marking})
-            report[key] = f"{rule.marking}-marked {p['value_type']}: {rule.applied}"
+            marking = overrides.scoped_marking(rule.marking, relation, column)
+            p["markings"] = sorted(set(p.get("markings", ())) | {marking})
+            report[key] = (f"{rule.marking}-marked {p['value_type']}: {rule.applied}"
+                           if marking == rule.marking else
+                           f"{marking}-marked {p['value_type']} (scoped_markings, in place of "
+                           f"{rule.marking}): {rule.applied}")
     return report

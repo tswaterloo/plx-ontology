@@ -1,6 +1,6 @@
 """The owning-system adapter contract for goal-2 dispatch, and an isolated owner.
 
-``operating.action_path`` decides
+Design: ``devloop/GOAL2-ACTIONS.md`` section 5b. ``operating.action_path`` decides
 *whether* an action may run (MC gate decided by a human admin/owner, current
 preconditions, the production hard guard); the owning system decides *what
 happened*. This module fixes the boundary between them, so that a real,
@@ -59,7 +59,7 @@ operation log says ``partial``, read back as ``unknown``) and
 same fields: the read-back sees a different value).
 
 What a real capability needs before it can be plugged in is
-``REAL_CAPABILITY_REQUIREMENTS`` (Vince).
+``REAL_CAPABILITY_REQUIREMENTS`` (GOAL2-ACTIONS.md section 8 item 2; Vince).
 
 Evidence label: ``isolated-fixture``.
 """
@@ -194,7 +194,7 @@ REAL_CAPABILITY_REQUIREMENTS: tuple[Mapping[str, str], ...] = (
     {"id": "isolated_test_tenant", "by": "Vince",
      "need": "a non-production instance of the owning system to prove the adapter "
              "live (a test company inside BC Production is not a sandbox), plus a "
-             "verify/live-checks spec for it"},
+             "devloop/live-checks spec for it"},
 )
 
 _DDL = """

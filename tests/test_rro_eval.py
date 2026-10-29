@@ -1,4 +1,4 @@
-"""Related Release Orders Draft 8: the 26 PROPOSED items over a pinned original.
+"""Related Release Orders Draft 8: the Dot's 26 PROPOSED items over a pinned original.
 
 The committed card file (``evals/dev/rro/proposed_items.json``) becomes 26
 ``plx-eval-item/v1`` items (14 comprehension F21, 12 arithmetic F22) through the
@@ -22,8 +22,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-from verify import live_verify
-from evals import runner, score
+from devloop import live_verify
+from evals import case_cards, runner, score
 from evals.measure import CONFLICT_REASON
 from evals.admission import admissible
 from evals.tests import fixtures as fx
@@ -43,16 +43,20 @@ def cards() -> dict:
     return json.loads(CARDS.read_text(encoding="utf-8"))
 
 
-def stand_in(doc: dict) -> bytes:
+def stand_in(doc: dict, stop: str = ".") -> bytes:
     """A synthetic original with the cards' anchors in range and each calculation's
-    operands printed (with thousands separators) on its first anchored line."""
+    operands printed (with thousands separators) on its first anchored line. Each line
+    ends with ``stop``: page text joins lines, so without it a line's last figure takes
+    the next line's first word as its meaning ("5,984 STAND"), and a figure printed twice
+    has two meanings, which the claim gate refuses as ambiguous (claim_checks prose-figure
+    rule, 464b1af27c and a22101fe50)."""
     lines = [f"{MARKER} {n}" for n in range(1, 1901)]
     for card in doc["real_example"]["cards"]:
         if card["layer"] == "arithmetic":
             first = card["source_lines"][0][0]
             lines[first - 1] += " " + " ".join(
                 f"{Decimal(o):,}" for o in tool._OPERAND.findall(card["calculation"]))
-    return ("\n".join(lines) + "\n").encode()
+    return ("\n".join(line + stop for line in lines) + "\n").encode()
 
 
 class CommittedProposalTests(unittest.TestCase):
@@ -107,9 +111,11 @@ class CommittedProposalTests(unittest.TestCase):
                                     "provenance_conflicts", "policy_status",
                                     "missing_originals", "real_example"})
         allowed = {"id", "layer", "question", "criterion", "source_lines", "interpretation",
-                   "calculation", "result"}
+                   "calculation", "result", "anchor"}
         for card in doc["real_example"]["cards"]:
             self.assertLessEqual(set(card), allowed, card["id"])
+            # an anchor names its record and the committed source naming it (card anchors)
+            self.assertIsNone(case_cards.anchor_problem(card), card["id"])
         # Kept out of the synthetic dev set the fixture baseline runs over.
         self.assertEqual(len(runner.load_items(ROOT / "evals" / "dev", split="dev")), 30)
 
@@ -123,12 +129,14 @@ class CommittedProposalTests(unittest.TestCase):
 
 
 class CaptureAndRunTests(unittest.TestCase):
+    stop = "."   # each stand-in line's end (stand_in)
+
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.state = Path(tmp.name) / "state"
         self.doc = cards()
-        self.body = stand_in(self.doc)
+        self.body = stand_in(self.doc, self.stop)
         self.doc["source"]["original"].update(sha256=sha256(self.body).hexdigest(),
                                               web_url=fake.PERSONAL_LINK)
         self.cards = Path(tmp.name) / "cards.json"
@@ -221,7 +229,7 @@ class CaptureAndRunTests(unittest.TestCase):
         self.assertNotIn(fake.PERSONAL_LINK, captures)
         # The live check's expectations hold on this output except the pinned Draft 8
         # identity, which a synthetic stand-in must never satisfy.
-        spec = json.loads((ROOT / "verify" / "live-checks" / "eval.use_case_proposal.json")
+        spec = json.loads((ROOT / "devloop" / "live-checks" / "eval.use_case_proposal.json")
                           .read_text("utf-8"))
         self.assertEqual(live_verify.check_expectations(spec, code, report),
                          ["original.sha256 != expected", "original.bytes != expected"])
@@ -279,6 +287,8 @@ class CaptureAndRunTests(unittest.TestCase):
 class AnswerRunTests(unittest.TestCase):
     """``--answer``: the admitted items run through a scripted agent on hosts seeded from
     the recorded capture (injected transport for the capture, synthetic stand-in body)."""
+
+    stop = CaptureAndRunTests.stop
 
     def setUp(self):
         CaptureAndRunTests.setUp(self)
@@ -384,7 +394,7 @@ class AnswerRunTests(unittest.TestCase):
                           for k in ("runs", "agree", "disagree", "blocked")},
                          {"runs": 11, "agree": 10, "disagree": 1, "blocked": 0})
         self.assertNotIn(MARKER, out)
-        spec = json.loads((ROOT / "verify" / "live-checks" / "eval.use_case_answers.json")
+        spec = json.loads((ROOT / "devloop" / "live-checks" / "eval.use_case_answers.json")
                           .read_text("utf-8"))
         self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", spec["requires_env"])  # either name:
         self.assertEqual(spec["requires_env_any"],
@@ -439,7 +449,7 @@ class AnswerRunTests(unittest.TestCase):
         self.assertEqual(report["blocked_upstream"], [{"part": "use_case_answers",
                                                        "source": "case-originals",
                                                        "cause": "capture_gap"}])
-        spec = json.loads((ROOT / "verify" / "live-checks" / "eval.use_case_answers.json")
+        spec = json.loads((ROOT / "devloop" / "live-checks" / "eval.use_case_answers.json")
                           .read_text("utf-8"))
         self.assertEqual(live_verify.check_expectations(spec, code, report,
                                                         spec["expect_blocked"]), [])
@@ -448,6 +458,51 @@ class AnswerRunTests(unittest.TestCase):
             code, _, err = self.answer(reader=reader)
             self.assertEqual((code, json.loads(err)),
                              (1, {"error": "reader_must_be_an_employee_principal"}))
+
+
+class AmbiguousPageFigureTests(unittest.TestCase):
+    """The same scripted answers over a stand-in whose lines end on a figure. A figure's
+    meaning and label word come from its own line only (``claim_checks._line_breaks``):
+    "... 5,984" ending a line never means the "STAND" opening the next, so A04, A08 and
+    A12 are credited as on the stand-in with stops. A figure printed with two meanings,
+    each on its own line, is still refused bare, never guessed."""
+
+    stop = ""
+    setUp, script, answer = AnswerRunTests.setUp, AnswerRunTests.script, AnswerRunTests.answer
+
+    def test_a_line_end_figure_takes_no_meaning_from_the_next_line(self):
+        code, out, err = self.answer()
+        self.assertEqual(code, 0, err)
+        rows = {r["card_id"]: r for r in json.loads(out)["answers"]["per_item"]}
+        # A04: 5,984 twice, the last ends its line; A12: 12 ends its line and is printed
+        # mid-line too; A08: 1,584 is also the page's line number 1584 at a line end.
+        for cid in ("A04", "A08", "A12"):
+            self.assertEqual(rows[cid]["outcome"], "correct", (cid, rows[cid]["codes"]))
+        self.assertEqual({cid for cid, r in rows.items() if r["layer"] == "arithmetic"
+                          and r["outcome"] == "wrong"}, {self.wrong})
+
+    def test_a_figure_printed_with_two_meanings_on_two_lines_is_refused_not_guessed(self):
+        from operating import claim_checks
+        page = "original://doc#page=1"
+        text = "Ordered 5,984 units\nSTAND 5,984 kits on hand\n"
+
+        def checked(quote=None):
+            claim = {"value": "5984", "citation": page, "field": "text",
+                     **({"quote": quote} if quote else {})}
+            parsed = claim_checks.parse_value_claims([claim], [page], [])
+            return claim_checks.check_items(
+                [{"id": "F1", "texts": [], "value_claims": parsed,
+                  "citations": [{"handle": page, "status": "resolved"}]}],
+                rows={page: {"page": 1, "text": text}}.get)
+        bare = checked()
+        self.assertEqual([f["code"] for f in bare["failures"]], ["claim_value_mismatch"])
+        self.assertIn("ambiguous", bare["failures"][0]["detail"])
+        self.assertTrue(checked("Ordered 5,984 units")["passed"])
+        # The same two lines, the first ending on its figure: one meaning, no ambiguity.
+        text = "Ordered 5,984\nSTAND 5,984 kits on hand\n"
+        self.assertFalse(checked()["passed"])   # "Ordered 5,984" vs "5,984 kits": two
+        text = "Ordered 5,984\nSTAND by. Kept 5,984\n"
+        self.assertTrue(checked()["passed"], checked()["failures"])
 
 
 if __name__ == "__main__":

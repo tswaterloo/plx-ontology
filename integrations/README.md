@@ -17,7 +17,7 @@ repos are read as checked-out source, never as business evidence.
 | Documents | `document_understanding.py` (see `DOCUMENT_UNDERSTANDING.md`), `doc_convert.py`, `xlsx_extract.py`, `macos_pdf_ocr.swift` |
 | Mission Control and brain | `mc.py`, `plx_hub_guard.py`, `vmc.py`, `mc_brain_probe.py` |
 
-All clients are labelled live-unverified until a `verify/live-checks/<id>.json` spec has run
+All clients are labelled live-unverified until a `devloop/live-checks/<id>.json` spec has run
 on reviewed main; the tests inject transports.
 
 ## Live read clients
@@ -41,14 +41,14 @@ task context comes from Mission Control (`mc_get_context` /
 employee and every hit is an untrusted lead; no Workbench tool serves them (the
 MCP knowledge search and `integrations/knowledge_leads.py` were retired with the
 platform MCP host). `MissionControlMcpClient` is the guarded
-MCP client; hosts are pinned to the reference-named MC and brain hosts.
+MCP client; hosts are pinned to the pack-named MC and brain hosts.
 
-- **Read-only by default.** `call_tool` sends only the read tools of mission-control.md
+- **Read-only by default.** `call_tool` sends only the read tools of pack 04
   §3 rows 1-12 (retried on 429/502/503/504 with jittered backoff capped at 4 s;
   `Retry-After` seconds or HTTP-date honoured up to the cap; injected sleep,
   jitter and clock). Every call, refusals included, gets a local audit record
   (`McAuditLog`, optional JSONL path).
-- **Writes need explicit opt-in.** Only the reference's W-A tools
+- **Writes need explicit opt-in.** Only the pack's W-A tools
   (`mc_create_task`, `mc_checkout_task`, `mc_report_progress`,
   `mc_complete_task`, `mc_request_approval`) can be opted in, via
   `write_tools=` plus `write_approvers=` (humans, never the MC operator or a
@@ -73,7 +73,7 @@ MCP client; hosts are pinned to the reference-named MC and brain hosts.
   `BRAIN_API_KEY` (`brn_`), else `VMC_API_URL` + `VMC_API_KEY`. Hits are
   untrusted leads (upstream `deterministic_link` 0.9 labels dropped), trimmed
   per actor before the per-actor cache. No write-back path exists.
-See `docs/reference/source-notes.md` "Mission Control and brain".
+See `devloop/SOURCE-NOTES.md` "Mission Control and brain".
 
 The MC contracts are grounded in MC `src/app/api/cursor/{tasks,context,self-check}/route.ts`,
 `src/app/api/cursor/tasks/[id]/route.ts`, `src/lib/mcp/read-actions.ts`,

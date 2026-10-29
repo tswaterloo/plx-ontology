@@ -8,7 +8,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from verify.tests.test_import_graph import TREE, write_tree
+from devloop.tests.test_import_graph import TREE, write_tree
 from scripts import gen_codemap
 
 PINS = {"pins": [
@@ -29,13 +29,13 @@ class RenderTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = write_tree(Path(self.tmp.name), {
-            **TREE, "verify/upstream-pins.json": json.dumps(PINS)})
+            **TREE, "devloop/upstream-pins.json": json.dumps(PINS)})
         self.text = gen_codemap.render(self.root)
         self.lines = self.text.splitlines()
 
     def test_how_to_use_comes_first(self) -> None:
         self.assertTrue(self.text.startswith("# Code map (generated)"))
-        self.assertIn("python3 verify/affected_tests.py --base origin/main", self.text[:1500])
+        self.assertIn("python3 devloop/affected_tests.py --base origin/main", self.text[:1500])
         self.assertLess(self.text.index("How to use"), self.text.index("## pkg"))
 
     def test_packages_are_sections_with_module_and_test_counts(self) -> None:
@@ -81,7 +81,7 @@ class RenderTests(unittest.TestCase):
     def test_output_is_deterministic_and_independent_of_creation_order(self) -> None:
         with tempfile.TemporaryDirectory() as other:
             reverse = write_tree(Path(other), dict(reversed(list(
-                {**TREE, "verify/upstream-pins.json": json.dumps(PINS)}.items()))))
+                {**TREE, "devloop/upstream-pins.json": json.dumps(PINS)}.items()))))
             self.assertEqual(gen_codemap.render(reverse), self.text)
         self.assertEqual(gen_codemap.render(self.root), self.text)
 
@@ -96,7 +96,7 @@ class SectionTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = write_tree(Path(self.tmp.name), {
-            **TREE, "verify/upstream-pins.json": json.dumps(PINS)})
+            **TREE, "devloop/upstream-pins.json": json.dumps(PINS)})
         self.full = gen_codemap.render(self.root)
 
     def sections(self, *prefixes: str) -> list[str]:

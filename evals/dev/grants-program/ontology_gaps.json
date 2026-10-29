@@ -1,7 +1,7 @@
 {
  "format": "plx-case-ontology-gaps/v1",
  "case": "stephen-grants",
- "status": "What the ontology lacks to answer evals/dev/grants-program/proposed_items.json. Sources are named, never read here; 'source unknown' carries the question that would find one. A brief reference names who asked, not the system of record.",
+ "status": "What the ontology lacks to answer evals/dev/grants-program/proposed_items.json. Sources are named, never read here; 'source unknown' carries the Dot question that would find one. A brief reference names who asked, not the system of record.",
  "advisory": "advisory:4db485a7f2e6",
  "gaps": [
   {
@@ -23,7 +23,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Where are the NGen project 14091 agreement, budget and claim periods kept (SharePoint site and library, funder portal), and who owns them?"
+   "dot_question": "Where are the NGen project 14091 agreement, budget and claim periods kept (SharePoint site and library, funder portal), and who owns them?"
   },
   {
    "id": "GP-GAP-02",
@@ -49,7 +49,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Where is the NGen Q10 claim workbook (site, library, file name) and which revision was submitted to the funder?"
+   "dot_question": "Where is the NGen Q10 claim workbook (site, library, file name) and which revision was submitted to the funder?"
   },
   {
    "id": "GP-GAP-03",
@@ -64,11 +64,11 @@
     {
      "system": "microsoft-graph",
      "relation": "mail (candidate only)",
-     "ref": "OntologyProject:docs/reference/live-sources.md@2003e14a91ee:19"
+     "ref": "OntologyProject:devloop/CONTEXT/06-LIVE-SOURCES.md@2003e14a91ee:19"
     }
    ],
    "source": "source unknown",
-   "open_question": "Where do NGen eligibility rulings such as the Q9 review arrive (funder portal message, letter, mail to which mailbox), and who at PLX keeps them?"
+   "dot_question": "Where do NGen eligibility rulings such as the Q9 review arrive (funder portal message, letter, mail to which mailbox), and who at PLX keeps them?"
   },
   {
    "id": "GP-GAP-04",
@@ -80,7 +80,7 @@
     "GP-11"
    ],
    "source": "source unknown",
-   "open_question": "Which funder portal and cadence does NGen use for claims, can its submitted claims and reimbursements be exported read-only, and who is the contact?"
+   "dot_question": "Which funder portal and cadence does NGen use for claims, can its submitted claims and reimbursements be exported read-only, and who is the contact?"
   },
   {
    "id": "GP-GAP-05",
@@ -109,7 +109,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Which system records hours worked on NGen 14091 by person and period (payroll project coding, a timesheet workbook), and can hours be read without wages?"
+   "dot_question": "Which system records hours worked on NGen 14091 by person and period (payroll project coding, a timesheet workbook), and can hours be read without wages?"
   },
   {
    "id": "GP-GAP-06",
@@ -132,7 +132,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Which key does a Q10 cost row carry to its invoice and payment (vendor invoice number, BC document number, Sage PO, cheque or EFT reference)?"
+   "dot_question": "Which key does a Q10 cost row carry to its invoice and payment (vendor invoice number, BC document number, Sage PO, cheque or EFT reference)?"
   },
   {
    "id": "GP-GAP-07",
@@ -151,7 +151,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "When one cost is claimed to more than one funder, where is that split recorded and which cost key does each claim line carry?"
+   "dot_question": "When one cost is claimed to more than one funder, where is that split recorded and which cost key does each claim line carry?"
   },
   {
    "id": "GP-GAP-08",
@@ -162,7 +162,7 @@
     "GP-09"
    ],
    "source": "source unknown",
-   "open_question": "Where are NGen 14091 deliverables and partner deliveries tracked, and which key ties a cost or an hours entry to one?"
+   "dot_question": "Where are NGen 14091 deliverables and partner deliveries tracked, and which key ties a cost or an hours entry to one?"
   },
   {
    "id": "GP-GAP-09",
@@ -181,7 +181,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Does PLX code NGen 14091 costs and payroll to the project in BC (a dimension), in Sage (a job or G/L segment) or only in the claim workbook?"
+   "dot_question": "Does PLX code NGen 14091 costs and payroll to the project in BC (a dimension), in Sage (a job or G/L segment) or only in the claim workbook?"
   },
   {
    "id": "GP-GAP-10",
@@ -201,7 +201,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Which SharePoint site and library hold the NGen claim workbooks and supporting invoice PDFs, and may the Workbench capture them read-only?"
+   "dot_question": "Which SharePoint site and library hold the NGen claim workbooks and supporting invoice PDFs, and may the Workbench capture them read-only?"
   },
   {
    "id": "GP-GAP-11",
@@ -219,7 +219,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Which Sage AP or G/L tables hold the vendor invoices and payments claimed to NGen, and can the reporting API serve them read-only?"
+   "dot_question": "Which Sage AP or G/L tables hold the vendor invoices and payments claimed to NGen, and can the reporting API serve them read-only?"
   },
   {
    "id": "GP-GAP-12",
@@ -232,7 +232,7 @@
     "GP-11"
    ],
    "source": "source unknown",
-   "open_question": "Does the NGen funder portal offer a read-only export or API for submitted claims, rulings and reimbursements, and who holds access?"
+   "dot_question": "Does the NGen funder portal offer a read-only export or API for submitted claims, rulings and reimbursements, and who holds access?"
   }
  ]
 }

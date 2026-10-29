@@ -1,0 +1,143 @@
+{
+ "schema": "plx-use-case-catalog/v1",
+ "note": "Nonsecret catalog of the use cases the business delivered to the Workbench and the source documents each one names (operating.use_case_catalog). A plx.find or plx.documents query that names a use case (its id as written, its full title, or one of its phrases next to 'use case', 'map' or 'process') gets that use case's own documents in a separate use_case block (never as search hits), each through its source's gate for the reader, and every document the use case needs that the Workbench does not hold as a named gap. Documents are named by where they are held: a SharePoint capture item (drive id, item id: its current captured version) or a case original of examples/case_originals.json (entry id). Gap rows name a document no source the Workbench reads holds; registry_row is the examples/case_originals.json row or card gap id it comes from (provenance only). Phrases have two words or more; a one-word id matches only next to such a keyword or as the whole query. Edit by hand when a use case or its documents change; tests/test_use_case_catalog.py checks it against the registry and the eval card sets.",
+ "use_cases": [
+  {
+   "id": "amazon-fba",
+   "title": "Amazon FBA replenishment",
+   "phrases": ["amazon fba", "fba replenishment"],
+   "documents": [
+    {"role": "map", "sharepoint": {"drive_id": "b!W4ssx17NiUipzjgFW2Rt1fW8RXEL_4xBgKvtLTtDIYNO-gr9fxAMQ7PHzLrczCuH", "item_id": "01RVPYB2GFP4P76T7LPBCJMOIXNMCEVMM4"}}
+   ],
+   "gaps": []
+  },
+  {
+   "id": "artwork-lifecycle",
+   "title": "Artwork lifecycle",
+   "phrases": ["artwork lifecycle"],
+   "documents": [
+    {"role": "map", "original": "co-bbd2a0e1abe4"},
+    {"role": "readme", "original": "co-bf0ab54326c2"}
+   ],
+   "gaps": []
+  },
+  {
+   "id": "asset-tracker",
+   "title": "Asset tracker: capitalize or expense",
+   "phrases": ["asset tracker", "capitalize vs expense", "capitalize or expense"],
+   "documents": [
+    {"role": "brief", "original": "co-2b32fe4f123c"},
+    {"role": "evidence", "sharepoint": {"drive_id": "b!21cDMtYWPk-2Su5-pozouhzo_iLz19dAtUMJDRf47JSsDBDlNOUZRadmEvEPqrmg", "item_id": "01TBGFSAV43YZIUR6JINBLWMC7YAQR226S"}}
+   ],
+   "gaps": [
+    {"document": "the asset tracker workbook revision the brief was written from", "registry_row": "gap-c6eac8f2325d", "detail": "pinned by the use case's record but not held: no watched folder serves that revision"}
+   ]
+  },
+  {
+   "id": "brand-requirements",
+   "title": "Brand and regulatory requirements",
+   "phrases": ["brand requirements", "brand requirement", "regulatory process flow"],
+   "documents": [
+    {"role": "map", "original": "co-eb9a6a206832"}
+   ],
+   "gaps": []
+  },
+  {
+   "id": "expired-disposition",
+   "title": "Expired material disposition",
+   "phrases": ["expired material disposition", "expired disposition", "expired material"],
+   "documents": [
+    {"role": "map", "sharepoint": {"drive_id": "b!W4ssx17NiUipzjgFW2Rt1fW8RXEL_4xBgKvtLTtDIYNO-gr9fxAMQ7PHzLrczCuH", "item_id": "01RVPYB2FOE7GHDI64NJA3ZXKPTNFK2W3Z"}}
+   ],
+   "gaps": []
+  },
+  {
+   "id": "grants-program",
+   "title": "Grants program",
+   "phrases": ["grants program", "grant program"],
+   "documents": [
+    {"role": "brief", "original": "co-81d7ee151c6e"}
+   ],
+   "gaps": []
+  },
+  {
+   "id": "packaging-sourcing",
+   "title": "New packaging sourcing",
+   "phrases": ["packaging sourcing", "new packaging sourcing"],
+   "documents": [
+    {"role": "map", "sharepoint": {"drive_id": "b!W4ssx17NiUipzjgFW2Rt1fW8RXEL_4xBgKvtLTtDIYNO-gr9fxAMQ7PHzLrczCuH", "item_id": "01RVPYB2DBBVHH4OFKCJGY4XQT5P4YSZQF"}}
+   ],
+   "gaps": []
+  },
+  {
+   "id": "procure-to-gl",
+   "title": "Packaging procure-to-GL and screening",
+   "phrases": ["procure to gl", "packaging procure to gl"],
+   "documents": [
+    {"role": "map", "original": "co-9b95f4c321f9"},
+    {"role": "map", "sharepoint": {"drive_id": "b!W4ssx17NiUipzjgFW2Rt1fW8RXEL_4xBgKvtLTtDIYNO-gr9fxAMQ7PHzLrczCuH", "item_id": "01RVPYB2AB5YDYYHEAWVEYHWTPX4X2ET3Z"}},
+    {"role": "evidence", "sharepoint": {"drive_id": "b!W4ssx17NiUipzjgFW2Rt1fW8RXEL_4xBgKvtLTtDIYNO-gr9fxAMQ7PHzLrczCuH", "item_id": "01RVPYB2FYNVL5CSAAMBCLSU77JM3ZRS3M"}}
+   ],
+   "gaps": []
+  },
+  {
+   "id": "quote-to-order",
+   "title": "Quote to order",
+   "phrases": ["quote to order"],
+   "documents": [
+    {"role": "map", "sharepoint": {"drive_id": "b!W4ssx17NiUipzjgFW2Rt1fW8RXEL_4xBgKvtLTtDIYNO-gr9fxAMQ7PHzLrczCuH", "item_id": "01RVPYB2D247AISQ2DNFGI6TU2R6TXHNRH"}},
+    {"role": "readme", "sharepoint": {"drive_id": "b!W4ssx17NiUipzjgFW2Rt1fW8RXEL_4xBgKvtLTtDIYNO-gr9fxAMQ7PHzLrczCuH", "item_id": "01RVPYB2AEU7BVTHXT7BAIZW2ZMJF6XTTC"}},
+    {"role": "evidence", "sharepoint": {"drive_id": "b!W4ssx17NiUipzjgFW2Rt1fW8RXEL_4xBgKvtLTtDIYNO-gr9fxAMQ7PHzLrczCuH", "item_id": "01RVPYB2EXC54PZJDIRZGKGWLGG5WXWN7N"}},
+    {"role": "evidence", "sharepoint": {"drive_id": "b!W4ssx17NiUipzjgFW2Rt1fW8RXEL_4xBgKvtLTtDIYNO-gr9fxAMQ7PHzLrczCuH", "item_id": "01RVPYB2DGNG3VIM3RD5GLAX7MCRCDC2M6"}},
+    {"role": "evidence", "sharepoint": {"drive_id": "b!W4ssx17NiUipzjgFW2Rt1fW8RXEL_4xBgKvtLTtDIYNO-gr9fxAMQ7PHzLrczCuH", "item_id": "01RVPYB2B4WPSIIX6KUZEJE55QSERX7M3M"}},
+    {"role": "evidence", "sharepoint": {"drive_id": "b!W4ssx17NiUipzjgFW2Rt1fW8RXEL_4xBgKvtLTtDIYNO-gr9fxAMQ7PHzLrczCuH", "item_id": "01RVPYB2GCUHL3RRERPFGJR4LSVNF5GBWZ"}}
+   ],
+   "gaps": []
+  },
+  {
+   "id": "ricardo-maps",
+   "title": "Operations process maps: file intake, PO delivery window, order lifecycle cost",
+   "phrases": ["file intake map", "po delivery window", "order lifecycle cost"],
+   "documents": [
+    {"role": "map", "original": "co-ad0e361eb696"},
+    {"role": "map", "original": "co-4b5768fdfd91"},
+    {"role": "map", "original": "co-4fc10ada2d57"},
+    {"role": "evidence", "original": "co-43309f2c499d"},
+    {"role": "evidence", "original": "co-a232eeb23b8e"},
+    {"role": "evidence", "original": "co-74d5ba693f2f"}
+   ],
+   "gaps": []
+  },
+  {
+   "id": "rnd-maps",
+   "title": "R&D process maps: meeting agenda, raw material samples, ingredient lists",
+   "phrases": ["r d process maps", "r d process map", "r d bi weekly", "raw material samples"],
+   "documents": [],
+   "gaps": [
+    {"document": "the R&D bi-weekly meeting agenda preparation map", "registry_row": "gap-1aefac272d36", "detail": "known from the use case's record only: no source the Workbench reads holds the map"},
+    {"document": "the raw material samples map (from request to used up)", "registry_row": "gap-15999825ecff", "detail": "known from the use case's record only: no source the Workbench reads holds the map"},
+    {"document": "the ingredient lists map (from sample made to the customer)", "registry_row": "gap-7dc82f245571", "detail": "known from the use case's record only: no source the Workbench reads holds the map"}
+   ]
+  },
+  {
+   "id": "rro",
+   "title": "Related release orders",
+   "phrases": ["related release order", "related release orders"],
+   "documents": [
+    {"role": "map", "original": "co-526103c21a4e"}
+   ],
+   "gaps": []
+  },
+  {
+   "id": "screening",
+   "title": "Screening process",
+   "phrases": ["screening process"],
+   "documents": [
+    {"role": "map", "sharepoint": {"drive_id": "b!W4ssx17NiUipzjgFW2Rt1fW8RXEL_4xBgKvtLTtDIYNO-gr9fxAMQ7PHzLrczCuH", "item_id": "01RVPYB2AB5YDYYHEAWVEYHWTPX4X2ET3Z"}}
+   ],
+   "gaps": [
+    {"document": "the screening bottles source folder", "registry_row": "gap-93ce2c66fc20", "detail": "named by the use case's record but not held: no watched folder serves it"}
+   ]
+  }
+ ]
+}

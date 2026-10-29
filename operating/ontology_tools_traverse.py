@@ -1,7 +1,7 @@
-"""Generic ontology tools ``plx.around`` and ``plx.timeline``.
+"""Generic ontology tools ``plx.around`` and ``plx.timeline`` (lane L9).
 
 Both tools read the L2 projection store (``ontology/store_ddl.py``, built by the
-projector) through the base tools' ``StoreReader`` and ``ReadPolicy``
+L7 projector) through lane L8's ``StoreReader`` and ``ReadPolicy``
 (``operating/ontology_tools.py``) and answer exactly the frozen contracts in
 ``operating/ontology_tool_contracts.json``: every output is validated with
 ``ontology/json_contract.py`` and bounded by ``limits.max_result_bytes`` before
@@ -11,9 +11,9 @@ complete. A set member first captured after ``as_known_at`` is left out with a
 ``not_ingested`` ``captured_after_as_known_at`` gap that counts only members the
 reader may read now; the answer as known at T stays complete. Nothing here names an object type, link type, event type or case:
 paths, types, display properties and event types come from the compiled schema
-and the store rows.
+and the store rows (10-DECISION 4, 09-CRITIQUE R4).
 
-Permissions come first (store_ddl docstring). An object is
+Permissions come first (09-CRITIQUE R6 #7, store_ddl docstring). An object is
 visible to a reader at ``as_known_at = T`` only when, *inside the SQL that
 selects, caps and counts rows*:
 
@@ -27,7 +27,7 @@ selects, caps and counts rows*:
 
 The item gate re-checks item-level ACLs of mail, SharePoint and original items
 through their L1 handle (store_ddl docstring; the case host does the same in
-``operating/case_runtime.py`` ``_employee_acl_denial``) with the base tools' gate: the
+``operating/case_runtime.py`` ``_employee_acl_denial``) with L8's gate: the
 host's ``OntologyTools(item_gate=...)`` (``item_gate_from_case_runtime``);
 without one, every ``graph-mail://``, ``sharepoint://`` and ``original://``
 handle is denied (default deny). The gate
@@ -35,7 +35,7 @@ runs as an SQL function, so hidden items neither take a page slot nor reach a
 cap nor change a count. A link is visible when it is live at T, its markings are
 held, every evidence handle passes the gate and both ends are visible. An event
 is visible when it is live at T, its markings are held, its handle passes the
-gate and every object it relates to is visible (the projector's read convention).
+gate and every object it relates to is visible (the L7 read convention).
 
 ``plx.around`` walks 1-3 declared link types (forward or reverse) from an object
 or a set handle. Each hop is validated against the schema before any read: an
@@ -43,7 +43,7 @@ undeclared link type or a hop whose source type is not the previous hop's
 target type is refused. ``tier_floor`` is the weakest tier traversed (default
 ``stored_by_text_join``: ``lead`` and ``contradicted`` links are shown only when
 a caller asks for them). A link touching a version whose lineage is
-``gold_native_staging`` is capped at ``lead`` (never authority, the same
+``gold_native_staging`` is capped at ``lead`` (R1: never authority, the same
 rule plx.find applies), unless it is a foreign key one source stores between its
 own rows: lineage decides which copy's values win, not whether that key exists.
 That rule is ``operating.ontology_tools._effective_tier``, the one plx.aggregate and
@@ -121,7 +121,7 @@ permission limit never reads as a business fact. A filter on a property whose va
 an object holds withheld from this reader decides that object only where its
 readable values already do (``_filter_holds``), with a ``marking_withheld`` gap.
 
-Completeness follows the same rule (rule: filter by permission before ranking;
+Completeness follows the same rule (owner rule: filter by permission before ranking;
 hidden evidence is never a complete count). When this reader's grants may hide part of
 what a call reads (``_slice_trimmed``: an audience unit, a marking or an item-gated
 handle of the path's link and object types, or of the root's event types, that it
@@ -132,13 +132,13 @@ set made from such an answer is marked in the registry (``SetRegistry.new(withhe
 and every later call on it (a further hop, ``plx.timeline``, ``plx.aggregate``) gets a
 ``withheld_by_permission`` root gap and is never complete either.
 
-Sharing with the base tools: one ``SetRegistry`` (``OntologyTools.sets``), the base tools'
+Sharing with lane L8: one ``SetRegistry`` (``OntologyTools.sets``), L8's
 visibility check on roots and shown objects (``_visible_versions``) on top of the
-stricter from-T SQL rule, the base tools' ``_trim_citations`` for edge citations, and the
+stricter from-T SQL rule, L8's ``_trim_citations`` for edge citations, and the
 store's lock around every call on the shared connection.
 
 ``register(tool_table, tools)`` wires both tools into a case host table, as
-the base tools' ``register`` does.
+L8's ``register`` does.
 """
 
 from __future__ import annotations
@@ -150,6 +150,8 @@ import datetime as dt
 from functools import lru_cache
 import hashlib
 import json
+import os
+from pathlib import Path
 import re
 import secrets
 import sqlite3
@@ -164,7 +166,7 @@ from ontology.json_contract import validate
 from ontology.reviews import ALLOCATED, effective
 from ontology.store import instant
 from ontology.types import Actor
-# The base tools' reader, policy and contract helpers (operating/ontology_tools.py): one
+# Lane L8's reader, policy and contract helpers (operating/ontology_tools.py): one
 # store reader, one policy, one envelope/gap/completeness shape for every tool.
 from operating.ontology_tools import (  # noqa: F401 - re-exported for hosts
     _AUDIENCE_SOURCE,
@@ -190,7 +192,7 @@ from operating.ontology_tools import (  # noqa: F401 - re-exported for hosts
     _gap,
     _inline_defs,
     _parse_time,
-    _effective_tier,   # the one link-tier rule; plx.aggregate imports it from here
+    _effective_tier,   # the one link-tier rule (R1); plx.aggregate imports it from here
     _source_of,
     _to_ms,
     NEVER_AUTHORITY,   # plx.evidence reads it from here
@@ -212,7 +214,7 @@ _TIER_RANK = {tier: index for index, tier in enumerate(TIER_ORDER)}
 DEFAULT_TIER_FLOOR = "stored_by_text_join"
 # What a link is (ER-06), shown beside its tier on every edge (``_link_kind``).
 LINK_KINDS = ("reference", "identity", "allocation", "dependency")
-# L1 handle schemes / audience prefixes whose items carry their own ACL (the base tools' rule).
+# L1 handle schemes / audience prefixes whose items carry their own ACL (L8's rule).
 GATED_SCHEMES = _ITEM_ACL_SCHEMES
 _GATED_AUDIENCES = _ITEM_ACL_AUDIENCES
 ORDER_CLASSES = {"source_recorded": 0, "source_business_date": 0, "document_stated": 0,
@@ -264,6 +266,9 @@ MAX_GAPS = 20
 # were not projected at all: a link to one of them cannot be ruled out.
 _RECORD_DROP_CODES = frozenset({"binding_key_absent", "binding_key_not_unique",
                                 "capture_versions_overlap"})
+# Gap-code prefixes meaning a value could not be read: a property's (``parse_``) or a
+# compared link key's (``link_key_``, at ``<link>#<index>@<binding>.<path>``).
+_UNREAD_CODES = ("parse_", "link_key_")
 
 _NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _LINK_TYPE = re.compile(r"^[A-Z][A-Za-z0-9]{1,63}\.[a-z][a-z0-9_]{0,63}$")
@@ -366,7 +371,7 @@ def _metered(tool: str, phase: str, seconds: float) -> None:
 @lru_cache(maxsize=65536)
 def _store_time(text: Any) -> str | None:
     """A store time (ISO date or timestamp, any offset) as fixed-width UTC text at
-    the base tools' millisecond resolution, so SQL compares exactly as plx.find/plx.object
+    L8's millisecond resolution, so SQL compares exactly as plx.find/plx.object
     do; None when unreadable (the row is then not visible)."""
     moment = _parse_time(text) if isinstance(text, str) else None
     return None if moment is None else moment.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
@@ -449,9 +454,9 @@ def _visible_value(alias: str, gate: str) -> str:
 class TraverseTools:
     """``plx.around`` and ``plx.timeline`` over one projection store.
 
-    ``base``: the host's base ``OntologyTools``. Its store, policy, item gate,
+    ``base``: the host's L8 ``OntologyTools``. Its store, policy, item gate,
     schema, contracts, clock and meta/freshness rules are shared, so the four
-    tools apply one permission rule. The set registry is the base tools' (``base.sets``), so
+    tools apply one permission rule. The set registry is L8's (``base.sets``), so
     a handle made by any of the four tools is a root for any other; the store's
     lock (``StoreReader.lock``) serialises every call on the shared connection.
     """
@@ -463,8 +468,6 @@ class TraverseTools:
         self.limits = self.contracts["limits"]
         self.sets: SetRegistry = base.sets
         self._source_index: dict[tuple[str, str], tuple[str, ...]] | None = None
-        # Reader-independent facts of the store as it is now (``_store_cached``).
-        self._cache: tuple[tuple[int, int], dict[Any, Any]] | None = None
         with self.store.lock:
             self.store.conn.create_function("plx_l9_time", 1, _store_time,
                                             deterministic=True)
@@ -472,7 +475,7 @@ class TraverseTools:
                                             deterministic=True)
 
     @property
-    def schema(self):  # noqa: ANN201 - base SchemaView or None
+    def schema(self):  # noqa: ANN201 - L8 SchemaView or None
         return self.base.schema
 
     @property
@@ -532,7 +535,7 @@ class TraverseTools:
         return result
 
     def _gate_function(self, actor: Actor) -> Callable[[Any], int]:
-        """The base tools' item-level ACL re-check (``OntologyTools._item_allowed``) as an SQL
+        """L8's item-level ACL re-check (``OntologyTools._item_allowed``) as an SQL
         function for this call, cached per handle."""
         cache: dict[str, int] = {}
 
@@ -565,40 +568,73 @@ class TraverseTools:
         return _Scope(actor, at, _fixed(at), explicit, keys, held, sets,
                       self.policy.granted_sources(actor), gate)
 
-    def prime(self) -> None:
+    def prime(self, cell_families: Sequence[str] = ()) -> None:
         """Read every reader-independent store fact now (``_store_cached``'s keys), so no
         reader's call pays for them: a host does this once when it opens a store
         generation (``ontology_host.tool_table``), before it serves. Nothing here
         depends on a reader or a policy. An unreadable store (an older format, a failed
-        read) primes nothing: the call that needs a fact reads it, and fails, as before."""
+        read) primes nothing: the call that needs a fact reads it, and fails, as before.
+        ``cell_families``: audience families whose value-cell span (``cell_span``) is
+        read too.
+
+        The facts of a store file are kept beside it (``facts_path``) for every later
+        process that opens the same unchanged file with the same fact code: reading
+        them scans the whole store (about 10 GB and a minute on 2.5M objects), and
+        every MCP session, harness and console process opens the generation anew."""
         try:
             with self.store.lock:
                 if self.store.format_problem() is not None:
+                    return
+                kept = _store_identity(self.store.conn)
+                if kept is not None and self._kept_facts(*kept, cell_families):
                     return
                 self._audience_keys()
                 self._audiences()
                 self._event_type_maps()
                 for kind in _SLICE_ROWS:
                     self._slices(kind)
+                for family in cell_families:
+                    self.cell_span(family)
+                if kept is not None:
+                    _save_facts(*kept, self.store.facts[1])
         except sqlite3.Error:
-            self._cache = None
+            self.store.facts = None
+
+    def _kept_facts(self, store: str, identity: Mapping[str, Any],
+                    cell_families: Sequence[str]) -> bool:
+        """Fill the store's facts from the file kept beside it: only when it was read
+        from this very file (``_store_identity``) by this fact code and holds every fact
+        ``prime`` reads; anything else (absent, foreign, corrupt) loads nothing."""
+        facts = _load_facts(store, identity)
+        wanted = {"audience_keys", "audiences", "event_types",
+                  *(("slices", kind) for kind in _SLICE_ROWS),
+                  *(("cell_span", family) for family in cell_families)}
+        if facts is None or not wanted <= set(facts):
+            return False
+        conn = self.store.conn
+        stamp = (conn.execute("PRAGMA data_version").fetchone()[0], conn.total_changes)
+        self.store.facts = (stamp, facts)
+        self.store.remember_audience_keys(facts["audience_keys"])
+        return True
 
     def _store_cached(self, key: Any, read: Callable[[], Any]) -> Any:
-        """``read()``, kept until the store changes: a commit on another connection
-        (``PRAGMA data_version``) or a write on this one (``total_changes``). Only facts
+        """``read()``, kept on the store's reader until the store changes: a commit on
+        another connection (``PRAGMA data_version``) or a write on this one
+        (``total_changes``), so every table over one open reader shares it. Only facts
         that hold for every reader are kept (each call applies its reader's grants to
         them), and only those whose read scans a whole table: no index leads with an
         audience key or a link type, so reading them per call grew with the store."""
         conn = self.store.conn
         stamp = (conn.execute("PRAGMA data_version").fetchone()[0], conn.total_changes)
-        if self._cache is None or self._cache[0] != stamp:
-            self._cache = (stamp, {})
-        if key not in self._cache[1]:
+        facts = self.store.facts
+        if facts is None or facts[0] != stamp:
+            facts = self.store.facts = (stamp, {})
+        if key not in facts[1]:
             tick = time.perf_counter()
-            self._cache[1][key] = read()
+            facts[1][key] = read()
             _metered("store", ".".join(key) if isinstance(key, tuple) else key,
                      time.perf_counter() - tick)
-        return self._cache[1][key]
+        return facts[1][key]
 
     @staticmethod
     def _laps(tool: str) -> Callable[[str], None]:
@@ -688,14 +724,14 @@ class TraverseTools:
 
     @staticmethod
     def _l8_scope(scope: _Scope) -> _L8Scope:
-        """The base tools' scope of this call: the grants ``OntologyTools._scope`` decides, taken
+        """L8's scope of this call: the grants ``OntologyTools._scope`` decides, taken
         from this scope (decided by the same rule), so no store read repeats them."""
         return _L8Scope(scope.actor, scope.audience_keys, scope.held, scope.marking_sets,
                         scope.sources, scope.at)
 
     def _visible_ids(self, scope: _Scope, ids: Iterable[str]) -> set[str]:
-        """Ids the base tools' visibility check (``OntologyTools._visible_versions``) admits
-        and that also pass this module's from-T rule (every version from T on is
+        """Ids L8's visibility check (``OntologyTools._visible_versions``) admits
+        and that also pass this lane's from-T rule (every version from T on is
         held and passes the item gate): never wider than plx.object."""
         ids = sorted(set(ids))
         if not ids:
@@ -859,7 +895,7 @@ class TraverseTools:
         if self.schema is None:
             raise ToolError("schema_unavailable", "the compiled ontology schema is not loaded, "
                             "so declared link types cannot be checked",
-                            "install the schema loader and domain files")
+                            "install the schema loader (lane L4) and domain files")
         hops = []
         current: set[str] | None = root_types
         for index, step in enumerate(path):
@@ -1191,7 +1227,7 @@ class TraverseTools:
         def read() -> dict[str, tuple[dict[str, str], dict[str, str] | None]]:
             out: dict[str, tuple[dict[str, str], dict[str, str] | None]] = {}
             for name, markings, gated, until in self.store.conn.execute(
-                    f"SELECT name, markings, plx_l9_gated(handles), MAX(CASE WHEN "
+                    f"SELECT name, markings, {_GATED_SQL}, MAX(CASE WHEN "
                     f"superseded_at IS NULL OR plx_l9_time(superseded_at) IS NULL THEN "
                     f"'{_OPEN}' ELSE plx_l9_time(superseded_at) END) "
                     f"FROM ({_SLICE_ROWS[kind]}) GROUP BY 1, 2, 3"):
@@ -1205,6 +1241,20 @@ class TraverseTools:
                     for name, (kept_marks, kept_handles) in out.items()}
 
         return self._store_cached(("slices", kind), read)
+
+    def cell_span(self, family: str) -> tuple[int, int] | None:
+        """(lowest, highest) value-cell rowid of the objects whose audience family is
+        ``family`` (the part of the audience key before its first colon), every version;
+        None when they hold no cell. A word-index search narrowed to these spans reads
+        the same rows of that family: no cell of it lies outside its span. One read per
+        store state, for every reader."""
+        def read() -> tuple[int, int] | None:
+            row = self.store.conn.execute(
+                _CELL_SPAN_SQL, {"family": family, "low": family + ":",
+                                 "high": family + chr(ord(":") + 1)}).fetchone()
+            return None if row is None or row[0] is None else (int(row[0]), int(row[1]))
+
+        return self._store_cached(("cell_span", family), read)
 
     def _no_link_gap(self, scope: _Scope, link_type: str, direction: str, target: str,
                      floor: str, frontier: Sequence[str],
@@ -1254,6 +1304,7 @@ class TraverseTools:
         report = self._build_gaps()
         if report is None:
             return "unknown", "the projection's build report is unavailable"
+        keys_reported = self._link_keys_reported()
         anchor_key = "from_binding" if direction == "forward" else "to_binding"
         anchor_handles = set().union(*self._handles(frontier).values()) if frontier else set()
         for index, lb in applicable:
@@ -1267,16 +1318,18 @@ class TraverseTools:
                         if g["where"] == binding and g["code"] in _RECORD_DROP_CODES:
                             return "unknown", f"some {binding} records were not projected"
                 wheres = self._sources_for(binding, path)
+                if keys_reported:
+                    wheres += (f"{link_type}#{index}@{binding}.{path}",)
                 if not wheres:
                     return "unknown", (f"the projector does not report unreadable values of "
                                        f"{binding} {path}")[:300]
                 for where in wheres:
-                    problem = _report_problem(report, where, ("parse_",),
+                    problem = _report_problem(report, where, _UNREAD_CODES,
                                               anchor_handles if role == "anchor" else set())
                     if problem == "unreadable":
                         return "unreadable", None
                     if problem or role != "anchor" and any(
-                            g["where"] == where and g["code"].startswith("parse_")
+                            g["where"] == where and g["code"].startswith(_UNREAD_CODES)
                             for g in report):
                         return "unknown", (f"some {binding} {path} values could not be "
                                            "read by the projector")[:300]
@@ -1302,6 +1355,16 @@ class TraverseTools:
             out.append({"code": gap["code"], "where": gap["where"], "count": gap["count"],
                         "samples": {h for h in gap.get("samples", []) if isinstance(h, str)}})
         return out
+
+    def _link_keys_reported(self) -> bool:
+        """Whether the build report names every compared link key the projector could
+        not read (``<link>#<index>@<binding>.<path>``, ``build_report.link_keys``): only
+        then does a key path no property reads have a report to rule absence out by."""
+        try:
+            report = json.loads(self.base._store_meta().get("build_report", ""))
+        except ValueError:
+            return False
+        return isinstance(report, dict) and report.get("link_keys") == "reported"
 
     def _handles(self, ids: Sequence[str]) -> dict[str, set[str]]:
         """Every L1 handle of each object's versions (to match build-report samples)."""
@@ -1331,7 +1394,7 @@ class TraverseTools:
                         filters: Sequence[Mapping[str, Any]]) -> tuple[set[str], set[str]]:
         """(objects every filter holds on, the filtered properties a verdict was
         undecided on): a value withheld from this reader (a marking it lacks, now or
-        later, or a refused item) is never read as missing (``_filter_objects``)."""
+        later, or a refused item) is never read as missing (L8 ``_filter_objects``)."""
         params = scope.params(ids=json.dumps(list(ids)),
                               props=json.dumps(sorted({f["property"] for f in filters})))
         values: dict[str, dict[str, list[tuple[str, Any]]]] = {}
@@ -1397,7 +1460,7 @@ class TraverseTools:
             if row["binding_kind"] == "mention" and self._mention_ambiguous(scope, row):
                 edge["why_not"] = (edge["why_not"]
                                    + [{"feature": "ambiguous", "agrees": False}])[:16]
-            # the base tools' citation rule (plx.object): a citation is kept only when it names
+            # L8's citation rule (plx.object): a citation is kept only when it names
             # a value of one of the two ends that this reader may read at T.
             edge = citations.trim(edge)
             if row["binding_kind"] == "reviewed":   # one store read per review, not per link
@@ -1819,10 +1882,220 @@ def _gated(text: Any) -> list[str]:
             if isinstance(h, str) and h.split("://", 1)[0] in GATED_SCHEMES]
 
 
+def _gated_sql(column: str) -> str:
+    """SQL: ``plx_l9_gated(column)``, called only on a text that holds a gated scheme
+    name followed by a colon (or a JSON unicode escape, which could spell one): a text
+    without one holds no gated handle, so a whole-table read skips the Python call and
+    its JSON parse for every other row."""
+    if not all(re.fullmatch(r"[a-z][a-z0-9-]*", scheme) for scheme in GATED_SCHEMES):
+        raise ValueError("a gated scheme name is not a plain SQL literal")
+    probes = [f"{scheme}:" for scheme in sorted(GATED_SCHEMES)] + ["\\u"]
+    held = " OR ".join(f"instr({column}, '{probe}') > 0" for probe in probes)
+    return f"(CASE WHEN {held} THEN plx_l9_gated({column}) END)"
+
+
 def _gated_text(text: Any) -> str | None:
     """``_gated`` as SQL (``plx_l9_gated``): a sorted JSON list, None when there are none."""
     gated = _gated(text)
     return json.dumps(sorted(set(gated))) if gated else None
+
+
+_GATED_SQL = _gated_sql("handles")
+# ``cell_span``: the family's audience keys (``family:`` up to the character after the
+# colon) and the bare key. CROSS JOIN keeps the objects first: one pass over them, then
+# only that family's versions, sources and cells by index (left to the planner, it scans
+# every value source and reads each one's version and object).
+_CELL_SPAN_SQL = (
+    "SELECT MIN(c.rowid), MAX(c.rowid) FROM objects o "
+    "CROSS JOIN object_versions v ON v.object_id = o.object_id "
+    "CROSS JOIN value_sources s ON s.ver = v.rowid CROSS JOIN value_cells c ON c.src = s.src "
+    "WHERE (o.audience_key >= :low AND o.audience_key < :high) OR o.audience_key = :family")
+
+# ---------------------------------------------------------------- kept store facts
+# The facts ``prime`` reads, kept beside the store file (``facts_path``) under the file's
+# identity and a digest of the code that reads them: a changed file, a pending WAL or a
+# change to that code reads them anew.
+FACTS_FORMAT = "plx-store-facts/v1"
+FACTS_MAX_BYTES = 512 << 20
+FACTS_PREFIX = ".store-facts-"
+
+
+def facts_path(store_file: str | Path) -> Path:
+    """Where the facts of ``store_file`` are kept: its directory, named by the file's
+    device and inode, so every hard link to one generation in a directory (the served
+    path, a run's pin) shares one file."""
+    path = Path(store_file)
+    stat = os.stat(path)
+    return path.with_name(f"{FACTS_PREFIX}{stat.st_dev}-{stat.st_ino}.json")
+
+
+def _prune_facts(directory: Path) -> None:
+    """Drop the kept facts of store files no longer in ``directory`` (a replaced served
+    generation, a swept pin)."""
+    try:
+        entries = list(os.scandir(directory))
+        held = {f"{FACTS_PREFIX}{e.stat(follow_symlinks=False).st_dev}-"
+                f"{e.stat(follow_symlinks=False).st_ino}.json"
+                for e in entries if not e.name.startswith(FACTS_PREFIX)
+                and e.is_file(follow_symlinks=False)}
+        for entry in entries:
+            if re.fullmatch(re.escape(FACTS_PREFIX) + r"\d+-\d+\.json", entry.name) \
+                    and entry.name not in held:
+                os.unlink(entry.path)
+    except OSError:
+        pass
+
+
+def _store_identity(conn: sqlite3.Connection) -> tuple[str, dict[str, Any]] | None:
+    """(the main database file, its identity: device, inode, size, change time, the
+    SQLite header's change counter, and the fact code's digest). None for an in-memory
+    or temporary store, a store with frames in its write-ahead log (its file is not yet
+    all of it) or anything unreadable: such a store keeps no facts. The identity names no
+    path: a hard link to the same file (a run's pin of a generation) is the same store."""
+    try:
+        path = next((row[2] for row in conn.execute("PRAGMA database_list")
+                     if row[1] == "main"), "")
+        if not path:
+            return None
+        wal = Path(path + "-wal")
+        if wal.exists() and wal.stat().st_size > 0:
+            return None
+        stat = os.stat(path)
+        with open(path, "rb") as handle:
+            header = handle.read(100)
+    except (OSError, sqlite3.Error):
+        return None
+    code = _facts_code_digest()
+    if code is None or len(header) < 100 or not header.startswith(b"SQLite format 3\x00"):
+        return None
+    return path, {"device": stat.st_dev, "inode": stat.st_ino, "size": stat.st_size,
+                  "mtime_ns": stat.st_mtime_ns,
+                  "change_counter": int.from_bytes(header[24:28], "big"), "code": code}
+
+
+@lru_cache(maxsize=1)
+def _facts_code_digest() -> str | None:
+    """A digest of what decides the kept facts: their SQL, the gated schemes and caps, and
+    the source of every function that reads or shapes them; None when that source cannot
+    be read (no facts are kept then)."""
+    import inspect
+    parts = [FACTS_FORMAT, json.dumps(_SLICE_ROWS, sort_keys=True), _GATED_SQL, _CELL_SPAN_SQL,
+             _OPEN, str(HOP_SCAN_CAP), json.dumps(sorted(GATED_SCHEMES))]
+    try:
+        parts += [inspect.getsource(item) for item in (
+            _store_time, _parse_time, _gated, _gated_text, _json_list, _grouped,
+            TraverseTools._audience_keys, TraverseTools._audiences,
+            TraverseTools._event_type_maps, TraverseTools._slices, TraverseTools.cell_span,
+            _encode_facts, _decode_facts, StoreReader.audience_keys)]
+    except (OSError, TypeError):
+        return None
+    return hashlib.sha256("\x00".join(parts).encode("utf-8")).hexdigest()
+
+
+def _fact_name(key: Any) -> str | None:
+    if key in ("audience_keys", "audiences", "event_types"):
+        return key
+    if isinstance(key, tuple) and len(key) == 2 and key[0] in ("slices", "cell_span"):
+        return f"{key[0]}.{key[1]}"
+    return None
+
+
+def _encode_facts(facts: Mapping[Any, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in facts.items():
+        name = _fact_name(key)
+        if name is None:
+            continue
+        if name == "audience_keys":
+            out[name] = list(value)
+        elif name == "audiences":
+            out[name] = {k: list(v) for k, v in value.items()}
+        elif name == "event_types":
+            out[name] = [{k: sorted(v) for k, v in part.items()} for part in value]
+        elif name.startswith("slices."):
+            out[name] = {k: [marks, handles] for k, (marks, handles) in value.items()}
+        else:
+            out[name] = None if value is None else list(value)
+    return out
+
+
+def _strings(value: Any) -> bool:
+    return isinstance(value, list) and all(isinstance(v, str) for v in value)
+
+
+def _ends(value: Any) -> bool:
+    return isinstance(value, dict) and all(isinstance(v, str) for v in value.values())
+
+
+def _decode_facts(encoded: Any) -> dict[Any, Any] | None:
+    """The facts of ``_encode_facts`` in the shapes the readers build; None when any of
+    them is not that shape."""
+    if not isinstance(encoded, dict):
+        return None
+    out: dict[Any, Any] = {}
+    for name, value in encoded.items():
+        if name == "audience_keys" and _strings(value):
+            out[name] = tuple(value)
+        elif name == "audiences" and isinstance(value, dict) \
+                and all(_strings(v) for v in value.values()):
+            out[name] = {k: tuple(v) for k, v in value.items()}
+        elif name == "event_types" and isinstance(value, list) and len(value) == 2 \
+                and all(isinstance(p, dict) and all(_strings(v) for v in p.values())
+                        for p in value):
+            out[name] = tuple({k: set(v) for k, v in part.items()} for part in value)
+        elif name.startswith("slices.") and name[len("slices."):] in _SLICE_ROWS \
+                and isinstance(value, dict) and all(
+                    isinstance(v, list) and len(v) == 2 and _ends(v[0])
+                    and (v[1] is None or _ends(v[1])) for v in value.values()):
+            out[("slices", name[len("slices."):])] = {k: (v[0], v[1]) for k, v in value.items()}
+        elif name.startswith("cell_span.") and (value is None or (
+                isinstance(value, list) and len(value) == 2
+                and all(isinstance(v, int) and not isinstance(v, bool) for v in value))):
+            out[("cell_span", name[len("cell_span."):])] = None if value is None else tuple(value)
+        else:
+            return None
+    return out
+
+
+def _load_facts(store: str, identity: Mapping[str, Any]) -> dict[Any, Any] | None:
+    try:
+        path = facts_path(store)
+        if path.stat().st_size > FACTS_MAX_BYTES:
+            return None
+        kept = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(kept, dict) or kept.get("format") != FACTS_FORMAT \
+            or kept.get("store") != dict(identity):
+        return None
+    return _decode_facts(kept.get("facts"))
+
+
+def _save_facts(store: str, identity: Mapping[str, Any], facts: Mapping[Any, Any]) -> None:
+    """Keep ``facts`` beside the store file, written whole or not at all (owner-only, a
+    temporary file renamed over it); a directory this process may not write keeps
+    nothing, and the next process reads the store again."""
+    try:
+        path = facts_path(store)
+    except OSError:
+        return
+    text = json.dumps({"format": FACTS_FORMAT, "store": dict(identity),
+                       "facts": _encode_facts(facts)}, sort_keys=True)
+    if len(text) > FACTS_MAX_BYTES:
+        return
+    tmp = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return
+    _prune_facts(path.parent)
 
 
 def _grouped(rows: Iterable[Sequence[Any]]) -> dict[str, tuple[str, ...]]:
@@ -1900,7 +2173,7 @@ _REVIEWER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:@+/-]{0,199}$")
 
 def link_review(base: OntologyTools, scope: Any, review_id: Any,
                 link: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """The review behind a reviewed link, as ``scope`` (the base tools') may see it at its time (see
+    """The review behind a reviewed link, as ``scope`` (L8's) may see it at its time (see
     the module docstring): served, ``{"withheld": "not_readable"}`` or ``{"withheld":
     "not_served"}``. ``link``: the projected row, whose reviewer, time and pair the store's
     record must repeat (else not served: the projection and the store disagree)."""
@@ -1940,10 +2213,10 @@ def link_review(base: OntologyTools, scope: Any, review_id: Any,
 
 
 class _PageCitations:
-    """The base tools' citation rule (``OntologyTools._trim_citations``, plx.object's) over every edge
+    """L8's citation rule (``OntologyTools._trim_citations``, plx.object's) over every edge
     of a page, read once for the page: the cited values of all its edges in one read, and
     the versions of all their ends in one more when an edge cites a cell no stored value
-    holds. Each edge is then trimmed by the base tools' own code against exactly the rows its own
+    holds. Each edge is then trimmed by L8's own code against exactly the rows its own
     reads would return (its citations' values, its two ends' versions), so the rule is
     one and the page costs two reads, not two per edge (the value read searches by
     handle: store v7's version key leads with it)."""
@@ -2108,7 +2381,7 @@ def _read_cursor(cursor: str, fingerprint: str
 # --------------------------------------------------------------------------- host wiring
 
 def tool_specs(contracts: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """MCP tool listings (name, description, inputSchema) for this module's tools."""
+    """MCP tool listings (name, description, inputSchema) for this lane's tools."""
     return [{"name": name, "description": contracts["tools"][name]["description"],
              "inputSchema": _inline_defs(contracts["tools"][name]["input"], contracts),
              "annotations": {"readOnlyHint": True}}

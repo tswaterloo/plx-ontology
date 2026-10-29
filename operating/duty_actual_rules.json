@@ -1,0 +1,24 @@
+{
+  "status": "configuration, not a fact about any broker: names are matched by keyword, never by a listed vendor",
+  "home_currency": "CAD",
+  "gl_description_keywords": ["duties", "duty", "brokerage", "customs", "tariff"],
+  "vendor_name_keywords": ["broker", "customs", "clearance"],
+  "combined_gl_note": "A G/L account named 'Duties & Brokerage' mixes the duty with the broker's own fee. The charge is the upper bound of the duty; the rate derived from it is labelled duty_and_brokerage, never pure duty.",
+  "max_plausible_rate": "0.4",
+  "po_reference_pattern": "PO\\d{6,}",
+  "freight": {
+    "note": "Actual inbound freight: Sage AP lines on a G/L account whose description names inbound freight. Outbound shipping to customers or warehouses, shipping supplies, freight recovered and freight charged to customers are not landed cost and are excluded by word. An account also matched as a duty account is never a freight account. BC invoices carry no G/L account here, so a vendor named like a forwarder is the only signal; a vendor named like both a broker and a forwarder is neither (its invoice cannot be split).",
+    "gl_description_keywords": ["freight", "forwarder", "cartage", "inbound"],
+    "gl_description_exclude": ["outbound", "outbournd", "recovered", "sales", "supplies", "exchange", "charged"],
+    "vendor_name_keywords": ["freight", "forwarder", "forwarding", "logistics", "cargo"],
+    "max_plausible_rate": "0.5"
+  },
+  "history": {
+    "note": "Estimates from PLX history for a purchase order with no recorded charge: a duty or freight rate per supplier, else per recorded supplier country, else company-wide, from the effective rates of purchase orders whose charges are linked by a recorded reference (median, with the interquartile range and the sample size). Freight charges are posted per forwarder and almost never name a purchase order, so the company-wide freight figure is an aggregate: inbound freight AP charges over the goods value received, both from the Sage ledger, pooled over quarters. Supplier and country keys are never merged across systems (a Sage vendor code and a Portal supplier id stay separate keys). Every estimate is labelled estimated_from_history with its basis; it is never a recorded value.",
+    "min_pos": 3,
+    "min_pos_all": 5,
+    "min_periods": 4,
+    "default_order": {"duty": ["linked", "aggregate"], "freight": ["aggregate", "linked"]}
+  },
+  "artifact_note":"landed_actuals.json is built at capture time (scripts/duty_actual_report.py) into <state_dir>/landed-actuals/, never Git. Actual amounts are finance-marked: only a reader holding the finance marking gets them."
+}

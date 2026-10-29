@@ -1,4 +1,4 @@
-"""Versioned mail capture over an injected Graph transport.
+"""Versioned mail capture (lane L3) over an injected Graph transport.
 
 No network and no credentials: every request goes to an in-process fake Graph
 (directory, folder lookup, message delta with skip/delta tokens, message and
@@ -22,7 +22,7 @@ import unittest
 import unittest.mock
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from verify import live_verify as lv
+from devloop import live_verify as lv
 from integrations import capture_mail, graph_read
 from integrations.capture_mail import (CaptureError, CaptureScope, MailCapture,
                                        MailCaptureStore, assert_outside_git)
@@ -470,7 +470,7 @@ class DeltaPagingTests(CaptureCase):
                              for c in self.graph.delta_calls()))
 
     def test_a_link_the_guard_would_refuse_is_never_followed_and_the_round_restarts(self):
-        """Graph shares the check: a nextLink with a raw space was
+        """Repair of 61a29755 (Graph shares the check): a nextLink with a raw space was
         stored as next_url and refused by check_request when followed
         (ReadOnlyGuardError, uncaught: every later run raised on it). Now it is refused
         where it arrives (or, for a stored cursor, before or when it is sent): the
@@ -666,7 +666,7 @@ class VersionIntegrityTests(CaptureCase):
         self.assertEqual(box["truncated_attachment_lists"], 0)
 
     def test_truncated_attachment_list_is_durable_retried_and_never_complete(self):
-        # capture-mail-attachment-pagination: 51 attachments over a
+        # Dot finding capture-mail-attachment-pagination: 51 attachments over a
         # listing cap of 50, then a re-observed unchanged changeKey.
         atts = [file_attachment(f"ATT-{i:02d}", content=f"c{i}".encode()) for i in range(51)]
         self.graph.put(BOX_A, "MSG-1", "CK-1-1", attachments=atts)
@@ -703,7 +703,7 @@ class VersionIntegrityTests(CaptureCase):
         self.assertEqual(len(view["attachments"]), 51)
 
     def test_listing_cut_at_the_hard_cap_is_capped_after_two_relists(self):
-        # A message with more attachments than the hard cap must
+        # Review of 4665b18: a message with more attachments than the hard cap must
         # not be re-listed forever, yet its folder stays incomplete.
         atts = [file_attachment(f"ATT-{i:02d}", content=f"c{i}".encode()) for i in range(51)]
         self.graph.put(BOX_A, "MSG-1", "CK-1-1", attachments=atts)
@@ -808,7 +808,7 @@ class SchedulerTests(CaptureCase):
                                          tenant="plx", classifications={"mail:*": "restricted"})
 
     def test_a_scope_larger_than_one_budget_completes_more_every_run_until_all(self):
-        # Live 2026-10-12 (capture.breadth): both cycles ended at complete_bound
+        # Live 2026-10-12 (capture.breadth 6b6e8b24): both cycles ended at complete_bound
         # 4 of 321 with 262 folders cut by the time budget. Every run walked the folders
         # in the same order, so the leading ones (complete folders' deltas and large
         # folders the page budget stops) spent each budget again and the cut ones were
@@ -951,7 +951,7 @@ class RefusedCaptureTests(CaptureCase):
                               summary["reasons"])
                 self.assertEqual(summary["counts"]["messages_seen"],
                                  0 if parts else summary["counts"]["messages_seen"])
-                # The live check reads each part as blocked by the host, never a pass.
+                # The verifier reads each part as blocked by the host, never a pass.
                 self.assertEqual([p["cause"] for p in lv.blocked_parts(summary)],
                                  ["host_misconfiguration"] * len(parts))
                 text = json.dumps(summary)
@@ -1093,6 +1093,43 @@ class AudienceTests(CaptureCase):
         for secret in (BOX_B, UPN_B, "Finance only subject", "MSG-B1"):
             self.assertNotIn(secret, shown)
 
+    def test_one_call_decides_mailbox_visibility_once_per_reader(self):
+        # Inside one tool call (visibility_scope) the mailboxes a reader may see are
+        # decided once, however many handles the call resolves; another reader in the
+        # same call gets its own decision, never the first's; a new call decides again.
+        audience = reader_audience()
+        handle_a = graph_read.mail_citation(BOX_A, "MSG-1", "CK-1-1")
+        decided: list[Actor] = []
+        real = MailCaptureStore._decide_visible
+
+        def counted(store, actor, aud):
+            decided.append(actor)
+            return real(store, actor, aud)
+
+        with unittest.mock.patch.object(MailCaptureStore, "_decide_visible", counted):
+            with capture_mail.visibility_scope():
+                for _ in range(5):
+                    self.assertIsNotNone(self.store.resolve(handle_a, READER_A, audience))
+                    for handle in self.handles_b:
+                        self.assertIsNone(self.store.resolve(handle, READER_A, audience))
+                finance = Actor("plx", frozenset({"staff:finance"}), "restricted")
+                self.assertIsNone(self.store.resolve(handle_a, finance, audience))
+                self.assertIsNotNone(self.store.resolve(self.handles_b[0], finance, audience))
+                with capture_mail.visibility_scope():   # nested: the outer call's
+                    self.assertIsNotNone(self.store.resolve(handle_a, READER_A, audience))
+                # A returned decision is the caller's copy: changing it changes no other.
+                self.store._visible(READER_A, audience).clear()
+                self.assertIsNotNone(self.store.resolve(handle_a, READER_A, audience))
+            self.assertEqual(decided, [READER_A, finance])
+            # The next call decides again: a grant moved since applies to it.
+            revoked = LiveSourceAudience({f"mail:{UPN_B}": ["staff:orders"]}, tenant="plx",
+                                         classifications={"mail:*": "restricted"})
+            with capture_mail.visibility_scope():
+                self.assertIsNone(self.store.resolve(handle_a, READER_A, revoked))
+            # Outside a call every read decides afresh.
+            self.assertIsNotNone(self.store.resolve(handle_a, READER_A, audience))
+            self.assertEqual(len(decided), 4)
+
     def test_reader_trimming_uses_the_mailbox_owner_acl(self):
         # Per-employee trimming at view time: an audience that requires the owner ACL
         # admits only a reader whose identity is the mailbox's.
@@ -1147,9 +1184,9 @@ class AudienceTests(CaptureCase):
 class StorageTests(unittest.TestCase):
     def test_state_dir_inside_a_git_tree_is_refused_before_anything_is_written(self):
         with self.assertRaises(CaptureError) as caught:
-            MailCaptureStore(ROOT / "verify" / "mail-state")
+            MailCaptureStore(ROOT / "devloop" / "mail-state")
         self.assertEqual(caught.exception.code, "state_dir_inside_git_tree")
-        self.assertFalse((ROOT / "verify" / "mail-state").exists())
+        self.assertFalse((ROOT / "devloop" / "mail-state").exists())
         with tempfile.TemporaryDirectory() as tmp:
             subprocess.run(["git", "init", "-q", tmp], check=True)
             with self.assertRaises(CaptureError):
@@ -1232,7 +1269,7 @@ class ScopeAndCliTests(unittest.TestCase):
         self.assertEqual(report["summary"]["delta_resumes"], 1)
         self.assertEqual(report["summary"]["messages_current"], 3)
         self.assertEqual(report["resolve_check"]["attachment_bytes_verified"], 1)
-        spec = json.loads((Path(__file__).resolve().parents[2] / "verify/live-checks"
+        spec = json.loads((Path(__file__).resolve().parents[2] / "devloop/live-checks"
                            / "graph.mail_capture.json").read_text(encoding="utf-8"))
         self.assertEqual(lv._recorded(spec, report)["relations"],
                          {"messages": 3, "attachments": 1})
@@ -1256,7 +1293,7 @@ class ScopeAndCliTests(unittest.TestCase):
         # Every bound mailbox 403 (or 401: a rejected token) in every run: the check reads
         # blocked upstream with the missing grant (never measured, never a capture
         # failure: nothing was read); a partial refusal stays a fail.
-        spec = json.loads((Path(__file__).resolve().parents[2] / "verify/live-checks"
+        spec = json.loads((Path(__file__).resolve().parents[2] / "devloop/live-checks"
                            / "graph.mail_capture.json").read_text(encoding="utf-8"))
         for name, status, forbidden, blocked in (
                 ("all", 403, {BOX_A, BOX_B}, [("mail.folder_read", 403, "missing_permission",
@@ -1333,7 +1370,7 @@ class ScopeAndCliTests(unittest.TestCase):
         # allowlisted mailbox while its audience grants one: a run that can never be
         # complete. The check's scope must lie inside its own grant.
         root = Path(__file__).resolve().parents[2]
-        command = json.loads((root / "verify/live-checks/graph.mail_capture.json")
+        command = json.loads((root / "devloop/live-checks/graph.mail_capture.json")
                              .read_text(encoding="utf-8"))["command"]
         scope = CaptureScope.from_file(root / command[command.index("--scope") + 1])
         audience = LiveSourceAudience.from_file(

@@ -10,7 +10,7 @@ compiled repository schema and the identifier grammar; no source is read).
   ``coverage.json`` ``not_served``: a ``not_served`` type with an upstream ask (the pending
   file's curated placeholder where one binds it). A foreign key to one names it as its
   target and stays a plain value of the served column: no served link reaches it.
-* Each relation bound here projects typed, cited values: money as Decimal text with
+* Each relation this lane binds projects typed, cited values: money as Decimal text with
   its currency, quantities with the unit their row states, a Sage unit conversion read
   from Sage only, and a staging test batch's schedule never as FM bronze.
 * ``plx.find`` resolves a quote by its number and an MO line (the FM AO item, the line
@@ -57,7 +57,7 @@ ROWS = {
     "public.assembly_order": [{"id": 777, "nameamo_c": "AO-26005Z"}],
     "public.assembly_order_item": [{"id": 4242, "idassem": 777, "lotno": "LOT-77-A",
                                     "qty_c": "1509"}],
-    # Bound here.
+    # Bound by this lane.
     "public.app_quote": [{
         "id": "q-1", "quote_number": "QUO-2026-0042", "customer_id": "c-1", "project_id": "4711",
         "status": "ACCEPTED", "issue_date": "2026-09-01T00:00:00.000Z",
@@ -84,10 +84,11 @@ ROWS = {
     "sage.ic_item_uom": [{"_sage_pk": "DPI-001|CSE", "itemno": "DPI-001         ",
                           "unit": "CSE       ", "conversion": "24.000000"}],
 }
-# Columns the pending Person/Lot bindings read, as a catalog would serve them (Q3).
+# Columns the pending Person/Lot bindings read, as a catalog would serve them (Q3). The
+# live app_user (2026-10-26 read) serves no name, email or job title; Person reads none.
 PENDING_PEOPLE_LOTS = {
-    "public.app_user": ["created_at", "department_id", "email", "id", "is_active", "job_title",
-                        "name", "updated_at", "user_role"],
+    "public.app_user": ["created_at", "department_id", "id", "is_active", "updated_at",
+                        "user_role"],
     "public.app_inventory_lot": [
         "batch_number", "created_at", "custom_fields", "expiry_date", "id", "lot_number",
         "owner_customer_id", "ownership", "product_id", "quantity_available", "quantity_on_hand",
@@ -95,8 +96,7 @@ PENDING_PEOPLE_LOTS = {
         "updated_at", "uom"],
 }
 PENDING_ROWS = {
-    "public.app_user": [{"id": "u-1", "name": "Pat Planner", "email": "pat@example.test",
-                         "user_role": "PROCUREMENT", "is_active": True}],
+    "public.app_user": [{"id": "u-1", "user_role": "PROCUREMENT", "is_active": True}],
     "public.app_inventory_lot": [{
         "id": "fm-wlp-9", "product_id": "p-1", "lot_number": "25123-1@A-01", "uom": "kg",
         "batch_number": "BC-26005A", "quantity_on_hand": "40", "quantity_reserved": "15.5",
@@ -163,10 +163,11 @@ class UnservedRelations(unittest.TestCase):
         prisma = json.loads((schema.META_DIR / "portal_prisma.json").read_text(encoding="utf-8"))
         report = schema.pending_report(catalog)
         # A pending relation the catalog serves is no not_served declaration: it waits for
-        # its type's promotion into domains/ (app_bc_entity_map: listed from Portal 52c9116,
-        # d92530b52 TASK-3525; read grant not live).
+        # its type's promotion into domains/: public.app_user, served live since 2026-10-26
+        # (pii-marked RelPublicAppUser; the pending Person waits for promotion).
+        # app_bc_entity_map was promoted into domains/bc_entity_map.json on 2026-10-27.
         self.assertEqual({e["relation"] for e in report if e["served"]},
-                         {"public.app_bc_entity_map"})
+                         {"public.app_user"})
         pending = {e["relation"]: e["file"] for e in report if not e["served"]}
         targets = {fk["to"]: fk.get("target_type")
                    for fk in coverage["prisma_relations_not_bound"]
@@ -176,12 +177,13 @@ class UnservedRelations(unittest.TestCase):
                        for relation in e.get("relations", ())} - set(catalog.served())
         self.assertEqual(set(declared), set(targets) | set(pending) | route_reads |
                          set(coverage["excluded_relations"]) |
-                         {"public." + m["table"] for m in prisma["other_models"].values()})
+                         {"public." + m["table"] for m in prisma["other_models"].values()
+                          if "public." + m["table"] not in catalog.served()})
         self.assertEqual(set(declared) & set(catalog.served()), set())
         self.assertEqual({rel: declared[rel]["object_type"] for rel in targets}, targets)
         self.assertEqual({rel: declared[rel]["declared_by"] for rel in pending}, pending)
-        self.assertEqual((declared["public.app_user"]["object_type"],
-                          declared["public.app_inventory_lot"]["object_type"]), ("Person", "Lot"))
+        self.assertEqual(declared["public.app_inventory_lot"]["object_type"], "InventoryLot")
+        self.assertNotIn("public.app_user", declared)   # served now: no not_served declaration
         types = {entry["object_type"] for entry in declared.values()}
         self.assertEqual(len(types), len(declared))   # one declaration per relation
         for tid in types:
@@ -265,7 +267,7 @@ class BoundRelationsProject(unittest.TestCase):
                  'SalesOrder:portal.app_sales_order:{"id":"so-1"}', "lead"),
                 ("QuoteLine.line_of", "reverse", LINE, "verified")):
             with self.subTest(link=link_type):
-                # Portal-native quotes are never authority: their values never win and
+                # Portal-native quotes are never authority (R1): their values never win and
                 # a link joining them to other records reads as a lead; the Portal's own
                 # foreign key from a quote's line to its quote is that key, a link.
                 out = self.call("plx.around", **{"from": QUOTE, "tier_floor": "lead", "path": [
@@ -279,7 +281,7 @@ class BoundRelationsProject(unittest.TestCase):
 
 
 class PendingPeopleAndLots(unittest.TestCase):
-    LOT = 'Lot:portal.app_inventory_lot:{"id":"fm-wlp-9"}'
+    LOT = 'InventoryLot:portal.app_inventory_lot:{"id":"fm-wlp-9"}'
     PERSON = 'Person:portal.app_user:{"id":"u-1"}'
 
     PII_READER, OPS_READER = Actor("plx", frozenset({"ops", "hr"})), Actor("plx", frozenset({"ops"}))
@@ -316,13 +318,17 @@ class PendingPeopleAndLots(unittest.TestCase):
         self.assertTrue(read)
         self.assertEqual({c for c in read
                           if re.search(r"password|secret|token|phone|hash|otp", c, re.I)}, set())
+        # Only columns the live catalog serves (2026-10-26: no name, email or job title).
+        served = set(schema.load_catalog().relations["public.app_user"].columns)
+        self.assertEqual(read - served, set())
+        self.assertEqual(set(PENDING_PEOPLE_LOTS["public.app_user"]) - served, set())
 
     def test_links_to_person_and_lot_are_the_generators_unserved_foreign_keys(self):
         coverage = json.loads(schema.COVERAGE_PATH.read_text(encoding="utf-8"))
         owners = self.schema.portal_bindings()
         expected = {}
         for fk in coverage["prisma_relations_not_bound"]:
-            to = {"public.app_user": "Person", "public.app_inventory_lot": "Lot"}.get(fk["to"])
+            to = {"public.app_user": "Person", "public.app_inventory_lot": "InventoryLot"}.get(fk["to"])
             if to is None:
                 continue
             self.assertIn("link", fk, fk)   # every such key's from columns are served
@@ -332,18 +338,22 @@ class PendingPeopleAndLots(unittest.TestCase):
         derived = {lid: (link["from"], link["to"], link["bindings"][0]["from_binding"],
                          link["bindings"][0]["pairs"])
                    for lid, link in self.schema.link_types.items()
-                   if link["to"] in ("Person", "Lot") and link["bindings"][0]["kind"] == "fk"}
+                   if link["to"] in ("Person", "InventoryLot") and link["bindings"][0]["kind"] == "fk"}
         self.assertEqual(derived, expected)
-        # 19 since Portal 0323e19c (TASK-3355) serves public.app_approval_record, whose
-        # approved_by is a key to app_user.
-        self.assertEqual(len([v for v in expected.values() if v[1] == "Person"]), 19)
-        self.assertIn(("public.app_approval_record", "public.app_user"),
-                      {(fk["from"], fk["to"]) for fk in coverage["prisma_relations_not_bound"]
-                       if fk.get("link", {}).get("name") == "approved_by"})
+        # public.app_user is served live since 2026-10-26: no foreign key to it is "not bound"
+        # any more, so the pending Person has no derived link (it was 19 FKs, TASK-3355 added
+        # app_approval_record.approved_by). Each key a generated raw type holds is now a
+        # verified link to the pii-marked RelPublicAppUser; the keys of curated types wait for
+        # the Person promotion (devloop/DECISIONS/2026-10-28-portal-all-relations-person-promotion.md).
+        self.assertEqual(len([v for v in expected.values() if v[1] == "Person"]), 0)
+        self.assertNotIn("public.app_user", {fk["to"] for fk in coverage["prisma_relations_not_bound"]})
+        link = self.served.link_types["RelPublicAppApprovalRecord.approved_by"]
+        self.assertEqual((link["to"], link["bindings"][0]["kind"], link["bindings"][0]["tier_ceiling"]),
+                         ("RelPublicAppUser", "fk", "verified"))
         self.assertFalse({lid for lid in derived} & set(self.served.link_types))
 
     def test_served_schema_keeps_not_served_placeholders(self):
-        for tid in ("Person", "Lot"):
+        for tid in ("Person", "InventoryLot"):
             placeholder = self.served.object_types[tid]
             self.assertEqual((placeholder["availability"]["state"], placeholder["bindings"]),
                              ("not_served", []))
@@ -351,7 +361,7 @@ class PendingPeopleAndLots(unittest.TestCase):
 
     def test_a_lot_is_found_by_its_number_and_linked_to_item_batch_and_ao(self):
         actor = Actor("plx", frozenset({"ops"}))
-        found = self.tools.call("plx.find", {"query": "25123-1@A-01", "object_type": "Lot"}, actor)
+        found = self.tools.call("plx.find", {"query": "25123-1@A-01", "object_type": "InventoryLot"}, actor)
         self.assertEqual(found["status"], "found", found)
         (candidate,) = found["candidates"]
         self.assertEqual(candidate["object"]["object_id"], self.LOT)
@@ -360,8 +370,8 @@ class PendingPeopleAndLots(unittest.TestCase):
         linked = dict(self.conn.execute(
             "SELECT link_type, to_object FROM links WHERE from_object = ?", (self.LOT,)))
         self.assertEqual(linked, {
-            "Lot.of_item": 'Product:portal.app_product:{"id":"p-1"}',
-            "Lot.from_assembly_order": 'AssemblyOrder:portal.fm_assembly_order:{"id":777}'})
+            "InventoryLot.of_item": 'Product:portal.app_product:{"id":"p-1"}',
+            "InventoryLot.from_assembly_order": 'AssemblyOrder:portal.fm_assembly_order:{"id":777}'})
         lineage, role = self.conn.execute(
             "SELECT v.lineage, o.quantity_role FROM object_versions v JOIN object_values o "
             "ON o.object_id = v.object_id WHERE v.object_id = ? AND o.property = "
@@ -369,27 +379,105 @@ class PendingPeopleAndLots(unittest.TestCase):
         self.assertEqual((lineage, role), ("gold_etl_from_fm", "committed"))
 
     def test_a_person_is_pii_marked_and_withheld_without_the_marking(self):
+        # public.app_user is served live since 2026-10-26 (a reduced column set), so the
+        # foreign keys to it are no longer "not bound": the pending Person has no derived
+        # link here (it had Quote.created_by_user and PurchaseRequisition.requester). The
+        # marking still withholds it from a reader without it, by find and by object.
         links = dict(self.conn.execute(
             "SELECT link_type, from_object FROM links WHERE to_object = ?", (self.PERSON,)))
-        self.assertEqual(links, {"Quote.created_by_user": QUOTE,
-                                 "PurchaseRequisition.requester": PR})
+        self.assertEqual(links, {})
         query = {"object_type": "Person",
                  "filters": [{"property": "user_role", "op": "eq", "value": "PROCUREMENT"}]}
         allowed = self.tools.call("plx.find", query, self.PII_READER)
         self.assertEqual([c["object"]["object_id"] for c in allowed["candidates"]], [self.PERSON])
         denied = self.tools.call("plx.find", query, self.OPS_READER)
         self.assertEqual(denied.get("candidates", []), [])
-        for reader, reached in ((self.PII_READER, [self.PERSON]), (self.OPS_READER, [])):
+        for reader, reached in ((self.PII_READER, True), (self.OPS_READER, False)):
             with self.subTest(reader=sorted(reader.principals)):
-                around = self.traverse.call("plx.around", {
-                    "from": QUOTE, "tier_floor": "lead",
-                    "path": [{"link_type": "Quote.created_by_user", "direction": "forward"}]},
-                    reader)
-                self.assertNotIn("error", around, around)
-                self.assertEqual([o["object_id"] for o in around["objects"]], reached)
-                self.assertNotIn(self.PERSON, json.dumps(around))
                 read = self.tools.call("plx.object", {"object_id": self.PERSON}, reader)
                 self.assertEqual("error" in read, not reached, read)
+
+
+class ServedPeopleAccessIsPiiMarked(unittest.TestCase):
+    """Every relation of the catalog's people-access domain (users, departments, access
+    grants, elevations) is a generated type that only a reader holding ``pii`` reaches."""
+    PII_READER, OPS_READER = Actor("plx", frozenset({"ops", "hr"})), Actor("plx", frozenset({"ops"}))
+
+    @classmethod
+    def setUpClass(cls):
+        catalog = schema.load_catalog()
+        cls.schema = schema.load_schema(catalog=catalog)
+        cls.relations = sorted(n for n, r in catalog.relations.items()
+                               if r.domain == "people-access")
+        rows = {"public.app_user": [{"id": "u-9", "user_role": "PROCUREMENT", "is_active": "true"}],
+                "public.app_department": [{"id": "d-9", "name": "Quality", "code": "QA"}],
+                "public.app_approval_record": [{"id": "ar-9", "approved_by_id": "u-9",
+                                                "record_type": "QUOTE", "file_name": "spec.pdf"}]}
+        cls.temp = tempfile.TemporaryDirectory()
+        path = Path(cls.temp.name) / "store.sqlite"
+        build_store(path, cls.schema, {"portal_api": Source(rows)}, normalizer=identifiers.normalize,
+                    clock=lambda: datetime(2026, 10, 26, tzinfo=timezone.utc))
+        cls.conn = sqlite3.connect(str(path), check_same_thread=False)
+        cls.tools = ot.OntologyTools(
+            ot.StoreReader(cls.conn), ot.ReadPolicy(tenant="plx", audiences={"api:*": {"ops"}},
+                                               markings={"pii": frozenset({"hr"})}),
+            schema=ot.SchemaView.from_compiled(cls.schema), grammar=identifiers,
+            item_gate=lambda actor, handle: True)
+        cls.traverse = TraverseTools(cls.tools)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.conn.close()
+        cls.temp.cleanup()
+
+    def test_the_eight_people_access_relations_are_served_and_pii_marked(self):
+        self.assertEqual(len(self.relations), 8)
+        for name in self.relations:
+            with self.subTest(relation=name):
+                (tid,) = [t for t, spec in self.schema.object_types.items()
+                          if any(b["relation"] == name for b in spec["bindings"])]
+                self.assertEqual(self.schema.object_types[tid]["markings"], ["pii"])
+
+    def test_a_reader_without_pii_finds_and_reads_none_of_them(self):
+        for tid, prop, value in (("RelPublicAppUser", "user_role", "PROCUREMENT"),
+                                 ("RelPublicAppDepartment", "code", "QA")):
+            stored = [r[0] for r in self.conn.execute(
+                "SELECT object_id FROM object_versions WHERE object_id LIKE ?", (tid + ":%",))]
+            self.assertEqual(len(stored), 1, (tid, stored))
+            with self.subTest(type=tid):
+                query = {"object_type": tid,
+                         "filters": [{"property": prop, "op": "eq", "value": value}]}
+                found = self.tools.call("plx.find", query, self.PII_READER)
+                self.assertEqual([c["object"]["object_id"] for c in found.get("candidates", [])], stored)
+                self.assertEqual(self.tools.call("plx.find", query, self.OPS_READER).get("candidates", []), [])
+                self.assertIn("error", self.tools.call("plx.object", {"object_id": stored[0]}, self.OPS_READER))
+                self.assertNotIn("error", self.tools.call("plx.object", {"object_id": stored[0]}, self.PII_READER))
+
+    def test_a_reader_without_pii_neither_traverses_to_nor_text_finds_them(self):
+        # The verified key approved_by_id links the (unmarked) approval record to the user;
+        # a free-text query reaches the department by its name.
+        (user,) = [r[0] for r in self.conn.execute(
+            "SELECT object_id FROM object_versions WHERE object_id LIKE 'RelPublicAppUser:%'")]
+        (record,) = [r[0] for r in self.conn.execute(
+            "SELECT object_id FROM object_versions WHERE object_id LIKE 'RelPublicAppApprovalRecord:%'")]
+        (dept,) = [r[0] for r in self.conn.execute(
+            "SELECT object_id FROM object_versions WHERE object_id LIKE 'RelPublicAppDepartment:%'")]
+        for reader, reached in ((self.PII_READER, True), (self.OPS_READER, False)):
+            with self.subTest(reader=sorted(reader.principals)):
+                around = self.traverse.call("plx.around", {
+                    "from": record, "tier_floor": "lead",
+                    "path": [{"link_type": "RelPublicAppApprovalRecord.approved_by",
+                              "direction": "forward"}]}, reader)
+                self.assertNotIn("error", around, around)
+                self.assertEqual([o["object_id"] for o in around["objects"]],
+                                 [user] if reached else [])
+                if not reached:
+                    self.assertNotIn(user, json.dumps(around))
+                found = self.tools.call("plx.find", {"query": "Quality"}, reader)
+                ids = [c["object"]["object_id"] for c in found.get("candidates", [])]
+                self.assertEqual(dept in ids, reached, found)
+                if not reached:
+                    self.assertNotIn(dept, json.dumps(found))
 
 
 if __name__ == "__main__":

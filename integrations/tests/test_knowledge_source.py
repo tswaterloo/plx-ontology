@@ -239,10 +239,10 @@ class KnowledgeSourceTests(unittest.TestCase):
         from contextlib import redirect_stdout
         import io
 
-        from verify import live_verify
+        from devloop import live_verify
         from integrations import knowledge_source
 
-        spec = json.loads((ROOT / "verify/live-checks/knowledge.brain_source.json")
+        spec = json.loads((ROOT / "devloop/live-checks/knowledge.brain_source.json")
                           .read_text("utf-8"))
         self.assertIn(spec["command"][2], live_verify.ALLOWED_MODULES)
         with tempfile.TemporaryDirectory() as tmp:
@@ -266,10 +266,10 @@ class KnowledgeSourceTests(unittest.TestCase):
         self.assertEqual({c[0] for c in sender.calls}, {"GET"})
         # Every recorded field is a count, a boolean or an enum: no item text leaves.
         self.assertEqual(live_verify.summarize(report, enums=True), report)
-        # The live check's own path (ENV_GUARD runs the module as ``__main__``) with its
+        # The verifier's own path (ENV_GUARD runs the module as ``__main__``) with its
         # environment shape: the run reaches the brain configuration and reports a JSON
         # verdict, never a traceback (it once died on a second ``brain`` registration).
-        # The host is not pinned, so it fails closed before any request.
+        # The host is one the pack does not name, so it fails closed before any request.
         environ = {"PATH": os.environ.get("PATH", ""), "VMC_API_KEY": "not-a-real-key",
                    "VMC_API_URL": "https://unnamed-host.invalid"}
         entry = live_verify.run_spec(spec, environ=environ)

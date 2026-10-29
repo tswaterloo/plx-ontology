@@ -642,6 +642,27 @@ class ColdCallTests(unittest.TestCase):
         self.assertEqual(slice_reads(meter.sql), [])
         store.conn.close()
 
+    def test_a_second_table_over_one_open_store_reads_none_of_its_slices(self):
+        # Failing first on fb57f04: the facts were primed per table, so a harness building
+        # one table per item over one open store re-read every store-wide slice per item
+        # (25 s an item on the live projection). They are the store's: kept on its reader.
+        from operating import ontology_host
+        store = sized(SIZE)
+        reader = ot.StoreReader(store.conn)
+
+        def table():
+            return ontology_host.tool_table(ot.OntologyTools(
+                reader, fx.POLICY, item_gate=fx.item_gate, schema=fx.SCHEMA, grammar=None,
+                contracts=fx.CONTRACTS, clock=lambda: fx.NOW,
+                monotonic=fx.Clock().monotonic), types.SimpleNamespace())
+        first = table()["plx.around"]["handler"](EMPTY_HOP, fx.FULL)
+        meter = Work(store.conn)
+        meter.reset()
+        second = table()["plx.around"]["handler"](EMPTY_HOP, fx.FULL)
+        self.assertEqual(slice_reads(meter.sql), [])
+        self.assertEqual(comparable(second), comparable(first))
+        store.conn.close()
+
     def test_primed_answers_are_the_unprimed_answers_for_each_reader(self):
         # Reader-dependent views stay per reader: the primed facts are the same for
         # every reader, so FULL and OPS (finance withheld) still differ as they did.

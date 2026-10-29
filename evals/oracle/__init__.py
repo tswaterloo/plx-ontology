@@ -1,8 +1,8 @@
-"""Independent evaluation oracle.
+"""Independent evaluation oracle (lane L11; 10-DECISION decision 8, 09-CRITIQUE R7 c).
 
 Computes ground truth for question families F1-F4 directly from raw source reads
 (Portal reporting API rows, BC documents) with joins re-derived from the Portal context
-pack (``docs/reference/portal-code-map.md``). It never imports ``ontology`` or ``operating``
+pack (``devloop/CONTEXT/03-PORTAL.md``). It never imports ``ontology`` or ``operating``
 (nor, inside this package, ``integrations``): transports are injected by the caller, so
 the oracle cannot share a projection, resolver or case script with the agent it grades.
 ``scripts/check_oracle_imports.py`` enforces the ban.

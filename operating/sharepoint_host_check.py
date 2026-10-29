@@ -1,10 +1,11 @@
 """Live check: the case host answers a SharePoint document question from the capture.
 
-``verify/live-checks/case.sharepoint_documents.json``. One GET-only capture run of the
+``devloop/live-checks/case.sharepoint_documents.json``. One GET-only capture run of the
 configured scope (``integrations.capture_sharepoint``, OCR of scanned PDFs on this
 host), a projection of the capture alone (no Portal source: the Portal-down shape),
-then the real user path: ``plx.documents`` through ``CaptureCaseHostTools`` with the
-host's live SharePoint readers re-reading each served file's permissions. The questions
+then the real user path: ``plx.documents`` through ``CaptureCaseHostTools`` (a search,
+decided on the capture and never re-read live), then ``plx.read`` of the first file each
+answer lists, which the host's live SharePoint readers re-read. The questions
 are the identifiers the captured text itself names (parsed by the one identifier
 grammar; never a configured case value), each asked as written with its label when the
 value alone names no identifier (``PO: 5280``, not ``5280``, as an employee would ask it):
@@ -20,10 +21,11 @@ granted, no source identity, item permissions required) must return nothing.
 ``requests_sent`` counts every Graph request of the check: the capture's
 (``capture_requests_sent``) and the host's (``host_requests_sent``, its OAuth token
 POSTs included). ``host_gets_sent`` counts the host's Graph GETs alone (item metadata
-and permissions of its live re-reads), so a positive count proves a re-read was sent.
+and permissions of the live re-reads its plx.read calls make), so a positive count
+proves a re-read was sent.
 
-With ``--document-class <profile>`` (``verify/live-checks/
-ontology.document_fields_sharepoint.json``) the same capture and projection
+With ``--document-class <profile>`` (``devloop/live-checks/
+ontology.document_fields_sharepoint.json``, directive P8) the same capture and projection
 measure that class of ``ontology/schema/document_fields.json`` instead of asking
 questions: the objects projected, the fields stated, the gaps read, per field how many
 documents state it and how many hold each gap reason (``fields``), each distinct
@@ -194,14 +196,18 @@ def document_class_counts(projection: Path, store: Any, actor: Actor,
         for gap in evidence["gaps"]:
             gaps[gap["reason"]] = gaps.get(gap["reason"], 0) + 1
         content = store.content(evidence["l1_handle"], actor, audience)
+        # An original the capture dropped once its text was read: the reading it kept.
+        reading = None if content is not None else \
+            store.original_reading(evidence["l1_handle"], actor, audience)
         text = (store.blob(evidence["text_sha256"]).decode("utf-8")
                 if evidence.get("text_sha256") else None)
         for citation in _citations(evidence):
             counts["citations"] += 1
-            counts["citations_resolved"] += content is not None and \
-                document_fields.resolve_citation(content, citation,
-                                                 mime_type=evidence["mime_type"],
-                                                 text=text) == citation["text"]
+            counts["citations_resolved"] += (content is not None or reading is not None) \
+                and document_fields.resolve_citation(content, citation,
+                                                     mime_type=evidence["mime_type"],
+                                                     text=text, reading=reading
+                                                     ) == citation["text"]
     return {**counts, "gaps": dict(sorted(gaps.items())), "links": dict(sorted(links.items())),
             "fields": {name: dict(sorted(tally.items())) for name, tally in sorted(fields.items())},
             "document_outcomes": [{"documents": n, "fields": json.loads(key)}
@@ -347,9 +353,19 @@ def run(args: argparse.Namespace, *, environ: Mapping[str, str] | None = None,
         host = CaptureCaseHostTools(runtime, reader, store_path=projection,
                                     sharepoint_capture_dir=state)
         try:
-            return [(host.call("plx.documents", {"query": question, "sources": ["sharepoint"],
-                                                 "limit": 50}, reader), host.refusals())
-                    for question in questions]
+            out = []
+            for question in questions:
+                answer = host.call("plx.documents", {"query": question,
+                                                     "sources": ["sharepoint"], "limit": 50},
+                                   reader)
+                refused = host.refusals()
+                # A search is decided on the capture and never re-read live; the read
+                # of the first file it lists re-reads that file's permissions live.
+                listed = [d.get("citation") for d in answer.get("documents") or ()]
+                if listed:
+                    host.call("plx.read", {"citation": listed[0]}, reader)
+                out.append((answer, refused))
+            return out
         finally:
             host_sent[0] += getattr(live.graph_transport, "requests_sent", 0) or 0
             host_gets[0] += getattr(live.graph_transport, "gets_sent", 0) or 0

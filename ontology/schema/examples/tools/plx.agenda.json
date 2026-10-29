@@ -1,0 +1,313 @@
+{
+  "tool": "plx.agenda",
+  "examples": [
+    {
+      "name": "bi_weekly_agenda_first_page",
+      "input": {
+        "agenda": "rnd_biweekly",
+        "scope": {
+          "meeting_chat": {
+            "chat_id": "19:synth-meeting@thread.v2"
+          },
+          "qa_handoffs": {
+            "chat_id": "19:synth-qa@thread.v2"
+          },
+          "mc_tasks": {
+            "bucket": "BKT-SYNTH"
+          }
+        },
+        "limit": 3
+      },
+      "output": {
+        "format": "plx-meeting-agenda-answer/v1",
+        "agenda": "rnd_biweekly",
+        "title": "R&D bi-weekly meeting agenda",
+        "source": {
+          "advisory": "advisory:d7076d889756",
+          "ref": "OntologyProject@57bce1d4cd7d",
+          "path": "context/d7076d8897560e9c362ad0ee6cdfc810209b31313db58cc50360bf20e8784818.json"
+        },
+        "sections": [
+          {
+            "id": "rnd_updates",
+            "label": "R&D Updates"
+          },
+          {
+            "id": "ongoing_project_updates",
+            "label": "Ongoing Project Updates"
+          },
+          {
+            "id": "sourcing_updates",
+            "label": "Sourcing Updates"
+          }
+        ],
+        "since": {
+          "value": "2026-10-14T14:16:00Z",
+          "basis": "previous_agenda",
+          "object_id": "TeamsChatMessage:gen.teams.chat_messages:{\"chat_id\":\"19:synth-meeting@thread.v2\",\"id\":\"m-posting\"}",
+          "cited": {
+            "property": "created_at",
+            "value": "2026-10-14T14:16:00.000000Z",
+            "citation": {
+              "l1_handle": "teams-chat://19%3Asynth-meeting%40thread.v2/m-posting@g1-1",
+              "field_path": "row.created_at",
+              "digest": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          }
+        },
+        "open_projects": [
+          {
+            "kind": "open_projects",
+            "lane": "mc_tasks",
+            "section": "ongoing_project_updates",
+            "object_id": "MCTask:mission_control.tasks:{\"id\":\"TASK-S2\",\"scope\":\"ops\"}",
+            "object_type": "MCTask",
+            "at": {
+              "property": "updated_at",
+              "value": "2026-10-01T00:00:00.000000Z",
+              "citation": {
+                "l1_handle": "mc://ops/tasks/TASK-S2@g1",
+                "field_path": "row.updatedAt",
+                "digest": "0000000000000000000000000000000000000000000000000000000000000000"
+              }
+            },
+            "title": {
+              "property": "title",
+              "value": {
+                "untrusted_text": "Synthetic project TASK-S2",
+                "origin": {
+                  "citation": "mc://ops/tasks/TASK-S2@g1",
+                  "field_path": "row.title"
+                }
+              },
+              "citation": {
+                "l1_handle": "mc://ops/tasks/TASK-S2@g1",
+                "field_path": "row.title",
+                "digest": "0000000000000000000000000000000000000000000000000000000000000000"
+              }
+            },
+            "status": {
+              "property": "stage",
+              "value": {
+                "untrusted_text": "backlog",
+                "origin": {
+                  "citation": "mc://ops/tasks/TASK-S2@g1",
+                  "field_path": "row.stage"
+                }
+              },
+              "citation": {
+                "l1_handle": "mc://ops/tasks/TASK-S2@g1",
+                "field_path": "row.stage",
+                "digest": "0000000000000000000000000000000000000000000000000000000000000000"
+              }
+            },
+            "owner": {
+              "property": "assignee",
+              "value": {
+                "untrusted_text": "task-s2@synth.example",
+                "origin": {
+                  "citation": "mc://ops/tasks/TASK-S2@g1",
+                  "field_path": "row.assignee"
+                }
+              },
+              "citation": {
+                "l1_handle": "mc://ops/tasks/TASK-S2@g1",
+                "field_path": "row.assignee",
+                "digest": "0000000000000000000000000000000000000000000000000000000000000000"
+              }
+            },
+            "citations": [
+              "mc://ops/tasks/TASK-S2@g1"
+            ],
+            "missing": [],
+            "line": "L1"
+          },
+          {
+            "kind": "open_projects",
+            "lane": "mc_tasks",
+            "section": "ongoing_project_updates",
+            "object_id": "MCTask:mission_control.tasks:{\"id\":\"TASK-S4\",\"scope\":\"ops\"}",
+            "object_type": "MCTask",
+            "at": {
+              "property": "updated_at",
+              "value": "2026-10-02T00:00:00.000000Z",
+              "citation": {
+                "l1_handle": "mc://ops/tasks/TASK-S4@g1",
+                "field_path": "row.updatedAt",
+                "digest": "0000000000000000000000000000000000000000000000000000000000000000"
+              }
+            },
+            "title": {
+              "property": "title",
+              "value": {
+                "untrusted_text": "Synthetic project TASK-S4",
+                "origin": {
+                  "citation": "mc://ops/tasks/TASK-S4@g1",
+                  "field_path": "row.title"
+                }
+              },
+              "citation": {
+                "l1_handle": "mc://ops/tasks/TASK-S4@g1",
+                "field_path": "row.title",
+                "digest": "0000000000000000000000000000000000000000000000000000000000000000"
+              }
+            },
+            "status": {
+              "property": "stage",
+              "value": {
+                "untrusted_text": "review",
+                "origin": {
+                  "citation": "mc://ops/tasks/TASK-S4@g1",
+                  "field_path": "row.stage"
+                }
+              },
+              "citation": {
+                "l1_handle": "mc://ops/tasks/TASK-S4@g1",
+                "field_path": "row.stage",
+                "digest": "0000000000000000000000000000000000000000000000000000000000000000"
+              }
+            },
+            "owner": {
+              "property": "assignee",
+              "value": {
+                "untrusted_text": "task-s4@synth.example",
+                "origin": {
+                  "citation": "mc://ops/tasks/TASK-S4@g1",
+                  "field_path": "row.assignee"
+                }
+              },
+              "citation": {
+                "l1_handle": "mc://ops/tasks/TASK-S4@g1",
+                "field_path": "row.assignee",
+                "digest": "0000000000000000000000000000000000000000000000000000000000000000"
+              }
+            },
+            "citations": [
+              "mc://ops/tasks/TASK-S4@g1"
+            ],
+            "missing": [],
+            "line": "L2"
+          },
+          {
+            "kind": "open_projects",
+            "lane": "mc_tasks",
+            "section": "ongoing_project_updates",
+            "object_id": "MCTask:mission_control.tasks:{\"id\":\"TASK-S1\",\"scope\":\"ops\"}",
+            "object_type": "MCTask",
+            "at": {
+              "property": "updated_at",
+              "value": "2026-10-20T00:00:00.000000Z",
+              "citation": {
+                "l1_handle": "mc://ops/tasks/TASK-S1@g1",
+                "field_path": "row.updatedAt",
+                "digest": "0000000000000000000000000000000000000000000000000000000000000000"
+              }
+            },
+            "title": {
+              "property": "title",
+              "value": {
+                "untrusted_text": "Synthetic project TASK-S1",
+                "origin": {
+                  "citation": "mc://ops/tasks/TASK-S1@g1",
+                  "field_path": "row.title"
+                }
+              },
+              "citation": {
+                "l1_handle": "mc://ops/tasks/TASK-S1@g1",
+                "field_path": "row.title",
+                "digest": "0000000000000000000000000000000000000000000000000000000000000000"
+              }
+            },
+            "status": {
+              "property": "stage",
+              "value": {
+                "untrusted_text": "progress",
+                "origin": {
+                  "citation": "mc://ops/tasks/TASK-S1@g1",
+                  "field_path": "row.stage"
+                }
+              },
+              "citation": {
+                "l1_handle": "mc://ops/tasks/TASK-S1@g1",
+                "field_path": "row.stage",
+                "digest": "0000000000000000000000000000000000000000000000000000000000000000"
+              }
+            },
+            "owner": {
+              "property": "assignee",
+              "value": {
+                "untrusted_text": "task-s1@synth.example",
+                "origin": {
+                  "citation": "mc://ops/tasks/TASK-S1@g1",
+                  "field_path": "row.assignee"
+                }
+              },
+              "citation": {
+                "l1_handle": "mc://ops/tasks/TASK-S1@g1",
+                "field_path": "row.assignee",
+                "digest": "0000000000000000000000000000000000000000000000000000000000000000"
+              }
+            },
+            "citations": [
+              "mc://ops/tasks/TASK-S1@g1"
+            ],
+            "missing": [],
+            "line": "L3"
+          }
+        ],
+        "changes": [],
+        "blockers": [],
+        "decisions_needed": [],
+        "page": {
+          "offset": 0,
+          "returned": 3,
+          "total": 12,
+          "next_offset": 3
+        },
+        "owners": [],
+        "gaps": [
+          {
+            "code": "binding_expected",
+            "state": "not_ingested",
+            "subject": "meeting_chat",
+            "detail": "TeamsChatMessage declares no body_preview; lines cite the record and show no text until a projection declares it"
+          },
+          {
+            "code": "binding_expected",
+            "state": "not_ingested",
+            "subject": "kb_channel",
+            "detail": "TeamsChannelMessage declares no body_preview; lines cite the record and show no text until a projection declares it"
+          },
+          {
+            "code": "lane_scope_not_given",
+            "state": "unknown",
+            "subject": "kb_channel",
+            "detail": "R&D KB channel: give team_id, channel_id in scope.kb_channel; the lane was not read"
+          }
+        ],
+        "withheld": {
+          "objects": 0,
+          "properties": 0
+        },
+        "complete": true,
+        "coverage": {
+          "lanes": 8,
+          "lanes_read": 4,
+          "not_in_ontology": 10
+        }
+      }
+    },
+    {
+      "name": "unknown_agenda",
+      "input": {
+        "agenda": "unknown"
+      },
+      "output": {
+        "error": {
+          "code": "unknown_agenda",
+          "message": "known: rnd_biweekly"
+        }
+      }
+    }
+  ]
+}

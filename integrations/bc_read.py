@@ -76,14 +76,14 @@ page. Captured records cite
 and resolve offline; a changed etag adds a version and keeps the old one.
 Completeness is reported per company and entity set; a partial read (budget,
 record cap, refused or throttled GET) is never reported complete. Incremental
-capture (``mode="auto"``, docs/decisions/2026-10-02-bc-capture-incremental.md):
+capture (``mode="auto"``, devloop/DECISIONS/2026-10-02-bc-capture-incremental.md):
 modified-since reads per company x entity set after the first full pass, posted
 invoice/credit-memo lines kept while their header version is unchanged, and a
 key-only full pass weekly that marks keys BC no longer lists
 ``missing_from_source_since`` (see ``BcCapture``). A capture run is complete only
 when the company listing is complete and lists every pinned company.
 
-Probe and capture (credentialed live check; counts and shapes only):
+Probe and capture (credentialed auditor; counts and shapes only):
 ``python3 -m integrations.bc_read probe [--entity purchaseOrders] [--case-entities]``
 ``python3 -m integrations.bc_read metadata-drift [--out FILE]`` (the schema pin's live check)
 ``python3 -m integrations.bc_read capture [--db F] [--budget-seconds N] [--resolve-sample N]
@@ -174,7 +174,7 @@ def _query_shape(pairs: Iterable[tuple[str, str]]) -> dict[str, list[str]]:
 
 
 def request_shape(url: str) -> dict[str, Any]:
-    """The shape of one BC read, never a value: ``path`` the entity
+    """The shape of one BC read, never a value (gap-1b49174b629f): ``path`` the entity
     sets below the company with every record key dropped (``customerPaymentJournals``,
     ``salesInvoices/salesInvoiceLines``) and the ``_query_shape`` of its query."""
     parts = urlsplit(url)
@@ -219,6 +219,23 @@ def _shaped(read: Callable[[str], Any], url: str) -> Any:
         raise
 
 
+# The purchase-order field page (``capture_store.BC_FIELD_PAGES``): each purchase order's
+# ``Your_Reference`` from ODataV4 Page 50, stored under the API v2.0 order's id, one unit
+# per company with a pinned name (``BcCapture._capture_references``).
+REFERENCE_SET = "purchaseOrderReferences"
+REFERENCE_PARENT_SET = "purchaseOrders"
+# ``SourceApi.get_pages``'s own item bound; live 2026-10-21: 355 orders in My Company. A
+# company with more is read truncated (the unit partial), never silently whole.
+REFERENCE_MAX_ITEMS = 5000
+# Page 50 rows per page (``Prefer: odata.maxpagesize``): three short fields a row, so the
+# reference traversal takes BC's page ceiling whatever the record page size of the call.
+REFERENCE_PAGE_SIZE = 1000
+# The counts of a field-page unit (``BcCapture._capture_references``); the ``REFERENCE_
+# DROPPED`` ones are rows never stored.
+REFERENCE_DROPPED = ("no_number", "ambiguous_api_record", "duplicate_number", "vendor_mismatch")
+REFERENCE_COUNTS = (*REFERENCE_DROPPED, "no_api_record", "blank_reference", "stored")
+
+
 class BusinessCentralReader:
     """Entitlement-checked GETs against one BC tenant/environment."""
 
@@ -244,7 +261,7 @@ class BusinessCentralReader:
     def evidence_label(self) -> str:
         """``live-read`` when requests go through the real GET-only sender, else
         ``injected-transport`` (an injected test sender). Never ``live-verified``:
-        that label comes only from a live-check result."""
+        that label comes only from a live verifier result."""
         transport = getattr(self._api, "_transport", None)
         injected = getattr(transport, "sender_injected", True)
         return "injected-transport" if injected is not False else "live-read"
@@ -355,6 +372,50 @@ class BusinessCentralReader:
                           entity=entity_set, **self._where)
         return self._list(actor, company_id, entity_set, url, resources=[resource],
                           page_size=page_size, max_pages=max_pages, max_items=max_items)
+
+    def purchase_order_references(self, actor: Actor, company_id: str, company_name: str, *,
+                                  page_size: int = 500, max_pages: int = 50,
+                                  max_items: int = REFERENCE_MAX_ITEMS) -> dict[str, Any]:
+        """The ``Your_Reference`` (FileMaker PO number) of every purchase order of one
+        company, read from the ODataV4 web-service page ``PurchaseOrder`` (Page 50): API
+        v2.0 ``purchaseOrders`` does not expose it. The one request shape is
+        ``grammar.bc_odata_purchase_order_query`` (``$select=No,Your_Reference,
+        Buy_from_Vendor_No``) on ``Company('<company_name>')``; ``company_name`` must be
+        the pinned name of ``company_id`` (``bc_company_books.json``) and the caller
+        checks it against the company listing (``BcCapture``). The fields are fields of
+        the company's purchase orders, so the audience resource is ``purchaseOrders``'.
+        Items: ``{"no", "fields", "etag"}`` (``fields`` exactly the three selected; a row
+        BC sends with no etag is versioned by the digest of its fields); a row without a
+        ``No`` is counted ``no_number``, never returned."""
+        company_id = _guid(company_id, "company id")
+        if isinstance(page_size, bool) or not isinstance(page_size, int) \
+                or not 1 <= page_size <= 1000:
+            raise ValueError("page_size must be 1..1000")
+        resource = self.resource(company_id, REFERENCE_PARENT_SET)
+        self._audience.require(actor, resource)
+        url = grammar.url("bc.odata_purchase_orders", grammar.bc_odata_purchase_order_query(),
+                          company=company_name, **self._where)
+        raws, completeness = _shaped(lambda u: self._api.get_pages(
+            u, max_pages=max_pages, max_items=max_items,
+            headers={"Prefer": f"odata.maxpagesize={page_size}"}), url)
+        items, withheld, no_number = [], 0, 0
+        for raw in raws:
+            fields = {name: raw.get(name) for name in grammar.BC_ODATA_PO_FIELDS}
+            number = fields["No"]
+            if not isinstance(number, str) or not number.strip():
+                no_number += 1
+                continue
+            if not self._audience.item_visible(actor, resource, self._source_acl()):
+                withheld += 1
+                continue
+            etag = raw.get("@odata.etag")
+            if not isinstance(etag, str) or not etag:
+                etag = "sha256:" + canonical_sha256(jsonable(fields))
+            items.append({"no": number, "fields": jsonable(fields), "etag": etag})
+        completeness = completeness_with_withheld(completeness, withheld)
+        completeness["no_number"] = no_number
+        return {"source": "business-central", "environment": self.environment,
+                "company_id": company_id, "items": items, "completeness": completeness}
 
     def list_lines(self, actor: Actor, company_id: str, document_set: str, document_id: str, *,
                    select: Sequence[str] | None = None, page_size: int = 100,
@@ -615,7 +676,7 @@ def build_bc(environ: Mapping[str, str] | None = None, *, sender=None,
 
 # ------------------------------------------------------------------ versioned capture
 
-# Entity sets the capture keeps per company: every BC
+# Entity sets the L1 capture keeps per company (10-DECISION 2; 09 lane L2): every BC
 # entity set an ontology binding reads (ontology/schema/domains/*.json), so a BC
 # projection can be complete on its own, and sales quotes (with their lines) for the
 # quotes domain. Document headers with a line navigation also capture their lines, per
@@ -631,7 +692,7 @@ def build_bc(environ: Mapping[str, str] | None = None, *, sender=None,
 # that leave the API once posted, and the Portal skips customer/vendor ledger entries as
 # not published on api/v2.0 for these companies (plx-customer-portal@790256c
 # inbound.ts:248-268, shouldSkipMissingPostedCollection;
-# docs/decisions/2026-10-07-bc-finance-2-payment-ledger.md). A set a company does not expose
+# devloop/DECISIONS/2026-10-07-bc-finance-2-payment-ledger.md). A set a company does not expose
 # (404 on its listing) fails its unit with reason ``not_exposed``: a gap, never empty.
 CAPTURE_ENTITY_SETS = ("purchaseOrders", "purchaseReceipts", "purchaseInvoices", "salesOrders",
                        "salesInvoices", "salesShipments", "salesCreditMemos",
@@ -726,8 +787,8 @@ def select_pinned(items: Sequence[Mapping[str, Any]], environment: str,
 
 # BC codes of a 400 that says the page found nothing it needs in the company (the payment
 # journal pages fail on a missing journal template): the company does not serve the set.
-# The request is not at fault when another company served the same read (the daily read
-# internal_data_not_found_filter).
+# The request is not at fault when another company served the same read (gap-1b49174b629f,
+# directive 4b59246fac05: the daily d298b51 read internal_data_not_found_filter).
 UNSERVED_CODES = frozenset({"internal_data_not_found_filter"})
 _REFUSED_STATUSES = frozenset({401, 403})
 # Reasons a header unit fails with when its company refuses or does not serve the set.
@@ -772,8 +833,8 @@ def load_ledger_scope(source: str | Path | Mapping[str, Any] | None = None
     """``{environment (lower): scope}`` of ``bc.ledgers`` from the pinned map's ``ledgers``
     section: the ``required_book`` (the Workbench's BC book, Production / My Company), the
     ``required_sets`` it must serve with lines, and the ``expected_gaps``: companies (by
-    GUID) whose named refusal of named sets is a reason-coded gap with an owner and a cause.
-    Anything malformed fails the load."""
+    GUID) whose named refusal of named sets is a reason-coded gap with an owner and a cause
+    (directive 8a8b59c65f56). Anything malformed fails the load."""
     document = source if isinstance(source, Mapping) else json.loads(
         Path(source or BOOKS_FILE).read_text(encoding="utf-8"))
     section = document.get("ledgers", {})
@@ -807,7 +868,7 @@ def load_ledger_scope(source: str | Path | Mapping[str, Any] | None = None
     return out
 
 
-# The start of the live-check session a check runs in (verify/live_verify.py sets it): a
+# The start of the verifier session a check runs in (devloop/live_verify.py sets it): a
 # consumer of the session's capture store reuses only what that session completed
 # (``BcCapture.capture(fresh_since=)``). Unset outside a session: nothing is reused.
 FRESH_SINCE_ENV = "PLX_CAPTURE_FRESH_SINCE"
@@ -818,7 +879,7 @@ def session_fresh_since(environ: Mapping[str, str] | None = None) -> str | None:
     return (os.environ if environ is None else environ).get(FRESH_SINCE_ENV) or None
 
 
-# Incremental capture (docs/decisions/2026-10-02-bc-capture-incremental.md).
+# Incremental capture (devloop/DECISIONS/2026-10-02-bc-capture-incremental.md).
 # ``mode="full"`` reads every unit in full each call (and marks records a complete
 # traversal did not see as missing). ``mode="auto"`` schedules per unit (company x
 # entity set): a set with ``lastModifiedDateTime`` (``grammar.BC_MODIFIED_SINCE_SETS``)
@@ -1009,13 +1070,20 @@ class BcCapture:
 
     def __init__(self, reader: BusinessCentralReader, store: CaptureStore, *,
                  books: Mapping[str, Mapping[str, str]] | None = None,
+                 names: Mapping[str, Mapping[str, str]] | None = None,
                  monotonic: Callable[[], float] = time.monotonic) -> None:
         self.reader = reader
         self.store = store
         # The shipped map also scopes the environment (only its pinned companies are read) and
-        # names them; an injected map is exactly what the caller pinned, no more.
+        # names them; an injected map is exactly what the caller pinned, no more. ``names``
+        # ({environment: {company GUID: name}}) pins the names of an injected map: the
+        # listing must show them, and a named company's purchase-order field page
+        # (``_capture_references``) is read by that name.
         self.only_pinned, self.names = (load_company_scope() if books is None
                                         else (frozenset(), {}))
+        if names is not None:
+            self.names = {str(env).lower(): {_guid(c, "company id"): n for c, n in pins.items()}
+                          for env, pins in names.items()}
         self.books = load_company_books() if books is None else books
         self._monotonic = monotonic
         self._deadline: float | None = None
@@ -1055,7 +1123,7 @@ class BcCapture:
         other set, so a budget stop keeps them; under a budget each root unit reads within
         an even share of what is left (one large root set never starves the later
         companies') and a unit its share cut resumes on what the others left.
-        ``fresh_since`` (a UTC instant, the start of the live-check session whose store this
+        ``fresh_since`` (a UTC instant, the start of the verifier session whose store this
         is: ``FRESH_SINCE_ENV``): a unit whose latest run began at or after it and finished
         ``complete`` is reported from the store (``reused``), not read again, so each check
         sharing the session's store tops it up (a paused unit resumes and the rest are
@@ -1137,6 +1205,10 @@ class BcCapture:
                 if entity_set in grammar.BC_DOCUMENT_LINES:
                     self._counted(entry, self._capture_lines, actor, company_id, entity_set,
                                   entry["lineage"], mode)
+            if self._references_planned(environment, company_id, entity_sets):
+                self._counted(entry, self._capture_references, actor, company_id,
+                              self.names[environment][company_id], entry["lineage"],
+                              REFERENCE_PAGE_SIZE)
             if self._stopped is None:  # from the listing already read: no request
                 entry["units"].append(self._capture_company(
                     actor, company_id, listing["items"], entry["lineage"]))
@@ -1144,10 +1216,12 @@ class BcCapture:
         self._deadline = None
         units = [u for c in report["companies"] for u in c["units"]]
         # Every planned unit (per pinned company: each set, each set's lines and the
-        # company record), whether or not the call reached it before a stop.
+        # company record, plus the purchase-order field page of a named company), whether
+        # or not the call reached it before a stop.
         report["units_total"] = len(entries) * (
             len(entity_sets) + sum(1 for s in entity_sets if s in grammar.BC_DOCUMENT_LINES)
-            + 1)
+            + 1) + sum(1 for company_id, _entry in entries
+                       if self._references_planned(environment, company_id, entity_sets))
         report["units_reached"] = len(units)
         report["units_complete"] = sum(1 for u in units if u.get("complete"))
         unserved = self._mark_unserved(report["companies"])
@@ -1516,6 +1590,119 @@ class BcCapture:
             lineage=lineage)], None)
         self.store.finish_run(run["run_id"], "complete")
         return self._unit_report(actor, unit, COMPANY_SET, requests=0)
+
+    def _references_planned(self, environment: str, company_id: str,
+                            entity_sets: Sequence[str]) -> bool:
+        """The call reads ``company_id``'s purchase-order field page: it captures
+        ``purchaseOrders`` and the pinned map names the company (ODataV4 addresses a company
+        by name; an unnamed company's page is never read, by a guessed name or otherwise)."""
+        return (REFERENCE_PARENT_SET in entity_sets
+                and bool(self.names.get(environment, {}).get(company_id)))
+
+    def _capture_references(self, actor: Actor, company_id: str, company_name: str,
+                            lineage: str, page_size: int) -> dict[str, Any]:
+        """The company's purchase-order field page as unit ``bc:<company>/
+        purchaseOrderReferences`` (``capture_store.BC_FIELD_PAGES``; audience: the
+        ``purchaseOrders`` resource): ``Your_Reference`` and ``Buy_from_Vendor_No`` of each
+        purchase order, read in one traversal of ODataV4 Page 50
+        (``BusinessCentralReader.purchase_order_references``) and stored under the API v2.0
+        order whose ``number`` is the page row's ``No``, read in this capture. Read only
+        after the company's ``purchaseOrders`` unit settled (else ``skipped``,
+        ``purchase_orders_not_settled``: a reference is never joined to an order the
+        capture does not hold). A page row is stored only when exactly one held order has
+        its number and the vendor numbers do not differ; every other row is counted, never
+        stored: ``no_number`` (no ``No``), ``no_api_record`` (no held order),
+        ``ambiguous_api_record`` (several), ``duplicate_number`` (the page lists the number
+        twice: every such row), ``vendor_mismatch``. ``blank_reference`` counts stored rows
+        whose ``Your_Reference`` is blank (the link step counts them ``missing``). A read
+        the item or page cap truncated, or one that dropped a row (``REFERENCE_DROPPED``: a
+        row the page does not tie to one held order alone) finishes ``partial``;
+        ``no_api_record`` (an order the capture does not hold, e.g. one created since its
+        ``purchaseOrders`` read) is counted and leaves a complete traversal ``complete``,
+        which marks orders no longer listed missing. A company name the grammar refuses
+        (``grammar.bc_company_name_ok``: not a pinned name) fails the unit
+        ``company_name_refused`` before any request."""
+        environment = self.reader.environment.lower()
+        resource = self.reader.resource(company_id, REFERENCE_PARENT_SET)
+        unit = bc_unit(company_id, REFERENCE_SET)
+        if not self.reader._audience.allows(actor, resource):
+            return {"entity_set": REFERENCE_SET, "unit": unit, "state": "not_visible",
+                    "complete": False}
+        if not _settled(self.store.run("bc", bc_unit(company_id, REFERENCE_PARENT_SET))):
+            return {"entity_set": REFERENCE_SET, "unit": unit, "state": "skipped",
+                    "reason": "purchase_orders_not_settled", "complete": False}
+        if not grammar.bc_company_name_ok(company_name):
+            return {"entity_set": REFERENCE_SET, "unit": unit, "state": "failed",
+                    "reason": "company_name_refused", "complete": False}
+        if self._reusable(unit):
+            return self._unit_report(actor, unit, REFERENCE_SET, reused=True)
+        run = self.store.begin_run("bc", unit, [resource])
+        if self._deferred(run):
+            return self._unit_report(actor, unit, REFERENCE_SET, deferred=True)
+        run_id = run["run_id"]
+        try:
+            listing = self.reader.purchase_order_references(
+                actor, company_id, company_name, page_size=page_size)
+        except SourceUnavailable as exc:
+            self._failure(run_id, exc, resumed=False)
+            return self._unit_report(actor, unit, REFERENCE_SET)
+        counts = dict.fromkeys(REFERENCE_COUNTS, 0)
+        counts["no_number"] = int(listing["completeness"].get("no_number") or 0)
+        orders: dict[str, list[CapturedRecord]] = {}
+        for record in self.store.current_records("bc", bc_unit(company_id,
+                                                               REFERENCE_PARENT_SET)):
+            number = (record.payload.get("row") or {}).get("number")
+            if isinstance(number, str) and number:
+                orders.setdefault(number, []).append(record)
+        listed: dict[str, int] = {}
+        for item in listing["items"]:
+            listed[item["no"]] = listed.get(item["no"], 0) + 1
+        captured: list[CapturedRecord] = []
+        for item in listing["items"]:
+            fields, held = item["fields"], orders.get(item["no"], [])
+            if listed[item["no"]] > 1:
+                counts["duplicate_number"] += 1
+                continue
+            if not held:
+                counts["no_api_record"] += 1
+                continue
+            if len(held) > 1:
+                counts["ambiguous_api_record"] += 1
+                continue
+            order = held[0]
+            theirs = (order.payload.get("row") or {}).get("vendorNumber")
+            ours = fields.get("Buy_from_Vendor_No")
+            if (isinstance(theirs, str) and theirs.strip() and isinstance(ours, str)
+                    and ours.strip() and theirs.strip() != ours.strip()):
+                counts["vendor_mismatch"] += 1
+                continue
+            reference = fields.get("Your_Reference")
+            if not isinstance(reference, str) or not reference.strip():
+                counts["blank_reference"] += 1
+            record_id = order.path[3]
+            meta = {"environment": environment, "company_id": company_id,
+                    "entity_set": REFERENCE_SET, "id": record_id, "etag": item["etag"],
+                    "last_modified": None, "source_acl": BusinessCentralReader._source_acl(),
+                    "content_sha256": canonical_sha256(fields),
+                    "parent": order.source_version,
+                    "live_citation": citation(environment, company_id, REFERENCE_SET,
+                                              record_id, item["etag"])}
+            captured.append(CapturedRecord(
+                path=(environment, company_id, REFERENCE_SET, record_id),
+                payload={"row": fields, "meta": meta}, source_version=item["etag"],
+                lineage=lineage))
+        counts["stored"] = len(captured)
+        withheld = int(listing["completeness"].get("withheld") or 0)
+        self.store.save_page(run_id, captured, None, withheld=withheld,
+                             dropped=sum(counts[k] for k in REFERENCE_DROPPED))
+        if listing["completeness"].get("complete") and not withheld:
+            self.store.finish_run(run_id, "complete", detail={"references": counts})
+        else:
+            reason = ("withheld_or_dropped" if withheld
+                      else listing["completeness"].get("truncation_reason") or "truncated")
+            self.store.finish_run(run_id, "partial", reason=reason,
+                                  detail={"references": counts})
+        return self._unit_report(actor, unit, REFERENCE_SET, references=counts)
 
     def _expands(self, actor: Actor, company_id: str, header_set: str) -> bool:
         """Whether a header page of ``header_set`` may carry its lines: the pinned metadata
@@ -2012,7 +2199,7 @@ class BcCapture:
 # Entity sets the case tools read (no employees; no Microsoft.NAV actions).
 CASE_ENTITY_SETS = ("purchaseOrders", "purchaseReceipts", "purchaseInvoices", "salesOrders",
                     "salesInvoices", "items", "vendors", "customers")
-# Finance sets ``probe --finance-entities`` checks (verify/live-checks/bc.ledgers.json):
+# Finance sets ``probe --finance-entities`` checks (devloop/live-checks/bc.ledgers.json):
 # field names, the ``$select`` allowlist BC accepts, lines of the first header.
 FINANCE_ENTITY_SETS = ("itemLedgerEntries", "generalLedgerEntries", "agedAccountsReceivables",
                        "agedAccountsPayables", "purchaseCreditMemos",
@@ -2249,7 +2436,7 @@ def probe(environ: Mapping[str, str] | None = None, *, sender=None,
     ``books``, default ``bc_company_books.json``; null when unpinned), entity set, status
     and BC code, each naming its ``message_class`` as diagnosis. Only one the caller
     expects for that company (``expected_refusals``, ``<company book>:<entity set>:<BC
-    error code>``, data from the live-check spec) is ``expected``
+    error code>``, data from the live-check spec, architect-20261013T0921Z) is ``expected``
     and reported only, whatever its message says; any
     other, the same set refused by another company or a configuration-class message
     included, is also a ``finance_entity_errors`` row, so the check fails at once, except a 400 whose BC
@@ -2350,7 +2537,7 @@ def probe(environ: Mapping[str, str] | None = None, *, sender=None,
 
         def excused(book: str | None, entity: Mapping[str, Any]) -> bool:
             # Only the listed company's refusal: an unpinned company (no book) never is.
-            # The message class is diagnosis, never a reason.
+            # The message class is diagnosis, never a reason (architect-20261013T0921Z).
             return refused(entity) and (
                 book, entity["entity_set"], entity["failure"]["error_code"]) in expected
 
@@ -2436,7 +2623,7 @@ _UNIT_FIELDS = ("entity_set", "state", "complete", "records_current", "records_m
                 "last_full_pass_at", "lines_skipped", "keys_refetched", "key_failures",
                 "full_reason", "nextlink_refused", "lines_gone", "lines_via_filter",
                 "reused", "capture_age_seconds", "stale", "lines_expanded", "accounted",
-                "later_ask")
+                "later_ask", "references")
 
 
 def bc_entity_sets(schema: Any, process: str = CAPTURE_PROCESS,
@@ -2494,7 +2681,7 @@ def capture_probe(environ: Mapping[str, str] | None = None, *, sender=None,
     host's readers resolve its handles; default a service audience bound to the BC tenant
     itself.
     ``roots``: the sets every company captures first (``BcCapture.capture``).
-    ``fresh_since``: the live-check session's start (``session_fresh_since``): units ``db``
+    ``fresh_since``: the verifier session's start (``session_fresh_since``): units ``db``
     holds complete from this session are not read again, any other unit is
     (``BcCapture.capture``)."""
     if mode not in CAPTURE_MODES:
@@ -2521,11 +2708,23 @@ def capture_probe(environ: Mapping[str, str] | None = None, *, sender=None,
         try:
             capture = BcCapture(reader, store, books=books, monotonic=monotonic)
             started = monotonic()
-            reports = [capture.capture(actor, entity_sets=entity_sets, page_size=page_size,
-                                       budget_seconds=budget_seconds, mode=mode,
-                                       full_pass_due=key_pass_last and index == passes - 1,
-                                       roots=roots, fresh_since=fresh_since)
-                       for index in range(passes)]
+            # A pass after an unfinished pass (a stop, or a unit left resumable) continues
+            # it: what this call already completed is reused, never read again
+            # (gap-d4538d178d26: a second pass that restarted every unit re-read pass 1's
+            # units on its own budget and never reached the rest). The call's start is the
+            # freshness floor unless the caller's session start is earlier.
+            call_start = store.now()
+            reports: list[dict[str, Any]] = []
+            resumed: list[bool] = []
+            for index in range(passes):
+                resume = bool(reports) and _unfinished(reports[-1])
+                resumed.append(resume)
+                reports.append(capture.capture(
+                    actor, entity_sets=entity_sets, page_size=page_size,
+                    budget_seconds=budget_seconds, mode=mode,
+                    full_pass_due=key_pass_last and index == passes - 1, roots=roots,
+                    fresh_since=fresh_since if fresh_since is not None or not resume
+                    else call_start))
             seconds = monotonic() - started
             last = reports[-1]
             result: dict[str, Any] = {
@@ -2579,6 +2778,7 @@ def capture_probe(environ: Mapping[str, str] | None = None, *, sender=None,
                                               for r in reports],
                 "all_complete": last["all_complete"], "stopped_reason": last["stopped_reason"],
                 "throttle": last["throttle"], "passes": passes,
+                "resumed_per_pass": resumed,
                 "new_versions_per_pass": [sum(u.get("new_versions") or 0
                                               for c in r["companies"] for u in c["units"])
                                           for r in reports],
@@ -2612,6 +2812,14 @@ def capture_probe(environ: Mapping[str, str] | None = None, *, sender=None,
     result["retry_sleep_seconds"] = round(api.retry.slept_seconds, 3) \
         if api.retry is not None else 0.0
     return result
+
+
+def _unfinished(report: Mapping[str, Any]) -> bool:
+    """A capture pass that left work to continue: it stopped (budget, throttle) or a unit it
+    reached is still resumable (a share cut, a paused read)."""
+    return report.get("stopped_reason") is not None or any(
+        u.get("resumable") or u.get("state") == "in_progress"
+        for c in report.get("companies") or () for u in c.get("units") or ())
 
 
 def capture_unit(company: Mapping[str, Any], entity_set: str) -> Mapping[str, Any] | None:
@@ -2683,6 +2891,13 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
                           "and read their lines first, so a budget stop keeps them")
     cap.add_argument("--key-pass-last", action="store_true",
                      help="auto mode: the last pass is the key-only full pass")
+    cap.add_argument("--live-audience", default=None,
+                     help="plx-live-source-audience/v1 file: bind --db to its tenant and "
+                          "capture as --principal, as a host captures (its readers resolve "
+                          "the store only then); default a service audience bound to the BC "
+                          "tenant itself")
+    cap.add_argument("--principal", default=None,
+                     help="the principal --live-audience grants (required with it)")
     drift = commands.add_parser("metadata-drift", help="the API v2.0 $metadata against the "
                                 "pinned document and the schema (names and counts only)")
     drift.add_argument("--out", default=None,
@@ -2700,7 +2915,14 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
                 first = tuple(s for s in generated_capture_sets() if s in sets)
                 sets = first + tuple(s for s in sets if s not in first)
                 roots = (*CAPTURE_ROOT_SETS, *first)
+            if (args.live_audience is None) != (args.principal is None):
+                raise ValueError("--live-audience and --principal go together")
+            audience = actor = None
+            if args.live_audience is not None:
+                audience = LiveSourceAudience.from_file(args.live_audience)
+                actor = Actor(audience.tenant, frozenset({args.principal}), "restricted")
             result = capture_probe(environ, sender=sender, db=args.db,
+                                   audience=audience, actor=actor,
                                    budget_seconds=args.budget_seconds,
                                    entity_sets=sets, roots=roots,
                                    page_size=args.page_size,
@@ -2720,7 +2942,11 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
         print(json.dumps({"error": "MetadataError", "error_code": exc.code,
                           "message": str(exc)}), file=sys.stderr)
         return 1
-    except (SourceUnavailable, NotVisible, ValueError, CaptureError) as exc:
+    except CaptureError as exc:   # its stable code names the refusal (binding_mismatch, ...)
+        print(json.dumps({"error": "CaptureError", "error_code": exc.code,
+                          "message": str(exc)}), file=sys.stderr)
+        return 1
+    except (SourceUnavailable, NotVisible, ValueError) as exc:
         print(json.dumps({"error": type(exc).__name__, "message": str(exc)}), file=sys.stderr)
         return 1
     print(json.dumps(result, indent=1, sort_keys=True))

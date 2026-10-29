@@ -1,9 +1,9 @@
-"""The live checks' warm store: the session stores a verifier run carries to the next.
+"""The live verifier's warm store: the session stores a verifier run carries to the next.
 
-A verifier session (``verify/live_verify.py``, "Session state") used to start every run in
+A verifier session (``devloop/live_verify.py``, "Session state") used to start every run in
 an empty temporary directory, so its producers synced the Portal mirror and built the
 session projection cold each time (about 1,500 s plus 2,200-3,100 s, every run cold:
-``docs/decisions/2026-10-19-projection-shared-cost.md``), and the consumers waiting on
+``devloop/DECISIONS/2026-10-19-projection-shared-cost.md``), and the consumers waiting on
 them were settled ``session_over_budget``. With ``PLX_WORKBENCH_STATE_DIR`` set, the session
 directory lives in ``<STATE>/live-verify-warm`` and two of its stores outlive the run
 (``WARM_ITEMS``): the session mirror (``mirror.sqlite``; its writer tops it up, keeping an
@@ -12,7 +12,7 @@ unchanged row's capture) and the session projection (``projection``: the generat
 whose captures changed and commits a generation whose digest equals a cold build's.
 
 A carried store is a writer's starting point, and a consumer's store when the verifier
-adopts it (``verify/live_verify.py``, "Session state", the warm-adoption rule): a store is
+adopts it (``devloop/live_verify.py``, "Session state", the warm-adoption rule): a store is
 kept with its last writer (``writer``: the check id, verdict, ``{id, checked_at, main_sha}``
 run, the start of the session it ran in and whether no store it read was written again
 after it, ``coherent``), and :meth:`WarmStore.peek` names that writer, without moving
@@ -44,7 +44,7 @@ Rules (each fails closed to a cold store, never to a refusal of the run):
 * A kept projection holds only its committed generation
   (``ontology.project_incremental.prune_to_current``).
 * Disk: when the kept bytes exceed half of the free space plus themselves (the 50% line
-  of ``docs/decisions/2026-10-18-projection-store-v6.md``), at open or after a run kept
+  of ``devloop/DECISIONS/2026-10-18-projection-store-v6.md``), at open or after a run kept
   its stores, everything kept is removed (``reset: disk_over_half``).
 * A killed run leaves its session directory; the next one removes it (it holds the lock,
   so no live run owns one), first keeping each store the run's journal names

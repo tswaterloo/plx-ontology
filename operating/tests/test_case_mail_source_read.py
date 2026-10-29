@@ -18,13 +18,13 @@ import json
 from pathlib import Path
 import unittest
 
-from verify import live_verify as lv
+from devloop import live_verify as lv
 from operating import case_mail
 from operating.case_mail_scope import MailScope
 from operating.tests.test_case_mail import BASE, ENV, KEY, CaseMailTestCase, _msg
 
 ROOT = Path(lv.ROOT)
-SPEC = "verify/live-checks/case.mail_evidence.json"
+SPEC = "devloop/live-checks/case.mail_evidence.json"
 
 
 def _spec(name: str = SPEC) -> dict:
@@ -125,7 +125,7 @@ class LiveScopeTests(unittest.TestCase):
             scope = json.loads((ROOT / scope_file).read_text(encoding="utf-8"))
             audience = json.loads((ROOT / audience_file).read_text(encoding="utf-8"))
             addresses = [m["address"] for m in scope["mailboxes"]]
-            # The six named mailboxes, nothing else.
+            # The six mailboxes of owner directive dedbcc76f44a, nothing else.
             self.assertEqual(sorted(addresses), sorted(
                 f"{box}@petrasoap.com" for box in ("order-confirmation", "ship", "torontowh",
                                                    "ap", "receiving", "qclabresults")))

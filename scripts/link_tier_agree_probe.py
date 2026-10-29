@@ -1,12 +1,17 @@
 """Live check that plx.around, plx.aggregate and plx.process read one tier for one link.
 
     python3 -m scripts.link_tier_agree_probe --store DIR/ontology.sqlite [--db FILE] \\
-        [--budget-seconds N] [--sample N] [--checks-budget-seconds N] [--live-audience FILE]
+        [--budget-seconds N] [--sample N] [--checks-budget-seconds N] [--live-audience FILE] \\
+        [--bc-capture] [--previous-report DAILY.json] [--session-projection SESSION_DIR]
 
-GET only (``operating.ontology_tools._effective_tier`` is the one
-link-tier rule). The projection probe (``scripts.ontology_projection_probe --build-only``) builds a
-throwaway projection of one Portal reporting API sync (no BC capture) and lays it out as the
-served host state, as ``scripts.process_dependencies_probe`` does. Then, offline over that
+GET only (09-CRITIQUE R1; ``operating.ontology_tools._effective_tier`` is the one
+link-tier rule). The L7 probe (``scripts.ontology_projection_probe --build-only``) builds a
+throwaway projection (a GET-only Portal sync; with ``--bc-capture`` one GET-only BC capture)
+and lays it out as the served host state, as ``scripts.process_dependencies_probe`` does;
+with ``--session-projection`` it opens the verifier session's projection instead when this
+session committed it (no sync, capture or projection of its own: a cold projection of a
+whole sync does not fit the build budget, which read ``budget_exhausted`` on main
+``1e2f02bd05``). Then, offline over that
 state, up to ``--sample`` sales orders are asked through the served host
 (``Host.served_tools``: the tools ``mcp`` serves) as its capture principal. An order's
 ``SalesOrderLine.line_of`` links are the unit: orders with a staging
@@ -205,11 +210,16 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     parser.add_argument("--db", default=None, help="throwaway mirror file (default: beside "
                         "the store)")
     parser.add_argument("--budget-seconds", type=float, default=None,
-                        help="the projection build's budget")
+                        help="the L7 build's budget")
     parser.add_argument("--checks-budget-seconds", type=float, default=None)
     parser.add_argument("--sample", type=int, default=20, help="orders asked")
     parser.add_argument("--live-audience", default=None)
     parser.add_argument("--workers", type=int, default=None)
+    parser.add_argument("--bc-capture", action="store_true")
+    parser.add_argument("--previous-report", default=None,
+                        help="last daily verifier report, passed to the L7 build")
+    parser.add_argument("--session-projection", default=None,
+                        help="the verifier session's projection (the L7 probe's)")
     args = parser.parse_args(argv)
     db = args.db or os.path.join(os.path.dirname(os.path.abspath(args.store)), "mirror.sqlite")
     phase = None
@@ -218,10 +228,14 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
 
         build_args = ["--db", db, "--store", args.store, "--build-only"]
         for flag, value in (("--budget-seconds", args.budget_seconds),
+                            ("--previous-report", args.previous_report),
                             ("--workers", args.workers),
-                            ("--live-audience", args.live_audience)):
+                            ("--live-audience", args.live_audience),
+                            ("--session-projection", args.session_projection)):
             if value is not None:
                 build_args += [flag, str(value)]
+        if args.bc_capture:
+            build_args.append("--bc-capture")
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             built = projection.main(build_args, environ=environ, bc_sender=bc_sender,
@@ -237,8 +251,8 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
                               "stage": "projection_build"}, sort_keys=True))
             return 1
         build = json.loads(out.getvalue())
-        parts = {key: build[key] for key in ("blocked_upstream", "sources", "disk")
-                 if key in build}
+        parts = {key: build[key] for key in ("blocked_upstream", "bc_capture", "sources",
+                                            "session_projection", "disk") if key in build}
         if build.get("sources_blocked"):
             print(json.dumps({"probe": PROBE, "sources_blocked": build["sources_blocked"],
                               **parts}, sort_keys=True))

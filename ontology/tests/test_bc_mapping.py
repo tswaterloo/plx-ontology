@@ -1,9 +1,9 @@
 """Portal <-> Business Central cross-system keys, projected with company scope.
 
 Fixture (synthetic ids only): a gold sales order that BC renumbered, the Portal entity
-map rows the drain wrote for it (pending schema file: the reporting-API manifest lists
-``public.app_bc_entity_map`` from plx-customer-portal@52c9116 (d92530b52 TASK-3525) but the
-read grant is not live, so the type stays pending), and BC captures of two companies that reuse the same
+map rows the drain wrote for it (``ontology/schema/domains/bc_entity_map.json``: the
+reporting API serves ``public.app_bc_entity_map`` since plx-customer-portal TASK-3525;
+promoted from pending/ 2026-10-27), and BC captures of two companies that reuse the same
 document numbers. Mirrors plx-customer-portal@c3ffda3: outbox-drain.ts upsertEntityMap /
 syncSalesOrder / syncSalesInvoice, align-portal-so-number.ts, order-identity.ts
 resolveOrderFromBcInvoiceId, document-finance-queries.ts resolveSalesOrderFinanceMatchKeys,
@@ -36,9 +36,10 @@ T0 = "2026-09-30T10:00:00.000000Z"
 # Prisma model Warehouse (plx-customer-portal@48d76e835660 portal/prisma/schema.prisma).
 WAREHOUSE_COLUMNS = ["address", "code", "created_at", "description", "exclude_from_valuation", "id",
                      "is_active", "location_type", "name", "temperature_controlled", "updated_at"]
-ENTITY_MAP_COLUMNS = ["bc_external_document_number", "bc_number", "bc_system_id",
-                      "created_at", "entity_type", "id", "last_synced_at", "source_id",
-                      "source_system", "status", "updated_at"]
+ENTITY_MAP_COLUMNS = ["bc_company_id", "bc_environment", "bc_external_document_number",
+                      "bc_number", "bc_system_id", "created_at", "entity_type", "id",
+                      "last_synced_at", "source_id", "source_system", "status", "updated_at"]
+PROD = {"bc_environment": "Production"}
 
 
 def catalog_without_entity_map() -> s.Catalog:
@@ -110,18 +111,18 @@ PORTAL = [
     portal("public.app_shipment", {"id": "sh-1", "sales_order_id": SO,
                                    "shipment_code": "SH100017", "customer_id": "cust-1"}),
     portal("public.app_product", {"id": "p-1", "code": "R-9001", "name": "n"}),
-    portal("public.app_bc_entity_map", {
+    portal("public.app_bc_entity_map", {**PROD,
         "id": "m1", "entity_type": "salesOrder", "source_system": "portal", "source_id": SO,
         "bc_system_id": G_SO_MAN.upper(), "bc_number": "SO100200", "status": "LINKED"}),
-    portal("public.app_bc_entity_map", {
+    portal("public.app_bc_entity_map", {**PROD,
         "id": "m2", "entity_type": "salesInvoice", "source_system": "portal",
         "source_id": SO, "bc_system_id": G_INV_MAN, "bc_number": "PSI-1001",
         "status": "LINKED"}),
     # A non-portal row naming the other company's order: never a Portal identity.
-    portal("public.app_bc_entity_map", {
+    portal("public.app_bc_entity_map", {**PROD,
         "id": "m3", "entity_type": "salesOrder", "source_system": "fm", "source_id": SO,
         "bc_system_id": G_SO_DIST, "bc_number": "SO100200", "status": "LINKED"}),
-    portal("public.app_bc_entity_map", {
+    portal("public.app_bc_entity_map", {**PROD,
         "id": "m4", "entity_type": "item", "source_system": "portal", "source_id": "p-1",
         "bc_system_id": G_ITEM_MAN, "bc_number": "R-9001", "status": "LINKED"}),
     # A second gold order: its salesOrder map row is ARCHIVED (cancelled in BC) and a
@@ -129,19 +130,29 @@ PORTAL = [
     # (entity_type + status 'LINKED', document-finance-queries.ts) read neither.
     portal("public.app_sales_order", {"id": SO2, "order_number": "SO-2026-0042",
                                       "customer_id": "cust-1", "status": "CANCELLED"}),
-    portal("public.app_bc_entity_map", {
+    portal("public.app_bc_entity_map", {**PROD,
         "id": "m5", "entity_type": "salesOrder", "source_system": "portal", "source_id": SO2,
         "bc_system_id": G_SO_MAN2, "bc_number": "SO100300", "status": "ARCHIVED"}),
-    portal("public.app_bc_entity_map", {
+    portal("public.app_bc_entity_map", {**PROD,
         "id": "m6", "entity_type": "customer", "source_system": "portal", "source_id": SO2,
         "bc_system_id": G_SO_MAN2, "bc_number": "SO100300", "status": "LINKED"}),
     # A third gold order mapped to a BC order whose systemId answers in two companies
     # (a copied company).
     portal("public.app_sales_order", {"id": SO3, "order_number": "SO-2026-0043",
                                       "customer_id": "cust-1", "status": "CONFIRMED"}),
-    portal("public.app_bc_entity_map", {
+    portal("public.app_bc_entity_map", {**PROD,
         "id": "m7", "entity_type": "salesOrder", "source_system": "portal", "source_id": SO3,
         "bc_system_id": G_SO_COPY, "bc_number": "SO100400", "status": "LINKED"}),
+    # Rows another BC environment's drain wrote (a UAT copy shares Production systemIds),
+    # or that name no environment: never identity for the captured Production records.
+    portal("public.app_product", {"id": "p-2", "code": "R-9002", "name": "n"}),
+    portal("public.app_bc_entity_map", {
+        "id": "m8", "entity_type": "item", "source_system": "portal", "source_id": "p-2",
+        "bc_system_id": G_ITEM_MAN, "bc_number": "R-9001", "status": "LINKED",
+        "bc_environment": "UAT"}),
+    portal("public.app_bc_entity_map", {
+        "id": "m9", "entity_type": "item", "source_system": "portal", "source_id": "p-2",
+        "bc_system_id": G_ITEM_DIST, "bc_number": "R-9001", "status": "LINKED"}),
 ]
 BC = [
     bc("salesOrders", MAN, {"id": G_SO_MAN, "number": "SO100200",
@@ -193,6 +204,7 @@ BC_INV_DIRECT = oid("SalesInvoice", "bc.sales_invoices", G_INV_DIRECT)
 BC_INV_POSTED = oid("SalesInvoice", "bc.sales_invoices", G_INV_POSTED)
 SHIPMENT = oid("Shipment", "portal.app_shipment", "sh-1")
 PRODUCT = oid("Product", "portal.app_product", "p-1")
+PRODUCT_UAT = oid("Product", "portal.app_product", "p-2")
 BC_ITEM_MAN = oid("Product", "bc.items", G_ITEM_MAN)
 BC_ITEM_DIST = oid("Product", "bc.items", G_ITEM_DIST)
 
@@ -257,12 +269,25 @@ class BcMappingProjection(unittest.TestCase):
         self.assertIn(("binding_key_not_unique", "bc.sales_orders"),
                       {(g["code"], g["where"]) for g in self.report["gaps"]})
 
+    def test_a_row_of_another_or_no_bc_environment_is_never_identity(self):
+        """Only Production rows are bound (the environment the BC capture reads): a UAT
+        drain's row naming a Production systemId, or a row naming no environment, is no
+        BcEntityMapping and no link."""
+        self.assertEqual(self.links("Product.bc_posted_as", frm=PRODUCT_UAT), [])
+        mapped = {r["object_id"] for r in self.tables["objects"]
+                  if r["object_type"] == "BcEntityMapping"}
+        for row_id in ("m8", "m9"):
+            self.assertNotIn(oid("BcEntityMapping", "portal.app_bc_entity_map", row_id), mapped)
+
     def test_bc_invoice_resolves_its_order_through_the_entity_map(self):
         self.assertEqual(self.tiers("SalesInvoice.posted_for_order", BC_INV_MAN),
                          {GOLD_SO: "verified"})
 
     def test_product_reaches_only_the_bc_item_the_map_names(self):
         self.assertEqual(self.tiers("Product.bc_posted_as", PRODUCT), {BC_ITEM_MAN: "verified"})
+        # The BC end is one record of one company: its capture lineage names the company.
+        versions = {v["object_id"]: v["lineage"] for v in self.tables["object_versions"]}
+        self.assertEqual(versions[BC_ITEM_MAN], MAN)
         # The code -> item No. key is a per-company master clone: both books, never merged,
         # and never verified while the Portal row does not serve its book.
         self.assertEqual(self.tiers("Product.same_record_as", PRODUCT),
@@ -359,25 +384,26 @@ class BcMappingSchema(unittest.TestCase):
         self.assertEqual(compiled.company_scope["SalesInvoice.bills"],
                          {1: s.SAME_BC_COMPANY, 2: s.SAME_BC_COMPANY})
 
-    def test_pending_bindings_load_only_on_request(self):
+    def test_the_entity_map_is_served_by_default_and_refused_without_its_relation(self):
         served = s.load_schema(catalog=s.load_catalog())
-        self.assertEqual(served.object_types["BcEntityMapping"]["bindings"], [])
-        self.assertNotIn("SalesOrder.bc_posted_as", served.link_types)
+        self.assertTrue(served.object_types["BcEntityMapping"]["bindings"])
+        for link in ("SalesOrder.bc_posted_as", "PurchaseOrder.bc_posted_as",
+                     "Product.bc_posted_as", "SalesInvoice.posted_for_order"):
+            self.assertIn(link, served.link_types)
         self.assertEqual(served.pending_types, {})
+        # A catalog that does not serve the relation fails the load closed, by name.
         with self.assertRaises(s.SchemaLoadError) as caught:
-            s.load_schema(catalog=catalog_without_entity_map(), include_pending=True)
+            s.load_schema(catalog=catalog_without_entity_map())
         self.assertIn("BcEntityMapping binding portal.app_bc_entity_map: unknown relation "
                       "'public.app_bc_entity_map' (not in the reporting-API catalog)",
                       caught.exception.errors)
-        # The pinned manifest lists the entity map now; the other pending files still refuse.
+        # The other pending files still refuse against the pinned catalog.
         with self.assertRaises(s.SchemaLoadError) as caught:
             s.load_schema(catalog=s.load_catalog(), include_pending=True)
         self.assertIn("Warehouse binding portal.app_warehouse: unknown relation "
                       "'public.app_warehouse' (not in the reporting-API catalog)",
                       caught.exception.errors)
         self.assertFalse([e for e in caught.exception.errors if "app_bc_entity_map" in e])
-        pending = s.load_schema(catalog=catalog_serving_entity_map(), include_pending=True)
-        self.assertEqual(pending.pending_types["BcEntityMapping"], "pending/bc_entity_map.json")
 
     def test_a_pending_type_keeps_its_placeholders_markings(self):
         docs = s.load_documents(include_pending=True)
@@ -385,25 +411,21 @@ class BcMappingSchema(unittest.TestCase):
         for name, doc in docs:
             doc = copy.deepcopy(doc)
             for t in doc.get("object_types", []):
-                if t["id"] == "BcEntityMapping" and not name.startswith("pending/"):
+                if t["id"] == "Warehouse" and not name.startswith("pending/"):
                     t["markings"] = ["finance"]
             marked.append((name, doc))
         compiled = s.compile_documents(marked, catalog=catalog_serving_entity_map())
-        self.assertEqual(compiled.pending_types["BcEntityMapping"], "pending/bc_entity_map.json")
-        replaced = compiled.object_types["BcEntityMapping"]
+        self.assertEqual(compiled.pending_types["Warehouse"], "pending/bc_warehouse.json")
+        replaced = compiled.object_types["Warehouse"]
         self.assertTrue(replaced["bindings"])
         self.assertEqual(replaced["markings"], ["finance"])
 
     def test_pending_report_names_the_unserved_relation(self):
-        def entry_of(catalog):
-            (entry,) = [e for e in s.pending_report(catalog)
-                        if e["relation"] == "public.app_bc_entity_map"]
-            return entry
-        entry = entry_of(catalog_without_entity_map())
-        self.assertEqual((entry["relation"], entry["served"], entry["upstream_ask"]),
-                         ("public.app_bc_entity_map", False, "Q3"))
-        self.assertTrue(entry_of(s.load_catalog())["served"])  # pinned manifest, TASK-3525
-        self.assertTrue(entry_of(catalog_serving_entity_map())["served"])
+        report = s.pending_report(s.load_catalog())
+        (entry,) = [e for e in report if e["relation"] == "public.app_warehouse"]
+        self.assertEqual((entry["served"], entry["upstream_ask"]), (False, "Q3"))
+        # Promoted: the entity map is no pending relation any more.
+        self.assertFalse([e for e in report if e["relation"] == "public.app_bc_entity_map"])
 
     def test_pending_file_never_replaces_a_declared_type(self):
         docs = s.load_documents(include_pending=True)

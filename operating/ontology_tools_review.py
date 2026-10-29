@@ -1,4 +1,4 @@
-"""``plx.review``: a person's review decisions on the ontology.
+"""``plx.review``: a person's review decisions on the ontology (directive dd40ff1bf83f P3).
 
 The confirm / reject controls of the employee workspace call this one tool. Mode
 ``record`` appends one decision to the Workbench's own review store
@@ -133,7 +133,7 @@ _STORED = dict(_CORRECTABLE, decimal=r"-?[0-9]+(?:\.[0-9]+)?", money=r"-?[0-9]+(
                quantity=r"-?[0-9]+(?:\.[0-9]+)?")
 _MACHINE_READ = frozenset({"parser", "ocr"})
 # Who may record an identity decision: the employee-policy principal the host maps to
-# the Portal's owner and admin roles (SUPER_ADMIN, ADMIN;
+# the Portal's owner and admin roles (SUPER_ADMIN, ADMIN; owner decision ab1b0f5d9fa8,
 # the policy's ``review:identity`` entry with ``portal_roles``).
 IDENTITY_REVIEW = "review:identity"
 IDENTITY_DECISIONS = frozenset({"accept_link", "reject_link", "alias", "reject_alias"})

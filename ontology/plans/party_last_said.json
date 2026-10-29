@@ -1,0 +1,332 @@
+{
+ "$schema": "_plan.schema.json",
+ "format": "plx-investigate-plan/v1",
+ "id": "party_last_said",
+ "families": [
+  "F19"
+ ],
+ "title": "What we last said to a supplier or customer, and who said it",
+ "description": "The latest messages a person of ours sent a supplier or customer, each cited with its time, subject and body preview and its sender (operating/people_graph.py): mail naming the party, its same-record twins or its orders, and mail a person linked to the party, read as this reader may read it. A message is to the party only when a recipient re-read from its citation is an address the party sent us mail from (a reviewed sender link) or at the party's own website domain; a shared mail provider's domain is never the party's. The sender passes the people exclusion first (fail closed: an excluded or undecidable sender is never named and its entry is withheld). Nothing found is a typed gap, never proof nothing was said.",
+ "root": {
+  "object_types": [
+   "Supplier",
+   "Customer"
+  ],
+  "fallback_filters": [
+   {
+    "object_type": "Supplier",
+    "property": "code"
+   },
+   {
+    "object_type": "Supplier",
+    "property": "name"
+   },
+   {
+    "object_type": "Customer",
+    "property": "code"
+   },
+   {
+    "object_type": "Customer",
+    "property": "name"
+   }
+  ]
+ },
+ "step_budget": 128,
+ "max_each": 25,
+ "steps": [
+  {
+   "id": "root_read",
+   "tool": "plx.object",
+   "from": "root",
+   "bind": "object_id",
+   "required": true
+  },
+  {
+   "id": "twins",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "description": "The same record in another system (every same-record link the schema declares at its type).",
+   "links": {
+    "binding_kind": "same_record",
+    "direction": "forward"
+   },
+   "args": {
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "twins_of",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "links": {
+    "binding_kind": "same_record",
+    "direction": "reverse"
+   },
+   "args": {
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "twin_reads",
+   "tool": "plx.object",
+   "from": [
+    "twins",
+    "twins_of"
+   ],
+   "bind": "object_id"
+  },
+  {
+   "id": "purchase_orders",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "twins",
+    "twins_of"
+   ],
+   "bind": "from",
+   "description": "The supplier's purchase orders.",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrder.ordered_from",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "sales_orders",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "twins",
+    "twins_of"
+   ],
+   "bind": "from",
+   "description": "The customer's sales orders.",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrder.ordered_by",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "party_mail",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "twins",
+    "twins_of"
+   ],
+   "bind": "from",
+   "description": "Mail a person linked to the party as its sender (a reviewed link).",
+   "args": {
+    "path": [
+     {
+      "link": "sent_emails"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "mentions",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "twins",
+    "twins_of",
+    "purchase_orders",
+    "sales_orders"
+   ],
+   "bind": "from",
+   "description": "Mail, files and tasks naming the party or its orders (mention links: leads).",
+   "links": {
+    "binding_kind": "mention",
+    "direction": "reverse"
+   },
+   "args": {
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "attachment_mail",
+   "tool": "plx.around",
+   "from": "mentions",
+   "bind": "from",
+   "description": "The mail an attachment naming them came with.",
+   "object_types": [
+    "Attachment"
+   ],
+   "args": {
+    "path": [
+     {
+      "link_type": "Attachment.attached_to",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   }
+  },
+  {
+   "id": "mail_reads",
+   "tool": "plx.object",
+   "from": [
+    "mentions",
+    "attachment_mail",
+    "party_mail"
+   ],
+   "bind": "object_id",
+   "object_types": [
+    "Email"
+   ],
+   "max_each": 40
+  }
+ ],
+ "evidence": [
+  {
+   "name": "party_website",
+   "kind": "property",
+   "object_type": "Supplier",
+   "properties": [
+    "website"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "mail_sent_at",
+   "kind": "property",
+   "object_type": "Email",
+   "properties": [
+    "sent_at",
+    "received_at"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "mail_sender",
+   "kind": "property",
+   "object_type": "Email",
+   "properties": [
+    "sender"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "mail_subject",
+   "kind": "property",
+   "object_type": "Email",
+   "properties": [
+    "subject"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "mail_body",
+   "kind": "property",
+   "object_type": "Email",
+   "properties": [
+    "body_preview"
+   ],
+   "description": "What the message itself says (its captured preview).",
+   "omit_empty": true
+  },
+  {
+   "name": "last_said",
+   "kind": "compute",
+   "required": true,
+   "engine": "party_last_said",
+   "description": "The latest message a person of ours sent the party, with its sender and up to four earlier ones, each citing its time, subject, body and sender entries; nothing found is a typed gap.",
+   "engine_args": {
+    "party_websites": [
+     "party_website"
+    ],
+    "party_links": [
+     "Email.sent_by_supplier",
+     "Email.sent_by_customer"
+    ],
+    "messages": {
+     "time": [
+      "mail_sent_at"
+     ],
+     "sender": [
+      "mail_sender"
+     ],
+     "said": [
+      "mail_subject",
+      "mail_body"
+     ],
+     "recipients": [
+      "row.to",
+      "row.cc"
+     ]
+    },
+    "twin_links": [
+     "Supplier.same_record_as",
+     "Customer.same_record_as"
+    ]
+   }
+  }
+ ]
+}

@@ -106,6 +106,11 @@ class OwnerActionTest(tap.ActionPathTestCase):
         return objects.WorkspaceActions(self.path, session, actors=actors, mc=self.mc.client,
                                         registry=self.registry, read_back=self.fx.read_back)
 
+    def approver(self, email=tap.VINCE, oid=tap.VINCE_OID):
+        """A person's own console session (a roster approver by default)."""
+        return fixture_session("plx", tap.OPS.principals, channel=CHANNEL_CONSOLE,
+                               subject_email=email, subject_oid=oid)
+
     def serve(self, session, actors=tap.OPS.principals):
         return serve(self, session, self.actions(session, actors), cases=self.cases,
                      path=self.path)
@@ -130,25 +135,32 @@ class OwnerActionTest(tap.ActionPathTestCase):
         status, refused = step(portal, "prepare_gate", task_id="TASK-9")
         self.assertEqual((status, refused["error"]), (409, "production_target_refused"))
         self.assertEqual(self.mc.sender.calls, [])
-        # The workspace has no approve step.
-        self.assertEqual(step(owned, "approve_call")[0], 400)
+        # Nothing is prepared yet: there is no call to approve.
+        self.assertEqual(step(owned, "approve_call", approves_sha256="0" * 64)[1]["error"],
+                         "invalid_state:proposed")
 
         status, prepared = step(owned, "prepare_gate", task_id="TASK-9")
-        self.assertEqual((status, prepared["state"], prepared["control"]["step"],
-                          prepared["control"]["available"]),
-                         (200, "gate_prepared", "approve_call", False))
+        self.assertEqual((status, prepared["state"], prepared["control"]["step"]),
+                         (200, "gate_prepared", "approve_call"))
         self.assertEqual(step(owned, "dispatch")[1]["error"], "gate_not_authorized")
         # The approval of that exact request is a person's other than the employee it is
-        # for, recorded through the approver's own door; an agent never approves.
+        # for; an agent never approves. The employee cannot approve at their own console.
+        shown = prepared["control"]["approves_sha256"]
+        status, refused = step(owned, "approve_call", approves_sha256=shown)
+        self.assertEqual((status, refused["error"]), (409, "call_approver_is_subject"))
         intent = self.path.get(tap.OPS, owned)["intent"]
-        for approver, code in ((tap.EMPLOYEE, "call_approver_is_subject"),
-                               ("agent:planner", "call_approver_not_allowed")):
-            with self.subTest(approver=approver), self.assertRaises(ap.ActionPathError) as caught:
-                self.path.approve_call(tap.OPS, owned, "TASK-9", self.call_record(
-                    intent, approved_by=approver), session=tap.SESSION)
-            self.assertEqual(caught.exception.code, code)
-        self.path.approve_call(tap.OPS, owned, "TASK-9", self.call_record(intent),
-                               session=tap.SESSION)
+        with self.assertRaises(ap.ActionPathError) as caught:
+            self.path.approve_call(tap.OPS, owned, "TASK-9", self.call_record(
+                intent, approved_by="agent:planner"), session=tap.SESSION)
+        self.assertEqual(caught.exception.code, "call_approver_not_allowed")
+        # A roster approver approves it at their own console session.
+        before = list(self.mc.sender.calls)
+        status, approved = self.serve(self.approver())("POST", "/api/object-action", {
+            "intent_id": owned, "step": "approve_call", "approves_sha256": shown})
+        self.assertEqual((status, approved["state"], approved["control"]["step"]),
+                         (200, "call_approved", "request_gate"))
+        self.assertEqual(self.mc.sender.calls, before)   # approving sent nothing, not even a read
+        self.assertNotIn("mc_request_approval", self.mc.tools_called())
 
         status, requested = step(owned, "request_gate")
         self.assertEqual((status, requested["state"]), (200, "gate_requested"))
@@ -169,8 +181,130 @@ class OwnerActionTest(tap.ActionPathTestCase):
                          (200, "verified", "verified", True))
         self.assertEqual(self.fx.calls, 1)
 
+    def test_only_a_roster_person_who_is_no_subject_approves_the_shown_call_once(self):
+        """The console's approve step: a person's own session on the approver roster with
+        a known Entra oid approves exactly the call shown (its digest), never an agent, the
+        eval principal, a person off the roster, an unknown or mismatched oid, a subject,
+        a stale view or a second time; nothing is sent by any of it."""
+        from dataclasses import replace
+
+        from operating.employee_permissions import EmployeePrincipal
+        from operating.goal2_mc_approval import ApproverRoster
+        from operating.session_identity import PROOF_EVAL
+
+        owned = self.owned["intent_id"]
+        request = self.serve(self.console)
+        self.assertEqual(request("POST", "/api/object-action", {
+            "intent_id": owned, "step": "prepare_gate", "task_id": "TASK-9"})[0], 200)
+        sent = list(self.mc.sender.calls)
+        status, listed = self.serve(self.approver())(
+            "GET", "/api/object-actions?id=" + quote(OBJECT, safe=""))
+        control = next(item["control"] for item in listed["intents"]["intents"]
+                       if item["intent_id"] == owned)
+        shown, subject = control["approves_sha256"], control["approves"]
+        state = self.path.get(tap.OPS, owned)
+        # What the click approves is shown first: type, target, traced parameters, effect,
+        # the exact call; bound to this intent and this prepared request.
+        self.assertEqual((control["step"], control["available"], subject["action_type"],
+                          subject["target"], subject["call"], subject["binding_sha256"],
+                          shown),
+                         ("approve_call", True, ap.FIXTURE_CAPABILITY,
+                          {"relation": tap.REL, "key": {"id": 3}},
+                          {"tool": "mc_request_approval", "arguments": {
+                              "taskId": "TASK-9", "reason": state["intent"]["gate_reason"]}},
+                          ap._binding(state["intent"]), ap.call_approval_sha256(state)))
+        self.assertEqual(subject["parameters"], [
+            {"name": name, "source": trace} for name, trace in
+            sorted(state["intent"]["parameter_trace"]["traces"].items())])
+        self.assertTrue(subject["parameters"])
+
+        # Another intent, prepared too: its digest is not this call's.
+        other = self.path.register(tap.OPS, self.case_id, self.path.record_proposal(
+            tap.OPS, self.case_id, ap.FIXTURE_CAPABILITY,
+            {"field": "po_reference", "value": "PO-9999"},
+            [{"check": "field_empty", "citation": self.handle, "field": "po_reference"}],
+            citations=[self.handle, tap.API_ORDER],
+            expected_effect={**tap.EFFECT, "equals": "PO-9999"},
+            session=tap.SESSION)["proposal_id"], session=tap.SESSION)["intent_id"]
+        self.path.prepare_gate(tap.OPS, other, "TASK-9", self.mc.client, session=tap.SESSION)
+        sent = list(self.mc.sender.calls)
+        other_shown = ap.call_approval_sha256(self.path.get(tap.OPS, other))
+        self.assertNotEqual(other_shown, shown)
+
+        employee = EmployeePrincipal("0000c000-0000-4000-8000-0000000000e1", tap.VINCE_OID)
+        evaluator = replace(self.approver(), proof=PROOF_EVAL, employee=employee,
+                            principals=frozenset({employee.principal}),
+                            expires_at=4102444800)
+        nobody = "someone.else@petrasoap.com"
+        cases = [
+            ("the employee it is for", self.console, shown, (409, "call_approver_is_subject")),
+            ("a person off the roster", self.approver(
+                nobody, "0000b000-0000-4000-8000-0000000000f1"), shown,
+             (409, "call_approver_not_allowed")),
+            ("a roster member who approves no type", self.approver(
+                tap.STEPHEN, "0000b000-0000-4000-8000-0000000000f2"), shown,
+             (409, "call_approver_not_allowed")),
+            ("a session without an oid", self.approver(oid=None), shown,
+             (409, "call_approver_oid_unknown")),
+            ("a session whose oid is not the roster's", self.approver(
+                oid="0000b000-0000-4000-8000-0000000000f3"), shown,
+             (409, "call_approver_session_oid_mismatch")),
+            ("a stale view: another intent's call", self.approver(), other_shown,
+             (409, "call_approval_stale")),
+            ("no shown call", self.approver(), None, (409, "call_approval_subject_required"))]
+        for name, session, digest, expected in cases:
+            with self.subTest(name):
+                body = {"intent_id": owned, "step": "approve_call"}
+                if digest is not None:
+                    body["approves_sha256"] = digest
+                status, refused = self.serve(session)("POST", "/api/object-action", body)
+                self.assertEqual((status, refused.get("detail") or refused.get("error")),
+                                 expected, refused)
+        with self.subTest("an agent session"):   # no console serves one; the step refuses it
+            with self.assertRaises(PermissionError) as caught:
+                self.actions(tap.SESSION).take(tap.OPS, {
+                    "intent_id": owned, "step": "approve_call", "approves_sha256": shown})
+            self.assertEqual(str(caught.exception), "only_a_person_acts")
+            with self.assertRaises(ap.ActionPathError) as caught:
+                self.path.approve_in_session(tap.OPS, owned, session=tap.SESSION,
+                                             shown_sha256=shown)
+            self.assertEqual(caught.exception.code, "only_a_person_approves")
+        with self.subTest("the eval principal"):
+            actions = self.actions(evaluator, actors=evaluator.actor.principals)
+            self.assertEqual(actions.control(evaluator.actor, {
+                "intent_id": owned, "next_safe_step": {"step": "approve_call"}})["why"],
+                "eval_principal_never_approves")
+            with self.assertRaises(ap.ActionPathError) as caught:
+                self.path.approve_in_session(evaluator.actor, owned, session=evaluator,
+                                             shown_sha256=shown)
+            self.assertEqual(caught.exception.code, "eval_principal_never_approves")
+        with self.subTest("a roster approver with no known oid"):
+            self.path = self.new_path(call_approvers=frozenset(), approver_roster=ApproverRoster(
+                {tap.VINCE: {"role": "owner", "action_types": tap.ALL_TYPES, "oid": None}},
+                source_ref="MC mc_users as listed by a person (test)"))
+            status, refused = self.serve(self.approver())("POST", "/api/object-action", {
+                "intent_id": owned, "step": "approve_call", "approves_sha256": shown})
+            self.assertEqual((status, refused["error"]), (409, "call_approver_oid_unknown"))
+            self.path = self.new_path()
+        self.assertEqual(self.path.get(tap.OPS, owned)["state"], "gate_prepared")
+
+        approve = self.serve(self.approver())
+        status, approved = approve("POST", "/api/object-action", {
+            "intent_id": owned, "step": "approve_call", "approves_sha256": shown})
+        self.assertEqual((status, approved["state"]), (200, "call_approved"))
+        record = self.path.get(tap.OPS, owned)["call_approval"]
+        self.assertEqual((record["approved_by"], record["approver_oid"], record["tool"]),
+                         (tap.VINCE, tap.VINCE_OID, "mc_request_approval"))
+        self.assertTrue(record["evidence_ref"].endswith(":shown:" + shown))
+        # Single use: a second click is refused, the same approval never stands twice.
+        status, again = approve("POST", "/api/object-action", {
+            "intent_id": owned, "step": "approve_call", "approves_sha256": shown})
+        self.assertEqual((status, again["error"]), (409, "invalid_state:call_approved"))
+        self.assertEqual(self.mc.sender.calls, sent)   # nothing was sent by any of it
+        self.assertEqual(self.path.get(tap.OPS, other)["state"], "gate_prepared")
+
     def test_the_offered_step_is_the_action_paths_next_safe_step(self):
-        """Reproduction: the control follows
+        """Reproduction (direction review of 5eecea1e): the control follows
         ``next_safe_step`` in every state and override (escalate, reregister, a closed
         case, a pending gate to reject), never a table of its own: a console step is an
         ``ActionPath`` method, any other step is unavailable with the path's detail."""
@@ -212,7 +346,7 @@ class OwnerActionTest(tap.ActionPathTestCase):
         self.assertEqual(status, 400, refused)
 
     def test_the_person_who_requests_an_approval_can_never_approve_it(self):
-        """Reproduction: an employee who is not a subject requests the
+        """Reproduction (review of fe2e9984): an employee who is not a subject requests the
         approval at the console, then decides that same request in MC as an MC owner; the
         decision never authorizes and nothing is dispatched."""
         from operating.goal2_mc_approval import ApproverRoster

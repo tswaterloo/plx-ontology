@@ -3,7 +3,7 @@ import unittest
 
 from integrations.live_source_grammar import BC_QUERY_SPECS
 
-# Live-reported cost fields per line entity: live run
+# Live-reported cost fields per line entity: main d395ed7, live run
 # live-2026-10-01T05:28:46Z, `python3 -m integrations.bc_read probe --case-entities`
 # (it reported select_allowlist_absent=["directUnitCost"] for purchaseInvoiceLines).
 LIVE_COST_FIELDS = {

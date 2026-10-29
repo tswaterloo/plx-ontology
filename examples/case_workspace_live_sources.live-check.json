@@ -1,7 +1,7 @@
 {
  "schema": "plx-ingest-sources/v1",
  "tenant": "plx",
- "note": "Live-check scope for operating.case_workspace_live (verify/live-checks/case.workspace_live.json): the Portal relations the AO and purchase-order case scripts read, filled into the source mirror by operating.ingestion (the only Portal Workbench API reader; GET only, paged, non-atomic). The workspace then opens and renders the cases offline over these captures.",
+ "note": "Live-check scope for operating.case_workspace_live (devloop/live-checks/case.workspace_live.json): the Portal relations the AO and purchase-order case scripts read, filled into the source mirror by operating.ingestion (the only Portal Workbench API reader; GET only, paged, non-atomic). The workspace then opens and renders the cases offline over these captures.",
  "actor": {
   "principals": [
    "svc:ingest"

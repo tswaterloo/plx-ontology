@@ -1,6 +1,6 @@
 """Live check: the security class of every captured SharePoint file, and its clearance.
 
-``verify/live-checks/sharepoint.restricted_class.json``. One GET-only capture run of
+``devloop/live-checks/sharepoint.restricted_class.json``. One GET-only capture run of
 the configured scope (``integrations.capture_sharepoint``), metadata-only: metadata,
 item permissions and eTags as the content capture reads them, no content GET (each file's
 content recorded ``skipped_metadata_only``; a full content capture of a ~1,300-file

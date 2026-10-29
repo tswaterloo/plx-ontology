@@ -11,7 +11,8 @@
    "ontology/schema/overrides/lineage.json",
    "ontology/schema/overrides/markings.json",
    "ontology/schema/overrides/money.json",
-   "ontology/schema/overrides/names.json"
+   "ontology/schema/overrides/names.json",
+   "ontology/schema/overrides/storage.json"
   ]
  },
  "counts": {

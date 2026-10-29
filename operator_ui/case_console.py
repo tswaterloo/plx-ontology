@@ -5,8 +5,8 @@
     python3 -m operator_ui.tests.case_fixtures --fixture --seed-fixtures --state-dir NEW_DIR \\
         --principal staff:operations
 
-Serves the console on a loopback port. Session identity (``operating.session_identity``):
-a live console has no host actor and no default principal; it takes the
+Serves the console on a loopback port. Session identity (``operating.session_identity``,
+10-DECISION #7): a live console has no host actor and no default principal; it takes the
 identity from each authenticated request, whose bearer credential is a signed session
 ticket (author ``human``) naming one employee, verified with ``PLX_WORKBENCH_SESSION_SECRET``
 and resolved per request through ``--employee-policy`` and ``--portal-access`` (Portal role
@@ -57,7 +57,7 @@ employee sees a real case's timeline, originals, relationship map, gaps and acti
 together, every part resolved for them. A state directory the ingestion runner filled is
 labelled ``source-mirror captures`` (``case_workspace_live.MIRROR_EVIDENCE``), never live.
 
-Object workspace: ``--ontology-store FILE`` serves the employee object
+Object workspace (10-DECISION #4): ``--ontology-store FILE`` serves the employee object
 workspace (``operator_ui.object_workspace``) over a projection store: find any served
 object with ``plx.find`` and open its card, relationship map, timeline, process, gaps,
 conflicts and registered intents, every value cited and every citation opened through
@@ -181,6 +181,7 @@ def object_workspace_for(runtime: CaseRuntime, store_path: Path, actor: Actor, *
                          session: SessionIdentity | None = None,
                          planner: Any = None, ask_bounds: Any = None,
                          capture_bounds: Mapping[str, Any] | None = None, clock: Any = None,
+                         freshness_bounds: Mapping[str, float] | None = None,
                          portal_captured: bool = False,
                          wrap_access: Callable[[Any], Any] | None = None,
                          report_store: Any = None) -> "objects.ObjectWorkspace":
@@ -202,7 +203,10 @@ def object_workspace_for(runtime: CaseRuntime, store_path: Path, actor: Actor, *
     ``planner`` (``operating.agent_loop``) it serves Ask: the agent loop for this reader,
     within ``ask_bounds``. ``capture_bounds``: the case host's SharePoint capture-read
     bounds (``operating.mcp_server.check_host_arguments``; unset: the host's defaults);
-    ``clock``: the host's capture clock (default the real now). ``portal_captured``: the
+    ``clock``: the host's capture clock (default the real now). ``freshness_bounds``:
+    source family -> seconds the host's own capture of it may be old before answers state
+    it stale (``--freshness-bound``, ``operating.host.freshness_bounds``; unset: no capture
+    is stale by its age, as the MCP host). ``portal_captured``: the
     host captures the Portal (``--host-captures-portal``), so an answer reports its
     capture state, never that no Portal reader is configured. ``wrap_access``: wraps the
     reader's ``HostAccess`` and the workspace uses the wrapper (the Ask eval's recorder of
@@ -221,6 +225,7 @@ def object_workspace_for(runtime: CaseRuntime, store_path: Path, actor: Actor, *
                                  sharepoint_capture_dir=sharepoint_capture_dir,
                                  session=session, reviews=reviews,
                                  portal_captured=portal_captured, **(capture_bounds or {}),
+                                 freshness_bounds=freshness_bounds,
                                  **({} if clock is None else {"clock": clock}))
     if wrap_access is not None:
         access = wrap_access(access)
@@ -442,6 +447,11 @@ def main(argv: Sequence[str] | None = None, *, fixtures: Any = None,
                         help="the host serving DIR captures the Portal into its mirror "
                              "(operating.host config 'portal'): answers report the Portal's "
                              "capture state, never that it is not configured")
+    parser.add_argument("--freshness-bound", action="append", default=[],
+                        metavar="SOURCE=SECONDS",
+                        help="how old the host's own capture of a source family may be "
+                             "before answers state it stale (operating.host "
+                             "freshness_bounds; parsed as operating.mcp_server reads it)")
     parser.add_argument("--marking", action="append", default=[],
                         help="fixture only: a marking the fixture reader holds (finance, "
                              "pii, ...); default none. A live employee holds no marking here")
@@ -455,6 +465,12 @@ def main(argv: Sequence[str] | None = None, *, fixtures: Any = None,
                              "purchase order; isolated-fixture / injected-transport, not "
                              "real data)")
     args = parser.parse_args(argv)
+    from operating.mcp_server import freshness_bounds as parse_freshness_bounds
+    try:
+        # The same bounds the MCP host applies; an unknown family or a bad value exits.
+        freshness = parse_freshness_bounds(args.freshness_bound)
+    except ValueError as error:
+        parser.error(str(error)[:300])
     state_dir = args.state_dir.resolve()
     if args.marking and not args.fixture:
         parser.error("--marking names a fixture reader's marking (--fixture only)")
@@ -594,10 +610,8 @@ def main(argv: Sequence[str] | None = None, *, fixtures: Any = None,
         ontology_path = ontology_path or state_dir / ONTOLOGY_FILE
         report = objects.project_mirror(state_dir, ontology_path)
         print(f"Projected {report['counts'].get('objects', 0)} objects into {ontology_path}")
-        from datetime import datetime, timezone
         from operating import proactive_engine
-        found = proactive_engine.after_build(ontology_path,
-                                             as_of=datetime.now(timezone.utc).date())
+        found = proactive_engine.after_build(ontology_path)   # the ET business day
         print(f"Proactive engine: {found['state']}, {found.get('gaps_found', 0)} gaps")
     elif ontology_path is None and (state_dir / ONTOLOGY_FILE).is_file():
         ontology_path = state_dir / ONTOLOGY_FILE
@@ -625,11 +639,15 @@ def main(argv: Sequence[str] | None = None, *, fixtures: Any = None,
             opener = case_workspace_live.CaseOpener(runtime, session.actor, state_dir,
                                                     audience=audience, originals=originals,
                                                     author_kind=session.author_kind)
-            for kind, identifier in open_requests:
-                result = opener.open_case(kind, identifier, reinvestigate=args.reinvestigate)
-                # Counts and enums only: the case itself is on the console.
-                print(json.dumps({key: result.get(key) for key in (
-                    "request", "status", "missing") if result.get(key)}))
+            try:
+                for kind, identifier in open_requests:
+                    result = opener.open_case(kind, identifier,
+                                              reinvestigate=args.reinvestigate)
+                    # Counts and enums only: the case itself is on the console.
+                    print(json.dumps({key: result.get(key) for key in (
+                        "request", "status", "missing") if result.get(key)}))
+            finally:
+                opener.close()   # the served generation it pinned, if any
         def objects_for(identity: SessionIdentity) -> Any:
             return object_workspace_for(runtime, ontology_path, identity.actor,
                                         state_dir=state_dir,
@@ -638,7 +656,7 @@ def main(argv: Sequence[str] | None = None, *, fixtures: Any = None,
                                         mail_capture_dir=args.mail_capture_dir,
                                         sharepoint_capture_dir=args.sharepoint_capture_dir,
                                         session=identity, planner=planner,
-                                        report_store=store,
+                                        report_store=store, freshness_bounds=freshness,
                                         portal_captured=args.host_captures_portal)
 
         def workspace_for(identity: SessionIdentity) -> CaseWorkspace:

@@ -1,14 +1,17 @@
 """The legacy objective/campaign/watch/autonomy family stays deleted.
 
 Deleted 2026-10-01. Goal 2 runs on
-operating/action_path.py.
+operating/action_path.py (devloop/CONTEXT/10-DECISION.md item 6), and the gate's
+runtime-focused entry checks that path instead of the deleted runtime.
 """
 
 from __future__ import annotations
 
 import ast
 import importlib.util
+import json
 from pathlib import Path
+import re
 import unittest
 
 
@@ -22,10 +25,10 @@ RETIRED = (
     "operating.objectives", "operating.related_scope", "operating.source_goal_constraints",
     "operating.supplier_catalog", "scripts.run_business_demo", "scripts.run_transaction_demo",
 )
-# operating/unified.py still names the family.
+# operating/unified.py still names the family; lane del-platform owns and deletes it.
 PENDING_OWNER_DELETION = {"operating/unified.py"}
 SCANNED = ("ontology", "integrations", "operating", "operator_ui", "ops_plane", "reasoning",
-           "engineering", "scripts", "verify", "evals", "tests")
+           "engineering", "scripts", "devloop", "evals", "tests")
 
 
 def _imported_modules(path: Path) -> set[str]:
@@ -66,6 +69,31 @@ class ObjectiveFamilyRetiredTests(unittest.TestCase):
                 hits = _imported_modules(path) & set(RETIRED)
                 self.assertFalse(hits, f"{relative} imports {sorted(hits)}")
         self.assertGreater(scanned, 200)
+
+    def test_every_gate_unittest_target_exists(self):
+        gate = json.loads((ROOT / "devloop" / "gate-checks.json").read_text(encoding="utf-8"))
+        targets = []
+        for check in gate["checks"]:
+            # A check's command line is `command` then its `modules` (devloop/controller.py).
+            command = " ".join([check["command"], *check.get("modules", [])])
+            for group in re.findall(r"unittest ((?:[\w.]+ ?)+)", command):
+                targets.extend(group.split())
+        self.assertTrue(targets)
+        for target in targets:
+            parts = target.split(".")
+            modules = [".".join(parts[:end]) for end in range(len(parts), 0, -1)]
+            self.assertTrue(any((ROOT / Path(*name.split("."))).with_suffix(".py").is_file()
+                                for name in modules), target)
+
+    def test_runtime_gate_checks_the_goal2_action_path(self):
+        gate = json.loads((ROOT / "devloop" / "gate-checks.json").read_text(encoding="utf-8"))
+        command = next(" ".join([check["command"], *check.get("modules", [])])
+                       for check in gate["checks"] if check["name"] == "runtime-focused")
+        modules = {target.rsplit(".", 2)[0] for target in command.split()[3:]}
+        self.assertEqual(modules, {"operating.tests.test_action_path",
+                                   "operating.tests.test_goal2_e2e"})
+        for retired in ("test_autonomy_driver", "test_drive_objective_replan"):
+            self.assertNotIn(retired, json.dumps(gate))
 
 
 if __name__ == "__main__":

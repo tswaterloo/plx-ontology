@@ -5,7 +5,7 @@
   "artifact_url": "https://claude.ai/artifact/VsRHaNWD2CdCnDd4n71yi4",
   "content_sha256": "17cd652f6783ed3945050817bad4029fdd229dd74546e3a6a747f73d43fa60ab",
   "extraction_record_path": "context/f82f3bca13c5a8b73cea9421e43587e8ee5082fd4751bfbf321fb96e500448f8.json",
-  "extraction_record_ref": "source records",
+  "extraction_record_ref": "origin/codex/advisory",
   "extraction_record_field": "facts[0].extracted_text",
   "assessment_record_path": "context/2fa3c0aa13eddff533ff5d6bb098a51732ae9d2fbdc811f2f3ac1cac89d29134.json",
   "observed_at": "2026-09-30T21:37:23.914359Z",
@@ -2982,7 +2982,7 @@
  ],
  "live_catalog_supplement": {
   "note": "Added by the Workbench, not part of Vince's map: purchase-side relations the read-only reporting API serves that the map does not name, read by the purchase-side case tools. Column presence is live-verified (catalog read); what a column joins to is stated with its basis and is never a verified identity.",
-  "evidence_ref": "results/5f234e31bb73a5094c0e71b034da2f6cb1ff67f1.purchase_catalog.json (live catalog read, run live-2026-10-01T03:29:17Z, main 5f234e3); copy in operating/tests/fixtures/live_purchase_catalog_2026-10-01.json",
+  "evidence_ref": "origin/claude/devloop-live:results/5f234e31bb73a5094c0e71b034da2f6cb1ff67f1.purchase_catalog.json (auditor live catalog read, run live-2026-10-01T03:29:17Z, main 5f234e3); copy in operating/tests/fixtures/live_purchase_catalog_2026-10-01.json",
   "observed_at": "2026-10-01T03:29:17Z",
   "relations": [
    {
@@ -3016,7 +3016,7 @@
   ]
  },
  "portal_code_readings": {
-  "note": "Added by the Workbench, not part of Vince's map: facts read from the Portal code (petralabx/plx-customer-portal, branch staging, commit 5724575 = 572457507bd7ff42f59e816690820e9a9918f213, read 2026-10-01; every cited file is byte-identical to its earlier 8da33e4/487862b reading except project-landed-quote.ts, where the TASK-2119 persist option moved the matrix caller from line 1431 to 1437; docs/reference/portal-code-map.md sections 2, 4.1, 4.10 and 9) that qualify the map text at the path named. Code readings, not runtime observations; the quote engine arithmetic is reproduced by operating/landed_cost.py and golden-tested against the later staging commit d4d1bb2 (operating.landed_cost.PORTAL_REVISION, re-pinned 2026-10-15), where landed-cost.ts, quote/matrix.ts, quote/workbook.ts, quote-advisories.ts and landed-gl.ts are unchanged and the project-landed-quote.ts callers sit at lines 823 and 1881. The BC-stage readings were re-read at staging 4243499 (4243499026f250e31122ae1c3d66d54b4563a130, 2026-10-14): each names the commit it was read at.",
+  "note": "Added by the Workbench, not part of Vince's map: facts read from the Portal code (petralabx/plx-customer-portal, branch staging, commit 5724575 = 572457507bd7ff42f59e816690820e9a9918f213, read 2026-10-01; every cited file is byte-identical to its earlier 8da33e4/487862b reading except project-landed-quote.ts, where the TASK-2119 persist option moved the matrix caller from line 1431 to 1437; devloop/CONTEXT/03-PORTAL.md sections 2, 4.1, 4.10 and 9) that qualify the map text at the path named. Code readings, not runtime observations; the quote engine arithmetic is reproduced by operating/landed_cost.py and golden-tested against the later staging commit d4d1bb2 (operating.landed_cost.PORTAL_REVISION, re-pinned 2026-10-15, drift-1015-portal-costing), where landed-cost.ts, quote/matrix.ts, quote/workbook.ts, quote-advisories.ts and landed-gl.ts are unchanged and the project-landed-quote.ts callers sit at lines 823 and 1881. The BC-stage readings were re-read at staging 4243499 (4243499026f250e31122ae1c3d66d54b4563a130, 2026-10-14, drift-1013-portal-bc): each names the commit it was read at.",
   "portal_commit": "5724575",
   "items": [
    {

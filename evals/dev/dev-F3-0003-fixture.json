@@ -154,19 +154,19 @@
   "invent_absent_value"
  ],
  "oracle": {
-  "id": "oracle:f3_quantities@1c117db7f628",
+  "id": "oracle:f3_quantities@305211c73a11",
   "interface": "plx-eval-oracle/v1",
   "derived_from": [
-   "docs/reference/portal-code-map.md#3.4 resolveOrderByNumber: exact order_number",
-   "docs/reference/portal-code-map.md#3.2 app_sales_order_line.quantity, uom free text (never converted)",
-   "docs/reference/portal-code-map.md#3.8 qty_manufactured = COALESCE(SUM(status qtymanuf), yield_actual) per AO, Cancelled excluded (P@59b0548:src/app/mrp/assembly/assembly-queries.ts:254)",
-   "docs/reference/portal-code-map.md#3.10 shipment lines of SHIPPED/DELIVERED shipments (P@59b0548:src/lib/assembly-bom/pack-out-history.ts:274; ShipmentStatus prisma/schema.prisma:372)",
-   "docs/reference/portal-code-map.md#3.2 app_sales_order_line.sales_order_id -> app_sales_order.id (P:prisma/schema.prisma:3720)",
-   "docs/reference/portal-code-map.md#3.8 app_manufacturing_order.sales_order_line_id -> app_sales_order_line.id (P:prisma/schema.prisma:2507)",
-   "docs/reference/portal-code-map.md#3.10 app_shipment.sales_order_id -> app_sales_order.id (P:prisma/schema.prisma:3788)",
-   "docs/reference/portal-code-map.md#3.10 app_shipment_line.shipment_id -> app_shipment.id (P:prisma/schema.prisma:3885)",
-   "docs/reference/portal-code-map.md#3.8 app_manufacturing_order.mo_code = FM assembly_order.nameamo_c (etlManufacturingOrders)",
-   "docs/reference/portal-code-map.md#3.8 FM assembly_order_status.idassembly -> assembly_order.id, qtymanuf = qty_manufactured (Portal migration 20260409_add_silver_assembly_views_and_indexes.sql:95)",
+   "devloop/CONTEXT/03-PORTAL.md#3.4 resolveOrderByNumber: exact order_number",
+   "devloop/CONTEXT/03-PORTAL.md#3.2 app_sales_order_line.quantity, uom free text (never converted)",
+   "devloop/CONTEXT/03-PORTAL.md#3.8 qty_manufactured = COALESCE(SUM(status qtymanuf), yield_actual) per AO, Cancelled excluded (P@59b0548:src/app/mrp/assembly/assembly-queries.ts:254)",
+   "devloop/CONTEXT/03-PORTAL.md#3.10 shipment lines of SHIPPED/DELIVERED shipments (P@59b0548:src/lib/assembly-bom/pack-out-history.ts:274; ShipmentStatus prisma/schema.prisma:372)",
+   "devloop/CONTEXT/03-PORTAL.md#3.2 app_sales_order_line.sales_order_id -> app_sales_order.id (P:prisma/schema.prisma:3720)",
+   "devloop/CONTEXT/03-PORTAL.md#3.8 app_manufacturing_order.sales_order_line_id -> app_sales_order_line.id (P:prisma/schema.prisma:2507)",
+   "devloop/CONTEXT/03-PORTAL.md#3.10 app_shipment.sales_order_id -> app_sales_order.id (P:prisma/schema.prisma:3788)",
+   "devloop/CONTEXT/03-PORTAL.md#3.10 app_shipment_line.shipment_id -> app_shipment.id (P:prisma/schema.prisma:3885)",
+   "devloop/CONTEXT/03-PORTAL.md#3.8 app_manufacturing_order.mo_code = FM assembly_order.nameamo_c (etlManufacturingOrders)",
+   "devloop/CONTEXT/03-PORTAL.md#3.8 FM assembly_order_status.idassembly -> assembly_order.id, qtymanuf = qty_manufactured (Portal migration 20260409_add_silver_assembly_views_and_indexes.sql:95)",
    "SO closed: SHIPPED/COMPLETE, FM text complet/closed/realiz (P@c3ffda3:src/lib/wms/source-status.ts:24) or Sage header complete 1/Y (etl-sage-distribution-gold.mjs:1393)"
   ],
   "computed_at": "2099-01-02T04:00:00Z",
@@ -174,7 +174,7 @@
  },
  "label": {
   "status": "oracle_only",
-  "note": "evidence: injected-transport fixture (synthetic FX rows from evals/oracle/fixture_world.py), not live PLX data. audit_requested: a person checks known_outcome against the sources, then sets status human_audited (audited_by, audited_at) or disputed."
+  "note": "evidence: injected-transport fixture (synthetic FX rows from evals/oracle/fixture_world.py), not live PLX data. audit_requested (09 Q9): a person checks known_outcome against the sources, then sets status human_audited (audited_by, audited_at) or disputed."
  },
  "scoring": {
   "exact_values": true,

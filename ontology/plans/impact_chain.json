@@ -5,8 +5,8 @@
  "families": [
   "F16"
  ],
- "title": "Which customer orders a late purchase order puts at risk, by how many days and for how much",
- "description": "From a late or slipping PO (plx.process po_delivery_window's own verdict), or every PO of one supplier, walk only recorded links: PO line, item and its twins, FileMaker assembly order components, the assembly order and its Portal MO, the order line it is made or allocated for, the customer order. Per order, worst first: days at risk against its required date and, for a reader shown it, its cited value. A missing link is a typed gap naming the source that would hold it; nothing is joined by shared codes or dates.",
+ "title": "Which customer orders a late purchase order puts at risk, by how many days, for how much and with what margin at stake",
+ "description": "From a late or slipping PO (plx.process po_delivery_window's own verdict), or every PO of one supplier, walk only recorded links: PO line, item and its twins (same-record links and the Portal entity map, which names one BC record of one company), FileMaker assembly order components, the assembly order and its Portal MO, the order line it is made or allocated for, the customer order. Per order, worst first: days at risk against its required date and, for a reader shown it, its cited value and the margin at stake (sales amount minus ordered quantity times the sold item's recorded unit cost, per line, where both are cited in one currency). A missing link is a typed gap naming the source that would hold it; nothing is joined by shared codes or dates.",
  "root": {
   "object_types": [
    "PurchaseOrder",
@@ -112,13 +112,59 @@
    "description": "The same, where the other record holds the link."
   },
   {
+   "id": "po_posted",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "supplier_pos"
+   ],
+   "bind": "from",
+   "object_types": [
+    "PurchaseOrder"
+   ],
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrder.bc_posted_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The BC purchase order the Portal posted this PO as (Portal entity map, joined on the BC systemId: one record of one company)."
+  },
+  {
+   "id": "po_posted_named",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "supplier_pos"
+   ],
+   "bind": "from",
+   "object_types": [
+    "PurchaseOrder"
+   ],
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrder.bc_posted_as",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The Portal PO a BC purchase order was posted from (the same entity-map row, read from the BC side)."
+  },
+  {
    "id": "lines",
    "tool": "plx.around",
    "from": [
     "root",
     "supplier_pos",
     "po_twins",
-    "po_twins_named"
+    "po_twins_named",
+    "po_posted",
+    "po_posted_named"
    ],
    "bind": "from",
    "object_types": [
@@ -184,11 +230,45 @@
    "description": "The same, where the other record holds the link."
   },
   {
+   "id": "item_posted",
+   "tool": "plx.around",
+   "from": "items",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Product.bc_posted_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The BC item the Portal created for this product (Portal entity map, joined on the BC systemId: one record of one company)."
+  },
+  {
+   "id": "item_posted_named",
+   "tool": "plx.around",
+   "from": "items",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Product.bc_posted_as",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The Portal product a BC item was created for (the same entity-map row, read from the BC side): the firm hop from a BC purchase order line to the Portal product and its FileMaker twins."
+  },
+  {
    "id": "item_twins2",
    "tool": "plx.around",
    "from": [
     "item_twins",
-    "item_twins_named"
+    "item_twins_named",
+    "item_posted",
+    "item_posted_named"
    ],
    "bind": "from",
    "args": {
@@ -207,7 +287,9 @@
    "tool": "plx.around",
    "from": [
     "item_twins",
-    "item_twins_named"
+    "item_twins_named",
+    "item_posted",
+    "item_posted_named"
    ],
    "bind": "from",
    "args": {
@@ -229,7 +311,9 @@
     "item_twins",
     "item_twins_named",
     "item_twins2",
-    "item_twins2_named"
+    "item_twins2_named",
+    "item_posted",
+    "item_posted_named"
    ],
    "bind": "from",
    "object_types": [
@@ -437,6 +521,121 @@
     "SalesOrder"
    ],
    "description": "Each order's required date, status and (for a reader allowed finance values) total."
+  },
+  {
+   "id": "order_lines",
+   "tool": "plx.around",
+   "from": [
+    "orders",
+    "order_twins",
+    "order_twins_named"
+   ],
+   "bind": "from",
+   "object_types": [
+    "SalesOrder"
+   ],
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrderLine.line_of",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "Every line of each order record, for the margin at stake."
+  },
+  {
+   "id": "line_read",
+   "tool": "plx.object",
+   "from": "order_lines",
+   "bind": "object_id",
+   "object_types": [
+    "SalesOrderLine"
+   ],
+   "description": "Each line's sales amount (finance) and ordered quantity."
+  },
+  {
+   "id": "sold_items",
+   "tool": "plx.around",
+   "from": "order_lines",
+   "bind": "from",
+   "object_types": [
+    "SalesOrderLine"
+   ],
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrderLine.for_item",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The item each line sells."
+  },
+  {
+   "id": "sold_twins",
+   "tool": "plx.around",
+   "from": "sold_items",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Product.same_record_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The sold item's records in other systems, where its cost may be recorded."
+  },
+  {
+   "id": "sold_twins_named",
+   "tool": "plx.around",
+   "from": "sold_items",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Product.same_record_as",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The same, where the other record holds the link."
+  },
+  {
+   "id": "sold_posted",
+   "tool": "plx.around",
+   "from": "sold_items",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Product.bc_posted_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The BC item a sold product was created as, whose recorded unit cost the margin may use."
+  },
+  {
+   "id": "cost_read",
+   "tool": "plx.object",
+   "from": [
+    "sold_items",
+    "sold_twins",
+    "sold_twins_named",
+    "sold_posted"
+   ],
+   "bind": "object_id",
+   "object_types": [
+    "Product"
+   ],
+   "description": "Each sold item's recorded unit cost (finance values: shown only to readers allowed them)."
   }
  ],
  "evidence": [
@@ -578,11 +777,38 @@
    "description": "Each order's currency."
   },
   {
+   "name": "line_amount",
+   "kind": "property",
+   "object_type": "SalesOrderLine",
+   "properties": [
+    "line_total"
+   ],
+   "description": "Each order line's sales amount excluding tax (finance values: shown only to readers allowed them)."
+  },
+  {
+   "name": "line_quantity",
+   "kind": "property",
+   "object_type": "SalesOrderLine",
+   "properties": [
+    "ordered_quantity"
+   ],
+   "description": "Each order line's ordered quantity with its unit."
+  },
+  {
+   "name": "item_cost",
+   "kind": "property",
+   "object_type": "Product",
+   "properties": [
+    "bc_unit_cost"
+   ],
+   "description": "Each sold item's BC recorded unit cost (Item.unitCost: excludes freight/duty, ERP-D-015; finance values: shown only to readers allowed them). The stored plan has no landed-cost step, so its margin is labelled 'recorded unit cost, excludes freight/duty'; the scheduled scan uses the landed-cost engine's per-unit total first."
+  },
+  {
    "name": "impact",
    "kind": "compute",
    "engine": "impact_chain",
    "required": true,
-   "description": "Per affected order, worst first: days at risk (material date + recorded lead time - required date; no assembly lead time is recorded, so 0 days are counted and days at risk is a lower bound) with the cited chain of links, the value at risk when shown, and a typed gap where a link is missing.",
+   "description": "Per affected order, worst first: days at risk (material date + recorded lead time - required date; no assembly lead time is recorded, so 0 days are counted and days at risk is a lower bound) with the cited chain of links, the value at risk and the margin at stake when shown, and a typed gap where a link is missing.",
    "engine_args": {
     "lateness": {
      "po": "late_po",
@@ -598,7 +824,10 @@
     "order_status": "order_status",
     "value": "order_value",
     "currency": "order_currency",
-    "assembly_status": "ao_status"
+    "assembly_status": "ao_status",
+    "line_amount": "line_amount",
+    "line_quantity": "line_quantity",
+    "item_cost": "item_cost"
    }
   }
  ]

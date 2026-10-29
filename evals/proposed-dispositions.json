@@ -1,10 +1,10 @@
 {
   "format": "plx-eval-proposal-dispositions/v1",
   "rule": "evals.admission.admissible",
-  "decision": "docs/decisions/2026-10-07-proposed-eval-units-admission.md",
+  "decision": "devloop/DECISIONS/2026-10-07-proposed-eval-units-admission.md",
   "refused": [
-    {"unit": "dev-F2-0101-employee", "source": "evals/proposed/employee-20261005T201622Z/dev-F2-0101-employee.json", "reasons": ["empty_outcome", "open_transaction", "lineage_partition_mismatch", "live_source_derivation"]},
-    {"unit": "dev-F4-0101-employee", "source": "evals/proposed/employee-20261005T201622Z/dev-F4-0101-employee.json", "reasons": ["empty_outcome", "open_transaction", "lineage_partition_mismatch", "live_source_derivation"]},
-    {"unit": "dev-F4-0102-employee", "source": "evals/proposed/employee-20261005T201622Z/dev-F4-0102-employee.json", "reasons": ["empty_outcome", "open_transaction", "lineage_partition_mismatch", "live_source_derivation"]}
+    {"unit": "dev-F2-0101-employee", "source": "origin/claude/devloop-task-evals-employee-20261005T201622Z:evals/proposed/employee-20261005T201622Z/dev-F2-0101-employee.json", "reasons": ["empty_outcome", "open_transaction", "lineage_partition_mismatch", "live_source_derivation"]},
+    {"unit": "dev-F4-0101-employee", "source": "origin/claude/devloop-task-evals-employee-20261005T201622Z:evals/proposed/employee-20261005T201622Z/dev-F4-0101-employee.json", "reasons": ["empty_outcome", "open_transaction", "lineage_partition_mismatch", "live_source_derivation"]},
+    {"unit": "dev-F4-0102-employee", "source": "origin/claude/devloop-task-evals-employee-20261005T201622Z:evals/proposed/employee-20261005T201622Z/dev-F4-0102-employee.json", "reasons": ["empty_outcome", "open_transaction", "lineage_partition_mismatch", "live_source_derivation"]}
   ]
 }

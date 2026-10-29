@@ -21,7 +21,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from verify import live_verify as lv
+from devloop import live_verify as lv
 from integrations.tests.test_source_mirror import BASE, KEY
 from integrations.workbench_read_api import WorkbenchReadApiClient
 from ontology import identifiers
@@ -33,7 +33,7 @@ ROOT = Path(__file__).resolve().parents[1]
 GONE = tuple(f"sage.{name}" for name in (
     "ar_customer", "ar_ship_to", "oe_shipment_detail", "oe_shipment_header", "po_detail",
     "po_header", "po_receipt_detail", "po_receipt_header"))
-SPEC = json.loads((ROOT / "verify/live-checks/ontology.projection.json").read_text("utf-8"))
+SPEC = json.loads((ROOT / "devloop/live-checks/ontology.projection.json").read_text("utf-8"))
 
 
 def world(unavailable=(), failing=(), keyless=()):

@@ -1,6 +1,6 @@
 """Captured Microsoft Graph sources beside mail and SharePoint: attachments as cited
-mention documents and Teams channel and chat messages as a
-projection source.
+mention documents (directive ddc3e0c36691 L4) and Teams channel and chat messages as a
+projection source (lanes gen-graph, teams-chat-projection).
 
 ``ontology.project.MailCaptures`` and ``SharePointCaptures`` project captured mail and
 SharePoint files as ``Email``, ``Attachment`` and ``SharePointFile`` objects (schema
@@ -47,13 +47,23 @@ Relation ``channelMessages``: one record per retained version of every channel m
 ``teams-channel://<team>/<channel>/<message>@<generation>-<capture-id>``, ``row`` the
 captured row (``capture_teams.message_row``) and ``audience_key`` the channel's unit
 ``teams:channel:<team>/<channel>``. Relation ``chatMessages`` (the chats of every account
-on the mail allowlist, ``docs/decisions/2026-10-07-ovs-teams-capture.md`` item 2) the
+on the mail allowlist, ``devloop/DECISIONS/2026-10-07-ovs-teams-capture.md`` item 2) the
 same way per chat: path (chat, message), handle ``teams-chat://<chat>/<message>@...``, unit
 ``teams:chat:<chat>``. A reader needs that unit granted *and* passes the item gate per
 handle (``operating.case_runtime.CaseRuntime.resolve_citation`` over the Teams capture: the
 message's and the conversation's latest captured membership), as for mail and SharePoint.
 A channel or chat without a captured membership is never visible, so none of its messages
-is projected (``docs/decisions/2026-10-10-followup-decisions.md`` item 6). Completeness
+is projected (``devloop/DECISIONS/2026-10-10-followup-decisions.md`` item 6).
+
+Relations ``chats`` and ``channels``: the conversation's own record (``capture_teams
+.CONVERSATION``: its topic or name, type, creation, latest message time and participants),
+one record per retained version, cited ``teams-chat://<chat>/conversation@...`` /
+``teams-channel://<team>/<channel>/conversation@...`` in the conversation's own unit, so the
+same unit grant, latest membership and people exclusion gate it as gate its messages
+(decision ``devloop/DECISIONS/2026-10-27-teams-conversation-objects.md``). Relation
+``teams``: a team, read from the record of its first standard channel (by unit) with a
+captured membership: a standard channel's audience is the team's members; a team none of
+whose standard channels is captured is not projected. Completeness
 per relation as for MC: ``source_not_captured`` when no conversation of its kind is
 projected, ``source_capture_incomplete`` while one's latest round did not finish or one is
 excluded (a run but no captured membership: its members read failed, ``capture_teams``
@@ -66,6 +76,7 @@ excluded (a run but no captured membership: its members read failed, ``capture_t
 
 from __future__ import annotations
 
+from dataclasses import replace
 from hashlib import sha256
 import json
 from pathlib import Path, PurePosixPath
@@ -86,6 +97,7 @@ TEXT_FIELD = "row.content_text"
 TEAMS = "teams"
 CHANNEL_MESSAGES = "channelMessages"
 CHAT_MESSAGES = "chatMessages"
+CHATS, CHANNELS, TEAMS_RELATION = "chats", "channels", "teams"
 NOT_CAPTURED = "source_not_captured"
 INCOMPLETE = "source_capture_incomplete"
 # Member states: its text was read; it is a container whose own members follow (the
@@ -219,10 +231,16 @@ class TeamsCaptures:
     }
 
     def __init__(self, path: str | Path) -> None:
-        from integrations.capture_teams import CHANNEL_KIND, CHAT_KIND, RELATIONS
+        from integrations.capture_teams import (CHANNEL_KIND, CHAT_KIND, CONVERSATION,
+                                                CONVERSATION_RELATIONS, RELATIONS)
 
         # relation -> the capture kind holding it (``capture_teams.RELATIONS``)
         self.kinds = {RELATIONS[kind.name]: kind for kind in (CHANNEL_KIND, CHAT_KIND)}
+        # conversation relation -> the message relation whose units and kind it shares
+        self.conversations = {CONVERSATION_RELATIONS[kind.name]: RELATIONS[kind.name]
+                              for kind in (CHANNEL_KIND, CHAT_KIND)}
+        self.conversations[TEAMS_RELATION] = RELATIONS[CHANNEL_KIND.name]
+        self._conversation = CONVERSATION
         self.path = Path(path).expanduser()
         if not self.path.is_file():
             raise ProjectionError("teams_capture_missing", str(self.path))
@@ -288,8 +306,11 @@ class TeamsCaptures:
         return out
 
     def capture_gap(self, relation: str) -> str | None:
+        if relation not in CAPTURED_RELATIONS[TEAMS]:
+            return NOT_CAPTURED
+        relation = self.conversations.get(relation, relation)
         units = self._units.get(relation)
-        if relation not in CAPTURED_RELATIONS[TEAMS] or not units:
+        if not units:
             return NOT_CAPTURED
         return (None if all(u["settled"] for u in units.values())
                 and not self._excluded[relation] else INCOMPLETE)
@@ -318,28 +339,113 @@ class TeamsCaptures:
         def stream(relation: str) -> Iterator[Any]:
             if not self._snapshot:
                 raise ProjectionError("capture_snapshot_closed", relation)
-            kind = self.kinds.get(relation)
-            if relation not in CAPTURED_RELATIONS[TEAMS] or kind is None:
+            if relation not in CAPTURED_RELATIONS[TEAMS]:
                 return
-            for unit in sorted(self._units[relation]):
-                for row in self._conn.execute(
-                        f"SELECT *, {REMOVALS_COLUMN} FROM versions "
-                        "WHERE kind = ? AND unit = ? "
-                        "ORDER BY path, recorded_at, capture_id", (kind.name, unit)):
-                    path = kind.canonical_path(
-                        [unquote(p) for p in str(row["path"]).split("/")])
-                    yield CapturedRecord(
-                        source=TEAMS, relation=relation, record_key=canonical(list(path)),
-                        row=json.loads(row["payload"])["row"],
-                        l1_handle=make_handle(kind, path, self.generation,
-                                              row["capture_id"]),
-                        field_prefix="row", digest=row["digest"],
-                        recorded_at=row["recorded_at"], superseded_at=row["superseded_at"],
-                        last_seen_at=row["last_seen_at"], audience_key=kind.unit(path),
-                        missing_from_source_since=row["missing_from_source_since"],
-                        removals=removals_of(row))
+            if relation == TEAMS_RELATION:
+                yield from self._teams()
+                return
+            owner = self.conversations.get(relation)
+            kind = self.kinds[owner or relation]
+            for unit in sorted(self._units[owner or relation]):
+                for record in self._versions(kind, unit, relation):
+                    # A conversation relation reads only the conversation's own record; a
+                    # message relation every other one.
+                    if (json.loads(record.record_key)[-1] == self._conversation) \
+                            == (owner is not None):
+                        yield record
 
         return _Relations(relations, stream)
+
+    def _versions(self, kind: Any, unit: str, relation: str,
+                  path: str | None = None) -> Iterator[CapturedRecord]:
+        """Every retained version of one unit (or of one ``path`` in it), as ``relation``
+        records."""
+        for row in self._conn.execute(
+                f"SELECT *, {REMOVALS_COLUMN} FROM versions WHERE kind = ? AND unit = ? "
+                + ("AND path = ? " if path is not None else "")
+                + "ORDER BY path, recorded_at, capture_id",
+                (kind.name, unit, *(() if path is None else (path,)))):
+            parts = kind.canonical_path([unquote(p) for p in str(row["path"]).split("/")])
+            yield CapturedRecord(
+                source=TEAMS, relation=relation, record_key=canonical(list(parts)),
+                row=json.loads(row["payload"])["row"],
+                l1_handle=make_handle(kind, parts, self.generation, row["capture_id"]),
+                field_prefix="row", digest=row["digest"],
+                recorded_at=row["recorded_at"], superseded_at=row["superseded_at"],
+                last_seen_at=row["last_seen_at"], audience_key=kind.unit(parts),
+                missing_from_source_since=row["missing_from_source_since"],
+                removals=removals_of(row))
+
+    def _teams(self) -> Iterator[CapturedRecord]:
+        """Relation ``teams`` (module doc): each team from the conversation record of its
+        first standard channel with a captured membership, keyed by the team id; versions
+        whose team part did not change are one version."""
+        kind = self.kinds[CHANNEL_MESSAGES]
+        chosen: dict[str, str] = {}
+        for unit in sorted(self._units[CHANNEL_MESSAGES]):
+            team = unit.split(":", 2)[2].split("/", 1)[0]
+            if team in chosen:
+                continue
+            current = self._conn.execute(
+                "SELECT payload FROM versions WHERE kind = ? AND unit = ? AND path LIKE ? "
+                "AND superseded_at IS NULL", (kind.name, unit, f"%/{self._conversation}"))
+            row = next((json.loads(r["payload"])["row"] for r in current), None)
+            if row and row.get("membership_type") == "standard":
+                chosen[team] = unit
+        for team, unit in sorted(chosen.items()):
+            last: CapturedRecord | None = None
+            for record in self._versions(kind, unit, TEAMS_RELATION):
+                if json.loads(record.record_key)[-1] != self._conversation:
+                    continue
+                team_part = canonical(record.row.get("team"))
+                record = replace(record, record_key=canonical([team]), digest=sha256(
+                    team_part.encode("utf-8")).hexdigest())
+                if last is not None and last.digest == record.digest \
+                        and last.superseded_at == record.recorded_at:
+                    # The channel changed, its team did not: the earlier version lasts.
+                    last = replace(last, superseded_at=record.superseded_at,
+                                   last_seen_at=record.last_seen_at,
+                                   missing_from_source_since=record.missing_from_source_since,
+                                   removals=record.removals)
+                    continue
+                if last is not None:
+                    yield last
+                last = record
+            if last is not None:
+                yield last
+
+    def documents(self) -> Iterator[Document]:
+        """Every retained channel- and chat-message version of a conversation with a
+        captured membership (the units ``records`` projects) as an ``ontology.mentions.
+        Document`` of kind ``teams_message``: its subject and its body text (HTML
+        dropped at capture), cited by the version's own handle, so the text index and
+        the mention links reach Teams messages as they reach mail. Each is gated as its
+        object is (audience ``teams:<kind>:<unit>`` and the conversation's latest
+        membership, re-checked per handle when read). The sender is a Teams account the
+        capture cannot classify by domain: ``unknown``, so a mention in it is an
+        external assertion."""
+        for relation, kind in sorted(self.kinds.items()):
+            for unit in sorted(self._units[relation]):
+                for row in self._conn.execute(
+                        "SELECT capture_id, path, digest, payload, recorded_at, superseded_at "
+                        "FROM versions WHERE kind = ? AND unit = ? "
+                        "ORDER BY path, recorded_at, capture_id", (kind.name, unit)):
+                    record = json.loads(row["payload"]).get("row") or {}
+                    if record.get("kind") == kind.name.split("_", 1)[1]:
+                        continue   # the conversation's own record: no message text
+                    path = kind.canonical_path(
+                        [unquote(p) for p in str(row["path"]).split("/")])
+                    handle = make_handle(kind, path, self.generation, row["capture_id"])
+                    fields = tuple(TextField(handle, f"row.{name}", record[name])
+                                   for name in ("subject", "body_text")
+                                   if isinstance(record.get(name), str)
+                                   and record[name].strip())
+                    if not fields:
+                        continue
+                    yield Document(handle, "teams_message", fields, sender_class="unknown",
+                                   digest=row["digest"], recorded_at=row["recorded_at"],
+                                   superseded_at=row["superseded_at"],
+                                   date=record.get("created_at") or record.get("last_modified"))
 
 
 class SharePointListCaptures:

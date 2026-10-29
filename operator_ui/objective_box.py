@@ -23,7 +23,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-from operating import objective_runner
+from operating import objective_runner, po_status
 from operating.explanations import explain, words
 
 MAX_ANSWER_ROOTS = 3
@@ -34,7 +34,8 @@ NOTE = ("The agent found the records this objective concerns and read them as yo
 
 
 def _today() -> date:
-    return date.today()
+    """The business day (ET) a run judges lateness on, never the host's local day."""
+    return po_status.business_today()
 
 
 def served(objects: Any) -> dict[str, Any]:

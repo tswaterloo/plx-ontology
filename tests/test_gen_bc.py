@@ -1,11 +1,11 @@
 """BC ontology generated from the pinned API v2.0 ``$metadata`` (``ontology/generator/bc.py``).
 
-Evidence labels: the committed pin is the live ``$metadata`` the live checks published on
+Evidence labels: the committed pin is the live ``$metadata`` the verifier published on
 2026-10-13 (sha256 09a82605, ``live-capture``); ``isolated-fixture`` for the parse, drift and
 registry probes (``FIXTURE``, aligned with that document where the schema binds it) and
 ``injected-transport`` for the ``$metadata`` GET and the capture, both through the real
 GET-only client served by ``FakeBc`` (``integrations/tests/test_bc_capture.py``). The live
-counterpart is ``verify/live-checks/schema.bc_metadata_drift.json`` (live-unverified).
+counterpart is ``devloop/live-checks/schema.bc_metadata_drift.json`` (live-unverified).
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ import unittest
 from unittest import mock
 from urllib.parse import unquote, urlsplit
 
-from verify import live_verify as lv
+from devloop import live_verify as lv
 from integrations import bc_read
 from integrations import live_source_grammar as grammar
 from integrations.live_source_guard import ReadOnlyGuardError
@@ -38,8 +38,8 @@ from scripts import source_registry as sr
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_DOCUMENT = "integrations/tests/fixtures/bc_api_v2_metadata.xml"
 FIXTURE = (ROOT / FIXTURE_DOCUMENT).read_text(encoding="utf-8")
-SPEC = json.loads((ROOT / "verify/live-checks/schema.bc_metadata_drift.json").read_text())
-CAPTURE_SPEC = json.loads((ROOT / "verify/live-checks/bc.capture_full.json").read_text())
+SPEC = json.loads((ROOT / "devloop/live-checks/schema.bc_metadata_drift.json").read_text())
+CAPTURE_SPEC = json.loads((ROOT / "devloop/live-checks/bc.capture_full.json").read_text())
 MAN, DIST = tp.MAN, tp.DIST
 NOT_SERVED = {"business-central.entity_set:postedSalesInvoices",
               "business-central.entity_set:salesReceivablesSetup",
@@ -98,7 +98,8 @@ class GenerationTests(unittest.TestCase):
         for path, text in bc.build().items():
             self.assertEqual(path.read_text(encoding="utf-8"), text, path)
         pinned = bc.load_pin()
-        # Honest label: the document the live checks published (results/artifacts/schema.bc_metadata_drift/<sha256>.xml), re-pinned in review.
+        # Honest label: the document the verifier published (claude/devloop-live
+        # results/artifacts/schema.bc_metadata_drift/<sha256>.xml), re-pinned in review.
         self.assertEqual((pinned["evidence_mode"], pinned["document"]["path"],
                           pinned["document"]["sha256"][:16], pinned["document"]["captured_at"]),
                          ("live-capture", bc.LIVE_DOCUMENT, "09a82605df002ea2",

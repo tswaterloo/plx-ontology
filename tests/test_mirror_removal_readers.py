@@ -1,8 +1,9 @@
-"""Every reader of a removed record goes through the one removal test.
+"""Every reader of a removed record goes through the one removal test (mirror-soft-deletes
+review minors, directive f43379daf26c).
 
 A record its source soft-deleted (``deleted_in_source``) reads as removed wherever a
 missing one does: ``plx.object`` labels it with a removal gap, ``plx.aggregate`` leaves
-it out of counts and sums and counts it in that gap (one whose
+it out of counts and sums and counts it in that gap (directive 81e02294ac48: one whose
 absence is not established stays counted), ``plx.read`` of its mirror citation carries
 the gap, ``plx.process`` holds it out (an evidence record leaves its stage unknown, a
 line is never summed) and a case-root pick never roots it; each through

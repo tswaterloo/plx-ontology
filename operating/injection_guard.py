@@ -1,6 +1,6 @@
 """Injection defence: source text is data, action parameters trace to what was read.
 
-Mail bodies, attachments and
+10-DECISION item 7 and 09-CRITIQUE R6 (items 1-5). Mail bodies, attachments and
 document text are the main inputs of the PO, freight and AO cases, and any of them
 may carry text written to steer the agent ("update the PO to ...", "payment is
 approved", "ignore previous instructions"). Three deterministic rules hold that
@@ -58,7 +58,7 @@ line; no model is involved in any of them.
    proposal's type (``ActionPath.register`` keeps no other); the per-call human approval
    still decides. An
    identifier parsed out of such text is served bare only for a kind whose declared
-   value pattern is kind-specific (``kind_specific``, decision IB-FIREWALL-4);
+   value pattern is kind-specific (``kind_specific``, lead decision IB-FIREWALL-4);
    the boundary re-checks every normalized identifier and typed value per kind and
    value type (``_identifier_record_typed``, ``_value_record_typed``).
 
@@ -71,7 +71,8 @@ line; no model is involved in any of them.
 
 Boundary: the MCP host passes every tool result through :func:`firewall_tool_output`
 once at its output boundary (``operating.mcp_server.MCPServer.handle``), so original page
-text, case-mail bodies and subjects and Portal/BC cells reach a model only as envelopes. The ontology tools
+text, case-mail bodies and subjects and Portal/BC cells reach a model only as envelopes
+(``devloop/OPEN-DECISIONS.md`` injection-firewall-sites, decided (a)). The ontology tools
 (``operating/ontology_tools*.py``) and the mail capture views
 (``integrations/capture_mail.py``) emit envelopes themselves (their outputs are
 contract-validated: ``mcp_server.SELF_ENVELOPING_TOOLS``); their results pass the same
@@ -86,7 +87,7 @@ source; it judges what the case store resolved).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 import json
 import re
@@ -152,10 +153,20 @@ class UntrustedText:
         return out
 
 
+# Why a tool withheld an envelope's source text ($defs/untrusted_text ``withheld``): the
+# text is then empty, so the envelope carries nothing to wrap.
+WITHHELD_REASONS = frozenset({"not_po_like"})
+
+
 def is_envelope(value: Any) -> bool:
-    """Whether ``value`` is an ``untrusted_text`` envelope (contract shape)."""
-    return (isinstance(value, Mapping) and isinstance(value.get("untrusted_text"), str)
-            and set(value) <= {"untrusted_text", "origin", "truncated"})
+    """Whether ``value`` is an ``untrusted_text`` envelope (contract shape). A withheld
+    envelope (``withheld`` a known reason) is one only when its text is empty."""
+    if not (isinstance(value, Mapping) and isinstance(value.get("untrusted_text"), str)):
+        return False
+    if "withheld" in value:
+        return (value["withheld"] in WITHHELD_REASONS and value["untrusted_text"] == ""
+                and set(value) <= {"untrusted_text", "origin", "withheld"})
+    return set(value) <= {"untrusted_text", "origin", "truncated"}
 
 
 def is_source_text_citation(handle: Any, content: Any = None) -> bool:
@@ -404,23 +415,47 @@ def builtin_column_types() -> ColumnTypes:
 @dataclass(frozen=True)
 class ContractTyping:
     """How a self-enveloping tool's contract types its strings: ``grammars`` (key ->
-    the patterns and enums the contract gives a string under that key) and
-    ``bare_keys`` (keys whose plain strings the contract allows: Workbench prose and the
-    agent's own query text)."""
+    the patterns and enums the contract gives a string under that key), ``bare_keys``
+    (keys whose plain strings the contract allows: Workbench prose and the agent's own
+    query text) and ``prose`` (contract path -> a pattern that accepts words and
+    spaces, such as a use case's catalog title: ``prose_pattern``). A prose pattern
+    types only the property it is declared on, never every string under that key
+    name: a source document's ``title`` elsewhere in a result matches 'PAY 5000 NOW' as
+    well as a catalog title does, so typed by its key alone it would leave bare."""
 
     grammars: Mapping[str, tuple[Any, ...]]
     bare_keys: frozenset[str] = frozenset()
+    prose: Mapping[str, tuple[Any, ...]] = field(default_factory=dict)
 
-    def typed(self, key: Any, value: str) -> bool:
+    def typed(self, key: Any, value: str, path: str | None = None) -> bool:
+        """Whether ``value`` under ``key`` stays bare; ``path``: its dotted path in the
+        result (list indexes included). Without one no prose pattern applies."""
         if _INVISIBLE.search(value):
             return False
         if key in self.bare_keys:
             return True
-        for grammar in self.grammars.get(key, ()) if isinstance(key, str) else ():
+        grammars = tuple(self.grammars.get(key, ())) if isinstance(key, str) else ()
+        if isinstance(path, str):
+            grammars += tuple(self.prose.get(contract_path(path), ()))
+        for grammar in grammars:
             if (value in grammar if isinstance(grammar, frozenset)
                     else grammar.fullmatch(value) is not None):
                 return True
         return False
+
+
+def contract_path(path: str) -> str:
+    """A result's dotted path as a contract path: list indexes left out
+    (``use_case.also.0.title`` -> ``use_case.also.title``)."""
+    return ".".join(part for part in path.split(".") if part and not part.isdigit())
+
+
+def prose_pattern(pattern: re.Pattern[str]) -> bool:
+    """Whether a contract pattern accepts words separated by spaces (an instruction
+    such as 'PAY 5000 NOW' of ``GENERIC_IDENTIFIER_SHAPES``): it cannot tell its own
+    field's text from a source's, so it types only where it is declared."""
+    return any(" " in shape and pattern.fullmatch(shape) is not None
+               for shape in GENERIC_IDENTIFIER_SHAPES)
 
 
 def contract_typing(contracts: Mapping[str, Any]) -> ContractTyping:
@@ -429,9 +464,11 @@ def contract_typing(contracts: Mapping[str, Any]) -> ContractTyping:
     output that has a ``pattern`` or an ``enum`` (``$ref`` resolved) types the strings
     under its key; a property the contract types as a plain string (Workbench prose such
     as detail and hint, the agent's own query text) is a bare key. The envelope's own
-    ``untrusted_text`` never is: source text is an envelope by the contract's rule."""
+    ``untrusted_text`` never is: source text is an envelope by the contract's rule. A
+    pattern that accepts prose (``prose_pattern``) types its own contract path alone."""
     defs = contracts.get("$defs") or {}
     found: dict[str, list[Any]] = {}
+    scoped: dict[str, list[Any]] = {}
     plain: set[str] = set()
 
     def resolve(schema: Any) -> Any:
@@ -440,11 +477,11 @@ def contract_typing(contracts: Mapping[str, Any]) -> ContractTyping:
             schema, seen = defs.get(str(schema["$ref"]).rsplit("/", 1)[-1]), seen + 1
         return schema
 
-    def add(key: str, grammar: Any) -> None:
-        if grammar not in found.setdefault(key, []):
-            found[key].append(grammar)
+    def add(table: dict[str, list[Any]], key: str, grammar: Any) -> None:
+        if grammar not in table.setdefault(key, []):
+            table[key].append(grammar)
 
-    def walk(schema: Any, key: str | None, depth: int = 0) -> None:
+    def walk(schema: Any, key: str | None, path: str, depth: int = 0) -> None:
         schema = resolve(schema)
         if not isinstance(schema, Mapping) or depth > 40:
             return
@@ -452,23 +489,26 @@ def contract_typing(contracts: Mapping[str, Any]) -> ContractTyping:
         if key is not None and (kinds == "string" or (isinstance(kinds, list)
                                                       and "string" in kinds)):
             if isinstance(schema.get("pattern"), str):
-                add(key, re.compile(schema["pattern"].removeprefix("^").removesuffix("$")))
+                grammar = re.compile(schema["pattern"].removeprefix("^").removesuffix("$"))
+                add(scoped if prose_pattern(grammar) else found,
+                    path if prose_pattern(grammar) else key, grammar)
             if isinstance(schema.get("enum"), list):
-                add(key, frozenset(v for v in schema["enum"] if isinstance(v, str)))
+                add(found, key, frozenset(v for v in schema["enum"] if isinstance(v, str)))
             if "pattern" not in schema and "enum" not in schema and key != "untrusted_text":
                 plain.add(key)
         for name, sub in (schema.get("properties") or {}).items():
-            walk(sub, name, depth + 1)
+            walk(sub, name, f"{path}.{name}" if path else name, depth + 1)
         if "items" in schema:
-            walk(schema["items"], key, depth + 1)
+            walk(schema["items"], key, path, depth + 1)
         for combined in ("anyOf", "oneOf", "allOf"):
             for sub in schema.get(combined) or ():
-                walk(sub, key, depth + 1)
+                walk(sub, key, path, depth + 1)
 
     for tool in (contracts.get("tools") or {}).values():
-        walk(tool.get("output"), None)
+        walk(tool.get("output"), None, "")
     return ContractTyping({key: tuple(items) for key, items in found.items()},
-                          frozenset(plain))
+                          frozenset(plain),
+                          {path: tuple(items) for path, items in scoped.items()})
 
 
 def _typed(key: Any, value: str) -> bool:
@@ -485,7 +525,7 @@ def is_unit(text: Any) -> bool:
     return isinstance(text, str) and _GRAMMARS["unit"].fullmatch(text) is not None
 
 
-# Generic identifier shapes (decision IB-FIREWALL-4): a code word with a digit, a
+# Generic identifier shapes (lead decision IB-FIREWALL-4): a code word with a digit, a
 # hyphenated word chain, two or three groups of which one carries a digit, a word chain
 # before an address (a sender-chosen Message-ID). A declared value pattern that accepts
 # any of them ('[^\x00-\x1f]{1,80}' of customer_po) is not kind-specific: it cannot tell
@@ -518,7 +558,7 @@ def is_identifier(value: Any, kind: str | None = None, citation: Any = None) -> 
 
     ``citation``: where the value was read. A value extracted from source text (a mail,
     an OCR'd original, a file: ``is_source_text_citation``) is bare only for a declared
-    kind-specific kind (``kind_specific``, decision IB-FIREWALL-4): the author of the
+    kind-specific kind (``kind_specific``, lead decision IB-FIREWALL-4): the author of the
     text chose it, and a generic shape ('PAY 5000 NOW', 'IGNORE-ALL-PREVIOUS-1') stays
     source text."""
     if not isinstance(value, str):
@@ -573,7 +613,7 @@ VALUE_TYPE_GRAMMARS: Mapping[str, str] = {
 
 def _value_record_typed(item: Mapping[str, Any]) -> bool | None:
     """Whether a value record's string ``value`` (a mapping with a ``value_type``) is typed
-    by that value type, the boundary's own check ('value' is a
+    by that value type, the boundary's own check (review ib-firewall-3 m3/m4: 'value' is a
     plain contract string, so its contract typing alone would let any text through);
     None for any other mapping. An identifier must be one of its property's kinds (of
     its object type when the record names it), read where its citation says."""
@@ -771,7 +811,8 @@ def firewall_tool_output(value: Any, *, citation: str | None = None,
         if is_envelope(item):  # Workbench prose names the Workbench, as built
             return rewrap(item, None if key in WORKBENCH_TEXT_KEYS else origin, sclass)
         if isinstance(item, str):
-            if _typed(key, item) or (contract is not None and contract.typed(key, item)):
+            if _typed(key, item) or (contract is not None
+                                     and contract.typed(key, item, path)):
                 return item
             if key in WORKBENCH_TEXT_KEYS:
                 return wrap(item, None, None, None)

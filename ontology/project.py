@@ -1,13 +1,13 @@
-"""Project cited L1 captures into the L2 ontology store, driven by the schema.
+"""Project cited L1 captures into the L2 ontology store, driven by the schema (lane L7).
 
-The projection is disposable: it
+10-DECISION 1-3, 5 and 09-CRITIQUE R1, R3, R8, R11. The projection is disposable: it
 reads only L1 captures (never a source system), copies nothing uncited and is rebuilt
 whole into a new store generation that is swapped in atomically
 (``ontology.store.StoreBuilder``).
 
 Input
 -----
-* A compiled schema (``ontology.schema.CompiledSchema`` from the loader, or any
+* A compiled schema (``ontology.schema.CompiledSchema`` from the L4 loader, or any
   object with ``object_types``, ``link_types``, ``event_types`` and ``digest``).
 * One :class:`CaptureSource` per binding source family. :class:`MirrorCaptures` reads
   the Portal source mirror (``integrations/source_mirror.py``): every retained version
@@ -59,7 +59,7 @@ What is built
   ``lead`` between two anchor records, which are never joined on text); an unknown
   pair, or an N:1/1:1 link whose from-record matches several records, is a ``lead``;
   typed values that differ make it ``contradicted``. ``mention`` and ``reviewed`` links
-  come from other sources (documents, review decisions) and are not projected here.
+  come from other lanes (documents, review decisions) and are not projected here.
   **BC company scope**: BC document and master numbers are unique only within one
   company (book), so a hop whose two ends are both BC captures
   (``ontology.schema.link_company_scope``) pairs records only when their capture
@@ -155,7 +155,7 @@ _STORED_KEY_TIERS = ("verified", "reviewed", "corroborated")
 _PROJECTED_LINK_KINDS = ("fk", "json_path", "same_record", "text_match")
 # Portal gold relations the silver-to-gold ETL re-inserts on every run under a fresh
 # ``cuid()`` id (``ON CONFLICT (id)`` never fires, no DELETE, no natural unique
-# constraint; docs/reference/portal-code-map.md, decision 2026-10-07-schema-coverage-etl-
+# constraint; devloop/CONTEXT/03-PORTAL.md, decision 2026-10-07-schema-coverage-etl-
 # duplicates): source -> relation -> the columns the ETL mints per insert. No served
 # column holds the silver source key, so a record's natural key is every other column of
 # its row (``_natural_key``): copies of one silver row are equal on all of them. At
@@ -410,7 +410,13 @@ class MirrorCaptures:
     Rows stream from a cursor (nothing is held per relation); the read transaction
     opened by :meth:`records` is the one snapshot every relation is read from, and it
     lasts until :meth:`close` (or the next :meth:`records`). The mirror runs in WAL
-    mode, so the open snapshot never blocks its writer. A key's ``row_removal``
+    mode, so the open snapshot never blocks its writer. The snapshot is one on purpose:
+    the incremental build compares :meth:`fingerprint` with what :meth:`records` yields,
+    and both must read the same commit (short per-relation transactions would let a
+    sync land between them and record a fingerprint for rows never projected). While it
+    is open no checkpoint can reset the WAL, so the WAL grows by the writes of one build
+    only: the writer checkpoints at the end of each sync and the host after each build
+    (``capture_store.checkpoint``, ``Host.checkpoint_stores``). A key's ``row_removal``
     stretches (missing from the source, or soft-deleted by it) ride on its current
     version as ``CapturedRecord.removals``. Their replacement labels are read only from
     a mirror labelled under the rule in force (``mirror_meta`` ``replacement_rule`` is
@@ -463,13 +469,26 @@ class MirrorCaptures:
         self._conn = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True,
                                      isolation_level=None)
         self._conn.row_factory = sqlite3.Row
+        # A scoped fallback (integrations/mirror_capture.py) reads the shared mirror it
+        # names through scope views; any other file reads as itself.
+        from integrations.source_mirror import attach_scoped
+        attach_scoped(self._conn)
         self._snapshot = False
+        layout = {}
         for table, columns in self._NEEDED.items():
             have = {row["name"] for row in self._conn.execute(f"PRAGMA table_info({table})")}
+            layout[table] = have
             if not columns <= have:
                 self._conn.close()
                 raise ProjectionError("mirror_layout_unsupported",
                                       f"{table} lacks {sorted(columns - have)}")
+        # A current row's last sighting: the mirror's own rule (a full traversal writes
+        # only changed rows and records its sighting of the rest once); a file written
+        # before that rule stores it on every row.
+        from integrations.source_mirror import _sighting_sql
+        self._seen_at = (_sighting_sql("row_current")[1]
+                         if "seen_through_at" in layout["relation_state"]
+                         and "sighting_floor" in layout["row_current"] else "last_seen_at")
         row = self._conn.execute(
             "SELECT value FROM mirror_meta WHERE name = 'generation'").fetchone()
         if row is None:
@@ -510,9 +529,12 @@ class MirrorCaptures:
         """relation -> how it is served, for the relations served from a persisted
         capture while the live source was unavailable (``integrations/mirror_capture.py``):
         every relation of a copy restored whole, or the ones a running mirror filled
-        from a copy (``persisted_relation``). Stale whatever their age."""
-        def served(relation: str, freshness: Mapping[str, Any]) -> dict[str, Any]:
-            out = {"relation": relation, "served_from": "persisted_capture",
+        from a copy (``persisted_relation``); or a relation it holds whose last refresh
+        failed (``refresh_failure``: ``cached_mirror``, as of its last refresh, with the
+        failure's error code). Stale whatever their age."""
+        def served(relation: str, freshness: Mapping[str, Any],
+                   source: str = "persisted_capture") -> dict[str, Any]:
+            out = {"relation": relation, "served_from": source,
                    "captured_at": freshness.get("captures_as_of"),
                    "http_status": freshness.get("http_status"),
                    "error_code": freshness.get("error_code")}
@@ -525,12 +547,28 @@ class MirrorCaptures:
         if row is not None:
             whole = json.loads(row["value"])
             return {relation: served(relation, whole) for relation in relations}
-        if self._conn.execute("SELECT 1 FROM sqlite_master WHERE name = "
-                              "'persisted_relation'").fetchone() is None:
-            return {}
-        return {item["relation"]: served(item["relation"], json.loads(item["freshness_json"]))
-                for item in self._conn.execute(
-                    "SELECT relation, freshness_json FROM persisted_relation ORDER BY relation")}
+        tables = {row["name"] for row in self._conn.execute(
+            "SELECT name FROM sqlite_master WHERE name IN ('persisted_relation', "
+            "'refresh_failure')")}
+        out: dict[str, dict[str, Any]] = {}
+        if "refresh_failure" in tables:
+            from integrations.mirror_capture import stale_label
+            for item in self._conn.execute(
+                    "SELECT f.relation, f.error, s.last_refresh_at FROM refresh_failure f "
+                    "JOIN relation_state s ON s.relation = f.relation ORDER BY f.relation"):
+                code = item["error"].partition(":")[0].strip()
+                code = code if re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", code) else "refresh_failed"
+                as_of = item["last_refresh_at"]
+                out[item["relation"]] = served(item["relation"], {
+                    "captures_as_of": as_of, "http_status": None, "error_code": code,
+                    "label": stale_label(as_of, None, code) if as_of else None},
+                    "cached_mirror")
+        if "persisted_relation" in tables:  # a copy filled in is the farther from live
+            out.update({item["relation"]: served(item["relation"],
+                                                 json.loads(item["freshness_json"]))
+                        for item in self._conn.execute(
+                            "SELECT relation, freshness_json FROM persisted_relation")})
+        return dict(sorted(out.items()))
 
     def records(self, relations: Sequence[str]) -> Mapping[str, Iterable[CapturedRecord]]:
         # The mirror's own minting and replacement rule.
@@ -569,7 +607,7 @@ class MirrorCaptures:
                 raise ProjectionError("capture_snapshot_closed", relation)
             for row in _sampled(self.sample, self._conn.execute(
                     f"""SELECT key_json, run_index, run_length, row_json, row_digest,
-                       capture_id, last_seen_at, missing_from_source_since,
+                       capture_id, {self._seen_at} AS last_seen_at, missing_from_source_since,
                        NULL AS superseded_by_capture, 1 AS current,
                        {self._REMOVALS} AS removals
                        FROM row_current WHERE relation = ?
@@ -709,6 +747,10 @@ class MailCaptures:
         self._conn = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True,
                                      isolation_level=None)
         self._conn.row_factory = sqlite3.Row
+        # A scoped fallback (integrations/mirror_capture.py) reads the shared mirror it
+        # names through scope views; any other file reads as itself.
+        from integrations.source_mirror import attach_scoped
+        attach_scoped(self._conn)
         self._snapshot = False
         for table, columns in self._NEEDED.items():
             have = {row["name"] for row in self._conn.execute(f"PRAGMA table_info({table})")}
@@ -832,15 +874,10 @@ class MailCaptures:
         return _Relations(relations, stream)
 
     def _blob_text(self, digest: Any) -> str | None:
-        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
-            return None
-        try:
-            content = (self.blobs / digest[:2] / digest).read_bytes()
-        except OSError:
-            return None
-        if hashlib.sha256(content).hexdigest() != digest:
-            return None
-        return content.decode("utf-8", errors="replace")
+        """A body's text from its blob (stored as it is or compressed), re-hashed."""
+        from integrations.captured_text import read_blob
+        content = read_blob(self.blobs, digest)
+        return None if content is None else content.decode("utf-8", errors="replace")
 
     def documents(self) -> Iterator[Any]:
         """Every projected message version as an ``ontology.mentions.Document``
@@ -1093,7 +1130,7 @@ class SharePointCaptures:
                 return
             if relation == "documentFields":   # typed fields of captured files
                 from ontology import document_fields
-                # A scan is read from its pinned OCR text (quality packets).
+                # A scan is read from its pinned OCR text (P8 quality packets).
                 yield from document_fields.captured(stream("driveItems", ocr=True),
                                                     self.blobs)
                 return
@@ -1152,7 +1189,7 @@ class SharePointCaptures:
                 **record, "content_sha256": row["content_sha256"],
                 "text_status": row["text_status"], "text_sha256": row["text_sha256"]})
             # A file read on its first pages only: its name only, and why (no gap
-            # channel here; docs/decisions/pdf-cap-readers-contract.md).
+            # channel here; devloop/DECISIONS/pdf-cap-readers-contract.md).
             withheld = None if found is None else found.text_withheld
             if found is not None and found.text is not None and withheld is None:
                 fields.extend(file_text_fields(handle, "row.content_text", found.text,
@@ -1218,7 +1255,7 @@ CAPTURE_SOURCES: dict[str, Callable[..., Any]] = {
 LIST_ITEMS = "listItems"
 CAPTURED_RELATIONS: dict[str, frozenset[str]] = {
     "sharepoint": frozenset({"driveItems", "documentFields", MEMBER_RELATION, LIST_ITEMS}),
-    "teams": frozenset({"channelMessages", "chatMessages"})}
+    "teams": frozenset({"channelMessages", "chatMessages", "chats", "channels", "teams"})}
 
 
 def capture_source(source: str, path: str | Path, **options: Any) -> Any:
@@ -1517,6 +1554,9 @@ class _Version:
         return f"{self.rec.field_prefix}.{path}"
 
 
+# ``_side`` problems that mean a record holds no key (nothing to read), not an unread one.
+_NO_KEY = frozenset({"value_absent", "never_sent_to_counterpart_system"})
+
 # Gap codes whose every handle a build records (``handles``), not only samples.
 RECORDED_GAPS = frozenset({"source_condition_unmet"})
 
@@ -1536,14 +1576,14 @@ class _Report:
     parts: dict[str, "_Report"] = field(default_factory=dict)
     unattributed: int = 0
 
-    def gap(self, code: str, where: str, handle: str | None = None) -> None:
-        self._gap(code, where, handle)
-        self._part()._gap(code, where, handle)
+    def gap(self, code: str, where: str, handle: str | None = None, count: int = 1) -> None:
+        self._gap(code, where, handle, count)
+        self._part()._gap(code, where, handle, count)
 
-    def _gap(self, code: str, where: str, handle: str | None) -> None:
+    def _gap(self, code: str, where: str, handle: str | None, count: int = 1) -> None:
         entry = self.gaps.setdefault(f"{code}:{where}", {"code": code, "where": where,
                                                          "count": 0, "samples": []})
-        entry["count"] += 1
+        entry["count"] += count
         samples = entry["samples"]
         if handle is not None and handle not in samples and (
                 len(samples) < _SAMPLES or handle < samples[-1]):
@@ -1607,7 +1647,7 @@ def _markings_text(markings: frozenset[str]) -> str:
 
 def _default_normalizer() -> Normalizer | None:
     try:
-        from ontology import identifiers  # absent until it lands
+        from ontology import identifiers  # lane L6; absent until it lands
     except ImportError:
         return None
     normalize = getattr(identifiers, "normalize", None)
@@ -1894,6 +1934,7 @@ class Projector:
         self._path_marks: dict[tuple[str, str], frozenset[str]] = {}
         self._company_unknown: dict[tuple[str, int], bool] = {}
         self._sigs: dict[tuple[str, str, str, str | None, str | None], int] = {}
+        self._unread_keys: dict[int, _Report] = {}   # per sig: the key values it could not read
         self._towards: dict[tuple[str, str, str, str | None, str], str | None] = {}
         self._source_order: dict[tuple[str, str, str], dict[str, int]] = {}
         self._cache: OrderedDict[int, _Version] = OrderedDict()
@@ -2478,17 +2519,32 @@ class Projector:
         sig = self._sigs.get(key)
         if sig is None:
             sig = self._sigs[key] = len(self._sigs) + 1
+            unread = self._unread_keys[sig] = _Report()
             rows: list[tuple[int, str, int]] = []
             for version in self._versions(binding):
-                norm, _, _ = self._side(version, path, pair, toward)
+                norm, problem, _ = self._side(version, path, pair, toward)
                 if norm is not None:
                     rows.append((sig, norm, version.vid))
+                elif problem not in _NO_KEY:
+                    unread._gap(f"link_key_{problem}", "", version.rec.l1_handle)
                 if len(rows) >= self.batch:
                     self._tick()
                     self._db.executemany("INSERT INTO k VALUES (?, ?, ?)", rows)
                     rows.clear()
             self._db.executemany("INSERT INTO k VALUES (?, ?, ?)", rows)
         return sig
+
+    def _report_unread_keys(self, where: str, keys: Iterable[tuple[str, str, int]]) -> None:
+        """Report, under ``<where>@<binding>.<path>``, the key values of one link binding
+        its ``_sig`` sets could not read: such a record joins nothing, so an absence
+        prover must see it (once per key path, however many pairs compare it)."""
+        for binding, path, sig in sorted(set(keys)):
+            for gap in self._unread_keys[sig].gaps.values():
+                at = f"{where}@{binding}.{path}"
+                for handle in gap["samples"]:
+                    self.report.gap(gap["code"], at, handle)
+                if gap["count"] > len(gap["samples"]):
+                    self.report.gap(gap["code"], at, None, gap["count"] - len(gap["samples"]))
 
     def _candidates(self, joins: Sequence[tuple[int, int]]
                     ) -> Iterator[tuple[int, list[tuple[int, int]]]]:
@@ -2578,6 +2634,10 @@ class Projector:
                  for pair in pairs]
         scoped = self._scoped(lb["from_binding"], lb["to_binding"])
         where = f"{lid}#{index}"
+        self._report_unread_keys(where, [
+            key for pair, (fsig, tsig) in zip(pairs, joins)
+            for key in ((lb["from_binding"], pair["from"], fsig),
+                        (lb["to_binding"], pair["to"], tsig))])
         for fvid, matches in self._candidates(joins):
             fv = self._version(fvid)
             if not self._binding_applies(lb, fv):
@@ -2613,6 +2673,13 @@ class Projector:
                    self._sig(lb["to_binding"], pair["to"], pair, via["binding"]))
                   for pair in via["to_pairs"]]
         where = f"{lid}#{index}"
+        self._report_unread_keys(where, [
+            key for pairs, ends, sigs in ((via["from_pairs"], (lb["from_binding"], via["binding"]),
+                                           joins),
+                                          (via["to_pairs"], (via["binding"], lb["to_binding"]),
+                                           onward))
+            for pair, (fsig, tsig) in zip(pairs, sigs)
+            for key in ((ends[0], pair["from"], fsig), (ends[1], pair["to"], tsig))])
         scoped_in = self._scoped(lb["from_binding"], via["binding"])
         scoped_out = self._scoped(via["binding"], lb["to_binding"])
         scoped_ends = self._scoped(lb["from_binding"], lb["to_binding"])
@@ -3514,6 +3581,9 @@ class Projector:
             for vid in self._vids():
                 self._lineage(self._version(vid))
 
+        # Bindings declared ``value_storage: packed`` store their values as packed records.
+        builder.packed_bindings = frozenset(
+            bid for bid, (_, b) in self.bindings.items() if b.get("value_storage") == "packed")
         try:
             # Each phase names the unit of what it reports (``_Report.unit``); none
             # inherits the last unit of the phase before it.
@@ -3726,9 +3796,11 @@ def finish_generation(builder: StoreBuilder, projector: "Projector",
             unmet[gap["where"]] = sorted(gap["handles"])
             gap = {key: value for key, value in gap.items() if key != "handles"}
         gaps.append(gap)
+    # ``link_keys``: every unread compared key is a gap (``_report_unread_keys``); a
+    # report without it never lets a reader rule out a link an unread key hid.
     report = {"projector": PROJECTOR, "schema_digest": projector.digest,
               "as_known_at": projector.cut, "counts": dict(sorted(counts.items())),
-              "gaps": gaps}
+              "gaps": gaps, "link_keys": "reported"}
     if steps:
         report["post_project"] = steps
         counts = dict(report["counts"], links=conn.execute(

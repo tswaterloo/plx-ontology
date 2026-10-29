@@ -1,4 +1,4 @@
-"""Source deletions: a soft delete the source asserts, and removal intervals kept.
+"""Source deletions (ING-09): a soft delete the source asserts, and removal intervals kept.
 
 A Portal relation whose catalog carries the declared soft-delete column (``deleted_at``,
 ``integrations/source_mirror_ingest.json`` ``soft_delete_rules``) labels a row with a value
@@ -169,8 +169,8 @@ class MirrorSoftDeleteTests(unittest.TestCase):
 
     def test_the_live_check_records_soft_deletes_as_counts_only(self):
         """The mirror.full_coverage command (scripts.live_read_probes) over the fake
-        transport, read through the spec exactly as the live check records it."""
-        from verify import live_verify as lv
+        transport, read through the spec exactly as the verifier records it."""
+        from devloop import live_verify as lv
         from scripts import live_read_probes as probes
         fake = workbench([customer("c1"), customer("c2", deleted_at="2026-09-28T08:00:00")])
         fake.tables[CUSTOMERS][1]["code"] = "SECRET-VALUE"
@@ -434,8 +434,8 @@ class MirrorReplacementTests(unittest.TestCase):
 
     def test_the_live_check_records_replaced_rows_as_counts_only(self):
         """mirror.relation_counts over the fake transport: the rows are replaced between
-        the counter's two reads, read through the spec as the live check records it."""
-        from verify import live_verify as lv
+        the counter's two reads, read through the spec as the verifier records it."""
+        from devloop import live_verify as lv
         from scripts import mirror_measure
 
         def measure(rows, after, *args):
@@ -477,7 +477,7 @@ class MirrorReplacementTests(unittest.TestCase):
         failures = lv.check_expectations(spec, 0, report)
         self.assertFalse([f for f in failures if "replac" in f], failures)
         # A plain deletion: the same-PO, same-product row past the 2-key sample was read
-        # by the first full read, so it is no successor.
+        # by the first full read, so it is no successor (reviewer repro).
         rows = [line("a", "po1"), line("b", "po2"), line("c", "po1")]
         report = measure(rows, rows[1:], "--sample-keys", "2")
         self.assertEqual((report["replaced_rows_total"],

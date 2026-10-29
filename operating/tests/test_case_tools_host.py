@@ -1,6 +1,6 @@
 """The case host's 22-tool listing after the host-budget merges (operating/case_tools_host.py).
 
-docs/decisions/2026-10-03-host-tool-budget.md phase 1: each retired case tool's
+devloop/DECISIONS/2026-10-03-host-tool-budget.md phase 1: each retired case tool's
 capability is reached through its successor, for the same reader and no wider:
 
 * plx.source_citation -> plx.read: intra-page paging by text_offset with the whole
@@ -49,7 +49,7 @@ from ontology.json_contract import validate
 from ontology.project import MailCaptures, build_store
 from operating.case_mail_scope import MailScope
 from operating.case_runtime import CaseRuntime, LiveReaders
-from operating.case_tools_host import CaptureCaseHostTools, CaseCaptures, PagedRead
+from operating.case_tools_host import CaptureCaseHostTools, CaseCaptures, PagedRead, serving_tools
 from operating.mcp_server import CASE_TOOL_RETIREMENTS, TOOLS, MCPServer
 from operating.ontology_host import CaseHostTools
 from operating.ontology_tools import load_contracts
@@ -225,6 +225,33 @@ class ReadParityTests(case_tools.CaseToolsTestCase):
         # Offset windows are not line reads and never carry line_cut.
         self.assertNotIn("line_cut", window({"text_offset": 0})["text_window"])
 
+    def test_find_gives_the_line_and_offset_of_each_place_a_phrase_is_written(self):
+        # A long document says it holds a thing on one line and that the thing is not
+        # provided a thousand lines on: find locates both without paging between them.
+        from types import SimpleNamespace
+        paged = PagedRead(SimpleNamespace(contracts=CONTRACTS, limits={
+            "max_untrusted_text_chars": 4000, "max_result_bytes": 64000}), None)
+        lines = ["Intro", "", "The final proforma is held on file."] + ["filler"] * 1000 + [
+            "Final\tPROFORMA: not provided."]
+        text = "\n".join(lines)
+        raw = {"content": text, "content_field": "body",
+               "content_citation": "graph-mail://BOX/MSG-1"}
+        found = paged._find({"citation": raw["content_citation"]}, raw, {
+            "citation": raw["content_citation"], "find": "final  proforma"})
+        hits = found["matches"]["hits"]
+        self.assertEqual([hit["line"] for hit in hits], [3, len(lines)])
+        for hit in hits:   # each snippet is the text at its offset, within its line
+            self.assertEqual(hit["text"]["untrusted_text"],
+                             text[hit["offset"]:hit["offset"] + hit["chars"]])
+            self.assertEqual(hit["text"]["untrusted_text"], lines[hit["line"] - 1])
+        self.assertEqual((found["matches"]["total_hits"], found["completeness"]["complete"]),
+                         (2, True))
+        self.assertNotIn("content", found)
+        missing = paged._find({"citation": raw["content_citation"]}, raw, {
+            "citation": raw["content_citation"], "find": "never written"})
+        self.assertEqual((missing["matches"]["hits"], missing["matches"]["total_hits"]),
+                         ([], 0))
+
     def test_a_file_citation_lists_every_extraction_version(self):
         self.local_ocr = False
         runtime = self.runtime(case_tools._no_ocr_extractor)
@@ -277,7 +304,7 @@ class ReadParityTests(case_tools.CaseToolsTestCase):
         citation = self.ao_citation(server)
         tools = CaseHostTools(runtime, server.actor)
         self.addCleanup(tools.close)
-        for paging in ({"text_offset": 0}, {"column_offset": 0}):
+        for paging in ({"text_offset": 0}, {"column_offset": 0}, {"find": "AO"}):
             answer = tools.call("plx.read", {"citation": citation, **paging}, server.actor)
             self.assertEqual(answer["error"]["code"], "paging_not_served", paging)
         self.assertEqual(tools.call("plx.read", {"citation": citation}, server.actor)
@@ -297,6 +324,323 @@ class ReadParityTests(case_tools.CaseToolsTestCase):
             self.server(case_tools.OPS, runtime)), "column_offset": 0})
         self.assertEqual(row["status"], "withheld")
         self.assertNotIn("columns", row)
+
+
+def _paged_extractor(count: int, pad: int = 0, figure_last: bool = False):
+    """An extractor of ``count`` pages, page n reading ``Page n holds <figure n>.`` (then
+    ``pad`` characters of words; ``figure_last``: the words first, the figure at the page's
+    end): each page's figure occurs on that page only."""
+    filler = ("and more words " * (pad // 15 + 1))[:pad]
+    texts = [(f"Page {n} {filler.strip()} holds {_figure(n)}." if figure_last
+              else f"Page {n} holds {_figure(n)}. {filler}".rstrip())
+             for n in range(1, count + 1)]
+
+    def extract(content, mime_type, *, original_url, filename="", local_pdf_ocr=False):
+        pages, start = [], 0
+        for number, text in enumerate(texts, 1):
+            pages.append({"page": number, "start": start, "end": start + len(text)})
+            start += len(text) + 1
+        return case_tools.ExtractedDocument("application/pdf", "x", "extracted", "stub",
+                                            "\f".join(texts), (), (), (), tuple(pages))
+    return extract, texts
+
+
+def _figure(page: int) -> int:
+    return 4000 + 37 * page
+
+
+def _page_answer(handle: str, value: int) -> dict:
+    text = f"The page reads {value}."
+    return {"answer": {"claims": [{"text": text, "citations": [handle], "value_claims": [
+        {"value": str(value), "citation": handle, "field": "text"}]}], "text": text}}
+
+
+class PageCitationTests(case_tools.CaseToolsTestCase):
+    """plx.read returns the page citations of the text it serves (a page read its page's,
+    a whole-text read and a text_offset window every page they cover), the session takes
+    them as returned evidence, and the answer gate still checks a page claim against that
+    page's own text only."""
+
+    local_ocr = True
+
+    def runtime(self, count: int = 3, pad: int = 0, figure_last: bool = False) -> CaseRuntime:
+        extractor, self.texts = _paged_extractor(count, pad, figure_last)
+        return ReadParityTests.runtime(self, extractor=extractor)
+
+    def attach(self, server: MCPServer, runtime: CaseRuntime) -> tuple[str, dict]:
+        return case_tools.OriginalReadTests.attach(self, server, runtime)
+
+    def plx_read(self, server: MCPServer, arguments: dict) -> dict:
+        return ReadParityTests.plx_read(self, server, arguments)
+
+    def submit(self, server: MCPServer, handle: str, value: int) -> dict:
+        result = _client(server, "plx.case_get", _page_answer(handle, value))
+        self.assertFalse(result["isError"], result)
+        return result["structuredContent"]
+
+    def codes(self, answer: dict) -> list[str]:
+        return [f["code"] for c in answer.get("unsupported_claims") or ()
+                for f in c.get("failures") or ()]
+
+    def test_a_page_read_cites_its_page_and_a_figure_on_it_passes_the_gate(self):
+        runtime = self.runtime()
+        server = self.server(case_tools.OPS, runtime)
+        _, original = self.attach(server, runtime)
+        file, page_three = original["citation"], original["page_citations"][2]
+        value = self.plx_read(server, {"citation": file, "page": 3})
+        self.assertEqual(value["citation"], page_three)
+        self.assertEqual(value["content"]["origin"]["citation"], page_three)
+        self.assertEqual(value["content"]["untrusted_text"], self.texts[2])
+        self.assertNotIn("pages", value)
+        passed = self.submit(server, page_three, _figure(3))
+        self.assertEqual(passed["outcome"], "answered", json.dumps(passed)[:1500])
+        # A page past the last: nothing is returned, so nothing of it can be cited.
+        missing = self.plx_read(server, {"citation": file, "page": 9})
+        self.assertNotEqual(missing["status"], "resolved")
+        self.assertEqual(missing["citation"], file)
+        refused = self.submit(server, file + "#page=9", _figure(3))
+        self.assertIn("cites_what_this_run_did_not_return", json.dumps(refused))
+
+    def test_a_claim_citing_one_page_with_the_figure_of_another_is_refused(self):
+        runtime = self.runtime()
+        server = self.server(case_tools.OPS, runtime)
+        _, original = self.attach(server, runtime)
+        file, page_three = original["citation"], original["page_citations"][2]
+        whole = self.plx_read(server, {"citation": file})
+        self.assertIn(page_three, [p["page_citation"] for p in whole["pages"]])
+        self.assertIn(str(_figure(2)), whole["content"]["untrusted_text"])
+        refused = self.submit(server, page_three, _figure(2))
+        self.assertNotEqual(refused["outcome"], "answered")
+        self.assertEqual(self.codes(refused), ["claim_value_mismatch"])
+        self.assertNotIn("cites_what_this_run_did_not_return", json.dumps(refused))
+
+    def test_a_window_read_lists_exactly_the_pages_its_text_covers(self):
+        for count in (1, 10, 60):
+            with self.subTest(pages=count):
+                self.setUp()
+                runtime = self.runtime(count)
+                server = self.server(case_tools.OPS, runtime)
+                _, original = self.attach(server, runtime)
+                file, cited = original["citation"], original["page_citations"]
+                text = "\f".join(self.texts)
+                for arguments in ({"citation": file}, {"citation": file, "text_offset": 0,
+                                                       "max_chars": 20000}):
+                    value = self.plx_read(server, arguments)
+                    pages = value["pages"]
+                    # Every page once, in order, each span the page's own text.
+                    self.assertEqual([p["page"] for p in pages], list(range(1, count + 1)))
+                    self.assertEqual([p["page_citation"] for p in pages], cited)
+                    for entry, own in zip(pages, self.texts):
+                        self.assertEqual(text[entry["offset"]:entry["offset"]
+                                              + entry["chars"]], own)
+                # A window inside the last page names that page alone.
+                last = len(text) - len(self.texts[-1])
+                window = self.plx_read(server, {"citation": file, "text_offset": last + 2,
+                                                "max_chars": 200})
+                self.assertEqual([p["page"] for p in window["pages"]], [count])
+                self.assertNotIn("page", window["text_window"])
+                # The page cited from the window passes; a page not covered was never
+                # returned by the window and is refused as such.
+                fresh = self.server(case_tools.OPS, runtime)
+                self.plx_read(fresh, {"citation": file, "text_offset": last + 2,
+                                      "max_chars": 200})
+                passed = self.submit(fresh, cited[-1], _figure(count))
+                self.assertEqual(passed["outcome"], "answered", json.dumps(passed)[:1500])
+                if count > 1:
+                    other = self.server(case_tools.OPS, runtime)
+                    self.plx_read(other, {"citation": file, "text_offset": last + 2,
+                                          "max_chars": 200})
+                    refused = self.submit(other, cited[0], _figure(1))
+                    self.assertIn("cites_what_this_run_did_not_return", json.dumps(refused))
+
+    def test_page_citations_that_do_not_fit_are_cut_with_a_gap_never_silently(self):
+        runtime = self.runtime(600)
+        server = self.server(case_tools.OPS, runtime)
+        _, original = self.attach(server, runtime)
+        file = original["citation"]
+        cited = [f"{file}#page={n}" for n in range(1, 601)]
+        for arguments in ({"citation": file}, {"citation": file, "text_offset": 0,
+                                               "max_chars": 20000}):
+            value = self.plx_read(server, arguments)
+            listed = [p["page_citation"] for p in value["pages"]]
+            self.assertGreater(len(listed), 0)
+            self.assertEqual(listed, cited[:len(listed)])   # in order, none lost inside
+            (gap,) = [g for g in value["gaps"] if g["reason"] == "page_citations_cut"]
+            self.assertEqual(gap["subject"], cited[len(listed)])
+            # The text keeps its place: at least as much as the pages listed cover.
+            last = value["pages"][-1]
+            self.assertGreaterEqual(len(value["content"]["untrusted_text"]),
+                                    min(8000, last["offset"]))
+
+    def test_a_page_served_only_in_part_makes_a_claim_on_it_partial(self):
+        # Each page prints its figure at its end, past 900 characters of words: a part of
+        # the page that stops before the figure never served it (a figure the served part
+        # holds reads in full: ``answer_gate._in_full``, the case below the loop).
+        runtime = self.runtime(3, pad=900, figure_last=True)
+        server = self.server(case_tools.OPS, runtime)
+        _, original = self.attach(server, runtime)
+        file, (one, two, _three) = original["citation"], original["page_citations"]
+        state = lambda answer: answer["answerability"]["state"]   # noqa: E731
+        # A page read cut by max_chars before the figure: the page is partly read.
+        cut = self.plx_read(server, {"citation": file, "page": 2, "max_chars": 200})
+        self.assertTrue(cut["content"]["truncated"])
+        self.assertNotIn(str(_figure(2)), cut["content"]["untrusted_text"])
+        self.assertTrue(server.unread(two, "text"))
+        partial = self.submit(server, two, _figure(2))
+        self.assertEqual((partial["outcome"], state(partial)), ("answered", "partial"),
+                         json.dumps(partial)[:1500])
+        # Read whole, the page is read: answerable.
+        whole = self.server(case_tools.OPS, runtime)
+        self.plx_read(whole, {"citation": file, "page": 2, "max_chars": 200})
+        self.plx_read(whole, {"citation": two, "text_offset": 0, "max_chars": 20000})
+        self.assertFalse(whole.unread(two, "text"))
+        self.assertEqual(state(self.submit(whole, two, _figure(2))), "answerable")
+        # A window of the whole text holding page 1 whole and the start of page 2.
+        reach = len(self.texts[0]) + 1 + 40
+        for page, cited, expected in ((1, one, "answerable"), (2, two, "partial")):
+            session = self.server(case_tools.OPS, runtime)
+            window = self.plx_read(session, {"citation": file, "text_offset": 0,
+                                             "max_chars": reach})
+            self.assertEqual([p["page"] for p in window["pages"]], [1, 2])
+            self.assertEqual(session.unread(cited, "text"), expected == "partial")
+            answer = self.submit(session, cited, _figure(page))
+            self.assertEqual((answer["outcome"], state(answer)), ("answered", expected),
+                             json.dumps(answer)[:1500])
+        # The default read of the whole file, cut at max_chars, holds page 1 whole only.
+        session = self.server(case_tools.OPS, runtime)
+        default = self.plx_read(session, {"citation": file, "max_chars": reach})
+        self.assertTrue(default["content"]["truncated"])
+        self.assertEqual((session.unread(one, "text"), session.unread(two, "text")),
+                         (False, True))
+        # A window of page 2 that ends after its figure: still part of the page, but the
+        # claim's figure was served whole, so the claim reads in full.
+        session = self.server(case_tools.OPS, runtime)
+        tail = self.plx_read(session, {"citation": two,
+                                       "text_offset": len(self.texts[1]) - 200})
+        self.assertIn(str(_figure(2)), tail["content"]["untrusted_text"])
+        self.assertTrue(session.unread(two, "text"))
+        self.assertEqual(state(self.submit(session, two, _figure(2))), "answerable")
+
+    def test_a_find_hit_is_served_text_of_its_page_and_bounded(self):
+        # Each page prints its figure past 900 characters of words: a find of the figure
+        # serves only its snippet, on the page it is on, and a claim on that page's figure
+        # reads in full from it (``answer_gate._in_full``), as from a window.
+        runtime = self.runtime(3, pad=900, figure_last=True)
+        server = self.server(case_tools.OPS, runtime)
+        _, original = self.attach(server, runtime)
+        file, three = original["citation"], original["page_citations"][2]
+        found = self.plx_read(server, {"citation": file, "find": f"holds {_figure(3)}"})
+        (hit,) = found["matches"]["hits"]
+        whole = "\f".join(self.texts)
+        self.assertEqual(hit["text"]["untrusted_text"],
+                         whole[hit["offset"]:hit["offset"] + hit["chars"]])
+        self.assertEqual((hit["page"], hit["page_citation"], hit["text"]["origin"]["citation"]),
+                         (3, three, three))
+        self.assertEqual(hit["text"]["untrusted_text"],
+                         self.texts[2][hit["page_offset"]:hit["page_offset"] + hit["chars"]])
+        self.assertLess(hit["chars"], 200)
+        self.assertNotIn("content", found)
+        self.assertTrue(server.unread(three, "text"))
+        answer = self.submit(server, three, _figure(3))
+        self.assertEqual((answer["outcome"], answer["answerability"]["state"]),
+                         ("answered", "answerable"), json.dumps(answer)[:1500])
+        # Its offset reads on from it.
+        window = self.plx_read(self.server(case_tools.OPS, runtime), {
+            "citation": file, "text_offset": hit["offset"], "max_chars": 200})
+        self.assertTrue(window["content"]["untrusted_text"].startswith(
+            hit["text"]["untrusted_text"]))
+        # At most 50 hits, all of them counted, the list said cut.
+        many = self.plx_read(server, {"citation": file, "find": "MORE words"})
+        self.assertEqual(len(many["matches"]["hits"]), 50)
+        self.assertEqual(many["matches"]["total_hits"], whole.count("more words"))
+        self.assertGreater(many["matches"]["total_hits"], 50)
+        self.assertEqual((many["completeness"]["truncated"], many["completeness"]["reason"]),
+                         (True, "find_hits_cut"))
+        offsets = [h["offset"] for h in many["matches"]["hits"]]
+        self.assertEqual(offsets, sorted(offsets))
+        both = self.plx_read(server, {"citation": file, "find": "holds", "text_offset": 0})
+        self.assertEqual(both["error"]["code"], "invalid_input")
+        # A reader outside the audience gets the generic refusal: no hit, page or text.
+        outsider = self.plx_read(self.server(case_tools.OUTSIDER, runtime),
+                                 {"citation": file, "find": f"holds {_figure(3)}"})
+        self.assertEqual(outsider["status"], "unresolvable")
+        self.assertNotIn("matches", outsider)
+        self.assertNotIn("page=", json.dumps(outsider))
+        self.assertNotIn(str(_figure(3)), json.dumps(outsider))
+
+    def test_a_reader_outside_the_audience_gets_no_page_citation(self):
+        runtime = self.runtime()
+        _, original = self.attach(self.server(case_tools.OPS, runtime), runtime)
+        outsider = self.server(case_tools.OUTSIDER, runtime)
+        file, page_three = original["citation"], original["page_citations"][2]
+        for arguments in ({"citation": file, "page": 3}, {"citation": file},
+                          {"citation": file, "text_offset": 0}):
+            value = self.plx_read(outsider, arguments)
+            self.assertEqual(value["status"], "unresolvable")
+            self.assertEqual(value["citation"], file)
+            self.assertNotIn("pages", value)
+            self.assertNotIn("page=", json.dumps(value))
+        refused = self.submit(outsider, page_three, _figure(3))
+        self.assertNotEqual(refused["outcome"], "answered")
+
+
+class AgendaOnTheCaseHostTests(unittest.TestCase):
+    """plx.agenda end to end through the case host (``serving_tools`` -> ``CaseHostTools``
+    tool table) on the synthetic R&D store of operating/tests/test_rnd_process_maps.py:
+    units are granted by the runtime's live audience, Teams messages pass the runtime's
+    citation gate, pii by the host's marking grants."""
+
+    class Runtime:
+        """The case runtime surface the host reads: audiences, employee gate, item gate."""
+
+        def __init__(self, allowed):
+            self.allowed = allowed   # principal -> predicate over audience resources
+            allows = lambda actor, resource: any(  # noqa: E731
+                self.allowed.get(p, lambda r: False)(resource) for p in actor.principals)
+            self.mirror = mock.Mock(_audience=lambda: mock.Mock(allows=allows))
+            self.live = mock.Mock(audience=mock.Mock(allows=allows), bc=None, mail=None)
+            self.client_configured = False
+
+        def employee_gate(self, actor):
+            return actor
+
+        def resolve_citation(self, handle, actor):
+            if not any(self.allowed.get(p, lambda r: False)(handle) for p in actor.principals):
+                raise PermissionError(handle)
+            return {}
+
+    def test_plx_agenda_answers_through_the_case_host_for_each_reader(self):
+        from operating.meeting_agenda import TOOL_NAME
+        from operating.tests import test_rnd_process_maps as rnd
+        rnd.Fixture.build()
+        full, chat = next(iter(rnd.FULL.principals)), next(iter(rnd.CHAT_ONLY.principals))
+        meeting = f"teams:chat:{rnd.MEETING}"
+        runtime = self.Runtime({full: lambda r: True,
+                                chat: lambda r: r == meeting or (
+                                    r.startswith(rnd.chat_handle(rnd.MEETING))
+                                    and rnd.HIDDEN_MESSAGE not in r)})
+        arguments = {"agenda": "rnd_biweekly", "scope": rnd.SCOPE}
+
+        def agenda(actor):
+            host = serving_tools(runtime, actor, store_path=rnd.Fixture.path,
+                                 marking_grants={"pii": [full]})
+            self.addCleanup(host.close)
+            return host.call(TOOL_NAME, arguments, actor)
+        out = agenda(rnd.FULL)
+        self.assertEqual(out["since"]["basis"], "previous_agenda")
+        self.assertEqual({rnd._native(l) for l in out["open_projects"]},
+                         {"TASK-S1", "TASK-S2", "TASK-S4"})
+        self.assertEqual([rnd._native(l) for l in out["decisions_needed"]], ["apg_s4"])
+        self.assertIn(rnd.HIDDEN_MESSAGE, {rnd._native(l) for l in out["changes"]})
+        self.assertTrue(all(l["citations"] for l in out["changes"]))
+        self.assertTrue(any(l["owner"] for l in out["open_projects"]))
+        # The chat-only reader: its two admitted messages, nothing of MC or the QA chat.
+        narrow = agenda(rnd.CHAT_ONLY)
+        self.assertEqual({rnd._native(l) for l in narrow["changes"]}, {"m-after-1", "m-after-2"})
+        self.assertEqual(narrow["open_projects"] + narrow["decisions_needed"], [])
+        text = json.dumps(narrow)
+        for hidden in (rnd.HIDDEN_MESSAGE, "TASK-S", "q-1", "synth.example"):
+            self.assertNotIn(hidden, text)
 
 
 class MailPinGapTests(unittest.TestCase):
@@ -407,11 +751,12 @@ class MailUnitsOnTheCaseHostTests(unittest.TestCase):
         self.audience.write_text(json.dumps({"schema": AUDIENCE_SCHEMA, "tenant": "plx",
                                              "audiences": {}}), encoding="utf-8")
 
-    def server(self, actor, *, scope=None, host=CaptureCaseHostTools) -> MCPServer:
+    def server(self, actor, *, scope=None, host=CaptureCaseHostTools,
+               exclusion=None) -> MCPServer:
         runtime = CaseRuntime(self.root / "state", client=None, audience=self.audience,
                               tenant="plx", live=LiveReaders(audience=reader_audience()),
                               mail_scope=scope or MailScope.unrestricted(),
-                              people_exclusion=PeopleExclusion.from_env(ENV))
+                              people_exclusion=exclusion or PeopleExclusion.from_env(ENV))
         self.addCleanup(runtime.close)
         self.runtime = runtime
         options = {"mail_capture_dir": self.state} if host is CaptureCaseHostTools else {}
@@ -526,6 +871,21 @@ class MailUnitsOnTheCaseHostTests(unittest.TestCase):
         self.assertFalse(outside_scope.allows([UPN_A]))
         answer = self.documents(self.server(READER_A, scope=outside_scope))
         self.assertEqual(self.messages(answer), set())
+
+
+    def test_a_search_never_lists_mail_of_an_excluded_person_or_without_a_guard(self):
+        # The search decides each message on the capture's rows; the people exclusion
+        # (PLX_EXCLUDED_PEOPLE_OIDS) still holds there, and a guard that cannot decide
+        # serves no captured message.
+        self.assertEqual(self.messages(self.documents(self.server(READER_A))), {"MSG-1"})
+        excluded = PeopleExclusion.from_env({**ENV, "PLX_EXCLUDED_PEOPLE_OIDS": BOX_A})
+        answer = self.documents(self.server(READER_A, exclusion=excluded))
+        self.assertEqual(self.messages(answer), set())
+        self.assertNotIn("MSG-1", json.dumps(answer))
+        undecided = PeopleExclusion(unavailable="excluded_people_oids_absent")
+        self.assertEqual(self.messages(self.documents(self.server(READER_A,
+                                                                  exclusion=undecided))),
+                         set())
 
 
 class CapturedTextStatusLabelTests(unittest.TestCase):

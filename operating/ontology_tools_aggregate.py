@@ -1,17 +1,17 @@
-"""Generic ontology tools ``plx.aggregate`` and ``plx.compare``.
+"""Generic ontology tools ``plx.aggregate`` and ``plx.compare`` (10-DECISION 4, 07 C.8).
 
-Both tools read the L2 projection store through the base tools' ``StoreReader``/``ReadPolicy``
-(``operating/ontology_tools.py``) and the traverse tools' visibility rules and link walk
+Both tools read the L2 projection store through lane L8's ``StoreReader``/``ReadPolicy``
+(``operating/ontology_tools.py``) and lane L9's visibility rules and link walk
 (``operating/ontology_tools_traverse.py``), and answer exactly the frozen contracts in
 ``operating/ontology_tool_contracts.json``: every output is validated with
 ``ontology/json_contract.py`` and bounded by ``limits.max_result_bytes`` before it
 leaves. Nothing here names an object type, property, link type or case: types,
 properties, cardinalities and authority come from the compiled schema and the store.
 
-Permissions first. Set members, dimension objects and values are
+Permissions first (09-CRITIQUE R6 #7). Set members, dimension objects and values are
 trimmed to what the reader may read at ``as_known_at`` *before* anything is grouped,
-summed or compared: the traverse SQL rules (audience granted; every version and value from T
-on carries only held markings and passes the item gate) plus the base tools' visibility check. A
+summed or compared: the L9 SQL rules (audience granted; every version and value from T
+on carries only held markings and passes the item gate) plus L8's visibility check. A
 value that exists for a readable object but is withheld from this reader never
 contributes: it is counted in ``withheld`` and the affected answer is incomplete.
 
@@ -19,7 +19,7 @@ contributes: it is counted in ``withheld`` and the affected answer is incomplete
 
 * the measure is read on the set's own objects (its grain). ``group_by`` properties are
   read on the set's objects, or with ``path`` on the objects 1-2 declared hops away.
-  A hop may only go to-one (dbt MetricFlow's join rule): a to-many hop would
+  A hop may only go to-one (dbt MetricFlow's join rule, 07 C.8): a to-many hop would
   repeat a measure once per reached object and is refused (``fan_out``). An N:M hop is
   refused (``n_to_m_allocation``) unless it is a sum's one hop: a member reaching one
   record over it is grouped under it; a member reaching several is split only by a
@@ -85,7 +85,7 @@ contributes: it is counted in ``withheld`` and the affected answer is incomplete
   ``partial`` is true and the answer is not complete: a partial number is never shown as
   a complete total. More than 200 groups, or more than one response holds, is
   ``truncated``;
-* time: members, values and absence are as known at ``as_known_at`` from
+* time (10-DECISION 5): members, values and absence are as known at ``as_known_at`` from
   the versioned captures. A member first captured after T is not counted (a
   ``not_ingested`` gap ``captured_after_as_known_at`` says how many: nothing was known of
   it then, which is not evidence it did not exist); one with a version live at T is;
@@ -290,8 +290,8 @@ class _Gaps:
 class AggregateTools:
     """``plx.aggregate`` and ``plx.compare`` over one projection store.
 
-    ``base``: the host's base ``OntologyTools`` (store, policy, item gate, schema,
-    contracts, clock, set registry); ``walk``: the ``TraverseTools`` over the same
+    ``base``: the host's L8 ``OntologyTools`` (store, policy, item gate, schema,
+    contracts, clock, set registry); ``walk``: the L9 ``TraverseTools`` over the same
     base (built when not given), whose visibility SQL and link walk are reused so the
     tools apply one permission rule.
     """
@@ -304,7 +304,7 @@ class AggregateTools:
         self.limits = self.contracts["limits"]
 
     @property
-    def schema(self):  # noqa: ANN201 - base SchemaView or None
+    def schema(self):  # noqa: ANN201 - L8 SchemaView or None
         return self.base.schema
 
     # ------------------------------------------------------------------ entry
@@ -373,7 +373,7 @@ class AggregateTools:
         if self.schema is None:
             raise ToolError("schema_unavailable", "the compiled ontology schema is not loaded, "
                             "so properties cannot be checked",
-                            "install the schema loader and domain files")
+                            "install the schema loader (lane L4) and domain files")
         for object_type in sorted(set(types)):
             declared = self._declared(object_type)
             missing = sorted(n for n in names if n not in declared)
@@ -390,7 +390,7 @@ class AggregateTools:
         if self.schema is None:
             raise ToolError("schema_unavailable", "the compiled ontology schema is not loaded, "
                             "so properties cannot be checked",
-                            "install the schema loader and domain files")
+                            "install the schema loader (lane L4) and domain files")
         declared = {n for object_type in types for n in self._declared(object_type)}
         missing = sorted(n for n in names if n not in declared)
         if missing:
@@ -1226,7 +1226,9 @@ class AggregateTools:
             label = spec
         else:
             candidates = sorted({r[0] for r in self.store.conn.execute(
-                "SELECT DISTINCT object_id FROM object_values WHERE l1_handle = ?", (handle,))})
+                "SELECT DISTINCT object_id FROM object_values WHERE object_id IN (SELECT "
+                "object_id FROM object_versions WHERE l1_handle = ?) AND l1_handle = ?",
+                (handle, handle))})
             ids = sorted(self.walk._visible_ids(scope, candidates))
             if not ids:
                 # Same answer whether nothing was projected from it or it is hidden.

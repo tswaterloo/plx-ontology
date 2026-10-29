@@ -3,7 +3,7 @@
 ``evals/dev/ricardo-maps/proposed_items.json`` holds the questions on the three October 2
 process-map packages and five original-backed anchors, each naming its missing outcome;
 ``ontology_gaps.json`` names what the ontology lacks. The contract is the Asset Tracker
-cards' checker; the related source records are cited as the first, as in the procure-to-GL set.
+cards' checker; the related advisories are cited as the first, as in the procure-to-GL set.
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ class RicardoMapsCardsTest(unittest.TestCase):
             "exposure": lambda c, g: c["real_example"].update(exposure="held-out"),
             "unknown original": lambda c, g: first(c)["originals"].append("co-000000000000"),
             "keys": lambda c, g: first(c).update(result="1"),
-            "open question": lambda c, g: g["gaps"][0].pop("open_question"),
+            "Dot question": lambda c, g: g["gaps"][0].pop("dot_question"),
             "needed_by": lambda c, g: g["gaps"][0]["needed_by"].append("RM-99"),
         }
         for label, edit in cases.items():

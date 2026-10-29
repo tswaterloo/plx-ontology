@@ -3,7 +3,7 @@
 
 ``operating/portal_error_codes.json`` (format ``plx-portal-error-codes/v1``) lists every
 code literal in the Portal's product source under ``portal/src`` at the
-``plx-customer-portal`` commit of ``verify/upstream-pins.json`` ``repo_pins``. The owner
+``plx-customer-portal`` commit of ``devloop/upstream-pins.json`` ``repo_pins``. The owner
 door (``operating.goal2_exec_owner.door_code``) and the Portal adapter's refusal
 (``operating.action_adapters.owner_code``) keep a Portal error code only while it is in
 this list: the employee keeps the Portal's own reason (``ORDER_NOT_EDITABLE``,
@@ -60,7 +60,7 @@ FORMAT = "plx-portal-error-codes/v1"
 REPO = "plx-customer-portal"
 SOURCE_ROOT = "portal/src/"
 OUT_PATH = ROOT / "operating" / "portal_error_codes.json"
-PINS_PATH = ROOT / "verify" / "upstream-pins.json"
+PINS_PATH = ROOT / "devloop" / "upstream-pins.json"
 
 SOURCE = re.compile(r"\.(?:ts|tsx|js|jsx|mjs|cjs)$")
 CODE = re.compile(r"[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*")

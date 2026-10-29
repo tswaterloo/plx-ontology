@@ -3,7 +3,7 @@
 Interface ``plx-eval-oracle/v1`` (evals/item.schema.json ``oracle_result``):
 ``oracle(root, as_known_at) -> {"answerability", "values", "chain", "gaps"}``.
 ``make_oracle(family, sources)`` returns that callable for one family; ``ORACLES`` names
-each family's oracle. Families:
+each family's oracle. Families (09-CRITIQUE R7):
 
 * F1 chain: the records linked to the root across Portal gold, FM, Sage and BC, walked
   over the declared keys in ``keys.EDGES`` (one walker, no per-kind branch);
@@ -611,13 +611,13 @@ def f3_quantities(ctx: Context, root: Mapping[str, Any]) -> dict[str, Any]:
     unlined_gaps(ctx, shipments, shipment_lines, unlined,
                  "shipped" if len(shipped_groups) <= 1 else None)
     # One state per value: shipped headers none of which has lines are the shipped value's
-    # only gap (absent_in_source), never also "no shipment rows".
+    # only gap (absent_in_source), never also "no shipment rows" (directive c1ff4b736a47).
     shipped = _quantity_values(ctx, "shipped", "shipped", "ShipmentLine", "quantity",
                                shipped_groups, None if shipments else "not_ingested",
                                "no_shipment_rows")
     if unlined and shipment_lines:
         # Some shipped headers have lines, others none: the lined sum is a lower bound,
-        # never the shipped quantity (finding oracle-f3-partial-shipment-lines).
+        # never the shipped quantity (Dot finding oracle-f3-partial-shipment-lines).
         for value in shipped:
             value["value"] = None
     values += shipped
@@ -1039,7 +1039,7 @@ def _result(ctx: Context, answerability: str | None, values: list[dict[str, Any]
             chain: list[dict[str, Any]], *, keep: Sequence[str] = ()) -> dict[str, Any]:
     """The ``oracle_result``. Values and chain over the item caps are never cut silently:
     the summary values named in ``keep`` (computed over everything) always stay, the rest
-    is cut in order and a gap makes the answer partial (finding
+    is cut in order and a gap makes the answer partial (Dot finding
     oracle-f4-silent-value-truncation)."""
     if len(values) > MAX_VALUES:
         pinned = [v for v in values if v.get("name") in keep]
@@ -1078,7 +1078,7 @@ ORACLES: dict[str, Oracle] = {o.family: o for o in (
     Oracle("F2", "f2_customer_po_status", f2_customer_po_status),
     Oracle("F3", "f3_quantities", f3_quantities),
     Oracle("F4", "f4_three_way_match", f4_three_way_match),
-    # Held-out only (two question families with no plan).
+    # Held-out only (10-DECISION 8: two question families with no plan).
     Oracle("F5", "f5_unmatched_invoices", f5_unmatched_invoices),
     Oracle("F6", "f6_shipped_short", f6_shipped_short),
 )}

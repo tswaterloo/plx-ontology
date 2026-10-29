@@ -5,7 +5,7 @@
         [--per-type N] [--scan N] [--workers N] [--bc-capture] [--live-audience FILE] \\
         [--previous-report DAILY.json] [--session-projection SESSION_DIR]
 
-GET only. The projection probe (``scripts.ontology_projection_probe --build-only``: one build, no
+GET only. The L7 probe (``scripts.ontology_projection_probe --build-only``: one build, no
 rebuild and no claim checks; a failed build prints its ``code``, ``phase``, ``store`` and
 ``disk``, and a refused build its ``need_bytes`` and ``free_bytes``: ``build_failure``;
 the build's ``disk.peak`` is passed on) builds the throwaway mirror and projection store
@@ -214,19 +214,19 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     parser.add_argument("--db", required=True, help="throwaway mirror file")
     parser.add_argument("--store", required=True, help="throwaway ontology store file")
     parser.add_argument("--budget-seconds", type=float, default=None,
-                        help="the projection build's budget")
+                        help="the L7 build's budget")
     parser.add_argument("--deps-budget-seconds", type=float, default=None)
     parser.add_argument("--per-type", type=int, default=20,
                         help="open roots answered per graph stage with prerequisites")
     parser.add_argument("--scan", type=int, default=200,
                         help="roots read per graph stage to find the open ones")
     parser.add_argument("--previous-report", default=None,
-                        help="last daily verifier report, passed to the projection build")
+                        help="last daily verifier report, passed to the L7 build")
     parser.add_argument("--workers", type=int, default=None)
     parser.add_argument("--bc-capture", action="store_true")
     parser.add_argument("--live-audience", default=None)
     parser.add_argument("--session-projection", default=None,
-                        help="the verifier session's projection (the projection probe's)")
+                        help="the verifier session's projection (the L7 probe's)")
     args = parser.parse_args(argv)
     phase = None   # the consumer's own phase, once the build succeeded
     try:

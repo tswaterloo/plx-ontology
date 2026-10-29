@@ -76,7 +76,7 @@
     "id": "oracle:f3_quantities@9202af6ce925",
     "interface": "plx-eval-oracle/v1",
     "derived_from": [
-      "docs/reference/portal-code-map.md#3.2 app_sales_order.customer_id -> app_customer.id"
+      "devloop/CONTEXT/03-PORTAL.md#3.2 app_sales_order.customer_id -> app_customer.id"
     ],
     "computed_at": "2099-01-02T03:05:00Z",
     "query_digest": "a8b771920b8319e47251d1360f5e880bc18e8d329b0f0d003ea3c7e615558947"

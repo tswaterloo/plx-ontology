@@ -1,7 +1,7 @@
 {
  "format": "plx-case-ontology-gaps/v1",
  "case": "expired-disposition",
- "status": "What the ontology lacks to answer evals/dev/expired-disposition/proposed_items.json: one entry per gap of the Expired-Material Disposition Map (map_gap_index 1-10, in the map's order) plus the disposal, replacement and waiver-verification links its stages name. map_says is the map's claim, attributed to the QC owner's walkthrough of 16 Oct 2026; implementation, where present, is a claim about deployed Portal or BC behaviour that nobody here verified (the map's review notes: portal code not verified). Each gap names its system of record, or says 'source unknown' with the question for QC. Sources are named, never read here; OntologyProject refs are at the base c11ad1ed5732, the map's at c8fcb26d00c8.",
+ "status": "What the ontology lacks to answer evals/dev/expired-disposition/proposed_items.json: one entry per gap of the Expired-Material Disposition Map (map_gap_index 1-10, in the map's order) plus the disposal, replacement and waiver-verification links its stages name. map_says is the map's claim, attributed to the QC owner's walkthrough of 16 Oct 2026; implementation, where present, is a claim about deployed Portal or BC behaviour that nobody here verified (the map's review notes: portal code not verified). Each gap names its system of record, or says 'source unknown' with the question for QC. Sources are named, never read here; OntologyProject refs are at the base c11ad1ed5732, the map's record at codex/advisory c8fcb26d00c8.",
  "advisory": "advisory:28a8482d8ba0",
  "gaps": [
   {
@@ -31,7 +31,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "QC: where is a waiver's or approval's batch or customer restriction recorded today besides the signed PDF (a hand-marked label, the QC log), and who checks it when a batch is picked?"
+   "dot_question": "QC: where is a waiver's or approval's batch or customer restriction recorded today besides the signed PDF (a hand-marked label, the QC log), and who checks it when a batch is picked?"
   },
   {
    "id": "EMD-GAP-02",
@@ -54,13 +54,13 @@
      "ref": "OntologyProject:ontology/source_registry.json@c11ad1ed5732:1369"
     },
     {
-     "system": "source-record",
-     "relation": "the map's source record (the claim, not a reader)",
+     "system": "dot",
+     "relation": "the map's advisory record (the claim, not a reader)",
      "ref": "OntologyProject:context/28a8482d8ba0dec0ecf02871caab3fdfba9ac1aa5b02f3e288ec40a4fdbf64d1.json@c8fcb26d00c8"
     }
    ],
    "source": "source unknown",
-   "open_question": "QC: is there any record today that lists the open expired-lot cases and their routes (a QC spreadsheet log, a SharePoint folder of Form 063s), and where is it kept?"
+   "dot_question": "QC: is there any record today that lists the open expired-lot cases and their routes (a QC spreadsheet log, a SharePoint folder of Form 063s), and where is it kept?"
   },
   {
    "id": "EMD-GAP-03",
@@ -83,13 +83,13 @@
      "ref": "OntologyProject:integrations/live_source_grammar.py@c11ad1ed5732:558-560"
     },
     {
-     "system": "source-record",
-     "relation": "the map's source record (the claim, not a reader)",
+     "system": "dot",
+     "relation": "the map's advisory record (the claim, not a reader)",
      "ref": "OntologyProject:context/28a8482d8ba0dec0ecf02871caab3fdfba9ac1aa5b02f3e288ec40a4fdbf64d1.json@c8fcb26d00c8"
     }
    ],
    "source": "source unknown",
-   "open_question": "QC: when a waiver releases an expired lot to one batch, how is its consumption posted today (a temporary new date, a manual override, no BC posting), and who decides?"
+   "dot_question": "QC: when a waiver releases an expired lot to one batch, how is its consumption posted today (a temporary new date, a manual override, no BC posting), and who decides?"
   },
   {
    "id": "EMD-GAP-04",
@@ -129,13 +129,13 @@
    ],
    "sources": [
     {
-     "system": "source-record",
-     "relation": "the map's source record (the claim, not a reader)",
+     "system": "dot",
+     "relation": "the map's advisory record (the claim, not a reader)",
      "ref": "OntologyProject:context/28a8482d8ba0dec0ecf02871caab3fdfba9ac1aa5b02f3e288ec40a4fdbf64d1.json@c8fcb26d00c8"
     }
    ],
    "source": "source unknown",
-   "open_question": "QC: where are raw-material container labels printed from today (a template, FileMaker, the Portal), and is a copy of each reprint kept anywhere besides Form 063?"
+   "dot_question": "QC: where are raw-material container labels printed from today (a template, FileMaker, the Portal), and is a copy of each reprint kept anywhere besides Form 063?"
   },
   {
    "id": "EMD-GAP-06",
@@ -159,7 +159,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "QC: where are completed Form 063 records and FT-IR printouts filed (a SharePoint library, a shared drive, paper only), and may the Workbench read that location?"
+   "dot_question": "QC: where are completed Form 063 records and FT-IR printouts filed (a SharePoint library, a shared drive, paper only), and may the Workbench read that location?"
   },
   {
    "id": "EMD-GAP-07",
@@ -204,7 +204,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "QC: is a lot's earlier extension recorded anywhere today (the QC log, Form 063 history, the receipt comment), and is the date type on supplier documents (expiry, best-use, retest) noted anywhere?"
+   "dot_question": "QC: is a lot's earlier extension recorded anywhere today (the QC log, Form 063 history, the receipt comment), and is the date type on supplier documents (expiry, best-use, retest) noted anywhere?"
   },
   {
    "id": "EMD-GAP-09",
@@ -296,7 +296,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "QC: when an expired lot is rejected, where is the write-off or return recorded today (a WMS transaction, FileMaker, a disposal form), and is the reason kept?"
+   "dot_question": "QC: when an expired lot is rejected, where is the write-off or return recorded today (a WMS transaction, FileMaker, a disposal form), and is the reason kept?"
   },
   {
    "id": "EMD-GAP-12",
@@ -336,8 +336,8 @@
      "ref": "OntologyProject:scripts/case_originals.py@c11ad1ed5732:1881-1943"
     },
     {
-     "system": "source-record",
-     "relation": "the map's source record (the claim, not a reader)",
+     "system": "dot",
+     "relation": "the map's advisory record (the claim, not a reader)",
      "ref": "OntologyProject:context/28a8482d8ba0dec0ecf02871caab3fdfba9ac1aa5b02f3e288ec40a4fdbf64d1.json@c8fcb26d00c8"
     }
    ],

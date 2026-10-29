@@ -1,4 +1,4 @@
-"""Structured answer claims: the planner states
+"""Structured answer claims (ROADMAP B1 ``structured-answer-claims``): the planner states
 each value as a claim (value, citation handle, field, its id) and writes short prose naming
 claims ``{id}``; ``operating.answer_gate`` checks each claim by reference against what the
 session's tools returned, never by reading the prose; code renders the answer's text from

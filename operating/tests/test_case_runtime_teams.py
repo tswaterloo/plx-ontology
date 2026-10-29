@@ -327,7 +327,8 @@ class TeamsCitationTests(tct.CaptureCase):
         with sqlite3.connect(self.store.path) as conn:
             old = {path.rpartition("/")[2]: rest for path, *rest in conn.execute(
                 "SELECT path, capture_id, payload, missing_from_source_since FROM versions "
-                "WHERE kind = ? AND superseded_at IS NULL", (kind,))}
+                "WHERE kind = ? AND superseded_at IS NULL AND path NOT LIKE '%/conversation'",
+                (kind,))}
         self.assertEqual({m: (json.loads(payload)["meta"]["source_acl"], missing is not None)
                           for m, (_, payload, missing) in old.items()},
                          {"3001": (legacy, False), "3002": (legacy, True)})
@@ -354,6 +355,71 @@ class TeamsCitationTests(tct.CaptureCase):
         self.assertTrue(self.claim(tct.COS_ONLY, quote, handles["3002"])["passed"])
         self.assertTrue(self.claim(tct.COS_ONLY, "PO12172025 is 4,200 USD", now)["passed"])
 
+    def test_conversations_are_objects_gated_per_unit_with_their_participants(self):
+        """TeamsChat, TeamsChannel and Team project from the conversation records, with
+        name, times and participants (Entra object ids, display names); each reader sees a
+        conversation and its participants only as it sees its messages, a message links to
+        its conversation, and a participant excluded after the capture withholds the
+        conversation whole (the case runtime's people exclusion on every read)."""
+        seen: dict = {}
+        for actor in (tct.MEMBER, tct.COS_ONLY, tct.VINCE_ONLY, tct.OUTSIDER, WITHHELD):
+            host = self.host(actor)
+            seen[actor] = {}
+            for kind, key in (("TeamsChat", "chat_id"), ("TeamsChannel", "channel_id"),
+                              ("Team", "team_id")):
+                out = host.call("plx.find", {"object_type": kind, "limit": 50, "filters": [
+                    {"property": key, "op": "present"}]}, actor)
+                seen[actor][kind] = [host.call("plx.object", {"object_id": c["object"][
+                    "object_id"]}, actor) for c in out["candidates"]]
+                if not seen[actor][kind]:
+                    text = json.dumps(out)
+                    for needle in ("teams-chat://", "teams-channel://", tct.U_OTHER,
+                                   "R&D Bi-weekly", "QA hand-offs"):
+                        self.assertNotIn(needle, text, (actor, kind))
+        counts = {a: {k: len(v) for k, v in kinds.items()} for a, kinds in seen.items()}
+        self.assertEqual(counts, {
+            tct.MEMBER: {"TeamsChat": 1, "TeamsChannel": 2, "Team": 1},
+            tct.COS_ONLY: {"TeamsChat": 1, "TeamsChannel": 1, "Team": 1},
+            tct.VINCE_ONLY: {"TeamsChat": 0, "TeamsChannel": 2, "Team": 1},
+            tct.OUTSIDER: {"TeamsChat": 0, "TeamsChannel": 0, "Team": 0},
+            WITHHELD: {"TeamsChat": 0, "TeamsChannel": 0, "Team": 0}})
+
+        def values(found):
+            return {v["property"]: (v["value"]["untrusted_text"] if isinstance(v["value"], dict)
+                                    else v["value"]) for v in found["values"]}
+        chat = values(seen[tct.COS_ONLY]["TeamsChat"][0])
+        self.assertEqual((chat["topic"], chat["chat_type"]), ("R&D Bi-weekly Meeting", "oneOnOne"))
+        self.assertEqual([p["id"] for p in json.loads(chat["participants"])],
+                         sorted([tct.U_COS, tct.U_OTHER]))
+        self.assertIsNotNone(chat["last_activity_at"])
+        private = next(values(c) for c in seen[tct.MEMBER]["TeamsChannel"]
+                       if values(c)["membership_type"] == "private")
+        self.assertEqual((private["display_name"], [p["id"] for p in json.loads(
+            private["participants"])]), ("QA hand-offs", [tct.U_VINCE]))
+        self.assertEqual(values(seen[tct.MEMBER]["Team"][0])["display_name"], "Operations")
+        # A chat message links to its chat; a channel message to its channel, it to its team.
+        message = self.host(tct.COS_ONLY).call("plx.find", CHAT_FIND, tct.COS_ONLY)
+        around = self.host(tct.COS_ONLY).call("plx.around", {
+            "from": message["candidates"][0]["object"]["object_id"],
+            "path": [{"link_type": "TeamsChatMessage.in_chat", "direction": "forward"}]},
+            tct.COS_ONLY)
+        self.assertEqual([o["object_type"] for o in around["objects"]], ["TeamsChat"], around)
+        handle = seen[tct.COS_ONLY]["TeamsChat"][0]["values"][0]["citation"]["l1_handle"]
+        self.assertIn("/conversation@", handle)
+        channel = seen[tct.MEMBER]["TeamsChannel"][0]["values"][0]["citation"]["l1_handle"]
+        self.assertTrue(self.gate(tct.COS_ONLY, handle))
+        # The chat's other participant is excluded after the capture: the chat object and its
+        # participants are withheld from every reader, as its messages are.
+        for excluded, cited in ((tct.U_OTHER, handle), (tct.U_VINCE, channel)):
+            guarded = CaseRuntime(self.tmp.name, client=None,
+                                  audience=AudienceMap({}, tenant="plx"), tenant="plx",
+                                  live=LiveReaders(self.audience),
+                                  people_exclusion=PeopleExclusion([excluded]))
+            self.addCleanup(guarded.close)
+            self.assertIsNone(oi.citation_rows(guarded)(cited, tct.MEMBER), excluded)
+            with self.assertRaises(Exception):
+                guarded.resolve_citation(cited, tct.MEMBER)
+
     def test_a_chat_without_a_captured_membership_is_not_projected_or_resolved(self):
         handle = self.visible(tct.COS_ONLY, tct.CHAT)[0]["citation"]
         with sqlite3.connect(self.store.path) as conn:
@@ -362,9 +428,10 @@ class TeamsCitationTests(tct.CaptureCase):
         with sqlite3.connect(path) as conn:
             types = dict(conn.execute("SELECT object_type, COUNT(*) FROM objects "
                                       "WHERE object_type LIKE 'Teams%' GROUP BY object_type"))
-        self.assertEqual(types, {"TeamsChannelMessage": 5})
-        self.assertIn({"code": "source_not_captured", "where": "gen.teams.chat_messages",
-                       "count": 1, "samples": []}, report["gaps"])
+        self.assertEqual(types, {"TeamsChannelMessage": 5, "TeamsChannel": 2})
+        for binding in ("gen.teams.chat_messages", "teams.chats"):
+            self.assertIn({"code": "source_not_captured", "where": binding,
+                           "count": 1, "samples": []}, report["gaps"])
         self.assertEqual(self.host(tct.COS_ONLY).call("plx.find", CHAT_FIND,
                                                       tct.COS_ONLY)["candidates"], [])
         self.assertFalse(self.gate(tct.COS_ONLY, handle))

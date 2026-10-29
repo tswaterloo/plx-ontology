@@ -8,11 +8,12 @@ refuses, naming the setting (``{"error": "state_dir_unset", "setting":
 
     python3 -m operating.host run    --state-dir DIR --config HOST.json
     python3 -m operating.host status --state-dir DIR
-    python3 -m operating.host serve  --state-dir DIR --config HOST.json [--interval-seconds N]
+    python3 -m operating.host serve  --state-dir DIR --config HOST.json \\
+        [--interval-seconds N] [--no-console] [--stop-file PATH]
     python3 -m operating.host check  --state-dir DIR --config HOST.json [--cycles N] \\
         [--interrupt-after-seconds S]
     python3 -m operating.host mcp    --state-dir DIR --config HOST.json \\
-        --session-ticket-env VAR [--eval-principal]
+        --session-ticket-env VAR [--eval-principal] [--agent ID]
     python3 -m operating.host mcp-http --state-dir DIR --config HOST.json \\
         --entra-resource ENTRA.json [--port N]
 
@@ -76,6 +77,43 @@ parts the latest read was refused or not answered on (``source_blocked``,
 ``blocked_parts``: a mail capture whose every bound mailbox Graph refused, a Teams part
 refused, a source that did not answer), which the case opener reads. Output is
 counts, states, reasons and times only: never a key, value, address or citation.
+
+Ingest mode (decision 2026-10-21-ingest-one-writer): with ``"ingest": {"mode":
+"capture_clis"}`` in the config a cycle reads its sources through every source's own
+capture CLI, as child processes (``operating.ingest_forever``: the source sections are
+that module's table, ``portal``, ``bc``, ``mail``, ``sharepoint``, ``sharepoint_lists``,
+``teams``, ``mc``), into the same stores the readers above write, through the same
+capture classes (the SharePoint walk position and change feed, the Teams owner's content
+confirmation gate). It is the same cycle: one scheduler (``serve``), one config schema,
+one lock, ledger and projection, one ``check``. Before any capture runs the people-
+exclusion list must load, else every configured source is blocked on it.
+``serve`` in ingest mode refuses a state directory the machine throws away (under the
+system temporary directory, ``/tmp``, ``/dev/shm``, ``/run``: ``state_dir_ephemeral``).
+A cycle (``run``, ``check``) runs its capture children concurrently
+(``ingest.max_parallel``); ``serve`` in ingest mode is the continuous mode
+(``Host.ingest_continuous``): it holds the cycle lock for its whole run, re-runs each
+source ``min_interval_seconds`` (default 120) after it finished, and each time sources
+finish records them as one ledger cycle (``continuous`` true) and builds the next
+projection generation at once (readers keep the previous one until it is published). It
+stops when ``--stop-file`` (default ``<DIR>/host/ingest.stop``) exists, when the state
+directory's file system has less than 4 GiB free (no build then) or on SIGTERM; the
+running children are stopped and each capture resumes from its own cursor next time.
+
+One writer per state directory: every cycle holds ``<DIR>/host/cycle.lock`` and is one
+ledger row with its ``runner`` (``host``, ``ingest``). ``run`` refuses while another
+cycle holds it (``host_cycle_running``); ``serve`` reports that cycle as ``waiting`` and
+tries again at its next interval. The lock holder first stops any capture child a killed
+host left running (``host/cycle-children.json``: pid, process group and start token; the
+group is killed only when the token still matches) and refuses when it cannot
+(``orphan_capture_running``, ``cycle_children_unreadable``); ``run``, ``check`` and
+``serve --no-console`` turn SIGTERM into an exit that stops the running child first.
+``check`` reports ``checks.cycles_overlapping``: ledger cycles that started before an
+earlier one finished (0 under the one lock). In ingest mode ``check`` adds the capture
+resume counters (``resume_checked``, ``completed_not_resumed``, ``requests_grew``,
+``full_reread_sources``, ...), ``duplicate_items`` per projected source
+(``duplicates``), ``leaked`` and ``state_persistent``, and is blocked
+(``no_completed_source_to_resume``) when no completed cursor source was there to check;
+``mail_folders_restarted`` and ``sharepoint_roots_restarted`` are not measured (None).
 
 ``check`` (the ``host.cycles`` live check) runs ``--cycles`` cycles, each by a new host
 over the same state directory (a restart between cycles), then reports what the cycles
@@ -155,6 +193,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -176,13 +215,36 @@ WITHHELD_PRINCIPAL = "staff:host-check-withheld"
 _LOWER_WORD = re.compile(r"[a-z_]+")
 _UPSTREAM = {"portal": "portal-workbench-api", "bc": "business-central",
              "mail": "microsoft-graph", "sharepoint": "microsoft-graph",
-             "teams": "microsoft-graph"}
+             "teams": "microsoft-graph", "sharepoint_lists": "microsoft-graph",
+             "mc": "mission-control-mcp"}
 # The projection source (an ontology binding's ``source``) each host source captures.
 PROJECTED_SOURCE = {"portal": "portal_api", "bc": "bc", "mail": "graph_mail",
                     "sharepoint": "sharepoint", "teams": "teams"}
 SOURCES = ("portal", "bc", "mail", "sharepoint", "teams")
 _TEAMS_COUNTS = ("pages", "messages_read", "replies_read", "versions_new", "unchanged")
 HOST_DIR, LEDGER_FILE, LOCK_FILE = "host", "host.sqlite", "cycle.lock"
+# The capture child processes of the running cycle (``CycleChildren``): the next holder of
+# the cycle lock stops any a killed runner left behind before its own cycle reads anything.
+CHILDREN_FILE, CHILDREN_SCHEMA = "cycle-children.json", "plx-host-cycle-children/v1"
+ORPHAN_STOP_SECONDS = 10.0
+HOST_RUNNER, INGEST_RUNNER = "host", "ingest"   # the ledger cycle's ``runner``
+CONTINUOUS_SCHEMA = "plx-host-ingest-continuous/v1"
+STOP_FILE = "ingest.stop"   # <DIR>/host/ingest.stop: the continuous ingest mode stops
+MIN_FREE_BYTES = 4 * 1024 ** 3   # ... and when its file system has less free than this
+# A projection build needs room for what it writes beside the generation served: the
+# estimate ``ontology.project_incremental.space_need`` makes from the last build's measured
+# sizes (an incremental build: its seed, none where the file system clones it, plus the
+# changed units' share; a cold one: the last measured store and working file) plus this
+# margin. Once the changed units are known the build takes the mode it prefers (cold when
+# most units changed or that needs less), else the other mode where that fits; only when
+# neither fits is it skipped (``disk_low``) and the previous generation stays served.
+# Checked before the build (the least any mode writes), once the changed units are known
+# (``disk.estimate``: the mode checked, ``estimates``: both) and while it runs (free space
+# below the margin stops it, its files removed).
+BUILD_DISK_MARGIN_BYTES = 1024 ** 3
+# How long the host's checkpoint between refreshes waits for each store's other
+# connections (a capture child's write, a short reader) before it reports ``busy``.
+CHECKPOINT_WAIT_MS = 2000
 PROJECTION_DIR, PROJECTION_FILE = "projection", "ontology.sqlite"
 BC_DIR, BC_FILE = "bc-capture", "capture.sqlite"
 KEY_ENV, URL_ENV = "PLX_WORKBENCH_API_KEY", "PLX_WORKBENCH_API_URL"
@@ -210,7 +272,7 @@ RUN_CHILD = (sys.executable, "-I", "-c", "import runpy, sys; sys.path.insert(0, 
 _CONFIG_KEYS = {"schema", "note", "tenant", "capture_principal", "capture_audience",
                 "live_audience", "mirror_audience", "employee_policy", "portal_access",
                 "entra_directory", "interval_seconds", "agent", "action_path",
-                "knowledge_namespaces", "case_coworker", "marking_grants", *SOURCES}
+                "knowledge_namespaces", "case_coworker", "marking_grants", "ingest"}
 _COWORKER_KEYS = {"group", "principal", "member_of"}
 _SOURCE_KEYS = {"portal": {"base_url", "relations", "budget_seconds"},
                 "bc": {"entity_sets", "budget_seconds", "books"},
@@ -264,11 +326,28 @@ def _age(now: datetime, stamp: str | None) -> int | None:
 
 class HostConfig:
     """``plx-host-config/v1``: which sources the host reads and with which audiences.
-    Relative paths resolve against the config file's directory."""
+    Relative paths resolve against the config file's directory. With ``ingest`` (ingest
+    mode) the source sections are ``capture_sources``' (default
+    ``operating.ingest_forever.SOURCES``; tests inject fake capture CLIs), each checked
+    against its CLI's fields."""
 
-    def __init__(self, document: Mapping[str, Any], base: Path) -> None:
-        if not isinstance(document, Mapping) or document.get("schema") != CONFIG_SCHEMA \
-                or set(document) - _CONFIG_KEYS:
+    def __init__(self, document: Mapping[str, Any], base: Path, *,
+                 capture_sources: Mapping[str, Any] | None = None) -> None:
+        from . import ingest_forever
+
+        if not isinstance(document, Mapping) or document.get("schema") != CONFIG_SCHEMA:
+            raise HostError("host_config_invalid")
+        self.ingest = None
+        self.capture_sources: Mapping[str, Any] = {}
+        if "ingest" in document:
+            try:
+                self.ingest = ingest_forever.ingest_settings(document["ingest"])
+            except ingest_forever.IngestError:
+                raise HostError("host_config_invalid:ingest") from None
+            self.capture_sources = (ingest_forever.SOURCES if capture_sources is None
+                                    else capture_sources)
+        names = tuple(self.capture_sources) if self.ingest is not None else SOURCES
+        if set(document) - _CONFIG_KEYS - set(names):
             raise HostError("host_config_invalid")
         self.tenant = document.get("tenant", "plx")
         self.principal = document.get("capture_principal", DEFAULT_PRINCIPAL)
@@ -321,6 +400,9 @@ class HostConfig:
             if not isinstance(self.agent, str) or self.agent not in load_agents().agents:
                 raise HostError("host_config_invalid:agent")
         self.sources: dict[str, dict[str, Any]] = {}
+        if self.ingest is not None:
+            self._ingest_sections(document, base)
+            return
         for name in SOURCES:
             entry = document.get(name)
             if entry is None:
@@ -345,6 +427,31 @@ class HostConfig:
             raise HostError("host_config_invalid:portal.relations")
         if {"bc", "mail", "sharepoint", "teams"} & set(self.sources) \
                 and self.capture_audience is None:
+            raise HostError("host_config_invalid:capture_audience")
+
+    def _ingest_sections(self, document: Mapping[str, Any], base: Path) -> None:
+        """Ingest mode's source sections, each one its capture CLI's
+        (``ingest_forever.section_options``): the host's audiences, tenant and principal
+        fill the fields a section leaves out. The capture audience is required as soon as
+        a configured CLI reads with a live audience (the check's trim and census read with
+        it)."""
+        from . import ingest_forever
+
+        defaults = {"live_audience": self.capture_audience,
+                    "audience": self.mirror_audience, "tenant": self.tenant,
+                    "principal": self.principal}
+        for name, spec in self.capture_sources.items():
+            if name not in document:
+                continue
+            try:
+                self.sources[name] = ingest_forever.section_options(
+                    spec, document[name], base, defaults)
+            except ingest_forever.IngestError:
+                raise HostError(f"host_config_invalid:{name}") from None
+        if not self.sources:
+            raise HostError("host_config_invalid:ingest")
+        if self.capture_audience is None and any(
+                "live_audience" in self.capture_sources[name].fields for name in self.sources):
             raise HostError("host_config_invalid:capture_audience")
 
     def _case_coworker(self, value: Any) -> dict[str, Any] | None:
@@ -382,13 +489,14 @@ class HostConfig:
         return narrowed
 
     @classmethod
-    def from_file(cls, path: str | Path) -> "HostConfig":
+    def from_file(cls, path: str | Path, *,
+                  capture_sources: Mapping[str, Any] | None = None) -> "HostConfig":
         path = Path(path).resolve()
         try:
             document = json.loads(path.read_text("utf-8"))
         except (OSError, ValueError):
             raise HostError("host_config_unreadable") from None
-        return cls(document, path.parent)
+        return cls(document, path.parent, capture_sources=capture_sources)
 
 
 def workbench_key(environ: Mapping[str, str]) -> str | None:
@@ -410,8 +518,17 @@ def projection_path(state_dir: Path) -> Path:
     return state_dir / PROJECTION_DIR / PROJECTION_FILE
 
 
-def build_projection(state_dir: Path, sources: Mapping[str, Any], *, tenant: str = "plx"
-                     ) -> dict[str, Any]:
+class DiskLow(Exception):
+    """The disk guard stopped a projection build (``disk``: free, needed, estimate)."""
+
+    def __init__(self, disk: Mapping[str, Any]) -> None:
+        super().__init__("disk_low")
+        self.disk = dict(disk)
+
+
+def build_projection(state_dir: Path, sources: Mapping[str, Any], *, tenant: str = "plx",
+                     space: Callable[[Mapping[str, Any]], None] | None = None,
+                     checkpoint: Callable[[], None] | None = None) -> dict[str, Any]:
     """The host's one call into the projection build: the next generation by
     ``ontology.project_incremental.build_generation`` in ``<DIR>/projection`` (only the
     units whose captures changed are projected again; the rest are reused from the
@@ -429,11 +546,13 @@ def build_projection(state_dir: Path, sources: Mapping[str, Any], *, tenant: str
 
     path = projection_path(state_dir)
     generation = build_generation(path.parent, load_schema(), sources,
-                                  post_project=build_steps.post_project(state_dir, tenant))
+                                  post_project=build_steps.post_project(state_dir, tenant),
+                                  space=space, checkpoint=checkpoint)
     _publish(generation.store, path)
     return {**generation.report, "build": {
         "mode": generation.mode, "units": generation.units,
         "units_rebuilt": generation.units_rebuilt, "seconds": generation.seconds,
+        "seed": generation.seed, "need": generation.need,
         "steps": {name: dict(step.get("counts") or {}) for name, step in
                   (generation.report.get("post_project") or {}).items()}}}
 
@@ -492,16 +611,199 @@ def state_captures(state_dir: Path, stack: ExitStack, *,
     the host serves its live or persisted mirror, the unfamiliar-sample eval syncs its
     own. SharePoint is held when its drive or its list-item capture store is
     (``ontology.project.SharePointCaptures.stores``)."""
-    from ontology import project
-
-    def held(source: str, path: Path) -> bool:
-        if source == "sharepoint":
-            return any(p.is_file() for p in project.SharePointCaptures.stores(state_dir))
-        return path.is_file()
-
     return {source: stack.enter_context(open_state_capture(
                 state_dir, source, internal_domains=internal_domains))
-            for source, path in state_capture_paths(state_dir).items() if held(source, path)}
+            for source in state_capture_paths(state_dir) if capture_held(state_dir, source)}
+
+
+def capture_held(state_dir: str | Path, source: str) -> bool:
+    """The state directory holds ``source``'s capture store (``state_capture_paths``;
+    SharePoint: its drive or its list-item store)."""
+    from ontology import project
+
+    if source == "sharepoint":
+        return any(p.is_file() for p in project.SharePointCaptures.stores(Path(state_dir)))
+    path = state_capture_paths(state_dir).get(source)
+    return path is not None and path.is_file()
+
+
+# ------------------------------------------------------------------ the cycle's children
+
+_PROC = Path("/proc")
+
+
+def _proc_stat(pid: int) -> list[str] | None:
+    """``/proc/<pid>/stat`` from its state field on (Linux); None when there is none."""
+    try:
+        text = (_PROC / str(pid) / "stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    return text[text.rindex(")") + 2:].split()
+
+
+def process_token(pid: int) -> str | None:
+    """When process ``pid`` started, as a token two different processes never share (the
+    boot id and the start tick on Linux, ``ps``'s start time elsewhere); None when no
+    running process has that pid (a zombie is not running)."""
+    if (_PROC / "self" / "stat").is_file():
+        fields = _proc_stat(pid)
+        if fields is None or fields[0] in ("Z", "X"):
+            return None
+        try:
+            boot = (_PROC / "sys" / "kernel" / "random" / "boot_id").read_text().strip()
+        except OSError:
+            boot = ""
+        return f"{boot}:{fields[19]}"
+    try:
+        found = subprocess.run(["ps", "-o", "stat=,lstart=", "-p", str(pid)],
+                               capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    line = found.stdout.strip()
+    if found.returncode != 0 or not line or line.startswith("Z"):
+        return None
+    return line.split(None, 1)[1] if " " in line else None
+
+
+def _group_running(pgid: int) -> bool:
+    """A process of group ``pgid`` still runs (zombies left out on Linux)."""
+    if (_PROC / "self" / "stat").is_file():
+        for entry in _PROC.iterdir():
+            if entry.name.isdigit():
+                fields = _proc_stat(int(entry.name))
+                if fields is not None and fields[2] == str(pgid) \
+                        and fields[0] not in ("Z", "X"):
+                    return True
+        return False
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+class CycleChildren:
+    """The capture child processes of the running cycle, in ``<DIR>/host/
+    cycle-children.json`` (0600, replaced whole): each one's pid, process group (a child
+    leads its own session), start token and source. Only the holder of the cycle lock
+    writes it. A runner SIGKILLed mid-cycle cannot stop its children; the next holder of
+    the lock does (``recover``) before its own cycle reads anything."""
+
+    # Concurrent capture children (ingest mode) add and remove their entries from worker
+    # threads: every read-modify-write of the file holds this lock.
+    _guard = threading.RLock()
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def _read(self) -> list[dict[str, Any]]:
+        try:
+            document = json.loads(self.path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return []
+        except (OSError, ValueError):
+            raise HostError("cycle_children_unreadable") from None
+        entries = document.get("children") if isinstance(document, dict) \
+            and document.get("schema") == CHILDREN_SCHEMA else None
+        if not isinstance(entries, list) or not all(
+                isinstance(e, dict) and type(e.get("pid")) is int and e["pid"] > 1
+                and type(e.get("pgid")) is int and e["pgid"] > 1
+                and isinstance(e.get("token"), str) for e in entries):
+            raise HostError("cycle_children_unreadable")
+        return entries
+
+    def _write(self, entries: Sequence[Mapping[str, Any]]) -> None:
+        temporary = self.path.with_name(f".{self.path.name}.{os.getpid()}."
+                                        f"{threading.get_ident()}")
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump({"schema": CHILDREN_SCHEMA, "children": list(entries)}, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, self.path)
+
+    def add(self, pid: int, source: str) -> None:
+        """Record child ``pid`` (started in its own session) right after it starts."""
+        try:
+            pgid = os.getpgid(pid)
+        except OSError:
+            pgid = pid
+        token = process_token(pid)
+        if token is None:
+            return   # already gone: nothing to stop later
+        with self._guard:
+            self._write([*self._read(), {"pid": pid, "pgid": pgid, "token": token,
+                                         "source": source}])
+
+    def remove(self, pid: int) -> None:
+        """Forget child ``pid`` once it is stopped and reaped (``child_process.stop``),
+        unless a process of its group outlives it: that stays recorded for ``recover``."""
+        with self._guard:
+            self._write([e for e in self._read()
+                         if e["pid"] != pid or _group_running(e["pgid"])])
+
+    def recover(self, *, monotonic: Callable[[], float] = time.monotonic,
+                sleep: Callable[[float], None] = time.sleep,
+                wait_seconds: float = ORPHAN_STOP_SECONDS) -> dict[str, int]:
+        """Stop the process group of every recorded child still running: SIGKILL when
+        its leader is the process recorded (same start token), or when the leader is gone
+        but the group is not (a pid is not reused while its group exists); a leader pid
+        now another process is left alone (``not_ours``). Refused
+        (``orphan_capture_running``) when a group outlives ``wait_seconds``; the record
+        is cleared only once every recorded group is gone."""
+        entries = self._read()
+        counts = {"recorded": len(entries), "stopped": 0, "gone": 0, "not_ours": 0}
+        killed = []
+        for entry in entries:
+            token = process_token(entry["pid"])
+            if token is not None and token != entry["token"]:
+                counts["not_ours"] += 1
+                continue
+            if token is None and not _group_running(entry["pgid"]):
+                counts["gone"] += 1
+                continue
+            try:
+                os.killpg(entry["pgid"], signal.SIGKILL)
+            except ProcessLookupError:
+                counts["gone"] += 1
+                continue
+            except PermissionError:
+                raise HostError("orphan_capture_running") from None
+            killed.append(entry["pgid"])
+            counts["stopped"] += 1
+        deadline = monotonic() + wait_seconds
+        while any(_group_running(pgid) for pgid in killed):
+            if monotonic() >= deadline:
+                raise HostError("orphan_capture_running")
+            sleep(0.05)
+        if entries:
+            self._write([])
+        return counts
+
+
+def cycle_overlaps(host: "Host") -> dict[str, Any]:
+    """Every finished cycle of ``host``'s ledger, whichever runner ran it: how many
+    started before an earlier one finished (two writers at once; 0 under one lock)."""
+    with host._ledger() as db:
+        rows = db.execute("SELECT started_at, finished_at, report FROM cycle "
+                          "ORDER BY started_at, cycle_id").fetchall()
+    overlapping, latest = 0, None
+    runners: dict[str, int] = {}
+    for row in rows:
+        try:
+            runner = json.loads(row["report"] or "{}").get("runner") or HOST_RUNNER
+        except ValueError:
+            runner = "unreadable"
+        runners[runner] = runners.get(runner, 0) + 1
+        if row["finished_at"] is None:
+            continue   # killed while running: it never finished
+        if latest is not None and row["started_at"] < latest:
+            overlapping += 1
+        latest = max(latest or row["finished_at"], row["finished_at"])
+    return {"cycles_recorded": len(rows), "cycles_overlapping": overlapping,
+            "cycles_by_runner": dict(sorted(runners.items()))}
 
 
 # ------------------------------------------------------------------ the host
@@ -519,7 +821,8 @@ class Host:
                  portal_options: Mapping[str, Any] | None = None,
                  clock: Callable[[], datetime] = _utc,
                  sleep: Callable[[float], None] = time.sleep,
-                 monotonic: Callable[[], float] = time.monotonic) -> None:
+                 monotonic: Callable[[], float] = time.monotonic,
+                 disk_free: Callable[[Path], int] | None = None) -> None:
         from integrations.capture_mail import assert_outside_git
 
         self.state_dir = assert_outside_git(Path(state_dir).expanduser().resolve())
@@ -532,6 +835,12 @@ class Host:
         self.sleep = sleep
         self.monotonic = monotonic   # the capture budgets' clock
         self.stop = threading.Event()
+        # The continuous ingest mode's disk guard (``ingest_continuous``): free bytes of
+        # the state directory's file system, stopped below ``min_free_bytes``; the build's
+        # guard too. ``disk_free`` (tests): the measure, never the machine's real disk.
+        self.disk_free: Callable[[Path], int] = (
+            disk_free or (lambda path: shutil.disk_usage(path).free))
+        self.min_free_bytes = MIN_FREE_BYTES
         (self.state_dir / HOST_DIR).mkdir(parents=True, exist_ok=True)
         with self._ledger() as db:
             for statement in _LEDGER_DDL:
@@ -554,16 +863,23 @@ class Host:
             db.close()
 
     @contextmanager
-    def _cycle_lock(self) -> Iterator[None]:
+    def _cycle_lock(self) -> Iterator[dict[str, int]]:
+        """The state directory's one cycle lock, whatever the host's mode: a second cycle
+        is refused (``host_cycle_running``). Taken, it first stops the capture children a
+        killed holder left running (``CycleChildren.recover``) and yields those counts."""
         with open(self.state_dir / HOST_DIR / LOCK_FILE, "a+") as handle:
             try:
                 fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise HostError("host_cycle_running") from None
             try:
-                yield
+                yield self.children().recover(monotonic=self.monotonic, sleep=time.sleep)
             finally:
                 fcntl.flock(handle, fcntl.LOCK_UN)
+
+    def children(self) -> "CycleChildren":
+        """The record of the running cycle's capture child processes (lock holder only)."""
+        return CycleChildren(self.state_dir / HOST_DIR / CHILDREN_FILE)
 
     def _actor(self) -> Actor:
         return Actor(self.config.tenant, frozenset({self.config.principal}), "restricted")
@@ -645,7 +961,10 @@ class Host:
         (self.state_dir / BC_DIR).mkdir(parents=True, exist_ok=True)
         store = CaptureStore(self.state_dir / BC_DIR / BC_FILE, audience)
         try:
-            books = bc_read.load_company_books(entry.get("books"))
+            # no books file: the shipped map, which also names My Company, so its Page 50
+            # purchase-order references (Your_Reference) are read; an injected map names none
+            books = (bc_read.load_company_books(entry["books"]) if entry.get("books")
+                     else None)
             report = bc_read.BcCapture(reader, store, books=books).capture(
                 self._actor(), entity_sets=tuple(entry.get("entity_sets")
                                                  or bc_read.CAPTURE_ENTITY_SETS),
@@ -683,7 +1002,8 @@ class Host:
         try:
             capture = capture_mail.MailCapture(
                 store, GraphMailReader(api, self._capture_audience()), self._actor(),
-                sleep=self.sleep, budget_seconds=entry.get("budget_seconds"))
+                sleep=self.sleep, budget_seconds=entry.get("budget_seconds"),
+                **capture_mail.PRODUCTION)
             run = capture.run(scope, directory=lambda: capture_mail.directory_mailboxes(
                 api, scope.directory_allows))
         finally:
@@ -781,7 +1101,8 @@ class Host:
         store = capture_teams.open_store(self.state_dir, audience)
         blocked: list[dict[str, Any]] = []
         try:
-            capture = capture_teams.TeamsCapture(store, api, audience, self._actor())
+            capture = capture_teams.TeamsCapture(store, api, audience, self._actor(),
+                                                 workers=capture_teams.WORKERS)
             # The CLI's gate (decision 2026-10-21-teams-host-confirmation-gate): the census
             # first (names and counts, no content), then content only of what the owner's
             # confirmation names and this census cleared; without one no message is read
@@ -838,43 +1159,177 @@ class Host:
 
     def cycle(self) -> dict[str, Any]:
         """Read every configured source once, record each outcome and rebuild the
-        projection. Counts only."""
+        projection. Counts only. Under the cycle lock (a killed holder's capture children
+        stopped first), a ``running`` ledger row (an earlier one left running was killed:
+        ``interrupted``), each source's outcome recorded (``_record``), the projection
+        rebuilt, the row finished with the report. The sources are read by the host's own
+        readers, or in ingest mode by their capture CLIs (``ingest_forever.read_sources``,
+        each child recorded in ``children()`` while it runs)."""
         if self.config is None:
             raise HostError("host_config_required")
+        if self.config.ingest is None:
+            return self._cycle(lambda: {name: self._read(name) for name in SOURCES},
+                               HOST_RUNNER)
+        from . import ingest_forever
+
+        return self._cycle(lambda: ingest_forever.read_sources(
+            self.config.capture_sources, self.config.sources, self.state_dir, self.environ,
+            grace=self.config.ingest["grace_seconds"], children=self.children(),
+            parallel=ingest_forever.max_parallel(self.config.ingest,
+                                                 len(self.config.sources))),
+            INGEST_RUNNER)
+
+    def _cycle(self, read: Callable[[], Mapping[str, Mapping[str, Any]]], runner: str
+               ) -> dict[str, Any]:
         try:
             session_identity.bind_state_dir(self.state_dir, fixture=False)
         except session_identity.SessionIdentityRefused as error:
             raise HostError(error.reason) from None
-        with self._cycle_lock():
-            started = self.clock()
+        with self._cycle_lock() as recovered:
+            cycle_id, started = self._open_cycle(runner)
+            return self._finish(cycle_id, started, dict(read()), runner, recovered)
+
+    def _open_cycle(self, runner: str) -> tuple[int, datetime]:
+        """A ``running`` ledger row (one left running by a killed holder: ``interrupted``)."""
+        started = self.clock()
+        with self._ledger() as db:
+            db.execute("UPDATE cycle SET state='interrupted' WHERE state='running'")
+            cycle_id = db.execute(
+                "INSERT INTO cycle(started_at, state, report) VALUES (?, 'running', ?)",
+                (_iso(started), json.dumps({"runner": runner}))).lastrowid
+        return cycle_id, started
+
+    def _finish(self, cycle_id: int, started: datetime,
+                outcomes: Mapping[str, Mapping[str, Any]], runner: str,
+                recovered: Mapping[str, int], *, skip_build: str | None = None,
+                extra: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """Record each outcome (``_record``), build the next projection generation
+        (``skip_build``: a reason not to, the previous generation stays served) and finish
+        the cycle row with its report."""
+        now = self.clock()
+        with self._ledger() as db:
+            for name, outcome in outcomes.items():
+                self._record(db, name, outcome, now)
+        if skip_build is not None:
             with self._ledger() as db:
-                db.execute("UPDATE cycle SET state='interrupted' WHERE state='running'")
-                cycle_id = db.execute("INSERT INTO cycle(started_at, state) VALUES (?, "
-                                      "'running')", (_iso(started),)).lastrowid
-            outcomes = {name: self._read(name) for name in SOURCES}
-            now = self.clock()
-            with self._ledger() as db:
-                for name, outcome in outcomes.items():
-                    self._record(db, name, outcome, now)
+                previous = db.execute("SELECT MAX(generation) FROM projection").fetchone()[0]
+            projection = {"state": "skipped", "generation": previous,
+                          "reasons": [skip_build]}
+        else:
             projection = self._project(cycle_id)
-            if projection["state"] == "built":
-                # The scheduled proactive engine over the new generation (its gap inbox
-                # beside the store, read by the console Home); never fails the cycle.
-                from . import proactive_engine
-                projection["proactive"] = proactive_engine.after_build(
-                    projection_path(self.state_dir), as_of=self.clock().date())
-            report = {"schema": CYCLE_SCHEMA, "cycle": cycle_id, "started_at": _iso(started),
-                      "sources": {name: {k: v for k, v in outcome.items()
-                                         if k != "served_path"}
-                                  for name, outcome in outcomes.items()},
-                      "projection": projection}
-            state = ("failed" if any(o["state"] == "failed" for o in outcomes.values())
-                     or projection["state"] == "failed" else "complete")
-            with self._ledger() as db:
-                db.execute("UPDATE cycle SET finished_at=?, state=?, report=? WHERE "
-                           "cycle_id=?", (_iso(self.clock()), state,
-                                          json.dumps(report, sort_keys=True), cycle_id))
-            return {**report, "state": state}
+        # Between refreshes, while no build runs (its snapshot is closed): every store's
+        # WAL moves into its file and is cut back (``checkpoint_stores``).
+        if projection["state"] == "built":
+            # The scheduled proactive engine over the new generation (its gap inbox
+            # beside the store, read by the console Home), every detector within its
+            # time budget; never fails the cycle.
+            projection["proactive"] = self._proactive()
+        wal = self.checkpoint_stores()
+        report = {"schema": CYCLE_SCHEMA, "cycle": cycle_id, "runner": runner,
+                  "started_at": _iso(started),
+                  "sources": {name: {k: v for k, v in outcome.items()
+                                     if k != "served_path"}
+                              for name, outcome in outcomes.items()},
+                  "projection": projection, "wal": wal, **(extra or {})}
+        if recovered.get("recorded"):
+            report["recovered_children"] = dict(recovered)
+        state = ("failed" if any(o["state"] == "failed" for o in outcomes.values())
+                 or projection["state"] == "failed" else "complete")
+        with self._ledger() as db:
+            db.execute("UPDATE cycle SET finished_at=?, state=?, report=? WHERE "
+                       "cycle_id=?", (_iso(self.clock()), state,
+                                      json.dumps(report, sort_keys=True), cycle_id))
+        return {**report, "state": state}
+
+    def _proactive(self) -> dict[str, Any]:
+        """The full scheduled engine run (``proactive_engine.refresh``) over the built
+        projection, as the capture principal (``_actor``), inside the cycle lock after the
+        build, with the live readers the host's sessions build (``_live_readers``), within
+        ``proactive_engine.REFRESH_BUDGET_SECONDS``: counts and enums only, never raising."""
+        from integrations.source_mirror import AudienceMap
+        from . import case_workspace_live as live
+        from . import proactive_engine
+
+        store = projection_path(self.state_dir)
+
+        def scheduled(as_of: Any, budget: Any) -> Mapping[str, Any]:
+            runtime = live.offline_runtime(self.state_dir, self.config.mirror_audience,
+                                           self.config.tenant, live=self._live_readers(),
+                                           environ=self.environ)
+            try:
+                return proactive_engine.refresh(
+                    runtime, self._actor(), AudienceMap.from_file(self.config.mirror_audience),
+                    store, as_of, captures=self.state_dir,
+                    scan_coverage="portal" in self.config.sources, budget=budget,
+                    clock=self.clock)
+            finally:
+                runtime.close()
+
+        return proactive_engine.after_build(store, clock=self.clock, scheduled=scheduled,
+                                            monotonic=self.monotonic)
+
+    def stop_reason(self, stop_file: Path) -> str | None:
+        """Why the continuous ingest mode stops now: ``stopped`` (``stop`` set: a signal,
+        the console closing), ``stop_file`` (the file exists) or ``low_disk`` (the state
+        directory's file system has less than ``min_free_bytes`` free, or cannot say);
+        None to go on."""
+        if self.stop.is_set():
+            return "stopped"
+        if stop_file.exists():
+            return "stop_file"
+        try:
+            free = self.disk_free(self.state_dir)
+        except OSError:
+            return "low_disk"   # unmeasured is never enough
+        return "low_disk" if free < self.min_free_bytes else None
+
+    def ingest_continuous(self, *, stop_file: Path, max_refreshes: int = 0,
+                          on_refresh: Callable[[dict[str, Any]], None] | None = None
+                          ) -> dict[str, Any]:
+        """Ingest mode, continuously (``operating.ingest_forever.Continuous``): every
+        configured source on its own cadence, ``ingest.max_parallel`` children at once,
+        under the one cycle lock held for the whole run (a ``run``, ``check`` or other
+        ``serve`` is refused meanwhile). Each time sources finish they are one ledger
+        cycle (runner ``ingest``, ``continuous`` true): recorded, then the next
+        projection generation built from every capture store as it is now (incremental:
+        only the units whose captures changed) and published; readers keep the previous
+        generation until it is. Stops on ``stop_file``, low disk (no build then) or
+        ``stop``; returns the run's summary (counts and codes)."""
+        if self.config is None or self.config.ingest is None:
+            raise HostError("host_ingest_mode_required")
+        from . import ingest_forever
+
+        try:
+            session_identity.bind_state_dir(self.state_dir, fixture=False)
+        except session_identity.SessionIdentityRefused as error:
+            raise HostError(error.reason) from None
+        with self._cycle_lock() as recovered:
+            first = [dict(recovered)]
+
+            def refresh(outcomes: dict[str, dict[str, Any]], reason: str | None,
+                        exclusion: dict[str, Any]) -> None:
+                # No capture of a store this build reads runs now (``Continuous``): the
+                # WAL each one left moves into its file before the build's snapshot.
+                exclusion = {**exclusion, "checkpoint": self.checkpoint_written(
+                    exclusion["exclusive"])}
+                cycle_id, started = self._open_cycle(INGEST_RUNNER)
+                report = self._finish(
+                    cycle_id, started, outcomes, INGEST_RUNNER,
+                    first.pop() if first else {},
+                    skip_build="low_disk" if reason == "low_disk" else None,
+                    extra={"continuous": True, "build_exclusion": exclusion})
+                if on_refresh is not None:
+                    on_refresh(report)
+
+            summary = ingest_forever.Continuous(
+                self.config.capture_sources, self.config.sources, self.state_dir,
+                self.environ, grace=self.config.ingest["grace_seconds"],
+                parallel=ingest_forever.max_parallel(self.config.ingest,
+                                                     len(self.config.sources)),
+                refresh=refresh, should_stop=lambda: self.stop_reason(stop_file),
+                children=self.children(), max_refreshes=max_refreshes,
+                wait_idle=self.stop.wait, build_reads=self.build_reads).run()
+        return {"schema": CONTINUOUS_SCHEMA, **summary}
 
     def _record(self, db: sqlite3.Connection, name: str, outcome: Mapping[str, Any],
                 now: datetime) -> None:
@@ -913,6 +1368,10 @@ class Host:
             served = {r["source"]: r for r in db.execute("SELECT * FROM source_state")}
             previous = db.execute("SELECT MAX(generation) FROM projection").fetchone()[0]
         portal = served.get("portal")
+        disk = self.build_disk()
+        if disk["free_bytes"] is None or disk["free_bytes"] < disk["needed_bytes"]:
+            return {"state": "skipped", "generation": previous, "reasons": ["disk_low"],
+                    "disk": disk}
         with ExitStack() as stack:
             sources: dict[str, Any] = {}
             try:
@@ -924,7 +1383,11 @@ class Host:
                                               internal_domains=self._internal_domains()))
                 if not sources:
                     return {"state": "no_captures", "generation": previous}
-                built = build_projection(self.state_dir, sources, tenant=self.config.tenant)
+                built = build_projection(self.state_dir, sources, tenant=self.config.tenant,
+                                         space=self._space_guard, checkpoint=self._disk_floor)
+            except DiskLow as low:   # the guard stopped it: nothing of it is left on disk
+                return {"state": "skipped", "generation": previous, "reasons": ["disk_low"],
+                        "disk": low.disk}
             except Exception as exc:  # noqa: BLE001 - the previous generation stays served
                 return {"state": "failed", "generation": previous, "reasons": [_reason(exc)]}
         inputs = {name: served[name]["generation"] for name in served}
@@ -935,6 +1398,155 @@ class Host:
                         objects, json.dumps(inputs, sort_keys=True)))
         return {"state": "built", "generation": cycle_id, "previous_generation": previous,
                 "objects": objects, "sources": sorted(sources), **built["build"]}
+
+    def build_disk(self, need: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """The free bytes of the state directory's file system (None: it cannot say,
+        never enough) and the bytes a build needs: ``need`` (a ``space_need`` estimate; by
+        default the least the next build writes: an incremental one's seed, a cold one's
+        measured size, nothing known for a store of a new format) plus
+        ``BUILD_DISK_MARGIN_BYTES``."""
+        from ontology.project_incremental import space_need
+
+        try:
+            served = projection_path(self.state_dir).stat().st_size
+        except OSError:
+            served = 0
+        if need is None:
+            try:
+                need = space_need(self.state_dir / PROJECTION_DIR, dirty=())
+            except (OSError, ValueError, sqlite3.Error):
+                need = {"mode": "unknown", "needed_bytes": served}
+        try:
+            free: int | None = int(self.disk_free(self.state_dir))
+        except OSError:
+            free = None
+        return {"free_bytes": free,
+                "needed_bytes": int(need.get("needed_bytes") or 0) + BUILD_DISK_MARGIN_BYTES,
+                "generation_bytes": served, "estimate": dict(need)}
+
+    def _space_guard(self, need: Mapping[str, Any]) -> None:
+        """``build_generation``'s ``space``: refuse a build its estimate does not fit."""
+        disk = self.build_disk(need)
+        if disk["free_bytes"] is None or disk["free_bytes"] < disk["needed_bytes"]:
+            raise DiskLow(disk)
+
+    def _disk_floor(self) -> None:
+        """Between build batches: stop when free space falls below the margin."""
+        try:
+            free: int | None = int(self.disk_free(self.state_dir))
+        except OSError:
+            free = None
+        if free is None or free < BUILD_DISK_MARGIN_BYTES:
+            raise DiskLow({"free_bytes": free, "needed_bytes": BUILD_DISK_MARGIN_BYTES,
+                           "estimate": {"mode": "running_floor"}})
+
+    def store_paths(self) -> dict[str, Path]:
+        """name -> every SQLite capture store file this state directory holds: the
+        served Portal mirror (live or persisted copy), the case runtime's mirror and
+        every ``state_capture_paths`` store (SharePoint: each of its stores)."""
+        from ontology import project
+
+        from .case_runtime import CASE_RUNTIME_DIR, MIRROR_FILE
+
+        found: dict[str, Path] = {}
+        with self._ledger() as db:
+            row = db.execute("SELECT served_path FROM source_state WHERE source='portal'"
+                             ).fetchone()
+        if row is not None and row["served_path"]:
+            found["portal"] = Path(row["served_path"])
+        found["portal_mirror"] = self.state_dir / CASE_RUNTIME_DIR / MIRROR_FILE
+        for name, path in state_capture_paths(self.state_dir).items():
+            if name == "sharepoint":
+                for index, store in enumerate(project.SharePointCaptures.stores(
+                        self.state_dir)):
+                    found[f"sharepoint{index or ''}"] = store
+            else:
+                found[name] = path
+        unique: dict[str, Path] = {}
+        seen: set[Path] = set()
+        for name, path in found.items():
+            if path.is_file() and path.resolve() not in seen:
+                seen.add(path.resolve())
+                unique[name] = path
+        return unique
+
+    def build_reads(self) -> list[Path]:
+        """Every store file the next build may open, held or not: the Portal mirror the
+        ledger serves, the host's working mirror (always: a Portal capture writes it and
+        its next record serves it), and every ``state_capture_paths`` store (SharePoint:
+        its drive and its list-item store). ``_project`` opens each one held, each with
+        one read snapshot until the build ends."""
+        from ontology import project
+
+        from .case_runtime import CASE_RUNTIME_DIR, MIRROR_FILE
+
+        paths = [self.state_dir / CASE_RUNTIME_DIR / MIRROR_FILE]
+        with self._ledger() as db:
+            row = db.execute("SELECT served_path FROM source_state WHERE source='portal'"
+                             ).fetchone()
+        if row is not None and row["served_path"]:
+            paths.append(Path(row["served_path"]))
+        for name, path in state_capture_paths(self.state_dir).items():
+            paths.extend(project.SharePointCaptures.stores(self.state_dir)
+                         if name == "sharepoint" else [path])
+        return paths
+
+    def checkpoint_written(self, names: Sequence[str]) -> dict[str, Any]:
+        """``wal_checkpoint(TRUNCATE)`` of the stores the named capture sources write
+        (``SourceSpec.writes``), before a build opens them: per source its state and WAL
+        bytes before and after (names, never paths). Never raises."""
+        from integrations.capture_store import checkpoint_file, sqlite_code
+
+        out: dict[str, Any] = {}
+        sources = self.config.capture_sources if self.config else {}
+        for name in names:
+            spec = sources.get(name)
+            if spec is None or spec.writes is None:
+                continue
+            for index, path in enumerate(spec.writes(self.state_dir)):
+                try:
+                    result = checkpoint_file(path, wait_ms=CHECKPOINT_WAIT_MS)
+                except (OSError, sqlite3.Error) as exc:
+                    result = {"state": "failed", "error": (sqlite_code(exc) if isinstance(
+                        exc, sqlite3.Error) else type(exc).__name__)}
+                if result is not None:
+                    out[f"{name}{index or ''}"] = {
+                        k: result[k] for k in ("state", "error", "wal_bytes_before",
+                                               "wal_bytes") if k in result}
+        return out
+
+    def checkpoint_stores(self) -> dict[str, Any]:
+        """``wal_checkpoint(TRUNCATE)`` of every store (``store_paths``), each waiting at
+        most ``CHECKPOINT_WAIT_MS``: counts by outcome and the WAL bytes before and after,
+        in total and per store (names, never paths). Never raises: a store it cannot
+        checkpoint is counted ``failed`` with its code."""
+        from integrations.capture_store import checkpoint_file, sqlite_code
+
+        out: dict[str, Any] = {"stores": 0, "truncated": 0, "busy": 0, "failed": 0,
+                               "wal_bytes_before": 0, "wal_bytes": 0, "by_store": {}}
+        try:
+            paths = self.store_paths()
+        except (OSError, sqlite3.Error) as exc:
+            return {**out, "failed": 1, "error": type(exc).__name__}
+        for name, path in paths.items():
+            try:
+                result = checkpoint_file(path, wait_ms=CHECKPOINT_WAIT_MS)
+            except (OSError, sqlite3.Error) as exc:
+                result = {"state": "failed", "error": (sqlite_code(exc) if isinstance(
+                    exc, sqlite3.Error) else type(exc).__name__), "wal_bytes_before": 0,
+                    "wal_bytes": 0}
+            if result is None:
+                continue
+            state = result["state"] if result["state"] in ("truncated", "busy") \
+                else "failed"
+            out["stores"] += 1
+            out[state] += 1
+            out["wal_bytes_before"] += result["wal_bytes_before"]
+            out["wal_bytes"] += result["wal_bytes"]
+            out["by_store"][name] = {k: result[k] for k in
+                                     ("state", "error", "wal_bytes_before", "wal_bytes")
+                                     if k in result}
+        return out
 
     def _internal_domains(self) -> Sequence[str]:
         from integrations import capture_mail
@@ -959,16 +1571,13 @@ class Host:
         from ontology.reviews import store_path
         from .build_steps import ReviewsIfPresent
         from integrations.people_exclusion import PeopleExclusion
-        from .case_runtime import CaseRuntime, build_live_readers
+        from .case_runtime import CaseRuntime
         from .case_tools_host import serving_tools
 
-        live_audience, mail, sharepoint = _served_captures(self)
-        live = None if live_audience is None else build_live_readers(
-            live_audience, self.environ, graph_sender=self.sender, bc_sender=self.sender,
-            sources=live_sources(self))
+        _live_audience, mail, sharepoint = _served_captures(self)
         runtime = CaseRuntime(self.state_dir, client=None,
                               audience=self.config.mirror_audience,
-                              tenant=self.config.tenant, live=live,
+                              tenant=self.config.tenant, live=self._live_readers(),
                               people_exclusion=PeopleExclusion.from_env(self.environ))
         try:
             served = serving_tools(runtime, actor,
@@ -977,13 +1586,24 @@ class Host:
                                    reviews=ReviewsIfPresent(store_path(self.state_dir)),
                                    portal_captured="portal" in self.config.sources,
                                    knowledge_namespaces=self.config.knowledge_namespaces,
-                                   marking_grants=self.config.marking_grants)
+                                   marking_grants=self.config.marking_grants,
+                                   freshness_bounds=freshness_bounds(self.config))
             try:
                 yield served
             finally:
                 served.close()
         finally:
             runtime.close()
+
+    def _live_readers(self) -> Any:
+        """The live readers of the sources the config names (``live_sources``), from the
+        live audience; None without one."""
+        from .case_runtime import build_live_readers
+
+        live_audience, _mail, _sharepoint = _served_captures(self)
+        return None if live_audience is None else build_live_readers(
+            live_audience, self.environ, graph_sender=self.sender, bc_sender=self.sender,
+            sources=live_sources(self))
 
     def trim_check(self, withheld_principal: str = WITHHELD_PRINCIPAL, *,
                    sample: int = 200) -> dict[str, Any]:
@@ -1093,7 +1713,9 @@ class Host:
         configured = (set(self.config.sources) if self.config is not None else
                       {name for name, row in rows.items() if row["configured"]})
         sources = []
-        for name in SOURCES:
+        # The host's sources, then any other ingest mode configures (SharePoint lists,
+        # Mission Control).
+        for name in (*SOURCES, *sorted(configured - set(SOURCES))):
             row = rows.get(name)
             if name not in configured:
                 continue
@@ -1116,12 +1738,50 @@ class Host:
                     "inputs": json.loads(built["inputs"])},
                 "last_cycle": None if last is None else dict(last)}
 
+    def serve_cycle(self) -> dict[str, Any]:
+        """``cycle``, or, while another process holds this directory's cycle (a ``run``,
+        another ``serve``, whatever its mode), a typed ``waiting`` report: the next
+        interval tries again, the serving host never stops for it."""
+        try:
+            return self.cycle()
+        except HostError as error:
+            if error.code != "host_cycle_running":
+                raise
+            return {"schema": CYCLE_SCHEMA, "cycle": None,
+                    "state": "waiting", "reason": error.code,
+                    "started_at": _iso(self.clock())}
+
     def serve(self, *, interval_seconds: float, max_cycles: int = 0,
-              on_cycle: Callable[[dict[str, Any]], None] | None = None) -> int:
-        """Cycles every ``interval_seconds`` until ``stop`` is set (or ``max_cycles``)."""
+              on_cycle: Callable[[dict[str, Any]], None] | None = None,
+              stop_file: Path | None = None) -> int:
+        """Cycles every ``interval_seconds`` until ``stop`` is set (or ``max_cycles``
+        attempts: a ``waiting`` one counts). In ingest mode: the continuous mode
+        (``ingest_continuous``, ``max_cycles`` its refreshes) until ``stop_file``
+        (default ``<DIR>/host/ingest.stop``), low disk or ``stop``; while another process
+        holds the cycle lock it reports ``waiting`` and tries again each interval."""
+        if self.config is not None and self.config.ingest is not None:
+            stop_file = stop_file or self.state_dir / HOST_DIR / STOP_FILE
+            while True:
+                try:
+                    summary = self.ingest_continuous(stop_file=stop_file,
+                                                     max_refreshes=max_cycles,
+                                                     on_refresh=on_cycle)
+                except HostError as error:
+                    if error.code != "host_cycle_running":
+                        raise
+                    if on_cycle is not None:
+                        on_cycle({"schema": CYCLE_SCHEMA, "cycle": None, "state": "waiting",
+                                  "reason": error.code, "started_at": _iso(self.clock())})
+                    if max_cycles == 1 or self.stop.wait(interval_seconds) \
+                            or self.stop_reason(stop_file):
+                        return 0
+                    continue
+                if on_cycle is not None:
+                    on_cycle(summary)
+                return summary["refreshes"]
         done = 0
         while not self.stop.is_set():
-            report = self.cycle()
+            report = self.serve_cycle()
             done += 1
             if on_cycle is not None:
                 on_cycle(report)
@@ -1144,14 +1804,15 @@ def _with_refusals(outcome: dict[str, Any], parts: Sequence[Mapping[str, Any]]
 
 
 def blocked_parts(name: str, outcome: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """The live checks' ``blocked_upstream`` parts of source ``name``'s ``outcome``:
+    """The live verifier's ``blocked_upstream`` parts of source ``name``'s ``outcome``:
     the parts its capture names as refused, else one for the source when it did not
     answer (``outage``), else none. The one rule the host ledger records and the case
     opener reads (``case_workspace_live.host_refusals``)."""
     if outcome.get("blocked_upstream"):
         return [dict(p) for p in outcome["blocked_upstream"]]
     if "outage" in outcome:
-        return [{"part": name, "source": _UPSTREAM[name], **outcome["outage"]}]
+        return [{"part": name, "source": outcome.get("upstream") or _UPSTREAM[name],
+                 **outcome["outage"]}]
     return []
 
 
@@ -1220,11 +1881,14 @@ def cycles_check(make_host: Callable[[], "Host"], *, cycles: int = 2,
     reports: list[dict[str, Any]] = []
     committed: list[int | None] = []   # the generation committed before each cycle ran
     interrupt = probe = None
+    carried = False   # observed: a capture store this check found, not one it made
     for index in range(cycles):
         if index == 1 and interrupt_after is not None:
             probe = _probe_case(make_host())
             interrupt = _killed_cycle(make_host(), spawn, interrupt_after)
         host = make_host()
+        if index == 0:
+            carried = _store_carried(host.state_dir)
         committed.append(_committed_generation(host))
         reports.append(host.cycle())
     host = make_host()
@@ -1240,9 +1904,12 @@ def cycles_check(make_host: Callable[[], "Host"], *, cycles: int = 2,
         "sources_configured": len(configured),
         "sources_not_run": sum(1 for r in reports for name in configured
                                if r["sources"][name]["state"] == "not_configured"),
-        "mail_folders_restarted": sum(_mail_restarted(r) for r in reports[1:]),
-        "sharepoint_roots_restarted": sum(_sharepoint_restarted(earlier, later)
-                                          for earlier, later in zip(reports, reports[1:])),
+        # Ingest mode keeps no folder or walk positions in its reports: not measured.
+        "mail_folders_restarted": None if host.config.ingest else
+        sum(_mail_restarted(r) for r in reports[1:]),
+        "sharepoint_roots_restarted": None if host.config.ingest else
+        sum(_sharepoint_restarted(earlier, later)
+            for earlier, later in zip(reports, reports[1:])),
         # Each later cycle builds on the generation committed when it started, never
         # older than the cycle before it built (a killed cycle may commit one between).
         "projection_chained": all(
@@ -1253,9 +1920,24 @@ def cycles_check(make_host: Callable[[], "Host"], *, cycles: int = 2,
         "later_rebuilds_fewer": first.get("state") == last.get("state") == "built"
         and last.get("mode") == "incremental"
         and last.get("units_rebuilt", 0) < first.get("units_rebuilt", 0),
+        # Every cycle of the ledger, by either runner (the host's readers or its ingest
+        # mode): none started before another finished.
+        **cycle_overlaps(host),
     }
     document = {"schema": CHECK_SCHEMA, "cycles": reports, "status": status,
                 "checks": checks, "trim": host.trim_check(withheld_principal)}
+    ingest_blocked: list[dict[str, Any]] = []
+    if host.config.ingest is not None:
+        from . import ingest_forever
+
+        added = ingest_forever.cycle_checks(
+            reports, sorted(configured), host.config.capture_sources, host.state_dir,
+            host.environ, internal_domains=host._internal_domains())
+        checks.update({key: value for key, value in added["checks"].items()
+                       if key not in checks})
+        checks["state_persistent"] = not ingest_forever.ephemeral(host.state_dir)
+        document["duplicates"] = added["duplicates"]
+        ingest_blocked = added["blocked"]
     if interrupt is not None:
         resumed = reports[1]
         checks["resumed_after_interrupt"] = (
@@ -1269,9 +1951,13 @@ def cycles_check(make_host: Callable[[], "Host"], *, cycles: int = 2,
     blocked: list[dict[str, Any]] = []
     for report in reports:
         for name, outcome in report["sources"].items():
-            part = {"part": name, "source": _UPSTREAM[name], **outcome.get("outage", {})}
-            if "outage" in outcome and part not in blocked:
-                blocked.append(part)
+            if host.config.ingest is not None and outcome.get("blocked_upstream"):
+                parts = outcome["blocked_upstream"]   # its capture's typed parts
+            else:
+                parts = [{"part": name, "source": outcome.get("upstream") or _UPSTREAM[name],
+                          **outcome["outage"]}] if "outage" in outcome else []
+            blocked.extend(part for part in parts if part not in blocked)
+    blocked.extend(part for part in ingest_blocked if part not in blocked)
     if blocked:
         document["blocked_upstream"] = blocked
     if "sharepoint" in configured:
@@ -1280,13 +1966,61 @@ def cycles_check(make_host: Callable[[], "Host"], *, cycles: int = 2,
         except Exception as exc:  # noqa: BLE001 - not measured is never measured complete
             document["sharepoint_coverage"] = {"census_complete": False, "complete": False,
                                                "reasons": [_reason(exc)]}
+        # Ingest mode types its own parts (ingest_forever.cycle_checks): unchanged.
+        cut = [] if host.config.ingest is not None else coverage_cut_block(
+            document, carried=carried or bool(
+                (document["sharepoint_coverage"].get("census") or {}).get("carried")))
+        if cut:
+            document["blocked_upstream"] = [*document.get("blocked_upstream", []), *cut]
     document["row_data_check"] = projection_row_check(
         projection_path(host.state_dir), json.dumps(document, sort_keys=True))
     return document
 
 
+def _store_carried(state_dir: Path) -> bool:
+    """A capture store (SharePoint or mail) in ``state_dir`` before the check ran: the
+    observed fact that this state is kept between runs."""
+    from integrations import capture_mail, capture_sharepoint
+
+    return capture_sharepoint.store_exists(state_dir) or capture_mail.store_exists(state_dir)
+
+
+def coverage_cut_block(document: Mapping[str, Any], *, carried: bool) -> list[dict[str, Any]]:
+    """The ``blocked_upstream`` parts (cause ``later_ask`` live-host-persistent-state-dir)
+    of a SharePoint check whose only shortfall is a cut by the time budget, of the census
+    or of the capture still under way, over a state this check did not find kept
+    (``carried`` false): one rule for every capture check,
+    ``capture_mail.budget_cut_block``. Any other shortfall (a scope bound, a gap, a
+    missed or unseen file, a failed cycle, coverage not measured), or a cut over a
+    carried state that resumes by itself, yields none: the check fails, never blocked.
+    Part names and enums only."""
+    from integrations.capture_mail import budget_cut_block
+
+    coverage = document.get("sharepoint_coverage") or {}
+    units: list[tuple[str, list[str]]] = []
+    for index, report in enumerate(document.get("cycles") or []):
+        state = (report.get("sources", {}).get("sharepoint") or {}).get("state")
+        if state not in ("captured", "partial"):
+            units.append((f"sharepoint.cycle{index}", [f"cycle_{state}"]))
+    if "census" not in coverage:
+        units.append(("sharepoint.coverage", ["not_measured"]))
+    units += [("sharepoint.census", [reason]) for reason in coverage.get("reasons") or []]
+    units += [("sharepoint.capture", [reason])
+              for reason in coverage.get("capture_incomplete") or []]
+    if coverage.get("capture_pending"):
+        units.append(("sharepoint.capture", list(coverage["capture_pending"])))
+    for key in ("files_missed", "files_current_not_seen"):
+        if coverage.get(key):
+            units.append((f"sharepoint.{key}", [key]))
+    if coverage.get("files_not_captured") and not (
+            coverage.get("capture_pending") or coverage.get("capture_incomplete")
+            or coverage.get("files_missed")):
+        units.append(("sharepoint.capture", ["files_not_captured"]))
+    return budget_cut_block(units, carried=carried)
+
+
 def _mail_restarted(report: Mapping[str, Any]) -> int:
-    return report["sources"]["mail"].get("resumed_from", {}).get("new_round", 0)
+    return report["sources"].get("mail", {}).get("resumed_from", {}).get("new_round", 0)
 
 
 def _sharepoint_restarted(earlier: Mapping[str, Any], later: Mapping[str, Any]) -> int:
@@ -1622,12 +2356,19 @@ def sharepoint_coverage(host: "Host", *,
     was in, with the files it saw, in ``host/`` of the state directory
     (:data:`CENSUS_FILE`), and the next call carries on from there, so no folder is listed
     twice and none is skipped, and coverage is counted over the carried census. A census
-    that ended (complete or with a permanent gap) is consumed: the next call lists afresh.
-    One older than the scope's ``census_max_age_hours`` (default ``full_walk_hours``), or
-    kept for another scope, restarts.
+    that ended is consumed: the next call lists afresh. One older than the scope's
+    ``census_max_age_hours`` (default ``full_walk_hours``), or kept for another scope,
+    restarts. A census that ended complete leaves its verdict (``ended``: when it started,
+    complete) beside the fresh one: while that verdict is inside the age window, a call
+    whose fresh census is cut only by its own budget or folder bound, with nothing missed
+    or unseen in what it listed, keeps it (``census.verdict`` ``ended_kept``,
+    ``census.refresh_reasons`` the fresh census's cut): every folder was listed inside the
+    window, by the fresh census where it reached and by the ended one elsewhere, the
+    staleness bound a carried census already has. Any gap, anything missed or unseen, or
+    the window passing, drops it (``census.verdict`` ``this_census``).
     ``census``: ``carried`` (this call resumed one), ``calls`` (this census so far),
     ``folders_listed_before`` (listed by the earlier calls), ``folders_pending`` (queued),
-    ``restarted_stale``.
+    ``restarted_stale``, ``verdict``, ``refresh_reasons``.
 
     ``files_not_captured``: files listed whose listed version (eTag) is not current under
     the root, ``files_missed`` those of a root whose capture last ended complete (a
@@ -1651,17 +2392,19 @@ def sharepoint_coverage(host: "Host", *,
     scope = cs.CaptureScope.from_file(entry.get("scope") or cs.DEFAULT_SCOPE)
     if scope.discover is not None:
         return {"census_complete": False, "complete": False, "reasons": ["discover_scope"]}
-    deadline = monotonic() + entry.get("census_budget_seconds", CENSUS_BUDGET_SECONDS)
+    budget_end = monotonic() + entry.get("census_budget_seconds", CENSUS_BUDGET_SECONDS)
     actor, audience = host._actor(), host._capture_audience()
     api, transport = host._graph()
     site_host = sharepoint_host_from_env(host.environ)
     counts = dict.fromkeys(COVERAGE_COUNTS, 0)
     reasons: set[str] = set()
     capture_cut: set[str] = set()   # why the capture (not the census) left files unread
+    pending: set[str] = set()       # why a capture still under way left files unread
     kept, stale = _load_census(host, scope)
     census = {"carried": bool(kept["roots"]), "calls": kept["calls"] + 1,
               "folders_listed_before": sum(r["folders_listed"] for r in kept["roots"].values()),
-              "folders_pending": 0, "restarted_stale": stale}
+              "folders_pending": 0, "restarted_stale": stale,
+              "verdict": "this_census", "refresh_reasons": []}
     kept["calls"] += 1
     ended, consumed = True, False
     # (drive, root) -> item id: (eTag, the folder the store holds it in)
@@ -1693,7 +2436,7 @@ def sharepoint_coverage(host: "Host", *,
             for root in target.folders:
                 record = kept["roots"].setdefault(f"{number}:{root}", _new_census_root(root))
                 files, listed, gaps, whole = _listed_files(
-                    reader, actor, root, target, deadline, monotonic, record,
+                    reader, actor, root, target, budget_end, monotonic, record,
                     save=lambda: _save_census(host, kept))
                 ended = ended and record["done"]
                 census["folders_pending"] += len(record["queue"]) + bool(record["cursor"])
@@ -1706,6 +2449,11 @@ def sharepoint_coverage(host: "Host", *,
                     # The capture's own walk bound (cumulative over its folders, scope
                     # max_folders) stopped before the library's end: named, never raised.
                     capture_cut.add("capture_folder_bound")
+                elif uncaptured and state.get("status") != "complete":
+                    # Still pending in the capture: by the reasons its root stopped with
+                    # (time_budget: it resumes in a later cycle), else capture_pending.
+                    pending |= set(filter(None, (state.get("reason") or "").split(","))) \
+                        or {"capture_pending"}
                 counts["roots_listed"] += not gaps
                 counts["folders_listed"] += listed["folders_listed"]
                 counts["items_withheld"] += listed["items_withheld"]
@@ -1721,13 +2469,28 @@ def sharepoint_coverage(host: "Host", *,
     finally:
         if store is not None:
             store.close()
-        # A census that ended is consumed; a cut one (or one the run broke off) is kept.
-        _save_census(host, kept, drop=consumed)
+        # A census that ended is consumed (its verdict kept when complete, below); a cut
+        # one (or one the run broke off) is kept.
+        if not consumed:
+            _save_census(host, kept)
+    complete = (not reasons and not counts["files_not_captured"]
+                and not counts["files_current_not_seen"])
+    previous = kept.get("ended")
+    if consumed:
+        _save_census(host, {**_fresh_census(host, scope), **({"ended": {
+            "started_at": kept["started_at"], "complete": True}} if complete else {})})
+    elif (isinstance(previous, dict) and previous.get("complete") is True
+          and _within_window(host, scope, previous.get("started_at"))
+          and reasons and reasons <= {cs.TIME_BUDGET, "folder_bound"}
+          and not counts["files_missed"] and not counts["files_current_not_seen"]
+          and not capture_cut):
+        census.update(verdict="ended_kept", refresh_reasons=sorted(reasons))
+        reasons = set()
     return {**counts, "census_complete": not reasons,
             "complete": not reasons and not counts["files_not_captured"]
             and not counts["files_current_not_seen"],
             "reasons": sorted(reasons), "capture_incomplete": sorted(capture_cut),
-            "census": census}
+            "capture_pending": sorted(pending), "census": census}
 
 
 STATE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")   # ``check --state-name``
@@ -1748,13 +2511,28 @@ def _census_key(scope: Any) -> str:
          for t in scope.targets], sort_keys=True).encode("utf-8")).hexdigest()
 
 
+def _fresh_census(host: "Host", scope: Any) -> dict[str, Any]:
+    return {"schema": CENSUS_SCHEMA, "scope": _census_key(scope),
+            "started_at": _iso(host.clock()), "calls": 0, "roots": {}}
+
+
+def _within_window(host: "Host", scope: Any, started_at: Any) -> bool:
+    """``started_at`` (a census's first call) is inside the scope's census age window."""
+    try:
+        started = datetime.strptime(started_at, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return False
+    age = (host.clock() - started).total_seconds()
+    return 0 <= age <= scope.census_max_age_hours * 3600
+
+
 def _load_census(host: "Host", scope: Any) -> tuple[dict[str, Any], bool]:
     """(the kept census, whether a stale one was dropped). A census that is unreadable,
     malformed, of another scope or older than the scope's ``census_max_age_hours`` is dropped:
     the listing starts over, never carries a position nobody can vouch for."""
     key = _census_key(scope)
-    fresh = {"schema": CENSUS_SCHEMA, "scope": key, "started_at": _iso(host.clock()),
-             "calls": 0, "roots": {}}
+    fresh = _fresh_census(host, scope)
     path = host.state_dir / HOST_DIR / CENSUS_FILE
     try:
         kept = json.loads(path.read_text("utf-8"))
@@ -1775,7 +2553,7 @@ def _load_census(host: "Host", scope: Any) -> tuple[dict[str, Any], bool]:
         return fresh, False
     age = host.clock() - started
     if age.total_seconds() > scope.census_max_age_hours * 3600:
-        return fresh, True
+        return fresh, bool(kept["roots"])   # an empty one (a verdict only) is not restarted
     return kept, False
 
 
@@ -1929,21 +2707,30 @@ def _reason(exc: BaseException) -> str:
         return f"{name}:{unavailable_detail(exc) or 'unavailable'}"
     if isinstance(exc, HostError):
         return f"{name}:{exc.code}"
+    if isinstance(exc, sqlite3.Error):   # the cause (disk_full, locked, ...), not the text
+        from integrations.capture_store import sqlite_code
+        return f"{name}:{sqlite_code(exc)}"
     return name
 
 
 # ------------------------------------------------------------------ serving
 
 def mcp_arguments(host: Host, *, session_ticket_env: str | None,
-                  eval_principal: bool = False) -> list[str]:
+                  eval_principal: bool = False, agent: str | None = None) -> list[str]:
     """``operating.mcp_server`` arguments for a live session over the host's state: the
     employee comes from a signed start-up ticket only (a command-line employee is a
     development session, which never opens live state). ``None``: the remote host's
     arguments (``operating.mcp_http_host``), whose employees come from each request.
     ``eval_principal``: the ticket names the declared eval principal
     (``operating.eval_principal``): read only (no action path) and only the marking
-    grants it declares; no Portal snapshot (it has no Portal row)."""
+    grants it declares; no Portal snapshot (it has no Portal row). ``agent``: the agent
+    definition this session runs instead of the config's (``operating/agent_definitions.json``;
+    an unknown one is refused, never the default)."""
     config = host.config
+    if agent is not None:
+        from .agent_definitions import load as load_agents
+        if not isinstance(agent, str) or agent not in load_agents().agents:
+            raise HostError("agent_unknown")
     declared = None
     if eval_principal:
         if session_ticket_env is None:
@@ -1964,10 +2751,11 @@ def mcp_arguments(host: Host, *, session_ticket_env: str | None,
         argv += ["--session-ticket-env", session_ticket_env]
     if declared is not None:
         argv += ["--eval-principal"]
-    if config.agent is not None:
-        argv += ["--agent", config.agent]
+    if (agent or config.agent) is not None:
+        argv += ["--agent", agent or config.agent]
     if "portal" in config.sources:
         argv += ["--host-captures-portal"]
+    argv += _freshness_arguments(config)
     if config.action_path and declared is None:
         argv += ["--enable-action-path"]
     if config.knowledge_namespaces is not None:
@@ -2063,17 +2851,19 @@ def resolve_approvers(host: Host) -> dict[str, Any] | None:
 def serve_mcp(host: Host, *, session_ticket_env: str,
               input_stream: Any = None, output_stream: Any = None,
               monotonic: Callable[[], float] = time.monotonic,
-              eval_principal: bool = False) -> None:
+              eval_principal: bool = False, agent: str | None = None,
+              clock: Callable[[], datetime] | None = None) -> None:
     """The MCP start-up path: identity resolution (with the directory when configured)
-    and the durable replay guard happen in ``mcp_server.main``'s session start."""
+    and the durable replay guard happen in ``mcp_server.main``'s session start.
+    ``clock``: the "now" the session judges its captures' age at (the host's)."""
     from . import mcp_server
 
     mcp_server.main(mcp_arguments(host, session_ticket_env=session_ticket_env,
-                                  eval_principal=eval_principal),
+                                  eval_principal=eval_principal, agent=agent),
                     # The eval principal is resolved from its declaration, never Entra.
                     directory=None if eval_principal
                     else directory_provider(host, monotonic=monotonic),
-                    input_stream=input_stream, output_stream=output_stream)
+                    input_stream=input_stream, output_stream=output_stream, clock=clock)
 
 
 def serve_mcp_http(host: Host, *, entra_resource: Path, bind: str, port: int,
@@ -2101,9 +2891,60 @@ def console_arguments(host: Host, port: int) -> list[str]:
         argv += ["--portal-access", str(config.portal_access)]
     if "portal" in config.sources:
         argv += ["--host-captures-portal"]
+    argv += _freshness_arguments(config)
     if projection_path(host.state_dir).is_file():
         argv += ["--ontology-store", str(projection_path(host.state_dir))]
     return argv + _live_arguments(host)
+
+
+def freshness_bounds(config: "HostConfig") -> dict[str, float]:
+    """Source family -> seconds: how old this host's own capture of a source may be
+    before answers state it stale (supervisor decision 2026-10-27, captured-Portal
+    staleness). Twice one capture turn of the source: its re-run interval (ingest mode:
+    the section's ``min_interval_seconds``, default 120 s; cycle mode: the host's
+    ``interval_seconds``) plus the time one capture may take (its ``budget_seconds``, else
+    ``timeout_seconds``, else the ingest default timeout, plus the ingest grace). A
+    family two sources write (SharePoint and its lists) takes the larger bound."""
+    from . import ingest_forever as ingest
+    out: dict[str, float] = {}
+    for name, section in sorted(config.sources.items()):
+        if config.ingest is not None:
+            spec = config.capture_sources.get(name)
+            family = getattr(spec, "projected", None)
+            interval = section.get("min_interval_seconds", ingest.DEFAULT_MIN_INTERVAL_SECONDS)
+            grace = config.ingest["grace_seconds"]
+        else:
+            family, interval, grace = PROJECTED_SOURCE.get(name), config.interval_seconds, 0
+        if family is None:
+            continue
+        run = (section.get("budget_seconds") or section.get("timeout_seconds")
+               or ingest.DEFAULT_TIMEOUT_SECONDS)
+        out[family] = max(out.get(family, 0.0), 2.0 * (float(interval) + float(run) + grace))
+    return out
+
+
+def _freshness_arguments(config: "HostConfig") -> list[str]:
+    return [arg for family, seconds in sorted(freshness_bounds(config).items())
+            for arg in ("--freshness-bound", f"{family}={seconds:g}")]
+
+
+@contextmanager
+def _terminated_exits() -> Iterator[None]:
+    """SIGTERM as ``SystemExit(143)`` while a cycle may run on the main thread, so the
+    cycle's capture children are stopped and unrecorded on the way out (a SIGKILL leaves
+    them to the next start's recovery, ``CycleChildren``). Off the main thread: as is."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def terminated(signum: int, _frame: Any) -> None:
+        raise SystemExit(128 + signum)
+
+    previous = signal.signal(signal.SIGTERM, terminated)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
 
 
 def _print(value: Any) -> None:
@@ -2117,9 +2958,13 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
          monotonic: Callable[[], float] = time.monotonic,
          input_stream: Any = None, output_stream: Any = None, jwks: Any = None,
          ready: Callable[[Any], None] | None = None,
-         child: Sequence[str] | None = None) -> int:
+         child: Sequence[str] | None = None,
+         capture_sources: Mapping[str, Any] | None = None,
+         disk_free: Callable[[Path], int] | None = None) -> int:
     """``child`` (tests): the command ``check --interrupt-after-seconds`` runs ``run`` with,
-    in place of ``RUN_CHILD``."""
+    in place of ``RUN_CHILD``. ``capture_sources`` (tests): ingest mode's capture CLIs, in
+    place of ``operating.ingest_forever.SOURCES``. ``disk_free`` (tests): the free-space
+    measure of every host this builds (``Host.disk_free``)."""
     parser = argparse.ArgumentParser(prog="python3 -m operating.host",
                                      description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
@@ -2141,11 +2986,17 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     serve.add_argument("--port", type=int, default=8765)
     serve.add_argument("--no-console", action="store_true",
                        help="cycles only (for a scheduler or a separate console)")
+    serve.add_argument("--stop-file", type=Path, default=None,
+                       help="ingest mode: stop when this file exists (default: "
+                            "<DIR>/host/ingest.stop)")
     mcp = commands.choices["mcp"]
     mcp.add_argument("--session-ticket-env", required=True)
     mcp.add_argument("--eval-principal", action="store_true",
                      help="the ticket names the declared eval principal "
                           "(operating.eval_principal): read only, no action path")
+    mcp.add_argument("--agent", default=None,
+                     help="the agent definition this session runs instead of the config's "
+                          "(operating/agent_definitions.json; unknown: refused)")
     check = commands.choices["check"]
     check.add_argument("--cycles", type=int, default=2)
     check.add_argument("--state-name", default=None, metavar="NAME",
@@ -2188,25 +3039,31 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
             print(json.dumps({"error": exc.code, "setting": exc.setting}), file=sys.stderr)
             return 2
     try:
-        config = None if args.command == "status" else HostConfig.from_file(args.config)
+        config = None if args.command == "status" else HostConfig.from_file(
+            args.config, capture_sources=capture_sources)
         from integrations.capture_mail import assert_outside_git
         state_dir = assert_outside_git(args.state_dir)   # as Host() does, before any write
         if args.command == "check" and args.interrupt_after_seconds is not None:
             claim_probe_state(state_dir)   # before Host() writes into it
         if args.command in ("serve", "mcp", "mcp-http") and probe_state(state_dir):
             raise HostError("host_probe_state_not_served")
+        if args.command == "serve" and config.ingest is not None:
+            from .ingest_forever import ephemeral
+            if ephemeral(state_dir):   # cursors a reboot clears re-read every source
+                raise HostError("state_dir_ephemeral")
         if getattr(args, "sources", None) is not None:
             config = config.only(args.sources.split(","))
         host = Host(args.state_dir, config, environ=environ, sender=sender,
                     workbench_fetch=workbench_fetch, portal_options=portal_options,
-                    clock=clock, sleep=sleep)
+                    clock=clock, sleep=sleep, monotonic=monotonic, disk_free=disk_free)
         if args.command in ("serve", "mcp", "mcp-http") \
                 and not getattr(args, "eval_principal", False):
             resolve_approvers(host)   # an eval session is never served the action path
         if args.command == "status":
             _print(host.status())
         elif args.command == "run":
-            _print(host.cycle())
+            with _terminated_exits():
+                _print(host.cycle())
         elif args.command == "check":
             run = ["run", "--state-dir", str(args.state_dir), "--config", str(args.config),
                    *(["--sources", args.sources] if args.sources is not None else [])]
@@ -2216,31 +3073,39 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
                                         stdout=subprocess.DEVNULL, start_new_session=True,
                                         env=None if environ is None else dict(environ))
 
-            _print(cycles_check(lambda: Host(
-                args.state_dir, config, environ=environ, sender=sender,
-                workbench_fetch=workbench_fetch, portal_options=portal_options,
-                clock=clock, sleep=sleep), cycles=args.cycles,
-                withheld_principal=args.withheld_principal,
-                interrupt_after=args.interrupt_after_seconds, spawn=spawn))
+            with _terminated_exits():
+                _print(cycles_check(lambda: Host(
+                    args.state_dir, config, environ=environ, sender=sender,
+                    workbench_fetch=workbench_fetch, portal_options=portal_options,
+                    clock=clock, sleep=sleep, monotonic=monotonic, disk_free=disk_free),
+                    cycles=args.cycles,
+                    withheld_principal=args.withheld_principal,
+                    interrupt_after=args.interrupt_after_seconds, spawn=spawn))
         elif args.command == "mcp":
             serve_mcp(host, session_ticket_env=args.session_ticket_env,
                       input_stream=input_stream, output_stream=output_stream,
-                      monotonic=monotonic, eval_principal=args.eval_principal)
+                      monotonic=monotonic, eval_principal=args.eval_principal,
+                      agent=args.agent, clock=clock)
         elif args.command == "mcp-http":
             return serve_mcp_http(host, entra_resource=args.entra_resource, bind=args.bind,
                                   port=args.port, monotonic=monotonic, jwks=jwks, ready=ready)
         else:
             interval = args.interval_seconds or config.interval_seconds
             if args.no_console:
-                host.serve(interval_seconds=interval, max_cycles=args.max_cycles,
-                           on_cycle=_print)
+                with _terminated_exits():
+                    host.serve(interval_seconds=interval, max_cycles=args.max_cycles,
+                               on_cycle=_print, stop_file=args.stop_file)
                 return 0
-            _print(host.cycle())   # the console opens over a built projection
+            continuous = config.ingest is not None
+            if not continuous:
+                _print(host.serve_cycle())   # the console opens over a built projection
 
             def later() -> None:
-                if not host.stop.wait(interval):
+                # Ingest mode starts at once: its sources refresh the projection as each
+                # finishes, the console serves the generation committed meanwhile.
+                if continuous or not host.stop.wait(interval):
                     host.serve(interval_seconds=interval, max_cycles=args.max_cycles,
-                               on_cycle=_print)
+                               on_cycle=_print, stop_file=args.stop_file)
 
             threading.Thread(target=later, daemon=True).start()
             from operator_ui import case_console

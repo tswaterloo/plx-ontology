@@ -593,7 +593,7 @@ class AgreementCauseTests(_NeedsPdf):
 
 class IssuedByOwnPartyTests(unittest.TestCase):
     def test_only_a_record_of_the_own_record_type_raises_the_doubt(self):
-        """The document's number held by an object of another
+        """Review c5c50e8b58e6 item 3: the document's number held by an object of another
         type than the class's own-record type is no own purchase order."""
         evidence = {"fields": {"po_number": {"value": "PO100236"}}}
         ((kind, value, record_type),) = document_fields.own_record_keys(
@@ -612,12 +612,12 @@ class IssuedByOwnPartyTests(unittest.TestCase):
 
 
 class CustomerPoLiveCheckTests(_NeedsPdf):
-    """``verify/live-checks/ontology.document_fields_customer_po.json`` over the in-process
+    """``devloop/live-checks/ontology.document_fields_customer_po.json`` over the in-process
     FakeDrive: the spec's expectations hold on the check's own output."""
 
     def test_the_customer_po_check_meets_its_spec_leaking_nothing(self):
         import argparse
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
         from integrations import capture_sharepoint as cs
         from integrations.tests import test_capture_sharepoint as tsp
         from operating import sharepoint_host_check as check
@@ -653,7 +653,7 @@ class CustomerPoLiveCheckTests(_NeedsPdf):
         self.assertTrue(all(method == "GET" for method, _url in drive.calls))
         for secret in ("4500000001", "OR1000777001", "Northwind", tsp.DRIVE):
             self.assertNotIn(secret, json.dumps(report))
-        spec = json.loads((ROOT / "verify/live-checks/ontology.document_fields_customer_po.json")
+        spec = json.loads((ROOT / "devloop/live-checks/ontology.document_fields_customer_po.json")
                           .read_text("utf-8"))
         lv.validate_spec(spec, stem="ontology.document_fields_customer_po")
         self.assertEqual(lv.check_expectations(spec, 0, report), [])
@@ -685,6 +685,54 @@ class TitleCueTests(_NeedsPdf):
         found = document_fields.extract_fields(pdf(customer_po("4500000001", "OR1000777001")),
                                                "application/pdf", filename="po.pdf")
         self.assertEqual(found["profile"], "customer_po")
+
+
+class NotPoLikeRecordTests(_NeedsPdf):
+    """REC-07 at the attested comparison: a Portal ``po_reference`` that is not PO-like
+    (a person's name, a spaced PO) is withheld (devloop/CASE-RUNTIME.md section 4). It
+    still compares on its source text, so a customer PO document that disagrees with it
+    is reported as a conflict, but the conflict shows the record side withheld and the
+    record's text reaches no reader through ``plx.object``."""
+    ORDERS = {key: ORDERS[key] for key in ("so1",)} | {
+        "so11": ("OR1000777011", {"po_reference": "Jane Smith"}),
+        "so12": ("OR1000777012", {"po_reference": "PO 4500000003"})}  # its document's PO
+    NAMED = dict.fromkeys(ORDERS, 1)
+    tools = MissingInRecordTests.tools
+    object_id = MissingInRecordTests.object_id
+    read = MissingInRecordTests.read
+
+    @classmethod
+    def setUpClass(cls):
+        MissingInRecordTests.setUpClass.__func__(cls)
+
+    @classmethod
+    def tearDownClass(cls):
+        MissingInRecordTests.tearDownClass.__func__(cls)
+
+    def test_a_withheld_po_reference_conflicts_on_its_text_but_is_never_echoed(self):
+        for key, text in (("so11", "Jane Smith"), ("so12", "PO 4500000003")):
+            for actor in (READER, NO_FINANCE, OUTSIDER):
+                with self.subTest(order=key, actor=actor.principals):
+                    out = self.read(self.object_id("SalesOrder", key), actor)
+                    self.assertNotIn(text.casefold(), json.dumps(out).casefold())
+                    if actor is OUTSIDER:   # the mail is not theirs: nothing to compare
+                        self.assertEqual(out["conflicts"], [])
+                        continue
+                    (conflict,) = out["conflicts"]
+                    self.assertEqual(conflict["kind"], "value_disagreement")
+                    (record,) = [v for v in conflict["values"]
+                                 if v["property"] == "customer_po"]
+                    self.assertEqual(record["value"], {
+                        "untrusted_text": "", "withheld": "not_po_like",
+                        "origin": record["value"]["origin"]})
+            out = self.read(self.object_id("SalesOrder", key))
+            (held,) = [v for v in out["values"] if v["property"] == "customer_po"]
+            self.assertEqual(held["value"]["withheld"], "not_po_like")
+            self.assertEqual(held["value"]["untrusted_text"], "")
+            self.assertNotIn("leads", out)  # a withheld value is not an empty one
+        # The order holding no PO still gets its lead: only the withheld text is hidden.
+        self.assertEqual([lead["kind"] for lead in self.read(
+            self.object_id("SalesOrder", "so1"))["leads"]], ["missing_in_record"])
 
 
 if __name__ == "__main__":

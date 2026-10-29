@@ -1,4 +1,4 @@
-"""Read-only evaluation of a case playbook against a finished case.
+"""Read-only evaluation of a case playbook against a finished case (milestone M2, component F).
 
 ``evaluate(playbook, call, case_id)`` reads one case through the MCP read tools
 (``plx.case_get`` paged to completion, ``plx.source_citation`` to re-read cited rows) and

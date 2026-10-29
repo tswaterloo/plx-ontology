@@ -60,7 +60,7 @@ class ScoreTests(unittest.TestCase):
                              reported)
             # 2400 contradicts its cited row (2350): the claim gate fails it, not the bound
             self.assertEqual(result["passed"], reported == "2350", reported)
-        self.assertEqual(result["scorer"], "plx-eval-scorer/14")
+        self.assertEqual(result["scorer"], "plx-eval-scorer/24")
 
     def test_a_claim_value_unstated_gate_failure_blocks_like_the_other_gate_codes(self):
         """The claim gate's claim_value_unstated (a passing text, enum or date claim whose
@@ -98,7 +98,7 @@ class ScoreTests(unittest.TestCase):
         self.assertIn("claim_uncited_number", result["violations"])
 
     def test_extra_uncited_number_is_a_blocking_gate_failure(self):
-        # A value with a number and no citations bypassed the gate.
+        # Review 1657540: a value with a number and no citations bypassed the gate.
         for extra in ({"name": "shipped_guess", "value": "2300", "quantity_role": "shipped"},
                       {"name": "damaged", "value": "999", "citations": []},
                       {"name": "damaged", "value": 999.0}):
@@ -214,7 +214,7 @@ class ScoreTests(unittest.TestCase):
                 self.assertEqual(result["outcome"], "wrong" if codes else "correct")
 
     def test_one_answer_gap_states_one_expected_gap_and_contradictory_states_fail(self):
-        """Gaps match one-to-one (a maximum matching, whatever the
+        """Directive 183ec855c89b: gaps match one-to-one (a maximum matching, whatever the
         order), and two states on one value contradict each other (isolated-fixture)."""
         outcome = copy.deepcopy(fx.item()["known_outcome"])
         outcome["gaps"] = [{"state": "not_ingested", "subject": "shipped quantity",
@@ -235,7 +235,7 @@ class ScoreTests(unittest.TestCase):
                 self.assertEqual(result["gap_honesty"], not codes)
 
     def test_the_oracle_gives_one_gap_state_per_value_and_two_states_contradict(self):
-        """F3 with shipment headers but no lines, the oracle
+        """Directive c1ff4b736a47 (1): F3 with shipment headers but no lines, the oracle
         gives shipped one gap (absent_in_source, shipment_without_lines), answered word for
         word correct; an item that expects a second state on that value (what the oracle
         gave before) no longer lets an answer state both (isolated-fixture)."""
@@ -261,7 +261,7 @@ class ScoreTests(unittest.TestCase):
         self.assertEqual((result["outcome"], result["codes"]), ("wrong", ["gap_contradictory"]))
 
     def test_contradictory_gaps_are_grouped_by_the_answer_value_they_resolve_to(self):
-        """Two states on the answer value ``shipped`` contradict
+        """Directive c1ff4b736a47 (2): two states on the answer value ``shipped`` contradict
         however the concerns is written; two states on a concerns naming no answer value
         (the expected value's name after the product renamed it) concern nothing."""
         outcome = copy.deepcopy(fx.item()["known_outcome"])
@@ -471,7 +471,10 @@ class PinnedOriginalTests(unittest.TestCase):
         self.assertEqual(codes_of(self.score(pinned_item(stale), ORIG_DRIVE), "lot"),
                          ["original_not_pinned"])
 
-    def test_a_short_value_verifies_only_through_a_cited_quote_that_holds_it(self):
+    def test_a_quote_never_rescues_a_value_and_a_forged_quote_refuses_it(self):
+        """The value is checked on its own: ``USD`` quoted as ``Currency: USD`` is still
+        too short to verify on the page. A quote then only refuses: it must hold the value
+        as written and the page must hold the quote."""
         host = OriginalHost({ORIG_PINNED: {"sha256": PIN}, ORIG_OTHER: {"sha256": "cd" * 32}},
                             text="Certificate of analysis. Currency: USD. Shade: not Amber. "
                                  "Qty ordered: 1,920 EA. Net weight: 500 lb.")
@@ -487,23 +490,34 @@ class PinnedOriginalTests(unittest.TestCase):
                 for handle, quote in zip(handles, quotes or (None,))])
             return sc.score(*run(item=item, answer=answer, host=host))
 
-        self.assertTrue(scored("USD", "Currency: USD")["passed"])
-        # without a quote today's rule stands: USD alone is too short to verify
-        self.assertEqual(codes_of(scored("USD"), "lot"), ["claim_check_failed"])
-        for value, quote in (("Amber", "not Amber"), ("Amber", "Shade: not Amber"),
-                             ("USD", "Certificate of analysis"), ("US", "Currency: USD"),
-                             ("EUR", "Currency: EUR")):   # the last is not on the page
+        # a quote never rescues a value that does not verify alone
+        for quote in (None, "Currency: USD", "Certificate of analysis. Currency: USD"):
+            with self.subTest(rescue=quote):
+                result = scored("USD", *(() if quote is None else (quote,)))
+                self.assertEqual(codes_of(result, "lot"), ["claim_check_failed"])
+                self.assertIn("claim_value_mismatch", result["claim_checks"]["codes"])
+        # a correct quote of a value that verifies alone passes
+        self.assertTrue(scored("Currency: USD", "Certificate of analysis. Currency: USD")
+                        ["passed"])
+        self.assertTrue(scored("1920", "Qty ordered: 1,920 EA", unit="EA")["passed"])
+        # a forged quote refuses a value that would pass alone
+        self.assertTrue(scored("Currency: USD")["passed"])
+        for value, quote, unit in (
+                ("Currency: USD", "Currency: USD and EUR", None),     # not on the page
+                ("Currency: USD", "Certificate of analysis", None),   # misses the value
+                ("Shade: not Amber", "Shade: not Amber or Red", None),  # not on the page
+                ("1920", "Qty ordered: 1,902 EA", "EA"),              # another number
+                ("1920", "Qty ordered: 1,920 EA. Net weight: 600 lb", "EA")):
             with self.subTest(value=value, quote=quote):
-                result = scored(value, quote)
+                result = scored(value, quote, unit=unit)
                 self.assertEqual(codes_of(result, "lot"), ["claim_check_failed"])
                 self.assertIn("claim_value_mismatch", result["claim_checks"]["codes"])
         # a refused quote keeps its citation's place: the pinned citation fails, the one
         # that passes cites another original
-        self.assertEqual(codes_of(scored("USD", "Certificate of analysis", "Currency: USD",
+        self.assertEqual(codes_of(scored("Currency: USD", "Certificate of analysis",
+                                         "Currency: USD",
                                          handles=(ORIG_PINNED, ORIG_OTHER)), "lot"),
                          ["original_not_pinned"])
-        # a number keeps the number path whatever its quote: its form and the page's unit
-        self.assertTrue(scored("1920", "Qty ordered: 1,920 EA", unit="EA")["passed"])
         weight = scored("500", "Net weight: 500 lb", unit="kg")
         self.assertIn("claim_unit_mismatch", weight["claim_checks"]["codes"])
         self.assertEqual(codes_of(weight, "lot"), ["claim_check_failed"])
@@ -511,9 +525,10 @@ class PinnedOriginalTests(unittest.TestCase):
         answer["values"][0]["citations"][0]["quote"] = None
         self.assertEqual(sc.answer_problems(answer), ["values.0.citations"])
 
-    def test_a_quote_counts_on_an_original_text_and_never_loosens_a_row_field(self):
+    def test_a_quote_on_a_row_field_or_an_original_text_only_refuses(self):
         """A row field has one value: 'Shipped' quoted as 'Partially Shipped' is not it,
-        while on an original's text the quote stands as it did before."""
+        and on an original's text 'Shipped' is too short to verify whatever the quote. A
+        quote the cited record does not hold refuses a value that passes alone."""
         status = fx.handle("public.app_sales_order", {"id": "so-q1"}, 9)
         mail = "graph-mail://ops@example.test/AAMkQ1@CKQ1"
         prose = "Order status: Partially Shipped on 2099-01-02."
@@ -530,17 +545,170 @@ class PinnedOriginalTests(unittest.TestCase):
             report = sc.gate(answer, evidence)["report"]
             return report["passed"], [failure["code"] for failure in report["failures"]]
 
+        mismatch = (False, ["claim_value_mismatch"])
         self.assertEqual(gated("Shipped", status, "row.status", "Partially Shipped"),
-                         (False, ["claim_value_mismatch"]))
+                         mismatch)
         for handle, field in ((ORIG_PINNED + "#page=1", "text"), (mail, "row.body_text")):
             with self.subTest(field=field):
                 self.assertEqual(gated("Shipped", handle, field, "Partially Shipped"),
+                                 mismatch)
+                self.assertEqual(gated("Partially Shipped", handle, field,
+                                       "Order status: Partially Shipped"), (True, []))
+                self.assertEqual(gated("Partially Shipped", handle, field,
+                                       "Order status: Partially Shipped on 2099-01-03"),
+                                 mismatch)
+                self.assertEqual(gated("Partially Shipped", handle, field, "Order status"),
+                                 mismatch)
+        self.assertEqual(gated("Partially Shipped", status, "row.status",
+                               "Partially Shipped"), (True, []))
+        # the cell does not hold these quotes (a label around it, a negation of it)
+        for quote in ("Status: Partially Shipped", "not Partially Shipped"):
+            with self.subTest(quote=quote):
+                self.assertEqual(gated("Partially Shipped", status, "row.status", quote),
+                                 mismatch)
+        # a citation of a record the harness did not re-read verifies no quote
+        self.assertEqual(gated("Partially Shipped", status.replace("so-q1", "so-q2"),
+                               "row.status", "Partially Shipped")[0], False)
+
+    def test_an_answer_text_writing_another_currency_beside_a_checked_value_fails(self):
+        """Scorer /22, as the product's final reply: EUR beside a value stated and checked
+        in USD is claim_currency_mismatch (blocking); its own currency, or a bare $ for a
+        dollar, passes."""
+        page = ORIG_PINNED + "#page=1"
+        evidence = {page: {"ok": True, "page": 1, "text": "Invoice total: USD 1,260.50."}}
+
+        def gated(text):
+            answer = {"text": text, "values": [{"name": "total", "value": "1260.50",
+                                                "currency": "USD", "citations": [
+                                                    {"l1_handle": page, "field_path": "text"}]}]}
+            report = sc.gate(answer, evidence)["report"]
+            return report["passed"], [failure["code"] for failure in report["failures"]
+                                      if failure["code"] != "claim_prose_unchecked"]
+
+        for text in ("1,260.50 USD.", "USD 1,260.50.", "$1,260.50."):
+            with self.subTest(text=text):
+                self.assertEqual(gated(text), (True, []))
+        for text in ("1,260.50 EUR.", "€1,260.50."):
+            with self.subTest(text=text):
+                self.assertEqual(gated(text), (False, ["claim_currency_mismatch"]))
+
+    def test_a_quote_holds_a_value_as_the_gate_writes_it_and_still_only_refuses(self):
+        """The quote tolerates what the claim gate tolerates: a status word in another case
+        (or with ``_``), a number in another format. A wrong value fails whatever the quote."""
+        status = fx.handle("public.app_sales_order", {"id": "so-q1"}, 9)
+        page = ORIG_PINNED + "#page=1"
+        evidence = {
+            status: {"ok": True, "status": "current", "relation": "public.app_sales_order",
+                     "key": {"id": "so-q1"},
+                     "row": {"id": "so-q1", "status": "Partially Shipped", "qty": 1000}},
+            page: {"ok": True, "page": 1,
+                   "text": "Qty ordered: 1,000 EA, 1000 EA on release; yield 25% of lot."}}
+
+        def gated(value, handle, field, quote):
+            answer = {"text": "", "values": [{"name": "v", "value": value, "citations": [
+                {"l1_handle": handle, "field_path": field, "quote": quote}]}]}
+            report = sc.gate(answer, evidence)["report"]
+            return report["passed"], [failure["code"] for failure in report["failures"]]
+
+        mismatch = (False, ["claim_value_mismatch"])
+        for value in ("partially shipped", "PARTIALLY SHIPPED", "partially_shipped"):
+            with self.subTest(status=value):
+                self.assertEqual(gated(value, status, "row.status", "Partially Shipped"),
                                  (True, []))
-                self.assertFalse(gated("Shipped", handle, field, "Order status")[0])
-        # an exact field value passes whatever the citation quotes
-        for quote in ("Status: Shipped", "not Partially Shipped"):
-            self.assertEqual(gated("Partially Shipped", status, "row.status", quote),
-                             (True, []))
+        for value, quote in (("1000", "Qty ordered: 1,000 EA"), ("1,000", "1000 EA on release"),
+                             ("0.25", "yield 25% of lot")):
+            with self.subTest(value=value, quote=quote):
+                self.assertEqual(gated(value, page, "text", quote), (True, []))
+        for value, quote in (("1,000", "1000"), ("1000", "1,000")):
+            with self.subTest(cell=quote):
+                self.assertEqual(gated(value, status, "row.qty", quote), (True, []))
+        # a wrong value fails whatever the quote says, and a quote of another value refuses
+        for value, handle, field, quote in (
+                ("Shipped", status, "row.status", "Partially Shipped"),
+                ("Open", status, "row.status", "Partially Shipped"),
+                ("1001", page, "text", "Qty ordered: 1,000 EA"),
+                ("1001", status, "row.qty", "1000"),
+                ("1000", page, "text", "yield 25% of lot"),
+                ("partially shipped", status, "row.status", "not partially shipped")):
+            with self.subTest(wrong=value, quote=quote):
+                self.assertEqual(gated(value, handle, field, quote), mismatch)
+
+    def test_a_percent_value_is_held_by_its_printed_percent_as_the_gate_reads_it(self):
+        """/23 (GP-05: ``100`` percent quoted as ``100% project-dedicated`` was refused,
+        the quote read as 1.00, while the product gate passed it). A value in a percent
+        unit is held at percent scale; any other unit, or none, still reads 25% as 0.25."""
+        page = ORIG_PINNED + "#page=1"
+        evidence = {page: {"ok": True, "page": 1,
+                           "text": "Qty ordered: 1,000 EA; yield 25% of lot; 25 pct waste."}}
+
+        def gated(value, unit, quote):
+            answer = {"text": "", "values": [{"name": "v", "value": value, **(
+                {"unit": unit} if unit else {}), "citations": [
+                    {"l1_handle": page, "field_path": "text", "quote": quote}]}]}
+            report = sc.gate(answer, evidence)["report"]
+            return report["passed"], [failure["code"] for failure in report["failures"]]
+
+        for value, unit, quote in (("25", "percent", "yield 25% of lot"),
+                                   ("25", "%", "yield 25% of lot"),
+                                   ("25", " Percent ", "yield 25% of lot"),
+                                   ("25", "pct", "25 pct waste"),
+                                   ("0.25", None, "yield 25% of lot")):
+            with self.subTest(value=value, unit=unit):
+                self.assertEqual(gated(value, unit, quote), (True, []))
+        for value, unit, quote in (("25", None, "yield 25% of lot"),
+                                   ("25", "lb", "yield 25% of lot"),
+                                   ("0.25", "percent", "yield 25% of lot"),
+                                   ("2500", "percent", "yield 25% of lot"),
+                                   ("26", "percent", "yield 25% of lot")):
+            with self.subTest(refused=value, unit=unit):
+                self.assertFalse(gated(value, unit, quote)[0])
+
+    def test_the_answer_text_restating_the_questions_token_asserts_no_figure(self):
+        """/23 (GP-05, RM-05): the scorer's own reading: a whole token holding a letter and
+        a digit that the asked question holds (equal but for case) is no figure of the
+        answer text; a bare number, a number and unit apart, a token written otherwise,
+        a token inside an answer value's text, or no question leave it a figure."""
+        asked = "What did the NGen Q9 review of MIDAS2 (PO-00349) and 12 kg reject?"
+        self.assertEqual(sc.asked_restated("The q9 review; MIDAS2; PO-00349.", asked),
+                         "The    review;       ;         .")
+        for text in ("12 kg left.", "The Q9-10 review.", "Q10 rows.", "NET30."):
+            with self.subTest(text=text):
+                self.assertEqual(sc.asked_restated(text, asked), text)
+        self.assertEqual(sc.asked_restated("Q9 by 9/30. Q9.", asked, ["Q9 by 9/30."]),
+                         "Q9 by 9/30.   .")
+        self.assertEqual(sc.asked_restated("The Q9 review.", None), "The Q9 review.")
+
+        def failures(text, question):
+            answer = {"text": text, "values": []}
+            return [(f["code"], f["value"]) for f in sc.gate(
+                answer, {}, question=question)["report"]["failures"]
+                if f["code"] == "claim_unstructured"]
+        self.assertEqual(failures("The Q9 review rejected it.", asked), [])
+        self.assertEqual(failures("The Q9 review rejected it.", None),
+                         [("claim_unstructured", "9")])
+        self.assertEqual(failures("The Q9 review cut 12 rows.", asked),
+                         [("claim_unstructured", "12")])
+        # /24: a quantity glued to its unit or term is a figure though the question holds
+        # it (the Portal's unit table, the scorer's term table); a label stays restated
+        glued = ("How did 12kg, 500ML, 3.5L, NET30, QTY-12, PRICE-500, USD500 and W30 "
+                 "change for SKU-1509, L9, PO5447 and Q9?")
+        for token, value in (("12kg", "12"), ("500ML", "500"), ("3.5L", "3.5"),
+                             ("NET30", "30"), ("QTY-12", "12"), ("PRICE-500", "500"),
+                             ("USD500", "500"), ("W30", "30")):
+            with self.subTest(glued=token):
+                self.assertTrue(sc.asked_quantity(token))
+                self.assertEqual(sc.asked_restated(f"It is {token}.", glued),
+                                 f"It is {token}.")
+                self.assertIn(("claim_unstructured", value),
+                              failures(f"It is {token}.", glued))
+        for token in ("SKU-1509", "L9", "PO5447", "Q9", "MIDAS2", "PO-00349"):
+            with self.subTest(label=token):
+                self.assertFalse(sc.asked_quantity(token))
+        self.assertEqual(failures("SKU-1509, L9, PO5447 and Q9.", glued), [])
+        item, transcript = {"question": {"text": "a", "paraphrases": ["b"]}}, {}
+        self.assertEqual(sc.asked_question(item, {"phrasing_index": 1}), "b")
+        self.assertEqual(sc.asked_question(item, transcript), "a")
+        self.assertIsNone(sc.asked_question(item, {"phrasing_index": 5}))
 
     def test_a_page_is_reassembled_whole_and_a_cut_page_supports_nothing(self):
         host = OriginalHost({ORIG_PINNED: {"sha256": PIN}}, chunk=10)
@@ -549,6 +717,38 @@ class PinnedOriginalTests(unittest.TestCase):
         self.assertEqual(transcript["evidence"][ORIG_PINNED + "#page=1"]["text"], PAGE_TEXT)
         transcript["evidence"][ORIG_PINNED + "#page=1"]["text"] = PAGE_TEXT[:10]
         self.assertFalse(sc.score(item, transcript)["passed"])
+
+    def test_a_quote_pins_which_of_two_printed_meanings_a_figure_is_as_the_gate_does(self):
+        """/20 (F22-0008: a quoted 9900.00 the gate passed was ambiguous to the scorer,
+        which checked the value without its quote)."""
+        page = ORIG_PINNED + "#page=1"
+        host = OriginalHost({ORIG_PINNED: {"sha256": PIN}},
+                            text="Statement total 9900.00 USD due. Credit limit 9900.00 "
+                                 "days overdue is not a figure here.")
+        item = pinned_item()
+        item["known_outcome"]["values"][0].update(name="total", value="9900.00")
+        item["known_outcome"]["values"][0].pop("object_type", None)
+
+        def scored(quote):
+            cite = {"l1_handle": page, "field_path": "text",
+                    **({"quote": quote} if quote else {})}
+            return sc.score(*run(item=item, host=host, answer=fx.good_answer(
+                answerability="answerable", gaps=[], text="The statement total is 9900.00.",
+                values=[{"name": "total", "value": "9900.00", "citations": [cite]}])))
+        bare = scored(None)
+        self.assertEqual(bare["outcome"], "wrong", bare)
+        self.assertIn("claim_value_mismatch", bare["claim_checks"]["codes"])
+        quoted = scored("Statement total 9900.00 USD")
+        self.assertEqual((quoted["outcome"], quoted["claim_checks"]["passed"]),
+                         ("correct", True), quoted)
+        self.assertNotIn("claim_value_mismatch", quoted["claim_checks"]["codes"])
+        # the quote pins, never rescues: a quote the page does not hold, or one that does
+        # not hold the value, still refuses it
+        for quote in ("Statement total 9900.00 CAD", "Credit limit due"):
+            self.assertEqual(scored(quote)["outcome"], "wrong", quote)
+        # printed once, the bare figure passes: the refusal above is the ambiguity
+        host.text = "Statement total 9900.00 USD due."
+        self.assertEqual(scored(None)["outcome"], "correct")
 
     def test_an_expression_over_figures_on_the_pinned_page_scores_right_and_wrong(self):
         page = ORIG_PINNED + "#page=1"
@@ -591,6 +791,65 @@ class PinnedOriginalTests(unittest.TestCase):
             result = scored(given)
             self.assertEqual(result["outcome"], "wrong", code)
             self.assertIn(code, codes_of(result, "total"), code)
+
+    def test_an_expression_inputs_quote_pins_its_figure_and_a_printed_percent_is_a_rate(self):
+        """A01/A05/A07 (F22-0001, -0005, -0007): the gate passes an expression whose inputs
+        each carry a quote; the scorer checked the inputs without it, so a figure printed
+        twice, or a "10" beside other tens, was ambiguous and the value stayed wrong."""
+        page = ORIG_PINNED + "#page=1"
+        host = OriginalHost({ORIG_PINNED: {"sha256": PIN}}, chunk=400, text=(
+            "15% Deposit Required. Received $18,901.08 open PP. Lines: 18,901.08 credited "
+            "later. Check: 15% of $123,429.27 is $18,514.39. Units 10 per case; "
+            "BZ-26F to 35F (10 SKUs) 3,024 each."))
+        item = pinned_item()
+        item["known_outcome"]["values"][0].update(name="gap", value="386.69")
+        item["known_outcome"]["values"][0].pop("object_type", None)
+
+        def scored(inputs, expression="x0 - x1", value="386.69"):
+            given = fx.good_answer(answerability="answerable", gaps=[],
+                                   text=f"The difference is {value}.", values=[{
+                                       "name": "gap", "value": value, "calculation": {
+                                           "op": "expression", "expression": expression,
+                                           "inputs": [{"l1_handle": page, "field_path": "text",
+                                                       **entry} for entry in inputs]}}])
+            item["known_outcome"]["values"][0]["value"] = value
+            return sc.score(*run(item=item, answer=given, host=host))
+        received = {"value": "18,901.08", "quote": "Received $18,901.08 open PP"}
+        due = {"value": "18,514.39", "quote": "15% of $123,429.27 is $18,514.39"}
+        quoted = scored([received, due])
+        self.assertEqual((quoted["outcome"], quoted["claim_checks"]["passed"]),
+                         ("correct", True), quoted)
+        # without the quote the figure printed twice is ambiguous, as the gate finds it
+        bare = scored([{"value": "18,901.08"}, due])
+        self.assertEqual(bare["outcome"], "wrong")
+        self.assertIn("claim_value_mismatch", bare["claim_checks"]["codes"])
+        # the quote pins, never rescues: one the page lacks, or one not holding the figure
+        for quote in ("Received $18,901.09 open PP", "Lines: credited later"):
+            refused = scored([{**received, "quote": quote}, due])
+            self.assertEqual(refused["outcome"], "wrong", quote)
+            self.assertFalse(refused["claim_checks"]["passed"], quote)
+        # a quote is a string, as the gate's input shape has it
+        self.assertEqual(sc.calculation_problem({"op": "expression", "expression": "x0",
+                                                 "inputs": [{"l1_handle": page,
+                                                             "field_path": "text",
+                                                             "value": "10", "quote": 7}]}),
+                         "input")
+        # "(10 SKUs)": a ten among other tens, pinned by its quote
+        tens = scored([{"value": "3,024", "quote": "(10 SKUs) 3,024 each"},
+                       {"value": "10", "quote": "(10 SKUs)"}], "x0*x1", "30240")
+        self.assertEqual(tens["outcome"], "correct", tens)
+        # a printed percent is its rate (15% is 0.15), checked where the text prints it as
+        # a percent, as the gate's expression inputs are (claim_checks.expression_inputs)
+        rate = scored([{"value": "18,514.39", "quote": "15% of $123,429.27 is $18,514.39"},
+                       {"value": "15%", "quote": "15% Deposit Required"}],
+                      "round_to_cents(x0*x1)", "2777.16")
+        self.assertEqual(rate["outcome"], "correct", rate)
+        self.assertEqual(rate["values"][0]["codes"], [])
+        # a percent the quote does not print as one is refused, never read as 15
+        unprinted = scored([{"value": "18,514.39", "quote": "15% of $123,429.27 is $18,514.39"},
+                            {"value": "15%", "quote": "Units 10 per case"}],
+                           "round_to_cents(x0*x1)", "2777.16")
+        self.assertEqual(unprinted["outcome"], "wrong")
 
     def test_expression_inputs_resolve_percent_and_currency_or_fail_closed(self):
         page = ORIG_PINNED + "#page=1"
@@ -753,7 +1012,7 @@ class PinnedOriginalTests(unittest.TestCase):
 
 
 class ProposedCardMatchTests(unittest.TestCase):
-    """The 2026-10-16 RRO run's shape (docs/decisions/2026-10-16-use-case-answer-misses.md
+    """The 2026-10-16 RRO run's shape (devloop/DECISIONS/2026-10-16-use-case-answer-misses.md
     finding 1, evals/dev/rro/answer_review.json): the compiler pins each arithmetic result to
     the byte pin as ``result``; the agent names its value otherwise and computes it over a
     page of the same original. The committed cards' operands on a synthetic stand-in page,
@@ -953,6 +1212,598 @@ class OutcomeTests(unittest.TestCase):
         everywhere = sc.aggregate([unjustified, sc.score(*run(answer=self.abstain()))])
         self.assertEqual((everywhere["dev"]["F3"]["outcomes"]["coverage"],
                           everywhere["dev"]["F3"]["outcomes"]["accuracy"]), (0.0, None))
+
+
+class RubricEvidenceTests(unittest.TestCase):
+    """Scorer /17: a proposal card (known outcome ``partial``, no value, no gap) is correct
+    only with an evidenced claim; the ``partial`` label alone never is."""
+
+    GAP = [{"state": "absent_in_source", "subject": "the fixture map",
+            "reason": "no_matching_document_found"}]
+
+    def card(self, question="Which order number does sales order SO-TEST-77 carry?",
+             **changes):
+        oracle = {"id": "oracle:proposed-comprehension@0123456789ab",
+                  "interface": "plx-eval-oracle/v1",
+                  "derived_from": ["card:fixture-map/FX-01"],
+                  "computed_at": "2099-01-02T03:05:00Z"}
+        oracle.update(changes.pop("oracle", {}))
+        return fx.item(question={"text": f"In the fixture-map use case: {question}"},
+                       known_outcome={"answerability": "partial", "values": [], "gaps": []},
+                       oracle=oracle,
+                       label={"status": "oracle_only", "note": "PROPOSED comprehension card "
+                              "FX-01 (fixture-map): a rubric, never gold. Criterion: name "
+                              "the order number from the sales order record."},
+                       must_not=["propose_action", "invent_absent_value"], **changes)
+
+    def answer(self, *, cited=True, gaps=None):
+        values = [{"name": "order_number", "value": "SO-TEST-77",
+                   "citations": [{"l1_handle": fx.H_SO, "field_path": "row.order_number"}]}
+                  ] if cited else [{"name": "order_number", "value": None}]
+        return fx.good_answer(answerability="partial", values=values,
+                              text="The sales order record names its order number."
+                              if cited else "The map was not found.",
+                              gaps=self.GAP if gaps is None else gaps)
+
+    def run_card(self, item, answer, *, read_order=True):
+        def script(prompt, call):
+            if read_order:
+                call("plx.find", {"relation": "public.app_sales_order"})
+            return fx.final_text(answer)
+        return sc.score(item, runner.record(item, runner.ScriptedAgent(script),
+                                            fx.FakeHost()))
+
+    def test_a_partial_with_no_claim_is_never_correct(self):
+        honest = self.run_card(self.card(), self.answer(cited=False))
+        silent = self.run_card(self.card(), self.answer(cited=False, gaps=[]))
+        self.assertEqual((honest["outcome"], honest["passed"], honest["abstained"]),
+                         ("justified_abstention", True, True))
+        self.assertEqual((silent["outcome"], silent["passed"]), ("wrong", False))
+        self.assertIn("evidence_missing", silent["codes"])
+        for result in (honest, silent):
+            self.assertEqual(result["evidence"], {"rubric": True, "evidenced_claims": 0,
+                                                  "label_only": True, "paths": [],
+                                                  "own_document_only": False,
+                                                  "own_document_quotes": [],
+                                                  "own_document_audited": False})
+
+    def test_a_partial_with_a_passed_cited_served_on_topic_claim_is_correct(self):
+        result = self.run_card(self.card(), self.answer())
+        self.assertEqual((result["outcome"], result["passed"], result["abstained"]),
+                         ("correct", True, False), result)
+        # the claim shares the card's identifier (SO-TEST-77): not an own-document credit
+        self.assertEqual(result["evidence"], {"rubric": True, "evidenced_claims": 1,
+                                              "label_only": False, "paths": ["identifier"],
+                                              "own_document_only": False,
+                                              "own_document_quotes": [],
+                                              "own_document_audited": False})
+
+    def test_a_claim_the_run_never_served_or_off_topic_is_no_evidence(self):
+        # the gate passes the claim (the harness re-reads the row), but no tool result of
+        # the run returned that record: the agent cited a handle it was never given
+        unserved = self.run_card(self.card(), self.answer(), read_order=False)
+        # served and passed, but about another card's topic: a passage of another map
+        other = self.run_card(self.card("What stages does the fixture map list?"),
+                              self.answer())
+        for result in (unserved, other):
+            self.assertTrue(result["claim_checks"]["passed"], result)
+            self.assertEqual((result["outcome"], result["evidence"]["label_only"]),
+                             ("justified_abstention", True))
+
+    def test_a_card_resting_on_an_original_no_one_holds_blocks_a_failed_abstention(self):
+        item = self.card(oracle={"derived_from": ["card:fixture-map/FX-01",
+                                                  "original://unpinned/gap-000000000001"]})
+        self.assertEqual(runner.validate_item(item), [])
+        self.assertEqual(runner.item_pins(item), [])
+        self.assertEqual(sc.unheld_originals(item), ["gap-000000000001"])
+        for answer in (self.answer(cited=False, gaps=[]),
+                       fx.good_answer(answerability="blocked", values=[], gaps=[],
+                                      text="The map was not found.")):
+            result = self.run_card(item, answer)
+            self.assertEqual((result["outcome"], result["passed"]), ("blocked", False))
+            self.assertIn("originals_not_held", result["codes"])
+        # an abstention that names the gap is justified, held or not, labelled partial or
+        # blocked (/20): the label is still never credited
+        for answer in (self.answer(cited=False),
+                       fx.good_answer(answerability="blocked", values=[], gaps=self.GAP,
+                                      text="The map was not found.")):
+            self.assertEqual(self.run_card(item, answer)["outcome"], "justified_abstention")
+        # evidence still scores: the agent found the answer elsewhere
+        self.assertEqual(self.run_card(item, self.answer())["outcome"], "correct")
+        # an unknown scheme is no unheld original (fail closed: the abstention is scored)
+        odd = self.card(oracle={"derived_from": ["card:fixture-map/FX-01",
+                                                 "original://unpinned/bad id"]})
+        self.assertEqual(sc.unheld_originals(odd), [])
+        self.assertEqual(self.run_card(odd, self.answer(cited=False, gaps=[]))["outcome"],
+                         "wrong")
+
+    def relabel(self, answerability, **kwargs):
+        return {**self.answer(**kwargs), "answerability": answerability}
+
+    def test_an_honest_abstention_is_the_same_whatever_its_label(self):
+        """/20 rule 1 (F23-0042, F24-0046: ``blocked``, no claim, a named gap, scored wrong
+        under /19 where the same answer labelled ``partial`` was justified)."""
+        for gaps, outcome, codes in ((None, "justified_abstention", []),
+                                     ([], "wrong", ["evidence_missing"])):
+            partial = self.run_card(self.card(), self.answer(cited=False, gaps=gaps))
+            blocked = self.run_card(self.card(), self.relabel("blocked", cited=False,
+                                                              gaps=gaps))
+            for result in (partial, blocked):
+                self.assertEqual((result["outcome"], result["codes"], result["abstained"]),
+                                 (outcome, codes, True), result)
+                self.assertTrue(result["evidence"]["label_only"])
+        # a blocked answer that states a claim the gate passed commits to it: the blocked
+        # label is then wrong (evidenced or not), never an abstention
+        stated = self.run_card(self.card(), self.relabel("blocked"))
+        offtopic = self.run_card(self.card("What stages does the fixture map list?"),
+                                 self.relabel("blocked"))
+        for result in (stated, offtopic):
+            self.assertEqual(result["outcome"], "wrong", result)
+            self.assertIn("answerability_mismatch", result["codes"])
+            self.assertFalse(result["evidence"]["label_only"])
+
+    def test_on_a_rubric_card_an_evidenced_answer_is_correct_whatever_its_label(self):
+        """/20 rule 3 (F21-0013, F23-0053: an evidenced claim labelled ``answerable``)."""
+        for label in ("partial", "answerable"):
+            result = self.run_card(self.card(), self.relabel(label))
+            self.assertEqual((result["outcome"], result["codes"]), ("correct", []), result)
+        # an overclaim: answerable with no evidenced claim (none, unserved or off topic)
+        for result in (self.run_card(self.card(), self.relabel("answerable", cited=False)),
+                       self.run_card(self.card(), self.relabel("answerable"),
+                                     read_order=False),
+                       self.run_card(self.card("What stages does the fixture map list?"),
+                                     self.relabel("answerable"))):
+            self.assertEqual(result["outcome"], "wrong", result)
+            self.assertIn("answerability_mismatch", result["codes"])
+        # an unsupported assertion beside the evidenced claim is still wrong
+        answer = self.relabel("answerable")
+        answer["values"].append({"name": "order_total", "value": "999.99",
+                                 "citations": [{"l1_handle": fx.H_SO,
+                                                "field_path": "row.order_number"}]})
+        result = self.run_card(self.card(), answer)
+        self.assertEqual(result["outcome"], "wrong", result)
+        self.assertIn("unsupported_assertion", result["codes"])
+        # a value-graded item (it expects partial, with values): the label still decides
+        self.assertFalse(sc.rubric_item(fx.item()))
+        for label in ("answerable", "blocked"):
+            graded = sc.score(*run(answer={**fx.good_answer(), "answerability": label}))
+            self.assertEqual(graded["outcome"], "wrong")
+            self.assertIn("answerability_mismatch", graded["codes"])
+
+    def test_a_wrong_value_on_a_value_graded_item_is_still_wrong(self):
+        answer = fx.good_answer()
+        answer["values"][0]["value"] = "2500"
+        result = sc.score(*run(answer=answer))
+        self.assertEqual(result["outcome"], "wrong")
+        self.assertEqual(result["evidence"], {"rubric": False, "evidenced_claims": 0,
+                                              "label_only": False, "paths": [],
+                                              "own_document_only": False,
+                                              "own_document_quotes": [],
+                                              "own_document_audited": False})
+        self.assertEqual(sc.score(*run())["outcome"], "correct")
+
+    def test_outcome_summary_reports_correct_with_evidence_and_label_only(self):
+        runs = [self.run_card(self.card(), self.answer()),
+                self.run_card(self.card(), self.answer(cited=False)),
+                self.run_card(self.card(), self.answer(cited=False, gaps=[])),
+                sc.score(*run())]
+        summary = sc.outcome_summary(runs)
+        self.assertEqual({k: summary[k] for k in ("correct", "correct_with_evidence",
+                                                   "label_only", "justified_abstention",
+                                                   "wrong", "unjustified_abstention")},
+                         {"correct": 2, "correct_with_evidence": 2, "label_only": 2,
+                          "justified_abstention": 1, "wrong": 1,
+                          "unjustified_abstention": 1})
+        self.assertEqual(sc.redact(runs[1])["evidence"]["label_only"], True)
+
+
+class UnscoredLayerTests(unittest.TestCase):
+    """/20 rule 2: an item whose card set marks its layer UNSCORED (``scoring.unscored``)
+    is never correct or wrong, in the score itself (F25-0002, F25-0017: the report's row
+    said unscored while the written score said wrong)."""
+
+    MARK = "UNSCORED until the originals of OR1 are read (ontology_gaps.json)"
+
+    def setUp(self):
+        self.cards = RubricEvidenceTests("test_a_partial_with_no_claim_is_never_correct")
+
+    def card(self, mark=MARK):
+        item = self.cards.card()
+        return {**item, "scoring": {**(item.get("scoring") or {}), "unscored": mark}}
+
+    def test_an_unscored_card_is_never_correct_or_wrong_and_in_no_rate(self):
+        item = self.card()
+        self.assertEqual(runner.validate_item(item), [])
+        cards = self.cards
+        runs = {"wrong_label": cards.run_card(item, cards.relabel("blocked")),
+                "evidenced": cards.run_card(item, cards.answer()),
+                "abstained": cards.run_card(item, cards.answer(cited=False)),
+                "uncited": cards.run_card(item, {**cards.relabel("answerable"), "values": [
+                    {"name": "order_number", "value": "SO-TEST-77", "citations": []}]})}
+        for name, result in runs.items():
+            self.assertEqual((result["outcome"], result["passed"], result["excluded"]),
+                             ("unscored", False, "unscored"), name)
+            self.assertEqual(sc.outcome_of(result), "unscored")
+            self.assertEqual(sc.excluded_reason(result), "unscored")
+        # the same answers on the same card unmarked are scored
+        self.assertEqual(cards.run_card(cards.card(), cards.relabel("blocked"))["outcome"],
+                         "wrong")
+        # an unsupported claim stays visible on the row, never in a rate
+        self.assertTrue(sc.confident_unsupported(runs["uncited"]))
+        scored = sc.score(*run())
+        summary = sc.outcome_summary([*runs.values(), scored])
+        self.assertEqual({k: summary[k] for k in ("runs", "unscored", "wrong", "correct",
+                                                   "answered", "confident_unsupported",
+                                                   "coverage", "accuracy")},
+                         {"runs": 5, "unscored": 4, "wrong": 0, "correct": 1, "answered": 1,
+                          "confident_unsupported": 0, "coverage": 1.0, "accuracy": 1.0})
+        group = sc.aggregate([*runs.values(), scored])["dev"]["F3"]
+        self.assertEqual((group["excluded"], group["runs"], group["all_runs"],
+                          group["pass_rate"], group["outcomes"]["unscored"]),
+                         ({"unscored": 4}, 1, 5, 1.0, 4))
+
+    def test_a_blocked_run_stays_blocked_and_a_bad_mark_fails_closed(self):
+        item = self.card()
+        failed = runner.record(item, runner.ScriptedAgent(lambda prompt, call: ""),
+                               fx.FakeHost())
+        failed["usage"]["exit_code"] = 1
+        self.assertEqual(sc.score(item, failed)["outcome"], "blocked")
+        answer = self.cards.answer(cited=False)
+        for bad in ("unscored later", "", "UNSCORED" + "x" * 200, 7, None, ["UNSCORED"]):
+            with self.assertRaises(sc.ScoreError, msg=repr(bad)) as raised:
+                self.cards.run_card(self.card(bad), answer)
+            self.assertEqual(str(raised.exception), "unscored_mark_invalid")
+        self.assertTrue(runner.validate_item(self.card("scored later")))
+
+
+class CardSpecificTopicTests(unittest.TestCase):
+    """Scorer /18-/19: a topic word must be the card's own (``set_topic_terms``): never a
+    word of the case or set title, of more than a quarter of the set's cards or of more
+    than a third of all sets; /19 also keeps /17's two card words and wants the
+    card-specific one in the claim's value or quote, never a name or an address."""
+
+    SET = [("In the fixture-map use case: What does the map say about order drawdown?",
+            "State the proposal: drawdown is sequential, attributed to the map."),
+           ("In the fixture-map use case: Which order lines carry a deposit?",
+            "Name each order line and its deposit."),
+           ("In the fixture-map use case: Who signs the order release?",
+            "Name the signatory of each order release."),
+           ("In the fixture-map use case: When was the order shipped?",
+            "Give the order's ship date.")]
+
+    def item(self, terms):
+        item = RubricEvidenceTests().card("What does the map say about order drawdown?")
+        item["scoring"] = {"citations_required": True, "topic_terms": terms}
+        self.assertEqual(runner.validate_item(item), [])
+        return item
+
+    def run_note(self, item, note, *, name=None):
+        h = fx.handle("public.app_sales_order", {"id": "so-n1"}, 9)
+        row = {"id": "so-n1", "notes": note, **({"name": name} if name else {})}
+        rows = {h: ("public.app_sales_order", {"id": "so-n1"}, row)}
+        answer = fx.good_answer(answerability="partial", text="The record says so.",
+                                values=[{"name": "note", "value": note, "citations": [
+                                    {"l1_handle": h, "field_path": "row.notes"}]}],
+                                gaps=RubricEvidenceTests.GAP)
+
+        def script(prompt, call):
+            call("plx.find", {"relation": "public.app_sales_order"})
+            return fx.final_text(answer)
+        result = sc.score(item, runner.record(item, runner.ScriptedAgent(script),
+                                              fx.FakeHost(rows)))
+        self.assertTrue(result["claim_checks"]["passed"], result)
+        return result
+
+    def test_set_words_title_words_and_generic_words_are_never_card_terms(self):
+        others = [[("Who signs the draft?", "Name the signatory.")],
+                  [("When was the plan signed?", "Name the signatory and the date.")]]
+        generic = sc.generic_terms([self.SET, *others])
+        self.assertEqual(sorted(generic & {"signatory", "drawdown", "deposit"}),
+                         ["signatory"])
+        terms = sc.set_topic_terms(self.SET, "fixture-map fixture-map-batch", generic)
+        # "order" is on every card (over a quarter), "fixture" is the title, "signatory"
+        # is on the cards of every set (over a third): none is a card's topic
+        self.assertEqual(terms[0], ["drawdown", "sequential"])
+        self.assertIn("deposit", terms[1])
+        self.assertFalse({"order", "fixture", "signatory"} & set().union(*map(set, terms)))
+        # the same words, case-name words aside, are card terms when nothing makes them common
+        self.assertIn("signatory", sc.set_topic_terms(self.SET, "fixture-map")[2])
+
+    def test_a_generic_word_overlap_is_not_on_topic_and_a_card_specific_term_is(self):
+        item = self.item(sc.set_topic_terms(self.SET, "fixture-map")[0])
+        generic = self.run_note(item, "Order map notes for the order desk")
+        specific = self.run_note(item, "Order drawdown runs in sequence")
+        # /19: one card word alone is not enough, even a card-specific one
+        lone = self.run_note(item, "Drawdown runs in sequence")
+        self.assertEqual(lone["outcome"], "justified_abstention")
+        self.assertEqual((generic["outcome"], generic["evidence"]["label_only"]),
+                         ("justified_abstention", True))
+        self.assertEqual((specific["outcome"], specific["evidence"]["evidenced_claims"]),
+                         ("correct", 1))
+        # an item without compiled topic terms has no topic word (fail closed)
+        self.assertEqual(self.run_note(self.item([]), "Order drawdown runs in sequence")
+                         ["outcome"], "justified_abstention")
+
+    def test_a_title_word_a_name_or_an_address_never_supplies_the_card_specific_word(self):
+        # the card's words ("order", "drawdown") sit in the record's title only: the
+        # claim's own value carries no card-specific word
+        item = self.item(["drawdown", "giulia"])
+        titled = self.run_note(item, "Runs in sequence", name="Order drawdown notes")
+        self.assertEqual(titled["outcome"], "justified_abstention")
+        # a person's name (scoring.topic_names) and an address's local part never count
+        named = self.item(["drawdown", "giulia"])
+        named["scoring"]["topic_names"] = ["giulia"]
+        self.assertEqual(sc.topic_terms(named), {"drawdown"})
+        self.assertEqual(self.run_note(named, "Order sent to Giulia")["outcome"],
+                         "justified_abstention")
+        self.assertEqual(self.run_note(self.item(["giulia"]),
+                                       "Order sent to giulia@example.com")["outcome"],
+                         "justified_abstention")
+        self.assertEqual(sc.person_names(["Giulia"], ["reviewed by Giulia Sellitto"]),
+                         {"giulia", "sellitto"})
+
+
+class SourceHost(OriginalHost):
+    """``OriginalHost`` with capture ``rows`` too, whose ``plx.find`` on ``documents``
+    returns ``served`` handles (a search result)."""
+
+    def __init__(self, originals, rows, served=()):
+        super().__init__(originals, chunk=200)
+        self.rows, self.served = rows, list(served)
+
+    def call(self, name, arguments):
+        if name == "plx.find" and arguments.get("relation") == "documents":
+            return {"returned": len(self.served),
+                    "rows": [{"citation": h} for h in self.served]}
+        return super().call(name, arguments)
+
+
+class SourceDocumentTests(unittest.TestCase):
+    """Scorer /21: a gate-passed claim on the card set's own source document is evidence,
+    whatever its words, in each of the three forms a read names its bytes; a claim on
+    another set's source document or whose value is a person never is (BR-05 cited the
+    Artwork map for a brand card; EMD-08 named signatories where roles were asked)."""
+
+    OWN_ORIGINAL, OWN_CAPTURE, OWN_ZIP, FOREIGN = "a1" * 32, "b2" * 32, "c3" * 32, "d4" * 32
+    DRIVE = "b%21FxDrive000000000000000000000000000000000000000000000000000000"
+    CAPTURE = f"sharepoint://{DRIVE}/01FXCAPTURE0000000000000000000000@%22%7BFX%7D%2C1%22"
+    ZIP = (f"sharepoint://{DRIVE}/01FXZIP000000000000000000000000000@%22%7BFX%7D%2C1%22"
+           f"#sha256={'c3' * 32}&member=map%2Fspec.md&member_sha256={'e5' * 32}")
+    # The off-topic words a map's passage may hold: no card word, no identifier.
+    PASSAGE = "Not posted for receipts"
+
+    def item(self, own=None, foreign=(), question="Which receipts post to the ledger?",
+             criterion="Name each posting from the map."):
+        item = RubricEvidenceTests().card(question)
+        item["label"] = {**item["label"], "note": item["label"]["note"].split(
+            "Criterion:")[0] + f"Criterion: {criterion}"}
+        item["scoring"] = {"citations_required": True, "topic_names": ["giulia", "sellitto"],
+                           "source_documents": [self.OWN_ORIGINAL, self.OWN_CAPTURE,
+                                                self.OWN_ZIP] if own is None else list(own),
+                           "foreign_documents": list(foreign)}
+        # the item schema refuses a malformed digest; the scorer ignores one regardless
+        self.assertEqual(bool(runner.validate_item(item)),
+                         any(not sc._DOCUMENT.match(d) for d in item["scoring"][
+                             "source_documents"] + item["scoring"]["foreign_documents"]))
+        return item
+
+    def run_claim(self, item, form, value=PASSAGE, *, ok=True, original_sha=None,
+                  field="notes"):
+        original = {"sha256": original_sha or self.OWN_ORIGINAL}
+        if form == "original":
+            handle = ORIG_PINNED + "#page=1"
+            cite = {"l1_handle": handle, "field_path": "text"}
+            text = f"Map page. {value}. End."
+        else:
+            handle = self.CAPTURE if form == "capture" else self.ZIP
+            cite = {"l1_handle": handle, "field_path": f"row.{field}"}
+            text = PAGE_TEXT
+        row = {"id": "fx-1", "notes": value, field: value,
+               **({"content_sha256": self.OWN_CAPTURE} if form == "capture" else {})}
+        host = SourceHost({ORIG_PINNED: original} if ok else {},
+                          {} if form == "original" else
+                          {handle: ("public.app_sales_order", {"id": "fx-1"}, row)},
+                          served=[handle])
+        host.text = text
+        answer = fx.good_answer(answerability="partial", text="The map says so.",
+                                values=[{"name": "said", "value": value, "citations": [cite]}],
+                                gaps=RubricEvidenceTests.GAP)
+
+        def script(prompt, call):
+            call("plx.find", {"relation": "documents"})
+            return fx.final_text(answer)
+        result = sc.score(item, runner.record(item, runner.ScriptedAgent(script), host))
+        if ok:
+            self.assertTrue(result["claim_checks"]["passed"], result)
+        return result
+
+    def test_a_claim_on_the_sets_own_document_counts_in_each_form(self):
+        for form in ("original", "capture", "zip_member"):
+            with self.subTest(form=form):
+                own = self.run_claim(self.item(), form)
+                self.assertEqual((own["outcome"], own["evidence"]["evidenced_claims"]),
+                                 ("correct", 1), own)
+                # the same passed, served claim on a set with no source documents (or a
+                # malformed list) has no tie to the card: the /19 rule alone decides
+                for documents in ([], ["not-a-digest"], ["A1" * 32]):
+                    none = self.run_claim(self.item(own=documents), form)
+                    self.assertEqual((none["outcome"], none["evidence"]["label_only"]),
+                                     ("justified_abstention", True), documents)
+        # another original's bytes are not the set's document, however alike the page
+        other = self.run_claim(self.item(), "original", original_sha="f6" * 32)
+        self.assertEqual(other["outcome"], "justified_abstention")
+        # an unread original (refused re-read) is never evidence
+        refused = self.run_claim(self.item(), "original", ok=False)
+        self.assertEqual(refused["evidence"]["evidenced_claims"], 0)
+        # a member's own digest is not its container's pin
+        self.assertEqual(sc.source_digests(self.ZIP, {"ok": True}), {self.OWN_ZIP})
+        self.assertEqual(sc.source_digests(self.ZIP, {"ok": False}), set())
+        self.assertEqual(sc.source_digests(self.ZIP, {"ok": False}, verified=False),
+                         {self.OWN_ZIP})
+
+    def test_a_files_metadata_is_never_own_document_or_topic_evidence(self):
+        """Scorer /24 (own-document audit of fresh-data case cards: four corrects rested
+        only on a map file's content type, text status or name). A gate-passed claim on
+        the set's own document counts only on the document's text; one on the file's
+        metadata, or on a structured field that is no text, does not. A topic tie on a
+        file's name is no tie either; the same words in the text are."""
+        for form in ("capture", "zip_member"):
+            for field, value in (("mime_type", "application/zip"),
+                                 ("name", "Receipts Posting Map.md"),
+                                 ("text_status", "unsupported"), ("size", "48211"),
+                                 ("last_modified", "2026-10-02T10:00:00Z"),
+                                 ("title", "Receipts posting map"),
+                                 ("contentType", "text/markdown"), ("stage", "approved")):
+                with self.subTest(form=form, field=field):
+                    result = self.run_claim(self.item(), form, value, field=field)
+                    self.assertEqual((result["outcome"], result["evidence"]["paths"]),
+                                     ("justified_abstention", []), result)
+            for field in ("notes", "content_text", "description"):
+                with self.subTest(form=form, text=field):
+                    result = self.run_claim(self.item(), form, field=field)
+                    self.assertEqual((result["outcome"], result["evidence"]["paths"]),
+                                     ("correct", ["own_document"]))
+        topic = self.item(own=[], question="Which receipts post to the ledger account?",
+                          criterion="Name each ledger posting the receipts map gives.")
+        topic["scoring"]["topic_terms"] = ["ledger"]
+        value = "Receipts ledger posting"
+        said = self.run_claim(topic, "capture", value)
+        self.assertEqual((said["outcome"], said["evidence"]["paths"]), ("correct", ["topic"]))
+        for field in ("name", "subject", "mime_type"):
+            with self.subTest(topic=field):
+                named = self.run_claim(topic, "capture", value, field=field)
+                self.assertEqual((named["outcome"], named["evidence"]["paths"]),
+                                 ("justified_abstention", []), named)
+        # a field that is no string at all is metadata (fail closed)
+        for field in (None, "", 7):
+            self.assertTrue(sc.metadata_field(field))
+            self.assertFalse(sc.document_text(field))
+        self.assertTrue(sc.document_text("text") and sc.document_text("row.content_text"))
+
+    def test_a_claim_on_another_sets_document_never_counts(self):
+        # BR-05: the claim shares the card's identifier, so the /17 path alone counts it
+        card = dict(question="Does release FX-REL-0042 need the form?",
+                    criterion="Name the form release FX-REL-0042 needs.")
+        value = "FX-REL-0042 needs form 13"
+        for form, foreign in (("original", self.OWN_ORIGINAL), ("capture", self.OWN_CAPTURE),
+                              ("zip_member", self.OWN_ZIP)):
+            with self.subTest(form=form):
+                tied = self.run_claim(self.item(own=[], **card), form, value)
+                self.assertEqual(tied["outcome"], "correct", tied)
+                alien = self.run_claim(self.item(own=[], foreign=[foreign], **card), form,
+                                       value)
+                self.assertEqual((alien["outcome"], alien["evidence"]["evidenced_claims"]),
+                                 ("justified_abstention", 0), alien)
+        # a document on both lists is the set's own (a shared map)
+        both = self.run_claim(self.item(foreign=[self.OWN_CAPTURE]), "capture")
+        self.assertEqual(both["outcome"], "correct")
+
+    def test_a_person_value_never_counts(self):
+        item = self.item(question="Who approved the disposition, by role?",
+                         criterion="Name the approving role; the Account Manager signs.")
+        for value in ("Marta Kowalski", "Giulia", "Giulia Sellitto",
+                      "approver: marta.k@example.com", "Jo Li"):
+            with self.subTest(value=value):
+                self.assertTrue(sc.person_value(value, item))
+                result = self.run_claim(item, "capture", value)
+                self.assertEqual((result["outcome"], result["evidence"]["evidenced_claims"]),
+                                 ("justified_abstention", 0), result)
+        # a role the card asks for, a sentence or an all-caps code is no person
+        for value in ("Account Manager", "Not posted for receipts", "SKU DPO",
+                      "Disposition case"):
+            with self.subTest(value=value):
+                self.assertFalse(sc.person_value(value, item))
+                self.assertEqual(self.run_claim(item, "capture", value)["outcome"], "correct")
+
+    def test_each_counted_claim_records_its_path_and_own_document_only_is_marked(self):
+        own = self.run_claim(self.item(), "capture")
+        self.assertEqual({k: own["evidence"][k] for k in ("paths", "own_document_only",
+                                                          "own_document_audited")},
+                         {"paths": ["own_document"], "own_document_only": True,
+                          "own_document_audited": False})
+        self.assertEqual(own["evidence"]["own_document_quotes"],
+                         [sc.audit_digest(self.PASSAGE)])
+        audited = self.audited()
+        self.assertEqual(runner.validate_item(audited), [])
+        self.assertTrue(self.run_claim(audited, "capture")["evidence"]["own_document_audited"])
+        # a claim another path ties is that path's, though it quotes the own document
+        card = dict(question="Does release FX-REL-0042 need the form?",
+                    criterion="Name the form release FX-REL-0042 needs.")
+        tied = self.run_claim(self.item(**card), "capture", "FX-REL-0042 needs form 13")
+        self.assertEqual((tied["outcome"], tied["evidence"]["paths"],
+                          tied["evidence"]["own_document_only"]),
+                         ("correct", ["identifier"], False))
+        # an abstention records no path and is never own-document-only
+        none = self.run_claim(self.item(own=[]), "capture")
+        self.assertEqual((none["evidence"]["paths"], none["evidence"]["own_document_only"]),
+                         ([], False))
+
+    def test_an_audit_closes_the_own_document_path_and_keeps_the_others(self):
+        card = dict(question="Does release FX-REL-0042 need the form?",
+                    criterion="Name the form release FX-REL-0042 needs.")
+        closed = self.item(**card)
+        closed["scoring"]["own_document_disabled"] = "quote does not meet the criterion"
+        self.assertEqual(runner.validate_item(closed), [])
+        self.assertFalse(sc.own_document_evidence(closed))
+        off = self.run_claim(closed, "capture")
+        self.assertEqual((off["outcome"], off["evidence"]["paths"]),
+                         ("justified_abstention", []))
+        kept = self.run_claim(closed, "capture", "FX-REL-0042 needs form 13")
+        self.assertEqual((kept["outcome"], kept["evidence"]["paths"]),
+                         ("correct", ["identifier"]))
+        # any value closes it (fail closed); the schema refuses an empty reason
+        for value in ("", None, False):
+            odd = {**closed, "scoring": {**closed["scoring"], "own_document_disabled": value}}
+            self.assertFalse(sc.own_document_evidence(odd))
+            self.assertTrue(runner.validate_item(odd))
+
+    def audited(self, date="2026-10-28", quotes=None, **card):
+        item = self.item(**card)
+        item["scoring"]["own_document_audited"] = {
+            "date": date, "quotes": [sc.audit_digest(self.PASSAGE)] if quotes is None
+            else quotes}
+        return item
+
+    def test_an_audit_binds_to_the_audited_claim_and_a_real_date(self):
+        # the audited claim, re-wrapped or re-cased, is the same claim
+        self.assertEqual(sc.audit_digest(" not POSTED\nfor   receipts "),
+                         sc.audit_digest(self.PASSAGE))
+        same = self.run_claim(self.audited(), "capture", "not posted for  RECEIPTS")
+        self.assertEqual((same["outcome"], sc.own_document_unaudited(same)), ("correct", False))
+        # a new answer on an audited card is still surfaced: correct, but unaudited
+        new = self.run_claim(self.audited(), "capture", "Posted only for transfers")
+        self.assertEqual((new["outcome"], new["evidence"]["own_document_only"],
+                          new["evidence"]["own_document_audited"],
+                          sc.own_document_unaudited(new)), ("correct", True, False, True))
+        # fail closed: an impossible date, a malformed audit or an empty list audits nothing
+        for audit in (self.audited("2026-02-30"), self.audited("28 Oct 2026"),
+                      self.audited(quotes=[]), self.audited(quotes=["NOT-A-DIGEST"])):
+            result = self.run_claim(audit, "capture")
+            self.assertTrue(sc.own_document_unaudited(result), audit["scoring"])
+        for bad in ("2026-02-30", "2026-13-01", "28 Oct", "2026-1-5", None, 20261028):
+            self.assertFalse(sc.audit_date(bad), bad)
+        self.assertTrue(sc.audit_date("2024-02-29"))
+        self.assertTrue(runner.validate_item(self.audited(quotes=[])))
+        string_form = self.item()
+        string_form["scoring"]["own_document_audited"] = "2026-10-28"   # the old form
+        self.assertTrue(runner.validate_item(string_form))
+        self.assertTrue(sc.own_document_unaudited(self.run_claim(string_form, "capture")))
+
+    def test_own_document_only_credits_on_unaudited_cards_are_counted_apart(self):
+        audited = self.audited()
+        card = dict(question="Does release FX-REL-0042 need the form?",
+                    criterion="Name the form release FX-REL-0042 needs.")
+        runs = [self.run_claim(audited, "capture"), self.run_claim(self.item(), "zip_member"),
+                self.run_claim(self.item(**card), "capture", "FX-REL-0042 needs form 13"),
+                self.run_claim(self.item(own=[]), "capture")]
+        self.assertEqual([sc.own_document_unaudited(r) for r in runs],
+                         [False, True, False, False])
+        summary = sc.outcome_summary(runs)
+        self.assertEqual({k: summary[k] for k in ("correct", "own_document_only",
+                                                   "own_document_unaudited")},
+                         {"correct": 3, "own_document_only": 2, "own_document_unaudited": 1})
+        # still correct either way: the tally is for review only
+        self.assertEqual(runs[1]["outcome"], "correct")
 
 
 class AggregateTests(unittest.TestCase):
@@ -1172,7 +2023,7 @@ class LineOrderTests(unittest.TestCase):
 
 
     def test_a_verdict_over_more_cells_than_max_citations_requires_every_cell(self):
-        """An F4 verdict names all its cells, beyond MAX_CITATIONS
+        """Directive 183ec855c89b: an F4 verdict names all its cells, beyond MAX_CITATIONS
         (the oracle no longer cuts them); an ``equal`` over only some is another verdict."""
         keys = [(relation, f"{prefix}{n}") for n in range(6) for relation, prefix in (
             ("public.app_purchase_order_line", "pol-"), ("public.app_receipt_line", "rcl-"))]
@@ -1195,7 +2046,7 @@ class LineOrderTests(unittest.TestCase):
                                  [] if outcome == "correct" else ["cited_other_row"])
 
     def test_an_f4_leg_cites_every_cell_it_sums_as_the_verdict_does(self):
-        """Item 1 received over 12 lines (two of them zero): the
+        """Directive c1ff4b736a47 (3): item 1 received over 12 lines (two of them zero): the
         oracle's received_1 names all 12 cells, as match_1 does, never the first 8, so a sum
         leaving rows out fails; a leg over more cells than one calculation states is unknown
         with a gap (isolated-fixture: the oracle's synthetic world)."""
@@ -1248,7 +2099,7 @@ class LineOrderTests(unittest.TestCase):
 
 
 class CapturedRecordAndCalculationTests(unittest.TestCase):
-    """Mail, SharePoint and BC citations resolved in the capture
+    """Directive 2db2fe9bf1f8 PT2: mail, SharePoint and BC citations resolved in the capture
     stores count, and a calculated value is recomputed (isolated-fixture)."""
 
     def score(self, answer=None, captured=None):
@@ -1318,7 +2169,7 @@ class CapturedRecordAndCalculationTests(unittest.TestCase):
                          ("correct", []), result)
 
     def test_a_total_stated_in_no_or_another_currency_is_wrong(self):
-        """The expected total is in USD; a total that states
+        """Directive 2aafc4270e73 item 3: the expected total is in USD; a total that states
         no currency (its inputs' USD aside), or whose inputs are in CAD, is wrong."""
         bare = f4_answer()
         next(v for v in bare["values"] if v["name"] == "invoiced_total").pop("currency")
@@ -1575,7 +2426,7 @@ def holding(path, value):
 
 
 class ServedHandleContractTests(unittest.TestCase):
-    """A record handle a tool returns is served under whatever key
+    """Review 724111c3 minor 1: a record handle a tool returns is served under whatever key
     carries it, read from the tool contracts (operating/ontology_tool_contracts.json), not
     from a key-naming convention; a key the contracts declare as anything else never
     serves one."""

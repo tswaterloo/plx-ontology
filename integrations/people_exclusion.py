@@ -3,8 +3,8 @@
 Some people's mail, chats and OneDrives are never read, stored or indexed. They are
 named by Entra object ID (later_ask ``excluded-people-oids``), never by name, and refused
 before any request that would read them: a mailbox open, a chat-member lookup, a
-chat's messages, a OneDrive's libraries. A message an excluded person sent is dropped
-before its body is read or stored.
+chat's messages, a OneDrive's libraries. A message an excluded person sent, or that is
+addressed or copied to one (mail), is dropped before its body is read or stored.
 
 The ID list comes from the environment (``PLX_EXCLUDED_PEOPLE_OIDS``: object IDs
 separated by commas or whitespace) and/or a JSON file outside the git tree
@@ -39,7 +39,8 @@ CONFIG = Path(__file__).with_name("people_exclusion.json")
 LATER_ASK = "excluded-people-oids"
 
 # Refusal kinds: what the refused read named.
-KINDS = frozenset({"mailbox", "chat_member", "chat", "sender", "onedrive_owner"})
+KINDS = frozenset({"mailbox", "chat_member", "chat", "sender", "recipient",
+                   "onedrive_owner"})
 # Why the guard is unavailable.
 CODES = frozenset({"excluded_people_oids_absent", "excluded_people_oids_invalid",
                    "excluded_people_file_unreadable", "excluded_people_file_in_git",

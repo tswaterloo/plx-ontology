@@ -1,8 +1,8 @@
 {
   "schema": "plx-paper-leads/v1",
-  "note": "[PAPER] unverified leads, not authority and not case facts: a reading of Ricardo's paper AO-26005C packet (pages 1 and 3 only). Components are named by the code the paper prints (no FM packaging id is asserted); a misprinted code matches no AO item and stays not comparable. When the case attaches the SharePoint original (operating.sharepoint_originals) it cites the page each lead names beside the FM rows. Labels carry no digits; paper values appear only in the investigation report's paper_leads.",
+  "note": "[PAPER] unverified leads, not authority and not case facts: the context pack's reading of Ricardo's paper AO-26005C packet (pages 1 and 3 only). Components are named by the code the paper prints (no FM packaging id is asserted); a misprinted code matches no AO item and stays not comparable. When the case attaches the SharePoint original (operating.sharepoint_originals) it cites the page each lead names beside the FM rows. Labels carry no digits; paper values appear only in the investigation report's paper_leads.",
   "case": "AO-26005C",
-  "provenance": "[PAPER] docs/reference/cases-and-artifacts.md section 3.3 (p1 AO header plan date, p3 shop floor filling date, filled count and damages; each lead names its page); reading of AO-26005C.pdf, sha256 9ece292f735c3f400b0e155538fd58422a0f5e339d50f40e038fbc225f1d600b (SharePoint QCQA AOs/2026 - AOs); read 2026-09-30",
+  "provenance": "[PAPER] devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md section 3.3 (p1 AO header plan date, p3 shop floor filling date, filled count and damages; each lead names its page); reading of AO-26005C.pdf, sha256 9ece292f735c3f400b0e155538fd58422a0f5e339d50f40e038fbc225f1d600b (SharePoint QCQA AOs/2026 - AOs); read 2026-09-30",
   "status": "unverified_lead",
   "leads": [
     {

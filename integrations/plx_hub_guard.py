@@ -1,8 +1,8 @@
 """Closed request grammar and guarded, retrying transport for Mission Control
 (MC) and the brain (VMC knowledge today, ``brain.plxcustomer.io`` after R7).
 
-Why this exists (``docs/reference/mission-control.md`` §0.3-0.4, §8 R1;
-``vmc-brain-tools.md`` §0.3, §7.1): neither key keeps us read-only.
+Why this exists (``devloop/CONTEXT/04-MISSION-CONTROL.md`` §0.3-0.4, §8 R1;
+``05-VMC-BRAIN-TOOLS.md`` §0.3, §7.1): neither key keeps us read-only.
 
 * ``MC_MCP_API_KEY`` resolves to a principal holding MC's full write bundle,
   and every MC write is mirrored to production SharePoint lists
@@ -19,12 +19,12 @@ MC (``check_mc_request``)
     REST read routes, each with a closed set of query keys.
   * ``POST https://<mc-host>/api/cursor/mcp`` only with a JSON-RPC body whose
     method is ``initialize``, ``tools/list`` or ``tools/call``; ``tools/call``
-    only for ``MC_READ_TOOLS`` (mission-control.md §3 rows 1-12, the **R** rows), each with
+    only for ``MC_READ_TOOLS`` (pack §3 rows 1-12, the **R** rows), each with
     a closed argument set. ``mc_suggest_work`` upserts a routing session and
     is treated as a write. No flag or env variable widens this.
-  * The reference's **W-A** write tools (``MC_APPROVABLE_WRITE_TOOLS``:
+  * The pack's **W-A** write tools (``MC_APPROVABLE_WRITE_TOOLS``:
     ``mc_create_task``, ``mc_checkout_task``, ``mc_report_progress``,
-    ``mc_complete_task``, ``mc_request_approval``; mission-control.md §3, §8 R1) pass
+    ``mc_complete_task``, ``mc_request_approval``; pack 04 §3, §8 R1) pass
     only with an ``McWriteAuthorization``: a human's approval naming that
     exact tool and exactly those arguments, inside its validity window. The
     client adds the explicit opt-in, approver set and single use
@@ -40,7 +40,7 @@ Brain (``check_brain_request``)
     items, node/{id}, document/{...id}, subgraph, trail, status), each with a
     closed set of query keys; every other path or method is refused.
 
-Hosts are pinned to the ones the reference names: MC ``mc.plxcustomer.io``;
+Hosts are pinned to the ones the pack names: MC ``mc.plxcustomer.io``;
 brain ``missioncontrol.tayloralton.com`` (VMC today) or
 ``brain.plxcustomer.io`` (after R7). Any other configured base URL is refused.
 
@@ -82,8 +82,8 @@ DEFAULT_VMC_BASE_URL = "https://missioncontrol.tayloralton.com"
 DEFAULT_BRAIN_BASE_URL = "https://brain.plxcustomer.io"
 BRAIN_HOST_AFTER_R7 = "brain.plxcustomer.io"
 VMC_HOST = "missioncontrol.tayloralton.com"
-MC_HOSTS = frozenset({"mc.plxcustomer.io"})            # mission-control.md header, §8 R2
-BRAIN_HOSTS = frozenset({VMC_HOST, BRAIN_HOST_AFTER_R7})  # vmc-brain-tools.md §4, §6
+MC_HOSTS = frozenset({"mc.plxcustomer.io"})            # pack 04 header, §8 R2
+BRAIN_HOSTS = frozenset({VMC_HOST, BRAIN_HOST_AFTER_R7})  # pack 05 §4, §6
 # RETRY_STATUSES, MAX_RETRIES, BACKOFF_*: the shared bounded retry in
 # ``live_source_guard.BoundedBackoff`` (also used by the BC GET path).
 
@@ -97,7 +97,7 @@ _DOC_SEGMENT = re.compile(r"^[A-Za-z0-9._:@-]{1,200}$")
 
 # --------------------------------------------------------------- MC grammar
 
-# mission-control.md §3 rows 1-12 (WB policy R). Value = allowed argument names.
+# Pack 04 §3 rows 1-12 (WB policy R). Value = allowed argument names.
 MC_READ_TOOLS: Mapping[str, frozenset[str]] = {
     "mc_self_check": frozenset(),
     "mc_get_context": frozenset({"depth", "bucket", "taskIds"}),
@@ -116,7 +116,7 @@ MC_READ_TOOLS: Mapping[str, frozenset[str]] = {
     "mc_sync_skills": frozenset({"packageId", "localRegistry", "runtimes"}),
 }
 APPROVAL_REQUEST_TOOL = "mc_request_approval"
-# Named so tests and reviewers can see the write set is explicit (mission-control.md §3).
+# Named so tests and reviewers can see the write set is explicit (pack §3).
 MC_WRITE_TOOLS = frozenset({
     "mc_suggest_work", "mc_create_project", "mc_create_bucket", "mc_update_bucket",
     "mc_create_task", "mc_checkout_task", "mc_report_progress", "mc_complete_task",
@@ -138,7 +138,7 @@ MC_WRITE_TOOLS = frozenset({
     # (evidence-actions.ts uploadEvidenceInputShape, create-http-server.ts:346).
     "mc_upload_evidence",
     "dispatch_to_swarm", "list_swarm_teams", "swarm_health"})
-# mission-control.md §3 W-A rows: writes a human may authorize per call (§8 R1/R3).
+# Pack 04 §3 W-A rows: writes a human may authorize per call (§8 R1/R3).
 # Value = allowed argument names (PLX_MC @1fba083 create-http-server.ts:267-332,
 # approval-actions.ts:14-17, actions.ts:525-544).
 MC_APPROVABLE_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
@@ -172,7 +172,7 @@ MC_WRITE_ARGUMENTS_NOT_SENT: Mapping[str, frozenset[str]] = {
     "mc_report_progress": frozenset({"cancelReason", "replacedBy", "note"}),
     APPROVAL_REQUEST_TOOL: frozenset({"checkoutId", "proposal"}),
 }
-# mission-control.md §3 NO rows (+ stdio swarm tools): never sent, whatever is approved.
+# Pack 04 §3 NO rows (+ stdio swarm tools): never sent, whatever is approved.
 MC_NEVER_TOOLS = MC_WRITE_TOOLS - frozenset(MC_APPROVABLE_WRITE_TOOLS)
 CHECKOUT_REPO_OWNER = "petralabx"
 # PLX_MC types.ts:9-18. ``cancelled`` (TASK-2529, @77a5af6) is never sent: it needs
@@ -185,7 +185,7 @@ MAX_WRITE_AUTHORIZATION_WINDOW = timedelta(hours=24)
 MCP_METHODS = frozenset({"initialize", "tools/list", "tools/call"})
 MCP_PATH = "/api/cursor/mcp"
 
-# REST read routes (mission-control.md §3 "REST-only surfaces"), closed query keys.
+# REST read routes (pack 04 §3 "REST-only surfaces"), closed query keys.
 MC_REST_ROUTES: Mapping[str, frozenset[str]] = {
     "/api/cursor/self-check": frozenset(),
     "/api/cursor/context": frozenset({"depth", "bucket", "taskIds"}),
@@ -244,7 +244,7 @@ def _check_origin(url: str, expected_host: str, environ: Mapping[str, str]):
             or port is not None or parts.netloc.lower() != host):
         raise ReadOnlyGuardError("request url must be plain https without port or userinfo")
     if host != expected_host or host not in MC_HOSTS | BRAIN_HOSTS:
-        raise ReadOnlyGuardError("host is not the configured, pinned upstream host")
+        raise ReadOnlyGuardError("host is not the configured, pack-named upstream host")
     for teams in _teams_urls(environ):
         try:
             teams_parts = urlsplit(teams)
@@ -360,7 +360,7 @@ def normalize_email(label: str) -> str:
 
 @dataclass(frozen=True)
 class McWriteAuthorization:
-    """A recorded human approval of exactly one MC write call (mission-control.md §8 R1).
+    """A recorded human approval of exactly one MC write call (pack 04 §8 R1).
 
     It names the tool and the exact arguments (compared in canonical JSON),
     the approving human (never a service principal or ``agent:`` label), the
@@ -442,7 +442,7 @@ def _nonblank(value: Any, high: int) -> bool:
 
 
 def _check_write_arguments(name: str, args: Mapping[str, Any]) -> None:
-    """Upstream-schema checks plus the reference's traps for the W-A writes."""
+    """Upstream-schema checks plus the pack's traps for the W-A writes."""
     if name == "mc_checkout_task":
         repo = args.get("repo")
         owner, _, repo_name = repo.partition("/") if isinstance(repo, str) else ("", "", "")
@@ -551,7 +551,7 @@ def check_mc_request(method: str, url: str, *, mc_host: str, body: Any = None,
     """Validate one MC request before I/O; return an operation label."""
     env = os.environ if environ is None else environ
     if mc_host not in MC_HOSTS:
-        raise ReadOnlyGuardError("MC host is not a pinned Mission Control host")
+        raise ReadOnlyGuardError("MC host is not a pack-named Mission Control host")
     path, query = _check_origin(url, mc_host, env)
     method = method.upper() if isinstance(method, str) else ""
     if method == "GET":
@@ -576,7 +576,7 @@ def check_brain_request(method: str, url: str, *, brain_host: str,
     """Validate one brain request before I/O: GET to the 7 agent routes only."""
     env = os.environ if environ is None else environ
     if brain_host not in BRAIN_HOSTS:
-        raise ReadOnlyGuardError("brain host is not a pinned brain host")
+        raise ReadOnlyGuardError("brain host is not a pack-named brain host")
     path, query = _check_origin(url, brain_host, env)
     if not isinstance(method, str) or method.upper() != "GET":
         raise ReadOnlyGuardError("brain requests are GET only")
@@ -612,7 +612,7 @@ def _origin_host(base_url: str) -> str:
 
 @dataclass(frozen=True, repr=False)
 class BrainConfig:
-    """The brain host and key as one pair (retirement R7, vmc-brain-tools.md §7.1.2).
+    """The brain host and key as one pair (retirement R7, pack 05 §7.1.2).
 
     ``BRAIN_API_KEY`` (``brn_*``) + ``BRAIN_BASE_URL`` (default
     ``https://brain.plxcustomer.io``) win when the key is set; otherwise
@@ -633,7 +633,7 @@ class BrainConfig:
         if self.pair == "brain" and not self.key.reveal().startswith("brn_"):
             raise ValueError("BRAIN_API_KEY must be a brn_ brain key")
         if host not in BRAIN_HOSTS:
-            raise ValueError("brain base URL host is not a pinned host")
+            raise ValueError("brain base URL host is not one the pack names")
         if self.pair == "vmc-fallback" and host == BRAIN_HOST_AFTER_R7:
             raise ValueError("VMC_API_KEY is never sent to the brain host")
 
@@ -665,7 +665,7 @@ class BrainConfig:
 class McConfig:
     """MC endpoint, key and admission headers (read-only use).
 
-    ``repo`` is the honest ``x-mc-repo`` audit label (mission-control.md §8 R2).
+    ``repo`` is the honest ``x-mc-repo`` audit label (pack 04 §8 R2).
     """
 
     base_url: str
@@ -676,7 +676,7 @@ class McConfig:
 
     def __post_init__(self) -> None:
         if _origin_host(self.base_url) not in MC_HOSTS:
-            raise ValueError("MC base URL host is not a pinned host")
+            raise ValueError("MC base URL host is not one the pack names")
         if not isinstance(self.key, Secret):
             raise ValueError("MC key must be a Secret")
         if (not isinstance(self.operator_email, str) or
@@ -723,7 +723,7 @@ class UpstreamError(SourceUnavailable):
     (an answer over the send's byte bound, never retried); ``status`` the
     HTTP status (None when unreachable). Messages never carry secrets.
 
-    Diagnosis, sanitized: ``layer`` is where it failed
+    Diagnosis (directive 8f867fce7ba1), sanitized: ``layer`` is where it failed
     (``transport``, ``http``, ``jsonrpc``, ``tool`` or ``knowledge_status``, the
     last an MC tool answer whose in-band status is not ``ok``); ``rpc_code`` the
     integer JSON-RPC error code; ``upstream_code`` the body's ``error.code`` when

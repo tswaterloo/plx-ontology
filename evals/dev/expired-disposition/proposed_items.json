@@ -5,7 +5,7 @@
  "source": {
   "advisory": {
    "id": "advisory:28a8482d8ba0",
-   "ref": "advisory@c8fcb26d00c8fdeaddab0d874e6428b5e396750c",
+   "ref": "origin/codex/advisory@c8fcb26d00c8fdeaddab0d874e6428b5e396750c",
    "path": "context/28a8482d8ba0dec0ecf02871caab3fdfba9ac1aa5b02f3e288ec40a4fdbf64d1.json",
    "record_sha256": "7d12ca6eca3730f564f08133a6998d0fe932ba9e28e0f4c75d342af3307675d7",
    "source_revision": "1.0;sha256:be191416464ca330efa8185e5d2b43c474aa6b5c34372debd6193594f28ee888",
@@ -13,7 +13,7 @@
   },
   "originals_registry": "examples/case_originals.json",
   "watched_originals": {
-   "note": "The map's archive, pinned from the advisory record (source_id item, source_revision sha256, source_bytes) and equal to the discovered read receipt (entry nr-07cff10e7f17, 17 Oct 2026). A read receipt of the watched file matches when its source.item_id and sha256 equal this pin. Name only, no contents.",
+   "note": "The map's archive, pinned from the advisory record (source_id item, source_revision sha256, source_bytes) and equal to the discovered read receipt of the live verifier (entry nr-07cff10e7f17, 17 Oct 2026). A read receipt of the watched file matches when its source.item_id and sha256 equal this pin. Name only, no contents.",
    "folders": {
     "Ontology UseCases": "wf-a672d852ff20"
    },
@@ -176,7 +176,7 @@
    "gap": "EMD-GAP-01"
   }
  ],
- "missing_originals_note": "Typed here because the registry generator makes gap rows only from the baseline and delta source-pin records. not_provided: the map describes the record as today's practice but the archive does not include it; pending_example: the map lists it as a pending example. None was read; a card never infers their content.",
+ "missing_originals_note": "Typed here because the registry generator makes gap rows only from the Dot's baseline and delta source-pin records. not_provided: the map describes the record as today's practice but the archive does not include it; pending_example: the map lists it as a pending example. None was read; a card never infers their content.",
  "live_sources": [
   {
    "id": "fm.receipt_raw_material",
@@ -303,6 +303,7 @@
    },
    {
     "id": "EMD-02",
+    "own_document_audited": {"date": "2026-10-28", "quotes": ["114b718e1c0a82bee3ec15e0c0e7c6e87c7d289f8c78d56602f80db26644c049"]},
     "layer": "comprehension",
     "question": "Which disposition routes can an expired raw-material lot take, and what new expiry does each give, according to the map?",
     "criterion": "Per the map (owner's statements of 16 Oct 2026, status stated): after the trigger and an initial screen, quick checks (organoleptic, FT-IR identity, container integrity); a 30-day extension; manufacturer recertification (the manufacturer's date on a revised CoA for the same lot); a material review board that weighs the routes in parallel by email; and its outcomes: customer waiver (no new date, one named batch), repurchase (the lot is rejected) or in-house recertification or defense (1 year from the test date, renewable). Approval on Form 063 is followed by the new expiry being applied to the lot and the label, or by rejection and disposal; FD&C certified colours are rejected outright. An answer keeps as practised, as decided and as it happened apart and does not present the target routes as built.",
@@ -317,6 +318,7 @@
    },
    {
     "id": "EMD-03",
+    "own_document_audited": {"date": "2026-10-28", "quotes": ["0eeebc9c81773a568c7aa2aff0e53b618db365e6fb5d51136038864a0bdb797d"]},
     "layer": "comprehension",
     "question": "When may a lot take the 30-day extension, and can its extension history be checked?",
     "criterion": "State the owner's rule as the map's: the lot expired 30 days ago or less, passes the limited panel (FT-IR identity, appearance, odour), gets 30 days from the original expiry, once per lot, and only if all six conditions hold (no evident testing issue, never expired before, CoA, SDS and TDS on file and traceable, not a compendial grade the formula requires, no customer that forbids it, and the remaining condition the map lists). 'Never expired before' needs an extension history per lot that the map says no system keeps; Form 063 records only previous and new expiry. An answer reports the history as unknown, never infers 'first extension' from a missing record, and keeps the map's target (an extension count on Lot No. Information) apart from fact.",
@@ -345,6 +347,7 @@
    },
    {
     "id": "EMD-05",
+    "own_document_audited": {"date": "2026-10-28", "quotes": ["4fa31739d991c2e97edeff9ebdeb452cb7c71a64f172b29487cf739a9464725a", "f1457c1420d7e418d67ed5efaf6b3ae9f51c05853a9376df06be2f326c9e7fa6"]},
     "layer": "tracing",
     "question": "What record ties together everything done about one expired lot?",
     "criterion": "None today, per the map: requests and outcomes travel by email and are typed into a receiving comment, the QC log, Form 063 and a label, none linked. Its target is one disposition case per lot holding each route's status, documents and a single closing decision with owner and date. The lot itself is identified by item plus supplier lot (two suppliers can share a lot string) and by a Lab ID with no confirmed portal home. An answer joins records on item plus lot or Lab ID with the source of each, reports the missing case as a gap and never merges two lots on a matching lot string alone.",
@@ -361,6 +364,8 @@
    },
    {
     "id": "EMD-06",
+    "own_document_evidence": false,
+    "own_document_note": "own-document quote does not meet the criterion (audit 2026-10-28)",
     "layer": "tracing",
     "question": "Which expired lots should QC test first, by batch demand?",
     "criterion": "The map's target is priority from the scheduled batch date the lot is allocated to, with a look-ahead window; today Production tells QC what to test first because the receipt testing-priority flag is unreliable, and cases open at scheduling time. Batch schedules are readable (BatchSchedule, Batch), but the raw-material lot a scheduled batch will consume appears only as text and the Portal lot is not served, so a lot-to-batch-demand ranking needs a join that does not exist. An answer cites the schedule rows it read, names the missing allocation link as a gap and does not rank lots by guessed allocation.",
@@ -376,6 +381,7 @@
    },
    {
     "id": "EMD-07",
+    "own_document_audited": {"date": "2026-10-28", "quotes": ["d0daf75004226b0cf681226baadbe35a82039a4bbfe66c04896d1e23510a6d8e", "76374e5d79574f1766f86f59115b8d8616a0536463d30e9855570a663ea728a3"]},
     "layer": "tracing",
     "question": "What is a lot's current expiry date, and do its records agree?",
     "criterion": "Read each copy with its source and as-of time: the FileMaker raw-material receipt (expirydate; per the map the new date is typed into its comment field), Form 063 and the QC log, the container label, the Portal lot (expiry field to confirm; not served) and the BC item ledger (lot expiry carried per entry under item tracking, but the Workbench allowlist reads neither lot number nor expiration date). The map says the same date is typed into three places with no link back to Form 063. An answer reports disagreement between copies as a conflict with each side attributed, treats an unread copy as unknown, and never picks one silently.",
@@ -437,6 +443,7 @@
    },
    {
     "id": "EMD-11",
+    "own_document_audited": {"date": "2026-10-28", "quotes": ["4cad224355c053631f746bf82ca605ff06c375be72a68c2fe217d98e90ea11f6"]},
     "layer": "tracing",
     "question": "How are relabelling, disposal and replacement purchases linked to the disposition of a lot?",
     "criterion": "Per the map: after approval the label is reprinted by hand with the new expiry; its target prints the label from the lot record with an extension marker and re-release date. Rejection marks Form 063 Rejected and writes the lot off through WMS transactions (to confirm), posting to BC as item journal batch PLXADJ through codeunit 50116 (from the system map, unverified); no reason code links the write-off to a case, a customer-supplied lot's return or disposal instruction is not recorded, and a replacement purchase order does not reference the expired lot. An answer reports each link as missing unless a read record carries it, and checks rejected quantity against written-off plus returned quantity only from read records.",

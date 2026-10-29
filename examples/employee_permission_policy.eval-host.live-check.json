@@ -1,0 +1,15 @@
+{
+ "schema": "plx-employee-permission-policy/v1",
+ "note": "Eval-host policy of the agent-host live checks (examples/host.live-check.json): no grant. principals and service_principal_object_ids are empty, so no employee and no service principal gets a Workbench principal through it; it exists so operating/eval_principal.py can mint the eval principal's ticket, whose entraTenantId is this policy's. entra_tenant_id is an eval-only sentinel, never a real Entra tenant: the eval principal resolver compares the ticket's tenant with this value only. clearance_by_access_level is the shape the schema requires, copied from examples/employee_permission_policy.example.json.",
+ "tenant": "plx",
+ "entra_tenant_id": "00000000-0000-4000-8000-00000000e7a0",
+ "clearance_by_access_level": {
+  "L1": "internal",
+  "L2": "internal",
+  "L3": "confidential",
+  "L4": "confidential",
+  "L5": "restricted"
+ },
+ "principals": {},
+ "service_principal_object_ids": []
+}

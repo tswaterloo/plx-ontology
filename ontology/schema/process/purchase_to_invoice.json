@@ -2,7 +2,7 @@
  "$schema": "_process.schema.json",
  "format": "plx-process-graph/v1",
  "id": "purchase_to_invoice",
- "description": "Procure-to-pay as Portal and BC run it (BC transaction mapping brief, P2P; Vince's Packaging Procure-to-GL Map stages 11, 13, 16, 17 and 19): purchase order, supplier confirmation (document-derived, optional), warehouse receipt(s) (BC purchase receipt, receive-only), vendor invoice posted in BC, and its G/L entries. Three-way match is the quantity check below: PO line vs receipt quantity, receipt vs invoice quantity, PO vs invoice unit price. Payment is the last stage: BC marks a posted invoice Paid once payments and applied credit memos settle it (posted vendor payments and vendor ledger entries are not captured; vendor payment journal lines are captured as pending Payment objects, never proof of a payment: docs/decisions/2026-10-07-bc-finance-2-payment-ledger.md); a credit memo applied to the PO's invoices is the optional vendor_credit stage.",
+ "description": "Procure-to-pay as Portal and BC run it (BC transaction mapping brief, P2P; Vince's Packaging Procure-to-GL Map stages 11, 13, 16, 17 and 19): purchase order, supplier confirmation (document-derived, optional), warehouse receipt(s) (BC purchase receipt, receive-only), vendor invoice posted in BC, and its G/L entries. Three-way match is the quantity check below: PO line vs receipt quantity, receipt vs invoice quantity, PO vs invoice unit price. Payment is the last stage: BC marks a posted invoice Paid once payments and applied credit memos settle it (posted vendor payments and vendor ledger entries are not captured; vendor payment journal lines are captured as pending Payment objects, never proof of a payment: devloop/DECISIONS/2026-10-07-bc-finance-2-payment-ledger.md); a credit memo applied to the PO's invoices is the optional vendor_credit stage.",
  "root_type": "PurchaseOrder",
  "tier_floor": "stored_by_text_join",
  "stages": [
@@ -44,7 +44,7 @@
      "events": [
       "PurchaseOrder.issued"
      ],
-     "note": "BC API v2.0 purchaseOrder status (captured: integrations/bc_purchase.py SELECT) read by the shared definition: Draft is a PO not yet released, so not issued, as a gold DRAFT is not; an unreadable status leaves the stage unknown, never issued."
+     "note": "BC API v2.0 purchaseOrder status (captured: integrations/bc_purchase.py SELECT) read by the shared definition: Draft is a PO not yet released, so not issued, as a gold DRAFT is not (lane process-deps-decisions, directive 40cbdb929c97); an unreadable status leaves the stage unknown, never issued."
     },
     {
      "object_type": "PurchaseOrder",
@@ -562,7 +562,7 @@
       {
        "link": "Receipt.receives",
        "from_binding": "portal.sage_po_receipt_header",
-       "reason": "a Sage receipt header can cover several POs (multipor/pors) but names one, and its detail lines carry no PO key"
+       "reason": "a Sage receipt header can cover several POs (multipor/pors) but names one, and its detail lines carry no PO key (devloop/OPEN-DECISIONS.md sage-multi-po-receipts)"
       }
      ],
      "recorded_on": {
@@ -575,7 +575,7 @@
      "absent_by": {
       "role": "ordered",
       "quantity": "received_quantity",
-      "evidence": "BC API v2.0 purchaseOrderLine.receivedQuantity: BC raises it when a receipt of the line posts, so zero on every Item line of a completely read PO, beside a complete read of its posted receipts, proves none (docs/decisions/2026-10-14-three-way-absence-proven.md)"
+      "evidence": "BC API v2.0 purchaseOrderLine.receivedQuantity: BC raises it when a receipt of the line posts, so zero on every Item line of a completely read PO, beside a complete read of its posted receipts, proves none (devloop/DECISIONS/2026-10-14-three-way-absence-proven.md)"
      },
      "ignore_through": [
       {
@@ -615,7 +615,7 @@
      "absent_by": {
       "role": "ordered",
       "quantity": "invoiced_quantity",
-      "evidence": "BC API v2.0 purchaseOrderLine.invoicedQuantity: BC raises it when an invoice of the line posts, so zero on every Item line of a completely read PO, beside a complete read of its invoices, proves none (docs/decisions/2026-10-14-three-way-absence-proven.md)"
+      "evidence": "BC API v2.0 purchaseOrderLine.invoicedQuantity: BC raises it when an invoice of the line posts, so zero on every Item line of a completely read PO, beside a complete read of its invoices, proves none (devloop/DECISIONS/2026-10-14-three-way-absence-proven.md)"
      },
      "fallback_paths": [
       [
@@ -734,7 +734,7 @@
   "plx-customer-portal:portal/src/lib/business-central/document-finance.ts@c3ffda3 (summarizeDocumentFinance: canceled and draft invoices excluded)",
   "operating/process_stage_map.json (Vince's Packaging Procure-to-GL Map, stages 11 PO, 13 production complete and vendor confirmation, 16 receive, 17 landed cost, 19 BC and G/L)",
   "plx-customer-portal:portal/src/lib/mrp/create-portal-purchase-order.ts@38cd3f3 and pack-receipt-portal.ts@38cd3f3 (359e2f0 TASK-2651 Generate PO writes app_purchase_order only; 5cade1b TASK-2652 pack receipt, QC and release on app_receipt + InventoryLot, receiptpack read-only)",
-  "sage-multi-po-receipts (Receipt.receives Sage pair capped at corroborated; never the receipt's only PO)",
+  "devloop/OPEN-DECISIONS.md sage-multi-po-receipts (Receipt.receives Sage pair capped at corroborated; never the receipt's only PO)",
   "plx-customer-portal:portal/src/lib/business-central/inbound.ts@790256c (projectPurchaseInvoice: status=Paid is authoritative; shouldSkipMissingPostedCollection: ledger entries not published on api/v2.0)",
   "plx-customer-portal:portal/src/lib/policies/seed-rules.ts@48d76e835 (ROUTING_DEPARTMENTS: owner_role is a Portal Department code, what a rule's PolicyApprovalTypeDepartment rows route a WorkItem to, portal/prisma/schema.prisma@48d76e835 :1099, :8467)",
   "seed-rules.ts@48d76e835: Portal routes purchase_order to PROC (bc.purchase_approval), supplier_confirmation to PROC (procurement.po_awaiting_confirmation), receipt discrepancies to WH (wms.cycle_count). Every other stage owner is this graph's declaration pending PLX review.",

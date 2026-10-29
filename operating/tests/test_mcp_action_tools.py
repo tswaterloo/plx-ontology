@@ -142,7 +142,7 @@ class ActionToolsTestCase(CaseToolsTestCase):
             "schema": ap.CALL_APPROVAL_SCHEMA, "tool": "mc_request_approval",
             "arguments": {"taskId": "TASK-9", "reason": intent["gate_reason"]},
             "approved_by": VINCE, "approved_at": "2026-10-01T11:00:00Z",
-            "expires_at": "2026-10-02T11:00:00Z", "evidence_ref": "source record (test)"},
+            "expires_at": "2026-10-02T11:00:00Z", "evidence_ref": "advisory record (test)"},
                 session=fixture_host_session(actor.principals))
         self.path.request_gate(actor, iid, self.mc.client,
                                session=fixture_host_session(actor.principals))
@@ -512,7 +512,7 @@ class ActionToolTests(ActionToolsTestCase):
         follow-ups; a session the case is not shown to gets case_not_found with nothing
         written; without the action path the option is refused. The listing follows: a writer
         (readOnlyHint false, as the contract's read_only) only where it records
-        (docs/decisions/2026-10-10-follow-ups-ask-loop-writes.md)."""
+        (devloop/DECISIONS/2026-10-10-follow-ups-ask-loop-writes.md)."""
         def started(argv, session=None):
             host, server = mcp_server.session_server(argv)
             self.addCleanup(host.close)

@@ -3,7 +3,7 @@ propose (register an owner-system proposal; run a workbench-internal catalog act
 status (one intent, or a case's intents) and verify (MC journal read, decision record,
 gate reconcile, owner read-back), served through ``ontology_host.CaseHostTools.call``
 (``action_tools.register``) and listed on the stdio case host in place of the retired
-``plx.action_get`` / ``plx.action_propose`` (2026-10-04; ``ActOverMcpTests``
+``plx.action_get`` / ``plx.action_propose`` (lead decision 2026-10-04; ``ActOverMcpTests``
 and ``test_mcp_action_tools`` call it through ``MCPServer.handle``).
 
 Evidence label: ``injected-transport`` (Workbench API: ``FakeWorkbench``; Mission
@@ -100,7 +100,7 @@ class ActTestCase(ActionToolsTestCase):
         return super().refused(server.server if isinstance(server, ActHost) else server,
                                name, arguments)
 
-    def host_drives_to_gate_requested(self, iid, evidence_ref="source record (test)",
+    def host_drives_to_gate_requested(self, iid, evidence_ref="advisory record (test)",
                                       lose_answer=False):
         """Host code (not the tool): the MC gate request after a human per-call approval."""
         actor = Actor("plx", OPS_FINANCE)
@@ -676,7 +676,7 @@ class PlxActTests(ActTestCase):
         # Without an MC reader the host says so and reads nothing.
         bare = self.action_server(OPS_FINANCE)
         other = self.registered(bare, self.employee_case("Set the PO on SO 3 to PO-7788 too?"))
-        self.host_drives_to_gate_requested(other, evidence_ref="second source record")
+        self.host_drives_to_gate_requested(other, evidence_ref="second advisory record")
         unread = self.verify(bare, other)
         self.assertEqual((unread["reason"], unread["mc_journal"], unread["mc_calls"]),
                          ("mc_reader_not_configured", None, 0))
@@ -725,7 +725,7 @@ class PlxActTests(ActTestCase):
         unknown = self.registered(ops, self.employee_case("Set the PO on SO 3 to PO-7788?"))
         self.host_drives_to_gate_requested(unknown, lose_answer=True)
         requested = self.registered(ops, self.employee_case("Set the PO on SO 3 to PO-7788 now?"))
-        self.host_drives_to_gate_requested(requested, evidence_ref="second source record")
+        self.host_drives_to_gate_requested(requested, evidence_ref="second advisory record")
         self.mc.decide("apg_2", decided_by=VINCE)
         trails = (self.history(unknown), self.history(requested))
         self.mc.down = True
@@ -744,7 +744,7 @@ class PlxActTests(ActTestCase):
         ops = self.action_server(OPS_FINANCE, reads=self.reads)
         case_id = self.employee_case("Several actions: PO-0, PO-1?")
         first, second = self.registered_intents(ops, case_id, 2)
-        self.host_drives_to_gate_requested(first, evidence_ref="source record 1")
+        self.host_drives_to_gate_requested(first, evidence_ref="advisory record 1")
         self.mc.decide("apg_1", decided_by=VINCE)
         self.assertEqual(self.verify(ops, first)["state"], "gate_authorized")
         # The same human approval presented again for the second intent: refused.
@@ -756,7 +756,7 @@ class PlxActTests(ActTestCase):
                 "schema": ap.CALL_APPROVAL_SCHEMA, "tool": "mc_request_approval",
                 "arguments": {"taskId": "TASK-9", "reason": intent["gate_reason"]},
                 "approved_by": VINCE, "approved_at": "2026-10-01T11:00:00Z",
-                "expires_at": "2026-10-02T11:00:00Z", "evidence_ref": "source record 1"},
+                "expires_at": "2026-10-02T11:00:00Z", "evidence_ref": "advisory record 1"},
                     session=fixture_host_session(self.actor.principals))
         self.assertEqual(raised.exception.code, "call_approval_already_used")
         waiting = self.act(ops, mode="status", intent_id=second)["intent"]
@@ -879,7 +879,7 @@ class ActOverMcpTests(ActTestCase):
         self.path.prepare_gate(self.actor, iid, "TASK-9", self.mc.client,
                                session=fixture_host_session(self.actor.principals))
         approval = {"approved_by": VINCE, "approved_at": "2026-10-01T11:00:00Z",
-                    "evidence_ref": "source record (test)"}
+                    "evidence_ref": "advisory record (test)"}
         for arguments, refusal in (
                 ({"mode": "verify", "intent_id": iid, "approval": approval},
                  "unknown_arguments:approval"),
@@ -972,7 +972,7 @@ class ActOverMcpTests(ActTestCase):
                 iid = self.registered(server, self.employee_case(
                     f"Set the PO on SO 3 to PO-7788 ({index})?"))
                 self.host_drives_to_gate_requested(
-                    iid, evidence_ref=f"source record {index} (test)")
+                    iid, evidence_ref=f"advisory record {index} (test)")
                 self.mc.decide(f"apg_{index}", decided_by=decided_by)
                 parked = self.ok(server, ACT, {"mode": "verify", "intent_id": iid})
                 self.assertEqual((parked["state"], parked["step"],

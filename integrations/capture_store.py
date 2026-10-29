@@ -1,17 +1,17 @@
 """Versioned L1 capture store for live sources (BC, Teams; mail and SharePoint via the registry).
 
-BC, mail and SharePoint had no
+10-DECISION decision 2 and 09-CRITIQUE R2 (c): BC, mail and SharePoint had no
 capture store and were re-read live on every resolve. This module keeps every
 captured version of a source record in one SQLite file, so a citation resolves
 offline to exactly what it cited, a changed source version keeps its history
-and the projection can be rebuilt "as known at" any capture time.
+and the projection (L7) can be rebuilt "as known at" any capture time.
 
 Source kinds. A ``SourceKind`` (registry: ``register_source_kind``) fixes the
 citation scheme, the record path grammar (``<scheme>://p1/.../pn``), the
 audience unit a record belongs to (the C0 ``objects.audience_key``:
 ``bc:<company>/<entity set>``, ``mail:<mailbox>``) and the live-audience
 resources a reader must hold. The BC kind is defined here (``BC_KIND``); the
-mail adapter registers its own kind the same way. Capture code
+mail adapter (lane L3) registers its own kind the same way. Capture code
 (``integrations.bc_read.BcCapture``) owns the source reads; this module never
 does I/O beyond its SQLite file.
 
@@ -26,7 +26,7 @@ resolves an old handle to reused capture ids (``capture_unknown``,
 fields) and ``key``, so ``operating.claim_checks`` checks ``row.<field>``
 claims on it unchanged (``claim_rows``).
 
-Versions. One row per captured version: ``recorded_at`` when first
+Versions (R8). One row per captured version: ``recorded_at`` when first
 captured, ``superseded_at`` (and ``superseded_by``) when a later capture of the
 same record held other content; at most one current version per record. A
 record seen again with the same content only updates ``last_seen_*``. A unit
@@ -80,6 +80,7 @@ from typing import Any, Callable, Iterator, Mapping, Sequence
 from urllib.parse import quote, unquote
 
 from ontology.store_ddl import LINEAGES
+from operating.capture_age import MAX_CAPTURE_AGE, capture_decides
 
 FORMAT = "plx-capture-store/v1"
 # Retention bound: versions kept per record (the current one included). Older
@@ -88,6 +89,11 @@ FORMAT = "plx-capture-store/v1"
 DEFAULT_MAX_VERSIONS_PER_RECORD = 50
 MAX_BATCH_HANDLES = 5000
 MAX_RECORDS_LIMIT = 1000
+# How long a unit's recorded source ACL (``set_unit_acl``) decides who sees the unit: the one
+# capture-age bound (``operating.capture_age``, 48 hours: one missed daily capture). A
+# membership a transient read failure kept (``integrations.capture_teams``) or one no capture
+# refreshed since is past it withheld from every reader until a members read records it again.
+UNIT_ACL_MAX_AGE = MAX_CAPTURE_AGE
 RUN_STATES = ("in_progress", "complete", "partial", "failed")
 
 _GENERATION = re.compile(r"^[0-9a-f]{16}$")
@@ -126,7 +132,9 @@ class SourceKind:
     ``unit_acl``: the unit's latest source ACL (``CaptureStore.set_unit_acl``, e.g. a
     Teams conversation's membership) also gates every version of the unit, superseded
     and missing ones included, so a revoked reader loses old versions too; a unit
-    with none recorded shows nothing (``clear_unit_acl``: its membership could not be read).
+    with none recorded shows nothing (``clear_unit_acl``: its membership could not be read),
+    nor one whose recorded ACL is older than ``UNIT_ACL_MAX_AGE`` (its ``recorded_at``,
+    refreshed by every ``set_unit_acl``; undated or dated after now decides nothing either).
     ``unit_acl_for(acl, payload)``: that unit ACL as it applies to one captured version
     (a Teams chat's members whose current visible history covers the message,
     ``integrations.capture_teams``); without it the unit ACL applies as recorded.
@@ -154,7 +162,8 @@ class SourceKind:
 
 _KINDS: dict[str, SourceKind] = {}
 # Source kinds defined by their capture adapter (imported on first registry use, so a
-# reader that only imports this module still finds them). Mail: ``integrations.capture_mail`` keeps its own
+# reader that only imports this module still finds them). Mail (lane L3, decision
+# 2026-10-02-mail-and-mentions-store): ``integrations.capture_mail`` keeps its own
 # versioned store (``MailCaptureStore``) and registers ``graph_mail`` here; SharePoint
 # (``integrations.capture_sharepoint``, ``SharePointCaptureStore``) registers
 # ``sharepoint`` the same way; Teams (``integrations.capture_teams``) keeps its channel
@@ -230,6 +239,13 @@ BC_LINE_HEADERS: dict[str, str] = {
     "customerPayments": "customerPaymentJournals", "vendorPayments": "vendorPaymentJournals"}
 
 
+# Field pages: records of one API v2.0 entity set enriched with fields only a BC web-service
+# page serves (``purchaseOrderReferences``: ODataV4 Page 50 ``PurchaseOrder``'s
+# ``Your_Reference``, stored under the API v2.0 purchase order's GUID). They are fields of
+# that set's documents, so they are visible exactly as that set is: the set's resource only.
+BC_FIELD_PAGES: dict[str, str] = {"purchaseOrderReferences": "purchaseOrders"}
+
+
 def _bc_path(parts: Sequence[str]) -> tuple[str, ...]:
     if isinstance(parts, (str, bytes)) or len(parts) != 4 \
             or not all(isinstance(p, str) for p in parts):
@@ -244,6 +260,8 @@ def _bc_path(parts: Sequence[str]) -> tuple[str, ...]:
 
 def _bc_resources(path: tuple[str, ...]) -> tuple[str, ...]:
     environment, company, entity_set, _ = path
+    if entity_set in BC_FIELD_PAGES:
+        return (f"bc:{environment}:{company}:{BC_FIELD_PAGES[entity_set]}",)
     own = f"bc:{environment}:{company}:{entity_set}"
     header = BC_LINE_HEADERS.get(entity_set)
     return (f"bc:{environment}:{company}:{header}", own) if header else (own,)
@@ -385,6 +403,132 @@ _SCHEMA = (
 )
 
 
+def wal_journal(db: sqlite3.Connection) -> None:
+    """A capture store's writer connection in WAL mode (kept in the file): a reader's open
+    snapshot (the projection build, reading while the next capture runs) never blocks the
+    writer, nor the writer the reader. A store another connection holds keeps its mode
+    for this run (SQLite refuses the switch then); the next writer switches it."""
+    try:
+        db.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError:
+        pass
+    bound_wal(db)
+
+
+# A WAL file is cut back to this size each time SQLite resets it (after a checkpoint
+# that moved every frame into the database), so one burst of writes never keeps its
+# disk space (the incident: an 11 GB WAL beside a 3.7 GB mirror filled the disk).
+WAL_SIZE_LIMIT_BYTES = 64 * 1024 ** 2
+
+
+def bound_wal(db: sqlite3.Connection) -> None:
+    """Set ``journal_size_limit`` on a writer connection (a per-connection setting)."""
+    db.execute(f"PRAGMA journal_size_limit = {WAL_SIZE_LIMIT_BYTES}")
+
+
+def wal_bytes(path: str | Path) -> int:
+    """The bytes of the WAL file beside the SQLite file ``path`` (0 when there is none)."""
+    try:
+        return Path(f"{path}-wal").stat().st_size
+    except OSError:
+        return 0
+
+
+def checkpoint(db: sqlite3.Connection, *, wait_ms: int = 0) -> dict[str, Any]:
+    """``PRAGMA wal_checkpoint(TRUNCATE)`` on ``db``, waiting at most ``wait_ms`` for
+    other connections (the connection's own busy timeout is restored after): every WAL
+    frame moves into the database and the WAL file is cut to zero bytes, unless a reader
+    still holds an older snapshot or a writer holds the lock (``busy`` true: the frames
+    up to the oldest snapshot are moved, the file keeps its size until a later
+    checkpoint). A writer calls it at the end of each capture run with no wait, so a
+    capture never waits for a projection build; the host calls it between refreshes,
+    while no build runs, with a short wait. Never raises for a busy or non-WAL file:
+    ``state`` is ``truncated``, ``busy``, ``in_transaction`` (nothing done: a checkpoint
+    inside an open transaction cannot move its own frames) or ``failed`` with the
+    error code (``sqlite_code``); ``closed`` for a connection closed already (a second
+    ``close``)."""
+    try:
+        open_transaction = db.in_transaction
+    except sqlite3.ProgrammingError:
+        return {"state": "closed"}
+    if open_transaction:
+        return {"state": "in_transaction"}
+    try:
+        before = db.execute("PRAGMA busy_timeout").fetchone()[0]
+        db.execute(f"PRAGMA busy_timeout = {max(0, int(wait_ms))}")
+        try:
+            busy, frames, moved = db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        finally:
+            db.execute(f"PRAGMA busy_timeout = {int(before)}")
+    except sqlite3.Error as exc:
+        return {"state": "failed", "error": sqlite_code(exc)}
+    return {"state": "busy" if busy else "truncated", "wal_frames": max(frames, 0),
+            "frames_moved": max(moved, 0)}
+
+
+def checkpoint_file(path: str | Path, *, wait_ms: int) -> dict[str, Any] | None:
+    """:func:`checkpoint` of the SQLite file at ``path`` on a connection of its own
+    (``mode=rw``: never creates a file), with the WAL's bytes before and after; None
+    when there is no such file. Only the WAL moves into the file: no row is written."""
+    path = Path(path)
+    if not path.is_file():
+        return None
+    before = wal_bytes(path)
+    try:
+        db = sqlite3.connect(path.resolve().as_uri() + "?mode=rw", uri=True,
+                             isolation_level=None, timeout=max(0, wait_ms) / 1000)
+    except sqlite3.Error as exc:
+        return {"state": "failed", "error": sqlite_code(exc), "wal_bytes_before": before,
+                "wal_bytes": before}
+    try:
+        bound_wal(db)
+        result = checkpoint(db, wait_ms=wait_ms)
+    except sqlite3.Error as exc:
+        result = {"state": "failed", "error": sqlite_code(exc)}
+    finally:
+        db.close()
+    return {**result, "wal_bytes_before": before, "wal_bytes": wal_bytes(path)}
+
+
+# SQLite's primary result codes, by the message text Python carries when it gives no
+# ``sqlite_errorname`` (Python < 3.11); the code names a cause, never a path or a row.
+_SQLITE_MESSAGES = (("disk is full", "disk_full"), ("database is locked", "locked"),
+                    ("database table is locked", "locked"), ("disk i/o error", "io_error"),
+                    ("malformed", "corrupt"), ("unable to open", "cant_open"),
+                    ("readonly", "readonly"), ("read-only", "readonly"),
+                    ("not a database", "not_a_database"), ("out of memory", "nomem"),
+                    ("interrupted", "interrupted"), ("no such table", "schema"),
+                    ("no such column", "schema"))
+_SQLITE_NAMES = {"SQLITE_FULL": "disk_full", "SQLITE_BUSY": "locked",
+                 "SQLITE_LOCKED": "locked", "SQLITE_IOERR": "io_error",
+                 "SQLITE_CORRUPT": "corrupt", "SQLITE_CANTOPEN": "cant_open",
+                 "SQLITE_READONLY": "readonly", "SQLITE_NOTADB": "not_a_database",
+                 "SQLITE_NOMEM": "nomem", "SQLITE_INTERRUPT": "interrupted"}
+
+
+def sqlite_code(exc: BaseException) -> str:
+    """A SQLite error as a short code (``disk_full``, ``locked``, ``io_error``, ...;
+    ``sqlite_error`` when unknown): the cause, without the message text (which may name
+    a table, a column or a path)."""
+    name = (getattr(exc, "sqlite_errorname", None) or "").split("_")
+    primary = "_".join(name[:2]) if len(name) >= 2 else ""
+    if primary in _SQLITE_NAMES:
+        return _SQLITE_NAMES[primary]
+    text = str(exc).lower()
+    for needle, code in _SQLITE_MESSAGES:
+        if needle in text:
+            return code
+    return "sqlite_error"
+
+
+def sqlite_bytes(db: sqlite3.Connection) -> int:
+    """The bytes of the database ``db`` holds, committed writes included whatever the
+    journal mode (a WAL store's writes sit in its WAL file until a checkpoint moves them
+    into the file, so the file's size lags behind)."""
+    pages = db.execute("PRAGMA page_count").fetchone()[0]
+    return pages * db.execute("PRAGMA page_size").fetchone()[0]
+
+
 class CaptureStore:
     """One SQLite file of versioned captures, read through a live audience."""
 
@@ -394,7 +538,7 @@ class CaptureStore:
         self._configure(path, audience, clock, max_versions_per_record)
         self._db = sqlite3.connect(str(path), isolation_level=None, timeout=30)
         self._db.row_factory = sqlite3.Row
-        self._db.execute("PRAGMA journal_mode=WAL")
+        wal_journal(self._db)
         for statement in _SCHEMA:
             self._db.execute(statement)
         with self._write():
@@ -421,6 +565,7 @@ class CaptureStore:
             raise CaptureError("store_missing", "no capture store at this path")
         store._db = sqlite3.connect(store.path.resolve().as_uri() + "?mode=ro", uri=True,
                                     isolation_level=None, check_same_thread=False)
+        store._read_only = True
         store._db.row_factory = sqlite3.Row
         try:
             store._identify()
@@ -463,6 +608,10 @@ class CaptureStore:
         self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     def close(self) -> None:
+        """Close the connection; a writer first checkpoints its WAL (no wait), so a
+        capture run never leaves its writes in a growing WAL file."""
+        if not getattr(self, "_read_only", False):
+            checkpoint(self._db)
         self._db.close()
 
     def __enter__(self) -> "CaptureStore":
@@ -501,6 +650,11 @@ class CaptureStore:
             elif pinned != binding:
                 raise CaptureError("binding_mismatch",
                                    "capture store holds captures of another source")
+
+    def stamped_tenant(self) -> str | None:
+        """The audience tenant the store's creation pinned (``binding_mismatch`` for any
+        other); a caller decides from it whether to capture into this file at all."""
+        return self._meta("tenant")
 
     def _check_binding(self) -> None:
         if self._meta("tenant") != self.audience.tenant:
@@ -543,9 +697,11 @@ class CaptureStore:
         acls = [source_acl if isinstance(source_acl, Mapping) else {}]
         superseded = row["superseded_at"] is not None
         if kind.unit_acl:
-            row = self._db.execute("SELECT acl FROM unit_acl WHERE kind = ? AND unit = ?",
-                                   (kind.name, kind.unit(path))).fetchone()
-            if row is None:
+            row = self._db.execute(
+                "SELECT acl, recorded_at FROM unit_acl WHERE kind = ? AND unit = ?",
+                (kind.name, kind.unit(path))).fetchone()
+            if row is None or not capture_decides(row["recorded_at"], self._clock(),
+                                                  UNIT_ACL_MAX_AGE):
                 return False
             unit_acl = json.loads(row["acl"])
             acls.append(unit_acl if kind.unit_acl_for is None
@@ -815,6 +971,7 @@ class CaptureStore:
                 "error = ?, cursor = NULL, detail = ? WHERE run_id = ?",
                 (state, now, now, reason, error,
                  None if detail is None else _canonical(dict(detail)), run_id))
+        checkpoint(self._db)   # the run's safe point: its writes leave the WAL
         return {"run_id": run_id, "state": state, "marked_missing": marked}
 
     def state(self, key: str) -> str | None:
@@ -837,6 +994,14 @@ class CaptureStore:
         row = self._db.execute("SELECT * FROM runs WHERE kind = ? AND unit = ? "
                                "ORDER BY run_id DESC LIMIT 1", (kind_name, unit)).fetchone()
         return None if row is None else _run_dict(row)
+
+    def unit_acl(self, kind_name: str, unit: str) -> dict[str, Any] | None:
+        """Writer side (no actor): the unit's latest recorded source ACL (a ``unit_acl``
+        kind), or None when none is recorded."""
+        source_kind(kind_name)
+        row = self._db.execute("SELECT acl FROM unit_acl WHERE kind = ? AND unit = ?",
+                               (kind_name, unit)).fetchone()
+        return None if row is None else json.loads(row["acl"])
 
     # -------------------------------------------------------------- reader side
 
@@ -1102,7 +1267,7 @@ def removals_of(row: Mapping[str, Any]) -> tuple[tuple[str, str, str], ...]:
     return tuple(tuple(item) for item in json.loads(row["removals"] or "[]"))
 
 
-__all__ = ["ADAPTER_MODULES", "BC_KIND", "BC_LINE_HEADERS", "CaptureError", "CaptureStore", "CapturedRecord",
+__all__ = ["ADAPTER_MODULES", "BC_FIELD_PAGES", "BC_KIND", "BC_LINE_HEADERS", "CaptureError", "CaptureStore", "CapturedRecord",
            "FORMAT", "SourceKind", "bc_unit", "is_capture_handle", "lineage_ok",
            "make_handle", "parse_handle", "register_source_kind", "removals_of",
-           "REMOVALS_COLUMN", "source_kind", "source_kinds"]
+           "REMOVALS_COLUMN", "source_kind", "source_kinds", "sqlite_bytes", "wal_journal"]

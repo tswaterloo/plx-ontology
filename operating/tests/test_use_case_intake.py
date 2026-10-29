@@ -288,13 +288,13 @@ class IntakeTests(UseCaseIntakeTestCase):
         self.assertFalse(by_name["po.pdf"]["accounting"]["complete"])
 
     def test_a_record_written_before_part_formats_groups_by_its_own_parts(self):
-        """A part recorded without a ``format`` is grouped by
+        """Directive afcfddf3107a (3): a part recorded without a ``format`` is grouped by
         its own kind and path, never under the outer file it sits in."""
         self.fake.put_file("F-BUNDLE", self.folder, "bundle.zip", zipped({
             "case.docx": ooxml("word/document.xml", images={"word/media/image1.png": PNG}),
             "reply.eml": b"From: a@example.com\r\nSubject: s\r\n\r\nbody\r\n",
             "notes.md": "Who approved?", "blob.bin": b"\x00\x93"}))
-        # A part of the record's own file whose
+        # Directive f6515fd2bede (2), DECIDED: a part of the record's own file whose
         # name states no format takes the record's sniffed detected_type, never
         # "ooxml" or "zip".
         self.fake.put_file("F-DECK", self.folder, "Procure deck", ooxml(
@@ -681,14 +681,14 @@ class CliTests(UseCaseIntakeTestCase):
     def live_check(report: dict) -> tuple[list[str], str]:
         """The real ingest.use_cases spec on a scan's output: its failures and what the
         verifier would record (JSON text)."""
-        from verify import live_verify
+        from devloop import live_verify
 
-        spec = json.loads((ROOT / "verify/live-checks/ingest.use_cases.json").read_text())
+        spec = json.loads((ROOT / "devloop/live-checks/ingest.use_cases.json").read_text())
         return (live_verify.check_expectations(spec, 0, report),
                 json.dumps(live_verify._recorded(spec, report)))
 
     def test_cli_scan_live_path_is_counts_only_and_note_is_text_only(self):
-        code, out = self.live_scan("--note")
+        code, out = self.live_scan("--dot-note")
         self.assertEqual(code, 0)
         report = json.loads(out)
         self.assertEqual(report["reader"], "environment")
@@ -700,7 +700,7 @@ class CliTests(UseCaseIntakeTestCase):
         for value in ("case.md", "Procure-to-GL", "F-MD", "9 days late", "supplier",
                       SP_HOST, DRIVE):
             self.assertNotIn(value, out)
-        self.assertIn("7 new and 0 changed artifacts", report["note"])
+        self.assertIn("7 new and 0 changed artifacts", report["dot_note"])
         # The denominators are present and add up, and the real spec passes on them.
         summary, items = report["summary"], report["evaluation_items"]
         self.assertGreater(summary["parts_read"], 0)
@@ -723,19 +723,20 @@ class CliTests(UseCaseIntakeTestCase):
         for value in ("case.md", "Procure-to-GL", "stage-map", "F-MD", "Outcome", "approved",
                       "Ontology UseCases", "sharepoint", SP_HOST, DRIVE):
             self.assertNotIn(value, recorded)
-        self.assertIn("nothing was written to SharePoint", report["note"])
+        self.assertIn("nothing was written to SharePoint", report["dot_note"])
         # Only GETs left the process (the guard refuses anything else).
         code, out = self.run_cli(["scan", "--state-dir", str(self.state)], environ={})
         self.assertEqual((code, json.loads(out)["summary"]["artifacts"]), (0, 0))
 
     def test_undecoded_msg_properties_are_counted_by_tag_and_identifiers_are_read(self):
-        """DOC-02: identifier binaries (entry ids, the conversation index
+        """DOC-02 gap-8f8fbd64e6b0: identifier binaries (entry ids, the conversation index
         and id) are read as msg-identifier with their MS-OXPROPS names; every other
         property stays unread msg_property_not_decoded and the summary names it by type
-        and id (a named property by its set and LID), never by a value. Search keys, one-off and address book entry ids and the reply-to
+        and id (a named property by its set and LID), never by a value. Directive
+        4a3b64a24fc3: search keys, one-off and address book entry ids and the reply-to
         entries are read as their address text (msg-address), or unread when they do not
         decode, never read with no text; a property table names every entry it could
-        not decode. A one-off's display name drops its control
+        not decode. Directive d3eb78699353: a one-off's display name drops its control
         characters, a reply-to list of store references only is identifiers, and a table
         with one bad entry reads the rest. DOC-02/DOC-07 (doc-parts-denominator): a binary
         that is protocol metadata (a MAPI-defined id, a named one in a Microsoft set) is
@@ -915,7 +916,7 @@ class CliTests(UseCaseIntakeTestCase):
             "unread_pdf_entries"], {"untyped": 2})
 
     def test_a_native_parser_panic_leaves_its_part_unread_and_the_scan_completes(self):
-        """Live ingest.use_cases died with
+        """Live ingest.use_cases (directive 2065e39ac61b) died with
         ``pyo3_runtime.PanicException``: ``pypdf`` loads ``cryptography`` (Rust/pyo3) on
         import, and a pyo3 panic derives from BaseException, past every ``except
         Exception``. Reproduced as that import panicking."""
@@ -940,7 +941,7 @@ class CliTests(UseCaseIntakeTestCase):
                           report["intake"]["counts"]["intake_failed"]), (8, 0))
         self.assertEqual(report["summary"]["unread_by_reason"]["parser_panicked"], 2)
         # An exit 0 with panicked parts is not coverage: the check fails and records the
-        # panicked parts by kind.
+        # panicked parts by kind (directive fe571d01e262).
         self.assertEqual((report["summary"]["parts_panicked"],
                           report["summary"]["panicked_by_kind"]), (2, {"pdf": 2}))
         failures, recorded = self.live_check(report)
@@ -967,7 +968,7 @@ class CliTests(UseCaseIntakeTestCase):
     @unittest.skipUnless(POPPLER, "poppler not installed")
     @mock.patch("integrations.doc_convert.installed_backend", return_value=None)
     def test_a_parser_panic_falls_back_to_the_pdf_text_layer_and_counts_per_format(self, _):
-        """With pypdf panicking, a PDF is still read through
+        """Directive 5b08d1ccdf6e item 8: with pypdf panicking, a PDF is still read through
         the one poppler path (method pdftotext-text); parser_panicked only when both
         readers fail. DOC-02/DOC-07: the summary carries parts read/unread per format and
         read parts by converter, so coverage re-derives from a per-format denominator."""
@@ -1025,7 +1026,7 @@ class CliTests(UseCaseIntakeTestCase):
                          [("po.pdf", "unread", "parser_panicked"),
                           ("po.pdf", "unread", "pdf_parser_unavailable")])
         # A panic while PdfReader parses the document (after a clean import) falls back
-        # the same way.
+        # the same way (directive afcfddf3107a (5)).
         constructed = type(sys)("pypdf")
         constructed.PdfReader = mock.Mock(side_effect=panic("Python API call failed"))
         with mock.patch.dict(sys.modules, {"pypdf": constructed}):
@@ -1037,8 +1038,8 @@ class CliTests(UseCaseIntakeTestCase):
                           ("po.pdf!/page/2", "extracted", "pdftotext-text"),
                           ("po.pdf#structure", "unread", "pdf_text_layer_only")])
         # A PDF over a bound of the text-layer path is skipped by that cap, never
-        # parser_panicked; over the page bound only the
-        # pages past it.
+        # parser_panicked (directive afcfddf3107a (2)); over the page bound only the
+        # pages past it (directive 23c4347efa25 (1)).
         from integrations import document_understanding
         for bound, expected in (
                 ("MAX_PAGES", [("po.pdf!/page/1", "extracted", None, None),
@@ -1051,7 +1052,7 @@ class CliTests(UseCaseIntakeTestCase):
             self.assertEqual([(p["path"], p["state"], p.get("cap"), p.get("limit"))
                               for p in parts], expected)
         # A page without a text layer is unread image_only: a scan whose pages are all
-        # empty reads nothing, so it cannot meet parts_read >= 1.
+        # empty reads nothing, so it cannot meet parts_read >= 1 (directive afcfddf3107a).
         self.fake.put_file("F-SCAN", self.folder, "scan.pdf", make_pdf([[], []]))
         with mock.patch.dict(sys.modules, {"pypdf": pypdf}):
             code, out = self.live_scan()
@@ -1071,7 +1072,7 @@ class CliTests(UseCaseIntakeTestCase):
     @unittest.skipUnless(PYPDF, "MarkItDown's page boundaries are checked against pypdf's "
                          "page count")
     def test_markitdown_reads_pdf_pages_first_and_every_page_keeps_its_provenance(self):
-        """DOC-07: the part readers read a PDF through the one reader,
+        """gap-105e75f678ed (DOC-07): the part readers read a PDF through the one reader,
         MarkItDown when installed (here an injected backend with its API) for a PDF pypdf
         cannot read, one part per page with the PDF's hash and the converter's identity;
         the summary counts them under markitdown and the real live-check spec passes on it."""
@@ -1111,7 +1112,7 @@ class CliTests(UseCaseIntakeTestCase):
         self.assertNotIn("PO-4471", recorded)
 
         # No page boundaries from MarkItDown: its text is one unpaged part and no second
-        # reader reads the whole PDF again.
+        # reader reads the whole PDF again (directive 440211923d3f (1)).
         from pypdf import PageObject
 
         class OnePiece(FakeMarkItDown):
@@ -1140,7 +1141,7 @@ class CliTests(UseCaseIntakeTestCase):
 
     @unittest.skipUnless(PYPDF, "the page bound is checked against pypdf's page count")
     def test_a_pdf_over_the_page_bound_reads_its_first_pages_and_skips_the_rest(self):
-        """A PDF over ``MAX_PAGES`` (200) is read on pages
+        """DECIDED 23c4347efa25 (1): a PDF over ``MAX_PAGES`` (200) is read on pages
         1-200, page by page (MarkItDown converts whole files only, so it never runs),
         and pages 201-250 are one skipped_by_cap ``pages`` range: the record is not
         complete and goes to review, and the real live-check spec still passes."""
@@ -1182,7 +1183,7 @@ class CliTests(UseCaseIntakeTestCase):
         self.assertEqual(self.live_check(report)[0], [])
         if POPPLER:  # pypdf missing: poppler's text layer reads the same first pages,
             # and MarkItDown is never given the PDF whole, whether poppler counted its
-            # pages (over the bound) or not.
+            # pages (over the bound) or not (directive 5ba82b6040ec (3)).
             from integrations import document_understanding
             real_count = document_understanding._poppler_page_count
             self.assertEqual(real_count(pdf), 250)
@@ -1220,9 +1221,9 @@ class CliTests(UseCaseIntakeTestCase):
 
     @unittest.skipUnless(PYPDF, "the page bound is checked against pypdf's page count")
     def test_pages_past_the_parts_room_are_skipped_parts_and_past_the_page_bound_pages(self):
-        """With less parts room than pages, the pages past
+        """Directive 23c4347efa25 (3)(4): with less parts room than pages, the pages past
         ``MAX_PAGES`` stay labelled ``pages`` and only those within it ``parts``, never
-        past ``MAX_PARTS``. Room is planned only for parts
+        past ``MAX_PARTS``. Directive 5ba82b6040ec (1): room is planned only for parts
         that will exist (no structure catalog keys, no absent document information), so
         a PDF that fits exactly keeps every readable page."""
         from integrations import document_understanding
@@ -1249,7 +1250,7 @@ class CliTests(UseCaseIntakeTestCase):
             self.assertLessEqual(len(result["parts"]), parts_cap)
             self.assertEqual(result["complete"], expected == page)
         # No room for a page and the range after it: no page text is read at all
-        #, by MarkItDown or pypdf.
+        # (directive d82b7c38fc7b (3)), by MarkItDown or pypdf.
         from pypdf import PageObject
         from integrations.tests.test_doc_convert import FAKE, FakeMarkItDown
 
@@ -1273,10 +1274,10 @@ class CliTests(UseCaseIntakeTestCase):
 
     @unittest.skipUnless(PYPDF, "a page's images are listed by pypdf")
     def test_an_image_heavy_pdf_never_goes_past_the_parts_bound(self):
-        """A page's images and annotations are read with room
+        """Directive 5ba82b6040ec (2): a page's images and annotations are read with room
         held for the later pages and the trailing skipped ranges, so a PDF whose images
         outgrow the parts room stays within ``MAX_PARTS`` and accounts for every page:
-        read, skipped, or in a skipped range. A page with
+        read, skipped, or in a skipped range. Directive d82b7c38fc7b (1): a page with
         images is planned two parts (its text and its resources), so when the room
         holds that for every page, every page's text is read."""
         from integrations import document_understanding
@@ -1325,7 +1326,7 @@ class CliTests(UseCaseIntakeTestCase):
     @unittest.skipUnless(POPPLER and PYPDF, "poppler not installed, or no importable pypdf "
                          "to encrypt the fixture")
     def test_the_text_layer_fallback_reports_a_user_password_pdf_encrypted(self):
-        """Poppler cannot open a PDF without its user
+        """Directive afcfddf3107a (2): poppler cannot open a PDF without its user
         password; the fallback reports it encrypted, not parser_panicked."""
         from pypdf import PdfReader, PdfWriter
 
@@ -1377,7 +1378,7 @@ class CliTests(UseCaseIntakeTestCase):
             (ROOT / "examples/ingestion_sources.live-check.json").read_text()),
             {"SHAREPOINT_DRIVE_ID": "b!x", "SHAREPOINT_SITE_ID": ENV["SHAREPOINT_SITE_ID"]})
         spec = {s["id"]: s for s in specs}[UNIT]
-        # The AGENTS site's library, resolved at run time.
+        # The AGENTS site's library (directive e2d2f62b791d), resolved at run time.
         self.assertEqual((spec["site"], spec["drive_id"], spec["path"], spec["recursive"]),
                          ("AGENTS", None, SITE_FOLDER, True))
         self.assertEqual(spec["not_configured"], [])
@@ -1401,7 +1402,7 @@ class CliTests(UseCaseIntakeTestCase):
         # No sharing (capability) link anywhere in the configuration or the spec.
         for path in ("examples/ingestion_sources.live-check.json",
                      "examples/ingestion_live_audience.live-check.json",
-                     "verify/live-checks/ingest.use_cases.json",
+                     "devloop/live-checks/ingest.use_cases.json",
                      "operating/use_case_intake.py"):
             text = (ROOT / path).read_text()
             # Any sharing-link shape (folder, file, doc ...): /:f:/, /:w:/, /:b:/s/, ?e=
@@ -1410,7 +1411,7 @@ class CliTests(UseCaseIntakeTestCase):
             self.assertIsNone(re.search(r"[?&]e=[A-Za-z0-9]", text), path)
 
     def test_live_check_spec_is_valid_in_dry_run(self):
-        dry = subprocess.run([sys.executable, "verify/live_verify.py", "--dry-run", "--only",
+        dry = subprocess.run([sys.executable, "devloop/live_verify.py", "--dry-run", "--only",
                               "ingest.use_cases"], cwd=ROOT, capture_output=True, text=True,
                              timeout=120)
         self.assertEqual(dry.returncode, 0, dry.stdout + dry.stderr)
@@ -1421,7 +1422,7 @@ class CliTests(UseCaseIntakeTestCase):
 
 
 class SiteResolvedUnitTests(UseCaseIntakeTestCase):
-    """ingest.use_cases failed live: the folder is not
+    """ingest.use_cases failed live (directive e2d2f62b791d): the folder is not
     under the PLXCUSTOMERS drive but at the root of the AGENTS site's default
     library. The unit now names the site and resolves its drive at run time."""
 
@@ -1662,7 +1663,7 @@ class LiveDeliveryShapeTests(UseCaseIntakeTestCase):
         for question in stub["questions"]:
             self.assertEqual(text[question["span"][0]:question["span"][1]], question["text"])
         self.assertEqual(stub["text_sha256"], use_case_intake._sha(text.encode("utf-8")))
-        # The documented input format to the evaluation tooling.
+        # The documented hand-off format to the evaluation lane.
         self.assertEqual(stub["split"], use_case_intake.split_for(stub["case_id"]))
         self.assertEqual(stub["status"], "stub_unconfirmed")
         from ontology.json_contract import check_schema, validate
@@ -1707,7 +1708,7 @@ class LiveDeliveryShapeTests(UseCaseIntakeTestCase):
         # A held-out delivery still yields dev items only (never held out), and the
         # runner executes them: every item is recorded, sealed and scored. An exact quote
         # of the cited original's re-read text is a verified text-span claim
-        # (docs/decisions/2026-10-06-use-case-evals-text-claims.md), so it is correct.
+        # (devloop/DECISIONS/2026-10-06-use-case-evals-text-claims.md), so it is correct.
         stubs_path = root / "evaluation_set.jsonl"
         stubs_path.write_text(stubs_path.read_text().replace('"split": "dev"',
                                                              '"split": "held_out"'))
@@ -2202,7 +2203,7 @@ class PartAccountingContractTests(unittest.TestCase):
                       {(p["state"], p.get("cap")) for p in capped["parts"]})
 
     def test_no_container_writes_past_the_parts_bound(self):
-        """A PDF's embedded files, an Outlook message's
+        """Directive d82b7c38fc7b (2): a PDF's embedded files, an Outlook message's
         storages and an OOXML package's parts are written only with room for them and
         for the parts after them: at every parts bound an artifact keeps to it, and
         with room for all of it nothing is skipped."""

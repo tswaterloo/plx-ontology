@@ -1,0 +1,41 @@
+{
+ "schema": "plx-host-config/v1",
+ "note": "Live check ingest.perpetual_cycle: the host in ingest mode (operating.host, decision 2026-10-21-ingest-one-writer), every connected source's capture CLI as one host cycle, budgets sized so two cycles fit the daily timeout (worst case about 3300 s a cycle). Paths are relative to this file. Portal reads through the host's mirror audience; mail and SharePoint capture under the host's capture audience (svc:workbench-host, as host.all_sources), so the host's trim and SharePoint census read what was captured; Teams and SharePoint lists keep the audiences of their own live checks. BC is held to purchaseReceipts, a set without calculated fields: cycle 2 reads its headers from the modified-since watermark, while purchaseReceiptLines is read in full every pass by design (Undo Receipt edits a posted receipt) and counts as full by design, not as a resume.",
+ "tenant": "plx",
+ "capture_audience": "host.all-sources.capture-audience.live-check.json",
+ "mirror_audience": "host_mirror_audience.live-check.json",
+ "ingest": {"mode": "capture_clis", "grace_seconds": 120},
+ "portal": {
+  "relations": ["public.app_sales_order", "public.assembly_order"],
+  "budget_seconds": 240
+ },
+ "bc": {
+  "entity_sets": ["purchaseReceipts"],
+  "budget_seconds": 480
+ },
+ "mail": {
+  "scope": "mail_capture_scope.live-check.json",
+  "budget_seconds": 600
+ },
+ "sharepoint": {
+  "scope": "sharepoint_capture_scope.live-check.json",
+  "budget_seconds": 600,
+  "census_budget_seconds": 300
+ },
+ "sharepoint_lists": {
+  "live_audience": "sharepoint_list_capture_audience.live-check.json",
+  "timeout_seconds": 300
+ },
+ "teams": {
+  "scope": "teams_capture_scope.live-check.json",
+  "live_audience": "teams_capture_audience.live-check.json",
+  "budget_seconds": 240
+ },
+ "mc": {
+  "scope": "live",
+  "queries": ["PLX Agent Workbench"],
+  "max_task_reads": 25,
+  "operator_email_default": "cos@petrasoap.com",
+  "timeout_seconds": 240
+ }
+}

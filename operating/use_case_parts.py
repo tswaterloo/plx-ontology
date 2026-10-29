@@ -368,9 +368,7 @@ def members(content: bytes, name: str, hint: str | None = None, *,
     relative the same way (``.``: the container itself, e.g. a zip that cannot be
     opened). ``max_part_bytes`` as in :func:`account`."""
     top = name or "original"
-    kind = _sniff(content, name, hint)
-    if not (kind == "mail" or (kind == "zip" and not _is_package(content))
-            or (kind == "cfb" and _is_msg(content))):
+    if not is_container(content, name, hint):
         return None
     files: list[dict[str, Any]] = []
     ledger = _Ledger(None, None, files, part_bytes=max_part_bytes)
@@ -385,6 +383,14 @@ def members(content: bytes, name: str, hint: str | None = None, *,
     gaps = [{**part, "path": relative(part["path"])} for part in ledger.parts
             if part["state"] != EXTRACTED]
     return {"files": files, "gaps": gaps}
+
+
+def is_container(content: bytes, name: str, hint: str | None = None) -> bool:
+    """Whether :func:`members` reads ``content`` member by member (a mail, a zip that is
+    not an Office package, an Outlook ``.msg``), without reading its members."""
+    kind = _sniff(content, name, hint)
+    return (kind == "mail" or (kind == "zip" and not _is_package(content))
+            or (kind == "cfb" and _is_msg(content)))
 
 
 def _is_package(data: bytes) -> bool:
@@ -593,12 +599,9 @@ def local_image_ocr() -> Callable[..., str] | None:
 
 
 def _html(source: str) -> str:
-    from integrations.document_understanding import _HTMLText
+    from integrations.document_understanding import html_text
 
-    parser = _HTMLText()
-    parser.feed(source)
-    parser.close()
-    return re.sub(r"\n[ \t]*(?:\n[ \t]*)+", "\n\n", parser.text()).strip()
+    return html_text(source)
 
 
 # ------------------------------------------------------------------ zip and OOXML
@@ -1681,4 +1684,4 @@ def _pdf_entry(where: str, name: Any) -> str:
 __all__ = ["ACCOUNTING_SCHEMA", "CAPS", "EXTRACTED", "FAMILIES", "FORMATS", "KINDS",
            "MAPI_METADATA_SETS", "METHOD_FAMILIES", "MAX_PART_BYTES", "PDF_ENTRIES", "REASONS",
            "SKIPPED", "STATES", "TAG_ID", "TAG_TYPE", "UNREAD", "VOCABULARY", "account",
-           "capped", "members", "part_format"]
+           "capped", "is_container", "members", "part_format"]

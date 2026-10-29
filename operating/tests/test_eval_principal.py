@@ -16,7 +16,7 @@ from pathlib import Path
 import shutil
 from unittest import mock
 
-from verify import live_verify as lv
+from devloop import live_verify as lv
 from operating import eval_principal as ep
 from operating import host as plx_host
 from operating import session_identity as si
@@ -26,7 +26,7 @@ from operating.tests import test_session_identity as tsi
 from scripts import eval_case_cards as cards
 from scripts import eval_real_agent as era
 
-SPEC = ep.ROOT / "verify" / "live-checks" / "eval.reader_coverage.json"
+SPEC = ep.ROOT / "devloop" / "live-checks" / "eval.reader_coverage.json"
 EXCLUDED = "PLX_EXCLUDED_PEOPLE_OIDS"
 SYNTHETIC_MAIL_HARNESS = (
     "import sys; from unittest import mock; "
@@ -120,6 +120,22 @@ class EvalPrincipalHostTest(th.HostCase):
         self.assertEqual(lv.validate_spec(spec, stem="eval.reader_coverage"), [])
         self.assertEqual(lv.check_expectations(spec, code, doc),
                          ["agent_evidence != expected"])
+
+    def test_a_host_that_never_captured_blocks_the_run_and_no_session_starts(self):
+        # The verifier's run on main 1e2f02bd read an empty state dir (no host cycle, no
+        # projection): 86 cards abstained and the check read fail. That measures the host,
+        # not the reader's coverage: a typed capture gap, never a fail and never a pass.
+        empty = self.root / "empty-state"
+        empty.mkdir()
+        code, doc, calls = self.cards("--measure-only",
+                                      environ={**self.environ, era.STATE_ENV: str(empty)})
+        self.assertEqual((code, doc["status"], doc["blocked_reason"]),
+                         (0, "blocked", "host_captures_absent"))
+        self.assertEqual([p["cause"] for p in doc["blocked_upstream"]], ["capture_gap"])
+        self.assertEqual((calls, self.started, doc["totals"]["run"]), ([], [], 0))
+        spec = json.loads(SPEC.read_text("utf-8"))
+        self.assertEqual(lv.check_expectations(spec, code, doc, spec["expect_blocked"]), [])
+        self.assertEqual([p["cause"] for p in lv.blocked_parts(doc)], ["capture_gap"])
 
     def test_a_named_reader_is_used_and_never_replaced_by_the_eval_principal(self):
         named = {**self.environ, era.READER_ENV: json.dumps(self.owner)}

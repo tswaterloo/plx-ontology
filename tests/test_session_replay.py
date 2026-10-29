@@ -303,8 +303,8 @@ class SessionReplayReportAssertionTests(unittest.TestCase):
             self.assertFalse(probe.session_replay_passed(report))
 
     def test_the_spec_refuses_each_failure(self):
-        from verify import live_verify as lv
-        from verify.tests import test_live_wiring as wiring
+        from devloop import live_verify as lv
+        from devloop.tests import test_live_wiring as wiring
         spec = wiring.spec(self.SPEC)
         good = {"session_replay": {**self.base(), "reextraction": self.base()["reextraction"],
                                    "divergences_by_kind": {}, "resync": {

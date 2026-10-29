@@ -5,8 +5,8 @@ Evidence label: ``injected-transport`` for SharePoint (the real GET-only
 the adapter tests) and the Portal rows (``FakeWorkbench``), ``isolated-fixture``
 for the packet bytes and their page text: six synthetic PDFs marked
 "SYNTHETIC TEST FIXTURE" and a stub extractor standing in for OCR. Nothing here
-is live data; ``verify/live-checks/ao-originals.json`` is what the live checks
-run.
+is live data; ``devloop/live-checks/ao-originals.json`` is what the live verifier
+runs.
 """
 
 from __future__ import annotations
@@ -379,7 +379,7 @@ def _local(server, name, arguments):
 
 
 class LiveCheckTest(unittest.TestCase):
-    """``python3 -m operating.sharepoint_originals check``: the live checks' command."""
+    """``python3 -m operating.sharepoint_originals check``: the live verifier's command."""
 
     def setUp(self) -> None:
         temp = tempfile.TemporaryDirectory()
@@ -414,12 +414,12 @@ class LiveCheckTest(unittest.TestCase):
         self.assertEqual({method for method, host in methods if host != "login.microsoftonline.com"},
                          {"GET"})
         # The spec's expectations hold for this (injected-transport) report.
-        spec = json.loads((ROOT / "verify" / "live-checks" / "ao-originals.json").read_text())
+        spec = json.loads((ROOT / "devloop" / "live-checks" / "ao-originals.json").read_text())
         self.assertEqual(spec["command"][:4],
                          ["python3", "-m", "operating.sharepoint_originals", "check"])
         self.assertEqual((ROOT / spec["command"][5]).resolve(), ORIGINALS_EXPECTED)
         self.assertEqual(spec["expect"]["exit_code"], code)
-        from verify import live_verify
+        from devloop import live_verify
         self.assertEqual(live_verify.check_expectations(spec, code, report), [])
 
     def test_the_file_rule_comes_from_the_expected_file_never_from_the_code(self):
@@ -488,8 +488,8 @@ class LiveCheckTest(unittest.TestCase):
             "error_code": "access_denied", "detail": "http_403"})
         for leaked in ("PLANTED", CLIENT_SECRET, "tempauth", "DL-do-not-leak"):
             self.assertNotIn(leaked, text)
-        spec = json.loads((ROOT / "verify" / "live-checks" / "ao-originals.json").read_text())
-        from verify import live_verify
+        spec = json.loads((ROOT / "devloop" / "live-checks" / "ao-originals.json").read_text())
+        from devloop import live_verify
         recorded = live_verify._recorded(spec, report)
         self.assertEqual(recorded["files[*].http_status"].count(403), 1)
         self.assertIn("access_denied", recorded["files[*].error_code"])
@@ -510,7 +510,7 @@ class LiveCheckTest(unittest.TestCase):
                          ("SourceUnavailable", 401, "invalid_authentication_token", "http_401"))
         self.assertNotIn("PLANTED", errors.getvalue())
         self.assertNotIn(CLIENT_SECRET, errors.getvalue())
-        from verify import live_verify
+        from devloop import live_verify
         published = live_verify._stderr_error(errors.getvalue())
         self.assertEqual((published["error"], published["http_status"],
                           published["error_code"]),

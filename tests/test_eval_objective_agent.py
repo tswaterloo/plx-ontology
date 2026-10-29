@@ -1,4 +1,4 @@
-"""The objective-investigation eval (scripts/eval_objective_agent.py,
+"""The objective-investigation eval (scripts/eval_objective_agent.py, ROADMAP B4,
 live check ``eval.objective_agent``): the objective gate, the harness post-check's
 metrics on scripted sessions and free-form objectives. Keyless: the fixture world and
 ``evals.runner.ScriptedAgent`` only (``injected-transport``, never the real agent)."""
@@ -56,11 +56,17 @@ def _root(objective) -> dict:
 
 
 def first_session(objective, as_known_at, *, gap_id=None, extra_fact=None, act=False,
-                  tries=()):
+                  tries=(), wordy=False):
     """A scripted first session: investigate, open a case, a cited fact per record read,
     the two gaps, one MC follow-up proposal per gap. ``gap_id`` overrides the proposals'
     gap; ``extra_fact`` adds a fact citing that handle; ``act`` also calls plx.act;
-    ``tries``: families tried first (their results are read, never recorded)."""
+    ``tries``: families tried first (their results are read, never recorded); ``wordy``:
+    each fact stated at length, as the real agent writes them (its case outgrows one
+    ``plx.case_get`` response)."""
+    statement = "The chain includes this record."
+    if wordy:
+        statement = (statement + " Its fields were read and agree with the order's chain;"
+                     " nothing on it contradicts the other records read.") * 25
     def script(prompt, call):
         for family in tries:
             call("plx.investigate", {"family": family, "root": _root(objective),
@@ -73,7 +79,7 @@ def first_session(objective, as_known_at, *, gap_id=None, extra_fact=None, act=F
         for handle in handles.values():
             call("plx.case_add_finding", {"case_id": case_id, "kind": "fact",
                                           "status": "supported",
-                                          "statement": "The chain includes this record.",
+                                          "statement": statement,
                                           "citations": [handle]})
         if extra_fact is not None:
             call("plx.case_add_finding", {"case_id": case_id, "kind": "fact",
@@ -266,6 +272,78 @@ class FixtureSessionsTest(unittest.TestCase):
         self.assertEqual(summary["false_gap_rate"], 0.0)
         self.assertTrue(oa.meets_bar(summary))
 
+    def test_case_over_one_response_is_paged_in_and_scored(self):
+        """The 2026-10-20/21 dailies (fixture: 10 sessions, 26 proposals, chain intact and
+        claimed on all 5, yet facts 0, gaps 0, recall 0.0, grounded 0.0): the real agent's
+        case outgrows one plx.case_get response, which then is a summary; its sections
+        must be paged in, never read as empty."""
+        host = self.make_host(self.objective)
+        pages = []
+        read = host.read
+
+        def counting(name, arguments):
+            if arguments.get("section") == "findings":
+                pages.append(arguments["offset"])
+            return read(name, arguments)
+        host.read = counting
+        try:
+            row = oa.run_objective(self.objective, TwoSessions(
+                first_session(self.objective, self.t, wordy=True), resume_session()),
+                host, self.expected, self.t)
+            whole = read("plx.case_get", {"case_id": row["case_id"]})
+        finally:
+            host.close()
+        self.assertEqual(whole["view"], "summary")
+        self.assertGreater(len(pages), 2)  # findings span pages (read twice: before resume)
+        self.assertEqual(row["facts"], sum(whole["counts"]["findings"].values()))
+        self.assertGreaterEqual(row["facts"], 5)
+        self.assertEqual((row["facts_unsupported"], row["grounded_facts"]), (0, 1))
+        self.assertEqual((row["agent_gaps"], row["false_gaps"]), (2, 0))
+        self.assertEqual((row["proposals"], row["proposals_grounded"]), (2, 2))
+        self.assertEqual(row["discovery_recall"], 1.0)
+        self.assertEqual(row["resume_duplicates"], 0)
+        self.assertTrue(oa.meets_bar(oa.part_summary([row])))
+
+    def test_unreadable_or_incomplete_case_pages_fail_closed(self):
+        summary = {"view": "summary", "counts": {"findings": {"supported": 2}, "gaps": 1,
+                                                 "proposals": 1, "timeline": 1}}
+        whole = {"findings": [{"id": "F1", "bucket": "supported", "kind": "fact"},
+                              {"id": "F2", "bucket": "supported", "kind": "fact"}],
+                 "gaps": [{"id": "G1"}], "proposals": [{"id": "P1"}],
+                 "timeline": [{"seq": 1}]}
+
+        def host_of(pages):
+            class Host:
+                def read(self, name, arguments):
+                    section = arguments.get("section")
+                    if section is None:
+                        return summary
+                    return pages(section, arguments["offset"])
+            return Host()
+
+        def complete_but(section, items):
+            return lambda name, offset: {
+                "section": name, "items": items if name == section else whole[name],
+                "next_offset": None}
+        variants = [(f"{section} short of the count", complete_but(section, items[:-1]),
+                     "case_incomplete") for section, items in whole.items()]
+        variants += [
+            ("a finding read twice", complete_but("findings", whole["findings"][:1] * 2),
+             "case_incomplete"),
+            ("a page that does not advance", lambda section, offset: {
+                "section": section, "items": [], "next_offset": offset},
+             "case_unreadable"),
+            ("a page without items", lambda section, offset: {
+                "section": section, section: whole[section], "next_offset": None},
+             "case_unreadable")]
+        for label, pages, code in variants:
+            with self.subTest(label):
+                with self.assertRaises(runner.RunnerError) as caught:
+                    oa.case_view(host_of(pages), "C1")
+                self.assertEqual(str(caught.exception), code)
+        view = oa.case_view(host_of(complete_but("gaps", whole["gaps"])), "C1")
+        self.assertEqual(view["findings"], {"supported": whole["findings"]})
+
     def test_proposal_from_an_unrecorded_gap_is_not_grounded(self):
         row = self.run_objective(self.objective,
                                  first_session(self.objective, self.t, gap_id="G9"))
@@ -426,8 +504,8 @@ class ReportTest(unittest.TestCase):
         # The live check on this report: the fixture part meets expect_blocked but for the
         # agent evidence (a scripted agent is never the real one); the pass expectation
         # needs the live part.
-        from verify import live_verify as lv
-        spec = json.loads((Path(oa.ROOT) / "verify" / "live-checks"
+        from devloop import live_verify as lv
+        spec = json.loads((Path(oa.ROOT) / "devloop" / "live-checks"
                            / "eval.objective_agent.json").read_text(encoding="utf-8"))
         self.assertEqual(lv.validate_spec(spec), [])
         self.assertEqual(lv.check_expectations(spec, 0, report, spec["expect_blocked"]),

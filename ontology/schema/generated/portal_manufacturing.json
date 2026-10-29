@@ -50,7 +50,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -303,7 +303,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -589,7 +589,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -1601,7 +1601,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -1843,7 +1843,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -2052,7 +2052,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -2822,7 +2822,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -3122,7 +3122,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -3333,7 +3333,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -3861,7 +3861,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -4162,7 +4162,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -4480,7 +4480,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -4803,7 +4803,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -5856,7 +5856,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -6102,7 +6102,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -6362,7 +6362,7 @@
        "note": "Pagination key ['id'] (key source: id)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -6637,7 +6637,7 @@
        "note": "Pagination key ['id'] (key source: id)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -6914,7 +6914,7 @@
        "note": "Pagination key ['id'] (key source: id)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -7171,7 +7171,7 @@
        "note": "Pagination key ['id'] (key source: id)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -7395,7 +7395,7 @@
        "note": "Pagination key ['id'] (key source: id)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -8368,7 +8368,7 @@
        "note": "Pagination key ['id'] (key source: id)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -8769,7 +8769,7 @@
        "note": "Pagination key ['id'] (key source: id)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -9094,6 +9094,41 @@
    ]
   },
   {
+   "id": "RelPublicAppBatchRecord.operator",
+   "from": "RelPublicAppBatchRecord",
+   "to": "RelPublicAppUser",
+   "name": "operator",
+   "reverse_name": "inverse_operator",
+   "cardinality": "N:1",
+   "description": "Prisma foreign key BatchRecord.operator (public.app_batch_record.operator_id -> public.app_user.id).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "gen.public.app_batch_record",
+     "to_binding": "gen.public.app_user",
+     "pairs": [
+      {
+       "from": "operator_id",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "upstream_code",
+       "repo": "plx-customer-portal",
+       "path": "portal/prisma/schema.prisma",
+       "commit": "52c9116f77ab",
+       "symbol": "BatchRecord",
+       "lines": "2943",
+       "note": "@relation(fields: [operator_id], references: [id])"
+      }
+     ]
+    }
+   ]
+  },
+  {
    "id": "RelPublicAppBatchRecord.product",
    "from": "RelPublicAppBatchRecord",
    "to": "RelPublicAppProduct",
@@ -9164,6 +9199,41 @@
    ]
   },
   {
+   "id": "RelPublicAppBatchRecord.signed_by",
+   "from": "RelPublicAppBatchRecord",
+   "to": "RelPublicAppUser",
+   "name": "signed_by",
+   "reverse_name": "inverse_signed_by",
+   "cardinality": "N:1",
+   "description": "Prisma foreign key BatchRecord.signedBy (public.app_batch_record.signed_by_id -> public.app_user.id).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "gen.public.app_batch_record",
+     "to_binding": "gen.public.app_user",
+     "pairs": [
+      {
+       "from": "signed_by_id",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "upstream_code",
+       "repo": "plx-customer-portal",
+       "path": "portal/prisma/schema.prisma",
+       "commit": "52c9116f77ab",
+       "symbol": "BatchRecord",
+       "lines": "2944",
+       "note": "@relation(fields: [signed_by_id], references: [id])"
+      }
+     ]
+    }
+   ]
+  },
+  {
    "id": "RelPublicAppBatchSchedule.batch",
    "from": "RelPublicAppBatchSchedule",
    "to": "RelPublicAppBatchRecord",
@@ -9193,6 +9263,41 @@
        "symbol": "BatchSchedule",
        "lines": "7601",
        "note": "@relation(fields: [batch_id], references: [id])"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "RelPublicAppManufacturingJob.created_by_user",
+   "from": "RelPublicAppManufacturingJob",
+   "to": "RelPublicAppUser",
+   "name": "created_by_user",
+   "reverse_name": "inverse_created_by_user_created",
+   "cardinality": "N:1",
+   "description": "Prisma foreign key ManufacturingJob.createdByUser (public.app_manufacturing_job.created_by -> public.app_user.id).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "gen.public.app_manufacturing_job",
+     "to_binding": "gen.public.app_user",
+     "pairs": [
+      {
+       "from": "created_by",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "upstream_code",
+       "repo": "plx-customer-portal",
+       "path": "portal/prisma/schema.prisma",
+       "commit": "52c9116f77ab",
+       "symbol": "ManufacturingJob",
+       "lines": "2643",
+       "note": "@relation(fields: [created_by], references: [id])"
       }
      ]
     }
@@ -9263,6 +9368,41 @@
        "symbol": "ManufacturingJob",
        "lines": "2642",
        "note": "@relation(fields: [sales_order_id], references: [id])"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "RelPublicAppManufacturingOrder.created_by_user",
+   "from": "RelPublicAppManufacturingOrder",
+   "to": "RelPublicAppUser",
+   "name": "created_by_user",
+   "reverse_name": "inverse_created_by_user_created_2",
+   "cardinality": "N:1",
+   "description": "Prisma foreign key ManufacturingOrder.createdByUser (public.app_manufacturing_order.created_by -> public.app_user.id).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "gen.public.app_manufacturing_order",
+     "to_binding": "gen.public.app_user",
+     "pairs": [
+      {
+       "from": "created_by",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "upstream_code",
+       "repo": "plx-customer-portal",
+       "path": "portal/prisma/schema.prisma",
+       "commit": "52c9116f77ab",
+       "symbol": "ManufacturingOrder",
+       "lines": "2725",
+       "note": "@relation(fields: [created_by], references: [id])"
       }
      ]
     }
@@ -9403,8 +9543,14 @@
        "symbol": "ManufacturingOrder",
        "lines": "2730",
        "note": "@relation(fields: [sales_order_line_id], references: [id])"
+      },
+      {
+       "kind": "workbench_code",
+       "path": "operating/link_contracts.json",
+       "note": "link contract portal-mo-to-sales-order-line: A Portal manufacturing order (the gold MO of an assembly order) is made for this Portal sales order line (SO Produce line; one live MO per line)."
       }
-     ]
+     ],
+     "link_contract": "portal-mo-to-sales-order-line"
     }
    ]
   },
@@ -9473,6 +9619,102 @@
        "symbol": "ProductionTask",
        "lines": "7635",
        "note": "@relation(fields: [mo_id], references: [id])"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "RelPublicAssemblyOrderItem.fm_ao_component_to_assembly_order",
+   "from": "RelPublicAssemblyOrderItem",
+   "to": "RelPublicAssemblyOrder",
+   "name": "fm_ao_component_to_assembly_order",
+   "reverse_name": "inverse_fm_ao_component_to_assembly_order",
+   "cardinality": "N:1",
+   "description": "Link contract fm-ao-component-to-assembly-order (fk): A FileMaker assembly order component row (bronze assembly_order_item) belongs to this assembly order: the AO that consumes the component.",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "gen.public.assembly_order_item",
+     "to_binding": "gen.public.assembly_order",
+     "pairs": [
+      {
+       "from": "idassem",
+       "to": "id",
+       "compare": "integer_id"
+      }
+     ],
+     "link_contract": "fm-ao-component-to-assembly-order",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "operating/link_contracts.json",
+       "note": "link contract fm-ao-component-to-assembly-order: A FileMaker assembly order component row (bronze assembly_order_item) belongs to this assembly order: the AO that consumes the component."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "RelPublicAssemblyOrderItem.fm_ao_component_to_bulk_product",
+   "from": "RelPublicAssemblyOrderItem",
+   "to": "RelPublicBulkProduct",
+   "name": "fm_ao_component_to_bulk_product",
+   "reverse_name": "inverse_fm_ao_component_to_bulk_product",
+   "cardinality": "N:1",
+   "description": "Link contract fm-ao-component-to-bulk-product (fk): A FileMaker assembly order component row consumes this bulk product.",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "gen.public.assembly_order_item",
+     "to_binding": "gen.public.bulk_product",
+     "pairs": [
+      {
+       "from": "idbulk",
+       "to": "id",
+       "compare": "integer_id"
+      }
+     ],
+     "link_contract": "fm-ao-component-to-bulk-product",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "operating/link_contracts.json",
+       "note": "link contract fm-ao-component-to-bulk-product: A FileMaker assembly order component row consumes this bulk product."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "RelPublicAssemblyOrderItem.fm_ao_component_to_packaging",
+   "from": "RelPublicAssemblyOrderItem",
+   "to": "RelPublicPackaging",
+   "name": "fm_ao_component_to_packaging",
+   "reverse_name": "inverse_fm_ao_component_to_packaging",
+   "cardinality": "N:1",
+   "description": "Link contract fm-ao-component-to-packaging (fk): A FileMaker assembly order component row consumes this packaging item.",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "gen.public.assembly_order_item",
+     "to_binding": "gen.public.packaging",
+     "pairs": [
+      {
+       "from": "idpack",
+       "to": "id",
+       "compare": "integer_id"
+      }
+     ],
+     "link_contract": "fm-ao-component-to-packaging",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "operating/link_contracts.json",
+       "note": "link contract fm-ao-component-to-packaging: A FileMaker assembly order component row consumes this packaging item."
       }
      ]
     }

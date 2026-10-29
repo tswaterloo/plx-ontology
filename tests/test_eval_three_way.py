@@ -4,7 +4,7 @@ Evidence label: ``isolated-fixture`` (injected transport). The oracle side reads
 synthetic world of ``evals/oracle/fixture_world.py``; the product side is an injected tool
 call (plx.find + plx.process answers shaped like the contract) or the real case host tool
 table over a projection built from the same world. Nothing here is live;
-``verify/live-checks/eval.unfamiliar_sample.json`` stays live-unverified.
+``devloop/live-checks/eval.unfamiliar_sample.json`` stays live-unverified.
 """
 
 from __future__ import annotations
@@ -178,7 +178,7 @@ class ScoreTest(unittest.TestCase):
         self.assertEqual(call.calls, [])
 
     def test_an_aspect_whose_sync_failed_is_blocked_alone_and_the_rest_still_scored(self):
-        # One aspect's failed source sync must not hide a wrong answer on
+        # Review em-1: one aspect's failed source sync must not hide a wrong answer on
         # another aspect. Only the aspects reading the failed relation are blocked.
         from evals.oracle import keys as K
 
@@ -202,7 +202,7 @@ class ScoreTest(unittest.TestCase):
         # eval.blocked counts the blocked aspects apart from blocked items.
         self.assertEqual(ev.blocked_summary([row], {}),
                          {"items": 0, "kinds": 0, "aspects": len(failed)})
-        # The product is wrong only on the blocked aspects and right on the
+        # Review e3-1: the product is wrong only on the blocked aspects and right on the
         # rest. The item is blocked (never three_way_correct) and its kind cannot pass.
         call = ScriptedFind({self.full.identifier: [root_handle(self.full)]},
                             processes={root_handle(self.full):

@@ -3,7 +3,7 @@
  "format": "plx-ontology-domain/v1",
  "domain": "mission_control",
  "origin": "curated",
- "description": "Mission Control work records and brain knowledge as ontology objects: MCTask, MCApproval, MCBucket and MCTaskEvent from MC read tools, KnowledgeEntry from mc_search_knowledge, all captured by integrations/mc_sources.py into the versioned capture store (source mission_control, cited mc://<scope>/<collection>/<id>@<generation>-<capture>). Audience mc:<scope>/<collection>, plus /<project> for tasks, approvals, task events and buckets: an MC operator scope is what that operator's MC principal may see, MC scopes those per project (PLX_MC@eeb7db7 src/lib/permissions/project-acl.ts), and a reader sees a record only when the live audience grants it mc:<scope>:<collection> and, for those, mc:<scope>:project:<project> (the MC project id or unparented). These are work and knowledge records, never business facts. Identifiers written in task text, gate reasons and knowledge entries are stored lead links (MCTask.mentions_<type>, MCApproval.mentions_<type>, KnowledgeEntry.mentions_<type>, ontology/schema.py MC_MENTION_LINK_RULES). Approvable MC writes are action types written by ontology/generator/mcp.py from the pinned tool shapes (generated/meta/mcp_tools.json); do not edit them by hand.",
+ "description": "Mission Control work records and brain knowledge as ontology objects (directive ddc3e0c36691 L6): MCTask, MCApproval, MCBucket and MCTaskEvent from MC read tools, KnowledgeEntry from mc_search_knowledge, all captured by integrations/mc_sources.py into the versioned capture store (source mission_control, cited mc://<scope>/<collection>/<id>@<generation>-<capture>). Audience mc:<scope>/<collection>, plus /<project> for tasks, approvals, task events and buckets: an MC operator scope is what that operator's MC principal may see, MC scopes those per project (PLX_MC@eeb7db7 src/lib/permissions/project-acl.ts), and a reader sees a record only when the live audience grants it mc:<scope>:<collection> and, for those, mc:<scope>:project:<project> (the MC project id or unparented). These are work and knowledge records, never business facts. Identifiers written in task text, gate reasons and knowledge entries are stored lead links (MCTask.mentions_<type>, MCApproval.mentions_<type>, KnowledgeEntry.mentions_<type>, ontology/schema.py MC_MENTION_LINK_RULES). Approvable MC writes are action types written by ontology/generator/mcp.py from the pinned tool shapes (generated/meta/mcp_tools.json); do not edit them by hand.",
  "object_types": [
   {
    "id": "MCTask",
@@ -154,6 +154,27 @@
       {
        "binding": "mission_control.tasks",
        "path": "reporter",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "accountable_owner",
+     "description": "The person MC holds accountable for the task (its accountableOwner), as MC records it: an address or a name, never resolved here.",
+     "value_type": "text",
+     "markings": [
+      "pii"
+     ],
+     "sources": [
+      {
+       "binding": "mission_control.tasks",
+       "path": "accountableOwner",
        "parser": "trim"
       }
      ],
@@ -1048,12 +1069,12 @@
   },
   "ctx.mc_model": {
    "kind": "context_pack",
-   "ref": "docs/reference/mission-control.md#2",
+   "ref": "devloop/CONTEXT/04-MISSION-CONTROL.md#2",
    "note": "MC data model: Task, Bucket, approval gates (Task.approvalGates), mc_events; read tools in section 3."
   },
   "ctx.mentions": {
    "kind": "context_pack",
-   "ref": "docs/reference/ontology-design.md#C.2",
+   "ref": "devloop/CONTEXT/07-ONTOLOGY-DESIGN.md#C.2",
    "note": "Document mentions any object: mention resolution (lead/corroborated)."
   },
   "wb.mc_write_door": {

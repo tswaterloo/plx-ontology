@@ -1,7 +1,7 @@
 """Amazon FBA case: PROPOSED dev-exposed cards and the ontology gaps they need.
 
 ``evals/dev/amazon-fba/proposed_items.json`` holds the questions of Greg's Amazon FBA
-Replenishment Map (FBA-*): shipment identity across Amazon, the
+Replenishment Map (FBA-*, advisory 45cd3b70238a): shipment identity across Amazon, the
 Sage OR, Freightcom and BC, case-to-unit reconciliation, item to Amazon SKU mapping,
 freight on final dims, the inventory move at BOL and the 45/90-day supply rule, and the
 real shipment OR1000154027. The map's original is pinned by item id and SHA-256 (from
@@ -36,7 +36,7 @@ SHIPMENT = "OR1000154027"
 # Every original kind the map names for the example; each unread one is typed.
 ORIGINAL_KINDS = {"email", "order", "customs", "bol", "label", "freight", "tracking"}
 STATES = {"link_pending", "to_come", "not_provided"}
-# The three systems the map asks Greg or Vince about.
+# The three systems the lane asks Greg or Vince about.
 ASKED = ("Seller Central", "Freightcom", "sales")
 SHA = re.compile(r"^[0-9a-f]{64}$")
 PRICE = re.compile(r"[$€£]\s?\d|\b(?:CAD|USD|EUR)\s?\d|\d\s?(?:CAD|USD|EUR)\b")
@@ -58,7 +58,7 @@ def problems(cards: dict, gaps: dict, originals: dict) -> list[str]:
     if ranks != list(range(1, 8)) or not all(g.get("map_gap") and g.get("map_says")
                                              for g in gaps["gaps"]):
         out.append(f"ranked gaps {ranks}")
-    asked = " ".join(g.get("open_question", "") for g in gaps["gaps"])
+    asked = " ".join(g.get("dot_question", "") for g in gaps["gaps"])
     out += [f"question for {s}" for s in ASKED if s not in asked]
     # The map's own original: its folder is the registry's /Ontology UseCases watch folder.
     watched = source.get("watched_originals", {})
@@ -122,11 +122,11 @@ class AmazonFbaCardsTest(unittest.TestCase):
 
     def test_pin_matches_the_advisory_record(self):
         """record_sha256 is the SHA-256 of the record at its commit, and the map's pin is
-        the record's own source item, revision hash and size."""
+        the record's own source item, revision hash and size. Needs codex/advisory."""
         pin = self.cards["source"]["advisory"]
         raw = _git_show(pin["ref"], pin["path"])
         if raw is None:
-            self.skipTest("commit e58e8a98 is not in this clone")
+            self.skipTest("advisory commit e58e8a98 is not in this clone")
         self.assertEqual(hashlib.sha256(raw).hexdigest(), pin["record_sha256"])
         record = json.loads(raw)
         self.assertEqual((record["source_revision"], record["created_at"]),
@@ -165,8 +165,8 @@ class AmazonFbaCardsTest(unittest.TestCase):
             # A removed citation, a missing gap source, an unpinned original.
             "uncited": lambda c, g: card(c, "FBA-03").update(cites=[]),
             "no source": lambda c, g: gap(g, "FBA-GAP-01").update(sources=[]),
-            "source unknown without an open question": lambda c, g: gap(g, "FBA-GAP-03")
-            .pop("open_question"),
+            "source unknown without a Dot question": lambda c, g: gap(g, "FBA-GAP-03")
+            .pop("dot_question"),
             "watched file": lambda c, g: files(c)[0].update(sha256="pending"),
             "advisory pin": lambda c, g: c["source"]["advisory"].update(record_sha256=""),
             "missing original kinds": lambda c, g: c.update(missing_originals=[
@@ -174,7 +174,7 @@ class AmazonFbaCardsTest(unittest.TestCase):
             "missing original MO-04": lambda c, g: c["missing_originals"][3].pop("gap"),
             "ranked gaps": lambda c, g: g["gaps"].pop(5),
             "question for Freightcom": lambda c, g: gap(g, "FBA-GAP-06")
-            .update(open_question="Who books the truck?"),
+            .update(dot_question="Who books the truck?"),
             "price": lambda c, g: card(c, "FBA-06")
             .update(criterion="Freight was quoted at USD 900."),
             "body": lambda c, g: files(c)[0].update(body="Hi Greg"),

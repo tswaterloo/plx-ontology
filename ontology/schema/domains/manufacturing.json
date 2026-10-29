@@ -3,7 +3,7 @@
   "format": "plx-ontology-domain/v1",
   "domain": "manufacturing",
   "origin": "curated",
-  "description": "Assembly orders (AOs) with components, damage, stage updates and labour tasks; bulk batches with QC results; manufacturing jobs; FG component lists; AO/batch allocations to order lines. FM bronze is authoritative for AOs and batches; gold copies are linked by code, never merged. Planned, produced, manufactured, accepted, retained and damaged quantities keep distinct roles. Formulas, BOMs and quality/eQMS records are declared not_served (Q3).",
+  "description": "Assembly orders (AOs) with components, damage, stage updates and labour tasks; bulk batches with QC results; manufacturing jobs; FG component lists; AO/batch allocations to order lines. FM bronze is authoritative for AOs and batches; gold copies are linked by code, never merged. Planned, produced, manufactured, accepted, retained and damaged quantities keep distinct roles. Formulas, BOMs and quality/eQMS records are declared not_served (Q3). Lane L5b.",
   "upstream_pins": {
     "plx-customer-portal": "b46934a"
   },
@@ -186,7 +186,7 @@
                 ]
               }
             ],
-            "note": "The Portal reads AO detail from FM; the gold copy is ETL output. Native MO rows have no confirmed authority."
+            "note": "The Portal reads AO detail from FM; the gold copy is ETL output. Native MO rows have no confirmed authority until Q1 is answered."
           },
           "evidence": [
             {
@@ -240,7 +240,7 @@
                 ]
               }
             ],
-            "note": "The Portal reads AO detail from FM; the gold copy is ETL output. Native MO rows have no confirmed authority."
+            "note": "The Portal reads AO detail from FM; the gold copy is ETL output. Native MO rows have no confirmed authority until Q1 is answered."
           },
           "evidence": [
             {
@@ -297,7 +297,7 @@
                 ]
               }
             ],
-            "note": "The Portal reads AO detail from FM; the gold copy is ETL output. Native MO rows have no confirmed authority."
+            "note": "The Portal reads AO detail from FM; the gold copy is ETL output. Native MO rows have no confirmed authority until Q1 is answered."
           },
           "evidence": [
             {
@@ -360,7 +360,7 @@
                 ]
               }
             ],
-            "note": "The Portal reads AO detail from FM; the gold copy is ETL output. Native MO rows have no confirmed authority."
+            "note": "The Portal reads AO detail from FM; the gold copy is ETL output. Native MO rows have no confirmed authority until Q1 is answered."
           },
           "evidence": [
             {
@@ -415,7 +415,7 @@
                 ]
               }
             ],
-            "note": "The Portal reads AO detail from FM; the gold copy is ETL output. Native MO rows have no confirmed authority."
+            "note": "The Portal reads AO detail from FM; the gold copy is ETL output. Native MO rows have no confirmed authority until Q1 is answered."
           },
           "evidence": [
             {
@@ -521,7 +521,7 @@
                 ]
               }
             ],
-            "note": "The Portal reads AO detail from FM; the gold copy is ETL output. Native MO rows have no confirmed authority."
+            "note": "The Portal reads AO detail from FM; the gold copy is ETL output. Native MO rows have no confirmed authority until Q1 is answered."
           },
           "evidence": [
             {
@@ -577,7 +577,7 @@
                 ]
               }
             ],
-            "note": "The Portal reads AO detail from FM; the gold copy is ETL output. Native MO rows have no confirmed authority."
+            "note": "The Portal reads AO detail from FM; the gold copy is ETL output. Native MO rows have no confirmed authority until Q1 is answered."
           },
           "evidence": [
             {
@@ -636,7 +636,7 @@
                 ]
               }
             ],
-            "note": "The Portal reads AO detail from FM; the gold copy is ETL output. Native MO rows have no confirmed authority."
+            "note": "The Portal reads AO detail from FM; the gold copy is ETL output. Native MO rows have no confirmed authority until Q1 is answered."
           },
           "evidence": [
             {
@@ -718,7 +718,7 @@
                 ]
               }
             ],
-            "note": "The Portal reads AO detail from FM; the gold copy is ETL output. Native MO rows have no confirmed authority."
+            "note": "The Portal reads AO detail from FM; the gold copy is ETL output. Native MO rows have no confirmed authority until Q1 is answered."
           },
           "evidence": [
             {
@@ -792,7 +792,7 @@
                 ]
               }
             ],
-            "note": "The Portal reads AO detail from FM; the gold copy is ETL output. Native MO rows have no confirmed authority."
+            "note": "The Portal reads AO detail from FM; the gold copy is ETL output. Native MO rows have no confirmed authority until Q1 is answered."
           },
           "evidence": [
             {
@@ -3027,7 +3027,7 @@
         },
         {
           "kind": "context_pack",
-          "ref": "docs/reference/portal-code-map.md#3.7",
+          "ref": "devloop/CONTEXT/03-PORTAL.md#3.7",
           "note": "Only finished_product_item / bulk_product are served of the product structure."
         }
       ]
@@ -3453,6 +3453,80 @@
               "from": "idbulk",
               "to": "id",
               "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.fetchassemblyorderitems.f2113b"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "AssemblyOrderComponent.consumed_lot",
+      "from": "AssemblyOrderComponent",
+      "to": "Lot",
+      "name": "consumed_lot",
+      "reverse_name": "consuming_components",
+      "cardinality": "N:M",
+      "markings": [
+        "quality_controlled"
+      ],
+      "description": "The supplier lot a FileMaker assembly order component row names (assembly_order_item.lotno), matched to the receiving lines' lot by its number only: a lead, never followed as a recorded link. No source records which received lot a component consumed (the Portal's app_manufacturing_order_line.lot_id to app_inventory_lot is not served, upstream ask Q3), and lot numbers recur across suppliers and lines, so a person's review (plx.review accept_link) is the only way it becomes firm. Quality-controlled: where a lot went is traceability a reader without the quality marking is never shown.",
+      "bindings": [
+        {
+          "kind": "text_match",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.fm_assembly_order_item",
+          "to_binding": "portal.fm_receipt_raw_material.lotnoqc",
+          "pairs": [
+            {
+              "from": "lotno",
+              "to": "lotnoqc",
+              "compare": "identifier",
+              "identifier_kind": "lot_number"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.fetchassemblyorderitems.f2113b"
+            }
+          ]
+        },
+        {
+          "kind": "text_match",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.fm_assembly_order_item",
+          "to_binding": "portal.fm_receipt_packaging.lotnoqc",
+          "pairs": [
+            {
+              "from": "lotno",
+              "to": "lotnoqc",
+              "compare": "identifier",
+              "identifier_kind": "lot_number"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.fetchassemblyorderitems.f2113b"
+            }
+          ]
+        },
+        {
+          "kind": "text_match",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.fm_assembly_order_item",
+          "to_binding": "portal.app_receipt_line.supplier_lot",
+          "pairs": [
+            {
+              "from": "lotno",
+              "to": "supplier_lot_number",
+              "compare": "identifier",
+              "identifier_kind": "lot_number"
             }
           ],
           "evidence": [
@@ -4046,8 +4120,8 @@
             },
             {
               "kind": "workbench_code",
-              "path": "verify/upstream-pins.json",
-              "note": "One live MO per sales order line, read at plx-customer-portal@549f6f0 (newer than this domain's b46934a pin; pinned and drift-watched in verify/upstream-pins.json): portal/src/lib/mrp/mo-so-line-link.ts:13-16 liveLinkedMo (the one not-CANCELLED MO on a line, TASK-2397 568f69c8); portal/src/lib/mrp/api-handlers/manufacturing-orders.ts:154-168 resolveLinkedSalesOrderLine (create: 409) and :815-834 tagExistingSalesOrderLine (tag: 409 SOL_ALREADY_HAS_MO), each while another MO on the line is not CANCELLED and deletedAt is null."
+              "path": "devloop/upstream-pins.json",
+              "note": "One live MO per sales order line, read at plx-customer-portal@549f6f0 (newer than this domain's b46934a pin; pinned and drift-watched in devloop/upstream-pins.json): portal/src/lib/mrp/mo-so-line-link.ts:13-16 liveLinkedMo (the one not-CANCELLED MO on a line, TASK-2397 568f69c8); portal/src/lib/mrp/api-handlers/manufacturing-orders.ts:154-168 resolveLinkedSalesOrderLine (create: 409) and :815-834 tagExistingSalesOrderLine (tag: 409 SOL_ALREADY_HAS_MO), each while another MO on the line is not CANCELLED and deletedAt is null."
             }
           ]
         }
@@ -4669,17 +4743,17 @@
   "evidence_catalog": {
     "context-pack.02-cases-and-artifacts-md.b99b18": {
       "kind": "context_pack",
-      "ref": "docs/reference/cases-and-artifacts.md",
+      "ref": "devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md",
       "note": "Ricardo's AO material: planned, produced, filled and damaged quantities differ and are never summed across components; AO header quantities can be empty."
     },
     "context-pack.03-portal-md-3-8.8b1656": {
       "kind": "context_pack",
-      "ref": "docs/reference/portal-code-map.md#3.8",
+      "ref": "devloop/CONTEXT/03-PORTAL.md#3.8",
       "note": "Authoritative AO = FM bronze assembly_order; gold app_manufacturing_order is the AO copy; AO <-> order lines are many-to-many in FM."
     },
     "context-pack.03-portal-md-4-8.915e1d": {
       "kind": "context_pack",
-      "ref": "docs/reference/portal-code-map.md#4.8",
+      "ref": "devloop/CONTEXT/03-PORTAL.md#4.8",
       "note": "AO quantity fields: qtytotal ordered, totalprodqty_c produced incl. samples, qtyacc_c accepted, finalqty/qtymanufold silver yields, component qty_c planned / actualamount consumed, damage per component."
     },
     "upstream-code.batchrecord.c3a320": {
@@ -4848,8 +4922,8 @@
     },
     "context-pack.03-portal-md-4-6.test-batch": {
       "kind": "context_pack",
-      "ref": "docs/reference/portal-code-map.md#4.6",
-      "note": "Portal acc0c53 (TASK-2351, portal/src/lib/mrp/test-receiving/batch-ids.ts:29-31, pinned in verify/upstream-pins.json): off the live customer site a batch that uses a staging test lot takes public.batch/batch_item ids >= 9000000 and a TEST-BC- number; FileMaker never issues either. silver.batches selects every public.batch row, so etlBatches copies them to app_batch_record."
+      "ref": "devloop/CONTEXT/03-PORTAL.md#4.6",
+      "note": "Portal acc0c53 (TASK-2351, portal/src/lib/mrp/test-receiving/batch-ids.ts:29-31, pinned in devloop/upstream-pins.json): off the live customer site a batch that uses a staging test lot takes public.batch/batch_item ids >= 9000000 and a TEST-BC- number; FileMaker never issues either. silver.batches selects every public.batch row, so etlBatches copies them to app_batch_record."
     }
   }
 }

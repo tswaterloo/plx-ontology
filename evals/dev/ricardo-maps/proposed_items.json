@@ -1,6 +1,6 @@
 {
  "format": "plx-eval-case-card-proposals/v1",
- "status": "PROPOSED dev cards for lead triage, never gold. Ricardo's October 2 process-map packages (ontology-file-intake, order-lifecycle-cost, po-delivery-window) and the original-backed anchors QRM-26037, Dandylion P-02289/PO-00269, PO5455, PO-00349/MIDAS2 and F-18-0025, source-conditioned on docs/reference/cases-and-artifacts.md section 3.6 and the pinned packets. Only the 12 map files are rows of examples/case_originals.json; the anchor originals (QRM files, Receiving messages, attachments, helper) are not registry rows, so those cards cite the packet. Each card names its missing outcome as missing. No amounts or expected values beyond the quoted source figures.",
+ "status": "PROPOSED dev cards for lead triage, never gold. Ricardo's October 2 process-map packages (ontology-file-intake, order-lifecycle-cost, po-delivery-window) and the original-backed anchors QRM-26037, Dandylion P-02289/PO-00269, PO5455, PO-00349/MIDAS2 and F-18-0025, source-conditioned on devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md section 3.6 and the pinned packets. Only the 12 map files are rows of examples/case_originals.json; the anchor originals (QRM files, Receiving messages, attachments, helper) are not registry rows, so those cards cite the packet. Each card names its missing outcome as missing. No amounts or expected values beyond the quoted source figures.",
  "case": "ricardo-maps",
  "source": {
   "advisory": {
@@ -35,42 +35,42 @@
    "system": "unverified",
    "relation": "approval or release record for QRM-26037 (signature/date fields are blank in the read DOCX)",
    "reader": "none",
-   "evidence": "OntologyProject:docs/reference/cases-and-artifacts.md@df2c16a88bd3"
+   "evidence": "OntologyProject:devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md@df2c16a88bd3"
   },
   {
    "id": "receiving.po5455_receipt",
    "system": "unverified",
    "relation": "actual receipt of PO5455 and the item received (ES-2 or Thamesurf SLES-30)",
    "reader": "none",
-   "evidence": "OntologyProject:docs/reference/cases-and-artifacts.md@df2c16a88bd3"
+   "evidence": "OntologyProject:devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md@df2c16a88bd3"
   },
   {
    "id": "receiving.po00349_arrival",
    "system": "unverified",
    "relation": "actual arrival of PO-00349 / MIDAS2 against shipment 228524",
    "reader": "none",
-   "evidence": "OntologyProject:docs/reference/cases-and-artifacts.md@df2c16a88bd3"
+   "evidence": "OntologyProject:devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md@df2c16a88bd3"
   },
   {
    "id": "dandylion.complaint_resolution",
    "system": "unverified",
    "relation": "resolution of Dandylion's October 2 missing-inventory complaint",
    "reader": "none",
-   "evidence": "OntologyProject:docs/reference/cases-and-artifacts.md@df2c16a88bd3"
+   "evidence": "OntologyProject:devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md@df2c16a88bd3"
   },
   {
    "id": "inventory.dandylion_posting",
    "system": "unverified",
    "relation": "actual inventory posting for Dandylion P-02289 / PO-00269",
    "reader": "none",
-   "evidence": "OntologyProject:docs/reference/cases-and-artifacts.md@df2c16a88bd3"
+   "evidence": "OntologyProject:devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md@df2c16a88bd3"
   },
   {
    "id": "qc.receiving_inspection_release",
    "system": "unverified",
    "relation": "receiving inspection result, accept/reject/rework decision, signer and stock disposition",
    "reader": "none",
-   "evidence": "OntologyProject:docs/reference/cases-and-artifacts.md@df2c16a88bd3"
+   "evidence": "OntologyProject:devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md@df2c16a88bd3"
   }
  ],
  "layers": {
@@ -161,6 +161,7 @@
    },
    {
     "id": "RM-05",
+    "own_document_audited": {"date": "2026-10-29", "quotes": ["a2f74207dae83588c175cbae00ebb5ffe6ee858f02776d01cfedd51a1d834b5a"]},
     "layer": "actual_case_answerability",
     "question": "When did PO-00349 (MIDAS2) arrive?",
     "criterion": "Missing outcome: real arrival is not established. Report that mail and slip 228524 support a September 15 shipment and 375 kg while the slip's August 26 expected delivery conflicts; present both dates and do not repair the ETA.",
@@ -190,6 +191,8 @@
    },
    {
     "id": "RM-06",
+    "own_document_evidence": false,
+    "own_document_note": "cost-map quotes (materials only) state none of the helper's SLES 8% to 9%, 0.1184 to 0.1332 or 58.79% mass findings the criterion asks for (audit 2026-10-29)",
     "layer": "tracing",
     "question": "What does the F-18-0025 helper establish about cost?",
     "criterion": "Report that the helper at 3d15ff87 records SLES 8% to 9% changing the contribution from 0.1184 to 0.1332, and that the three rows cover 58.79% of mass. State that this is not full cost and not a quote-to-cash outcome.",

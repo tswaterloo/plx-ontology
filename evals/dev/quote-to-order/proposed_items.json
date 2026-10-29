@@ -12,6 +12,15 @@
    "advisories": [
     "advisory:72bf7b7ae3f6",
     "advisory:b663c5f3b388"
+   ],
+   "source_files_note": "The map's own files in AGENTS/Ontology UseCases/Process Maps - Quote-to-Order (2026-10-15), from the SharePoint capture store (content_sha256, the bytes' SHA-256, checked against the stored blobs on 28 Oct 2026; one version each). No advisory manifest lists them, so they are not watched_originals. The scorer counts a claim citing one as on this set's source document (evals/score.py, scorer /21). Names only, no contents.",
+   "source_files": [
+    {"name": "README.md", "item_id": "01RVPYB2AEU7BVTHXT7BAIZW2ZMJF6XTTC", "sha256": "75b8b0391a51f2e884883df062428b8a2a9ccfe588d1f579a0ab9a49711dce45", "bytes": 1655},
+    {"name": "Quote-to-Order Map.html", "item_id": "01RVPYB2D247AISQ2DNFGI6TU2R6TXHNRH", "sha256": "459429ad106d4f82d60197abfe5cea807ae89e8b412a70d6f9255623ffef3c00", "bytes": 191212},
+    {"name": "decision-log-drafts.md", "item_id": "01RVPYB2EXC54PZJDIRZGKGWLGG5WXWN7N", "sha256": "368030c1f3fef0d3986ee57eb8c13b6c0ecf0b7253b76e81a5da0a2dfe749000", "bytes": 7670},
+    {"name": "mission-control-task-drafts.md", "item_id": "01RVPYB2DGNG3VIM3RD5GLAX7MCRCDC2M6", "sha256": "cbe830aa56c49f722a5319620ed401b37adaa4cf52c3509296cce27b5f891b17", "bytes": 11795},
+    {"name": "quote-to-order-map-ontology.csv", "item_id": "01RVPYB2B4WPSIIX6KUZEJE55QSERX7M3M", "sha256": "2363b1d2facc58d95345c9c949bbe7edd9ddaed9da43f08c5a42297978ea497a", "bytes": 5216},
+    {"name": "quote-to-order-map-relations.csv", "item_id": "01RVPYB2GCUHL3RRERPFGJR4LSVNF5GBWZ", "sha256": "9fa5c80f7f338cc9520d09717564b5c77c691ce58bac6f35905bf6a04c8f651c", "bytes": 1268}
    ]
   },
   "QW": {
@@ -38,7 +47,7 @@
  "source": {
   "advisory": {
    "id": "advisory:72bf7b7ae3f6",
-   "ref": "advisory@1cbde9b7abdeac872dad96f60ccee65efa0ee1a6",
+   "ref": "origin/codex/advisory@1cbde9b7abdeac872dad96f60ccee65efa0ee1a6",
    "path": "context/72bf7b7ae3f6226fd904bef64a683147f878c16ac45f2549432089d975ed5827.json",
    "record_sha256": "695d0715abb99945d06c3f730038e5b58eeb03925c943fb4f199b35176e9c734",
    "source_revision": "user-html-export-sha256:f98f355a90d5823c7e6dd8f2b32d59f6715885d9ccc761e5ca08ac213b100c33",
@@ -48,7 +57,7 @@
    {
     "id": "advisory:b663c5f3b388",
     "role": "Vince's invitation to the Quote-to-Order Map (messages only, map pinned as advisory:72bf7b7ae3f6); gap-c6908655ad11, related only",
-    "ref": "advisory@9e79b8ddaad48675077cfd337d4528e37ad8677e",
+    "ref": "origin/codex/advisory@9e79b8ddaad48675077cfd337d4528e37ad8677e",
     "path": "context/b663c5f3b388a4af33d8fafcf2f482fde64e109085590366a99dc2daeb3b91c1.json",
     "record_sha256": "3dbbab8245c43d23a125c6743f09f8503a61087dc456414f4a3c200b6dbdb5e4",
     "source_revision": "selected-facts-sha256:e1ea3f191308a64b3780b47a801139023d370a9f6d5c1d9b076f1f238f24460e",
@@ -57,7 +66,7 @@
    {
     "id": "advisory:bb494ac6ba9d",
     "role": "manifest of the 11 quote workbooks in the three _Quote Workbooks folders (bytes downloaded and hashed; bodies not delivered); gap-8831e5c7c5bd",
-    "ref": "advisory@8469459ed58ddd0593152ba3f7b801571374dcca",
+    "ref": "origin/codex/advisory@8469459ed58ddd0593152ba3f7b801571374dcca",
     "path": "context/bb494ac6ba9df883cd6afdbe39ff7731793355041ee7d077bf68094827f704b1.json",
     "record_sha256": "f2b99accee63c792017ec8ee5dd8f7dd3166f2b3cc2e86380cb3b52933134181",
     "source_revision": "verified-manifest-sha256:746af2164a06b8981d5ed4e334102b273faf95e44d5d2a0632c1200dceb26335",
@@ -66,7 +75,7 @@
    {
     "id": "advisory:0dc11f49acee",
     "role": "manifest of the 17 other entries of the same folders (14 emails, 3 _summary.md; bytes hashed, bodies not assessed); gap-4f3881121f61",
-    "ref": "advisory@3d84813974f0c68b845254b094365be414044fc1",
+    "ref": "origin/codex/advisory@3d84813974f0c68b845254b094365be414044fc1",
     "path": "context/0dc11f49aceec6d8a22c5a9e8070936bd6f15097d36a9648f41b0566ede0fbe4.json",
     "record_sha256": "89d8f1612f742ea7bdd21800435ef2359afa265c2525d543728d99fa876ea2b7",
     "source_revision": "manifest-sha256:45d617ec3ea060d398f49b214677c241d5aeb7e8dbb5f5ee587593d1ff1646ef",
@@ -75,7 +84,7 @@
    {
     "id": "advisory:bc0e2a7d0f24",
     "role": "User journey for cost workflows (ZIP v1.0: 29-step cost-to-assembly design artifact); gap-cf0325bc0713",
-    "ref": "advisory@49a43337176673d859cdb3a734ffab3c7ac9d5c1",
+    "ref": "origin/codex/advisory@49a43337176673d859cdb3a734ffab3c7ac9d5c1",
     "path": "context/bc0e2a7d0f24ab9ef1e8ec64e14550d9830df5bd7592dbf997eff0ee2a40aab5.json",
     "record_sha256": "a2c7ddf5607c55cd24d7c359e88ad027c804b5fefa7202fca26499d16505ff21",
     "source_revision": "1.0:2026-10-15T14:55:27Z",
@@ -84,7 +93,7 @@
    {
     "id": "advisory:c70b2464d73c",
     "role": "Vince's announcement of the next case, quoting with incomplete information (planned, original not submitted); slots into examples.*.missing_at_quote",
-    "ref": "advisory@557a03722b1b7c0c4e4c4b2bf4d490453fb38175",
+    "ref": "origin/codex/advisory@557a03722b1b7c0c4e4c4b2bf4d490453fb38175",
     "path": "context/c70b2464d73c1afda78935dfddc3e72b5661b7efdaa3289003856124cd27e748.json",
     "record_sha256": "a65572e503386b4d6d604c9df253c36e2e08e283a55600cd762db25846c7d3c9",
     "source_revision": "ac3df1121e78b0f3a1cfa7bbbe3f3bbfed223f72e3fb39479753719b67282153",
@@ -613,6 +622,7 @@
   "cards": [
    {
     "id": "QO-01",
+    "own_document_audited": {"date": "2026-10-28", "quotes": ["009baa72cbf072485edb058cbea18641ac79557c9b0de53b0e9a69a2f7f5bc53", "71b1465794a16e37d12956775160068ba24eadf21f36353a3f90d5be7d19dd8f", "bae0eb4cf777b309b538288f712f5f9ea8eed44a4402cea21ca42705db2d28e3", "c4881ccb749731607b5315fecf0efb395acdff7e07f9cc58b2958c755c3d2f06", "d2ede595574c11b49e60a58d94f6cd09d5924ac9e01c71fd23a63390eb689a61", "823085b03c7fad18526a0f14c368dff6f113fe22922ba7a405fec683572c4666"]},
     "layer": "comprehension",
     "question": "What does the Quote-to-Order Map cover, and what kind of evidence is it?",
     "criterion": "Attribute to the map (Vince's artifact, exported 15 Oct 2026): 22 stages from the brief to a won order in Business Central or a lost quote, five worked examples A to E and 16 ranked gaps. Its Portal code readings are of staging at an unstated commit and were not rechecked by it. Call it a stakeholder use-case synthesis, not a verified report of deployed systems.",
@@ -625,6 +635,7 @@
    },
    {
     "id": "QO-02",
+    "own_document_audited": {"date": "2026-10-28", "quotes": ["c5fa68ed964d62369e2ea5fd96a9532afe06fac7ee2d11fb5214cb96d99f6cbe"]},
     "layer": "tracing",
     "question": "How is a lost quote recorded today, and when does a quote expire?",
     "criterion": "Keep three views apart, each attributed: as practised, lost quotes are not recorded (Vince, 15 Oct 2026); as built, a Portal quote can be REJECTED with an optional free-text reason or marked EXPIRED by hand, with a default validity window set at create; as targeted by the map, a reason from a set list and automatic expiry 30 days after issue. A count of lost quotes comes only from read quote rows.",
@@ -674,6 +685,7 @@
    },
    {
     "id": "QO-A2",
+    "own_document_audited": {"date": "2026-10-29", "quotes": ["016130dece5078bcc954bf55e9f4ad6a05c9adf83040b07bc9d87410e76c6759", "597842f0f60e5cd0ffc1277c756266d806133fb651dd543748f5521e198fce42"]},
     "layer": "comprehension",
     "question": "Which quote inputs were missing or assumed when the Sahajan minis quote was priced?",
     "criterion": "Name each input of examples.A.missing_at_quote as missing or assumed, attributed to the map's reading of the workbook notes; never fill one with a value. The workbook's READY TO QUOTE result does not make an assumed input known.",
@@ -731,6 +743,8 @@
    },
    {
     "id": "QO-C2",
+    "own_document_evidence": false,
+    "own_document_note": "own-document quote does not meet the criterion (audit 2026-10-28)",
     "layer": "comprehension",
     "question": "Which quote inputs were missing when G2 Beauty was given a price?",
     "criterion": "Name each input of examples.C.missing_at_quote as missing, attributed to the map; a later vendor quote or formula cost does not make it known at quote time.",
@@ -760,6 +774,7 @@
    },
    {
     "id": "QO-D2",
+    "own_document_audited": {"date": "2026-10-28", "quotes": ["94eb373b772f15a02662d0e72a63ad1e10f6be1a555a706156e268a85d6c12ff"]},
     "layer": "comprehension",
     "question": "Which component prices were missing when Soapbox was quoted?",
     "criterion": "Name each input of examples.D.missing_at_quote as missing, attributed to the map. A component PLX supplies with no vendor price is a missing input, never a zero cost.",
@@ -803,6 +818,7 @@
    },
    {
     "id": "QW-01",
+    "unscored": "UNSCORED: the criterion needs operator-run read receipts matching source.watched_originals, which the transcript cannot show",
     "layer": "comprehension",
     "question": "Which pinned workbook revisions belong to each quote example, and which one is the quote of record?",
     "criterion": "Identify a workbook only by name, item id and SHA-256 from a read receipt that matches source.watched_originals; two files with one name are distinct revisions. Which revision is the quote of record is not stated anywhere read and stays unknown until a person answers.",
@@ -817,6 +833,7 @@
    },
    {
     "id": "QW-02",
+    "unscored": "UNSCORED: the criterion rules out the _summary.md files and needs operator-run read receipts of the pinned emails, which the transcript cannot show",
     "layer": "tracing",
     "question": "When was each example's quote or price sent, and by whom (by role)?",
     "criterion": "Answer from the pinned emails of the three folders only after they are read through scripts.case_originals read; record the date and the sender's role, never a body. The three _summary.md files are folder summaries, not quotes.",

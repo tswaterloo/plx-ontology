@@ -3,7 +3,7 @@
   "format": "plx-ontology-domain/v1",
   "domain": "bc_finance",
   "origin": "curated",
-  "description": "Business Central finance ledgers per company (book): companies, item ledger and G/L entries, G/L accounts, and the (unserved) Portal app_bc_entity_map. Business documents (orders, invoices, receipts, shipments and their lines, incl. their BC and Sage bindings) are declared once, in orders.json / purchasing.json; links here target those types and binding ids. BC is Production and read GET-only; the company is the lineage bc_<book> (manufacturing, distribution, consol). Renumbering: Portal SO/PO numbers are rewritten to the BC No. after drain (custom_fields.renumberedTo), and BC externalDocumentNumber echoes the customer PO (orders) or the Portal order number (invoices). Also the aged receivable/payable balances per party and the payment journal lines (Payment).",
+  "description": "Business Central finance ledgers per company (book): companies, item ledger and G/L entries, G/L accounts; the Portal app_bc_entity_map is domains/bc_entity_map.json. Business documents (orders, invoices, receipts, shipments and their lines, incl. their BC and Sage bindings) are declared once, in lane L5a's orders.json / purchasing.json; links here target those types and binding ids. BC is Production and read GET-only; the company is the lineage bc_<book> (manufacturing, distribution, consol). Renumbering: Portal SO/PO numbers are rewritten to the BC No. after drain (custom_fields.renumberedTo), and BC externalDocumentNumber echoes the customer PO (orders) or the Portal order number (invoices). Lane L5b. Also the aged receivable/payable balances per party and the payment journal lines (Payment).",
   "upstream_pins": {
     "plx-customer-portal": "b46934a"
   },
@@ -36,7 +36,7 @@
             },
             {
               "kind": "live_trace",
-              "ref": "claude/verify-live:results/latest.json#bc.adapter_probe (live-2026-10-01T19:39:24Z)",
+              "ref": "claude/devloop-live:results/latest.json#bc.adapter_probe (live-2026-10-01T19:39:24Z)",
               "note": "companies_count 3, environment_is_production true."
             },
             {
@@ -90,7 +90,7 @@
       "description": "A posted item ledger entry (BC): purchase, sale, output, consumption, adjustment, transfer. The signed quantity means different things per entry type; never sum across entry types.",
       "availability": {
         "state": "partial",
-        "reason": "itemLedgerEntries: select allowlist in integrations/live_source_grammar.py BC_QUERY_SPECS, checked live by verify/live-checks/bc.ledgers.json (unverified until it passes). The capture reads at most 25,000 entries per call (CAPTURE_RECORD_CAPS) and resumes: until the unit settles the binding is source_capture_incomplete, a gap, never an absence."
+        "reason": "itemLedgerEntries: select allowlist in integrations/live_source_grammar.py BC_QUERY_SPECS, checked live by devloop/live-checks/bc.ledgers.json (unverified until it passes). The capture reads at most 25,000 entries per call (CAPTURE_RECORD_CAPS) and resumes: until the unit settles the binding is source_capture_incomplete, a gap, never an absence."
       },
       "bindings": [
         {
@@ -286,7 +286,7 @@
       "description": "A posted G/L entry (BC). Freight and duty are expensed to G/L under ERP-D-015.",
       "availability": {
         "state": "partial",
-        "reason": "generalLedgerEntries: select allowlist in integrations/live_source_grammar.py BC_QUERY_SPECS, checked live by verify/live-checks/bc.ledgers.json (unverified until it passes). The capture reads at most 25,000 entries per call (CAPTURE_RECORD_CAPS) and resumes: until the unit settles the binding is source_capture_incomplete, a gap, never an absence."
+        "reason": "generalLedgerEntries: select allowlist in integrations/live_source_grammar.py BC_QUERY_SPECS, checked live by devloop/live-checks/bc.ledgers.json (unverified until it passes). The capture reads at most 25,000 entries per call (CAPTURE_RECORD_CAPS) and resumes: until the unit settles the binding is source_capture_incomplete, a gap, never an absence."
       },
       "bindings": [
         {
@@ -552,7 +552,7 @@
       "description": "BC agedAccountsReceivables: one row per customer with an open balance, aged into current and three overdue periods as of a date. A report BC recomputes on each read (the capture keeps each read's row as a version), keyed by the party.",
       "availability": {
         "state": "partial",
-        "reason": "agedAccountsReceivables is a report page; a company that does not expose it fails the capture unit with reason not_exposed (a gap, never zero balances). UNVERIFIED live until verify/live-checks/bc.ledgers.json passes."
+        "reason": "agedAccountsReceivables is a report page; a company that does not expose it fails the capture unit with reason not_exposed (a gap, never zero balances). UNVERIFIED live until devloop/live-checks/bc.ledgers.json passes."
       },
       "bindings": [
         {
@@ -771,7 +771,7 @@
       "description": "BC agedAccountsPayables: one row per supplier with an open balance, aged into current and three overdue periods as of a date. A report BC recomputes on each read (the capture keeps each read's row as a version), keyed by the party.",
       "availability": {
         "state": "partial",
-        "reason": "agedAccountsPayables is a report page; a company that does not expose it fails the capture unit with reason not_exposed (a gap, never zero balances). UNVERIFIED live until verify/live-checks/bc.ledgers.json passes."
+        "reason": "agedAccountsPayables is a report page; a company that does not expose it fails the capture unit with reason not_exposed (a gap, never zero balances). UNVERIFIED live until devloop/live-checks/bc.ledgers.json passes."
       },
       "bindings": [
         {
@@ -991,7 +991,7 @@
       "anchor": true,
       "availability": {
         "state": "partial",
-        "reason": "Only unposted payment journal lines: BC API v2.0 serves no posted payment (customer/vendor ledger entries are not published for these companies, plx-customer-portal@790256c inbound.ts:248-268); Portal app_order_prepayment is outside the reporting API allowlist. UNVERIFIED live until verify/live-checks/bc.ledgers.json passes.",
+        "reason": "Only unposted payment journal lines: BC API v2.0 serves no posted payment (customer/vendor ledger entries are not published for these companies, plx-customer-portal@790256c inbound.ts:248-268); Portal app_order_prepayment is outside the reporting API allowlist. UNVERIFIED live until devloop/live-checks/bc.ledgers.json passes.",
         "upstream_ask": "Q3"
       },
       "bindings": [
@@ -1366,59 +1366,6 @@
           "id": "workbench.bc_finance_specs"
         }
       ]
-    },
-    {
-      "id": "BcEntityMapping",
-      "description": "Portal's identity bridge app_bc_entity_map: (entity_type, source_system portal|fm|sage, source_id) -> BC systemId + No. (+ echoed externalDocumentNumber), status LINKED|ARCHIVED|BLOCKED. It is the only verified Portal<->BC link for renumbered orders, POs and invoices; distribution clones encode the book in source_id ('{id}::distribution'). Until it is served, Portal<->BC links fall back to renumberedTo (verified) and number/externalDocumentNumber matches (leads). Its bindings and the entity-map joins (SalesOrder/PurchaseOrder/Product.bc_posted_as, SalesInvoice.posted_for_order) are declared and tested in ontology/schema/pending/bc_entity_map.json, which replaces this placeholder when loaded with include_pending.",
-      "availability": {
-        "state": "not_served",
-        "reason": "app_bc_entity_map and every bc_* snapshot table are outside the reporting API allowlist.",
-        "upstream_ask": "Q3"
-      },
-      "bindings": [],
-      "properties": [],
-      "evidence": [
-        {
-          "kind": "upstream_code",
-          "repo": "plx-customer-portal",
-          "path": "scripts/migrations/20260615_create_app_bc_integration.sql",
-          "commit": "b46934a",
-          "note": "app_bc_entity_map: unique (entity_type, source_system, source_id); source_system portal|fm|sage; bc_system_id, bc_number, bc_external_document_number; status LINKED|ARCHIVED|BLOCKED; no company column.",
-          "symbol": "app_bc_entity_map",
-          "lines": "67-91"
-        },
-        {
-          "kind": "upstream_code",
-          "repo": "plx-customer-portal",
-          "path": "portal/src/lib/business-central/book-routing.ts",
-          "commit": "b46934a",
-          "note": "masterBookSliceId / shipmentBookSliceId: distribution clones use source_id '{id}::distribution' (shipments '{id}::manufacturing|::distribution'); the book is encoded in source_id, not a column.",
-          "symbol": "masterBookSliceId",
-          "lines": "64-113"
-        },
-        {
-          "kind": "ref",
-          "id": "context-pack.03-portal-md-4-10.86537f"
-        },
-        {
-          "kind": "upstream_code",
-          "repo": "plx-customer-portal",
-          "path": "portal/src/lib/business-central/align-portal-so-number.ts",
-          "commit": "b46934a",
-          "note": "After drain the gold SO order_number is rewritten to the BC document No.; custom_fields.renumberedTo keeps the BC No., fmOeNumber the earlier number.",
-          "symbol": "alignPortalSoNumberToBc",
-          "lines": "21-67"
-        },
-        {
-          "kind": "upstream_code",
-          "repo": "plx-customer-portal",
-          "path": "portal/src/lib/business-central/align-portal-po-number.ts",
-          "commit": "b46934a",
-          "note": "Gold PO po_number is rewritten to the BC No.; custom_fields.renumberedTo / fmPoNumber keep both numbers.",
-          "symbol": "alignPortalPoNumberToBc",
-          "lines": "10-55"
-        }
-      ]
     }
   ],
   "link_types": [
@@ -1637,7 +1584,7 @@
             },
             {
               "kind": "context_pack",
-              "ref": "docs/reference/cases-and-artifacts.md",
+              "ref": "devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md",
               "note": "Procure-to-GL map: PO -> receipt -> vendor invoice -> G/L, with BC renumbering and externalDocumentNumber as the bridges."
             },
             {
@@ -2036,12 +1983,12 @@
   "evidence_catalog": {
     "context-pack.03-portal-md-4-10.86537f": {
       "kind": "context_pack",
-      "ref": "docs/reference/portal-code-map.md#4.10",
+      "ref": "devloop/CONTEXT/03-PORTAL.md#4.10",
       "note": "app_bc_entity_map, outbox/inbox, ERP-D-012 two books, ERP-D-015 freight/duty expensed to G/L, ERP-D-009 go-forward receipts only."
     },
     "context-pack.06-live-sources-md.10666f": {
       "kind": "context_pack",
-      "ref": "docs/reference/live-sources.md",
+      "ref": "devloop/CONTEXT/06-LIVE-SOURCES.md",
       "note": "BC Production (3 companies) is readable GET-only through the one guarded client."
     },
     "upstream-code.bcbookkey.e32697": {
@@ -2077,12 +2024,12 @@
     "workbench.bc_same_company_scope": {
       "kind": "workbench_code",
       "path": "ontology/schema.py",
-      "note": "Both ends are BC captures: compare only within one BC company (bc_<book> equal on both ends). BC numbers are unique per company only; masters synced to several books and consolidation copies reuse them (SO vs DSO series: outbox-drain.ts:880-890 @b46934a). Machine-readable today as ontology.schema.link_company_scope / CompiledSchema.company_scope; a C0 field is asked in bc-link-company-scope."
+      "note": "Both ends are BC captures: compare only within one BC company (bc_<book> equal on both ends). BC numbers are unique per company only; masters synced to several books and consolidation copies reuse them (SO vs DSO series: outbox-drain.ts:880-890 @b46934a). Machine-readable today as ontology.schema.link_company_scope / CompiledSchema.company_scope; a C0 field is asked in devloop/OPEN-DECISIONS.md bc-link-company-scope."
     },
     "workbench.bc_finance_specs": {
       "kind": "workbench_code",
       "path": "integrations/live_source_grammar.py",
-      "note": "BC_QUERY_SPECS itemLedgerEntries, generalLedgerEntries, agedAccountsReceivables/-Payables (keyed by customerId/vendorId, BC_RECORD_KEY_FIELD), customer/vendorPaymentJournals and customer/vendorPayments (lines of their journal by journalId, BC_LINE_PARENT_FIELD): field names from the BC API v2.0 resource reference (MicrosoftDocs dynamics365smb-devitpro-pb api-reference/v2.0). Captured by integrations.bc_read.BcCapture; a 404 listing is reason not_exposed. Field names and $select acceptance are checked by verify/live-checks/bc.ledgers.json (probe --finance-entities); unverified live until it passes."
+      "note": "BC_QUERY_SPECS itemLedgerEntries, generalLedgerEntries, agedAccountsReceivables/-Payables (keyed by customerId/vendorId, BC_RECORD_KEY_FIELD), customer/vendorPaymentJournals and customer/vendorPayments (lines of their journal by journalId, BC_LINE_PARENT_FIELD): field names from the BC API v2.0 resource reference (MicrosoftDocs dynamics365smb-devitpro-pb api-reference/v2.0). Captured by integrations.bc_read.BcCapture; a 404 listing is reason not_exposed. Field names and $select acceptance are checked by devloop/live-checks/bc.ledgers.json (probe --finance-entities); unverified live until it passes."
     }
   }
 }

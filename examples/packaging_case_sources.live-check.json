@@ -1,7 +1,7 @@
 {
  "schema": "plx-ingest-sources/v1",
  "tenant": "plx",
- "note": "Live-check scope for scripts.eval_packaging_oracle_check (verify/live-checks/case.packaging_oracle.json): the purchase-order relations of examples/packaging_case_audience.example.json, filled into the source mirror by operating.ingestion (GET only, paged, non-atomic) before the case opens offline.",
+ "note": "Live-check scope for scripts.eval_packaging_oracle_check (devloop/live-checks/case.packaging_oracle.json): the purchase-order relations of examples/packaging_case_audience.example.json, filled into the source mirror by operating.ingestion (GET only, paged, non-atomic) before the case opens offline.",
  "actor": {
   "principals": [
    "svc:ingest"

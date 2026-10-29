@@ -23,7 +23,7 @@ anchors over those exact bytes (a line ends at ``\\n``; a final newline opens no
 line) and returns digests, never text.
 
 Evidence: tests use an injected transport; the live capture is live-unverified
-until ``verify/live-checks/eval.use_case_proposal.json`` has a verifier result.
+until ``devloop/live-checks/eval.use_case_proposal.json`` has a verifier result.
 """
 
 from __future__ import annotations

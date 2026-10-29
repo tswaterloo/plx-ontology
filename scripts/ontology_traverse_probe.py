@@ -1,19 +1,19 @@
-"""Live check of plx.around / plx.timeline: counts, booleans and timings only.
+"""Live check of plx.around / plx.timeline (lane L9): counts, booleans and timings only.
 
     python3 -m scripts.ontology_traverse_probe --db DIR/mirror.sqlite \
         --store DIR/ontology.sqlite [--budget-seconds N] [--traverse-budget-seconds N] \
         [--sample N] [--max-rss-mb N] [--previous-report DAILY.json] \
         [--mirror-audience FILE] [--live-audience FILE]
 
-GET only. Builds the throwaway mirror and projection store once with the projection probe
+GET only. Builds the throwaway mirror and projection store once with the L7 probe
 (``scripts.ontology_projection_probe --build-only``: no rebuild and no claim checks,
 determinism is ``ontology.projection``'s; its ``mirror_complete`` and parts are kept, and
 a budget stop inside the build prints the build's partial counts, a failed build its
 ``code``, ``phase``, ``store`` and ``disk``: ``build_failure``), then
-runs the traverse tools on real data under the curated schema, every call through the served
-host (``operating.host.Host.served_tools`` over the build's throwaway state, the projection probe's
+runs the L9 tools on real data under the curated schema, every call through the served
+host (``operating.host.Host.served_tools`` over the build's throwaway state, the L7 probe's
 ``served_host``: the tools ``mcp`` serves, each call under the policy it is served with)
-as the projection probe's reader (its capture principal under the host's audiences,
+as the L7 probe's reader (its capture principal under the host's audiences,
 ``--mirror-audience`` / ``--live-audience`` passed to the build; default: granted what the
 build captured):
 
@@ -37,19 +37,19 @@ build captured):
 * ``unexpected_not_found`` (must be 0): roots the reader may read answered
   ``object_not_found``.
 
-``--budget-seconds`` bounds the mirror sync (as in the projection probe) and, unless
+``--budget-seconds`` bounds the mirror sync (as in the L7 probe) and, unless
 ``--traverse-budget-seconds`` is given, the traversal too. The report carries the
 build's ``mirror_complete`` (a traversal over a partial mirror is still checked, and
 the partial mirror is visible) and the whole process's peak resident memory
 (``maxrss_mb``); with ``--max-rss-mb`` the probe fails when the peak exceeds it
 (decision projection-memory: the build streams per binding).
 
-With ``--bc-capture`` the build also captures and projects BC (the projection probe's
+With ``--bc-capture`` the build also captures and projects BC (the L7 probe's
 ``--bc-capture``): every source is then one part, a Portal that is down or not configured
 is reported in ``blocked_upstream`` and the traversal runs over what was projected (a
 Portal outage blocks parts, not the check); when no record source was projected the
 probe prints ``sources_blocked`` and the blocked parts and measures nothing. Every
-handle the answers cite is resolved offline as the served host resolves it for the projection
+handle the answers cite is resolved offline as the served host resolves it for the L7
 probe's reader (``citations``: checked, resolved, unresolved, resolved by scheme;
 ``scripts.ontology_projection_probe.served_citations`` over ``Host.served_tools``).
 
@@ -317,24 +317,24 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     parser.add_argument("--max-rss-mb", type=float, default=None,
                         help="peak resident memory budget for the whole probe")
     parser.add_argument("--previous-report", default=None,
-                        help="last daily verifier report, passed to the projection build")
+                        help="last daily verifier report, passed to the L7 build")
     parser.add_argument("--bc-capture", action="store_true",
-                        help="capture and project BC too (the projection probe's --bc-capture)")
+                        help="capture and project BC too (the L7 probe's --bc-capture)")
     parser.add_argument("--mirror-audience", default=None,
-                        help="the served host's plx-source-mirror-audience/v1 file (the projection "
+                        help="the served host's plx-source-mirror-audience/v1 file (the L7 "
                              "probe's --mirror-audience)")
     parser.add_argument("--live-audience", default=None,
-                        help="the served host's plx-live-source-audience/v1 file (the projection "
+                        help="the served host's plx-live-source-audience/v1 file (the L7 "
                              "probe's --live-audience)")
     parser.add_argument("--session-projection", default=None,
-                        help="the verifier session's projection (the projection probe's "
+                        help="the verifier session's projection (the L7 probe's "
                              "--session-projection)")
     args = parser.parse_args(argv)
     phase = None   # the consumer's own phase, once the build succeeded
     try:
-        from ontology import schema as schema_loader
+        from ontology import schema as schema_loader  # lane L4
         from operating import ontology_tools as ot
-        from scripts import ontology_projection_probe as projection
+        from scripts import ontology_projection_probe as projection  # lane L7
 
         build_args = ["--db", args.db, "--store", args.store, "--build-only"]
         if args.budget_seconds is not None:

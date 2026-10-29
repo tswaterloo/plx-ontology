@@ -18,7 +18,7 @@ import io
 import json
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -94,7 +94,7 @@ class World(unittest.TestCase):
 
     def workspace(self, name, planner=None):
         live = cf.live_readers(self.world, self.state / cf.LIVE_AUDIENCE_FILE)
-        workspace, close = fp.workspace_for(
+        workspace, close, self.projection = fp.workspace_for(
             self.state.resolve(), self.state / cf.MIRROR_AUDIENCE_FILE, "plx",
             [cf.OPERATIONS, cf.PURCHASING], "restricted", work_dir=self.root / name,
             planner=planner, live=live)
@@ -120,13 +120,20 @@ class FixtureWorld(World):
         self.assertEqual(steps["landed_cost"]["status"], "fail")
         self.assertEqual(steps["draft"]["status"], "pass")
         self.assertEqual(steps["draft"]["executed"], 0)
-        self.assertEqual(steps["margin"]["status"], "unrelated_sample")
+        # The fixture PO feeds no customer order on record: the impact chain says where it
+        # stops, and the step fails (never an unrelated sample, never a pass).
+        self.assertEqual((steps["margin"]["status"], steps["margin"]["reason"],
+                          steps["margin"]["fed_by"]),
+                         ("fail", "no_sales_order_fed", "impact_chain"))
         self.assertEqual(summary["passed"]["margin"], 0)
         # The oracle read the Portal rows; the fixture holds no BC capture, named unread.
         self.assertEqual(summary["oracle"]["late"], 0)
         self.assertIn("bc_capture", summary["oracle"]["unread"])
         self.assertIsNone(summary["home"]["recall"]["recall"])
         self.assertEqual(summary["margin"]["reason"], "sales_order_not_held")
+        # No host serves this directory: the run builds its own projection.
+        self.assertEqual((self.projection["source"], self.projection["reason"]),
+                         ("private", "no_served_generation"))
         dumped = json.dumps(summary)
         for marker in ("PO5447", "po-synth", "\"claims\"", "draft_texts"):
             self.assertNotIn(marker, dumped)
@@ -160,11 +167,15 @@ class FixtureWorld(World):
                             "--mirror-audience", str(self.state / cf.MIRROR_AUDIENCE_FILE),
                             "--principal", cf.PURCHASING, "--order", ORDER,
                             "--as-of", AS_OF.isoformat(),
+                            "--host-policy", str(fp.ROOT / "examples" /
+                                                 "po_document_chain_host.live-check.json"),
                             "--work-dir", str(self.root / "main")], environ={})
         self.assertEqual(code, 0)
         summary = json.loads(out.getvalue())
         self.assertEqual(summary["schema"], fp.SCHEMA)
         self.assertEqual(summary["sent"], 0)
+        self.assertEqual((summary["markings"], summary["family"]),
+                         (["purchasing_prices"], fp.QUESTION_FAMILY))
         steps = summary["orders"][0]["steps"]
         self.assertEqual(steps["ask"]["status"], "blocked")
         self.assertIn("PLX_CLAUDE_CODE_OAUTH_TOKEN", steps["ask"]["missing_setting"])
@@ -193,6 +204,181 @@ class LateWorld(World):
         recall = summary["home"]["recall"]
         self.assertEqual(recall["late"], 1)
         self.assertEqual(steps["home"]["status"] == "pass", recall["listed"] == 1)
+
+    def test_an_ask_naming_its_family_is_the_plan_s_answer_without_a_planner_call(self):
+        """The flagship's Ask names the late-order plan: code states its result whole (its
+        cited claims, its gaps as unknowns) and the planner is never asked; the oracle still
+        scores it (this world's Portal line holds no date of its own, so no plan entry cites
+        it: the step fails on its late line, as it must)."""
+        asked = []
+
+        def planner(request):
+            asked.append(1)
+            return {"action": "abstain", "reason": "data_absent: not asked"}, None
+        workspace = self.workspace("family", planner)
+        summary = fp.run(workspace, [], count=1, as_of=AS_OF, question=fp.QUESTION,
+                         identify=True, family=fp.QUESTION_FAMILY, margin=False)
+        ask = summary["orders"][0]["steps"]["ask"]
+        self.assertEqual(asked, [])
+        self.assertEqual((ask["outcome"], ask["tool_calls"]), ("answered", 2))
+        self.assertTrue(ask["late_lines"])
+        self.assertIn(("expected date: " + DUE, "api"), {
+            (claim["text"], fp.system_of(claim["citations"][0])) for claim in ask["claims"]})
+        self.assertTrue(ask["unknown_texts"])
+        self.assertEqual((ask["status"], ask["reason"]), ("fail", "late_lines_not_cited"))
+        # a plan answer is asked for with its family only; a family alone keeps the planner
+        for bad in ({"plan_answer": True}, {"family": fp.QUESTION_FAMILY, "plan_answer": 1}):
+            with self.assertRaises(ValueError):
+                workspace.ask_run({"object_id": LATE, "question": fp.QUESTION, **bad})
+        self.assertEqual(asked, [])
+        workspace.ask_run({"object_id": LATE, "question": fp.QUESTION,
+                           "family": fp.QUESTION_FAMILY})
+        self.assertTrue(asked)
+
+
+def serve_generation(state: Path) -> None:
+    """Build the projection a persistent host serves (``operating.host.build_projection``:
+    ``<state>/projection``, a committed generation) over the state's captures."""
+    from contextlib import ExitStack
+
+    from ontology import project
+    from operating import host
+    from operating.case_runtime import CASE_RUNTIME_DIR, MIRROR_FILE
+
+    with ExitStack() as stack:
+        sources = host.state_captures(state, stack)
+        sources["portal_api"] = stack.enter_context(
+            project.MirrorCaptures(state / CASE_RUNTIME_DIR / MIRROR_FILE))
+        host.build_projection(state, sources, tenant="plx")
+
+
+def private_files(state: Path) -> list[tuple]:
+    """What a private projection build writes in the case workspace directory (each
+    file's name, inode and modification time: a build replaces the file)."""
+    folder = state / "case-workspace-live"
+    return sorted((p.name, p.stat().st_ino, p.stat().st_mtime_ns) for p in folder.iterdir()
+                  if p.name.startswith(("ontology-", ".ontology-", ".plx-projection-"))
+                  ) if folder.is_dir() else []
+
+
+class ServedWorld(World):
+    """A state directory a host serves: the flagship reads the served generation,
+    read-only and pinned, never a private build; the scoring is the private build's."""
+    late = True
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        serve_generation(cls.state)
+
+    def flagship(self, name):
+        summary = fp.run(self.workspace(name, scripted_planner(LATE)), [], count=3,
+                         as_of=AS_OF, question=fp.QUESTION, identify=False)
+        return [{k: (v["status"], v["reason"]) for k, v in row["steps"].items()
+                 if k != "timing"} for row in summary["orders"]], summary
+
+    def test_the_flagship_reads_the_served_generation_and_scores_as_a_private_build(self):
+        from ontology.project_incremental import current_generation
+
+        served = current_generation(self.state / "projection")
+        before = private_files(self.state)
+        steps, summary = self.flagship("served")
+        self.assertEqual(self.projection, {"source": "served", "reason": "served_generation",
+                                           "generation": served.id, "pinned": True})
+        self.assertEqual(private_files(self.state), before)   # nothing projected for it
+        self.assertEqual(summary["oracle"]["late"], 1)
+        # The same captures built privately (the served generation set aside) score the
+        # same per step.
+        current = self.state / "projection" / "CURRENT"
+        aside = current.with_name("CURRENT.aside")
+        current.rename(aside)
+        try:
+            private, _ = self.flagship("private")
+            self.assertEqual(self.projection["source"], "private")
+            self.assertEqual(self.projection["reason"], "no_served_generation")
+        finally:
+            aside.rename(current)
+        self.assertEqual(steps, private)
+
+    def test_the_pin_keeps_the_generation_while_the_host_prunes_it(self):
+        import shutil
+
+        from operating import case_workspace_live as live_ws
+
+        chosen = live_ws.run_projection(self.state, "plx")
+        self.addCleanup(chosen.close)
+        generation = self.state / "projection" / "generations" / chosen.generation
+        copy = self.root / "generation-copy"
+        shutil.copytree(generation, copy)   # restored after: other tests read it
+        self.addCleanup(lambda: generation.exists() or shutil.copytree(copy, generation))
+        shutil.rmtree(generation)   # the host committed twice and pruned this one
+        import sqlite3
+        with contextlib.closing(sqlite3.connect(f"file:{chosen.path}?mode=ro", uri=True)) as db:
+            digest = db.execute("SELECT value FROM store_meta WHERE key = "
+                                "'content_digest'").fetchone()[0]
+        self.assertEqual(digest, chosen.content_digest)
+        pin = chosen.path
+        chosen.close()
+        self.assertFalse(pin.exists())
+
+    def test_a_foreign_tenants_decision_is_never_served_and_a_low_disk_builds_nothing(self):
+        import sqlite3
+
+        from ontology import reviews
+        from operating import case_workspace_live as live_ws
+
+        import types
+
+        from ontology.project_incremental import current_generation
+
+        store = reviews.store_path(self.state)
+        with contextlib.closing(sqlite3.connect(store)) as db, db:
+            db.execute("CREATE TABLE reviews (tenant TEXT, recorded_at TEXT)")
+            db.execute("INSERT INTO reviews VALUES ('plx', '2999-01-01T00:00:00Z')")
+        self.addCleanup(store.unlink)
+        # The tenant's own decision the served build read none of (the host may serve
+        # another tenant), or one recorded after the build started: never served.
+        self.assertEqual(live_ws.served_generation(self.state, "plx"),
+                         (None, "served_tenant_unproven"))
+        served = current_generation(self.state / "projection")
+        read = types.SimpleNamespace(store=served.store, report={
+            "post_project": {"reviews": {"counts": {"decisions": 1}}}})
+        self.assertEqual(live_ws._foreign_or_unproven(self.state, "plx", read),
+                         "served_older_than_decisions")
+        with contextlib.closing(sqlite3.connect(store)) as db, db:
+            db.execute("UPDATE reviews SET recorded_at = '2000-01-01T00:00:00Z'")
+        self.assertIsNone(live_ws._foreign_or_unproven(self.state, "plx", read))
+        with contextlib.closing(sqlite3.connect(store)) as db, db:
+            db.execute("INSERT INTO reviews VALUES ('another-tenant', '2000-01-01T00:00:00Z')")
+        before = private_files(self.state)
+        self.assertEqual(live_ws.served_generation(self.state, "plx"),
+                         (None, "served_tenant_unproven"))
+        # It falls back to a private build, which the disk check refuses before it starts.
+        with self.assertRaises(live_ws.ProjectionDiskLow):
+            live_ws.run_projection(self.state, "plx", disk_free=lambda _path: 1)
+        self.assertEqual(private_files(self.state), before)
+        # Room at the start, none once it runs: the build stops and leaves no part behind.
+        calls = []
+
+        def filling(_path):
+            calls.append(1)
+            return 10 ** 15 if len(calls) == 1 else 1
+        with self.assertRaises(live_ws.ProjectionDiskLow):
+            live_ws.run_projection(self.state, "plx", disk_free=filling)
+        self.assertGreater(len(calls), 1)
+        self.assertEqual(private_files(self.state), before)
+
+    def test_a_stopped_run_leaves_no_pin_behind(self):
+        from operating import case_workspace_live as live_ws
+
+        folder = self.state / "case-workspace-live"
+        folder.mkdir(exist_ok=True)
+        dead = folder / f"{live_ws.PIN_PREFIX}00000001-999999999-deadbeef.sqlite"
+        dead.write_bytes(b"")
+        chosen = live_ws.run_projection(self.state, "plx")
+        self.addCleanup(chosen.close)
+        self.assertFalse(dead.exists())
+        self.assertTrue(chosen.pinned)
 
 
 class LandedEstimate(unittest.TestCase):
@@ -286,6 +472,34 @@ class Oracle(unittest.TestCase):
         bc[1]["fields"]["expectedReceiptDate"] = "0001-01-01"   # BC's empty date
         self.assertEqual(self.late(portal, bc)["late"], [])
 
+    def test_late_is_judged_on_the_oracles_own_et_day_across_both_dst_changes(self):
+        # (due day, the moment in UTC, its ET wall time, late?): the oracle reads the
+        # clock itself (pl.business_today), never through the Workbench
+        cases = (("2026-10-19", (2026, 10, 20, 1, 0), "21:00 EDT Oct 19", False),
+                 ("2026-10-19", (2026, 10, 20, 4, 30), "00:30 EDT Oct 20", True),
+                 ("2026-03-07", (2026, 3, 8, 2, 0), "21:00 EST Mar 7", False),
+                 ("2026-03-07", (2026, 3, 8, 5, 30), "00:30 EST Mar 8", True),
+                 ("2026-03-08", (2026, 3, 9, 1, 0), "21:00 EDT Mar 8", False),
+                 ("2026-03-08", (2026, 3, 9, 4, 30), "00:30 EDT Mar 9", True),
+                 ("2026-10-31", (2026, 11, 1, 1, 0), "21:00 EDT Oct 31", False),
+                 ("2026-10-31", (2026, 11, 1, 4, 30), "00:30 EDT Nov 1", True),
+                 ("2026-11-01", (2026, 11, 2, 2, 0), "21:00 EST Nov 1", False),
+                 ("2026-11-01", (2026, 11, 2, 5, 30), "00:30 EST Nov 2", True))
+        for due, moment, wall, late in cases:
+            with self.subTest(due=due, at=wall):
+                now = datetime(*moment, tzinfo=timezone.utc)
+                as_of = pl.business_today(now)
+                self.assertEqual(as_of, date.fromisoformat(due) + timedelta(days=int(late)))
+                portal = {PO: [portal_po("p1", "1", "SUBMITTED", due)],
+                          PO_LINE: [portal_line("l1", "p1", "10", "0")]}
+                found = pl.late_orders(portal, [], as_of)["late"]
+                self.assertEqual([u["due"] for g in found for u in g["late_lines"]],
+                                 [due] if late else [])
+        with self.assertRaisesRegex(ValueError, "aware"):
+            pl.business_today(datetime(2026, 10, 20, 1, 0))
+        with self.assertRaisesRegex(ValueError, "dst_rule"):   # its rule is 2007's
+            pl.business_today(datetime(2006, 7, 1, tzinfo=timezone.utc))
+
     def test_open_received_and_closed(self):
         lines = [portal_line("l1", "p1", "10", "10")]
         self.assertEqual(self.late({PO: [portal_po("p1", "1", "SUBMITTED", DUE)],
@@ -325,6 +539,185 @@ class Oracle(unittest.TestCase):
             self.assertEqual(len({tuple(g["numbers"]) for g in out["late"]}), n)
 
 
+def bc_reference(bid, number, your_reference, company="c1"):
+    return {"company_id": company, "entity_set": pl.BC_REFERENCES,
+            "citation": f"bc://production/{company}/{pl.BC_REFERENCES}/{bid}@1",
+            "fields": {"No": number, "Your_Reference": your_reference}}
+
+
+def vendor_map(supplier, bc_vendor, company="c1"):
+    return {"row": {"entity_type": "vendor", "source_system": "portal", "status": "LINKED",
+                    "source_id": supplier, "bc_number": bc_vendor, "bc_company_id": company},
+            "citation": f"api://map/{supplier}@1"}
+
+
+def po_map(portal_id, bc_id, *, company="c1", status="LINKED", environment="Production",
+           entity_type="purchaseOrder"):
+    return {"row": {"entity_type": entity_type, "source_system": "portal", "status": status,
+                    "source_id": portal_id, "bc_system_id": bc_id, "bc_company_id": company,
+                    "bc_environment": environment},
+            "citation": f"api://map/{portal_id}-{bc_id}@1"}
+
+
+class EntityMapJoin(unittest.TestCase):
+    """The oracle groups a Portal order and the BC order the Portal's own entity map says
+    it was posted as into one order, by its own reading of the raw map rows (decision
+    2026-10-28-oracle-entity-map-po-groups): one late order is never counted twice."""
+
+    def world(self, maps, *, n=1, extra_bc=()):
+        portal = {PO: [portal_po(f"p{i}", f"PO#{4600 + i}", "SUBMITTED", None)
+                       for i in range(n)],
+                  PO_LINE: [portal_line(f"l{i}", f"p{i}", "5", None) for i in range(n)],
+                  pl.ENTITY_MAP: list(maps)}
+        bc = [bc_po(f"B-{i}", f"PO1000{i}", requested="2026-09-01") for i in range(n)]
+        bc += [bc_line(f"bl{i}", f"B-{i}", "5", "0") for i in range(n)]
+        return pl.late_orders(portal, bc + list(extra_bc), AS_OF)
+
+    def test_a_posted_order_is_one_late_group_with_both_numbers(self):
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                out = self.world([po_map(f"p{i}", f"b-{i}") for i in range(n)], n=n)
+                self.assertEqual((out["counts"]["groups"], len(out["late"])), (n, n))
+                self.assertEqual(out["counts"]["entity_map_joined"], n)
+                for group in out["late"]:
+                    self.assertEqual({h["system"] for h in group["headers"]}, {"portal", "bc"})
+                    self.assertEqual(len(group["numbers"]), 2)
+        # without the map: the same order is two groups (the Portal one undated here)
+        out = self.world([])
+        self.assertEqual((out["counts"]["groups"], len(out["late"])), (2, 1))
+
+    def test_a_row_that_is_not_a_linked_production_po_mapping_joins_nothing(self):
+        for kw in ({"status": "ARCHIVED"}, {"environment": "UAT"},
+                   {"entity_type": "item"}, {"company": "c2"}):
+            with self.subTest(**kw):
+                out = self.world([po_map("p0", "b-0", **kw)])
+                self.assertEqual(out["counts"]["groups"], 2)
+                self.assertEqual(out["counts"]["entity_map_joined"], 0)
+
+    def test_two_rows_for_one_end_are_a_conflict_never_a_guess(self):
+        # one Portal order mapped to two BC orders, and two Portal orders to one BC order
+        for maps in ([po_map("p0", "b-0"), po_map("p0", "b-1")],
+                     [po_map("p0", "b-0"), po_map("p1", "b-0")]):
+            with self.subTest(maps=[m["citation"] for m in maps]):
+                out = self.world(maps, n=2)
+                self.assertEqual((out["counts"]["entity_map_joined"],
+                                  out["counts"]["entity_map_conflict"]), (0, 2))
+                self.assertEqual(out["counts"]["groups"], 4)
+
+
+class YourReferenceJoin(unittest.TestCase):
+    """The oracle joins a BC order to the Portal order its Your_Reference names only when
+    the product's own rule (``evals.oracle.po_reference.decide``) finds the link firm."""
+
+    def world(self, *, portal_date="2026-03-02", order_date="2026-03-02", supplier=None,
+              bc_vendor=None, mapped=None, extra_portal=(), renumbered=None, extra_bc=(), n=1):
+        pos, lines, refs, orders, bc_lines = [], [], [], [], []
+        for i in range(n):
+            row = portal_po(f"p{i}", f"PO10600{i}", "SUBMITTED", None,
+                            fmPoNumber=f"PO#700{i}", source="etl-silver-to-gold",
+                            **({"renumberedTo": renumbered} if renumbered else {}))
+            row["row"].update(date_generated=portal_date, supplier_id=supplier)
+            pos.append(row)
+            lines.append(portal_line(f"l{i}", f"p{i}", "5", None))
+            order = bc_po(f"b{i}", f"BC{i}", requested="2026-09-01")
+            order["fields"].update(orderDate=order_date, vendorNumber=bc_vendor)
+            orders.append(order)
+            bc_lines.append(bc_line(f"bl{i}", f"b{i}", "5", "0"))
+            refs.append(bc_reference(f"b{i}", f"BC{i}", f" po#700{i}"))
+        portal = {PO: pos + list(extra_portal), PO_LINE: lines,
+                  pl.ENTITY_MAP: [vendor_map(supplier, m) for m in mapped or ()]}
+        return pl.late_orders(portal, orders + bc_lines + refs + list(extra_bc), AS_OF)
+
+    def joined(self, out):
+        return [g for g in out["groups"] if g["bc"] and any(
+            h["system"] == "portal" for h in g["headers"])]
+
+    def test_a_firm_reference_joins_and_its_fm_number_is_the_group_s(self):
+        out = self.world()
+        (group,) = self.joined(out)
+        self.assertEqual(out["counts"]["groups"], 1)
+        self.assertIn("PO#7000", group["numbers"])   # what a document names
+        self.assertTrue(fp.names_number("Re: PO#7000 delivery", group["numbers"]))
+        self.assertEqual((out["counts"]["your_reference_firm"],
+                          out["counts"]["your_reference_firm_by_order_date"],
+                          out["counts"]["your_reference_lead"]), (1, 1, 0))
+        # the Portal's supplier mapped to the order's BC vendor corroborates on its own
+        out = self.world(order_date="2026-06-01", supplier="s1", bc_vendor="V1", mapped=["v1"])
+        self.assertEqual(len(self.joined(out)), 1)
+        self.assertEqual(out["counts"]["your_reference_firm_by_supplier"], 1)
+
+    def test_a_lead_never_joins(self):
+        cases = {
+            # dates 91 days apart, no supplier map: uncorroborated
+            "uncorroborated": dict(order_date="2026-06-01"),
+            # the map names another BC vendor: a conflict, though the dates agree
+            "supplier_conflict": dict(supplier="s1", bc_vendor="V1", mapped=["V2"]),
+            # a second Portal order holds the same FM number
+            "ambiguous_fm": dict(extra_portal=[portal_po("px", "PO9", "SUBMITTED", None,
+                                                         fmPoNumber="PO#7000",
+                                                         source="etl-silver-to-gold")]),
+            # the Portal order is renumbered to another BC order already
+            "conflict": dict(renumbered="BCX", extra_bc=[bc_po("bx", "BCX")]),
+        }
+        for code, world in cases.items():
+            with self.subTest(code=code):
+                out = self.world(**world)
+                self.assertFalse(any(h["citation"] == "bc://po/b0@1" for g in self.joined(out)
+                                     for h in g["headers"]))
+                self.assertEqual(out["counts"]["your_reference_firm"], 0)
+                self.assertEqual(out["counts"][f"your_reference_lead_{code}"],
+                                 2 if code == "ambiguous_fm" else 1)
+        # a Portal-minted order never qualifies, not even as a lead
+        portal = {PO: [portal_po("p0", "PO1", "SUBMITTED", None, fmPoNumber="PO#7000",
+                                 source="portal-generate-po")]}
+        out = pl.late_orders(portal, [bc_po("b0", "BC0"), bc_reference("b0", "BC0", "PO#7000")],
+                             AS_OF)
+        self.assertEqual(self.joined(out), [])
+        self.assertEqual((out["counts"]["your_reference_firm"],
+                          out["counts"]["your_reference_lead"]), (0, 0))
+
+    def test_a_reference_that_is_not_the_order_s_number_or_blank_joins_nothing(self):
+        portal = {PO: [portal_po("p0", "PO1", "SUBMITTED", None, fmPoNumber="PO#7000",
+                                 source="etl-silver-to-gold")]}
+        for ref in (bc_reference("b0", "OTHER", "PO#7000"), bc_reference("b0", "BC0", "  "),
+                    bc_reference("b0", "BC0", "7000")):
+            with self.subTest(ref=ref["fields"]):
+                out = pl.late_orders(portal, [bc_po("b0", "BC0"), ref], AS_OF)
+                self.assertEqual(self.joined(out), [])
+
+    def test_the_oracle_s_rule_fails_closed(self):
+        # the product holds the same rule (ontology.tests.test_bc_po_your_reference
+        # RuleParityTests runs both copies over every input combination)
+        from evals.oracle import po_reference
+        self.assertIs(pl.po_reference, po_reference)
+        # unknown or unexpected inputs never make a link firm
+        firm = dict(portal_matches=1, bc_claimants=1, authority=True, other_partner=False,
+                    supplier=True, order_days_apart=0)
+        self.assertEqual(po_reference.decide(**firm).tier, po_reference.FIRM)
+        for name, value in (("portal_matches", "1"), ("portal_matches", 0),
+                            ("bc_claimants", None), ("bc_claimants", 2), ("authority", "yes"),
+                            ("other_partner", None), ("supplier", False)):
+            with self.subTest(**{name: value}):
+                self.assertNotEqual(po_reference.decide(**{**firm, name: value}).tier,
+                                    po_reference.FIRM)
+        for supplier, days in ((None, None), ("yes", 0.5), (None, True), (None, -1), (None, 8)):
+            with self.subTest(supplier=supplier, days=days):
+                verdict = po_reference.decide(**{**firm, "supplier": supplier,
+                                                 "order_days_apart": days})
+                self.assertEqual((verdict.tier, verdict.code),
+                                 (po_reference.LEAD, "uncorroborated"))
+
+    def test_cardinality_no_order_lost_doubled_or_joined_twice(self):
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                out = self.world(n=n)
+                self.assertEqual(out["counts"]["groups"], n)
+                self.assertEqual(len(self.joined(out)), n)
+                self.assertEqual(len(out["late"]), n)
+                self.assertEqual(len({h["citation"] for g in out["groups"]
+                                      for h in g["headers"]}), 2 * n)
+
+
 def group(*, bc=True):
     lines = [{"system": "bc", "citation": "bc://pol/l1@1", "due": DUE,
               "date_source": "bc://pol/l1@1", "line": True}]
@@ -344,10 +737,12 @@ class StubWorkspace:
     """The workspace calls the steps make, with answers set per test."""
 
     def __init__(self, *, ask=None, proposal=None, follow_ups=(), investigated=None,
-                 around=()):
+                 around=(), families=None):
         self.asked, self.proposal, self.recorded_follow_ups = ask, proposal, follow_ups
         self.investigated, self.around = investigated, list(around)
+        self.families = dict(families or {})   # family -> its answer (else ``investigated``)
         self.follow_ups = True
+        self.asked_families: list[tuple[str, str]] = []
 
     def ask_run(self, request):
         if self.asked is None:
@@ -356,7 +751,8 @@ class StubWorkspace:
 
     def investigate(self, family, root):
         self.family = family
-        return self.investigated
+        self.asked_families.append((family, root))
+        return self.families.get(family, self.investigated)
 
     def record_on_case(self, request):
         return {"recorded": [{"record_id": "G1", "outcome": "recorded"}],
@@ -427,10 +823,114 @@ class Steps(unittest.TestCase):
 
     def test_a_document_confirms_only_an_exact_order_number(self):
         self.assertTrue(fp.names_number("Re: PO5 ships Friday", ["PO5"]))
+        # One order whatever its written form, either way round, in any case.
+        for form in ("PO#4643", "PO 4643", "PO4643", "PO-4643", "po # 4643", "PO#04643"):
+            self.assertTrue(fp.names_number(f"Re: {form}, update please", ["PO#4643"]), form)
+            self.assertTrue(fp.names_number("Re: PO#4643.", [form]), form)
+        self.assertTrue(fp.names_number("DPO100001 shipped", ["DPO100001"]))
         for text, numbers in (("Re: PO55 ships", ["PO5"]), ("2 of line 1", ["1", "2"]),
-                              ("XPO5", ["PO5"])):
+                              ("XPO5", ["PO5"]), ("PO#46431 ships", ["PO#4643"]),
+                              ("PO#4643-FM12 ships", ["PO#4643"]),
+                              ("DPO4643 ships", ["PO#4643"]),
+                              # a bare number never names an order, whatever the order holds
+                              ("4643 units of line 2", ["PO#4643"]),
+                              ("order 40017 is late", ["40017"]),
+                              ("PO 40017 is late", ["40017"])):
             self.assertFalse(fp.names_number(text, numbers), text)
-        self.assertTrue(fp.names_number("order 40017 is late", ["40017"]))
+
+    TEAMS = "teams-chat://19%3Achat/m1@v1"
+
+    def test_a_teams_message_naming_the_order_is_a_second_source(self):
+        line = ("Line 1 was due 2026-09-01.", [self.LINE])
+        out = ask(StubWorkspace(ask=answered(line, ("A chat asks about PO5.", [self.TEAMS]))),
+                  group(), confirmed=(self.TEAMS,))
+        self.assertEqual((out["reason"], out["second_sources"]),
+                         ("names_late_lines_and_date_cross_system", 1))
+        self.assertEqual(out["systems_cited"], {"bc": 1, "teams-chat": 1})
+        # one that does not name the number is a lead, never a second source
+        out = ask(StubWorkspace(ask=answered(line, ("A lead chat.", [self.TEAMS]))), group(),
+                  confirmed=())
+        self.assertEqual((out["reason"], out["second_sources"]), ("no_second_source_cited", 0))
+
+    def test_a_lead_the_answer_marks_counts_only_when_worded_as_a_lead(self):
+        line = ("Line 1 was due 2026-09-01.", [self.LINE])
+
+        def marked(text):
+            reply = answered(line, (text, [self.MAIL]))
+            reply["claims"][1]["value_claims"] = [{"citation": self.MAIL, "lead": True}]
+            return ask(StubWorkspace(ask=reply), group())
+        self.assertEqual(marked("The supplier mail names PO5.")["reason"],
+                         "lead_not_worded_as_lead")
+        worded = marked("The supplier mail names PO5 (lead: link not verified).")
+        self.assertEqual((worded["reason"], worded["second_sources"]),
+                         ("names_late_lines_and_date_cross_system", 1))
+        # a firm one counts plainly
+        plain = ask(StubWorkspace(ask=answered(line, ("The mail names PO5.", [self.MAIL]))),
+                    group())
+        self.assertEqual(plain["reason"], "names_late_lines_and_date_cross_system")
+
+    def test_a_teams_message_is_read_through_the_runtime_s_gates_and_fails_closed(self):
+        """``RawCaptures.confirms`` reads a cited Teams message only for a reader the live
+        audience grants Teams and through the runtime's read (its membership check and the
+        people exclusion); a refusal, a moved revision or no grant is unconfirmed."""
+        class Audience:
+            def __init__(self, teams):
+                self.teams = teams
+
+            def may_read_any(self, actor, prefix):
+                return self.teams and prefix == "teams:"
+
+        class Runtime:
+            def __init__(self, teams, view):
+                self.live = mock.Mock(audience=Audience(teams))
+                self.view, self.reads = view, []
+
+            def employee_gate(self, actor):
+                return actor
+
+            def claim_row(self, handle, actor):
+                self.reads.append(handle)
+                if isinstance(self.view, Exception):
+                    raise self.view
+                return self.view
+
+        row = {"row": {"body_text": "Can you chase PO 5 for an update?"},
+               "changed_since": False}
+        for teams, view, expect, reads in (
+                (True, row, True, 1), (False, row, False, 0),
+                (True, PermissionError("capture_citation_unresolvable"), False, 1),
+                (True, {**row, "changed_since": True}, False, 1),
+                (True, {"row": {"body_text": "Can you chase 5?"}}, False, 1)):
+            runtime = Runtime(teams, view)
+            raw = fp.RawCaptures(runtime, actor=object())
+            self.assertIs(raw.confirms(self.TEAMS, ["PO5"]), expect, (teams, view))
+            self.assertEqual(len(runtime.reads), reads, (teams, view))
+
+    def test_the_flagship_reader_holds_the_markings_its_host_grants_and_no_more(self):
+        """The flagship host config grants purchasing_prices as the real host does
+        (examples/host.live-check.json): to staff:purchasing only, finance to nobody. The
+        reader gets exactly what its principals are granted; an invalid grant refuses the
+        run."""
+        flagship = fp.ROOT / "examples/po_document_chain_host.live-check.json"
+        real = json.loads((fp.ROOT / "examples/host.live-check.json").read_text("utf-8"))
+        self.assertEqual(json.loads(flagship.read_text("utf-8"))["marking_grants"],
+                         real["marking_grants"])
+        self.assertEqual(fp.granted_markings(flagship, ["staff:purchasing"]),
+                         {"purchasing_prices"})
+        for principals in (["staff:operations"], ["staff:finance"], []):
+            self.assertEqual(fp.granted_markings(flagship, principals), set(), principals)
+        with tempfile.TemporaryDirectory() as tmp:
+            for grants in ({"purchasing_prices": ["*"]}, {"no_such_marking": ["staff:x"]},
+                           ["purchasing_prices"]):
+                path = Path(tmp) / "host.json"
+                path.write_text(json.dumps({"marking_grants": grants}), "utf-8")
+                with self.assertRaises(ValueError):
+                    fp.granted_markings(path, ["staff:purchasing"])
+                with contextlib.redirect_stderr(io.StringIO()), \
+                        self.assertRaises(SystemExit):
+                    fp.main(["--state-dir", tmp, "--mirror-audience", str(path),
+                             "--principal", "staff:purchasing", "--host-policy", str(path)],
+                            environ={})
 
     def test_a_25_second_ask_fails_timing(self):
         self.assertEqual(fp.timing_step({"status": "pass", "seconds": 25.0})["reason"],
@@ -464,17 +964,77 @@ class Steps(unittest.TestCase):
             {"kind": "computed", "name": "landed_cost_estimate", "value": "9"}]}}),
             "o", identify=False)
         self.assertEqual(unlabelled["reason"], "landed_cost_estimate_not_labelled")
+        # The walkthrough shows the amount in cents; the entry keeps its precision.
+        long_tail = fp.landed_step(StubWorkspace(investigated={"investigation": {"answer": [
+            {"kind": "computed", "name": "landed_cost_estimate", "currency": "CAD",
+             "value": "371.199420010000000000000000101", "steps": ["ESTIMATE x"]}]}}),
+            "o", identify=True)
+        self.assertEqual((long_tail["status"], long_tail["landed_cost_shown"],
+                          long_tail["landed_cost_estimate"]),
+                         ("pass", "371.20 CAD", "371.199420010000000000000000101"))
+
+    def test_the_margin_is_the_first_order_the_impact_chain_says_the_po_feeds(self):
+        """No direct link type: the margin step asks the impact chain (firm links only,
+        the entity map among them) and takes the order it ranks first; the margin is the
+        order_margin answer for that order, finance-gated. No order fed fails with where
+        the walk stopped, never a pass and never an unrelated sample."""
+        self.assertEqual(fp.feeds_links(), [])   # no direct purchase-order -> sales-order link
+        shown = {"investigation": {"answer": [
+            {"kind": "computed", "name": "order_margin", "value": "10", "basis": ["x"]},
+            {"kind": "property", "name": "n", "citation": {"l1_handle": "bc://so/1@1"}}],
+            "gaps": []}}
+        impact = {"investigation": {"answer": [
+            {"kind": "computed", "name": "impact_2", "steps": ["chain from o to SalesOrder:b"]},
+            {"kind": "computed", "name": "impact_1", "steps": ["chain from o to SalesOrder:a"]},
+            {"kind": "computed", "name": "impact", "value": 2, "steps": []}], "gaps": []}}
+        ws = StubWorkspace(families={"impact_chain": impact, fm.FAMILY: shown})
+        fed = fp.margin_step(ws, "o", feeds=[], identify=True)
+        self.assertEqual((fed["status"], fed["reason"], fed["fed_by"], fed["orders_fed"]),
+                         ("pass", "margin_shown", "impact_chain", 2))
+        self.assertEqual(ws.asked_families, [("impact_chain", "o"),
+                                             (fm.FAMILY, "SalesOrder:a")])
+        self.assertEqual(fed["object_id"], "SalesOrder:a")
+        # A reader without the finance marking: blocked with the typed gap, no figure.
+        withheld = {"investigation": {"answer": [
+            {"kind": "computed", "name": "order_margin", "value": None}],
+            "gaps": [{"reason": "marking_withheld", "subject": "order_margin"}]}}
+        gated = fp.margin_step(StubWorkspace(families={"impact_chain": impact,
+                                                       fm.FAMILY: withheld}),
+                               "o", feeds=[], identify=False)
+        self.assertEqual((gated["status"], gated["reason"]), ("blocked", "margin_withheld"))
+        # The walk reaches no order (a lead-only item twin): a fail naming the stop.
+        stopped = {"investigation": {"answer": [
+            {"kind": "computed", "name": "impact", "value": 0, "steps": []}],
+            "gaps": [{"reason": "link_lead_only", "subject": "Product:x"}]}}
+        out = fp.margin_step(StubWorkspace(families={"impact_chain": stopped}), "o",
+                             feeds=[], identify=False)
+        self.assertEqual((out["status"], out["reason"], out["impact_stops"]),
+                         ("fail", "no_sales_order_fed", ["link_lead_only"]))
+        # A walk the step budget cut (live PO100035 shape, 128 of 128 steps): still a
+        # fail, and it says the walk was cut, so no order fed is never read as a data fact
+        cut = {"investigation": dict(stopped["investigation"], completeness={
+            "complete": False, "truncated": True, "reason": "step_budget"})}
+        out = fp.margin_step(StubWorkspace(families={"impact_chain": cut}), "o",
+                             feeds=[], identify=False)
+        self.assertEqual((out["status"], out["reason"], out["impact_cut"]),
+                         ("fail", "no_sales_order_fed", "step_budget"))
+        fitted = {"investigation": dict(stopped["investigation"], completeness={
+            "complete": False, "truncated": True, "reason": "result_too_large"})}
+        out = fp.margin_step(StubWorkspace(families={"impact_chain": fitted}), "o",
+                             feeds=[], identify=False)
+        self.assertNotIn("impact_cut", out)
+        # No impact answer at all (not served): a fail, never a pass.
+        out = fp.margin_step(StubWorkspace(), "o", feeds=[], identify=False)
+        self.assertEqual((out["status"], out["reason"]), ("fail", "no_sales_order_fed"))
 
     def test_an_unrelated_margin_sample_is_not_a_pass(self):
-        self.assertEqual(fp.feeds_links(), [])   # no purchase-order to sales-order link
-        out = fp.margin_step(StubWorkspace(), "o", feeds=[], identify=False)
-        self.assertEqual(out["status"], "unrelated_sample")
         shown = {"investigation": {"answer": [
             {"kind": "computed", "name": "order_margin", "value": "10", "basis": ["x"]},
             {"kind": "property", "name": "n", "citation": {"l1_handle": "bc://so/1@1"}}],
             "gaps": []}}
         so = {"object_id": "SalesOrder:1", "object_type": "SalesOrder"}
         sample = fm.margin_sample(StubWorkspace(investigated=shown, around=[so]))
+        self.assertEqual(sample["status"], "unrelated_sample")
         self.assertEqual((sample["status"], sample["sample"]["reason"]),
                          ("unrelated_sample", "margin_shown"))
         self.assertEqual(fm.margin_sample(StubWorkspace())["reason"], "sales_order_not_held")

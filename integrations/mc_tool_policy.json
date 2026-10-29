@@ -1,5 +1,5 @@
 {
- "_usage": "Workbench policy for every Mission Control MCP tool, independent of integrations/plx_hub_guard.py. verify/tests/test_live_wiring.py checks that the guard's MC_READ_TOOLS, MC_APPROVABLE_WRITE_TOOLS and MC_NEVER_TOOLS equal these lists exactly. When the read-only PLX_MC checkout holds `commit`, it also checks that the HTTP MCP server registers exactly these tools, without stdio_only. To change a tool's class, read the upstream handler at a re-pinned commit, then update this file and the guard in the same change.",
+ "_usage": "Workbench policy for every Mission Control MCP tool, independent of integrations/plx_hub_guard.py. devloop/tests/test_live_wiring.py checks that the guard's MC_READ_TOOLS, MC_APPROVABLE_WRITE_TOOLS and MC_NEVER_TOOLS equal these lists exactly. When the read-only PLX_MC checkout holds `commit`, it also checks that the HTTP MCP server registers exactly these tools, without stdio_only. To change a tool's class, read the upstream handler at a re-pinned commit, then update this file and the guard in the same change.",
  "repo": "petralabx/PLX_MC",
  "commit": "5bf29d2ebb3714694d2276f17b909f1a6d14365a",
  "sources": ["src/lib/mcp/create-http-server.ts", "src/lib/mcp/read-actions.ts",

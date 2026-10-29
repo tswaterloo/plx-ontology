@@ -12,34 +12,40 @@
   {"resources": ["workbook", "workbookWorksheet", "workbookRange", "workbookTable"], "via": "driveItem", "source": "sharepoint", "relation": "driveItems",
    "note": "Workbook cells are the content of the captured file."},
   {"resources": ["listItem", "fieldValueSet", "listItemVersion"], "via": "list", "source": "sharepoint", "relation": "listItems",
-   "note": "Items of a SharePoint list that is not a document library: integrations/capture_sharepoint_lists.py captures the lists its scope names (integrations/sharepoint_list_capture_scope.json; docs/decisions/2026-10-10-gen-graph-residual-list-items.md option b), item permissions as their audience."},
+   "note": "Items of a SharePoint list that is not a document library: integrations/capture_sharepoint_lists.py captures the lists its scope names (integrations/sharepoint_list_capture_scope.json; devloop/DECISIONS/2026-10-10-gen-graph-residual-list-items.md option b), item permissions as their audience."},
   {"resources": ["chatMessage"], "via": "channel", "source": "teams", "relation": "channelMessages",
    "note": "integrations/capture_teams.py: channel messages and replies."},
   {"resources": ["chatMessage"], "via": "chat", "source": "teams", "relation": "chatMessages",
-   "note": "integrations/capture_teams.py: the chats of every account on the mail allowlist (operating/case_mail_scope.json; docs/decisions/2026-10-07-ovs-teams-capture.md item 2), projected gated by chat membership (docs/decisions/2026-10-10-followup-decisions.md item 6)."},
-  {"resources": ["site", "drive", "list", "columnDefinition", "mailFolder", "team", "channel", "chat", "teamsTab", "sharedDriveItem"],
-   "not_business_data": "container", "decision": "docs/decisions/2026-10-08-gen-graph-not-business-data.md",
+   "note": "integrations/capture_teams.py: the chats of every account on the mail allowlist (operating/case_mail_scope.json; devloop/DECISIONS/2026-10-07-ovs-teams-capture.md item 2), projected gated by chat membership (devloop/DECISIONS/2026-10-10-followup-decisions.md item 6)."},
+  {"resources": ["chat"], "source": "teams", "relation": "chats",
+   "note": "integrations/capture_teams.py: a chat's own record (topic, type, times, participants), gated by its membership like its messages (devloop/DECISIONS/2026-10-27-teams-conversation-objects.md)."},
+  {"resources": ["channel"], "source": "teams", "relation": "channels",
+   "note": "integrations/capture_teams.py: a channel's own record (name, membership type, times, participants), gated by its membership like its messages (devloop/DECISIONS/2026-10-27-teams-conversation-objects.md)."},
+  {"resources": ["team"], "source": "teams", "relation": "teams",
+   "note": "integrations/capture_teams.py: a team (name, creation), read with its standard channels' records (devloop/DECISIONS/2026-10-27-teams-conversation-objects.md)."},
+  {"resources": ["site", "drive", "list", "columnDefinition", "mailFolder", "teamsTab", "sharedDriveItem"],
+   "not_business_data": "container", "decision": "devloop/DECISIONS/2026-10-08-gen-graph-not-business-data.md",
    "note": "A container, its configuration or its schema: the captures traverse it to reach the items; it holds no business record of its own."},
   {"resources": ["user", "group", "directoryObject", "organization"],
-   "not_business_data": "directory", "decision": "docs/decisions/2026-10-08-gen-graph-not-business-data.md",
+   "not_business_data": "directory", "decision": "devloop/DECISIONS/2026-10-08-gen-graph-not-business-data.md",
    "note": "Directory identities and memberships: permission inputs (integrations/graph_directory.py), never ontology records."},
   {"resources": ["subscription"],
-   "not_business_data": "infrastructure", "decision": "docs/decisions/2026-10-08-gen-graph-not-business-data.md",
+   "not_business_data": "infrastructure", "decision": "devloop/DECISIONS/2026-10-08-gen-graph-not-business-data.md",
    "note": "Change-notification subscriptions of the upstream sync engines."},
   {"resources": ["thumbnailSet", "workbookRangeFormat", "workbookRangeFont"],
-   "not_business_data": "presentation", "decision": "docs/decisions/2026-10-08-gen-graph-not-business-data.md",
+   "not_business_data": "presentation", "decision": "devloop/DECISIONS/2026-10-08-gen-graph-not-business-data.md",
    "note": "Rendering and formatting of a file, not its content."},
   {"resources": ["event", "onlineMeeting", "callTranscript"],
-   "not_business_data": "calendar_meetings", "decision": "docs/decisions/2026-10-08-gen-graph-not-business-data.md",
+   "not_business_data": "calendar_meetings", "decision": "devloop/DECISIONS/2026-10-08-gen-graph-not-business-data.md",
    "note": "Calendars and meeting transcripts of the agent tooling (agentic-swarm); default until decided, reversal: a capture and a family."},
   {"resources": ["todoTaskList", "todoTask", "plannerTask"],
-   "not_business_data": "personal_tasks", "decision": "docs/decisions/2026-10-08-gen-graph-not-business-data.md",
+   "not_business_data": "personal_tasks", "decision": "devloop/DECISIONS/2026-10-08-gen-graph-not-business-data.md",
    "note": "To Do and Planner tasks the agent tooling writes; Mission Control is the task system of record."}
  ],
  "operations": {
-  "action": {"not_business_data": "write_operation", "decision": "docs/decisions/2026-10-07-rec03-production-writes.md"},
-  "ref": {"not_business_data": "write_operation", "decision": "docs/decisions/2026-10-07-rec03-production-writes.md"},
-  "write_method": {"not_business_data": "write_operation", "decision": "docs/decisions/2026-10-07-rec03-production-writes.md"}
+  "action": {"not_business_data": "write_operation", "decision": "devloop/DECISIONS/2026-10-07-rec03-production-writes.md"},
+  "ref": {"not_business_data": "write_operation", "decision": "devloop/DECISIONS/2026-10-07-rec03-production-writes.md"},
+  "write_method": {"not_business_data": "write_operation", "decision": "devloop/DECISIONS/2026-10-07-rec03-production-writes.md"}
  },
  "templates": {
   "/drives/{}/{}/{}": {"as": "/drives/{}/root:/{}", "evidence": "PLX_MC:scripts/provision-sharepoint.py@5bf29d2ebb37:370",
@@ -52,6 +58,10 @@
    "lineage": "mail",
    "capture": "integrations/capture_teams.py",
    "csdl_type": "chatMessage",
+   "evidence_catalog": {
+    "wb.mentions": {"kind": "workbench_code", "path": "ontology/mentions.py", "note": "Identifier mentions extracted by the one identifier grammar from a Teams message's subject and body (ontology/project_graph.py TeamsCaptures.documents) and resolved through the identifier index; stored as lead links (store_mention_links)."},
+    "ctx.mentions": {"kind": "context_pack", "ref": "devloop/CONTEXT/07-ONTOLOGY-DESIGN.md#C.2", "note": "Document mentions any object: mention resolution (lead/corroborated)."}
+   },
    "fields": {
     "id": "id",
     "reply_to_id": "replyToId",
@@ -73,13 +83,19 @@
      "relation": "channelMessages", "binding": "gen.teams.channel_messages",
      "key": ["team_id", "channel_id", "id"],
      "fields": {"team_id": "channelIdentity/teamId", "channel_id": "channelIdentity/channelId"},
-     "description": "One captured Teams channel message or reply version (Graph chatMessage; lineage mail until the Teams lineage decision, docs/decisions/2026-10-07-ovs-teams-capture.md item 1). Readers are trimmed per channel and by the channel's captured membership. Source text is untrusted; the body is cited, not projected."
+     "links": [{"name": "in_channel", "to": "TeamsChannel", "to_binding": "teams.channels",
+                "reverse_name": "messages", "pairs": {"team_id": "team_id", "channel_id": "channel_id"},
+                "description": "The channel a captured channel message or reply was posted in (Graph structure: the message's team and channel ids; ontology/schema/domains/teams_conversations.json)."}],
+     "description": "One captured Teams channel message or reply version (Graph chatMessage; lineage mail until the Teams lineage decision, devloop/DECISIONS/2026-10-07-ovs-teams-capture.md item 1). Readers are trimmed per channel and by the channel's captured membership. Source text is untrusted; the body is cited, not projected."
     },
     "TeamsChatMessage": {
      "relation": "chatMessages", "binding": "gen.teams.chat_messages",
      "key": ["chat_id", "id"],
      "fields": {"chat_id": "chatId"},
-     "description": "One captured Teams chat message version (Graph chatMessage; lineage mail, docs/decisions/2026-10-07-ovs-teams-capture.md item 1). The chats of every account on the mail allowlist are captured (item 2); readers are trimmed per chat and by the chat's captured membership, and a chat without a captured membership is not projected (docs/decisions/2026-10-10-followup-decisions.md item 6). Source text is untrusted; the body is cited, not projected."
+     "links": [{"name": "in_chat", "to": "TeamsChat", "to_binding": "teams.chats",
+                "reverse_name": "messages", "pairs": {"chat_id": "chat_id"},
+                "description": "The chat a captured chat message was posted in (Graph structure: the message's chat id; ontology/schema/domains/teams_conversations.json)."}],
+     "description": "One captured Teams chat message version (Graph chatMessage; lineage mail, devloop/DECISIONS/2026-10-07-ovs-teams-capture.md item 1). The chats of every account on the mail allowlist are captured (item 2); readers are trimmed per chat and by the chat's captured membership, and a chat without a captured membership is not projected (devloop/DECISIONS/2026-10-10-followup-decisions.md item 6). Source text is untrusted; the body is cited, not projected."
     }
    }
   },

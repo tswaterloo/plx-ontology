@@ -13,7 +13,7 @@ GET-only Graph adapter (``integrations.graph_read.SharePointReader``), either
   tool ``plx.case_attach_original`` with drive_id + item_id (bytes under a cap,
   SHA-256 identity, immutable provenance, citable as ``original://<id>`` and
   ``original://<id>#page=<n>``) -- ``attach_original`` / ``attach_originals``;
-* or, for the live checks, directly through the reader with a probe audience that
+* or, for the live verifier, directly through the reader with a probe audience that
   grants only that folder's top-level tree -- ``check``
   (``python3 -m operating.sharepoint_originals check --expected <file>``), which prints
   counts, byte sizes and SHA-256 digests only (no text, no names of people, no URLs) and
@@ -22,8 +22,8 @@ GET-only Graph adapter (``integrations.graph_read.SharePointReader``), either
 A packet is matched by its file name, never by a hardcoded item id; a listed item whose
 id or digest differs from the expectation is reported, not hidden.
 
-Evidence label: everything here is live-unverified until the live checks run the
-``verify/live-checks/ao-originals.json`` spec; tests use an injected transport.
+Evidence label: everything here is live-unverified until the live verifier runs the
+``devloop/live-checks/ao-originals.json`` spec; tests use an injected transport.
 """
 
 from __future__ import annotations
@@ -312,7 +312,7 @@ def check(expected_path: str | Path, environ: Mapping[str, str] | None = None, *
 
 
 def _source_error(error: Exception) -> int:
-    """The live checks publish error, http_status and error_code from this line."""
+    """The live verifier publishes error, http_status and error_code from this line."""
     from integrations.live_source_guard import failure_diagnostics
     diagnosis = {key: value for key, value in failure_diagnostics(error).items()
                  if value is not None and key != "error_class"}

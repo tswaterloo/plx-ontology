@@ -301,6 +301,41 @@ class EmployeeCaseRuntimeTests(LiveCitationTestCase):
         with self.assertRaises(CitationUnresolvable):
             collection_only.resolve_citation(handle, EMPLOYEE)
 
+    def test_an_mc_citation_reads_through_plx_read_and_the_host_reread(self):
+        # An agent's plx.read and the harness's re-read (plx.source_citation, host code)
+        # read an mc:// citation from the host's MC capture, as the reader may see it;
+        # before, both refused the scheme, so a cited MC value never checked.
+        from operating.mcp_server import MCPServer
+        from operating.ontology_tools_evidence import RuntimeCitations
+        handle = self.mc_gate()
+        runtime = self.employee_runtime(self.live({
+            **LIVE_AUDIENCE, "mc:ops:approvals": ["staff:quality"],
+            "mc:ops:project:PRJ-OPS": ["staff:quality"]}))
+        read = RuntimeCitations(runtime).read(handle, EMPLOYEE)
+        self.assertEqual((read["status"], read["lineage"], read["fields"]["row.decidedAt"]),
+                         ("resolved", "mission_control", "2026-10-01T12:00:00Z"))
+
+        def reread(actor):
+            server = MCPServer(case_runtime=runtime, actor=actor)
+            server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                           "params": {"protocolVersion": "2025-11-25", "capabilities": {},
+                                      "clientInfo": {"name": "t", "version": "1"}}})
+            server.handle({"jsonrpc": "2.0", "method": "notifications/initialized"})
+            out = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+                "name": "plx.source_citation", "arguments": {"citation": handle}}},
+                host_code=True)
+            return out["result"].get("structuredContent") or {}
+
+        found = reread(EMPLOYEE)
+        self.assertEqual((found["ok"], found["key"], found["row"]["status"]),
+                         (True, {"id": "apg_one"}, "approved"))
+        # A reader without the MC grant reads nothing of it, through either path.
+        host = Actor("plx", frozenset({"staff:vince", "staff:shared"}), "restricted")
+        self.assertNotEqual(RuntimeCitations(runtime).read(handle, host)["status"], "resolved")
+        denied = reread(host)
+        self.assertFalse(denied.get("ok"))
+        self.assertNotIn("approved", json.dumps(denied))
+
     def test_mc_citations_fail_closed_without_the_hosts_mc_capture(self):
         handle = self.mc_gate()
         granted = {**LIVE_AUDIENCE, "mc:ops:*": ["staff:quality"],

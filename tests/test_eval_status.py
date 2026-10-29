@@ -1,4 +1,4 @@
-"""scripts/eval_status.py: the state.status.eval line from a live-check report.
+"""scripts/eval_status.py: the state.status.eval line from a live-verifier report.
 
 Evidence label: isolated-fixture (synthetic reports; no live result is read)."""
 

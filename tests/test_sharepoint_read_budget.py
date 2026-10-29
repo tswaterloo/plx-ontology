@@ -1,4 +1,4 @@
-"""The SharePoint read budget: the shared walker's rules
+"""The SharePoint read budget (lane sharepoint-read-budget): the shared walker's rules
 that let a large scope fit a live check's time budget, over the injected Graph fakes of
 integrations/tests/test_capture_sharepoint.py and tests/test_case_originals.py. No
 network, no credentials. Evidence: injected-transport.

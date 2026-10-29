@@ -5,7 +5,7 @@ next score; a mail sender is offered and linked to its Supplier the same way.
 
 Evidence label: ``isolated-fixture`` (synthetic Portal, BC and mail captures through the
 real projector, the compiled repository schema, ``plx.review`` and the reviews link step;
-no source is read); the live check's own argv (``verify/live-checks/
+no source is read); the live check's own argv (``devloop/live-checks/
 ontology.identity_scoring.json``) runs ``injected-transport`` over the live-wiring fixture
 world and is checked by the verifier's ``check_expectations``.
 """
@@ -421,8 +421,8 @@ class SchemaIdentifierFeaturesTest(unittest.TestCase):
 
 class LiveCheckSpecTest(unittest.TestCase):
     def test_spec_runs_end_to_end_and_counts_a_payload_that_is_not_its_candidates(self):
-        from verify import live_verify as lv
-        from verify.tests import test_live_wiring as wiring
+        from devloop import live_verify as lv
+        from devloop.tests import test_live_wiring as wiring
         from scripts import identity_scoring_probe as probe
         from scripts import ontology_projection_probe as projection
 

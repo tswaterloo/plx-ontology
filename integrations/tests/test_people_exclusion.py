@@ -1,4 +1,4 @@
-"""The people-exclusion guard over an injected transport.
+"""The people-exclusion guard (access record 64fca27acc88) over an injected transport.
 
 Mail, Teams chats and OneDrives of excluded people are refused before any request,
 keyed by Entra object ID; a message an excluded person sent is dropped before it is
@@ -27,7 +27,7 @@ from integrations.tests import test_capture_sharepoint_estate as te
 from integrations.tests import test_capture_teams as tc
 from integrations.tests import test_live_source_adapters as ta
 from integrations.capture_store import CaptureError
-from integrations.capture_teams import Conversation, TeamsCapture, open_store
+from integrations.capture_teams import CONVERSATION, Conversation, TeamsCapture, open_store
 
 EXCLUDED = tm.BOX_B                         # the synthetic excluded person's mailbox
 EXCLUDED_UPN = tm.UPN_B
@@ -129,7 +129,7 @@ class GuardConfigTests(unittest.TestCase):
 
 
     def test_a_block_part_carries_a_cause_live_verify_knows(self):
-        import verify.live_verify as live_verify
+        import devloop.live_verify as live_verify
         absent = PeopleExclusion.from_env({}).block_part("mail.people_exclusion")
         self.assertEqual(live_verify.blocked_cause(declared=absent["cause"]), "later_ask")
         unresolved = PeopleExclusion([EXCLUDED])
@@ -267,7 +267,7 @@ class MailGuardTests(unittest.TestCase):
 
 class TeamsGuardTests(unittest.TestCase):
     """capture_teams uses the same guard. Chats are read over the fake only: no Teams
-    chat is ever read live by this capture."""
+    chat is ever read live by this lane (directive cdce67ac8e8c)."""
 
     SENDER = "0000aaaa-0000-0000-0000-000000000009"   # an excluded sender, no member
 
@@ -295,7 +295,10 @@ class TeamsGuardTests(unittest.TestCase):
     def paths(self, thread):
         kind, unit = ("teams_chat", Conversation("chat", thread).unit) if thread == tc.CHAT \
             else ("teams_channel", Conversation("channel", thread, tc.TEAM).unit)
-        return {r.path[-1] for r in self.store.current_records(kind, unit)}
+        # Message ids: the conversation's own record (CONVERSATION) is no
+        # message (as the CLI counts it apart).
+        return {r.path[-1] for r in self.store.current_records(kind, unit)
+                if r.path[-1] != CONVERSATION}
 
     def test_an_absent_or_empty_list_refuses_every_teams_read_with_zero_requests(self):
         for name, kwargs in {"absent": {"absent": True}, "empty": {"excluded": " , "}}.items():

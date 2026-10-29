@@ -7,15 +7,20 @@ every match as a cited candidate with the caveats that make a number match
 weak evidence. It never picks a candidate, never links records and never
 writes anything; identity between a Portal record and a BC document comes
 from Portal's ``app_bc_entity_map`` (schema binding
-``ontology/schema/domains/bc_finance.json``; pending ``ontology/schema/pending/bc_entity_map.json``),
+``ontology/schema/domains/bc_entity_map.json``),
 not from here.
 
-Why numbers are weak:
+Why numbers are weak (devloop/CONTEXT/02 §1.3 stage 11, §1.7 #2/#6, §2.3;
+03 §3.2-3.4):
 
 * Portal ``app_purchase_order.po_number`` is rewritten to the BC No. once
   linked (and may carry an ``-FM<id>`` suffix on clashes); the FM PO number
-  goes to BC "Your Reference" (codeunit 50115), which the standard API v2.0
-  ``purchaseOrders`` set does not expose to this reader.
+  is often in BC "Your Reference" (a map reading of codeunit 50115; the link
+  is judged on data evidence, decision 2026-10-27-your-reference-evidence),
+  which the standard API v2.0
+  ``purchaseOrders`` set does not expose to this reader (ODataV4 Page 50
+  ``PurchaseOrder`` does; only the BC capture reads it, field page
+  ``purchaseOrderReferences``).
 * Portal ``app_sales_order.order_number`` is rewritten to the BC document No.
   after drain (``alignPortalSoNumberToBc``); an older Portal number may match
   nothing, or a different document that happens to reuse it.
@@ -54,8 +59,9 @@ CAVEATS: dict[str, str] = {
         "identity link between a Portal record and a BC document."),
     "po_number_rewritten": (
         "Portal app_purchase_order.po_number is rewritten to the BC No. once linked and "
-        "may carry an -FM<id> suffix; the FM PO number lives in BC 'Your Reference', "
-        "which the API v2.0 purchaseOrders set does not expose here."),
+        "may carry an -FM<id> suffix; the FM PO number is often in BC 'Your Reference', "
+        "which the API v2.0 purchaseOrders set does not expose here (ODataV4 Page 50 does; "
+        "only the BC capture reads it)."),
     "order_number_rewritten": (
         "Portal app_sales_order.order_number is rewritten to the BC document No. after "
         "drain; a pre-rewrite Portal number may match nothing or another document."),

@@ -1,4 +1,4 @@
-"""Declarative plans over the generic primitives, on the fixture world.
+"""Lane plx-investigate: declarative plans over the generic primitives, on the fixture world.
 
 The world is the synthetic oracle world the frozen dev items were drawn from
 (``evals/oracle/fixture_world.py``), mirrored through the GET-only Portal client with an
@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+from decimal import Decimal
 import json
 from pathlib import Path
 import tempfile
@@ -182,10 +183,11 @@ class PlansAreDataTests(unittest.TestCase):
         families = {f: p.id for p in plans.values() for f in p.doc["families"]}
         # F1-F4 are the evaluated families, F7 landed cost, F10 order margin, F11 decision
         # evidence, F12 commercial chain links, F13 item lineage,
-        # F14 late PO, F15 counterparty position, F16 impact chain; held-out F5/F6 have no plan.
+        # F14 late PO, F15 counterparty position, F16 impact chain, F17 lot impact, F18 people
+        # on a record, F19 what we last said to a party; held-out F5/F6 have no plan.
         self.assertEqual(set(families),
                          {"F1", "F2", "F3", "F4", "F7", "F10", "F11", "F12", "F13", "F14", "F15",
-                          "F16"})
+                          "F16", "F17", "F18", "F19"})
         evaluated = {json.loads(p.read_text("utf-8"))["family"]
                      for p in DEV.glob("dev-*.json")}
         self.assertLessEqual(evaluated, set(families))
@@ -254,6 +256,24 @@ class PlansAreDataTests(unittest.TestCase):
         def zero_of_another_kind(d):
             d["evidence"].append({"name": "n", "kind": "count", "object_type": "SalesOrder",
                                   "bindings": ["portal.app_sales_order"], "zero": "assumed"})
+        def total_without_a_role(d):
+            del d["evidence"][0]["quantity_role"]
+        def total_numbered(d):
+            d["evidence"][0]["numbering"] = "value"
+        def total_on_a_count(d):
+            d["evidence"].append({"name": "n", "kind": "count", "object_type": "SalesOrder",
+                                  "bindings": ["portal.app_sales_order"], "total": "sum"})
+        def prefer_without_total(d):
+            del d["evidence"][1]["total"]
+        def prefer_over_an_undeclared_link(d):
+            d["evidence"][1]["prefer"]["via"] = ["AssemblyOrder.no_such_link"]
+        def prefer_of_an_unknown_property(d):
+            d["evidence"][1]["prefer"]["property"] = "no_such_property"
+        for mutate in (total_without_a_role, total_numbered, total_on_a_count,
+                       prefer_without_total, prefer_over_an_undeclared_link,
+                       prefer_of_an_unknown_property):
+            with self.subTest(mutate.__name__):
+                self.assertTrue(self._broken(mutate))
         for mutate in (undeclared_link, unknown_tool, bad_args, disconnected,
                        unknown_property, forward_reference, self_call, links_beside_a_path,
                        links_reaching_nothing, one_unknown_source, distinct_property,
@@ -560,8 +580,24 @@ class FakeHostTests(unittest.TestCase):
                   if e["kind"] == "property"}
         self.assertEqual(marked, {"ordered": None, "received": True})
 
+    def test_a_refused_relation_leaves_short_only_an_answer_that_reads_it(self):
+        # Every Portal answer carries the family's freshness, so each lists every relation
+        # the live source refuses: the gap counts only for a relation the chain read.
+        def run(relation):
+            refused = [{"state": "inaccessible", "reason": "relation_unavailable",
+                        "subject": relation, "detail": "the live source refuses it now"}]
+            return self.run_with([(("ordered", "received"), True)], gaps=refused)
+
+        untouched = run("public.order_entry")
+        self.assertNotIn("gap_inaccessible", untouched["answerability"]["reasons"])
+        self.assertNotIn("relation_unavailable", {g["reason"] for g in untouched["gaps"]})
+        read = run("public.app_purchase_order")  # the root's own relation
+        self.assertIn("gap_inaccessible", read["answerability"]["reasons"])
+        self.assertIn(("inaccessible", "relation_unavailable", "public.app_purchase_order"),
+                      {(g["state"], g["reason"], g["subject"]) for g in read["gaps"]})
+
     def test_the_listing_follows_the_recorder_and_host_state_gaps_ask_nobody(self):
-        """docs/decisions/2026-10-10-follow-ups-ask-loop-writes.md: a host that records
+        """devloop/DECISIONS/2026-10-10-follow-ups-ask-loop-writes.md: a host that records
         follow-ups lists plx.investigate as a writer, as its contract's read_only says; one
         that does not lists it read-only and refuses the option, writing nothing. A gap about
         the host's own state (a source it configures no reader for, a capture state its
@@ -930,6 +966,18 @@ class PartyCheckTests(unittest.TestCase):
                 self.assertEqual(calls["around"].count((self.PO, "PurchaseOrder.ordered_from")),
                                  1)
 
+    def test_a_record_left_out_for_another_party_leaves_the_answer_partial(self):
+        """Which of the same-number records is the root's own rests on a corroboration a
+        person may overturn, so the answer is partial whenever one was left out, and only
+        then (the oracle's ``bc_vendor_differs``)."""
+        for n, differs in ((1, False), (10, True)):
+            with self.subTest(n=n):
+                result, _ = self.run_plan(n)
+                reasons = result["answerability"]["reasons"]
+                self.assertEqual("party_differs" in reasons, differs, result["answerability"])
+                if differs:
+                    self.assertEqual(result["answerability"]["state"], "partial")
+
     def test_a_spent_budget_keeps_the_unchecked_records_and_says_so(self):
         result, _ = self.run_plan(60, budget=20)
         value, basis = self.kept(result)
@@ -949,6 +997,81 @@ class PartyCheckTests(unittest.TestCase):
         self.assertEqual(set(basis), {self.invoice(i) for i in range(10)})
         self.assertNotIn("party_differs", {g["reason"] for g in result["gaps"]})
         self.assertNotIn("app_supplier", json.dumps(result))
+
+
+class UnaskedNotServedTests(unittest.TestCase):
+    """A property its source never serves (BC purchaseInvoices remainingAmount) is a gap
+    of every whole-record read of its type, the same for every reader: it stays listed,
+    but leaves the answer short only when the plan asks for that property (a read that
+    names it, or evidence of it). An F1 chain over a BC purchase invoice is answerable
+    though BC serves no remaining amount. Evidence label: isolated-fixture."""
+    ROOT = 'PurchaseInvoice:bc.purchase_invoices:{"id":"i"}'
+    NOT_SERVED = {"state": "inaccessible", "reason": "not_served",
+                  "subject": "PurchaseInvoice.remaining_amount",
+                  "detail": "BC does not serve remainingAmount on purchaseInvoices"}
+
+    def run_plan(self, *, args=None, evidence=None):
+        meta = {"schema_digest": "a" * 64, "as_known_at": "2099-01-02", "freshness": []}
+
+        def obj(arguments, actor):
+            wanted = arguments.get("properties")
+            gaps = [dict(self.NOT_SERVED)] \
+                if wanted is None or "remaining_amount" in wanted else []
+            return {"object": {"object_id": arguments["object_id"],
+                               "object_type": "PurchaseInvoice", "display": None,
+                               "lineage": "bc_manufacturing"},
+                    "values": [{"property": "bc_number", "value_type": "identifier",
+                                "value": "108008", "markings": [],
+                                "citation": {"l1_handle": "bc://prod/c1/purchaseInvoices/i@g-1",
+                                             "field_path": "row.number", "digest": "b" * 64,
+                                             "lineage": "bc_manufacturing"}}],
+                    "conflicts": [], "identity": [], "linked_counts": [], "gaps": gaps,
+                    "meta": meta,
+                    "completeness": {"complete": True, "truncated": False, "returned": 1}}
+
+        step = {"id": "root_read", "tool": "plx.object", "from": "root", "bind": "object_id"}
+        if args is not None:
+            step["args"] = args
+        doc = {"$schema": "_plan.schema.json", "format": oi.PLAN_FORMAT, "id": "fake_unasked",
+               "families": ["F9"], "title": "t", "description": "d",
+               "root": {"object_types": ["PurchaseInvoice"]}, "step_budget": 8,
+               "steps": [step],
+               "evidence": evidence or [{"name": "root_record_count", "kind": "count",
+                                         "from": "root"}]}
+        self.assertEqual(validate(doc, PLAN_FORMAT, root=PLAN_FORMAT), [])
+        self.assertEqual(oi.check_plan(doc, ot.default_schema(), CONTRACTS), [])
+        tools = oi.InvestigateTools(
+            {"plx.object": {"handler": obj}},
+            plans={"fake_unasked": oi.Plan(doc, "procedure:fake_unasked@" + "0" * 16)},
+            schema=ot.default_schema(), rows=lambda h, a: None)
+        result = tools.call("plx.investigate", {"family": "F9", "root": self.ROOT},
+                            Actor("plx", frozenset({"x"})))
+        _ok(self, result)
+        return result
+
+    def test_an_unasked_unserved_property_leaves_the_answer_whole_and_listed(self):
+        result = self.run_plan()
+        self.assertEqual(result["answerability"], {"state": "answerable", "reasons": []})
+        self.assertIn(("inaccessible", "not_served", "PurchaseInvoice.remaining_amount"),
+                      {(g["state"], g["reason"], g["subject"]) for g in result["gaps"]})
+
+    def test_a_read_that_names_the_unserved_property_leaves_the_answer_short(self):
+        result = self.run_plan(args={"properties": ["bc_number", "remaining_amount"]})
+        self.assertEqual(result["answerability"]["state"], "partial")
+        self.assertIn("gap_inaccessible", result["answerability"]["reasons"])
+
+    def test_evidence_of_the_unserved_property_leaves_the_answer_short(self):
+        result = self.run_plan(evidence=[
+            {"name": "owed", "kind": "property", "object_type": "PurchaseInvoice",
+             "properties": ["remaining_amount"]}])
+        self.assertEqual(result["answerability"], {"state": "partial",
+                                                   "reasons": ["gap_inaccessible"]})
+        result = self.run_plan(evidence=[
+            {"name": "owed", "kind": "property", "object_type": "PurchaseInvoice",
+             "properties": ["remaining_amount"], "required": True}])
+        self.assertNotEqual(result["answerability"]["state"], "answerable")
+        self.assertIn("missing_owed", result["answerability"]["reasons"])
+        self.assertIsNone(next(e for e in result["answer"] if e["name"] == "owed")["value"])
 
 
 class FamilyTests(Base):
@@ -1037,6 +1160,27 @@ class FamilyTests(Base):
                        for g in result["gaps"]})
         self.assertEqual(result["answerability"]["state"], "partial")
 
+    def test_f3_produced_sums_the_status_entries_of_the_one_fm_assembly_order(self):
+        """Produced is the Portal's qty manufactured: the valued FM status entries of the
+        manufacturing order's one FM assembly order, summed (in the order's unit: an entry
+        carries none), as one computed entry over the cited entries."""
+        table, _ = self.table()
+        result = self.investigate(table, "F3", self.root_of(_item("dev-F3-0003-fixture")))
+        (total,) = [e for e in result["answer"] if e["name"] == "produced"]
+        lines = [e for e in result["answer"] if e["name"].startswith("produced_line_")]
+        self.assertEqual((total["kind"], total["quantity_role"]), ("computed", "produced"))
+        self.assertEqual(total["inputs"], [e["name"] for e in lines])
+        self.assertEqual(len(lines), 2)
+        self.assertEqual({e["object_type"] for e in lines}, {"AssemblyOrderStatusEntry"})
+        self.assertEqual({e["unit"] for e in lines}, {total["unit"]})
+        self.assertEqual(sum(Decimal(e["value"]) for e in lines), Decimal(total["value"]))
+        self.assertRegex(total["digest"], "^[0-9a-f]{64}$")
+        self.assertTrue(result["claim_checks"]["passed"], result["claim_checks"])
+        # An answer with an assembly order no status entry values keeps its own figure.
+        result = self.investigate(table, "F3", self.root_of(_item("dev-F3-0005-fixture")))
+        self.assertEqual([e["object_type"] for e in self.answer(result, "produced")],
+                         ["AssemblyOrder"])
+
     def test_f2_customer_po_reports_every_carrying_order_with_cited_status(self):
         item = _item("dev-F2-0001-fixture")
         table, _ = self.table()
@@ -1092,7 +1236,8 @@ class FamilyTests(Base):
         self.assertIn("lead_tier_links_followed", {g["reason"] for g in result["gaps"]})
         self.assertEqual(result["answerability"], {"state": "answerable", "reasons": []})
         # A hop answered short of its evidence makes the same answer partial; a gap state
-        # outside the contract fails closed (never answerable).
+        # outside the contract fails closed (never answerable). Evidence read from a stale
+        # copy was read: the answer states the stale gap and stays answerable.
         around = table["plx.around"]["handler"]
         for state in ("stale", "inaccessible", "not_ingested", "absent_in_source", "lost"):
             with self.subTest(state=state):
@@ -1106,8 +1251,11 @@ class FamilyTests(Base):
                     self.actor)
                 if state == "lost":
                     self.assertEqual(probed["error"]["code"], "contract_violation")
-                elif state == "absent_in_source":
-                    self.assertEqual(probed["answerability"]["state"], "answerable")
+                elif state in ("absent_in_source", "stale"):
+                    self.assertEqual(probed["answerability"], {"state": "answerable",
+                                                               "reasons": []})
+                    self.assertIn((state, "probe"), {(g["state"], g["reason"])
+                                                     for g in probed["gaps"]})
                 else:
                     self.assertEqual(probed["answerability"],
                                      {"state": "partial", "reasons": [f"gap_{state}"]})
@@ -1488,7 +1636,7 @@ class CaseHostToolsTests(Base):
         host = self.host(self.actor)
         self.assertEqual(set(host.table), {"plx.schema", "plx.find", "plx.object",
                                            "plx.around", "plx.timeline", "plx.process",
-                                           "plx.investigate"})
+                                           "plx.investigate", "plx.agenda"})
         from operating.ontology_host import table_tool_names
         self.assertEqual(set(host.table), table_tool_names())
         result = host.call("plx.investigate", {"family": "F3", "root": self.root_of(item),
@@ -1535,7 +1683,7 @@ class CaseHostToolsTests(Base):
 
 
 class McpHostTests(Base):
-    """plx.investigate listed on the stdio case host (decision 2026-10-04): an MCP
+    """plx.investigate listed on the stdio case host (lead decision 2026-10-04): an MCP
     client's call passes ``MCPServer.handle`` (the employee gate, the per-call policy of
     ``CaseHostTools``, the output boundary) and its plans run over the host's own table,
     plx.process included."""
@@ -1934,6 +2082,78 @@ class BcHostClaimTests(unittest.TestCase):
         self.assertTrue(then["claim_checks"]["passed"])
 
 
+class PurchaseOrderTwinTests(unittest.TestCase):
+    """dev-F1-0005-live's shape: a Portal PO loaded from FileMaker whose FM twin holds an
+    item and a raw receipt received against it (the oracle walks po.fm_po, fm_po.items and
+    fm_po_item.raw_receipts). The chain reaches the twin's items and their raw receipts and
+    counts each per binding, as it counts a sales order's FM twin lines. Synthetic rows
+    projected by the real build. Evidence label: isolated-fixture."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from ontology import identifiers
+        from ontology import schema as schema_loader
+        from ontology.project import CapturedRecord, build_store
+        t0 = "2026-09-25T10:00:00.000000Z"
+
+        def row(table, key, fields, n):
+            relation = f"public.{table}"
+            return CapturedRecord("portal_api", relation, json.dumps({"id": key}),
+                                  {"id": key, **fields}, f"api://{relation}/{key}@g-1", "row",
+                                  f"{n:064x}", t0, None, t0, f"api:{relation}")
+
+        class Static:
+            source = "portal_api"
+
+            def records(self, relations):
+                return {r: [x for x in rows if x.relation == r] for r in relations}
+
+            def describe(self):
+                return {"generation": "static", "relations": {}}
+
+        rows = [
+            row("app_purchase_order", "p1", {
+                "po_number": "PO#9401", "supplier_id": "v1",
+                "custom_fields": {"fmGeneratedPoId": 9402, "fmPoNumber": "PO#9401"}}, 1),
+            row("app_purchase_order_line", "l1", {"purchase_order_id": "p1"}, 2),
+            row("generated_purchase_order", 9402, {"ponumber": "PO#9401"}, 3),
+            row("generated_purchase_order_item", 9403, {"idpogen": 9402}, 4),
+            row("receipt_raw_material", 9404, {"idpogenitem": 9403, "idlabid": "R9404"}, 5)]
+        cls.tmp = tempfile.TemporaryDirectory(prefix="plx-investigate-po-twin-")
+        cls.addClassCleanup(cls.tmp.cleanup)
+        cls.path = Path(cls.tmp.name) / "ontology.sqlite"
+        cls.compiled = schema_loader.load_schema()
+        cls.now = dt.datetime(2026, 10, 6, 12, 0, tzinfo=dt.timezone.utc)
+        build_store(cls.path, cls.compiled, {"portal_api": Static()},
+                    normalizer=identifiers.normalize, clock=lambda: cls.now)
+
+    def test_the_fm_twins_items_and_their_raw_receipts_are_counted(self):
+        policy = ot.ReadPolicy(tenant="plx", audiences={"api:*": {"staff"}},
+                               markings={m: {"staff"} for m in store_ddl.MARKINGS})
+        reader = ot.StoreReader.open(self.path)
+        self.addCleanup(reader.conn.close)
+        base = ot.OntologyTools(reader, policy,
+                                schema=ot.SchemaView.from_compiled(self.compiled),
+                                grammar=None, contracts=CONTRACTS, clock=lambda: self.now)
+        table: dict = {}
+        ot.register(table, base)
+        tt.register(table, tt.TraverseTools(base))
+        oi.register(table, oi.InvestigateTools(table, rows=lambda h, a: None,
+                                               scope=oi.read_scope(base),
+                                               clock=lambda: self.now))
+        result = table["plx.investigate"]["handler"](
+            {"family": "F1", "root": 'PurchaseOrder:portal.app_purchase_order:{"id":"p1"}'},
+            Actor("plx", frozenset({"staff"})))
+        _ok(self, result)
+        counted = {e["name"]: e for e in result["answer"] if e["kind"] == "count"}
+        self.assertEqual(counted["fm_purchase_order_count"]["value"], 1)
+        self.assertEqual(counted["purchase_order_line_count"]["value"], 1)
+        self.assertEqual(counted["fm_purchase_order_item_count"]["basis"],
+                         ['PurchaseOrderLine:portal.fm_generated_purchase_order_item:{"id":9403}'])
+        self.assertEqual(counted["fm_raw_receipt_count"]["basis"],
+                         ['ReceiptLine:portal.fm_receipt_raw_material:{"id":9404}'])
+
+
 class NamedOrderInvoiceTests(unittest.TestCase):
     """A Portal PO that BC no longer holds as a purchase order (BC deletes a PO once it is
     fully invoiced and posted) while a posted BC invoice names its number: the three-way
@@ -2094,6 +2314,58 @@ class NamedOrderInvoiceTests(unittest.TestCase):
         self.assertIn("citations", verified["reason"][0])
         self.assertEqual(fitted["completeness"]["reason"], "result_too_large")
 
+    def test_a_result_over_the_cap_drops_chain_objects_before_its_edges(self):
+        """An edge is the chain's evidence and names its ends by id; an object is only their
+        display. Fitting the envelope drops objects first, so every edge stays when the
+        objects' bytes are enough."""
+        edges = [{"from": f"o{n}", "to": f"p{n}", "tier": "verified", "reason": []}
+                 for n in range(4)]
+        objects = [{"id": f"o{n}", "label": "x" * 400} for n in range(4)]
+        out = {"chain": {"edges": edges, "objects": objects},
+               "values": [], "answer": [], "gaps": [],
+               "completeness": {"complete": True, "truncated": False}}
+        bare = copy.deepcopy(out)
+        bare["chain"]["objects"] = []
+        bare["completeness"] = {"complete": False, "truncated": True,
+                                "reason": "result_too_large"}
+        tools = object.__new__(oi.InvestigateTools)
+        tools.limits = {"max_result_bytes": ot._envelope_bytes(bare)}
+        fitted = tools._fit(out)
+        self.assertEqual(fitted["chain"]["edges"], edges)
+        self.assertLess(len(fitted["chain"]["objects"]), len(objects))
+        self.assertEqual(fitted["completeness"]["reason"], "result_too_large")
+
+    def test_fitting_marks_only_the_entries_whose_value_rested_on_a_cell_it_cut(self):
+        """The biggest entries lose their cells first. An entry whose value a cell held
+        (a date read from a line) is marked ``inputs_cut``: it can no longer be cited from
+        what it carries. A verdict no cell holds is not marked: nothing citable was lost."""
+        def cell(n, value):
+            return {"property": "p", "value": value, "citation": {
+                "l1_handle": f"bc://co/lines/{n}@v-{n}" + "x" * 300, "field_path": "row.d"}}
+        dated = {"name": "open_line_1", "kind": "select", "value": "2099-01-01",
+                 "check": "not_applicable", "cells": [cell(1, "2099-01-01")]}
+        verdict = {"name": "why_1", "kind": "select", "value": "a > b",
+                   "check": "not_applicable", "cells": [cell(2, "x"), cell(3, "y")]}
+        out = {"chain": {"edges": [], "objects": []}, "values": [], "gaps": [],
+               "answer": [dated, verdict],
+               "completeness": {"complete": True, "truncated": False}}
+        bare = copy.deepcopy(out)
+        for entry in bare["answer"]:
+            entry.pop("cells")
+        tools = object.__new__(oi.InvestigateTools)
+        tools.limits = {"max_result_bytes": ot._envelope_bytes(bare) + 600}
+        fitted = tools._fit(out)
+        by_name = {e["name"]: e for e in fitted["answer"]}
+        self.assertNotIn("cells", by_name["why_1"])
+        self.assertNotIn("inputs_cut", by_name["why_1"])
+        self.assertEqual(fitted["completeness"]["reason"], "result_too_large")
+        # when the dated entry's cell goes too, the entry says so
+        tools.limits = {"max_result_bytes": ot._envelope_bytes(bare)}
+        fitted = tools._fit(copy.deepcopy(out))
+        by_name = {e["name"]: e for e in fitted["answer"]}
+        self.assertIs(by_name["open_line_1"]["inputs_cut"], True)
+        self.assertNotIn("cells", by_name["open_line_1"])
+
     answer = staticmethod(Base.answer)
 
 
@@ -2150,6 +2422,127 @@ class EvalRunnerTests(Base):
         ordered = next(v for v in result["values"] if v["name"] == "ordered")
         self.assertTrue(ordered["passed"], ordered)
         self.assertTrue(runner.verify_seal(transcript))
+
+
+class TwinConflictTests(unittest.TestCase):
+    """An order read through its twins in two systems (live 2026-10-27: a BC order, the
+    Portal order it was posted from and that order's FileMaker record) disagrees on many
+    properties, and several plan items read each one. The disagreements are listed once,
+    and when they and the gaps alone leave a page no room for one entry, the answer pages
+    with the conflicts no entry cites dropped, never ``result_too_large`` for the whole
+    answer (landed cost on two of three live late orders)."""
+
+    ACTOR = Actor("plx", frozenset({"x"}))
+
+    @staticmethod
+    def value(record, field="row.currency", text="CAD"):
+        handle = f"bc://production/co/purchaseOrders/{record}@v-1"
+        return {"property": "currency", "value_type": "text", "markings": [],
+                "value": {"untrusted_text": text, "origin": {"citation": handle,
+                                                             "field_path": field}},
+                "citation": {"l1_handle": handle, "field_path": field,
+                             "digest": "d" * 64, "lineage": "bc_manufacturing"}}
+
+    def test_a_disagreement_is_listed_once_and_a_fuller_one_replaces_its_part(self):
+        a, b, c = (self.value(r, text=t) for r, t in (("a", "CAD"), ("b", "CAD$"), ("c", "US")))
+        conflicts: list = []
+        oi._add_conflict(conflicts, {"kind": "value_disagreement", "subject": "PO.currency",
+                                     "values": [a, b]})
+        # the same records in the other order, and a part of a later fuller one: nothing
+        oi._add_conflict(conflicts, {"kind": "value_disagreement", "subject": "PO.currency",
+                                     "values": [b, a]})
+        self.assertEqual(len(conflicts), 1)
+        oi._add_conflict(conflicts, {"kind": "value_disagreement", "subject": "PO.currency",
+                                     "values": [a, b, c]})
+        self.assertEqual([len(x["values"]) for x in conflicts], [3])
+        oi._add_conflict(conflicts, {"kind": "value_disagreement", "subject": "PO.currency",
+                                     "values": [c, a]})
+        self.assertEqual(len(conflicts), 1)
+        # another subject, another note, or records partly the same: their own conflicts
+        oi._add_conflict(conflicts, {"kind": "value_disagreement", "subject": "PO.total",
+                                     "values": [a, b]})
+        oi._add_conflict(conflicts, {"kind": "value_disagreement", "subject": "PO.currency",
+                                     "note": "attested", "values": [a, b]})
+        d = self.value("d", text="EUR")
+        oi._add_conflict(conflicts, {"kind": "value_disagreement", "subject": "PO.currency",
+                                     "values": [c, d]})
+        self.assertEqual(len(conflicts), 4)
+        # a value without a citation is never merged away
+        bare = dict(a)
+        del bare["citation"]
+        oi._add_conflict(conflicts, {"kind": "value_disagreement", "subject": "PO.currency",
+                                     "values": [bare, b]})
+        self.assertEqual(len(conflicts), 5)
+
+    def result(self, lines: int, conflicts: int) -> dict:
+        """A landed-cost-shaped answer: a total over ``lines`` line units (each a computed
+        entry and its own cited input), ``conflicts`` twin conflicts (the first on the
+        total's cited record) and gaps with long details."""
+        answer = [{"name": "landed_cost", "kind": "computed", "value": "1.00",
+                   "inputs": [f"line_{i}" for i in range(lines)], "check": "not_checked"},
+                  {"name": "po", "kind": "property", "value": "PO1", "value_type": "text",
+                   "citation": {"l1_handle": "bc://production/co/purchaseOrders/r0@v-1",
+                                "field_path": "row.currency"}, "check": "passed"}]
+        for i in range(lines):
+            answer += [{"name": f"line_{i}", "kind": "computed", "value": "1.00",
+                        "inputs": [f"price_{i}"], "check": "not_checked"},
+                       {"name": f"price_{i}", "kind": "property", "value": "1.00",
+                        "value_type": "money", "check": "passed", "citation": {
+                            "l1_handle": f"bc://production/co/lines/l{i}@v-1",
+                            "field_path": "row.unitCost"}}]
+        found = [{"kind": "value_disagreement", "subject": f"PurchaseOrder.p{n}",
+                  "values": [self.value(f"r{n}"), self.value(f"s{n}" + "x" * 600, text="CAD$")]}
+                 for n in range(conflicts)]
+        gaps = [{"state": "unknown", "reason": "no_match", "subject": f"S{n}.link reverse",
+                 "detail": "d" * 400, "who_can_answer": ["PROC"]} for n in range(12)]
+        return {"answer": answer, "values": [], "chain": {"objects": [], "edges": []},
+                "gaps": gaps, "conflicts": found, "trace": [],
+                "completeness": {"complete": True, "truncated": False}}
+
+    def pages(self, out: dict, cap: int) -> list[dict]:
+        tools = object.__new__(oi.InvestigateTools)
+        tools.limits = {"max_result_bytes": cap}
+        arguments = {"family": "landed_cost", "root": "PurchaseOrder:bc.purchase_orders:x"}
+        found, cursor = [], None
+        while True:
+            page = tools._page(copy.deepcopy(out), arguments, self.ACTOR, cursor)
+            self.assertNotIn("error", page, f"page {len(found) + 1}")
+            self.assertLessEqual(ot._envelope_bytes(page), cap)
+            found.append(page)
+            nxt = page["completeness"].get("next_cursor")
+            if not nxt:
+                return found
+            cursor = oi._read_cursor(nxt, oi._question(arguments, self.ACTOR))
+
+    def test_conflicts_too_large_for_any_page_page_the_answer_never_refuse_it(self):
+        for lines in (1, 10, 60):
+            with self.subTest(lines=lines):
+                out = self.result(lines, conflicts=20)
+                shared = dict(out, answer=out["answer"][:2] + out["answer"][2:4])
+                # the conflicts alone are over the cap: no page held one entry before
+                cap = ot._envelope_bytes(dict(shared, conflicts=out["conflicts"][:1])) + 2000
+                self.assertGreater(ot._envelope_bytes(shared), cap)
+                pages = self.pages(out, cap)
+                names = [e["name"] for page in pages for e in page["answer"]]
+                for i in range(lines):   # each line and its input on exactly one page
+                    self.assertEqual((names.count(f"line_{i}"), names.count(f"price_{i}")),
+                                     (1, 1))
+                for page in pages:
+                    self.assertIn("landed_cost", [e["name"] for e in page["answer"]])
+                    # the conflict on the answer's own cited record stays on every page
+                    self.assertIn("PurchaseOrder.p0", [c["subject"] for c in page["conflicts"]])
+                    self.assertTrue(page["completeness"]["truncated"])
+                    # the drop is stated, with how many are not shown
+                    (note,) = [g for g in page["gaps"] if g["reason"] == "conflicts_truncated"]
+                    self.assertTrue(note["detail"].startswith(
+                        f"{20 - len(page['conflicts'])} conflict(s)"), note)
+                self.assertLess(len(pages[0]["conflicts"]), 20)
+                # an answer that fits drops nothing and says nothing about it
+                (whole,) = self.pages(out, 10 ** 6)
+                self.assertEqual(len(whole["conflicts"]), 20)
+                self.assertNotIn("conflicts_truncated", [g["reason"] for g in whole["gaps"]])
+                if lines > 1:   # the room is made once: pages pack lines, never one each
+                    self.assertLess(len(pages), lines)
 
 
 if __name__ == "__main__":

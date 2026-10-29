@@ -78,7 +78,7 @@ class CustomerPoRoleTests(unittest.TestCase):
 
 class SchemaTypedCellTests(unittest.TestCase):
     """Only a schema-typed cell supplies a value, and a field no role types takes none
-    (the injection hook ``ActionPath.register`` runs)."""
+    (the injection hook ``ActionPath.register`` runs; security lane a0e5 item 3)."""
 
     def test_an_untyped_cell_never_supplies_a_value(self):
         # A role-less fixture target takes any typed cell, but a free-text cell of a real

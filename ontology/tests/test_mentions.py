@@ -1,4 +1,4 @@
-"""Mentions projection: extraction, quoted history, external senders and
+"""Mentions projection (lane L16): extraction, quoted history, external senders and
 resolution through the identity layer (plx.find) over a fixture projection store.
 
 Mail comes from a real ``MailCaptureStore`` filled by ``MailCapture`` over the
@@ -506,7 +506,7 @@ if __name__ == "__main__":
 
 
 class ReferenceAliasTests(unittest.TestCase):
-    """(ER-02, ER-05; decision 2026-10-19-reference-alias-leads): a supplier's
+    """ROADMAP A10 (ER-02, ER-05; decision 2026-10-19-reference-alias-leads): a supplier's
     own number in a confirmation whose PO link two independent features corroborate is an
     alias lead, never a join; after a person's ``alias`` review a later mail naming only
     that number joins the PO, citing the review; a ``reject_alias`` joins nothing and stops

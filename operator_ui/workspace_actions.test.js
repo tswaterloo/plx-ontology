@@ -91,3 +91,37 @@ test("a console that takes no steps shows no actions panel and never a raw error
   await A.show(doc, served, "PurchaseOrder:x", {api: async () => ({served: true, ...answer(intent())}), post: async () => ({})});
   assert.equal(buttons(served).length, 1);
 });
+
+test("an approval shows exactly what is approved before the click and names its digest", async () => {
+  const posted = [];
+  const approves = {intent_id: IID, action_type: "portal.sales_order.set_customer_po",
+    owner_system: "portal", target: {relation: "public.app_sales_order", key: {id: "so-1"}},
+    expected_effect: {fields: ["po_reference"], values: {po_reference: "PO7001"}},
+    parameters: [{name: "proposed_customer_po", source: {source: "citation",
+      citation: "fixture://doc/101", field: "customer_po"}}],
+    evidence: [{handle: "fixture://doc/101", digest: "ab".repeat(32)}],
+    human_preconditions: ["a person confirms the PO belongs to this order"],
+    call: {tool: "mc_request_approval", arguments: {taskId: "TASK-9", reason: "why"}}};
+  const sha = "c".repeat(64);
+  const panel = A.renderActions(doc, answer(intent({state: "gate_prepared", control: {
+    step: "approve_call", label: "Approve exactly this call", available: true, why: null,
+    approves, approves_sha256: sha}})), async body => { posted.push(body); return {state: "call_approved", outcome: "not_dispatched"}; });
+  const shown = text(panel);
+  for (const part of [/portal\.sales_order\.set_customer_po in portal/, /public\.app_sales_order \{"id":"so-1"\}/,
+    /proposed_customer_po: from fixture:\/\/doc\/101 field customer_po/, /PO7001/,
+    /mc_request_approval \{"taskId":"TASK-9","reason":"why"\}/, /nothing is sent by approving/,
+    /Check first: a person confirms/]) assert.match(shown, part);
+  const [button] = buttons(panel);
+  assert.equal(button.getAttribute("data-step"), "approve_call");
+  await button.listeners.click();
+  assert.deepEqual(posted, [{intent_id: IID, step: "approve_call", approves_sha256: sha}]);
+  assert.match(text(panel), /call approved: Nothing has been sent/);
+});
+
+test("an approval whose call is not shown offers no button", () => {
+  const panel = A.renderActions(doc, answer(intent({state: "gate_prepared", control: {
+    step: "approve_call", label: "Approve", available: true, why: null, approves: null,
+    approves_sha256: null}})), () => { throw new Error("never"); });
+  assert.equal(buttons(panel).length, 0);
+  assert.match(text(panel), /the call to approve is not shown/);
+});

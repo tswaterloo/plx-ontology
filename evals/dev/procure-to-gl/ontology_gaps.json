@@ -1,7 +1,7 @@
 {
  "format": "plx-case-ontology-gaps/v1",
  "case": "procure-to-gl",
- "status": "What the ontology lacks to answer evals/dev/procure-to-gl/proposed_items.json (screening decision, conversion step, G/L posting lineage and the links and readers around them). Sources are named, never read here; 'source unknown' carries the question that would find one. OntologyProject refs on context/ paths are source records.",
+ "status": "What the ontology lacks to answer evals/dev/procure-to-gl/proposed_items.json (screening decision, conversion step, G/L posting lineage and the links and readers around them). Sources are named, never read here; 'source unknown' carries the Dot question that would find one. OntologyProject refs on context/ paths are records of the codex/advisory branch.",
  "advisory": "advisory:4f8c497adb40",
  "gaps": [
   {
@@ -18,7 +18,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Where is an outside screening job recorded today (FileMaker layout, Portal page, spreadsheet or email), and who owns the screener's proof and counts?"
+   "dot_question": "Where is an outside screening job recorded today (FileMaker layout, Portal page, spreadsheet or email), and who owns the screener's proof and counts?"
   },
   {
    "id": "PTG-GAP-02",
@@ -34,7 +34,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Who approves a screen proof and records the good and rejected counts from the screener, and where is that record kept?"
+   "dot_question": "Who approves a screen proof and records the good and rejected counts from the screener, and where is that record kept?"
   },
   {
    "id": "PTG-GAP-03",
@@ -50,7 +50,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Which Business Central document performs the blank-to-screened conversion under option (a) (assembly order, item reclassification journal or production order), and in which company?"
+   "dot_question": "Which Business Central document performs the blank-to-screened conversion under option (a) (assembly order, item reclassification journal or production order), and in which company?"
   },
   {
    "id": "PTG-GAP-04",
@@ -66,7 +66,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Has the ERP-D-015 exception for screening blanks and the screening clearing account been approved, by whom, and where is that decision recorded?"
+   "dot_question": "Has the ERP-D-015 exception for screening blanks and the screening clearing account been approved, by whom, and where is that decision recorded?"
   },
   {
    "id": "PTG-GAP-05",
@@ -82,7 +82,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Does any field or table name the blank SKU a screened SKU is made from (Portal product, FileMaker packaging or BC item), and is it filled for current screened items?"
+   "dot_question": "Does any field or table name the blank SKU a screened SKU is made from (Portal product, FileMaker packaging or BC item), and is it filled for current screened items?"
   },
   {
    "id": "PTG-GAP-06",
@@ -103,7 +103,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Does the Business Central tenant expose Value Entries or the G/L - Item Ledger Relation through any API page (standard v2.0 or a custom page), and under which name?"
+   "dot_question": "Does the Business Central tenant expose Value Entries or the G/L - Item Ledger Relation through any API page (standard v2.0 or a custom page), and under which name?"
   },
   {
    "id": "PTG-GAP-07",
@@ -138,7 +138,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "How is a supplier deposit recorded in Business Central (prepayment invoice, or a vendor payment line with which applies-to or external document number), and does it name the PO?"
+   "dot_question": "How is a supplier deposit recorded in Business Central (prepayment invoice, or a vendor payment line with which applies-to or external document number), and does it name the PO?"
   },
   {
    "id": "PTG-GAP-09",
@@ -172,7 +172,7 @@
    "id": "PTG-GAP-11",
    "kind": "reader",
    "name": "Screening Process Map originals (the ZIP's HTML, spec JSON and ontology CSV/JSON members)",
-   "ontology_today": "Not a row of examples/case_originals.json; only the source descriptor with member hashes is pinned, and the Workbench has no verified read of the members.",
+   "ontology_today": "Not a row of examples/case_originals.json; only the advisory descriptor with member hashes is pinned, and the Workbench has no verified read of the members.",
    "needed_by": ["SP-01", "SP-02", "SP-03"],
    "sources": [
     {

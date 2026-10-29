@@ -1,4 +1,4 @@
-"""The oracle cannot run Workbench code (CI check ``oracle-import-ban``).
+"""The oracle cannot run Workbench code (09 R7 c, 10-DECISION 8): gate ``oracle-import-ban``.
 
 Two layers. The static allowlist scan (``scripts/check_oracle_imports.py``) is clean on
 this tree and flags every planted bypass, including the ones a deny list missed (path
@@ -50,7 +50,7 @@ BYPASSES = {
     "w.py": "import sys\nsys.modules\n",
     "x.py": "from evals import runner\n",
     "y.data": "not python\n",
-    # Attribute chains from allowed modules.
+    # Attribute chains from allowed modules (re-review b5fc325).
     "z1.py": "import typing\ntyping.sys.modules['builtins'].exec('1')\n",
     "z2.py": "import pathlib\npathlib.os.system('true')\n",
     "z3.py": "import dataclasses\nm = dataclasses.sys.modules\n",

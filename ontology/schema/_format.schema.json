@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "plx-ontology-domain/v1",
   "title": "PLX ontology domain schema file (C0 contract, frozen)",
-  "description": "Format of every ontology/schema/domains/<domain>.json (curated) and ontology/schema/generated/*.json (skeleton) file. Cross-file rules (unique ids, links/events/actions naming declared types and bindings, identifier kinds declared in ontology/schema/identifiers.json, link_contract ids existing) are the loader's; this schema fixes the shapes. Validated with ontology/json_contract.py (stdlib).",
+  "description": "Format of every ontology/schema/domains/<domain>.json (curated) and ontology/schema/generated/*.json (skeleton) file. Authority: devloop/CONTEXT/10-DECISION.md decisions 1-3, 5-7, 9 and 09-CRITIQUE R1, R3, R5, R6, R8, R11, R15. Cross-file rules (unique ids, links/events/actions naming declared types and bindings, identifier kinds declared in ontology/schema/identifiers.json, link_contract ids existing) are the loader's (L4); this schema fixes the shapes. Validated with ontology/json_contract.py (stdlib).",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -91,7 +91,7 @@
   },
   "$defs": {
     "lineage": {
-      "description": "Where an L1 record or L2 value came from (plus `workbench` for records the Workbench itself authors: cases, review decisions, annotations). `bc_<company>` names the BC Production company (the company/book is a dimension of every BC-sourced object). `mission_control` is a record read through a Mission Control read tool, `brain` a record read from the brain's agent knowledge GET routes (integrations/knowledge_source.py): engineering/agent work records and derived knowledge, never business facts.",
+      "description": "Where an L1 record or L2 value came from (09-CRITIQUE R1, plus `workbench` for records the Workbench itself authors: cases, review decisions, annotations). `bc_<company>` names the BC Production company (R15: the company/book is a dimension of every BC-sourced object). `mission_control` is a record read through a Mission Control read tool, `brain` a record read from the brain's agent knowledge GET routes (integrations/knowledge_source.py): engineering/agent work records and derived knowledge, never business facts.",
       "anyOf": [
         {
           "type": "string",
@@ -117,7 +117,7 @@
       ]
     },
     "tier": {
-      "description": "Link/identity evidence tier, strongest first: verified (typed stored key agrees) > reviewed (a person accepted it, bound to exact source revisions) > corroborated (>=2 independent features agree; inferred, never fact) > stored_by_text_join > lead > contradicted.",
+      "description": "Link/identity evidence tier, strongest first (07 C.2): verified (typed stored key agrees) > reviewed (a person accepted it, bound to exact source revisions) > corroborated (>=2 independent features agree; inferred, never fact) > stored_by_text_join > lead > contradicted.",
       "type": "string",
       "enum": [
         "verified",
@@ -129,12 +129,13 @@
       ]
     },
     "marking": {
-      "description": "Property/object marking. A reader must hold every marking of a value; derived values carry the union of their inputs' markings.",
+      "description": "Property/object marking (07 C.7, R6 #7-8). A reader must hold every marking of a value; derived values carry the union of their inputs' markings.",
       "type": "string",
       "enum": [
         "finance",
         "l5",
         "pii",
+        "purchasing_prices",
         "quality_controlled"
       ]
     },
@@ -180,7 +181,7 @@
       ]
     },
     "time_basis": {
-      "description": "How an event's time is known. Lateness/order are computed only between bases that allow it.",
+      "description": "How an event's time is known (07 C.3, R8). Lateness/order are computed only between bases that allow it.",
       "type": "string",
       "enum": [
         "source_recorded",
@@ -212,7 +213,7 @@
       "pattern": "^[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*){0,2}$"
     },
     "evidence_entry": {
-      "description": "Why a binding, link or rule is believed. Upstream code is cited as repo + path + commit so the nightly meaning diff can re-check it.",
+      "description": "Why a binding, link or rule is believed. Upstream code is cited as repo + path + commit so the nightly meaning diff (R9 d) can re-check it.",
       "oneOf": [
         {
           "type": "object",
@@ -274,7 +275,7 @@
             },
             "ref": {
               "type": "string",
-              "pattern": "^docs/reference/[a-z0-9-]+\\.md(?:[#§:].{1,80})?$"
+              "pattern": "^devloop/CONTEXT/[0-9]{2}-[A-Z0-9-]+\\.md(?:[#§:].{1,80})?$"
             },
             "note": {
               "type": "string",
@@ -540,7 +541,7 @@
       ]
     },
     "lineage_rule": {
-      "description": "First matching rule (all predicates true) sets the record's lineage (custom_fields.source, fmId, sageOrdUniq, externalId prefixes, FM ids >= 900000).",
+      "description": "First matching rule (all predicates true) sets the record's lineage (R1: custom_fields.source, fmId, sageOrdUniq, externalId prefixes, FM ids >= 900000).",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -708,6 +709,10 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 2000
+        },
+        "value_storage": {
+          "description": "How the projection stores this binding's values (ontology/store_ddl.py layout v10; generated from ontology/schema/overrides/storage.json with its evidence). cells (the default): one row per value, text word-indexed. packed: the currency-free values of each source record in one packed record, not word-indexed (read by object, property filter, key, identifier and link).",
+          "enum": ["cells", "packed"]
         }
       },
       "allOf": [
@@ -757,7 +762,7 @@
       ]
     },
     "value_source": {
-      "description": "Where one property value is read: a binding and a path in its record, plus the deterministic parser that turns source text into the typed value (only deterministic parsers produce values). unit*/currency* here override the property-level default for this source (Portal, Sage and BC keep currency and UoM in different columns). Money sources declare tax_basis, or tax_basis_from where each record states its own (one of the two required for money, both refused elsewhere). A unit_price money source declares the unit its price is per (per_unit, per_unit_from or per_unit_unknown, optionally per_unit_unknown_by_lineage, and per_unit_rules that decide it per record where per_unit_unknown leaves it unknown); other sources never do.",
+      "description": "Where one property value is read: a binding and a path in its record, plus the deterministic parser that turns source text into the typed value (R6 #2: only deterministic parsers produce values). unit*/currency* here override the property-level default for this source (Portal, Sage and BC keep currency and UoM in different columns). Money sources declare tax_basis, or tax_basis_from where each record states its own (one of the two required for money, both refused elsewhere). A unit_price money source declares the unit its price is per (per_unit, per_unit_from or per_unit_unknown, optionally per_unit_unknown_by_lineage, and per_unit_rules that decide it per record where per_unit_unknown leaves it unknown); other sources never do.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -1047,7 +1052,7 @@
       ]
     },
     "authority_rule": {
-      "description": "One precedence entry; earlier entries outrank later ones. gold_native_staging may be authority only with a recorded human confirmation that those rows are real.",
+      "description": "One precedence entry; earlier entries outrank later ones. gold_native_staging may be authority only with a recorded human confirmation that those rows are real (R1, Q1).",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -1654,7 +1659,7 @@
       ]
     },
     "identity_key": {
-      "description": "A key that identifies records of this type within or across bindings. `tier` is the strongest tier agreement on it can reach; a non-unique key yields cluster candidates, never a merge.",
+      "description": "A key that identifies records of this type within or across bindings. `tier` is the strongest tier agreement on it can reach; a non-unique key yields cluster candidates, never a merge (R3).",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -1738,7 +1743,7 @@
         },
         "anchor": {
           "type": "boolean",
-          "description": "Anchors (orders, POs, AOs, invoices) never auto-merge."
+          "description": "Anchors (orders, POs, AOs, invoices) never auto-merge (R3)."
         },
         "availability": {
           "type": "object",
@@ -1762,7 +1767,7 @@
             },
             "upstream_ask": {
               "type": "string",
-              "description": "A question (Qn), or for a BC set or page what it waits on: bc_api_v2:<name> (BC must serve it under api/v2.0) or workbench_grammar:<name> (a custom API route the Workbench's GET-only grammar does not admit); ontology/generator/bc.py UPSTREAM_ASKS.",
+              "description": "A question of devloop/CONTEXT/09-CRITIQUE.md (Qn), or for a BC set or page what it waits on: bc_api_v2:<name> (BC must serve it under api/v2.0) or workbench_grammar:<name> (a custom API route the Workbench's GET-only grammar does not admit); ontology/generator/bc.py UPSTREAM_ASKS.",
               "pattern": "^(Q[0-9]{1,2}|(bc_api_v2|workbench_grammar):[A-Za-z][A-Za-z0-9]{0,79})$"
             }
           },
@@ -2209,7 +2214,7 @@
       }
     },
     "event_type": {
-      "description": "Business event declared from a date column, a status change between captures (capture_observed) or a document (valid time only on events).",
+      "description": "Business event declared from a date column, a status change between captures (capture_observed) or a document (R8: valid time only on events).",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -2392,10 +2397,10 @@
           "maxLength": 2000
         }
       },
-      "description": "Every parameter must trace to a cited typed value, a schema constant or the trusted user objective recorded at case_open."
+      "description": "R6 #3: every parameter must trace to a cited typed value, a schema constant or the trusted user objective recorded at case_open."
     },
     "action_type": {
-      "description": "Typed action: data that feeds operating/action_path.py. Owner-system actions stop at dispatched_by_human; only Workbench-internal edits execute here.",
+      "description": "Typed action (07 C.6 amended by R5): data that feeds operating/action_path.py. Owner-system actions stop at dispatched_by_human; only Workbench-internal edits execute here.",
       "type": "object",
       "additionalProperties": false,
       "required": [

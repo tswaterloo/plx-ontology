@@ -1,7 +1,11 @@
 {
  "schema": "plx-case-mail-scope/v1",
- "note": "The one canonical mail allowlist: the mailboxes a capture scope may name one by one (integrations/capture_mail refuses a named mailbox outside this list; tenant-wide capture of every directory mailbox minus an explicit exclusion list, ING-06, is configured in integrations/mail_capture_scope.json and does not depend on this list) and whose mail may enter a case (ING-13, WS-08). Reported Graph mail allowlist at petrasoap.com, enforced upstream by the Exchange application access policy group graph-portal-mailscope@petrasoap.com. Only status 'reported_allowlisted' is in scope; 'pending_confirmation' stays out until confirmed (fail closed). Personal mailboxes (ricardo, vince) are listed because the allowlist lists them (use only allowlisted mailboxes). This file grants nothing: a reader still needs the live-source audience (and, for an employee, mailbox ownership) to read any message.",
- "source": "reported Graph mail allowlist at petrasoap.com",
+ "note": "The one canonical mail allowlist: the mailboxes a capture scope may name one by one (integrations/capture_mail refuses a named mailbox outside this list; tenant-wide capture of every directory mailbox minus an explicit exclusion list, ING-06 and owner rule 5be438765457, is configured in integrations/mail_capture_scope.json and does not depend on this list) and whose mail may enter a case (ING-13, WS-08). Reported Graph mail allowlist at petrasoap.com (docs/astra-review/ACCESS-DELTA.md L54; devloop/CONTEXT/01-VISION-AND-REQUIREMENTS.md 'Mail scope'), enforced upstream by the Exchange application access policy group graph-portal-mailscope@petrasoap.com. Only status 'reported_allowlisted' is in scope; 'pending_confirmation' stays out until confirmed (fail closed). Personal mailboxes (ricardo, vince) are listed because the allowlist lists them (CONTEXT/01 conflict C23: use only allowlisted mailboxes). This file grants nothing: a reader still needs the live-source audience (and, for an employee, mailbox ownership) to read any message.",
+ "all_directory": {
+  "enabled": true,
+  "note": "Plain words: since Vince's Exchange policy of 2026-10-22 (3:45 PM ET), and by owner decision of 2026-10-26, EVERY person in the company directory is in scope for mail-to-case and for Teams chats, except the people on the exclusion list (PLX_EXCLUDED_PEOPLE_OIDS or PLX_EXCLUDED_PEOPLE_FILE, integrations/people_exclusion.py). The exclusion list is applied first, before any request. If that list is missing, empty or unreadable, nobody is in scope through this switch (fail closed). The named mailboxes below stay as they are (they are what a capture scope may name one by one). Set enabled to false to go back to the named list only."
+ },
+ "source": "docs/astra-review/ACCESS-DELTA.md L54",
  "mailboxes": [
   {"address": "receiving@petrasoap.com", "status": "reported_allowlisted", "kind": "shared_operational"},
   {"address": "ship@petrasoap.com", "status": "reported_allowlisted", "kind": "shared_operational"},
@@ -14,9 +18,9 @@
   {"address": "ricardo@petrasoap.com", "status": "reported_allowlisted", "kind": "personal"},
   {"address": "vince@petrasoap.com", "status": "reported_allowlisted", "kind": "personal"},
   {"address": "cos@petrasoap.com", "status": "reported_allowlisted", "kind": "agent_operational"},
-  {"address": "order-confirmation@petrasoap.com", "status": "reported_allowlisted", "kind": "shared_operational", "note": "named (2026-10-21) as a mailbox mail capture reads"},
-  {"address": "torontowh@petrasoap.com", "status": "reported_allowlisted", "kind": "shared_operational", "note": "named (2026-10-21) as a mailbox mail capture reads"},
-  {"address": "qclabresults@petrasoap.com", "status": "reported_allowlisted", "kind": "shared_operational", "note": "named (2026-10-21) as a mailbox mail capture reads"},
+  {"address": "order-confirmation@petrasoap.com", "status": "reported_allowlisted", "kind": "shared_operational", "note": "named by owner directive dedbcc76f44a (2026-10-21) as a mailbox mail capture reads"},
+  {"address": "torontowh@petrasoap.com", "status": "reported_allowlisted", "kind": "shared_operational", "note": "named by owner directive dedbcc76f44a (2026-10-21) as a mailbox mail capture reads"},
+  {"address": "qclabresults@petrasoap.com", "status": "reported_allowlisted", "kind": "shared_operational", "note": "named by owner directive dedbcc76f44a (2026-10-21) as a mailbox mail capture reads"},
   {"address": "accounting1@petrasoap.com", "status": "pending_confirmation", "kind": "shared_operational"}
  ],
  "internal_domains": ["petrasoap.com", "petralabx.com"]

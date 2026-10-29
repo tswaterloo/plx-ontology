@@ -50,7 +50,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -250,7 +250,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -472,7 +472,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -832,7 +832,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -1675,7 +1675,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -2033,7 +2033,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -2214,7 +2214,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -2482,7 +2482,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -3062,7 +3062,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -3458,7 +3458,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -3861,7 +3861,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -4258,7 +4258,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -4829,7 +4829,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -5467,7 +5467,7 @@
        "note": "Pagination key ['itemno'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -6274,7 +6274,7 @@
        "note": "Pagination key ['_sage_pk'] (key source: nullable-unique)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -6421,7 +6421,7 @@
        "note": "Pagination key ['id'] (key source: id)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -6612,7 +6612,7 @@
        "note": "Pagination key ['id'] (key source: id)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -6936,7 +6936,7 @@
        "note": "Pagination key ['id'] (key source: id)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -7199,7 +7199,7 @@
        "note": "Pagination key ['id'] (key source: id)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -7503,7 +7503,7 @@
        "note": "Pagination key ['id'] (key source: id)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -7722,7 +7722,7 @@
        "note": "Pagination key ['id'] (key source: id)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -7996,7 +7996,7 @@
        "note": "Pagination key ['id'] (key source: id)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -8412,6 +8412,73 @@
  ],
  "link_types": [
   {
+   "id": "RelPublicAppApprovalRecord.approved_by",
+   "from": "RelPublicAppApprovalRecord",
+   "to": "RelPublicAppUser",
+   "name": "approved_by",
+   "reverse_name": "inverse_approved_by",
+   "cardinality": "N:1",
+   "description": "Prisma foreign key ApprovalRecord.approvedBy (public.app_approval_record.approved_by_id -> public.app_user.id).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "gen.public.app_approval_record",
+     "to_binding": "gen.public.app_user",
+     "pairs": [
+      {
+       "from": "approved_by_id",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "upstream_code",
+       "repo": "plx-customer-portal",
+       "path": "portal/prisma/schema.prisma",
+       "commit": "52c9116f77ab",
+       "symbol": "ApprovalRecord",
+       "lines": "1168",
+       "note": "@relation(fields: [approved_by_id], references: [id])"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "RelPublicAppBcEntityMap.portal_entity_map_item_to_product",
+   "from": "RelPublicAppBcEntityMap",
+   "to": "RelPublicAppProduct",
+   "name": "portal_entity_map_item_to_product",
+   "reverse_name": "inverse_portal_entity_map_item_to_product",
+   "cardinality": "N:1",
+   "description": "Link contract portal-entity-map-item-to-product (fk): A Portal entity-map item row (source_system portal, status LINKED) names the Portal product the BC drain created a BC item for; its bc_system_id names that BC item (contract portal-entity-map-to-bc-item). The Portal's own BC joins read this row (ontology/schema/domains/bc_entity_map.json binding portal.app_bc_entity_map), never the item number, which recurs across BC companies.",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "gen.public.app_bc_entity_map",
+     "to_binding": "gen.public.app_product",
+     "pairs": [
+      {
+       "from": "source_id",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "link_contract": "portal-entity-map-item-to-product",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "operating/link_contracts.json",
+       "note": "link contract portal-entity-map-item-to-product: A Portal entity-map item row (source_system portal, status LINKED) names the Portal product the BC drain created a BC item for; its bc_system_id names that BC item (contract portal-entity-map-to-bc-item). The Portal's own BC joins read this row (ontology/schema/domains/bc_entity_map.json binding portal.app_bc_entity_map), never the item number, which recurs across BC companies."
+      }
+     ]
+    }
+   ]
+  },
+  {
    "id": "RelPublicAppFgItem.minted_product",
    "from": "RelPublicAppFgItem",
    "to": "RelPublicAppProduct",
@@ -8476,6 +8543,76 @@
        "symbol": "FgItem",
        "lines": "7242",
        "note": "@relation(fields: [reference_product_id], references: [id])"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "RelPublicAppProduct.created_by_user",
+   "from": "RelPublicAppProduct",
+   "to": "RelPublicAppUser",
+   "name": "created_by_user",
+   "reverse_name": "inverse_created_by_user_created_3",
+   "cardinality": "N:1",
+   "description": "Prisma foreign key Product.createdByUser (public.app_product.created_by -> public.app_user.id).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "gen.public.app_product",
+     "to_binding": "gen.public.app_user",
+     "pairs": [
+      {
+       "from": "created_by",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "upstream_code",
+       "repo": "plx-customer-portal",
+       "path": "portal/prisma/schema.prisma",
+       "commit": "52c9116f77ab",
+       "symbol": "Product",
+       "lines": "1931",
+       "note": "@relation(fields: [created_by], references: [id])"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "RelPublicAppProduct.updated_by_user",
+   "from": "RelPublicAppProduct",
+   "to": "RelPublicAppUser",
+   "name": "updated_by_user",
+   "reverse_name": "inverse_updated_by_user",
+   "cardinality": "N:1",
+   "description": "Prisma foreign key Product.updatedByUser (public.app_product.updated_by -> public.app_user.id).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "gen.public.app_product",
+     "to_binding": "gen.public.app_user",
+     "pairs": [
+      {
+       "from": "updated_by",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "upstream_code",
+       "repo": "plx-customer-portal",
+       "path": "portal/prisma/schema.prisma",
+       "commit": "52c9116f77ab",
+       "symbol": "Product",
+       "lines": "1932",
+       "note": "@relation(fields: [updated_by], references: [id])"
       }
      ]
     }

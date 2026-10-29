@@ -50,7 +50,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -417,7 +417,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -753,7 +753,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -1122,7 +1122,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -1363,7 +1363,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -1655,7 +1655,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -2010,7 +2010,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -2232,7 +2232,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -2478,7 +2478,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -2698,7 +2698,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -2818,7 +2818,7 @@
        {
         "kind": "workbench_code",
         "path": "operating/source_unit_contracts.json",
-        "note": "public-order-entry-item-assembly-qtymfg-c-manufactured: Quantity manufactured on the AO link to a sales order line. An FM link-table calculation that no Portal code reads (docs/reference/portal-code-map.md section 4.8); finished-good quantities come from the AO, not from this column."
+        "note": "public-order-entry-item-assembly-qtymfg-c-manufactured: Quantity manufactured on the AO link to a sales order line. An FM link-table calculation that no Portal code reads (devloop/CONTEXT/03-PORTAL.md section 4.8); finished-good quantities come from the AO, not from this column."
        }
       ]
      },
@@ -2826,7 +2826,7 @@
       {
        "kind": "workbench_code",
        "path": "operating/source_unit_contracts.json",
-       "note": "public-order-entry-item-assembly-qtymfg-c-manufactured: Quantity manufactured on the AO link to a sales order line. An FM link-table calculation that no Portal code reads (docs/reference/portal-code-map.md section 4.8); finished-good quantities come from the AO, not from this column."
+       "note": "public-order-entry-item-assembly-qtymfg-c-manufactured: Quantity manufactured on the AO link to a sales order line. An FM link-table calculation that no Portal code reads (devloop/CONTEXT/03-PORTAL.md section 4.8); finished-good quantities come from the AO, not from this column."
       }
      ]
     },
@@ -2869,7 +2869,7 @@
        {
         "kind": "workbench_code",
         "path": "operating/source_unit_contracts.json",
-        "note": "public-order-entry-item-assembly-qtyplan-c-planned: Planned quantity on the AO link to a sales order line (it can be 0.0 on a link, in which case the planned figure is on the AO item). An FM link-table calculation that no Portal code reads (docs/reference/portal-code-map.md section 4.8); finished-good quantities come from the AO, not from this column."
+        "note": "public-order-entry-item-assembly-qtyplan-c-planned: Planned quantity on the AO link to a sales order line (it can be 0.0 on a link, in which case the planned figure is on the AO item). An FM link-table calculation that no Portal code reads (devloop/CONTEXT/03-PORTAL.md section 4.8); finished-good quantities come from the AO, not from this column."
        }
       ]
      },
@@ -2877,7 +2877,7 @@
       {
        "kind": "workbench_code",
        "path": "operating/source_unit_contracts.json",
-       "note": "public-order-entry-item-assembly-qtyplan-c-planned: Planned quantity on the AO link to a sales order line (it can be 0.0 on a link, in which case the planned figure is on the AO item). An FM link-table calculation that no Portal code reads (docs/reference/portal-code-map.md section 4.8); finished-good quantities come from the AO, not from this column."
+       "note": "public-order-entry-item-assembly-qtyplan-c-planned: Planned quantity on the AO link to a sales order line (it can be 0.0 on a link, in which case the planned figure is on the AO item). An FM link-table calculation that no Portal code reads (devloop/CONTEXT/03-PORTAL.md section 4.8); finished-good quantities come from the AO, not from this column."
       }
      ]
     }
@@ -2947,7 +2947,7 @@
        "note": "Pagination key ['id'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -3171,7 +3171,7 @@
        "note": "Pagination key ['_sage_pk'] (key source: nullable-unique)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -4268,6 +4268,9 @@
        "path": "rtgamtovr",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance"
      ]
     },
     {
@@ -4323,6 +4326,9 @@
        "path": "rtgtxamt1",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance"
      ]
     },
     {
@@ -4334,6 +4340,9 @@
        "path": "rtgtxamt2",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance"
      ]
     },
     {
@@ -4345,6 +4354,9 @@
        "path": "rtgtxamt3",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance"
      ]
     },
     {
@@ -4356,6 +4368,9 @@
        "path": "rtgtxamt4",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance"
      ]
     },
     {
@@ -4367,6 +4382,9 @@
        "path": "rtgtxamt5",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance"
      ]
     },
     {
@@ -5003,7 +5021,7 @@
        "note": "Pagination key ['invuniq'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -5203,6 +5221,9 @@
        "path": "disamtover",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance"
      ]
     },
     {
@@ -5390,6 +5411,9 @@
        "path": "invdiscamt",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance"
      ]
     },
     {
@@ -6042,6 +6066,9 @@
        "path": "rtgtxamt1",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance"
      ]
     },
     {
@@ -6053,6 +6080,9 @@
        "path": "rtgtxamt2",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance"
      ]
     },
     {
@@ -6064,6 +6094,9 @@
        "path": "rtgtxamt3",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance"
      ]
     },
     {
@@ -6075,6 +6108,9 @@
        "path": "rtgtxamt4",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance"
      ]
     },
     {
@@ -6086,6 +6122,9 @@
        "path": "rtgtxamt5",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance"
      ]
     },
     {
@@ -7108,7 +7147,7 @@
        "note": "Pagination key ['_sage_pk'] (key source: nullable-unique)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -8783,7 +8822,7 @@
        "note": "Pagination key ['orduniq'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -9137,6 +9176,9 @@
        "path": "invamtdue",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance"
      ]
     },
     {
@@ -9159,6 +9201,9 @@
        "path": "invdiscamt",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance"
      ]
     },
     {
@@ -10511,7 +10556,7 @@
        "note": "Pagination key ['_sage_pk'] (key source: nullable-unique)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -11568,6 +11613,9 @@
        "path": "rtgamtovr",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance"
      ]
     },
     {
@@ -11601,6 +11649,9 @@
        "path": "rtgtxamt1",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance"
      ]
     },
     {
@@ -11612,6 +11663,9 @@
        "path": "rtgtxamt2",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance"
      ]
     },
     {
@@ -11623,6 +11677,9 @@
        "path": "rtgtxamt3",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance"
      ]
     },
     {
@@ -11634,6 +11691,9 @@
        "path": "rtgtxamt4",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance"
      ]
     },
     {
@@ -11645,6 +11705,9 @@
        "path": "rtgtxamt5",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance"
      ]
     },
     {
@@ -12373,7 +12436,7 @@
        "note": "Pagination key ['shiuniq'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -12595,6 +12658,9 @@
        "path": "disamtover",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance"
      ]
     },
     {
@@ -13148,6 +13214,9 @@
        "path": "rtgtxamt1",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance"
      ]
     },
     {
@@ -13159,6 +13228,9 @@
        "path": "rtgtxamt2",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance"
      ]
     },
     {
@@ -13170,6 +13242,9 @@
        "path": "rtgtxamt3",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance"
      ]
     },
     {
@@ -13181,6 +13256,9 @@
        "path": "rtgtxamt4",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance"
      ]
     },
     {
@@ -13192,6 +13270,9 @@
        "path": "rtgtxamt5",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance"
      ]
     },
     {
@@ -13412,6 +13493,9 @@
        "path": "shidiscamt",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance"
      ]
     },
     {
@@ -14467,7 +14551,7 @@
        "note": "Pagination key ['id'] (key source: id)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -14669,7 +14753,7 @@
        "note": "Pagination key ['id'] (key source: id)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -14816,7 +14900,7 @@
        "note": "Pagination key ['id'] (key source: id)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default (09-CRITIQUE R1); curated bindings add row-level lineage rules."
     }
    ],
    "properties": [
@@ -14997,6 +15081,41 @@
   }
  ],
  "link_types": [
+  {
+   "id": "RelPublicAppQuote.created_by_user",
+   "from": "RelPublicAppQuote",
+   "to": "RelPublicAppUser",
+   "name": "created_by_user",
+   "reverse_name": "inverse_created_by_user_created_5",
+   "cardinality": "N:1",
+   "description": "Prisma foreign key Quote.createdByUser (public.app_quote.created_by -> public.app_user.id).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "gen.public.app_quote",
+     "to_binding": "gen.public.app_user",
+     "pairs": [
+      {
+       "from": "created_by",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "upstream_code",
+       "repo": "plx-customer-portal",
+       "path": "portal/prisma/schema.prisma",
+       "commit": "52c9116f77ab",
+       "symbol": "Quote",
+       "lines": "5698",
+       "note": "@relation(fields: [created_by], references: [id])"
+      }
+     ]
+    }
+   ]
+  },
   {
    "id": "RelPublicAppQuote.customer",
    "from": "RelPublicAppQuote",
@@ -15208,7 +15327,7 @@
    "name": "portal_so_to_fm_order_by_fmid",
    "reverse_name": "inverse_portal_so_to_fm_order_by_fmid",
    "cardinality": "N:1",
-   "description": "Link contract portal-so-to-fm-order-by-fmid (json_path): A Portal sales order is bridged to this FM order_entry through custom_fields.fmId, the link Portal itself resolves by. The order number is not a link: Portal rewrites order_number to the BC document No. after drain. Portal's bridge may have first chosen an existing unlinked SO by PO/ERP text (findUnlinkedPortalSo) before stamping fmId; the Portal code map treats the stamped fmId as a source-asserted link (docs/reference/portal-code-map.md section 9), and so does this contract.",
+   "description": "Link contract portal-so-to-fm-order-by-fmid (json_path): A Portal sales order is bridged to this FM order_entry through custom_fields.fmId, the link Portal itself resolves by. The order number is not a link: Portal rewrites order_number to the BC document No. after drain. Portal's bridge may have first chosen an existing unlinked SO by PO/ERP text (findUnlinkedPortalSo) before stamping fmId; the pack treats the stamped fmId as a source-asserted link (03-PORTAL section 9), and so does this contract.",
    "bindings": [
     {
      "kind": "json_path",
@@ -15227,7 +15346,7 @@
       {
        "kind": "workbench_code",
        "path": "operating/link_contracts.json",
-       "note": "link contract portal-so-to-fm-order-by-fmid: A Portal sales order is bridged to this FM order_entry through custom_fields.fmId, the link Portal itself resolves by. The order number is not a link: Portal rewrites order_number to the BC document No. after drain. Portal's bridge may have first chosen an existing unlinked SO by PO/ERP text (findUnlinkedPortalSo) before stamping fmId; the Portal code map treats the stamped fmId as a source-asserted link (docs/reference/portal-code-map.md section 9), and so does this contract."
+       "note": "link contract portal-so-to-fm-order-by-fmid: A Portal sales order is bridged to this FM order_entry through custom_fields.fmId, the link Portal itself resolves by. The order number is not a link: Portal rewrites order_number to the BC document No. after drain. Portal's bridge may have first chosen an existing unlinked SO by PO/ERP text (findUnlinkedPortalSo) before stamping fmId; the pack treats the stamped fmId as a source-asserted link (03-PORTAL section 9), and so does this contract."
       }
      ]
     }
@@ -15263,8 +15382,14 @@
        "symbol": "SalesOrderLine",
        "lines": "4101",
        "note": "@relation(fields: [product_id], references: [id])"
+      },
+      {
+       "kind": "workbench_code",
+       "path": "operating/link_contracts.json",
+       "note": "link contract portal-so-line-to-product: A Portal sales order line sells this Portal product (the item whose recorded unit cost the margin at stake reads)."
       }
-     ]
+     ],
+     "link_contract": "portal-so-line-to-product"
     }
    ]
   },
@@ -15298,6 +15423,82 @@
        "symbol": "SalesOrderLine",
        "lines": "4100",
        "note": "@relation(fields: [sales_order_id], references: [id])"
+      },
+      {
+       "kind": "workbench_code",
+       "path": "operating/link_contracts.json",
+       "note": "link contract portal-so-line-to-so: A Portal sales order line belongs to this Portal sales order."
+      }
+     ],
+     "link_contract": "portal-so-line-to-so"
+    }
+   ]
+  },
+  {
+   "id": "RelPublicAppShipRelease.cancelled_by_user",
+   "from": "RelPublicAppShipRelease",
+   "to": "RelPublicAppUser",
+   "name": "cancelled_by_user",
+   "reverse_name": "inverse_cancelled_by_user",
+   "cardinality": "N:1",
+   "description": "Prisma foreign key ShipRelease.cancelledByUser (public.app_ship_release.cancelled_by -> public.app_user.id).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "gen.public.app_ship_release",
+     "to_binding": "gen.public.app_user",
+     "pairs": [
+      {
+       "from": "cancelled_by",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "upstream_code",
+       "repo": "plx-customer-portal",
+       "path": "portal/prisma/schema.prisma",
+       "commit": "52c9116f77ab",
+       "symbol": "ShipRelease",
+       "lines": "4365",
+       "note": "@relation(fields: [cancelled_by], references: [id])"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "RelPublicAppShipRelease.created_by_user",
+   "from": "RelPublicAppShipRelease",
+   "to": "RelPublicAppUser",
+   "name": "created_by_user",
+   "reverse_name": "inverse_created_by_user_created_6",
+   "cardinality": "N:1",
+   "description": "Prisma foreign key ShipRelease.createdByUser (public.app_ship_release.created_by -> public.app_user.id).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "gen.public.app_ship_release",
+     "to_binding": "gen.public.app_user",
+     "pairs": [
+      {
+       "from": "created_by",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "upstream_code",
+       "repo": "plx-customer-portal",
+       "path": "portal/prisma/schema.prisma",
+       "commit": "52c9116f77ab",
+       "symbol": "ShipRelease",
+       "lines": "4363",
+       "note": "@relation(fields: [created_by], references: [id])"
       }
      ]
     }
@@ -15374,6 +15575,41 @@
    ]
   },
   {
+   "id": "RelPublicAppShipRelease.released_by_user",
+   "from": "RelPublicAppShipRelease",
+   "to": "RelPublicAppUser",
+   "name": "released_by_user",
+   "reverse_name": "inverse_released_by_user",
+   "cardinality": "N:1",
+   "description": "Prisma foreign key ShipRelease.releasedByUser (public.app_ship_release.released_by -> public.app_user.id).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "gen.public.app_ship_release",
+     "to_binding": "gen.public.app_user",
+     "pairs": [
+      {
+       "from": "released_by",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "upstream_code",
+       "repo": "plx-customer-portal",
+       "path": "portal/prisma/schema.prisma",
+       "commit": "52c9116f77ab",
+       "symbol": "ShipRelease",
+       "lines": "4364",
+       "note": "@relation(fields: [released_by], references: [id])"
+      }
+     ]
+    }
+   ]
+  },
+  {
    "id": "RelPublicAppShipRelease.sales_order",
    "from": "RelPublicAppShipRelease",
    "to": "RelPublicAppSalesOrder",
@@ -15403,6 +15639,41 @@
        "symbol": "ShipRelease",
        "lines": "4361",
        "note": "@relation(fields: [sales_order_id], references: [id])"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "RelPublicAppShipment.created_by_user",
+   "from": "RelPublicAppShipment",
+   "to": "RelPublicAppUser",
+   "name": "created_by_user",
+   "reverse_name": "inverse_created_by_user_created_7",
+   "cardinality": "N:1",
+   "description": "Prisma foreign key Shipment.createdByUser (public.app_shipment.created_by -> public.app_user.id).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "gen.public.app_shipment",
+     "to_binding": "gen.public.app_user",
+     "pairs": [
+      {
+       "from": "created_by",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "upstream_code",
+       "repo": "plx-customer-portal",
+       "path": "portal/prisma/schema.prisma",
+       "commit": "52c9116f77ab",
+       "symbol": "Shipment",
+       "lines": "4189",
+       "note": "@relation(fields: [created_by], references: [id])"
       }
      ]
     }

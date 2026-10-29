@@ -1,0 +1,132 @@
+{
+ "format": "plx-case-ontology-gaps/v1",
+ "case": "rnd-maps",
+ "status": "What the ontology lacks to answer evals/dev/rnd-maps/proposed_items.json; each gap is also a named gap of the answer that needs it.",
+ "advisory": "advisory:d7076d889756",
+ "gaps": [
+  {
+   "id": "AG-GAP-01",
+   "kind": "object",
+   "name": "Portal R&D project and task (client + formula, status, waiting on, owner)",
+   "ontology_today": "RelPublicAppProject and RelPublicAppProjectTask are declared not served; open projects come only from Mission Control tasks.",
+   "needed_by": [
+    "AG-03",
+    "AG-05"
+   ],
+   "sources": [
+    {
+     "system": "ontology",
+     "relation": "public.app_project, public.app_project_task not served",
+     "ref": "OntologyProject:ontology/schema/generated/portal_not_served_p_r.json@95d931c1d773"
+    }
+   ]
+  },
+  {
+   "id": "AG-GAP-02",
+   "kind": "reader",
+   "name": "R&D KB Board (Planner tasks per client and formula)",
+   "ontology_today": "No Planner capture; the board is the closest thing to a log and is read by nobody.",
+   "needed_by": [
+    "AG-03",
+    "AG-05"
+   ],
+   "source": "source unknown",
+   "dot_question": "Which Planner plan holds the R&D KB Board, and may a GET-only Graph reader capture its tasks and buckets?"
+  },
+  {
+   "id": "AG-GAP-03",
+   "kind": "object",
+   "name": "Teams message text in the projection (a body property on TeamsChatMessage and TeamsChannelMessage)",
+   "ontology_today": "Teams messages are projected with time, sender, subject and attachments; the body is cited, not projected, so agenda lines show no message text (binding_expected body_preview).",
+   "needed_by": [
+    "AG-02",
+    "AG-05"
+   ],
+   "sources": [
+    {
+     "system": "ontology",
+     "relation": "TeamsChatMessage properties",
+     "ref": "OntologyProject:ontology/schema/generated/graph_teams.json@95d931c1d773"
+    }
+   ]
+  },
+  {
+   "id": "AG-GAP-04",
+   "kind": "object",
+   "name": "Agenda record (meeting date, sections, lines linked to their records, review edits)",
+   "ontology_today": "The agenda exists only as Word, Canva and a posted PDF; no record keeps one draft or its edits.",
+   "needed_by": [
+    "AG-06"
+   ],
+   "source": "source unknown",
+   "dot_question": "Where would the reviewed agenda be stored once Word and Canva retire, and who publishes it?"
+  },
+  {
+   "id": "RS-GAP-01",
+   "kind": "object",
+   "name": "Sample request and sample receipt (requester, project, amount wanted, based on, supplier code, received amount and unit)",
+   "ontology_today": "RelPublicAppSourcingRequest and RelPublicAppSourcingSample are not served; requests live in FileMaker email, direct email and Teams.",
+   "needed_by": [
+    "RS-02",
+    "RS-04"
+   ],
+   "sources": [
+    {
+     "system": "ontology",
+     "relation": "public.app_sourcing_request, public.app_sourcing_sample not served",
+     "ref": "OntologyProject:ontology/schema/generated/portal_not_served_s_z.json@95d931c1d773"
+    }
+   ]
+  },
+  {
+   "id": "RS-GAP-02",
+   "kind": "object",
+   "name": "Lab batch usage per sample (actual grams per line drawn from a receipt)",
+   "ontology_today": "No usage record exists anywhere: amounts are in handwritten notes, so quantity left is usage_not_recorded.",
+   "needed_by": [
+    "RS-03"
+   ],
+   "source": "source unknown",
+   "dot_question": "Where will formulators record actual grams per batch line once the portal lab batch exists, and does it name the sample container used?"
+  },
+  {
+   "id": "IL-GAP-01",
+   "kind": "reader",
+   "name": "FileMaker R&D formulas (formula number, product name, legacy number, formula lines)",
+   "ontology_today": "The formula_code identifier kind names public.formula as its carrier with served false; Formulation is not served, so an IL's formula number is named but not verified and its ingredients cannot be checked.",
+   "needed_by": [
+    "IL-02",
+    "IL-03"
+   ],
+   "sources": [
+    {
+     "system": "ontology",
+     "relation": "formula_code carrier public.formula served false",
+     "ref": "OntologyProject:ontology/schema/identifiers.json@95d931c1d773"
+    },
+    {
+     "system": "ontology",
+     "relation": "Formulation, RelPublicFormulaItem not served",
+     "ref": "OntologyProject:ontology/schema/generated/portal_not_served_f_o.json@95d931c1d773"
+    }
+   ]
+  },
+  {
+   "id": "IL-GAP-02",
+   "kind": "link",
+   "name": "Ingredient list keyed by formula number (one IL record per version, its files as attachments)",
+   "ontology_today": "An IL is a SharePoint file named by product; its formula number is read from the file name only, and copies are told apart only by content hash.",
+   "needed_by": [
+    "IL-02",
+    "IL-04"
+   ],
+   "sources": [
+    {
+     "system": "ontology",
+     "relation": "SharePointFile name, content_sha256",
+     "ref": "OntologyProject:ontology/schema/domains/documents.json@95d931c1d773"
+    }
+   ]
+  }
+ ]
+}

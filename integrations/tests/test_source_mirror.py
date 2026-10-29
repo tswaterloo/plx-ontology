@@ -729,7 +729,7 @@ class BindingTests(MirrorTestCase):
 
 
     def test_binding_follows_the_audience_in_force_not_the_constructor(self):
-        # Editing the audience file's tenant plx -> acme used to
+        # Review f17afb7: editing the audience file's tenant plx -> acme used to
         # serve plx rows to acme actors because only the constructor tenant was
         # compared.
         path = Path(self.directory.name) / "audience.json"
@@ -988,7 +988,7 @@ class ResolveTests(MirrorTestCase):
                                          ("sage.po_header", "ponumber")])
         # A Portal-entered row (no import marker): Portal resolves po_reference as an
         # order identity (order-identity.ts resolveOrderByNumber), so it is a typed
-        # external reference, not free text.
+        # external reference, not free text (directive 1746a096c3 item 3).
         typed = found[("public.app_sales_order", "po_reference")]
         self.assertEqual((typed["identifier_strength"], typed["strength_basis"]),
                          ("external_reference", "portal_order_entry"))
@@ -1135,8 +1135,8 @@ class CatalogAndCliTests(MirrorTestCase):
 
 
 class PoReferenceStrengthTests(MirrorTestCase):
-    """po_reference strength follows the Portal writer of each row
-    (petralabx/plx-customer-portal staging@8da33e4)."""
+    """po_reference strength follows the Portal writer of each row (directive
+    1746a096c3 item 3; petralabx/plx-customer-portal staging@8da33e4)."""
 
     def test_strength_depends_on_the_row_origin_not_the_column(self):
         rows = [
@@ -1239,7 +1239,7 @@ class PoReferenceStrengthTests(MirrorTestCase):
 
 
 class ConcurrentRefreshTests(MirrorTestCase):
-    """A delayed page or finish of a refresh that another
+    """Dot review 28293799: a delayed page or finish of a refresh that another
     refresh took over must never change a capture behind an issued citation."""
 
     REL = "public.concurrent"
@@ -1411,7 +1411,7 @@ class ConcurrentRefreshTests(MirrorTestCase):
         self.assertEqual(len(reopened.rows(OPS, self.REL)["rows"]), 4)
 
     def test_a_delayed_first_page_never_replaces_a_newer_completed_capture(self):
-        """No traversal row exists after B started and completed
+        """Review of a9041dd R1: no traversal row exists after B started and completed
         a newer capture, yet A's late first page must not become current."""
         a, b = self.writer(hooked=True), self.writer()
         a.refresh(OPS, self.REL)
@@ -1461,7 +1461,7 @@ class ConcurrentRefreshTests(MirrorTestCase):
         self.assertEqual(self.db().execute("SELECT COUNT(*) FROM capture").fetchone()[0], 1)
 
     def test_a_superseded_writer_never_abandons_the_completed_capture(self):
-        """A's cursor is rejected after B resumed and completed
+        """Review of a9041dd R2: A's cursor is rejected after B resumed and completed
         A's traversal; A's abandon must not mark that complete capture abandoned."""
         a, b = self.writer(hooked=True), self.writer()
         a.refresh(OPS, self.REL)
@@ -1757,7 +1757,7 @@ def _numbered(fake, name, count, *, since=None):
 
 
 class PagingRunawayTests(MirrorTestCase):
-    """Five gold relations staged 1,000,000 distinct keys and
+    """Directive a9cc0e0ab498: five gold relations staged 1,000,000 distinct keys and
     committed 0, and one Sage relation returned HTTP 500. A paging defect must stop a
     relation after the page that proves it, a row-bound relation must not stay wedged,
     and one failing relation never blocks the others."""
@@ -2131,7 +2131,7 @@ class PagingRunawayTests(MirrorTestCase):
         self.assertEqual(run["failure_class"], "source_defect")
         self.assertIs(run["defer_next_run"], False)
 
-    # Every path that fails a relation in a
+    # Review of 69fa596 (task mirror-coverage-3): every path that fails a relation in a
     # sync leaves its refresh_failure, a record that cannot be written is reported, and
     # the wait for the write lock is bounded.
 
@@ -2343,7 +2343,7 @@ class PagingRunawayTests(MirrorTestCase):
                         .startswith("mirror_store_busy: "))
 
     def test_an_unwritten_failure_stays_failed_in_later_syncs_and_coverage(self):
-        # A later sync of another relation and coverage() on the
+        # Reviewer reproduction: a later sync of another relation and coverage() on the
         # same mirror must not count the failed relation complete.
         other_rel = "public.app_other"
         _numbered(self.fake, self.REL, 9)

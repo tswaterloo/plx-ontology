@@ -75,7 +75,7 @@ CONTRACTS = json.loads((ROOT / "operating/ontology_tool_contracts.json").read_te
 # The review module as committed before the value reviews (7f7a6ba:ontology/reviews.py),
 # byte for byte (its git blob id is checked): the v2 store below is one v2 wrote.
 V2_SOURCE = Path(__file__).parent / "fixtures" / "reviews_v2.py.txt"
-V2_BLOB = "3a3bc967552d74a6d317e5ec7e002fc83fc73f23"
+V2_BLOB = "563af0e6b0b094598f7fee54c1bce435696af050"
 A, B = f"employee:{tr.OID_A}", f"employee:{tr.OID_B}"
 READER_B = tr.employee_session(tr.OID_B).actor
 REVIEWED_AT = dt.datetime(2026, 10, 3, 12, 0, tzinfo=dt.timezone.utc)
@@ -548,7 +548,7 @@ class ValueReviewTests(unittest.TestCase):
 
     @unittest.skipUnless(HAS_PDF, "a paged original is a PDF: needs pypdf and reportlab")
     def test_a_cited_page_is_taken_exactly_when_plx_read_resolves_it(self):
-        """The page check is ``plx.read``'s own read
+        """Direction review of 1843d3d14c: the page check is ``plx.read``'s own read
         (``CitationReader.read`` with ``page``), for the same reader, of a mail attachment,
         a zip member, a PDF of which no text was read and a message, for a reader the host
         admits and one it no longer admits (withheld before anything of the page is read,

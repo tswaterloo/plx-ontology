@@ -1,7 +1,7 @@
 """The one identifier grammar (ontology/schema/identifiers.json + ontology/identifiers.py).
 
 Evidence label: ``isolated-fixture`` (no source is read). Golden forms come from
-docs/reference/cases-and-artifacts.md and portal-code-map.md and the Portal code
+devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md and 03-PORTAL.md and the Portal code
 they cite (plx-customer-portal@b46934a).
 """
 
@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 # (kind, as written, normalised, blocking key)
 GOLDEN = [
-    # Petra PO (po-number-series.ts, create-fm-purchase-order.ts, cases-and-artifacts.md PO5447 case)
+    # Petra PO (po-number-series.ts, create-fm-purchase-order.ts, pack 02 PO5447 case)
     ("petra_po", "PO5447", "PO5447", "5447"),
     ("petra_po", "PO#5447", "PO5447", "5447"),
     ("petra_po", "PO 5447", "PO5447", "5447"),
@@ -39,28 +39,30 @@ GOLDEN = [
     ("petra_po", "UAT-PO#5283", "UAT-PO5283", "5283"),
     ("petra_po", "PO#5300-FM77", "PO5300-FM77", "5300FM77"),
     ("petra_po", "PO-K3J9X2", "PO-K3J9X2", "K3J9X2"),
-    # Proforma invoices (cases-and-artifacts.md F02: one document, three numbers)
+    # The FM clash suffix as the Portal's migrated rows and BC Your Reference write it
+    ("petra_po", "PO2-FM-106", "PO2-FM106", "2FM106"),
+    # Proforma invoices (pack 02 F02: one document, three numbers)
     ("pi_ref", "PI-SWC024613", "PI-SWC024613", "24613"),
     ("pi_ref", "PI-SWC025240", "PI-SWC025240", "25240"),
     ("pi_ref", "PI-25240", "PI-25240", "25240"),
     ("pi_ref", "PI23219", "PI-23219", "23219"),
-    # Customer PO (portal-code-map.md s3.3; SalesOrder 351 customer PO PO12172025)
+    # Customer PO (pack 03 s3.3; brief: SalesOrder 351 customer PO PO12172025)
     ("customer_po", "PO12172025", "PO12172025", "12172025"),
     ("customer_po", " PO# 4500 12 ", "PO# 4500 12", "450012"),
     ("customer_po", "Customer P.O. 4500", "CUSTOMER P.O. 4500", "4500"),
     ("customer_po", "Jane Smith", "JANE SMITH", "Jane Smith".upper()),
-    # Sales orders (portal-code-map.md s3.2)
+    # Sales orders (pack 03 s3.2)
     ("so_number", "SO-2026-0012", "SO-2026-0012", "SO-2026-0012"),
     ("so_number", "SO100000", "SO100000", "SO100000"),
     ("so_number", "dso100001", "DSO100001", "DSO100001"),
     ("so_number", "SO-FM-351", "SO-FM-351", "SO-FM-351"),
     ("so_number", "OR1000151885", "OR1000151885", "OR1000151885"),
-    # BC numbers (renumbered POs / SOs; portal-code-map.md s4.10)
+    # BC numbers (renumbered POs / SOs; pack 03 s4.10)
     ("bc_document_no", "po100523", "PO100523", "PO100523"),
     ("bc_external_document_no", "PO12172025", "PO12172025", "PO12172025"),
     ("bc_system_id", "BBBBBBBB-0000-0000-0000-000000000009",
      "bbbbbbbb-0000-0000-0000-000000000009", "bbbbbbbb-0000-0000-0000-000000000009"),
-    # AO / MO / batch / lot / receipt (portal-code-map.md s3.5, s3.8, s3.9)
+    # AO / MO / batch / lot / receipt (pack 03 s3.5, s3.8, s3.9)
     ("ao_code", "AO-26005B", "AO-26005B", "AO-26005B"),
     ("ao_code", "ao-26119a", "AO-26119A", "AO-26119A"),
     ("mo_code", "MO-k3j9x2", "MO-K3J9X2", "MO-K3J9X2"),
@@ -91,7 +93,7 @@ GOLDEN = [
     ("erp_item_code", "dvs5003", "DVS5003", "DVS5003"),
     ("customer_erp_code", "take5", "TAKE5", "TAKE5"),
     ("supplier_code", "acme", "ACME", "ACME"),
-    # FM / Sage / project keys (portal-code-map.md s3.1, s3.2, s3.12; AO trace)
+    # FM / Sage / project keys (pack 03 s3.1, s3.2, s3.12; brief AO trace)
     ("fm_id", "10718", "10718", "10718"),
     ("fm_id", "351.0", "351", "351"),
     ("fm_id", 89, "89", "89"),
@@ -159,8 +161,9 @@ class SchemaTests(unittest.TestCase):
                 self.assertEqual(bindings[name]["to"]["field"], to_field)
                 self.assertEqual(bindings[name]["tier"], tier)
                 self.assertIn("@", bindings[name]["upstream"] + "@")
-        # app_bc_entity_map is not served by the reporting API: declared, not readable.
-        self.assertFalse(bindings["portal_entity_to_bc_number"]["served"]["from"])
+        # app_bc_entity_map is served by the reporting API since TASK-3525 (promoted
+        # 2026-10-27, ontology/schema/domains/bc_entity_map.json).
+        self.assertTrue(bindings["portal_entity_to_bc_number"]["served"]["from"])
         for name in ("supplier_name", "mail_sender_domain", "mail_and_sharepoint_mentions"):
             self.assertEqual(bindings[name]["tier"], "lead")
         for binding in bindings.values():
@@ -294,7 +297,7 @@ class KindFormatTests(unittest.TestCase):
                                      r"writer found in plx-customer-portal@[0-9a-f]{7,40} "
                                      r"paths searched: )")
                     self.assertNotRegex(free["upstream"],
-                                        r"(operating|ontology|integrations|verify|evals)/|"
+                                        r"(operating|ontology|integrations|devloop|evals)/|"
                                         r"EVIDENCE/")
         self.assertIn("free text", ids.kind_spec("customer_po")["no_fixed_format"]["why"])
         # SalesOrder.poReference ("Customer's PO number"), not ManufacturingOrder's.
@@ -444,7 +447,7 @@ class NormalizerTests(unittest.TestCase):
                 once = ids.normalize(kind, written)
                 if once is not None:
                     self.assertEqual(ids.normalize(kind, once), once, (kind, written))
-        # Separators no longer count towards the minimum length.
+        # Review 2c6fac6: separators no longer count towards the minimum length.
         self.assertIsNone(ids.normalize("tracking_number", "AB-12"))
         self.assertEqual(ids.normalize("tracking_number", "AB-123"), "AB123")
 
@@ -553,6 +556,33 @@ class ScannerTests(unittest.TestCase):
                 self.assertEqual([m for m in ids.find_identifiers(text)
                                   if m.kind == "petra_po"], [])
 
+    def test_a_labelled_quantity_with_a_unit_is_not_an_identifier(self):
+        # From the eval transcripts: "SAHAJAN quote 120 mL" was read as quote number 120,
+        # so a text question paid for an identifier lookup over every captured file.
+        from ontology import mentions
+
+        def read(text):
+            return [(m["identifier_kind"], m["normalized"]) for m in mentions.extract(text)]
+
+        for text in ("SAHAJAN quote 120 mL", "quote 120mL", "Quote 12.5 KG of base",
+                     "PO 4821 kg", "quotation 3 cases", "quote 10 cases", "quote 120 mL",
+                     "quote 2500 L", "quote 12.5 cases", "quote 100 pcs"):
+            with self.subTest(text=text):
+                self.assertEqual(read(text), [])
+        for text, expected in (
+                ("QRM-26037", [("eqms_number", "QRM-26037")]),
+                ("PO-00269", [("petra_po", "PO269")]),
+                ("F-18-0025 helper cost", [("formula_code", "F-18-0025")]),
+                ("F-26-1179 ingredient list", [("formula_code", "F-26-1179")]),
+                ("quote 120 for 50 mL bottles", [("quote_number", "120")]),
+                ("Quote: QT.150126.07 120 mL", [("quote_number", "QT.150126.07")]),
+                ("PO 4821\nkg", [("petra_po", "PO4821")]),
+                # A count word does not stop a number of four or more digits.
+                ("Quote 26037 unit price", [("quote_number", "26037")]),
+                ("PO 4821 cases", [("petra_po", "PO4821")])):
+            with self.subTest(text=text):
+                self.assertEqual(read(text), expected)
+
     def test_scan_work_grows_linearly_on_adversarial_text(self):
         """Counts the Python-level operations (value normalisations and mention
         constructions) per scan, so load cannot flake it. The regex engine's own
@@ -651,15 +681,24 @@ class ProseRecordLabelTests(unittest.TestCase):
         for prop in (sales, purchase):
             self.assertEqual((prop["value_type"], prop["identifier_kind"]),
                              ("identifier", "bc_document_no"))
-        self.assertEqual(sales["sources"], [{"binding": "bc.sales_invoices", "path": "number",
-                                             "parser": "identifier"}])
+        # BC's own document, then Portal's served snapshot of it (public.bc_*_snapshot, live
+        # catalog 2026-10-26): its number is the same BC No., parsed the same way; authority
+        # stays with the BC books (the snapshot is gold_native_staging, never authority).
+        for prop, bc, portal in ((sales, "bc.sales_invoices", "portal.bc_invoice_snapshot"),
+                                 (purchase, "bc.purchase_invoices",
+                                  "portal.bc_purchase_invoice_snapshot")):
+            self.assertEqual(prop["sources"], [
+                {"binding": bc, "path": "number", "parser": "identifier"},
+                {"binding": portal, "path": "number", "parser": "identifier"}])
+            self.assertEqual([r["lineage"] for r in prop["authority"]["precedence"]],
+                             [["bc_manufacturing", "bc_distribution"]])
         self.assertEqual(schema.bindings["bc.sales_invoices"][1]["relation"], "salesInvoices")
 
 
 class FixtureIdentifierFormTests(unittest.TestCase):
     """The eval fixture world writes every identifier in an upstream form: each value on a
     declared carrier parses as its kind, so the projector never records it
-    ``identifier_unparsed`` (docs/decisions/2026-10-04-po-fixture-roots.md: fix the
+    ``identifier_unparsed`` (devloop/DECISIONS/2026-10-04-po-fixture-roots.md: fix the
     fixture, never loosen the grammar). The one exception is declared there: a PO
     renumbered to a code no grammar reads."""
 
@@ -758,7 +797,7 @@ class SystemGrammarTests(unittest.TestCase):
 
 
 # The four modules that used to own private identifier grammars (pre-move regex
-# literals copied here verbatim). The moved grammars must find the
+# literals copied here verbatim, base d70699a). The moved grammars must find the
 # same matches on the same text; the rewrites only remove ambiguous adjacent
 # whitespace quantifiers (linear-time, same language).
 _OLD = {
@@ -844,14 +883,16 @@ _ALLOWED_REGEX_NAMES = {
         "_PARTY", "_MAIL_PARTY", "_MAIL_DATE", "_SPEC",
         # OCR tool output lines and the word-box layout mark line, PDF page sizes, pptx
         # markdown escapes, attachment marker sanitisation; written numbers and their
-        # thousands groups.
+        # thousands groups; HTML text's blank-line collapse.
         "<_only_line>", "_LAYOUT_LINE", "<_portable_pdf_text>", "<_converted_claims>", "<extract_document>",
-        "NUMBER_TOKEN", "<_grouped>"},
+        "NUMBER_TOKEN", "<_grouped>", "<html_text>"},
     "integrations/graph_evidence.py": set(),
-    # _INSTANT is an ISO-instant time format and _VERSION_ID a SharePoint file version
-    # label (major.minor), not identifier grammars.
-    "integrations/live_source_grammar.py": {"_DRIVE_SEGMENT_BAD", "_FIELD", "_INSTANT",
-                                            "_VERSION_ID", "<_compile>"},
+    # _INSTANT is an ISO-instant time format, _VERSION_ID a SharePoint file version
+    # label (major.minor) and _BC_COMPANY_NAME a BC company display name (checked
+    # against the pinned map), not identifier grammars.
+    "integrations/live_source_grammar.py": {"_BC_COMPANY_NAME", "_DRIVE_SEGMENT_BAD",
+                                            "_FIELD", "_INSTANT", "_VERSION_ID",
+                                            "<_compile>"},
 }
 _RE_CALLS = {"compile", "search", "match", "fullmatch", "finditer", "findall", "sub", "subn",
              "split"}

@@ -1,6 +1,6 @@
 """Case runtime: the source mirror and the case record joined for MCP clients.
 
-Implements docs/reference/case-runtime.md section 3. The investigating agent is the MCP
+Implements devloop/CASE-RUNTIME.md section 3. The investigating agent is the MCP
 client (Claude); this module only binds the two deterministic parts together:
 
 * ``integrations.source_mirror.SourceMirror`` answers catalog/rows/resolve for
@@ -12,7 +12,7 @@ The runtime resolves these citation schemes, all for the calling actor and
 after an audience check: ``api://`` rows through the mirror,
 ``original://`` originals through ``operating.case_originals.OriginalStore``
 (bytes re-hashed on every resolve), and the live sources through the read-only
-readers the host configured (``LiveReaders``, docs/reference/case-runtime.md section 7):
+readers the host configured (``LiveReaders``, devloop/CASE-RUNTIME.md section 7):
 ``graph-mail://`` (``GraphMailReader``), ``sharepoint://`` (one
 ``SharePointReader`` per configured drive) and ``bc://``
 (``BusinessCentralReader``). A live scheme whose reader is not configured
@@ -115,7 +115,8 @@ import os
 from pathlib import Path
 import sqlite3
 import threading
-from typing import Any, Collection, Mapping, Sequence
+from contextlib import contextmanager
+from typing import Any, Collection, Iterator, Mapping, Sequence
 
 from integrations.capture_store import CaptureError, CaptureStore, is_capture_handle
 from integrations.http import SourceUnavailable
@@ -128,6 +129,8 @@ from ontology.core import Actor
 from .capture_age import capture_decides
 from .case_links import LinkContracts
 from .case_mail_scope import OUTSIDE_SCOPE as MAIL_OUTSIDE_SCOPE, MailScope
+from .captured_originals import (FAILED, REFUSED, CapturedOriginals, SourceLookup, kind_of,
+                                 refusal as gate_refusal, repository_resource)
 from .case_originals import (RECORDED_CAPTURE_SOURCE, SCHEME as ORIGINAL_SCHEME,
                              OriginalError, OriginalStore)
 from .cases import CaseStore, CitationUnresolvable
@@ -206,6 +209,16 @@ LIMITATIONS = (
 )
 
 
+
+class _KeptStore:
+    """A read-only capture store a runtime keeps open (``CaseRuntime.mail_reader``): the
+    file it was opened on, the lock its reads hold, and how many reads hold it now."""
+
+    def __init__(self, identity: tuple[int, ...], store: Any) -> None:
+        self.identity, self.store = identity, store
+        self.lock = threading.RLock()
+        self.users, self.dropped = 0, False
+
 class CaseRuntimeUnavailable(ValueError):
     """The case runtime is not configured on this host (default deny)."""
 
@@ -279,7 +292,7 @@ def build_live_readers(audience: LiveSourceAudience | str | Path,
                        sharepoint_drives: Sequence[str] = (),
                        graph_sender: Any = None, bc_sender: Any = None,
                        sources: Collection[str] | None = None) -> LiveReaders:
-    """Readers from the environment.
+    """Readers from the environment (credential names as in WORKING-BRIEF).
 
     Graph mail + SharePoint need ``MICROSOFT_GRAPH_{TENANT,CLIENT}_ID`` and
     ``MICROSOFT_GRAPH_CLIENT_SECRET``; drives are ``SHAREPOINT_DRIVE_ID`` plus
@@ -408,6 +421,9 @@ class CaseRuntime:
         # while the file is the same one (``_capture_read``); the lock serialises its use.
         self._capture_reads: dict[Path, tuple[tuple[int, ...], CaptureStore]] = {}
         self._capture_lock = threading.Lock()
+        # The mail captures' read-only stores (``mail_reader``): directory -> (file
+        # identity, store, the lock its users hold).
+        self._mail_reads: dict[Path, _KeptStore] = {}
         # The host's mail and SharePoint document captures (``_from_capture``)
         # (``operating.case_tools_host.CaseCaptures``); None: live readers only.
         self.captures: Any = None
@@ -432,6 +448,8 @@ class CaseRuntime:
             from integrations.people_exclusion import PeopleExclusion
             people_exclusion = PeopleExclusion.from_env(os.environ)
         self.people_exclusion = people_exclusion
+        if self.mail_scope.all_directory:
+            self.mail_scope.attach_people(people_exclusion)
         self._address_exclusion: Any = _UNBOUND
         self._address_lock = threading.Lock()
         # (mailbox, message, attachment, message changeKey) -> attachment metadata
@@ -452,15 +470,23 @@ class CaseRuntime:
             options["persisted_store"] = store_from_env(os.environ)
         self.mirror = SourceMirror(root / MIRROR_FILE, client, audience, tenant=tenant,
                                    **options)
+        # The capture store's case originals (<state>/case-originals), each behind the
+        # gate of the source item it was read from (``_captured_original_gate``).
+        self.captured_originals = CapturedOriginals(
+            self.state_dir, gate=self._captured_original_gate,
+            lookup=self._captured_source_lookup,
+            exclusion_clear=self._captured_original_exclusion_clear)
         self.originals = OriginalStore(root, **{**dict(originals_options or {}),
-                                                "source_gate": self._original_source_gate})
+                                                "source_gate": self._original_source_gate,
+                                                "captured": self.captured_originals})
         self.cases = CaseStore(root / CASES_FILE,
                                citation_resolver=lambda handle, actor:
                                self.resolve_citation(handle, actor),
                                clock=case_clock, unit_contracts=unit_contracts,
                                link_contracts=self.link_contracts,
                                header_gate=self._case_header_gate)
-        for target in (self.mirror, self.originals, self.cases, self):
+        for target in (self.mirror, self.originals, self.captured_originals, self.cases,
+                       self):
             gate_actor_methods(target, self.employee_gate)
 
     def _case_header_gate(self, relations: Sequence[str], actor: Actor) -> bool:
@@ -480,7 +506,7 @@ class CaseRuntime:
         ``MAILBOX_ACCESS_UNDETERMINED``: shared and delegated (FullAccess /
         ReadPermission) mailbox access is an Exchange permission that Graph v1.0
         does not expose, so it can be neither proven nor ruled out
-        (docs/reference/permissions.md). BC exposes no record ACL. A SharePoint record
+        (devloop/PERMISSIONS.md). BC exposes no record ACL. A SharePoint record
         must also pass the employee's file clearance (its security class:
         Finance, Business Central, Staff Scratch), refused like an ACL denial so
         the class is not revealed. A non-employee actor is unaffected (``None``).
@@ -547,6 +573,11 @@ class CaseRuntime:
         with self._capture_lock:
             for path in list(self._capture_reads):
                 self._drop_capture_read(path)
+            for directory in list(self._mail_reads):
+                self._drop_mail_read(directory)
+        close_captures = getattr(self.captures, "close", None)
+        if callable(close_captures):
+            close_captures()
         self.mirror.close()
 
     def resolve_citation(self, handle: str, actor: Actor) -> dict[str, Any]:
@@ -732,17 +763,26 @@ class CaseRuntime:
                 self._drop_capture_read(path)
                 raise CitationUnresolvable("capture_citation_unresolvable") from None
         if not result.get("ok") or result.get("kind") != kind:
-            raise CitationUnresolvable("capture_citation_unresolvable")
+            # ``not_visible``: the audience or the record's own check refused this reader
+            # (a decided refusal); any other error is a failure. Both read alike.
+            raise gate_refusal("capture_citation_unresolvable",
+                               REFUSED if result.get("error") == "not_visible" else FAILED)
         if source in ("teams-channel", "teams-chat"):
             from .ontology_tools_evidence import people_excluded
             # A message an excluded person sent, or of a chat they are in, is withheld from
             # every reader now, whenever it was captured (read alike: not visible).
-            named = [(result["row"] or {}).get("from")]
+            row = result["row"] or {}
+            named = [row.get("from")]
+            # A conversation's own record (TeamsChat, TeamsChannel, Team): withheld whole
+            # when any participant is excluded now, so none appears as a participant (every
+            # string of the value, whatever its shape, as for ``from``).
+            named.append(row.get("participants"))
             if source == "teams-chat":
                 named.append(((result.get("meta") or {}).get("source_acl") or {})
                              .get("identities"))
             if people_excluded(self.people_exclusion, named):
-                raise CitationUnresolvable("capture_citation_unresolvable")
+                # The guard was usable (``exclusion_refusal`` above): it decided.
+                raise gate_refusal("capture_citation_unresolvable", REFUSED)
         return result
 
     def _capture_read(self, path: Path) -> CaptureStore:
@@ -764,6 +804,56 @@ class CaseRuntime:
         cached = self._capture_reads.pop(path, None)
         if cached is not None:
             cached[1].close()
+
+    @contextmanager
+    def mail_reader(self, directory: str | Path) -> Iterator[Any]:
+        """The mail capture under ``directory`` opened read-only once and kept while its
+        file is the same one (device and inode: an open SQLite connection reads every
+        later commit to it), used under its lock. A document search's item gate reads
+        it for every message it checks; opening the writer's store each time ran its
+        schema, journal and permission statements per message. Every read decides as
+        before (the store's own gates). A store a writer has not brought up to date is
+        read through the writer's store, opened and closed for this use, as before."""
+        from integrations.capture_mail import CaptureError, DB_FILE, MailCaptureStore, STORE_DIR
+        directory = Path(directory)
+        stat = (directory.expanduser() / STORE_DIR / DB_FILE).stat()
+        identity = (stat.st_dev, stat.st_ino)
+        with self._capture_lock:
+            kept = self._mail_reads.get(directory)
+            if kept is None or kept.identity != identity:
+                self._drop_mail_read(directory)
+                try:
+                    kept = _KeptStore(identity, MailCaptureStore.open_read_only(directory))
+                except CaptureError:
+                    kept = None
+                if kept is not None:
+                    self._mail_reads[directory] = kept
+            if kept is not None:
+                kept.users += 1
+        if kept is None:
+            store = MailCaptureStore(directory)
+            try:
+                yield store
+            finally:
+                store.close()
+            return
+        try:
+            with kept.lock:
+                yield kept.store
+        finally:
+            with self._capture_lock:
+                kept.users -= 1
+                if kept.dropped and kept.users == 0:
+                    kept.store.close()
+
+    def _drop_mail_read(self, directory: Path) -> None:
+        """Forget a kept mail store and close it once no read holds it (the caller holds
+        ``_capture_lock``)."""
+        kept = self._mail_reads.pop(directory, None)
+        if kept is not None:
+            kept.dropped = True
+            if kept.users == 0:
+                kept.store.close()
 
     def _capture_store(self, handle: str) -> tuple[str, str, Path]:
         """(source, capture kind, store path) of a capture handle's scheme."""
@@ -886,7 +976,7 @@ class CaseRuntime:
                     "superseded_at": captured["superseded_at"]}
         return {key: captured[key] for key in ("citation", "relation", "recorded_at", "row")}
 
-    # ---- live sources (docs/reference/case-runtime.md section 7) ------------------
+    # ---- live sources (devloop/CASE-RUNTIME.md section 7) ------------------
 
     def _reader(self, handle: str) -> tuple[str, Any]:
         """(scheme, reader) for a live handle, or ``LiveSourceNotConfigured``."""
@@ -1194,6 +1284,121 @@ class CaseRuntime:
             return False
         return (isinstance(current, Mapping) and current.get("id") == item_id
                 and self._employee_acl_allows(actor, "sharepoint", current))
+
+    def _captured_source_lookup(self) -> SourceLookup:
+        """The source captures a captured original's gate decides on: the SharePoint
+        capture the host wired (``captures``; none: no SharePoint unit is held) and this
+        state's Teams capture."""
+        return SourceLookup(self.state_dir,
+                            sharepoint_dir=getattr(self.captures, "sharepoint_capture_dir",
+                                                   None),
+                            audience=getattr(self.live, "audience", None))
+
+    def _captured_original_exclusion_clear(self, owner: Any, people: Any = None) -> bool:
+        """Does the people exclusion withhold a captured original in OneDrive ``owner``
+        (None: in no OneDrive) whose source names ``people`` (a Teams chat attachment's
+        sender and members, as ``SourceLookup.teams_chat_people`` reads them; None: none)
+        from nobody? A guard that cannot decide, an excluded owner or person, or one it
+        cannot decide offline (an address needs the bound guard): False."""
+        return self._captured_original_exclusion(owner, people) is True
+
+    def _captured_original_exclusion(self, owner: Any, people: Any = None) -> bool | str:
+        """``_captured_original_exclusion_clear`` with why not: True (withheld from
+        nobody), ``REFUSED`` (the guard decided an owner or person is excluded) or
+        ``FAILED`` (the guard cannot decide, offline or at all, or failed)."""
+        from integrations.people_exclusion import PeopleExcluded
+        if self.exclusion_refusal():
+            return FAILED
+        if owner or people is not None:
+            guard = self.address_exclusion()
+            if guard is None:
+                return FAILED
+            try:
+                if owner:
+                    guard.refuse_onedrive_path(owner)
+            except PeopleExcluded:
+                return REFUSED
+            except Exception:  # noqa: BLE001 - undecidable: withheld
+                return FAILED
+            if people is not None:
+                from .ontology_tools_evidence import people_excluded
+                if not getattr(guard, "bound", False):
+                    return FAILED
+                try:
+                    if people_excluded(guard, [people]):
+                        return REFUSED
+                except Exception:  # noqa: BLE001 - undecidable: withheld
+                    return FAILED
+        return True
+
+    def _captured_original_gate(self, unit: Mapping[str, Any], actor: Actor) -> bool | str:
+        """May ``actor`` read a captured case original now (owner decision 2026-10-27)?
+
+        The people exclusion first: a guard that cannot decide withholds every captured
+        original, and a file in an excluded person's OneDrive (or one whose owner the
+        guard cannot decide offline) is withheld. Then the gate of the source the file
+        was read from, for its current captured version: a SharePoint item through the
+        host's SharePoint capture (``captures``, the gate ``plx.read`` reads that item
+        with), a Teams chat attachment through the Teams capture's gate of its message
+        (``_capture_resolve``). Anything else, or any failure, denies.
+
+        True opens it. A denial is ``REFUSED`` when decided (the exclusion decided the
+        file is excluded, the source gate refused this reader) and ``FAILED`` otherwise
+        (an exception, an undecided guard, no capture configured, an unreadable store):
+        ``CapturedOriginals.refusal_kind`` tells the scorer which; readers see neither.
+
+        A repository file (supervisor decision 2026-10-29): the live audience's exact grant
+        of ``repo:<owner>/<name>`` to this reader, decided first (no grant, or no live
+        audience: ``REFUSED``, as before the grant existed), then the people exclusion of
+        the file's OneDrive owner when its source names one."""
+        if unit.get("kind") == "repository":
+            resource = unit.get("handle")
+            try:
+                granted = (self.live is not None and isinstance(resource, str)
+                           and resource == repository_resource(unit)
+                           and self.live.audience.allows(actor, resource) is True)
+            except Exception:  # noqa: BLE001 - a failing audience denies, never leaks
+                return FAILED
+            if not granted:
+                return REFUSED
+            # The file's own OneDrive copy (a repository row that also names one) keeps
+            # its owner's exclusion, as on the SharePoint and Teams paths.
+            return self._captured_original_exclusion(unit.get("onedrive_owner"))
+        excluded = self._captured_original_exclusion(unit.get("onedrive_owner"))
+        if excluded is not True:
+            return excluded
+        handle = unit.get("handle")
+        if not isinstance(handle, str):
+            return FAILED
+        try:
+            if unit.get("kind") == "sharepoint" and handle.startswith(SHAREPOINT_SCHEME):
+                if self.captures is None:
+                    return FAILED
+                decide = getattr(self.captures, "gate_decision", None)
+                if callable(decide):
+                    decided = decide(handle, actor)
+                    return True if decided is True else REFUSED if decided == REFUSED \
+                        else FAILED
+                view = self.captures(handle, actor)
+                return True if isinstance(view, Mapping) and view.get("status") == "current" \
+                    else FAILED
+            if unit.get("kind") == "teams_chat" and handle.startswith(TEAMS_CHAT_SCHEME):
+                found = self._capture_resolve(handle, actor)
+                return True if bool(found.get("ok")) and found.get("changed_since") is False \
+                    else FAILED
+        except Exception as exc:  # noqa: BLE001 - a refusing or failing gate denies
+            return kind_of(exc)
+        return FAILED
+
+    def original_refusal_kind(self, handle: str, actor: Actor) -> str | None:
+        """Why ``actor`` is not served the captured original ``handle`` now (None: it
+        is): ``REFUSED`` (decided) or ``FAILED``, as
+        ``CapturedOriginals.refusal_kind`` says. For the evaluation scorer
+        (``evals.runner.originals_held``) only; no tool answers it."""
+        try:
+            return self.captured_originals.refusal_kind(handle, actor)
+        except Exception:  # noqa: BLE001 - a refused employee gate or a failure decides nothing
+            return FAILED
 
     def _recorded_capture_gate(self, provenance: Mapping[str, Any], actor: Actor) -> bool:
         """May ``actor`` read an original seeded from a recorded guarded capture, now?

@@ -1,0 +1,30 @@
+{
+ "_usage": "Reporting-API relations the schema binds that the Portal API does not serve yet, by the later_ask (controller state) that waits on it. The drift probe (scripts/gen_ontology_skeleton.py drift_live) reports a missing one as a blocked part naming the ask, never as unexplained; once the catalog serves it, it is listed under later_ask_now_served: retire the entry. Relation names only: a served relation's columns are read from the catalog, never listed here.",
+ "asks": {
+  "portal-new-tables": {
+   "relations": [
+    "public.app_approval_record",
+    "public.app_bc_entity_map",
+    "public.app_supplier_product_tier",
+    "public.assembly_order_status",
+    "public.batch",
+    "public.production",
+    "silver.assembly_order_statuses",
+    "silver.batches",
+    "silver.production_tasks"
+   ]
+  },
+  "portal-sage-regrant": {
+   "relations": [
+    "sage.ap_open_document",
+    "sage.ap_term",
+    "sage.ap_vendor",
+    "sage.ap_vendor_remit",
+    "sage.gl_account",
+    "sage.gl_batch",
+    "sage.gl_je_detail",
+    "sage.gl_je_header"
+   ]
+  }
+ }
+}

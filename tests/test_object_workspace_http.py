@@ -637,7 +637,8 @@ class ObjectWorkspaceHttpTest(unittest.TestCase):
 
     def test_an_unparsed_identifier_carrier_needs_the_propertys_markings(self):
         # A reader granted the type but not the property's markings learns nothing of what
-        # failed to parse there; the same reader holding them is told.
+        # failed to parse there; the same reader holding them is told (minor b of
+        # directive 26bb17568234).
         from operating import ontology_host
         with sqlite3.connect(self.store) as conn:
             report = json.loads(conn.execute("SELECT value FROM store_meta WHERE key = "
@@ -930,7 +931,7 @@ class ObjectWorkspaceHttpTest(unittest.TestCase):
         self.assertEqual(answer["tool_calls"], [{"step": 0, "tool": "plx.object",
                                                  "is_error": False}])
         # Each kept claim cites a record the card returned, typed as a handle, that this
-        # reader opens, and passed the agent loop's claim gate (the one gate: its verdict here).
+        # reader opens, and passed the loop's claim gate (the one gate: its verdict here).
         card_handles = {v["citation"]["l1_handle"] for v in view["card"]["values"]}
         texts = [(c["text"], c["check"]["status"]) for c in answer["claims"]]
         self.assertEqual(texts, [("PO number: PO#5447", "passed")])
@@ -1081,7 +1082,8 @@ class ObjectWorkspaceHttpTest(unittest.TestCase):
         self.assertEqual([u["reason"] for u in narrow["unsupported"]],
                          ["cites_what_this_run_did_not_return"])
         # Its unsupported claim cites a record withheld from this reader: its text, which
-        # holds what the planner remembers of the line, is not shown.
+        # holds what the planner remembers of the line, is not shown (directive
+        # 912374bc973a item 4).
         self.assertEqual((narrow["unsupported"][0]["text"],
                           narrow["unsupported"][0]["text_withheld"]),
                          (None, "cites_a_record_withheld_from_the_reader"))
@@ -1558,9 +1560,9 @@ class PersonControlsTest(unittest.TestCase):
         self.assertEqual(request, {"tool": "mc_create_task", "sent": False, "arguments": {
             "title": body["missing"], "bucket": FOLLOW_UP_BUCKET, "priority": "medium",
             "reporter": MC_OPERATOR, "idempotencyKey": key, "description": description}})
-        # Why, then each citation, then the reference
+        # Why, then each citation (owner policy e251073ef3c5 item 1), then the reference
         # that carries the key. This console knows no audience for its bucket, so no
-        # source text goes.
+        # source text goes (owner decision 44adf4de553a).
         self.assertTrue(description.startswith(f"{body['why']}\n\nCited sources ("))
         self.assertTrue(description.endswith(
             f"\n\nPLX Workbench case {proposal['case_id']}, action {proposal['intent_id']}, "
@@ -2040,10 +2042,11 @@ class GrantSnapshotTest(unittest.TestCase):
 
 
 class StoreProvenanceTest(unittest.TestCase):
-    """A store is a state directory's only when
+    """Directive 26bb17568234 (plan d2eca493ebe3): a store is a state directory's only when
     it records a Portal mirror or BC capture generation that is that source's capture
     there now; a source the store did not project is labelled not_projected, never
-    refused (a store built during a Portal outage). The status is per source, so only a projected
+    refused (a store built during a Portal outage). Directive 42fbdafa2dca (decision
+    architect-20261011T0721Z-MEuPpgWV): the status is per source, so only a projected
     source of another generation refuses, naming that source and no other."""
 
     @classmethod
@@ -2880,7 +2883,7 @@ def sharepoint_scope_drive(files):
     """A FakeDrive (integrations.tests.test_capture_sharepoint) holding the folder
     ``SHAREPOINT_SCOPE`` captures with one synthetic text file per ``files``, and the
     scope's drive id; serve it with ``tc.SITE_DRIVE`` patched to that id."""
-    from verify.tests import test_live_wiring as wiring
+    from devloop.tests import test_live_wiring as wiring
     from integrations.tests import test_capture_sharepoint as tc
 
     target = json.loads((wiring.ROOT / SHAREPOINT_SCOPE).read_text("utf-8"))["targets"][0]
@@ -2910,9 +2913,9 @@ def sharepoint_request(url: str) -> bool:
 
 
 class ObjectViewLiveCheckTest(unittest.TestCase):
-    """``verify/live-checks/workspace.object_view.json``: the spec's own argv over the
+    """``devloop/live-checks/workspace.object_view.json``: the spec's own argv over the
     fixture world with the Portal, BC and Graph transports injected (the wiring of
-    ``verify/tests/test_live_wiring.py``), its output checked by the verifier's own
+    ``devloop/tests/test_live_wiring.py``), its output checked by the verifier's own
     ``check_expectations``. Evidence: injected-transport."""
 
     # the second names a customer PO the spec's sample opens, so its related-mail panel
@@ -2933,7 +2936,7 @@ class ObjectViewLiveCheckTest(unittest.TestCase):
         SharePoint scope's drive holds its folder with one text file per ``files``."""
         import os
 
-        from verify.tests import test_live_wiring as wiring
+        from devloop.tests import test_live_wiring as wiring
         from integrations import graph_read
         from integrations.live_source_guard import BoundedBackoff
         from integrations.tests import test_capture_sharepoint as tc
@@ -2978,8 +2981,8 @@ class ObjectViewLiveCheckTest(unittest.TestCase):
                 os.chdir(cwd)
 
     def test_spec_runs_end_to_end_and_records_panel_denominators_only(self):
-        from verify import live_verify as lv
-        from verify.tests import test_live_wiring as wiring
+        from devloop import live_verify as lv
+        from devloop.tests import test_live_wiring as wiring
         from scripts import object_workspace_probe as probe
 
         spec_doc = wiring.spec("workspace.object_view")
@@ -3153,8 +3156,8 @@ class ObjectViewLiveCheckTest(unittest.TestCase):
         naming no record, a captured file naming a customer PO links it, the sampled root
         opens its documents panel and the run passes expect (no blocked part). The no-grant
         reader is served none of the files (its capture read-back and every open)."""
-        from verify import live_verify as lv
-        from verify.tests import test_live_wiring as wiring
+        from devloop import live_verify as lv
+        from devloop.tests import test_live_wiring as wiring
         from integrations import capture_sharepoint
         from scripts import object_workspace_probe as probe
         from scripts import ontology_projection_probe as projection
@@ -3218,8 +3221,8 @@ class ObjectViewLiveCheckTest(unittest.TestCase):
         incomplete holding files is served and marked partial_upstream, never blocking; an
         entry at served-state/sharepoint-capture the probe did not link is refused and
         left alone; and a later run without SharePoint serves no earlier run's capture."""
-        from verify import live_verify as lv
-        from verify.tests import test_live_wiring as wiring
+        from devloop import live_verify as lv
+        from devloop.tests import test_live_wiring as wiring
         from integrations import capture_sharepoint
         from scripts import object_workspace_probe as probe
         from scripts import ontology_projection_probe as projection
@@ -3355,8 +3358,8 @@ class ObjectViewLiveCheckTest(unittest.TestCase):
         """gap-7942ca70a8df: gaps, conflicts, leads and withheld markers are four panels;
         a root showing only a withheld marker leaves markers_gaps empty, so the spec's
         panels.markers_gaps.roots >= 1 fails on it."""
-        from verify import live_verify as lv
-        from verify.tests import test_live_wiring as wiring
+        from devloop import live_verify as lv
+        from devloop.tests import test_live_wiring as wiring
         from scripts import object_workspace_probe as probe
 
         spec_doc = wiring.spec("workspace.object_view")
@@ -3400,7 +3403,7 @@ class ObjectViewLiveCheckTest(unittest.TestCase):
         self.assertNotIn("panels.markers_shown.roots", spec_doc["expect"]["json_min"])
 
     def test_each_panel_counts_on_the_root_that_shows_it_and_a_withheld_root_adds_none(self):
-        from verify.tests import test_live_wiring as wiring
+        from devloop.tests import test_live_wiring as wiring
         from operating.host import projection_path
         from scripts import object_workspace_probe as probe
         from scripts import ontology_projection_probe as projection
@@ -3469,8 +3472,8 @@ class ObjectViewLiveCheckTest(unittest.TestCase):
         self.assertEqual((rest["withheld_roots"], rest["workspace_errors"]), (1, 0))
 
     def test_a_bc_outage_still_needs_a_portal_root_searched_as_the_no_grant_reader(self):
-        from verify import live_verify as lv
-        from verify.tests import test_live_wiring as wiring
+        from devloop import live_verify as lv
+        from devloop.tests import test_live_wiring as wiring
         from scripts import object_workspace_probe as probe
 
         def bc_down(*_):   # every BC request, the token's included, is refused
@@ -3497,12 +3500,12 @@ class ObjectViewLiveCheckTest(unittest.TestCase):
                          ["find_denied_probed_unblocked < 1"])
 
     def test_a_portal_outage_is_blocked_and_a_fixture_host_refuses_the_bc_only_store(self):
-        """With the Portal not configured, or answering 503, the
+        """Directive 26bb17568234: with the Portal not configured, or answering 503, the
         store is projected from BC and mail beside a fresh empty mirror, served with
         portal_api not projected, and the run is blocked by the outage (expect_blocked
         passes), never a fail. A fixture host still refuses that live store."""
-        from verify import live_verify as lv
-        from verify.tests import test_live_wiring as wiring
+        from devloop import live_verify as lv
+        from devloop.tests import test_live_wiring as wiring
         from integrations import workbench_read_api
         from integrations.http import SourceHttpError
         from operating import mcp_server
@@ -3560,8 +3563,8 @@ class ObjectViewLiveCheckTest(unittest.TestCase):
         root is document-linked: a typed source_gap part, never a pass. With every
         mailbox's directory lookup refused the build's mail.mailbox_lookup part reaches
         the record and the run passes expect_blocked (blocked, never pass)."""
-        from verify import live_verify as lv
-        from verify.tests import test_live_wiring as wiring
+        from devloop import live_verify as lv
+        from devloop.tests import test_live_wiring as wiring
         from scripts import object_workspace_probe as probe
 
         spec_doc = wiring.spec("workspace.object_view")
@@ -3634,7 +3637,7 @@ class ObjectViewLiveCheckTest(unittest.TestCase):
 
 
 class SessionReplayLiveCheckTest(unittest.TestCase):
-    """``verify/live-checks/session.replay.json``: the spec's own argv over the fixture
+    """``devloop/live-checks/session.replay.json``: the spec's own argv over the fixture
     world with the Portal, BC and Graph transports injected (``ObjectViewLiveCheckTest``'s
     wiring), its printed summary checked by the verifier's own ``check_expectations``; then,
     over the same built state, a cited row changed between record and replay, and a
@@ -3665,8 +3668,8 @@ class SessionReplayLiveCheckTest(unittest.TestCase):
             yield
 
     def test_spec_keeps_and_replays_sessions_and_withholds_them_from_the_case_reader(self):
-        from verify import live_verify as lv
-        from verify.tests import test_live_wiring as wiring
+        from devloop import live_verify as lv
+        from devloop.tests import test_live_wiring as wiring
         from scripts import object_workspace_probe as probe
         from scripts import ontology_projection_probe as projection
 
@@ -3854,8 +3857,8 @@ class ObjectViewFailedOpenTest(unittest.TestCase):
         self.assertEqual(self.answers["broken"]["object"]["object_id"], self.named["broken"])
 
     def test_the_spec_requires_and_keeps_the_typed_cause_under_the_detail_cap(self):
-        from verify import live_verify as lv
-        from verify.tests import test_live_wiring as wiring
+        from devloop import live_verify as lv
+        from devloop.tests import test_live_wiring as wiring
         from scripts import object_workspace_probe as probe
 
         spec = wiring.spec("workspace.object_view")
@@ -3908,7 +3911,7 @@ class SessionBcReuseTest(unittest.TestCase):
     projection. Now the consumer starts from the producer's capture and reads
     only what the session did not complete.
 
-    Evidence label: ``injected-transport``. The verifier session (``verify.live_verify``
+    Evidence label: ``injected-transport``. The verifier session (``devloop.live_verify``
     ``SessionState``) runs the specs' own argv over the fixture Portal, the BC fake and the
     Graph fake; nothing live (both specs stay live-unverified)."""
 
@@ -3917,8 +3920,8 @@ class SessionBcReuseTest(unittest.TestCase):
         budget runs out in its projection, after its BC capture), then workspace.object_view
         by its own argv with a fresh BC fake. Returns (producer report, consumer exit
         code, consumer report, the consumer's BC requests by path)."""
-        from verify import live_verify as lv
-        from verify.tests import test_live_wiring as wiring
+        from devloop import live_verify as lv
+        from devloop.tests import test_live_wiring as wiring
         from integrations import workbench_read_api
         from ontology import project_incremental
         from scripts import object_workspace_probe as workspace
@@ -4007,8 +4010,8 @@ class SessionBcReuseTest(unittest.TestCase):
         # The spec holds on this output (only the labels tell the fake from a live read,
         # and the fixture's SharePoint file names no record) and its record keeps the
         # reuse counts.
-        from verify import live_verify as lv
-        from verify.tests import test_live_wiring as wiring
+        from devloop import live_verify as lv
+        from devloop.tests import test_live_wiring as wiring
         spec_doc = wiring.spec("workspace.object_view")
         self.assertEqual(set(lv.check_expectations(spec_doc, code, document)),
                          {"bc_capture.evidence_label != expected",

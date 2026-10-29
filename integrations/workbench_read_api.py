@@ -32,6 +32,9 @@ from .http import SourceHttpError, SourceUnavailable, check_https_base, get_json
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _QUALIFIED = re.compile(r"^([a-z][a-z0-9_]*)\.([a-z][a-z0-9_]*)$")
 _MAX_RESPONSE = 5_500_000
+# Shape bound on the catalog and health relation lists, not a budget: the Portal listed
+# 246 relations on 2026-10-21, and a cap at the catalog size made every read unavailable.
+_MAX_RELATIONS = 1000
 # A reason is plain text: words, numbers and punctuation without URL, query, quote or
 # address characters, and never a key-shaped or long opaque token.
 _REASON = re.compile(r"[A-Za-z0-9 _.,:;=<>()\[\]+\-]{1,160}")
@@ -151,8 +154,8 @@ def _listed_gaps(value: Mapping[str, Any], field: str) -> dict[str, str]:
     """{relation: reason} of a health list: entries ``{name, reason}`` or ``{name,
     columns}`` (the missing column names, reported as their count)."""
     items = value.get(field)
-    if not isinstance(items, list) or len(items) > 200:
-        raise WorkbenchNotReady(f"health: {field} is not a list of at most 200 entries")
+    if not isinstance(items, list) or len(items) > _MAX_RELATIONS:
+        raise WorkbenchNotReady(f"health: {field} is not a list of at most {_MAX_RELATIONS} entries")
     out: dict[str, str] = {}
     for index, item in enumerate(items):
         name = item.get("name") if isinstance(item, dict) else None
@@ -313,8 +316,8 @@ class WorkbenchReadApiClient:
         broken contract is WorkbenchNotReady with the entry and the problem."""
         value = self._get("/v1/relations")
         rows = value.get("relations") if isinstance(value, dict) else None
-        if not isinstance(rows, list) or not 1 <= len(rows) <= 200:
-            raise WorkbenchNotReady("catalog: relations is not a list of 1 to 200 entries")
+        if not isinstance(rows, list) or not 1 <= len(rows) <= _MAX_RELATIONS:
+            raise WorkbenchNotReady(f"catalog: relations is not a list of 1 to {_MAX_RELATIONS} entries")
         result: dict[str, dict[str, Any]] = {}
         for index, item in enumerate(rows):
             name = item.get("name") if isinstance(item, dict) else None

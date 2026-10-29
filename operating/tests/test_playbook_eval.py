@@ -4,7 +4,7 @@ Evidence label: ``injected-transport``. The AO-26005B case is investigated throu
 ``MCPServer`` over the in-process ``FakeWorkbench`` (the setup of ``test_ao_26005b_case``,
 without the OCR part); the customer-PO case uses the fixtures of ``test_customer_po_coverage``.
 The evaluator mechanics below run on the AO playbook **v1** over the frozen v1-shaped
-investigation (``operating/tests/ao_v1_investigation.py``: v1 binds adoption ledgers and
+investigation (``operating/tests/ao_v1_investigation.py``: v1 binds M3 adoption ledgers and
 is the only AO version with a repeat sum); ``AoV2Tests`` scores the reference investigation
 (``operating/tests/ao_reference_investigation.py``) with v2. Mutated cases are built by
 driving MCP tools (a
@@ -434,7 +434,7 @@ class AoV2Tests(AoEvalCase):
         v2 = REGISTRY.get("ao_quantity_reconciliation", 2)
         v3 = REGISTRY.get("ao_quantity_reconciliation", 3)
         v4 = REGISTRY.get("ao_quantity_reconciliation", 4)
-        # Adoption ledgers bind the v1 definition; it is never edited in place.
+        # M3 adoption ledgers bind the v1 definition; it is never edited in place.
         self.assertEqual(v1.definition_sha256,
                          "a3515167ad9709598880b29371f8f7686ad0c8ff72206a63fffe55ab61343797")
         self.assertEqual((v1.retired_tools, v2.retired_tools),
@@ -536,7 +536,7 @@ class AoV2Tests(AoEvalCase):
         self.assertIn("not an exact binding", self.check(report, "planned_arith")["detail"])
 
     def test_citing_the_box_row_as_the_basis_fails(self):
-        """The box row (qty_per_batch 0.25, planned 378 rounded up) as the
+        """Review 47646d9: the box row (qty_per_batch 0.25, planned 378 rounded up) as the
         basis gives planned - produced = 9 EA; v2 must refuse it."""
         def box_basis(rows, ao_id):
             return next(row for row in rows if row["row"]["id"] == 58386), ""
@@ -925,7 +925,7 @@ class CustomerPoEvalBase:
 
 class CustomerPoEvalTests(CustomerPoEvalBase, unittest.TestCase):
     def test_evidence_accepted_only_by_an_any_role_is_never_clean(self):
-        """A foreign Sage header passed clean, labelled 'bound'."""
+        """Review 424873f: a foreign Sage header passed clean, labelled 'bound'."""
         case_id = self.build()
         other = self.call("mirror.rows", {"relation": "sage.oe_order_header",
                                               "where": [["ordnumber", "eq", "S4"]]})
@@ -1471,7 +1471,7 @@ class NonExactCalculationTests(AoEvalCase):
 
 
     def test_hardcoded_expression_on_exact_binding_fails(self):
-        """Exact inputs, but the recorded method is not the playbook's."""
+        """Minor finding 1: exact inputs, but the recorded method is not the playbook's."""
         def extra(call, out):
             call("plx.case_compute", {"case_id": out["case_id"], "unit": "EA",
                                       "expression": "planned*6/1509 + manufactured*0",
@@ -1487,7 +1487,7 @@ class NonExactCalculationTests(AoEvalCase):
         self.assertFalse(report["summary"]["passed_all"])
 
     def test_two_fields_of_one_row_are_perturbed_independently(self):
-        """Values keyed by row made planned - manufactured 0 every round, so
+        """Review ec3a804: values keyed by row made planned - manufactured 0 every round, so
         this hardcoded expression (exact on the real rows) passed."""
         def extra(call, out):
             call("plx.case_compute", {"case_id": out["case_id"], "unit": "EA",
@@ -1870,7 +1870,7 @@ class FrozenContractTests(AoEvalCase):
 
 
 class PerSubjectGapTests(CustomerPoEvalBase, unittest.TestCase):
-    """With two bound orders each expected gap is owed once per order."""
+    """Review finding 1: with two bound orders each expected gap is owed once per order."""
 
     def two_orders(self):
         coverage = self.coverage(origins=["portal_entered"],
@@ -1928,7 +1928,7 @@ class PerSubjectGapTests(CustomerPoEvalBase, unittest.TestCase):
 
 
 class RereadPayloadPinTests(CustomerPoEvalBase, unittest.TestCase):
-    """The evaluator scores only the payload the case recorded."""
+    """Review finding 2: the evaluator scores only the payload the case recorded."""
 
     @staticmethod
     def drifting(call, field, value):
@@ -1980,7 +1980,7 @@ class RereadPayloadPinTests(CustomerPoEvalBase, unittest.TestCase):
 
 class OriginalPageClaimEvaluationTests(unittest.TestCase):
     """A claim on an original page (field "text") is scored on the page the evaluator re-read
-    and digest-checked, not marked claim_uncited (AO_V2 with an original)."""
+    and digest-checked, not marked claim_uncited (review of 927033f, AO_V2 with an original)."""
 
     def setUp(self) -> None:
         from operating.tests import test_ao_originals as orig_tests

@@ -471,12 +471,12 @@ class ConsoleWalkthroughTest(unittest.TestCase):
                     self.assertEqual(len(checks["fonts"]), 1, checks["fonts"])
 
     def test_live_check_reports_every_step_passing_on_the_real_walk(self):
-        from verify import live_verify
+        from devloop import live_verify
         summary = {"schema": "plx-console-walkthrough/v1", "evidence": "isolated-fixture",
                    "blocked_reason": None, **step_results(self.walk)}
         failed = [name for name, step in summary["steps"].items() if step["status"] != "pass"]
         self.assertEqual(failed, [])
-        spec = json.loads((ROOT / "verify/live-checks/workspace.console_walkthrough.json").read_text())
+        spec = json.loads((ROOT / "devloop/live-checks/workspace.console_walkthrough.json").read_text())
         live_verify.validate_spec(spec, stem="workspace.console_walkthrough")
         self.assertEqual(live_verify.check_expectations(spec, 0, summary), [])
         broken = json.loads(json.dumps(self.walk))

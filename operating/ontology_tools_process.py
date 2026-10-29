@@ -1,4 +1,4 @@
-"""Generic ontology tool ``plx.process``: process conformance
+"""Generic ontology tool ``plx.process`` (lane plx-process): process conformance
 over the L2 projection store, driven by declarative stage graphs.
 
 The graphs are data (``ontology/schema/process/*.json``, format
@@ -18,10 +18,10 @@ invoice price) per group of identical items. The sales-order graph mirrors
 and the purchase graph Portal's P2P code and the BC mapping brief at the same
 commit; the graph files cite each source.
 
-Permissions come first and come from the base tools (``operating/ontology_tools.py``):
-one ``ReadPolicy``, one ``StoreReader``, the base tools' visibility rule for every object
+Permissions come first and come from lane L8 (``operating/ontology_tools.py``):
+one ``ReadPolicy``, one ``StoreReader``, L8's visibility rule for every object
 (audience, markings of the version at T and of the latest version, item ACL
-re-check through the L1 handle) and the base tools' set handles. A link counts only when it
+re-check through the L1 handle) and L8's set handles. A link counts only when it
 is live at T, its markings are held, every evidence handle passes the item gate
 and both ends are visible; an event only when it is live at T, its markings are
 held, its handle passes the item gate and every object it relates to is
@@ -39,7 +39,7 @@ it withheld, never decided (permission monotonicity, below).
 
 Reached / not reached / unknown (the contract states ``present`` / ``missing``
 with a typed gap / ``not_applicable`` / ``out_of_order``): a stage is
-``missing`` with ``absent_in_source`` only when that is proven (the traverse tools'
+``missing`` with ``absent_in_source`` only when that is proven (lane L9's
 absence rules):
 
 1. the link hop can carry the evidence from the binding the object was
@@ -60,7 +60,7 @@ absence rules):
 4. no visible link below the tier floor reaches a candidate (a lead is never
    evidence, and never proof of absence).
 
-Scoped completeness (docs/decisions/2026-10-04-bc-threeway-side-completeness.md):
+Scoped completeness (devloop/DECISIONS/2026-10-04-bc-threeway-side-completeness.md):
 when a carrier's source family is not known complete, a BC hop is still proven when the
 store's ``source_freshness`` holds a complete claim (``scopes`` of the far binding's
 relation) for every record the hop starts from: a ``company=<id>`` claim (a settled
@@ -73,7 +73,7 @@ anchored claim never covers a record it does not name or a ``via`` binding, and 
 claim ever changes the family's freshness: a per-root read is never a source-wide claim.
 
 Relation completeness
-(docs/decisions/2026-10-17-answer-correctness-relation-completeness.md): when the
+(devloop/DECISIONS/2026-10-17-answer-correctness-relation-completeness.md): when the
 Portal family is partial (some bound relation never fully traversed), a Portal hop is still proven when ``store_meta.relation_completeness`` says
 the relation of the far binding (and of its ``via`` binding) is ``complete``, not stale,
 with a full traversal that finished by ``as_known_at``, and the build report names no
@@ -81,7 +81,7 @@ incomplete capture of that binding. Only the capture's own record of a finished 
 traversal counts, never a row count; a partial, stale, unknown or malformed entry
 leaves the hop as before. A stale family stays unproven whatever its relations say,
 and a BC hop still needs a family or scoped claim
-(docs/decisions/2026-10-14-three-way-absence-proven.md).
+(devloop/DECISIONS/2026-10-14-three-way-absence-proven.md).
 
 A visible record whose status says "not done" proves a stage not reached on its
 own; "every record done" (Portal's every()) needs the same proof that no hidden
@@ -116,7 +116,7 @@ a stage that is unknown because its type is not served is unknown for every
 reader, so it does not hold back ``variants``; nor does an optional stage, which is
 never part of a variant's sequence.
 
-Permission monotonicity (contract): for any
+Permission monotonicity (contract, lead decision on review of b26efdb): for any
 reader, every stage, condition, check and current-stage answer equals what a
 full-grant reader gets, or is undecided (null / unknown with a gap); never a
 different decided value. So a comparison is decided only when every source that
@@ -132,7 +132,7 @@ that type starts there; any other hop the source family's whole grant),
 or never ran), ``scope_not_read`` (no complete capture of the source and no complete
 read scoped to these records), ``evidence_unproven`` (anything else: a past
 ``as_known_at``, the projection's report, the evidence cap). One exception (lead
-decision, docs/decisions/2026-10-05-bc-only-portal-hops.md): on a BC root, a side read
+decision, devloop/DECISIONS/2026-10-05-bc-only-portal-hops.md): on a BC root, a side read
 from its own BC records, which are proven complete, is decided although its twin paths
 or the items' identity links reach a binding the projection never captured
 (``source_not_captured``, the Portal in a BC-only store) and nothing else; the side then
@@ -178,7 +178,7 @@ and the side's line sum (zero when the side's stage is proven absent) must agree
 else one ``recorded_measure_conflict`` gap names both (citations in
 ``ProcessAnswer.roots``) and the side's quantity comparisons of the item are
 undecided, naming that gap; ``recorded_measure_unproven`` when they cannot be
-matched. Neither is ever chosen, except that
+matched. Neither is ever chosen, except as the lead decided on review of a0c97a9:
 when every line of the side's item is in a unit that is no label of the figure's,
 that comparison is decided from the figure and says so (``measured_by``), beside the
 gaps saying the line sum was not compared; a line in the figure's unit can
@@ -218,13 +218,14 @@ A root whose lineage is ``gold_native_staging`` gets only leads: every reached /
 not-reached / out-of-order answer becomes unknown (``staging_root``). A link's tier is
 the one plx.around and plx.aggregate serve (``operating.ontology_tools._effective_tier``:
 capped at ``lead`` when it touches a never-authority row, except a foreign key one source
-stores between its own rows). plx.process is stricter about the record, on purpose:
+stores between its own rows). plx.process is stricter about the record, on purpose (R1):
 a never-authority record reached from an authority one is never counted, whatever the
 link's tier (``never_authority_record``, a lead like a below-floor link).
 
 For one root the output also carries the additive contract fields
 ``current_stage``, ``conditions`` and per-stage ``citations``
-(``plx-process-output``, decided), and (docs/decisions/2026-10-07-process-coverage-process-output.md)
+(devloop/OPEN-DECISIONS.md ``plx-process-output``, decided), and (lane
+process-coverage, devloop/DECISIONS/2026-10-07-process-coverage-process-output.md)
 ``next_stage`` (the stage expected after ``current_stage``, only when that is proven),
 ``due`` (per stage declaring due dates: overdue at ``as_known_at`` only from declared
 planned date columns, proven complete and agreeing, uncontradicted by a captured document
@@ -247,7 +248,7 @@ Cross-department dependencies (RSN-01, WS-09, EXE-07): every stage declares its
 the graph's declaration where Portal routes no such step), reported on each
 missing stage, and may declare ``prerequisites``: stages of other processes that every
 live record its paths reach must reach first, read as that graph reads them
-(``_stage_of``: variant, evidence, rule C, never-authority). For one root, a stage not reached lists
+(``_stage_of``: variant, evidence, rule C, R1). For one root, a stage not reached lists
 its ``blockers`` (``_blockers``): each such record proven not to have reached its stage,
 with that stage's owner, and below it that stage's own prerequisites (an order's
 manufacturing waits on its AO, the AO on its materials' purchase receipt, Portal and
@@ -271,8 +272,8 @@ cancelled PO) blocks nothing; a draft (not reached by its status) is said in a
 ``ProcessTools.process`` returns further per-root detail in
 ``ProcessAnswer.roots``.
 
-The case host wires the tool with ``register`` (as the base and traverse tools do); this module does not
-edit ``operating/mcp_server.py``.
+The case host wires the tool with ``register`` (as L8/L9 do); this lane does not
+edit ``operating/mcp_server.py`` (lane wire-host owns the slot).
 """
 
 from __future__ import annotations
@@ -291,11 +292,11 @@ from ontology.json_contract import validate
 from ontology.schema import BC_COMPANY_NOT_KNOWN
 from ontology.types import Actor
 from ontology.units import is_unit_price, same_denominator, unit_token, value_basis
-from operating.ontology_tools import (  # the base tools: one reader, policy, visibility, sets
+from operating.ontology_tools import (  # lane L8: one reader, policy, visibility, sets
     _AUDIENCE_SOURCE,
     _IDENTITY_TIERS,
     _ITEM_ACL_AUDIENCES,
-    NEVER_AUTHORITY,   # the one never-authority set; process_risks reads it from here
+    NEVER_AUTHORITY,   # the one R1 set; process_risks reads it from here
     OntologyTools,
     SchemaView,
     ToolError,
@@ -313,9 +314,11 @@ from operating.ontology_tools import (  # the base tools: one reader, policy, vi
     _to_ms,
     _value_out,
     identity_link_type,
+    result_limit,
     unit_text,
     units_text,
 )
+from operating import po_status
 from operating.attested_conflicts import conflicts as attested_conflicts
 from operating.ontology_tools_traverse import WITHHELD  # one name for a trimmed answer
 
@@ -333,7 +336,7 @@ DEFAULT_TIER_FLOOR = "stored_by_text_join"
 # A number that names several records (several BC companies' orders, or several far
 # records the projector found): never counted, never a pick (``_company_by_reader``).
 AMBIGUOUS = "ambiguous_target"
-# A never-authority record reached from an authority one: never counted (``_hop``).
+# A never-authority record reached from an authority one: never counted (R1, ``_hop``).
 NEVER_AUTHORITY_RECORD = "never_authority_record"
 # A lineage never authority, as a reader names it (the gap's detail; its code in basis).
 _LINEAGE_PLAIN = {"gold_native_staging": "the Portal's staging"}
@@ -822,7 +825,7 @@ _WITHHELD, _INCOMPLETE, _NOT_READ, _UNPROVEN = (
 _HIDDEN = "withheld_from_reader"
 # A binding the projection never captured (build report ``source_not_captured``): its gap
 # reads ``source_capture_incomplete``, but a BC-rooted side may be decided past it
-# (``cross_system_unchecked``, docs/decisions/2026-10-05-bc-only-portal-hops.md).
+# (``cross_system_unchecked``, devloop/DECISIONS/2026-10-05-bc-only-portal-hops.md).
 _UNCAPTURED = "source_not_captured"
 _CAUSES = (_HIDDEN, _WITHHELD, _INCOMPLETE, _UNCAPTURED, _NOT_READ, _UNPROVEN)
 _GAP_OF_CAUSE = {_UNCAPTURED: _INCOMPLETE, _HIDDEN: _WITHHELD}
@@ -922,6 +925,10 @@ class Dated:
     date: dt.date | None
     gap: dict[str, Any] | None
     unattested: dict[str, Any] | None
+    # the gap is ``due_date_unproven`` only because a path reached a lead (a link or
+    # carrier below the tier floor): a lead is never counted and hides nothing a counted
+    # read would hold, so lateness ranks the counted dates past it (po_status.read's rule)
+    lead_only: bool = False
 
 
 @dataclass
@@ -1007,10 +1014,10 @@ class _Ctx:
 
 
 def _business_date(at: dt.datetime) -> dt.date:
-    """The date a due date is compared with: the earliest calendar date anywhere at
-    ``at`` (UTC-12), so a due day counts as passed only once it has ended in every time
-    zone, the business's included (no business time zone is declared)."""
-    return (at.astimezone(dt.timezone.utc) - dt.timedelta(hours=12)).date()
+    """The date a due date is compared with: ``at``'s business day in America/New_York
+    (``po_status.business_today``), so a due day has passed once it has ended in ET, the
+    same day the proactive engine and the home list judge lateness on."""
+    return po_status.business_today(at)
 
 
 def _date(text: Any) -> dt.date | None:
@@ -1110,7 +1117,7 @@ def _bc_record(row: Mapping[str, Any]) -> tuple[str, str] | None:
 
 def _build_report(store_meta: Mapping[str, str]) -> list[dict[str, Any]] | None:
     """The projector's build-report gaps, or None when absent or malformed
-    (absence is then never claimed), read as the traverse tools read it."""
+    (absence is then never claimed), read as lane L9 reads it."""
     try:
         report = json.loads(store_meta.get("build_report", ""))
     except ValueError:
@@ -1130,7 +1137,7 @@ def _build_report(store_meta: Mapping[str, str]) -> list[dict[str, Any]] | None:
 # =========================================================================== tool
 
 class ProcessTools:
-    """``plx.process`` over the store and policy of a base ``OntologyTools``.
+    """``plx.process`` over the store and policy of an L8 ``OntologyTools``.
 
     ``graphs``: process id -> graph document (``load_graphs``); by default the
     graphs of ``ontology/schema/process`` checked against ``tools.schema``.
@@ -1367,7 +1374,7 @@ class ProcessTools:
         fill()
         # Fit one response: drop per-item gaps, then check items, from the tail; the
         # completeness says so (F8), never an error for a large order.
-        limit = self.base.limits["max_result_bytes"]
+        limit = result_limit(self.base.limits)
         blocked = [item for item in result["stages"] if item.get("blockers")]
         risky = [item for item in result["stages"] if item.get("risks")]
         while _envelope_bytes(result) > limit and (listed or result["quantity_checks"] or risky
@@ -1533,7 +1540,7 @@ class ProcessTools:
         item_gaps = [c["gap"] for c in conflicts] + item_gaps
         lineage = ctx.visible([oid])[oid]["lineage"]
         if lineage in NEVER_AUTHORITY:
-            # A staging row is never authority, so nothing about it is proven; the
+            # R1: a staging row is never authority, so nothing about it is proven; the
             # binding's own lineage rules say what an authority row of it carries.
             basis = self._staging_reason(oid, lineage)
             plain = _LINEAGE_PLAIN.get(lineage, lineage.replace("_", " "))
@@ -1701,7 +1708,7 @@ class ProcessTools:
         attesting, attested_proven = self._attesting(ctx, graph, oid, floor, tid, columns)
         contradicted = [c["subject"] for c in conflicts
                         if c["subject"].rsplit(" vs ", 1)[-1] in attesting]
-        gap = None
+        gap, lead_only = None, False
         if contradicted:
             gap = _gap("unknown", "due_date_conflict", contradicted[0], (
                 "a captured document contradicts this due date (" + "; ".join(contradicted)
@@ -1721,6 +1728,10 @@ class ProcessTools:
             gap = _gap("unknown", "due_date_unproven", subject, (
                 "the due dates are not proven complete or readable: "
                 + "; ".join(dict.fromkeys(w.text for w in reach.reasons + parts.reasons))))
+            why = reach.reasons + parts.reasons
+            lead_only = (bool(why) and all(w.tier == _LEAD for w in why)
+                         and not (reach.truncated or parts.truncated or uncited
+                                  or None in dates))
         elif not dates:
             gap = _gap("absent_in_source", "no_due_date", subject,
                        "no declared due date is recorded for this stage")
@@ -1734,7 +1745,7 @@ class ProcessTools:
                 "differently, and no such document of this record is proven visible to this "
                 "reader: lateness is not stated"))
         if gap is not None:   # unattested still read: lateness ranks disagreeing dates
-            return Dated(values, None, gap, unattested)
+            return Dated(values, None, gap, unattested, lead_only)
         return Dated(values, next(iter(dates)), None, unattested)
 
     def _columns(self, tid: str, name: str) -> set[tuple[str, str]]:
@@ -1937,8 +1948,8 @@ class ProcessTools:
 
     def _stage_of(self, ctx: _Ctx, graph: Mapping[str, Any], oid: str, sid: str) -> _Outcome:
         """Stage ``sid`` of a prerequisite record as its own graph reads it for this
-        reader: its variant, its evidence, rule C (``_recorded_absence``) and the
-        never-authority rule (a staging record proves nothing). Cached per call."""
+        reader: its variant, its evidence, rule C (``_recorded_absence``) and R1 (a
+        staging record proves nothing). Cached per call."""
         key = (graph["id"], sid, oid)
         if key not in ctx.stage_reads:
             floor = graph.get("tier_floor", DEFAULT_TIER_FLOOR)
@@ -2492,7 +2503,7 @@ class ProcessTools:
             if applicable and not self._countable(path, ctx.obj(oid)["binding_id"], floor,
                                                   final_bindings):
                 # A path no chain of counted link bindings runs along proves nothing:
-                # an empty hop on it is no absence (rule A).
+                # an empty hop on it is no absence (rule A, review of d419d74).
                 out.proven = False
                 out.reasons.append(_Why(_LEAD, "path_lead_only", (
                     "from this source, " + " -> ".join(h["link"] for h in path)
@@ -2567,7 +2578,7 @@ class ProcessTools:
         """Per hop, the far-side bindings from which the rest of the path can still
         reach evidence (``final`` at the end; None = any). A link binding to any
         other binding can never carry evidence, so it neither counts nor blocks a
-        proof (the traverse tools' per-binding rule, applied along the path)."""
+        proof (lane L9's per-binding rule, applied along the path)."""
         if final is None:
             return [None] * len(path)
         out: list[set[str] | None] = [None] * len(path)
@@ -2662,12 +2673,12 @@ class ProcessTools:
             anchor = ends.get(row[column])
             if lineage in NEVER_AUTHORITY and (anchor is None
                                                or anchor["lineage"] not in NEVER_AUTHORITY):
-                # Stricter than the link: a never-authority record is never evidence
+                # R1, stricter than the link: a never-authority record is never evidence
                 # for an authority one (an anchor whose version is unknown counts as one)
                 out.proven = False
                 out.reasons.append(_Why(_LEAD, NEVER_AUTHORITY_RECORD, (
                     f"a {hop['link']} link ({tier}) reaches a {lineage} record: never "
-                    "evidence for an authority record, not counted")))
+                    "evidence for an authority record (R1), not counted")))
                 out.leads.append((row[column], target))
                 continue
             reached[target] = ends[target]
@@ -2899,7 +2910,7 @@ class ProcessTools:
         """The upstream reason a root row is ``lineage``, in its binding's own lineage
         rules (the schema cites the upstream writer of each): the origin markers that make
         a row authority, the default, then those that mark it staging or test. A row
-        holding none of the authority markers stays a lead."""
+        holding none of the authority markers stays a lead (10-DECISION 2)."""
         parts = oid.split(":", 2)
         found = self._binding(parts[1]) if len(parts) == 3 else None
         spec = (found[1].get("lineage") or {}) if found else {}
@@ -3245,7 +3256,7 @@ class ProcessTools:
 
     def _recorded_absence(self, ctx: _Ctx, graph: Mapping[str, Any], oid: str,
                           outcomes: MutableMapping[str, _Outcome], floor: str) -> None:
-        """Rule C: a stage proven to have no record, whose quantity
+        """Rule C (review of d419d74): a stage proven to have no record, whose quantity
         side the upstream system also records on another side's lines (``recorded_on``),
         stays proven absent only when this reader reads every such figure and each is
         zero. A non-zero figure makes it unknown (``recorded_measure_conflict``, cited);
@@ -3298,7 +3309,7 @@ class ProcessTools:
 
     def _absent_in_bc(self, ctx: _Ctx, graph: Mapping[str, Any], oid: str,
                       outcomes: MutableMapping[str, _Outcome], floor: str) -> None:
-        """``absent_by`` (docs/decisions/2026-10-14-three-way-absence-proven.md): the
+        """``absent_by`` (devloop/DECISIONS/2026-10-14-three-way-absence-proven.md): the
         stage of a BC-rooted record whose own BC records hold none (proven, or unknown
         only because its twin's system was never captured: ``past_uncaptured``) is
         ``absent_in_bc`` when BC's own figure proves it: this reader reads every line of
@@ -3494,14 +3505,14 @@ class ProcessTools:
                 if summed is None:
                     why = f"{said}, but a {role} line of this item has no single readable value"
                 elif unit is None:
-                    # rule B: lines in the figure's unit can check it;
+                    # rule B (review of d419d74): lines in the figure's unit can check it;
                     # alone they already exceed it, or the item stays unmatched, never
                     # decided from the figure
                     alike = [rows for rows in own if _one_unit(got[1] | {rows[0]["unit"]})]
                     alike_sum = sum((Decimal(rows[0]["value"]) for rows in alike), Decimal(0))
                     alike_lines = bool(alike)
                     # zero against non-zero needs no conversion: it contradicts in any
-                    # unit
+                    # unit (review of 51ace0d)
                     received = any(Decimal(rows[0]["value"]) != 0 for rows in own)
                     if (got[0] == 0) == received:
                         cited += _cite_rows(ctx, own)
@@ -3558,7 +3569,7 @@ class ProcessTools:
                    side: Mapping[str, Any], group: str, entry: Mapping[str, Any]
                    ) -> dict[str, Any] | None:
         """A comparison of ``on`` with ``side`` decided from the figure ``on``'s lines
-        record for ``side`` (the upstream status
+        record for ``side`` (lead decision on review of a0c97a9: the upstream status
         compares exactly these, e.g. Portal's ordered vs quantity_received in purchase
         UoM), used only when every line of ``side``'s item is in a unit that is no
         label of the figure's (rule B). The item names its measure (``measured_by``);
@@ -4368,7 +4379,7 @@ def tool_specs(contracts: Mapping[str, Any]) -> list[dict[str, Any]]:
 def register(tool_table: MutableMapping[str, dict[str, Any]], tools: ProcessTools) -> None:
     """Add ``plx.process`` to a case host's tool table (name -> {name, description,
     inputSchema, annotations, handler}); ``handler(arguments, actor)``. A name
-    already present is refused."""
+    already present is refused. Lane wire-host owns the case host's slot."""
     for spec in tool_specs(tools.contracts):
         if spec["name"] in tool_table:
             raise ValueError(f"tool already registered: {spec['name']}")

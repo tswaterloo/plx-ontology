@@ -1,7 +1,7 @@
 {
  "schema": "plx-live-source-audience/v1",
  "tenant": "plx",
- "note": "EXAMPLE ONLY, not a PLX-confirmed grant: the mail capture service principal of the graph.mail_all_mailboxes live check, granted every mailbox (mail:*). What is read is bounded by the directory scope (integrations/mail_all_mailboxes_scope.json: the people exclusion and the HR / payroll deny list), never by this grant, and the Exchange application access policy still applies upstream (a refused mailbox is a forbidden gap). Default deny. The withheld principal of the check has no grant, so reading the capture store as it must return 0 mailboxes, 0 rows and 0 counts.",
+ "note": "EXAMPLE ONLY, not a PLX-confirmed grant: the mail capture service principal of the graph.mail_all_mailboxes live check, granted every mailbox (mail:*; owner directive c75dfaba0f8e). What is read is bounded by the directory scope (integrations/mail_all_mailboxes_scope.json: the people exclusion and the HR / payroll deny list), never by this grant, and the Exchange application access policy still applies upstream (a refused mailbox is a forbidden gap). Default deny. The withheld principal of the check has no grant, so reading the capture store as it must return 0 mailboxes, 0 rows and 0 counts.",
  "default_classification": "confidential",
  "audiences": {
   "mail:*": [

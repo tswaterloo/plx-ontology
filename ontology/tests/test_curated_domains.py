@@ -1,11 +1,12 @@
 """Curated domain files (ontology/schema/domains/*.json) are well-formed and closed.
 
-Per-domain acceptance: every file validates against the C0
+Per-domain acceptance (09-CRITIQUE lane L5): every file validates against the C0
 format; 0 orphan links (both ends and every binding resolve to declared object
 types, across all domain files present); every link binding has evidence; every
 property with >= 2 sources has an authority rule whose entries can actually apply.
 Also checked against in-repo evidence: Portal bindings name a relation and key the
-reporting API serves (EVIDENCE/live/2026-09-30-portal-live-check.json), BC bindings
+reporting API serves (EVIDENCE/live/2026-09-30-portal-live-check.json, or the pinned
+catalog's live_added rows from the recorded 2026-10-26 GET /v1/relations read), BC bindings
 name an entity set the GET-only grammar allows, and every BC path read from a set
 with a $select allowlist is in that allowlist (else the value is declared degraded
 or not served).
@@ -26,10 +27,29 @@ ROOT = Path(__file__).resolve().parents[2]
 DOMAINS = ROOT / "ontology/schema/domains"
 FORMAT = json.loads((ROOT / "ontology/schema/_format.schema.json").read_text(encoding="utf-8"))
 SERVED = json.loads((ROOT / "EVIDENCE/live/2026-09-30-portal-live-check.json").read_text(encoding="utf-8"))["relations"]
+# Plus the relations a later recorded live GET /v1/relations read served that the
+# 2026-09-30 check predates: the pinned catalog marks each live_added and cites that read
+# (live_added.ref); a manifest-only relation is never added here.
+_PINNED = json.loads(schema.CATALOG_SNAPSHOT_PATH.read_text(encoding="utf-8"))
+assert _PINNED["live_added"]["ref"].startswith("live GET /v1/relations@"), _PINNED["live_added"]
+# A manifest relation listed after 2026-09-30 is served on the same evidence only when the
+# whole pinned catalog reproduces the recorded live body's structure digest (names, columns,
+# keys: ``live_digest`` over ``live_served`` relations, scripts/gen_ontology_skeleton.py
+# merge-live): then that live read served it with exactly this key. Otherwise only the
+# live_added rows count.
+from scripts.gen_ontology_skeleton import served_structure_digest  # noqa: E402
+
+_LIVE_READ_ALL = (_PINNED["live_added"].get("live_served") == len(_PINNED["relations"])
+                  and _PINNED["live_added"].get("live_digest")
+                  == served_structure_digest(_PINNED["relations"]))
+SERVED = {**{row["name"]: {"key": row["key"], "since": row["since"],
+                           "unavailable": row["unavailable"]}
+             for row in _PINNED["relations"]
+             if row.get("live_added") is True or _LIVE_READ_ALL}, **SERVED}
 LINK_CONTRACTS = {c["id"] for c in json.loads(
     (ROOT / "operating/link_contracts.json").read_text(encoding="utf-8"))["contracts"]}
 IDENTIFIERS = ROOT / "ontology/schema/identifiers.json"
-# The curated files; the checks below run over every domain file present.
+# The files this lane (L5b) owns; the checks below run over every domain file present.
 L5B = ("manufacturing", "catalog_parties", "bc_finance")
 
 
@@ -350,6 +370,18 @@ class BindingsMatchReadableSources(unittest.TestCase):
                 if "time" in event:
                     yield event["time"]["binding"], event["time"]["path"], "served"
 
+    def test_a_manifest_relation_is_served_only_through_the_recorded_live_digest(self):
+        """public.app_bc_entity_map (manifest since TASK-3525, after the 2026-09-30 check)
+        counts as served because the recorded live read's digest covers the whole pinned
+        catalog; one changed key breaks the digest, so it would not count."""
+        self.assertTrue(_LIVE_READ_ALL)
+        self.assertEqual(SERVED["public.app_bc_entity_map"]["key"], ["id"])
+        changed = copy.deepcopy(_PINNED["relations"])
+        row = next(r for r in changed if r["name"] == "public.app_bc_entity_map")
+        row["key"] = ["source_id"]
+        self.assertNotEqual(served_structure_digest(changed),
+                            _PINNED["live_added"]["live_digest"])
+
     def test_portal_bindings_name_served_relations_and_keys(self):
         for bid, binding in CATALOG.bindings.items():
             if binding["source"] != "portal_api":
@@ -364,7 +396,7 @@ class BindingsMatchReadableSources(unittest.TestCase):
         for bid, path, availability in self._paths():
             binding = CATALOG.bindings.get(bid)
             if binding is None:
-                continue  # another domain's binding (missing ones are reported by test_zero_orphan_links)
+                continue  # another lane's binding (missing ones are reported by test_zero_orphan_links)
             if binding["source"] != "bc" or CATALOG.type_domain[CATALOG.binding_type[bid]] not in L5B:
                 continue
             self.assertIn(binding["relation"], grammar.BC_ENTITY_SETS, bid)
@@ -405,7 +437,7 @@ def errors_of(documents) -> list[str]:
 
 
 class LoaderEnforcesValueInvariants(unittest.TestCase):
-    """The value invariants hold for every consumer of the loader, not only in domain tests."""
+    """The value invariants hold for every consumer of the loader, not only in lane tests."""
 
     def test_curated_files_compile(self):
         self.assertTrue(compile_curated().digest.startswith("sha256:"))
@@ -493,7 +525,7 @@ def bc_capture(binding_id: str | None) -> bool:
 
 
 class IdentityScope(unittest.TestCase):
-    """Identity-tier repairs: company scope, batch collapse, supplier codes."""
+    """Identity-tier repairs (review of 413a0bb): company scope, batch collapse, supplier codes."""
 
     def test_every_bc_to_bc_link_binding_is_company_scoped(self):
         compiled = compile_curated()

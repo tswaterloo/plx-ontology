@@ -1,4 +1,4 @@
-"""Load, validate and digest the ontology schema.
+"""Load, validate and digest the ontology schema (09-CRITIQUE R9, lane L4).
 
 The schema is a set of ``plx-ontology-domain/v1`` files (C0 format,
 ``ontology/schema/_format.schema.json``):
@@ -47,7 +47,7 @@ order, of the order of id-keyed lists, and of JSON formatting; ordered semantics
 Link bindings whose two ends are BC captures compare within one BC company:
 document and master numbers are unique only per company (book), so
 ``CompiledSchema.company_scope`` lists them (``link_company_scope``) until the C0
-format can say it (``bc-link-company-scope``). A binding
+format can say it (devloop/OPEN-DECISIONS.md ``bc-link-company-scope``). A binding
 joining a BC capture to another source on a BC number, not on the BC record's key, does
 not know the company (``bc_company_not_known``): its links are at most leads.
 
@@ -66,8 +66,8 @@ relations and whether a catalog now serves them (time to move the file to domain
 
 ``drift_report`` compares a compiled schema with a (newer) catalog: served
 relations neither bound nor excluded, bound relations or columns that are gone
-(a property whose column is gone is reported as ``degraded``), served columns
-no binding reads, and declared ``not_served`` columns that are now served.
+(a property whose column is gone is reported as ``degraded``, R9b), served columns
+no binding reads (R9c), and declared ``not_served`` columns that are now served.
 
 Stdlib only; no network; imports only ``ontology.json_contract`` (the profile file is read
 as JSON, never through ``ontology.document_fields``).
@@ -97,6 +97,7 @@ META_DIR = GENERATED_DIR / "meta"
 COVERAGE_PATH = META_DIR / "coverage.json"
 CATALOG_SNAPSHOT_PATH = META_DIR / "portal_catalog.json"
 IDENTIFIERS_PATH = SCHEMA_DIR / "identifiers.json"
+UPSTREAM_ASKS_PATH = SCHEMA_DIR / "upstream_asks.json"
 LINK_CONTRACTS_PATH = Path(__file__).resolve().parent.parent / "operating" / "link_contracts.json"
 
 COVERAGE_FORMAT = "plx-ontology-skeleton-coverage/v1"
@@ -107,7 +108,7 @@ _QUALIFIED = re.compile(r"^([a-z][a-z0-9_]*)\.([a-z][a-z0-9_]*)$")
 _COLUMN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-# Lineages the C0 format admits as authority only with a human confirmation:
+# Lineages the C0 format admits as authority only with a human confirmation (R1/Q1):
 # leaving them out of a precedence is expected, so it is not even a warning.
 NEVER_AUTHORITY_UNCONFIRMED = frozenset({"gold_native_staging"})
 
@@ -242,11 +243,24 @@ MC_MENTION_LINK_RULES: tuple[Mapping[str, Any], ...] = tuple(
          "Mission Control approval gate reason"),
         ("KnowledgeEntry", "mission_control.knowledge", "mentioned_in_knowledge_entry",
          "knowledge entry (title or snippet)")))
+# Teams messages (integrations/capture_teams.py, ontology/project_graph.py TeamsCaptures
+# .documents): a channel or chat message's subject and body. The sender is a Teams account
+# the capture cannot classify by domain, so every mention is an external assertion, a lead.
+TEAMS_MENTION_LINK_RULES: tuple[Mapping[str, Any], ...] = tuple(
+    {"from": source, "from_binding": binding, "reverse_name": reverse, "cardinality": "N:M",
+     "tier_ceiling": "lead", "evidence": ("wb.mentions", "ctx.mentions"),
+     "description": _MC_MENTION_DESCRIPTION.replace("{what}", what)}
+    for source, binding, reverse, what in (
+        ("TeamsChannelMessage", "gen.teams.channel_messages",
+         "mentioned_in_teams_channel_message", "Teams channel message (subject or body)"),
+        ("TeamsChatMessage", "gen.teams.chat_messages", "mentioned_in_teams_chat_message",
+         "Teams chat message (subject or body)")))
 MENTION_LINK_RULES: tuple[Mapping[str, Any], ...] = (MENTION_LINK_RULE,
                                                      SHAREPOINT_MENTION_LINK_RULE,
                                                      ATTACHMENT_MENTION_LINK_RULE,
                                                      CONTAINER_MEMBER_MENTION_LINK_RULE,
-                                                     *MC_MENTION_LINK_RULES)
+                                                     *MC_MENTION_LINK_RULES,
+                                                     *TEAMS_MENTION_LINK_RULES)
 
 
 def _snake_case(name: str) -> str:
@@ -390,6 +404,14 @@ def _field_authority_note(profile: Mapping[str, Any], field: str, noun: str,
     return note + "."
 
 
+def _money_markings() -> set[str]:
+    """The markings money may carry: finance, and a marking every finance holder holds
+    (``store_ddl.MARKING_HELD_WITH``; purchasing_prices, owner decision 2026-10-27,
+    ``schema/overrides/markings.json`` scoped_markings)."""
+    from ontology.store_ddl import MARKING_HELD_WITH
+    return {"finance"} | {m for m, by in MARKING_HELD_WITH.items() if "finance" in by}
+
+
 def _marking_vocabulary() -> set[str]:
     return set(_read_json(FORMAT_PATH)["$defs"]["marking"]["enum"])
 
@@ -472,9 +494,12 @@ def document_field_properties(profile: Mapping[str, Any], vocabularies: Mapping[
                             f"fields.{field}.place", "as_is"))
         elif kind == "money":
             per_unit = bool(spec.get("per_unit"))
+            # Money is finance, unless the field names a money marking every finance
+            # holder holds (store_ddl.MARKING_HELD_WITH): that one replaces finance.
+            narrower = spec.get("marking") in _money_markings() - {"finance"}
             out.append(prop(name, kind, spec, {
                 "value_type": "money", "money_measure": "unit_price" if per_unit else "amount",
-                "markings": ["finance"]}, value, "decimal_text",
+                "markings": [] if narrower else ["finance"]}, value, "decimal_text",
                 currency_from=f"fields.{field}.currency",
                 tax_basis=spec.get("tax_basis", "unknown"),
                 **({"per_unit_from": f"fields.{field}.per_unit"} if per_unit else {})))
@@ -693,7 +718,7 @@ class Catalog:
 
     @property
     def digest(self) -> str:
-        """Order-independent hash of the catalog (tracked on each sync)."""
+        """Order-independent hash of the catalog (R9a: tracked on each sync)."""
         return _sha256({name: {"columns": sorted(rel.columns),
                                "key": list(rel.key) if rel.key is not None else None,
                                "since": dict(rel.since) if rel.since else None,
@@ -915,7 +940,8 @@ def bc_company_not_known(link_binding: Mapping[str, Any],
     binding's whole key.
 
     BC numbers (document No., customer/vendor/item No.) recur across companies, and a
-    Portal row does not serve the book it was posted to (``bc-link-company-scope``), so such a pair names that number in every company
+    Portal row does not serve the book it was posted to (devloop/OPEN-DECISIONS.md
+    ``bc-link-company-scope``), so such a pair names that number in every company
     that holds it: a link is at most a ``lead`` until the book is served. A pair on
     the BC binding's key (its system id; a key answering in two companies is dropped
     as ``binding_key_not_unique``) names one record of one company. ``bindings`` as
@@ -1270,9 +1296,10 @@ def compile_documents(documents: Iterable[tuple[str, Any]], *,
             where = f"{tid}.{p['name']}"
             check_kind(where, p.get("identifier_kind"))
             if p["value_type"] == "money" and \
-                    "finance" not in type_markings | set(p.get("markings", [])):
-                errors.append(f"{where}: money must carry the finance marking "
-                              "(on the property or its object type)")
+                    not _money_markings() & (type_markings | set(p.get("markings", []))):
+                errors.append(f"{where}: money must carry the finance marking, or a money "
+                              "marking every finance holder holds (store_ddl."
+                              "MARKING_HELD_WITH), on the property or its object type")
             for holder in [p] + list(p["sources"]):
                 label = where if holder is p else f"{where} source {holder['binding']}"
                 for key in ("unit", "per_unit"):
@@ -1368,7 +1395,7 @@ def compile_documents(documents: Iterable[tuple[str, Any]], *,
                 # still shown and conflicts reported (C0: authority picks the displayed
                 # value; it does not have to rank every lineage). Reported as a warning,
                 # except gold_native_staging, which C0 admits as authority only with a
-                # human confirmation, so leaving it out is the expected case.
+                # human confirmation (R1/Q1), so leaving it out is the expected case.
                 for bid in sorted(produced):
                     ranked = {lin for rule in p["authority"]["precedence"]
                               if rule.get("binding", bid) == bid for lin in rule["lineage"]}
@@ -1713,6 +1740,26 @@ def load_schema(root: str | Path = SCHEMA_DIR, *,
     return pickle.loads(blob)
 
 
+def load_upstream_asks(path: str | Path = UPSTREAM_ASKS_PATH) -> dict[str, str]:
+    """Relation -> later_ask id for the reporting-API relations the schema binds that the
+    API does not serve yet (``upstream_asks.json``: ``{ask: {"relations": [...]}}``). The
+    drift probe reports a missing one under its ask, not as unexplained; a relation named
+    under two asks, or a malformed file, raises (fail closed)."""
+    doc = _read_json(Path(path))
+    asks = doc.get("asks") if isinstance(doc, dict) else None
+    if not isinstance(asks, dict):
+        raise ValueError(f"{path}: expected an object with 'asks'")
+    out: dict[str, str] = {}
+    for ask, entry in asks.items():
+        relations = entry.get("relations") if isinstance(entry, dict) else None
+        if not isinstance(relations, list) or not all(isinstance(r, str) for r in relations):
+            raise ValueError(f"{path}: ask {ask!r} needs a 'relations' list of names")
+        for relation in relations:
+            if out.setdefault(relation, ask) != ask:
+                raise ValueError(f"{path}: {relation} is named under {out[relation]} and {ask}")
+    return out
+
+
 def pending_report(catalog: Catalog, root: str | Path = SCHEMA_DIR) -> list[dict[str, Any]]:
     """Every Portal relation a pending file binds, and whether ``catalog`` serves it now
     (then the file belongs in domains/; until then the relation is an upstream ask)."""
@@ -1733,7 +1780,7 @@ def pending_report(catalog: Catalog, root: str | Path = SCHEMA_DIR) -> list[dict
 
 
 def drift_report(compiled: CompiledSchema, catalog: Catalog) -> dict[str, Any]:
-    """Compare a compiled schema with a catalog (drift guard)."""
+    """Compare a compiled schema with a catalog (R9 drift guard a-c)."""
     bound = compiled.portal_bindings()
     served = catalog.served()
     unbound = sorted(set(served) - set(bound) - set(compiled.excluded_relations))

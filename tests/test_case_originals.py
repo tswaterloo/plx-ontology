@@ -1,5 +1,5 @@
 """Case originals registry and reader (scripts/case_originals.py): registry rows from a
-trimmed copy of the source-pin record and capture records, and one read of every
+trimmed copy of the Dot's source-pin record and capture records, and one read of every
 registered original and every watch-folder file through the GET-only Graph clients over a
 fixture tenant (injected transport)."""
 
@@ -24,7 +24,7 @@ import zipfile
 from integrations.graph_read import quick_xor_hash
 from integrations.live_source_grammar import encode_share_id
 from integrations.tests import test_live_source_adapters as adapters
-from verify import live_verify as lv
+from devloop import live_verify as lv
 from scripts import case_originals as co
 
 SECRET = "s3cr3t~CLIENT~value~do-not-leak"
@@ -96,7 +96,7 @@ PROCESS = f"https://{SP}/sites/Operations/Shared%20Documents/Owner/process-maps/
 
 
 def record() -> dict:
-    """A trimmed copy of the source record's shape."""
+    """A trimmed copy of the advisory record's shape (field names as the Dot writes them)."""
     teams = {"source_message_url": "https://teams.microsoft.com/l/message/19%3Aabc/1",
              "source_message_id": "1", "source_attachment_id": "d6-1",
              "submitted_at": "2026-10-12T18:20:43.979Z",
@@ -235,7 +235,7 @@ CAP_ZIP = _capture_zip()
 
 
 def capture(name: str, data: bytes, item: str, sha: str | None = None) -> dict:
-    """A capture record's shape (a context record naming one original file by
+    """A capture record's shape (an advisory context record naming one original file by
     its provider size and quickXorHash only)."""
     return {"schema": "plx-advisory/v1", "kind": "context",
             "created_at": "2026-10-15T10:03:42+00:00",
@@ -250,7 +250,7 @@ def capture(name: str, data: bytes, item: str, sha: str | None = None) -> dict:
 
 
 
-# -- a manifest record (a read of a SharePoint library: source_manifest,
+# -- a manifest record (the Dot's read of a SharePoint library: source_manifest,
 #    nested_attachment_manifest, zip_member_manifest), trimmed to the record's field shapes
 MSITE, MWEB, MLIST = (uuid.UUID(f"{n}{n}{n}{n}0000-0000-4000-8000-00000000000{n}")
                       for n in (1, 2, 3))
@@ -261,7 +261,7 @@ ART_PATH = "/Art Examples"
 LOTION = b"# Lotion thread\nThe lotion ends pending 7K2.\n"
 INDEX = b"<html><body>index v2 body 3J8</body></html>"
 MAP_LINK = "https://claude.ai/artifact/not-a-registry-value"
-CAVEATS = {  # verbatim
+CAVEATS = {  # owner directive 642494a1e893, verbatim
     "a": "the issue index's lotion re-approval and the customer's concentrate cancellation "
          "are index claims only; the supplied transcripts don't support them (lotion ends "
          "pending; no cancellation in the 142-line concentrate transcript), and neither is "
@@ -472,7 +472,7 @@ class ReportAssertionTests(unittest.TestCase):
     own ``expect`` is applied with ``check_expectations``)."""
 
     def spec(self):
-        return json.loads((Path(__file__).resolve().parent.parent / "verify" / "live-checks"
+        return json.loads((Path(__file__).resolve().parent.parent / "devloop" / "live-checks"
                            / "case.originals_read.json").read_text(encoding="utf-8"))
 
     def test_a_cited_fact_without_a_resolving_citation_is_mislabelled(self):
@@ -625,9 +625,12 @@ class CaseOriginalsTest(unittest.TestCase):
         self.assertEqual([a["record_sha256"] for a in registry["advisories"]],
                          ["5cfdad986c741bb61fd3cde2c21b88c2cc59a608d7522a0494f7c84e360cbe71",
                           "a20ba73959a0c2557d4f343cf1f8108dc3cdababa6a38e537689be58eb332e96",
-                          "f2cd062d2ad182dbc8efc6024d89e0aa8b11702275a9b0b22b45e81693181276"])
+                          "f2cd062d2ad182dbc8efc6024d89e0aa8b11702275a9b0b22b45e81693181276",
+                          # the card-sources input's one cited record (Laura's ZIP)
+                          "b1f2c4fa840b5497d3d0b6b0e61c685997e6593b62dfe0934210b6a25e05e23e"])
+        self.assertEqual([a["role"] for a in registry["advisories"]][-1], "card")
         self.assertEqual((registry["counts"]["file_records"], registry["counts"]["aliases"],
-                          len(registry["counts"]["cases"])), (92, 21, 9))
+                          len(registry["counts"]["cases"])), (92, 21, 10))
         text = co.REGISTRY_PATH.read_text(encoding="utf-8")
         for leak in ('"originals/', '"expanded/', "tempauth", "downloadUrl", "/home/",
                      "Bearer"):
@@ -636,7 +639,7 @@ class CaseOriginalsTest(unittest.TestCase):
                            if "revision" in r and r["revision"]["version_id"] in
                            ("195.0", "197.0"))
         self.assertEqual(revisions, ["195.0", "197.0"])
-        # the four captures: one row each, bound to their case and gap; over the
+        # the four advisory captures: one row each, bound to their case and gap; over the
         # reader's content bound a typed oversize row, never a sha256 the record lacks
         captures = [r for r in registry["rows"] if r.get("origin") == "capture"]
         self.assertEqual([(r["capture"]["path"][8:20], r["capture"]["gap"], r["status"],
@@ -761,6 +764,39 @@ class CaseOriginalsTest(unittest.TestCase):
         self.assertTrue(all(method == "GET" for method, url in tenant.calls
                             if "login.microsoftonline.com" not in url))
 
+    def test_a_row_proven_by_a_recorded_capture_is_stored_and_served(self):
+        """A pin an earlier capture proved (``proven_by``) is held like any other read:
+        its bytes and extracted text go into the store, so the host can serve it and the
+        scorer counts it held. Verified by hash only, it was held nowhere (RRO map)."""
+        from operating import captured_originals as captured
+
+        proven = record()
+        proven["source_inventory"]["files"][0].update(
+            claude_full_body_read_status="proven_by_recorded_capture",
+            claude_receipt_id="eval.use_case_proposal",
+            source_message_url="https://teams.microsoft.com/l/message/19%3Aabc%40thread.v2/1"
+                               "?context=%7b%22contextType%22%3a%22chat%22%7d")
+        self.raw = json.dumps(proven).encode()
+        registry = self.build(watch_links=[PROCESS])
+        self.path.write_text(json.dumps(registry), encoding="utf-8")
+        row = next(r for r in registry["rows"] if r.get("expected", {}).get("sha256") == h(MAP)
+                   and r["origin"] == "baseline")
+        self.assertEqual(row["proven_by"], ["eval.use_case_proposal"])
+        self.run_read(Tenant())
+        receipt = self.receipt(row["id"])
+        self.assertEqual((receipt["body_status"], receipt["match"], receipt["proven_by"],
+                          receipt["stored"], receipt["extraction"]["status"]),
+                         ("read", True, ["eval.use_case_proposal"],
+                          f"case-originals/{h(MAP)}", "complete"))
+        store = self.root / "state"
+        self.assertEqual(h((store / receipt["stored"]).read_bytes()), h(MAP))
+        self.assertIn("Unique body sentence 9F3.",
+                      (store / receipt["extraction"]["text_ref"]).read_text(encoding="utf-8"))
+        held = captured.CapturedOriginals(store, gate=lambda *_: False).entries()[row["id"]]
+        self.assertIsNone(held.reason)
+        self.assertEqual({k: held.unit[k] for k in ("kind", "chat_id", "message_id")},
+                         {"kind": "teams_chat", "chat_id": "19:abc@thread.v2", "message_id": "1"})
+
     def test_discovered_reads_survive_a_registry_change_without_a_request(self):
         """A registry v2 (one row added) in the same state dir reuses every discovered read
         of v1 (same eTag, size, intact bytes): no content GET, and the receipt says so."""
@@ -821,7 +857,7 @@ class CaseOriginalsTest(unittest.TestCase):
         document = json.loads(stdout)
         # the live spec over this real output: only the registry's size differs here (its
         # fewer gaps are under the cap, never a failure)
-        spec = json.loads((co.ROOT / "verify" / "live-checks" / f"{co.REPORT_CHECK}.json")
+        spec = json.loads((co.ROOT / "devloop" / "live-checks" / f"{co.REPORT_CHECK}.json")
                           .read_text(encoding="utf-8"))
         lv.validate_spec(spec, stem=co.REPORT_CHECK)
         self.assertEqual(lv.check_expectations(spec, code, document),
@@ -851,15 +887,16 @@ class CaseOriginalsTest(unittest.TestCase):
 
     def test_the_live_floor_over_the_committed_registry_needs_a_graph_read(self):
         # the committed registry through a tenant that serves none of its files: every one of
-        # its 150 entries and 4 captures reports why, yet the check fails without a Graph read
+        # its 151 entries (150 and the card-sourced Teams attachment) and 4 captures reports
+        # why, yet the check fails without a Graph read
         with mock.patch.object(co, "REPOSITORY_ROOT", self.root):
             report = co.read(ENV, registry_path=co.REGISTRY_PATH, state_dir=self.root / "s",
                              run_id="run-floor", role="verifier", sender=Tenant(),
                              ocr=lambda image: OCR_TEXT)
-        spec = json.loads((co.ROOT / "verify" / "live-checks" / f"{co.REPORT_CHECK}.json")
+        spec = json.loads((co.ROOT / "devloop" / "live-checks" / f"{co.REPORT_CHECK}.json")
                           .read_text(encoding="utf-8"))
         self.assertEqual((report["entries"], report["unreported"], report["undiagnosed"],
-                          report["captures_reported"], report["ok"]), (150, 0, 0, 4, True))
+                          report["captures_reported"], report["ok"]), (151, 0, 0, 4, True))
         self.assertEqual(lv.check_expectations(spec, 0, report),
                          ["by_status.read < 1", "read_via.drive_item < 1",
                           "case_findings.rendered < 1"])  # nothing read, nothing rendered
@@ -1108,7 +1145,7 @@ class CaseOriginalsTest(unittest.TestCase):
         self.assertFalse(report["ok"])
 
     def test_the_spec_timeout_covers_the_budget_and_one_bounded_step(self):
-        spec = json.loads((co.ROOT / "verify" / "live-checks" / f"{co.REPORT_CHECK}.json")
+        spec = json.loads((co.ROOT / "devloop" / "live-checks" / f"{co.REPORT_CHECK}.json")
                           .read_text(encoding="utf-8"))
         budget = float(spec["command"][spec["command"].index("--budget-seconds") + 1])
         self.assertGreater(spec["timeout_seconds"], budget + co.STEP_BOUND_SECONDS)
@@ -1520,7 +1557,7 @@ class CaseOriginalsTest(unittest.TestCase):
         self.assertNotIn(po["id"], baseline_po.get("same_bytes_as") or [])
         self.assertEqual({tuple(r["case_ids"]) for r in added}, {("case-art",)})
         self.assertEqual({r["case"] for r in added}, {"case-art"})
-        self.assertEqual({tuple(r["proven_by"]) for r in added}, {()})  # a read
+        self.assertEqual({tuple(r["proven_by"]) for r in added}, {()})  # the Dot's read
         # the header: the record's commit, SHA-256, sections, payloads and caveats verbatim
         head = registry["advisories"][-1]
         self.assertEqual((head["role"], head["commit"], head["path"], head["record_sha256"],
@@ -1863,9 +1900,144 @@ class CaseOriginalsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "crosswalk_input_invalid"):
             self.build(crosswalks=[("evals/x.json", b"not json")])
 
+    def card_sources(self, data: bytes, **over) -> tuple[bytes, dict, str]:
+        """A card-sources input naming one Teams chat attachment (and one gap), the
+        advisory record that pins it, and the attachment's content URL."""
+        url = personal("laura", "flow-mapper.zip")
+        thread = "19%3A0c75e4d6abc%40thread.v2/1792424594223"
+        record_doc = {"schema": "plx-advisory/v1", "kind": "context", "source_id": url,
+                      "source_revision": "sha256:" + h(data),
+                      "evidence": [{"source": url, "detail": "the attachment"},
+                                   {"source": f"https://teams.microsoft.com/l/message/{thread}",
+                                    "detail": "the chat message that shared it"}]}
+        attachment = {"name": "flow-mapper.zip", "owner": "Laura", "url": url,
+                      "teams_message_url": f"https://teams.microsoft.com/l/message/{thread}"
+                                           "?context=%7b%22contextType%22%3a%22chat%22%7d",
+                      "attachment_id": "3f6962f7-39ac-4675-b1fb-844893e7705d",
+                      "submitted_at": "2026-10-19T15:43:14.223Z", "bytes": len(data),
+                      "sha256": h(data), "advisory": {"commit": "e" * 40,
+                                                      "path": "context/card.json"}}
+        attachment.update(over)
+        sources = {"schema": co.CARD_SOURCES_SCHEMA, "note": "test", "entries": [
+            {"case": "case-brand", "chat_attachment": attachment},
+            {"case": "case-rnd", "gap": {"item": "an artifact-only map", "owner": "Erin",
+                                         "source": "an artifact invitation",
+                                         "evidence": "advisory:aaaaaaaaaaaa",
+                                         "status": "no bytes held or pinned"}}]}
+        return json.dumps(sources).encode(), record_doc, url
+
+    def test_a_card_sourced_teams_attachment_is_routed_read_and_gated_by_its_chat(self):
+        from operating.captured_originals import source_unit
+
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("brand-map.md", "# Brand requirements map\n")
+        data = buffer.getvalue()
+        sources, record_doc, url = self.card_sources(data)
+        records = {("e" * 40, "context/card.json"): json.dumps(record_doc).encode()}
+        registry = self.build(card_sources=sources, card_records=records)
+        [row] = [r for r in registry["rows"] if r["origin"] == "card" and "source" in r]
+        [gap] = [r for r in registry["rows"] if r["origin"] == "card" and "gap" in r]
+        self.assertEqual((row["status"], row["kind"], row["case_ids"], row["expected"]),
+                         ("pinned", "original", ["case-brand"],
+                          {"bytes": len(data), "sha256": h(data)}))
+        self.assertEqual((row["source"]["url"], row["source"]["teams_message_id"],
+                          row["source"]["teams_attachment_id"]),
+                         (url, "1792424594223", "3f6962f7-39ac-4675-b1fb-844893e7705d"))
+        self.assertEqual((gap["status"], gap["case"], gap["expected"]),
+                         ("gap", "case-rnd", {"bytes": None, "sha256": None}))
+        self.assertEqual(registry["advisories"][-1]["role"], "card")
+        self.assertEqual(registry["advisories"][-1]["record_sha256"], h(records[(
+            "e" * 40, "context/card.json")]))
+        # read through the attachment's content URL (graph.share_drive_item), GET only
+        tenant = Tenant()
+        tenant.files[(PERSONAL, "01LAURA")] = ("/Microsoft Teams Chat Files", "01FT",
+                                               "flow-mapper.zip", data)
+        tenant.shares[encode_share_id(url)] = (PERSONAL, "01LAURA")
+        self.path.write_text(json.dumps(registry), encoding="utf-8")
+        report = self.run_read(tenant)
+        self.assertEqual({m for m, _ in tenant.calls}, {"GET", "POST"})  # POST: token only
+        receipt = self.receipt(row["id"])
+        self.assertEqual((receipt["body_status"], receipt["match"], receipt["read_via"],
+                          receipt["sha256"]), ("read", True, "shared_link", h(data)))
+        self.assertGreaterEqual(report["read_via"]["shared_link"], 1)
+        # served behind the chat message's gate, the OneDrive owner's exclusion first
+        unit, reason = source_unit(receipt)
+        self.assertEqual((unit["kind"], unit["chat_id"], unit["message_id"],
+                          unit["onedrive_owner"], reason),
+                         ("teams_chat", "19:0c75e4d6abc@thread.v2", "1792424594223",
+                          "laura_x_com", None))
+        # a Graph refusal of the link is that row's own typed finding
+        tenant.shares.pop(encode_share_id(url))
+        self.run_read(tenant, run_id="run-2")
+        self.assertEqual(self.receipt(row["id"])["body_status"], "gone")
+
+    def test_a_card_source_its_record_does_not_prove_fails_closed(self):
+        record_key = ("e" * 40, "context/card.json")
+
+        def attempt(sources, record_doc, records=None):
+            co.build_registry(
+                self.raw, advisory_commit=COMMIT, advisory_path="context/x.json",
+                card_sources=sources, card_records=records if records is not None else {
+                    record_key: json.dumps(record_doc).encode()})
+
+        data = b"PK\x05\x06" + b"\0" * 18   # an empty zip archive no other row pins
+        sources, good, url = self.card_sources(data)
+        refused = {
+            # the record names other bytes, another file or another message
+            "card_attachment_unproven": [
+                (sources, {**good, "source_revision": "sha256:" + "0" * 64}),
+                (sources, {**good, "source_id": personal("laura", "other.zip")}),
+                (sources, {**good, "evidence": good["evidence"][:1]}),
+                (self.card_sources(data, url=personal("laura", "other.zip"))[0], good),
+                (self.card_sources(data, sha256="0" * 64)[0], good)],
+            # a channel message link, a non-chat link, an unknown key, a malformed pin
+            "card_attachment_invalid": [
+                (self.card_sources(data, teams_message_url="https://teams.microsoft.com/l/"
+                                   "message/19%3Ax%40thread.tacv2/1?context=%7b%22contextType"
+                                   "%22%3a%22channel%22%7d")[0], good),
+                (self.card_sources(data, teams_message_url=url)[0], good),
+                (self.card_sources(data, bytes=-1)[0], good),
+                (self.card_sources(data, advisory={"commit": "e" * 40,
+                                                  "path": "../card.json"})[0], good)],
+            "card_source_invalid": [(self.card_sources(data, extra="x")[0], good)],
+            "card_sources_invalid": [(b"[]", good), (json.dumps(
+                {"schema": "plx-case-originals-card-sources/v0", "entries": []}).encode(),
+                good)]}
+        for reason, cases in refused.items():
+            for sources_bytes, record_doc in cases:
+                with self.subTest(reason=reason), self.assertRaisesRegex(ValueError, reason):
+                    attempt(sources_bytes, record_doc)
+        with self.assertRaisesRegex(ValueError, "card_advisory_missing"):
+            attempt(sources, good, records={})
+        # bytes another row already pins: the card names that row instead
+        dup_sources, dup_record, _ = self.card_sources(MAP)
+        with self.assertRaisesRegex(ValueError, "card_attachment_duplicates_row"):
+            co.build_registry(self.raw, advisory_commit=COMMIT, advisory_path="context/x.json",
+                              card_sources=dup_sources,
+                              card_records={record_key: json.dumps(dup_record).encode()})
+
+    def test_committed_card_rows_are_the_generators(self):
+        # examples/case_originals_card_sources.json through the generator gives the
+        # committed rows of origin card, the attachment proven by its advisory record
+        # (read from the local Git objects; absent there, nothing can be checked).
+        raw = (co.ROOT / "examples" / "case_originals_card_sources.json").read_bytes()
+        records = co._card_records(raw)
+        if not records:
+            self.skipTest("the cited advisory record is not in this checkout's Git objects")
+        heads, files, gaps = co._card_rows(raw, records)
+        registry, _ = co.load_registry(co.REGISTRY_PATH)
+        self.assertEqual([r for r in registry["rows"] if r.get("origin") == "card"],
+                         files + gaps)
+        self.assertEqual(registry["advisories"][-len(heads):], heads)
+        [zip_row] = files
+        self.assertEqual((zip_row["name"], zip_row["expected"]["sha256"][:8],
+                          zip_row["source"]["teams_message_id"]),
+                         ("regulatory-process-flow-mapper.zip", "1c081e63", "1792424594223"))
+
     def test_committed_registry_carries_the_artwork_manifest_and_the_crosswalk(self):
         registry, _ = co.load_registry(co.REGISTRY_PATH)
-        head = registry["advisories"][-1]
+        [head] = [a for a in registry["advisories"] if a["role"] == "manifest"]
         self.assertEqual((head["role"], head["commit"], head["path"], head["record_sha256"],
                           head["case"]),
                          ("manifest", "78640266849886c3816e9b78adbfcc6f64042aad",

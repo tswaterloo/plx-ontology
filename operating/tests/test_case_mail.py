@@ -8,7 +8,9 @@ capture (Graph delta); socket connections are refused for the whole module. Two
 mailboxes are captured: the allowlisted shared ``order-confirmation@`` inbox (its UPN differs
 from the allowlisted SMTP address) and a mailbox outside the case mail scope
 whose mail cites the same PO number; the reader is even granted that mailbox
-by the live audience, so only the scope keeps it out.
+by the live audience, so only the scope keeps it out. Since the owner decision of
+2026-10-26 the scope covers every directory user except excluded people, so the
+outside mailbox belongs to a person excluded after the capture ran (``CASE_ENV``).
 """
 
 from __future__ import annotations
@@ -64,6 +66,11 @@ OUT_KEYS = [f"mail:{OUTSIDE}", f"mail:{CEO_ID}"]
 LIVE_AUDIENCE = {**{key: ["staff:purchasing", "svc:mail-capture", "agent:case-bot"]
                     for key in MAIL_KEYS},
                  **{key: ["staff:purchasing", "svc:mail-capture"] for key in OUT_KEYS}}
+# The host environ of the case runtime: the outside mailbox's owner is an excluded
+# person (owner decision 2026-10-26: every directory user but the excluded people is in
+# the case mail scope). The capture ran before the exclusion (retroactive).
+CASE_ENV = {**ENV, "PLX_EXCLUDED_PEOPLE_OIDS":
+            f"{ENV['PLX_EXCLUDED_PEOPLE_OIDS']},{CEO_ID}"}
 CAPTURE_ACTOR = Actor("plx", frozenset({"svc:mail-capture"}), "restricted")
 CAPTURE_SCOPE = {"schema": "plx-mail-capture-scope/v1", "window_days": 90,
                  "internal_domains": ["petrasoap.com"],
@@ -216,7 +223,7 @@ class CaseMailTestCase(unittest.TestCase):
                               originals_options={"extractor": _extractor},
                               # The guard the host reads from the environ its live
                               # readers are built from (case_mail.main, host.py).
-                              people_exclusion=PeopleExclusion.from_env(ENV), **options)
+                              people_exclusion=PeopleExclusion.from_env(CASE_ENV), **options)
         self.addCleanup(runtime.close)
         return runtime
 
@@ -510,7 +517,7 @@ class PermissionTests(CaseMailTestCase):
         self.assertNotIn("graph-mail://", json.dumps(view))
 
     def test_cited_mail_only_case_follows_the_capture_completeness(self):
-        # With no PO root, the thread index alone decides whether
+        # Review of 4665b18: with no PO root, the thread index alone decides whether
         # the related mail can be complete.
         runtime = self.runtime()
         citation = runtime.mail_message(PURCHASING, PO_BOX, "m-confirm")["citation"]
@@ -794,7 +801,7 @@ class McpHostScopeTests(CaseMailTestCase):
         runtime = CaseRuntime(self.state, client=client, audience=self.mirror_audience,
                               tenant="plx", live=live,
                               mirror_options={"clock": self.clock, "retry_delay_seconds": 0},
-                              people_exclusion=PeopleExclusion.from_env(ENV))
+                              people_exclusion=PeopleExclusion.from_env(CASE_ENV))
         self.addCleanup(runtime.close)
         server = self.server(runtime)
         case_id = self.po_case(runtime)
@@ -936,10 +943,10 @@ class CliTests(CaseMailTestCase):
         self.assertEqual(sum(c["counts"]["findings_not_recorded"] for c in report["cases"]), 1)
 
     def test_the_live_check_spec_passes_on_the_injected_world(self):
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
 
         root = Path(lv.ROOT)
-        spec = json.loads((root / "verify/live-checks/case.mail_evidence.json")
+        spec = json.loads((root / "devloop/live-checks/case.mail_evidence.json")
                           .read_text(encoding="utf-8"))
         lv.validate_spec(spec)
         argv = [part.replace("{tmp}", str(self.root / "spec-tmp")) for part in spec["command"]]
@@ -985,10 +992,10 @@ class CliTests(CaseMailTestCase):
         # call and the missing grant are blocked parts and expect_blocked checks the rest,
         # which must still read every input no part stopped.
         from integrations.http import SourceHttpError
-        from verify import live_verify as lv
+        from devloop import live_verify as lv
 
         root = Path(lv.ROOT)
-        spec = json.loads((root / "verify/live-checks/case.mail_evidence.json")
+        spec = json.loads((root / "devloop/live-checks/case.mail_evidence.json")
                           .read_text(encoding="utf-8"))
         lookup = {"part": "mail.mailbox_lookup", "source": "microsoft-graph",
                   "http_status": 403, "error_code": "missing_permission",

@@ -1,7 +1,7 @@
 {
  "format": "plx-case-ontology-gaps/v1",
  "case": "vince-artwork",
- "status": "What the ontology lacks to answer evals/dev/artwork-lifecycle/proposed_items.json. Sources are named, never read here; 'source unknown' carries the question that would find one.",
+ "status": "What the ontology lacks to answer evals/dev/artwork-lifecycle/proposed_items.json. Sources are named, never read here; 'source unknown' carries the Dot question that would find one.",
  "advisory": "advisory:0cd0f444ac49",
  "gaps": [
   {
@@ -77,7 +77,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Is the artwork QA gate deployed on staging/UAT as a soft warning with a waiver or as a block, where is that setting held, and does accepting artwork for an unreleased formula warn or block?"
+   "dot_question": "Is the artwork QA gate deployed on staging/UAT as a soft warning with a waiver or as a block, where is that setting held, and does accepting artwork for an unreleased formula warn or block?"
   },
   {
    "id": "AL-GAP-04",
@@ -216,7 +216,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "Which record maps a Portal-minted P-item to its FileMaker packaging id during cutover, and is app_bc_entity_map populated for printed-component items?"
+   "dot_question": "Which record maps a Portal-minted P-item to its FileMaker packaging id during cutover, and is app_bc_entity_map populated for printed-component items?"
   },
   {
    "id": "AL-GAP-10",
@@ -234,7 +234,7 @@
     }
    ],
    "source": "source unknown",
-   "open_question": "After cutover, which BC record holds AO consumption of a printed label lot (assembly orders, production order consumption or item ledger entries), and in which company?"
+   "dot_question": "After cutover, which BC record holds AO consumption of a printed label lot (assembly orders, production order consumption or item ledger entries), and in which company?"
   },
   {
    "id": "AL-GAP-11",
@@ -245,7 +245,7 @@
     "AL-10"
    ],
    "source": "source unknown",
-   "open_question": "What does Form #008 record on an AO, and where is it captured today (paper, FileMaker or a Portal table)?"
+   "dot_question": "What does Form #008 record on an AO, and where is it captured today (paper, FileMaker or a Portal table)?"
   },
   {
    "id": "AL-GAP-12",
@@ -256,7 +256,7 @@
     "AL-06"
    ],
    "source": "source unknown",
-   "open_question": "Who owns the artwork department decision on a proof (a named role or person), and where is that owner recorded?"
+   "dot_question": "Who owns the artwork department decision on a proof (a named role or person), and where is that owner recorded?"
   },
   {
    "id": "AL-GAP-13",
@@ -267,7 +267,7 @@
     "AL-02"
    ],
    "source": "source unknown",
-   "open_question": "Who owns the die-line for a printed component, and where is its version held?"
+   "dot_question": "Who owns the die-line for a printed component, and where is its version held?"
   },
   {
    "id": "AL-GAP-14",
@@ -278,7 +278,7 @@
     "AL-07"
    ],
    "source": "source unknown",
-   "open_question": "How is a proof attached before the Portal (email, FileMaker or SharePoint), and which record links it to its printed component?"
+   "dot_question": "How is a proof attached before the Portal (email, FileMaker or SharePoint), and which record links it to its printed component?"
   },
   {
    "id": "AL-GAP-15",
@@ -289,7 +289,7 @@
     "AL-02"
    ],
    "source": "source unknown",
-   "open_question": "Which print-ready artifacts go to the printer for an approved version, and where are they stored?"
+   "dot_question": "Which print-ready artifacts go to the printer for an approved version, and where are they stored?"
   }
  ]
 }
