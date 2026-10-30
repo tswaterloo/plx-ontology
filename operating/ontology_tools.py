@@ -687,6 +687,24 @@ class StoreReader:
             + where + "ORDER BY f.rowid LIMIT :batch",
             scope.params(words=words, after=after, batch=batch, type=object_type)))
 
+    def object_chunks(self, scope: _Scope, object_ids: Sequence[str]) -> list[sqlite3.Row]:
+        """Every readable chunk of captured document text of ``object_ids`` (the shape of
+        ``chunk_matches``, no word match): the object readable, the version the field
+        reads current at :at, the field's markings permitted; in chunk order."""
+        return list(self.conn.execute(
+            "SELECT t.chunk_id AS row_no, t.body, fd.object_id, fd.version_handle, "
+            "fd.citation, fd.field_path, fd.sender_class, o.object_type, "
+            "o.binding_id AS object_binding, o.audience_key FROM text_chunks t "
+            "JOIN text_fields fd ON fd.field_id = t.field_id "
+            "JOIN objects o ON o.object_id = fd.object_id "
+            "JOIN object_versions v ON v.l1_handle = fd.version_handle "
+            "AND v.object_id = fd.object_id "
+            "WHERE fd.object_id IN (SELECT value FROM json_each(:ids)) AND "
+            + self._VISIBLE_OBJECT + "AND " + self._at("v")
+            + " AND fd.markings IN (SELECT value FROM json_each(:marks)) "
+            "ORDER BY fd.object_id, fd.field_id, t.start",
+            scope.params(ids=json.dumps(list(object_ids)))))
+
     def objects_of_type(self, scope: _Scope, object_type: str, after: str,
                         batch: int) -> list[sqlite3.Row]:
         return list(self.conn.execute(
@@ -1486,6 +1504,9 @@ class _Match:
     exact: bool = False
     # A captured document's text: its sender class (``untrusted_text`` origin).
     sender_class: str | None = None
+    # Relevance order of a hybrid search hit (``operating/search``, PLX_SEARCH=hybrid):
+    # 1 is the best; 0 for every other match, which keeps the object-id order.
+    order: int = 0
 
     def sort_key(self) -> tuple:
         # Other text (a document's words, a value that is not display text) ranks with
@@ -1493,7 +1514,8 @@ class _Match:
         # the one it is shown and gated by.
         primary = self.role == "primary" and self.reason not in _OTHER_TEXT_REASONS
         return (_TIER_RANK[self.tier], 0 if primary else 1,
-                _REASON_RANK[self.reason], 0 if self.exact else 1, self.object_id)
+                _REASON_RANK[self.reason], 0 if self.exact else 1, self.order,
+                self.object_id)
 
 
 # --------------------------------------------------------------------------- sets
@@ -2362,8 +2384,20 @@ class OntologyTools:
     # ------------------------------------------------------------------ plx.find
 
     def _find(self, arguments: Mapping[str, Any], actor: Actor) -> dict[str, Any]:
-        with self.store.lock:
-            result = self._find_store(arguments, actor)
+        from operating.search import plug
+        with plug.call_state():
+            query = arguments.get("query")
+            if (isinstance(query, str) and plug.enabled() and "as_known_at" not in arguments
+                    and _text_tokens(query, []) and not _names_identifier(query)):
+                # Hybrid retrieval runs before the store lock is taken; its hits are gated
+                # under the lock (``_hybrid_matches``).
+                plug.prefetch(self.policy, actor, self._item_allowed, query)
+            with self.store.lock:
+                result = self._find_store(arguments, actor)
+            return self._find_after(arguments, actor, result)
+
+    def _find_after(self, arguments: Mapping[str, Any], actor: Actor,
+                    result: dict[str, Any]) -> dict[str, Any]:
         if (result["status"] != "not_found" or self.sources is None
                 or arguments.get("query") is None):
             return result
@@ -2505,12 +2539,14 @@ class OntologyTools:
         # generation (``_read_scan_cursor``).
         generation = _generation(store_meta)
         scan_after, prior, undecided_before, carry = "", 0, frozenset(), ()
+        cursor_mode: str | None = None
         if cursor is not None:
             if query is None:
                 offset, pinned, scan_after, prior, undecided_before, carry = \
                     _read_scan_cursor(cursor, fingerprint, generation)
             else:
                 offset, pinned = _read_cursor(cursor, fingerprint)
+                cursor_mode = _cursor_mode(cursor)
             if "as_known_at" not in arguments:
                 at = pinned
         scope = self._scope(actor, at)
@@ -2545,6 +2581,14 @@ class OntologyTools:
             matches, notes, scan_truncated = self._match_query(
                 scope, query, keys, arguments.get("identifier_kind"), object_type)
             notes += self._scope_identity(scope, matches, query)
+            from operating.search import plug
+            search_state = plug.current()
+            search_mode = search_state["mode"] if search_state else "index"
+            if cursor is not None:
+                plug.check_cursor_mode(cursor_mode, search_mode)
+            fallback = plug.fallback_gap(f"query:{' '.join(query.split())}")
+            if fallback is not None:
+                notes.append(fallback)
         else:
             matches, scan_truncated, undecided, scan_position = self._match_filters(
                 scope, object_type, filters, scan_after)
@@ -2813,7 +2857,8 @@ class OntologyTools:
         def finish(count: int) -> dict[str, Any]:
             done = offset + max(0, count - len(repeated))
             if query is not None:
-                next_cursor = _write_cursor(done, at, fingerprint) if done < total else None
+                next_cursor = (_write_cursor(done, at, fingerprint, search_mode)
+                               if done < total else None)
             elif done < total:
                 next_cursor = scan_cursor(done, scan_after, prior, carry)
             else:
@@ -3150,9 +3195,11 @@ class OntologyTools:
         if not tokens:
             return [], False
         needle = " ".join(tokens)
+        hybrid = self._hybrid_matches(scope, query, needle, object_type)
         terms = query_terms(tokens)
         if terms is None:
-            return [], True   # a word the index splits or drops: nothing is claimed absent
+            # A word the index splits or drops: nothing is claimed absent.
+            return hybrid or [], True
         words = " AND ".join('"' + term.replace('"', '""') + '"*' for term in terms)
         typed = None
         if self.schema is not None:
@@ -3176,8 +3223,10 @@ class OntologyTools:
                             if isinstance(prop, Mapping) and prop.get("identifier_kind")]
             passes.append(("value_text", lambda after: self.store.text_matches(
                 scope, words, held, after, batch, beside=True, object_type=object_type)))
-        out: list[_Match] = []
-        objects: set[str] = set()
+        # Hybrid hits first (their objects are not matched again by the word index,
+        # whose matches follow), so the AND-matching index only adds what search missed.
+        out: list[_Match] = list(hybrid or ())
+        objects: set[str] = {m.object_id for m in out}
         scanned = 0
         try:
             for reason, fetch in passes:
@@ -3206,6 +3255,50 @@ class OntologyTools:
         except sqlite3.OperationalError:
             return out, True   # a query the index cannot read is no proof of absence
         return out, False
+
+    def _hybrid_matches(self, scope: _Scope, query: str, needle: str,
+                        object_type: str | None) -> list[_Match] | None:
+        """With ``PLX_SEARCH=hybrid``, the objects hybrid search ranks for ``query``
+        (``operating/search``: meaning, OR-matched words, typos), as ``document_text``
+        leads in its relevance order. Each passes this store's own gate at ``scope.at``
+        (``_visible_versions``: audience, markings, time, item ACL), and its quoted text
+        is this store's own captured text of the version shown (``object_chunks``: the
+        chunk holding a query word, else its first), cited to that field: never the
+        query, never the search row. An object with no stored text to quote is not a
+        candidate here. None when search is off, the time asked is not now (search
+        keeps no history) or search could not run: the word index alone answers."""
+        from operating.search import plug
+        if not plug.enabled() or not plug.is_now(scope.at, self.clock()):
+            return None
+        hits = plug.ranked(self.policy, scope.actor, self._item_allowed, query).hits
+        if not hits:
+            return None
+        ids = [h["object_id"] for h in hits if object_type is None
+               or h["object_id"].split(":", 1)[0] == object_type]
+        readable = self._visible_versions(scope, ids)
+        chunks: dict[str, list[sqlite3.Row]] = {}
+        for row in self.store.object_chunks(scope, [i for i in ids if i in readable]):
+            if row["version_handle"] == readable[row["object_id"]]["l1_handle"]:
+                chunks.setdefault(row["object_id"], []).append(row)
+        tokens = [t.casefold() for t in _text_tokens(query, [], limit=None)]
+        out: list[_Match] = []
+        for rank, object_id in enumerate(ids, start=1):
+            rows = chunks.get(object_id)
+            if not rows or len(out) >= TEXT_SCAN_CAP:
+                continue
+            best, word = rows[0], None
+            for row in rows:
+                folded = chunk_text(row["body"]).casefold()
+                word = next((t for t in tokens if t in folded), None)
+                if word is not None:
+                    best = row
+                    break
+            match = _chunk_match(best, readable[object_id], needle,
+                                 [word] if word else (tokens or [""]))
+            if match is not None:
+                match.order = rank
+                out.append(match)
+        return out
 
     def _match_filters(self, scope: _Scope, object_type: str, filters: list[dict],
                        start: str = "") -> tuple[list[_Match], bool, set[str], str | None]:
@@ -3593,6 +3686,7 @@ class OntologyTools:
         seen_props: set[str] = set()
         unreadable: set[str] = set()
         stored = self.store.scoped_currency(scope, self.store.values([object_id]))
+        first_seen: dict[tuple[str, str], Any] = {}   # when each shown value was first seen
         for row in stored:
             if wanted is not None and row["property"] not in wanted:
                 continue
@@ -3613,6 +3707,7 @@ class OntologyTools:
                 gaps.append(problem)
             else:
                 values.append(value)
+                first_seen[(row["l1_handle"], row["field_path"])] = row["recorded_at"]
         withheld_props -= seen_props
         for name in sorted(unreadable - seen_props):
             seen_props.add(name)
@@ -3639,6 +3734,7 @@ class OntologyTools:
             found, not_compared, leads = attested(self, scope, object_id, object_type)
             conflicts.extend(found)
             gaps.extend(not_compared)
+        _resolve_conflicts(conflicts, first_seen, linked_values)
 
         removal = self.store.removals([object_id], _format_time(at)).get(object_id)
         if removal is not None:
@@ -4093,9 +4189,14 @@ def _fingerprint(arguments: Mapping[str, Any], actor: Actor) -> str:
     return hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()[:16]
 
 
-def _write_cursor(offset: int, at: dt.datetime, fingerprint: str) -> str:
-    raw = json.dumps({"o": offset, "t": _format_time(at), "f": fingerprint},
-                     separators=(",", ":"))
+def _write_cursor(offset: int, at: dt.datetime, fingerprint: str,
+                  mode: str | None = None) -> str:
+    """``mode``: the ranking the page belongs to (``operating/search/plug.Ranked.mode``),
+    kept so a later page is listed from that same ranking or refused."""
+    body: dict[str, Any] = {"o": offset, "t": _format_time(at), "f": fingerprint}
+    if mode is not None and mode != "index":
+        body["m"] = mode
+    raw = json.dumps(body, separators=(",", ":"))
     return base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
 
 
@@ -4169,6 +4270,16 @@ def _read_scan_cursor(cursor: str, fingerprint: str, generation: str
 
 def _generation_tag(generation: str) -> str:
     return hashlib.sha256(generation.encode()).hexdigest()[:16]
+
+
+def _cursor_mode(cursor: str) -> str | None:
+    """The ranking mode a (validated) cursor was written for; None: the word index."""
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        mode = json.loads(base64.urlsafe_b64decode(padded.encode()).decode()).get("m")
+    except (ValueError, AttributeError):
+        return None
+    return mode if isinstance(mode, str) else None
 
 
 def _read_cursor(cursor: str, fingerprint: str) -> tuple[int, dt.datetime]:
@@ -4515,6 +4626,23 @@ def _citation_dict_ok(item: Mapping[str, Any]) -> bool:
             and bool(_HANDLE.match(str(item["l1_handle"])))
             and bool(_FIELD_PATH.match(str(item["field_path"])))
             and bool(_DIGEST.match(str(item["digest"]))))
+
+
+def _resolve_conflicts(conflicts: list[dict], first_seen: dict[tuple[str, str], Any],
+                       peer_values: Sequence[tuple[str, Mapping]]) -> None:
+    """Each value disagreement's ``resolution`` (``operating.answer_conflicts``): the
+    values the system of record, then the newest reading, then the most specific
+    document trusts, the rule and why; none trusted when no rule decides. Over the
+    values this reader already reads (the conflict holds no other)."""
+    from operating.answer_conflicts import resolution
+    dated = dict(first_seen)
+    for _, row in peer_values:
+        dated.setdefault((row["l1_handle"], row["field_path"]), row["recorded_at"])
+    for conflict in conflicts:
+        if conflict.get("kind") == "value_disagreement" and conflict.get("values"):
+            found = resolution(conflict, dated=dated)
+            if found is not None:
+                conflict["resolution"] = found
 
 
 def _conflicts(object_type: str, values: list[dict], peer_values: list[tuple[str, Mapping]],

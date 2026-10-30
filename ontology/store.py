@@ -17,9 +17,10 @@ it. Two halves:
   ``as_known_at=T`` reads rows with ``recorded_at <= T`` and (``superseded_at`` null
   or ``> T``), in every table alike.
 
-``content_digest`` is a SHA-256 over every table in primary-key order (``store_meta``
-without the volatile ``built_at``/``content_digest`` keys), so two builds from the
-same captures and schema have the same digest.
+``content_digest`` is a SHA-256 over every table's rows in primary-key order
+(``store_meta`` without its volatile keys), composed of per-segment digests (see
+``content_digest_parts``), so two builds from the same captures and schema have the same
+digest, and a seeded build digests again only the segments it wrote.
 
 Stdlib only.
 """
@@ -39,6 +40,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import time as time_module
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 from ontology import store_ddl
@@ -48,7 +50,7 @@ FORMAT = store_ddl.FORMAT
 _POST_PROJECT = "post_project"   # ontology.project.POST_PROJECT: such values are always cells
 TIER_ORDER = ("verified", "reviewed", "corroborated", "stored_by_text_join", "lead",
               "contradicted")
-VOLATILE_META = frozenset({"built_at", "content_digest"})
+VOLATILE_META = frozenset({"built_at", "content_digest", "content_digest_parts"})
 # Primary-key order of every table, for the content digest and deterministic reads.
 _TABLE_ORDER = (
     ("store_meta", "key"),
@@ -268,13 +270,16 @@ def _row_text(row: Iterable[Any]) -> str:
 _CHUNK_OBJECTS = 2000
 
 
-def _object_bounds(conn: sqlite3.Connection, every: int) -> list[Any]:
-    bounds: list[Any] = [None]
+def _object_bounds(conn: sqlite3.Connection, every: int, low: Any = None,
+                   high: Any = None) -> list[Any]:
+    """Chunk bounds over the object ids in [``low``, ``high``) (None: unbounded)."""
+    bounds: list[Any] = [low]
+    clause, args = _range("object_id", low, high)
     for index, (object_id,) in enumerate(conn.execute(
-            "SELECT object_id FROM objects ORDER BY object_id")):
+            f"SELECT object_id FROM objects{clause} ORDER BY object_id", args)):
         if index and index % every == 0:
             bounds.append(object_id)
-    bounds.append(None)
+    bounds.append(high)
     return bounds
 
 
@@ -291,10 +296,12 @@ def _range(column: str, low: Any, high: Any) -> tuple[str, list[Any]]:
     return (f" WHERE {' AND '.join(where)}" if where else ""), args
 
 
-def _value_rows(conn: sqlite3.Connection) -> Iterator[list[tuple[Any, ...]]]:
-    """Every ``object_values`` row (``VALUE_COLUMNS``), in key order, chunk by chunk of
-    objects: the view's rows read from the physical tables, a packed record's values
-    decoded here once (the view decodes one value per ``json_extract``)."""
+def _value_rows(conn: sqlite3.Connection, low: Any = None, high: Any = None
+                ) -> Iterator[list[tuple[Any, ...]]]:
+    """Every ``object_values`` row (``VALUE_COLUMNS``) of the objects in [``low``,
+    ``high``) (None: unbounded), in key order, chunk by chunk of objects: the view's rows
+    read from the physical tables, a packed record's values decoded here once (the view
+    decodes one value per ``json_extract``)."""
     D = store_ddl
     fields = {row[0]: row[1:] for row in conn.execute(
         "SELECT field, property, field_path FROM value_fields")}
@@ -306,9 +313,9 @@ def _value_rows(conn: sqlite3.Connection) -> Iterator[list[tuple[Any, ...]]]:
         layouts.setdefault(layout, []).append((field, kind))
     # A small chunk: its values are decoded and sorted here (about 190 per object of a
     # wide packed relation), so the digest stays on a small bounded heap.
-    bounds = _object_bounds(conn, max(1, _CHUNK_OBJECTS // 32))
-    for low, high in zip(bounds, bounds[1:]):
-        clause, args = _range("v.object_id", low, high)
+    bounds = _object_bounds(conn, max(1, _CHUNK_OBJECTS // 32), low, high)
+    for first, last in zip(bounds, bounds[1:]):
+        clause, args = _range("v.object_id", first, last)
         out = []
         for (object_id, handle, digest, lineage, binding, recorded, superseded, field,
              layout, value, currency, cite) in conn.execute(
@@ -329,31 +336,193 @@ def _value_rows(conn: sqlite3.Connection) -> Iterator[list[tuple[Any, ...]]]:
         yield out
 
 
-def _ordered(conn: sqlite3.Connection, table: str, order: str) -> Iterator[sqlite3.Cursor]:
-    """Cursors that together read ``table`` in ``order`` (``object_values``: see
-    :func:`_value_rows`)."""
-    yield conn.execute(f"SELECT * FROM {table} ORDER BY {order}")
+# --------------------------------------------------------------------------- digest
+
+# The content digest is made of parts: each table's rows are cut into segments (the rows
+# of one binding's objects, by the ``<Type>:<binding>:`` prefix of their object id; the
+# links of one link type; the events of one event type; ``store_meta`` whole, without its
+# volatile keys), each segment is digested in the table's primary-key order, and the
+# digest is the SHA-256 of the sorted (part, segment digest) list. The same rows give the
+# same parts however the generation was built, so a seeded build (``StoreBuilder(seed=)``)
+# digests again only the segments a write touched (``_DIRTY_TRIGGERS`` record them) and
+# takes the seed's digest of every other one (its ``store_meta`` ``content_digest_parts``,
+# used only when they compose its ``content_digest``).
+DIGEST_FORMAT = "plx-content-digest/v2"
+DIGEST_PARTS = "content_digest_parts"
+# Table -> the column its rows are segmented by (an object id, by its binding prefix; a
+# link type; an event type); None: the table is one segment.
+_SEGMENT_BY: dict[str, str | None] = {
+    "store_meta": None, "objects": "object_id", "object_removals": "object_id",
+    "object_versions": "object_id", "object_values": "object_id", "links": "link_type",
+    "identifiers": "object_id", "events": "event_type", "event_objects": "object_id"}
+_ALL = ("all", "")
+
+
+def object_segment(object_id: Any) -> str:
+    """The digest segment of an object's rows: its id up to the second ':'
+    (``<Type>:<binding>:``); '' for an id without two (one segment for every such id)."""
+    if type(object_id) is not str:
+        return ""
+    first = object_id.find(":")
+    second = object_id.find(":", first + 1) if first >= 0 else -1
+    return object_id[:second + 1] if second >= 0 else ""
+
+
+def _segment_sql(column: str) -> str:
+    """:func:`object_segment` in SQL (``instr`` and ``substr`` count characters, as
+    Python does)."""
+    rest = f"instr(substr({column}, instr({column}, ':') + 1), ':')"
+    return (f"(CASE WHEN instr({column}, ':') > 0 AND {rest} > 0 THEN "
+            f"substr({column}, 1, instr({column}, ':') + {rest}) ELSE '' END)")
+
+
+def _part(table: str, segment: str) -> str:
+    return f"{table}\x1f{segment}"
+
+
+def digest_of_parts(parts: Mapping[str, str]) -> str:
+    """The content digest the ``parts`` compose."""
+    digest = hashlib.sha256(f"{DIGEST_FORMAT}\n".encode())
+    for name in sorted(parts):
+        digest.update(f"{name}\x1e{parts[name]}\n".encode("utf-8"))
+    return "sha256:" + digest.hexdigest()
+
+
+def _segment_rows(conn: sqlite3.Connection, table: str, order: str,
+                  bounds: tuple[str, str] | None, where: str, args: Sequence[Any]
+                  ) -> Iterator[tuple[list[str], list[Any]]]:
+    """(column names, a batch of rows) of ``table`` in ``order``: the rows of the objects
+    in ``bounds`` ([low, high)), else the rows ``where`` selects."""
+    if table == "object_values":
+        for rows in _value_rows(conn, *(bounds or (None, None))):
+            yield list(store_ddl.VALUE_COLUMNS), rows
+        return
+    if bounds is not None:
+        where, args = f" WHERE {_SEGMENT_BY[table]} >= ? AND {_SEGMENT_BY[table]} < ?", bounds
+    cursor = conn.execute(f"SELECT * FROM {table}{where} ORDER BY {order}", list(args))
+    names = [item[0] for item in cursor.description]
+    while True:
+        rows = cursor.fetchmany(256)   # a small batch: the digest runs on a bounded heap
+        if not rows:
+            break
+        yield names, rows
+
+
+def _digest_segments(conn: sqlite3.Connection, table: str, order: str, *,
+                     bounds: tuple[str, str] | None = None, where: str = "",
+                     args: Sequence[Any] = (), only: str | None = None) -> dict[str, str]:
+    """segment -> digest of its rows among those selected (``only``: that segment's)."""
+    by = _SEGMENT_BY[table]
+    hashes: dict[str, Any] = {}
+    header = b""
+    column = None
+    for names, rows in _segment_rows(conn, table, order, bounds, where, args):
+        if not header:
+            header = f"#{table}:{','.join(names)}\n".encode()
+            column = names.index(by) if by is not None else None
+        for row in rows:
+            if table == "store_meta" and row[0] in VOLATILE_META:
+                continue
+            if column is None:
+                segment = ""
+            elif by == "object_id":
+                segment = object_segment(row[column])
+            else:
+                segment = row[column] if type(row[column]) is str else ""
+            if only is not None and segment != only:
+                continue
+            digest = hashes.get(segment)
+            if digest is None:
+                digest = hashes[segment] = hashlib.sha256(header)
+            digest.update((_row_text(row) + "\n").encode("utf-8"))
+    return {segment: digest.hexdigest() for segment, digest in hashes.items()}
+
+
+def content_digest_parts(conn: sqlite3.Connection,
+                         previous: Mapping[str, str] | None = None,
+                         dirty: Iterable[tuple[str, str]] | None = None) -> dict[str, str]:
+    """Every part of the content digest (comment above). ``previous`` and ``dirty``: the
+    parts of the store this one was seeded from and the segments written since
+    (``("object_id", segment)``, ``("link_type", type)``, ``("event_type", type)``;
+    ``("all", "")`` every one): only those are digested again."""
+    marks = None if dirty is None else set(dirty)
+    if previous is None or marks is None or _ALL in marks:
+        parts: dict[str, str] = {}
+        for table, order in _TABLE_ORDER:
+            parts.update({_part(table, segment): digest for segment, digest
+                          in _digest_segments(conn, table, order).items()})
+        return parts
+    parts = dict(previous)
+    for table, order in _TABLE_ORDER:
+        by = _SEGMENT_BY[table]
+        segments = [""] if by is None else sorted(s for kind, s in marks if kind == by)
+        if by in ("link_type", "event_type") and segments:
+            # One read of the table for every marked type (no index leads with the type).
+            found = _digest_segments(conn, table, order, where=f" WHERE {by} IN (SELECT "
+                                     "value FROM json_each(?))", args=(json.dumps(segments),))
+            for segment in segments:
+                parts.pop(_part(table, segment), None)
+            parts.update({_part(table, s): d for s, d in found.items()})
+            continue
+        for segment in segments:
+            if by is None:
+                found = _digest_segments(conn, table, order)
+            elif segment:   # [low, high) holds exactly the ids with this prefix
+                found = _digest_segments(conn, table, order,
+                                         bounds=(segment, segment[:-1] + ";"))
+            else:   # ids without a binding prefix: no range holds only them
+                found = _digest_segments(conn, table, order, only="")
+            parts.pop(_part(table, segment), None)
+            parts.update({_part(table, s): d for s, d in found.items()})
+    return parts
 
 
 def content_digest(conn: sqlite3.Connection) -> str:
-    digest = hashlib.sha256()
-    for table, order in _TABLE_ORDER:
-        if table == "object_values":
-            digest.update(f"#{table}:{','.join(store_ddl.VALUE_COLUMNS)}\n".encode())
-            for rows in _value_rows(conn):
-                digest.update("".join(_row_text(row) + "\n" for row in rows).encode("utf-8"))
-            continue
-        for cursor in _ordered(conn, table, order):
-            names = [item[0] for item in cursor.description]
-            digest.update(f"#{table}:{','.join(names)}\n".encode())
-            while True:
-                rows = cursor.fetchmany(256)   # a small batch: the digest runs on a bounded heap
-                if not rows:
-                    break
-                digest.update("".join(_row_text(row) + "\n" for row in rows
-                                      if not (table == "store_meta" and row[0] in VOLATILE_META)
-                                      ).encode("utf-8"))
-    return "sha256:" + digest.hexdigest()
+    """The content digest of a store, every part digested (comment above)."""
+    return digest_of_parts(content_digest_parts(conn))
+
+
+def _dirty_triggers() -> tuple[str, ...]:
+    """TEMP triggers recording in ``temp.plx_dirty`` the digest segment of every row a
+    seeded build inserts, updates or deletes (``StoreBuilder``). A value's segment is its
+    version's object's: one whose version cannot be found marks every segment, as does an
+    update or delete of a shared row (a value field, kind or layout; a link text or
+    skeleton); a new shared row changes no stored row."""
+    def mark(kind: str, expression: str) -> str:
+        segment = _segment_sql("x") if kind == "object_id" else "x"
+        return (f"INSERT OR IGNORE INTO plx_dirty SELECT CASE WHEN x IS NULL THEN 'all' "
+                f"ELSE '{kind}' END, CASE WHEN x IS NULL THEN '' ELSE {segment} END "
+                f"FROM (SELECT {expression} AS x);")
+    version = "(SELECT object_id FROM object_versions WHERE rowid = {0}.ver)"
+    cell = ("(SELECT v.object_id FROM value_sources s JOIN object_versions v "
+            "ON v.rowid = s.ver WHERE s.src = {0}.src)")
+    keyed = {"objects": ("object_id", "{0}.object_id"),
+             "object_removals": ("object_id", "{0}.object_id"),
+             "object_versions": ("object_id", "{0}.object_id"),
+             "identifiers": ("object_id", "{0}.object_id"),
+             "event_objects": ("object_id", "{0}.object_id"),
+             "value_sources": ("object_id", version), "value_cells": ("object_id", cell),
+             "link_rows": ("link_type", "{0}.link_type"),
+             "events": ("event_type", "{0}.event_type")}
+    out = []
+    for table, (kind, expression) in keyed.items():
+        for event, rows in (("INSERT", ("NEW",)), ("DELETE", ("OLD",)),
+                            ("UPDATE", ("OLD", "NEW"))):
+            body = " ".join(mark(kind, expression.format(row)) for row in rows)
+            # BEFORE a delete or update: the row's version is still there to be found.
+            when = "AFTER" if event == "INSERT" else "BEFORE"
+            out.append(f"CREATE TEMP TRIGGER IF NOT EXISTS plx_dirty_{table}_{event.lower()} "
+                       f"{when} {event} ON main.{table} BEGIN {body} END")
+    for table in ("value_fields", "value_kinds", "value_layouts", "value_layout_fields",
+                  "link_texts", "link_skeletons"):
+        for event in ("DELETE", "UPDATE"):
+            out.append(f"CREATE TEMP TRIGGER IF NOT EXISTS plx_dirty_{table}_{event.lower()} "
+                       f"BEFORE {event} ON main.{table} BEGIN "
+                       "INSERT OR IGNORE INTO plx_dirty VALUES ('all', ''); END")
+    return tuple(out)
+
+
+_DIRTY_TRIGGERS = _dirty_triggers()
 
 
 # --------------------------------------------------------------------------- link texts
@@ -491,7 +660,38 @@ class StoreBuilder:
         if self._conn.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
             self.abort()
             raise StoreError("foreign_keys_unavailable")
+        # A seed whose digest parts compose its digest: every segment written from here
+        # on is recorded, and only those are digested again at the commit.
+        self._seed_parts = self._parts_of_seed() if seed is not None else None
+        if self._seed_parts is not None:
+            self._conn.execute("CREATE TEMP TABLE IF NOT EXISTS plx_dirty (kind TEXT NOT NULL, "
+                               "segment TEXT NOT NULL, PRIMARY KEY (kind, segment)) "
+                               "WITHOUT ROWID")
+            for statement in _DIRTY_TRIGGERS:
+                self._conn.execute(statement)
+        # How the digest was made at the commit: "full" or "segments" (rows of the
+        # touched segments only), and how many segments were digested again.
+        self.digest_mode: str | None = None
+        self.digest_segments: int | None = None
+        self.seconds: dict[str, float] = {}   # the commit's check and digest (measurement)
         self._conn.execute("BEGIN IMMEDIATE")
+
+    def _parts_of_seed(self) -> dict[str, str] | None:
+        """The seed's digest parts when they compose its content digest, else None."""
+        try:
+            meta = dict(self.connection.execute(
+                "SELECT key, value FROM store_meta WHERE key IN (?, ?)",
+                ("content_digest", DIGEST_PARTS)).fetchall())
+            held = json.loads(meta.get(DIGEST_PARTS) or "null")
+        except (sqlite3.Error, ValueError):
+            return None
+        if not isinstance(held, dict) or held.get("format") != DIGEST_FORMAT:
+            return None
+        parts = held.get("parts")
+        if not isinstance(parts, dict) or not all(
+                isinstance(k, str) and isinstance(v, str) for k, v in parts.items()):
+            return None
+        return parts if digest_of_parts(parts) == meta.get("content_digest") else None
 
     @property
     def connection(self) -> sqlite3.Connection:
@@ -755,13 +955,25 @@ class StoreBuilder:
         untouched."""
         conn = self.connection
         try:
+            started = time_module.monotonic()
             problems = self.check()
             if problems:
                 raise StoreError("store_invariant_violated", "; ".join(problems[:10]))
+            self.seconds["check"] = round(time_module.monotonic() - started, 3)
+            started = time_module.monotonic()
             self.set_meta("built_at", built_at)
             self.set_meta("format", FORMAT)
-            digest = content_digest(conn)
+            dirty = None
+            if self._seed_parts is not None:
+                dirty = [tuple(row) for row in conn.execute(
+                    "SELECT kind, segment FROM temp.plx_dirty")]
+            parts = content_digest_parts(conn, self._seed_parts, dirty)
+            self.digest_mode = "full" if dirty is None or _ALL in dirty else "segments"
+            self.digest_segments = len(parts) if self.digest_mode == "full" else len(dirty)
+            digest = digest_of_parts(parts)
             self.set_meta("content_digest", digest)
+            self.set_meta(DIGEST_PARTS, {"format": DIGEST_FORMAT, "parts": parts})
+            self.seconds["digest"] = round(time_module.monotonic() - started, 3)
             conn.execute("COMMIT")
             conn.close()
             self._conn = None
@@ -1245,12 +1457,12 @@ def iter_rows(conn: sqlite3.Connection, table: str) -> Iterator[Any]:
             yield from rows
         return
     order = dict(_TABLE_ORDER)[table]
-    for cursor in _ordered(conn, table, order):
-        yield from cursor
+    yield from conn.execute(f"SELECT * FROM {table} ORDER BY {order}")
 
 
 __all__ = ["clone_file", "clone_or_copy", "FORMAT", "MAX_LIMIT", "ProjectionStore", "ReadPolicy", "StoreBuilder",
            "StoreError", "TIER_ORDER", "allowed_marking_sets", "canonical", "content_digest",
+           "content_digest_parts", "digest_of_parts", "object_segment",
            "format_problem", "held_stretches", "instant", "iter_rows", "known_at", "LATEST_SQL",
            "markings_text", "pack_link_texts", "removal_stretches", "removals_at", "removed_at_sql",
            "unpack_link_text", "withhold_currency"]

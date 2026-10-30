@@ -203,6 +203,7 @@ from typing import Any, Callable, Mapping, Sequence
 from evals import runner
 from evals import score as scoring
 from operating import eval_principal
+from operating.agent_session import EXCLUSION_ENV, GRAPH_ENV, ReaderHost
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = "plx-eval-real-agent/v1"
@@ -220,17 +221,13 @@ READER_ENV = "PLX_EVAL_READER"  # the named reader's identity, JSON claims
 STATE_ENV = "PLX_WORKBENCH_STATE_DIR"  # the persistent host's state directory
 HOST_CONFIG_ENV = "PLX_WORKBENCH_HOST_CONFIG"  # its plx-host-config/v1 file
 TICKET_ENV = "PLX_EVAL_SESSION_TICKET"  # the variable a live session's ticket travels in
-# The people-exclusion guard's settings (``integrations.people_exclusion``): object ids and a
-# file path, no credential. The host subprocess reads them as the product host does; without
-# them the guard does not load and the host withholds every mailbox.
-EXCLUSION_ENV = ("PLX_EXCLUDED_PEOPLE_OIDS", "PLX_EXCLUDED_PEOPLE_FILE")
+# The people-exclusion guard's settings and the Graph directory reader's: the product
+# host's (``operating.agent_session``).
 # The live verifier's list of the host settings it provisioned for this run (names,
 # comma-separated, never a value: the live verifier AGENT_PROVISIONED_ENV).
 PROVISIONED_ENV = "PLX_WORKBENCH_HOST_PROVISIONED"
 HOST_SETTINGS = ("PLX_WORKBENCH_SESSION_SECRET", STATE_ENV, HOST_CONFIG_ENV)
 READER_CLAIMS = ("uid", "email", "entraTenantId", "entraObjectId")
-GRAPH_ENV = ("MICROSOFT_GRAPH_TENANT_ID", "MICROSOFT_GRAPH_CLIENT_ID",
-             "MICROSOFT_GRAPH_CLIENT_SECRET")
 DEFAULT_LIVE_COUNT = 24
 MIN_LIVE_ITEMS = 20
 LIVE_READ_SECONDS = 1200.0  # the oracle's own source reads (sampling and answers)
@@ -609,7 +606,7 @@ def bc_rooted(item: Mapping[str, Any]) -> bool:
     return str((item.get("root") or {}).get("relation") or "").startswith("bc.")
 
 
-class LiveHost:
+class LiveHost(ReaderHost):
     """The persistent host as one named reader, for one run, on the Host contract of
     ``evals.runner.CaseHost``: the agent's session is the host's own MCP server
     (``mcp_server``: ``operating.host mcp``), the harness's (``tools``, ``call`` as a client
@@ -624,44 +621,22 @@ class LiveHost:
     ``agent``: the agent definition both sessions run instead of the host config's
     (``operating.host mcp --agent``), so the harness's catalog is the agent's."""
 
+    ticket_env = TICKET_ENV
+
     def __init__(self, state_dir: Path, config: Path, identity: Mapping[str, str],
                  secret: str, *, tenant: str, extra_env: Mapping[str, str] | None = None,
                  read_timeout: float = HOST_READ_SECONDS, eval_principal: bool = False,
                  agent: str | None = None) -> None:
-        self.state_dir, self.config = Path(state_dir), Path(config)
-        self.agent = agent
-        self._identity, self._secret = dict(identity), secret
-        self._extra_env = dict(extra_env or {})
-        self.eval_principal = eval_principal
-        self.actor = {"tenant": tenant,
-                      "reader": "eval_principal" if eval_principal else "named_employee"}
+        super().__init__(state_dir, config, identity, secret, tenant=tenant,
+                         extra_env=extra_env, eval_principal=eval_principal, agent=agent)
         self.read_timeout = read_timeout
         self._proc: Any = None
         self._stderr: Any = None
         self._buffer = bytearray()
         self._ids = 0
 
-    def ticket(self) -> str:
-        from operating import session_identity as si
-        return si.mint_session_ticket(
-            uid=self._identity["uid"], email=self._identity["email"],
-            tenant_id=self._identity["entraTenantId"],
-            object_id=self._identity["entraObjectId"], author=si.AUTHOR_AGENT,
-            secret=self._secret)
-
     def _command(self, module: str, *command: str) -> dict[str, Any]:
-        from operating import session_identity as si
-        return {"command": sys.executable,
-                "args": ["-m", module, *command, "--state-dir", str(self.state_dir),
-                         "--config", str(self.config), "--session-ticket-env", TICKET_ENV,
-                         *(["--eval-principal"] if self.eval_principal else []),
-                         *(["--agent", self.agent] if self.agent else [])],
-                "cwd": str(ROOT),
-                "env": {"PYTHONPATH": str(ROOT), TICKET_ENV: self.ticket(),
-                        si.SESSION_TICKET_SECRET_ENV: self._secret,
-                        **{name: os.environ[name] for name in EXCLUSION_ENV
-                           if os.environ.get(name)},
-                        **self._extra_env}}
+        return self.command(module, *command)
 
     def mcp_server(self) -> dict[str, Any]:
         return self._command("operating.host", "mcp")

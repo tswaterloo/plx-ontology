@@ -42,7 +42,8 @@ from urllib.parse import unquote
 
 from integrations.capture_store import FORMAT, REMOVALS_COLUMN, make_handle, removals_of
 from integrations.mc_sources import COLLECTIONS, KIND, MC_KIND, audience_key
-from ontology.project import CapturedRecord, ProjectionError, _Relations
+from ontology.project import (CapturedRecord, ProjectionError, _Relations, _file_marks,
+                              _watermark, begin_snapshot)
 
 SOURCE = KIND
 NOT_CAPTURED = "source_not_captured"
@@ -73,6 +74,8 @@ class McCaptures:
         self._conn = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True,
                                      isolation_level=None)
         self._conn.row_factory = sqlite3.Row
+        self._opened = _file_marks(self._conn)   # before anything is read
+        self._marks: list[Any] | None = None
         self._snapshot = False
         try:
             for table, columns in self._NEEDED.items():
@@ -169,9 +172,14 @@ class McCaptures:
                     continue  # no project key: never under the collection's audience alone
                 yield path, row, payload, key
 
+    def watermark(self) -> list[Any] | None:
+        """The file state the snapshot of the last :meth:`records` reads
+        (``ontology.project.begin_snapshot``; None: no reuse of its fingerprints)."""
+        return _watermark(self, self._marks, self._opened) if self._snapshot else None
+
     def records(self, relations: Sequence[str]) -> Mapping[str, Iterable[CapturedRecord]]:
         self._end_snapshot()
-        self._conn.execute("BEGIN")  # one snapshot for every relation
+        self._marks = begin_snapshot(self._conn)  # one snapshot for every relation
         self._snapshot = True
 
         def stream(relation: str) -> Iterator[CapturedRecord]:

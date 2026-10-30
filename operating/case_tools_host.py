@@ -1637,7 +1637,10 @@ class CaptureCaseHostTools(CaseHostTools):
         (``operating.use_case_catalog``) for this reader, listed in ``use_case`` alone:
         they are never search hits, so the search's page, counts and ``no_match`` gap
         stay as the search produced them. Only the source kinds the call searches
-        (``sources``: ``sharepoint``, ``original``) are resolved. Each goes through
+        (``sources``: ``sharepoint``, ``original``) are resolved; those held in a source
+        the call does not search are counted per source in a
+        ``use_case_documents_not_searched`` gap (never named, never resolved), so a
+        narrowed search is never told the catalog lists none. Each goes through
         its source's gate (a SharePoint item through :meth:`captured`, a case original
         through the runtime's captured-original gate), and those not served to this
         reader are counted, never named. A document the use case needs that no source
@@ -1675,7 +1678,7 @@ class CaptureCaseHostTools(CaseHostTools):
             return result
         blocks = []
         for case in cases:
-            listed, withheld = self._use_case_served(case, actor, wanted)
+            listed, withheld, unsearched = self._use_case_served(case, actor, wanted)
             block = {"id": case.id, "title": case.title,
                      "documents": [{"citation": d["citation"], "kind": d["kind"],
                                     "role": d["role"], "title": d["title"]}
@@ -1689,6 +1692,15 @@ class CaptureCaseHostTools(CaseHostTools):
                                  f"{withheld} source document(s) of this use case are not "
                                  "served to you (not held by the Workbench, or not openable "
                                  "with your permissions); they are not named"))
+            if unsearched:
+                held_in = ", ".join(f"{count} in {source}"
+                                    for source, count in sorted(unsearched.items()))
+                gaps.append(_gap("unknown", "use_case_documents_not_searched",
+                                 f"use_case:{case.id}",
+                                 f"{sum(unsearched.values())} source document(s) of this use "
+                                 f"case are held in a source this search did not include "
+                                 f"({held_in}); search again with those sources (or with no "
+                                 "sources) to list the ones you may open"))
             for missing in case.gaps:
                 gaps.append(_gap("not_ingested", "use_case_document_not_held",
                                  f"use_case:{case.id}",
@@ -1697,7 +1709,7 @@ class CaptureCaseHostTools(CaseHostTools):
                                  "map does not stand in for it; records and files held "
                                  "elsewhere (SharePoint files, mail, Portal or ERP records, "
                                  "task boards) may still answer the question"))
-            if not listed and not case.gaps and not withheld:
+            if not case.documents and not case.gaps:
                 gaps.append(_gap("not_ingested", "use_case_document_not_held",
                                  f"use_case:{case.id}",
                                  "the Workbench's catalog lists no source document for this "
@@ -1721,20 +1733,26 @@ class CaptureCaseHostTools(CaseHostTools):
         return out
 
     def _use_case_served(self, case: Any, actor: Any, kinds: set[str]
-                         ) -> tuple[list[dict[str, Any]], int]:
+                         ) -> tuple[list[dict[str, Any]], int, dict[str, int]]:
         """(the documents of ``case`` of ``kinds`` served to this reader now, in catalog
-        order, each {citation, kind, role, title}; how many of them are not)."""
+        order, each {citation, kind, role, title}; how many of them are not; how many
+        of its documents are of a kind not in ``kinds``, by ``sources`` name: never
+        resolved, so never gated, listed or withheld here)."""
         from operating.captured_originals import SCHEME as ORIGINAL
         from operating import use_case_catalog as ucc
         listed: list[dict[str, Any]] = []
         withheld = 0
+        unsearched: dict[str, set[Any]] = {}   # each document once, however often named
         store = self._sharepoint()
         originals = getattr(self.runtime, "captured_originals", None)
         # Originals listed beside a textless SharePoint copy, within the list's bound.
         room = ucc.MAX_DOCUMENTS - len(case.documents)
         for doc in case.documents:
             if ("sharepoint_file" if "sharepoint" in doc else "original") not in kinds:
-                continue   # a source this call does not search
+                source = "sharepoint" if "sharepoint" in doc else "original"
+                unsearched.setdefault(source, set()).add(
+                    doc.get("original", doc.get("sharepoint")))
+                continue   # a source this call does not search: counted, not resolved
             if any(d.get("_key") == doc.get("original", doc.get("sharepoint"))
                    or "original" in doc and d["citation"] == ORIGINAL + doc["original"]
                    for d in listed):
@@ -1774,7 +1792,7 @@ class CaptureCaseHostTools(CaseHostTools):
                     continue
                 name = entry.receipt.get("name")
             listed.append(self._use_case_document(doc, handle, kind, name))
-        return listed, withheld
+        return listed, withheld, {source: len(keys) for source, keys in unsearched.items()}
 
     @staticmethod
     def _use_case_document(doc: Mapping[str, Any], handle: str, kind: str, name: Any

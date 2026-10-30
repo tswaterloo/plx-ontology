@@ -388,6 +388,182 @@ def _sampled(sample: RowSample | None, rows: Iterable[Any]) -> Iterable[Any]:
     """``rows``, or the ones ``sample`` keeps."""
     return rows if sample is None else sample(rows)
 
+
+def _file_marks(conn: sqlite3.Connection) -> list[list[Any]] | None:
+    """The file state of every database file ``conn`` reads (its main file and any
+    attached one, each with its ``-wal``): device, inode, size and modification and change
+    times. A write to a file changes its change time (the kernel sets it; no caller can),
+    so equal marks mean equal bytes. None when one is not a file (in memory)."""
+    out: list[list[Any]] = []
+    for row in conn.execute("PRAGMA database_list").fetchall():
+        name = row[2]
+        if row[1] == "temp":
+            continue
+        if not name:
+            return None
+        for path in (name, name + "-wal"):
+            try:
+                st = os.stat(path)
+            except FileNotFoundError:
+                out.append([path, None])
+                continue
+            out.append([path, st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns,
+                        st.st_ctime_ns])
+    return out
+
+
+def begin_snapshot(conn: sqlite3.Connection) -> list[list[Any]] | None:
+    """Open the one read snapshot of a capture source on ``conn`` (``BEGIN`` and a first
+    read, which pins it) and return the file marks (:func:`_file_marks`) its snapshot
+    reads: taken before and after the snapshot starts, so a write landing in between
+    gives None (the snapshot may hold it or not). A source's ``watermark`` names them: a
+    later build whose source returns an equal watermark reads the same bytes, so the
+    same records (``ontology.project_incremental``)."""
+    before = _file_marks(conn)
+    conn.execute("BEGIN")
+    conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
+    after = _file_marks(conn)
+    return after if before == after else None
+
+
+def stream_fingerprint(records: Iterable[Any]) -> str:
+    """Digest of every field of every record, except a current version's
+    ``last_seen_at`` (``MirrorCaptures.fingerprint`` says why)."""
+    digest = hashlib.sha256()
+    for rec in records:
+        digest.update(repr(_fingerprint_cells(rec)).encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def _fingerprint_cells(rec: Any) -> tuple[Any, ...]:
+    return tuple(None if name == "last_seen_at" and rec.superseded_at is None
+                 else getattr(rec, name) for name in _REC_FIELDS)
+
+
+# The modules a derived relation (``documentFields``, ``containerMembers``: read from the
+# captured bytes of attachments and files) is computed by; with every repository module
+# they import (at any depth, lazily too), the schema files and the PDF reader's version
+# they decide what it holds (:func:`derived_fingerprint`).
+_DERIVATION_ROOTS = ("ontology.document_fields", "ontology.project_graph",
+                     "integrations.captured_text")
+
+
+# ``import a.b, c`` and ``from a.b import (c, d)`` at any indentation (a function's own).
+_IMPORT = re.compile(r"^[ \t]*(?:import[ \t]+([\w., \t]+)|from[ \t]+(\.*[\w.]*)[ \t]+import"
+                     r"[ \t]+(\([^)]*\)|[^\n#]+))", re.MULTILINE)
+
+
+# The installed libraries the extractors read files with (PDF, Office through markitdown and
+# the converters it loads).
+_EXTRACTOR_LIBRARIES = ("pypdf", "markitdown", "magika", "mammoth", "openpyxl", "python-pptx",
+                        "pdfminer.six", "pandas", "xlrd", "olefile")
+
+
+@lru_cache(maxsize=1)
+def derivation_code() -> str:
+    """Digest of the code and data a derived relation is computed by: the repository
+    modules ``_DERIVATION_ROOTS`` import at any depth (every ``import`` statement of their
+    source, a function's own included), the schema JSON files, the Python and ``pypdf``
+    versions."""
+    import sys
+    root = Path(__file__).resolve().parents[1]
+    packages = {p.name for p in root.iterdir() if (p / "__init__.py").is_file()}
+
+    def source_of(module: str) -> Path | None:
+        base = root.joinpath(*module.split("."))
+        for path in (base.with_suffix(".py"), base / "__init__.py"):
+            if path.is_file():
+                return path
+        return None
+
+    seen: dict[str, Path] = {}
+    pending = list(_DERIVATION_ROOTS)
+    while pending:
+        module = pending.pop()
+        if not module or module in seen or module.split(".")[0] not in packages:
+            continue
+        path = source_of(module)
+        if path is None:   # a name imported from a module, not a module
+            continue
+        seen[module] = path
+        package = module if path.name == "__init__.py" else module.rpartition(".")[0]
+        for plain, origin, names in _IMPORT.findall(path.read_text(encoding="utf-8")):
+            if plain:
+                pending.extend(n.split(" as ")[0].strip() for n in plain.split(","))
+                continue
+            dots = len(origin) - len(origin.lstrip("."))
+            base = origin[dots:]
+            if dots:
+                parent = package.split(".")[:len(package.split(".")) - dots + 1]
+                base = ".".join(parent + ([base] if base else []))
+            pending.append(base)
+            pending.extend(f"{base}.{n.split(' as ')[0].strip()}"
+                           for n in names.strip("()").replace("\n", " ").split(",")
+                           if n.strip())
+    digest = hashlib.sha256(f"{sys.version_info[:3]}\n".encode())
+    from importlib.metadata import version
+    for library in _EXTRACTOR_LIBRARIES:   # an upgrade re-reads what it reads
+        try:
+            digest.update(f"{library} {version(library)}\n".encode())
+        except Exception:  # noqa: BLE001 - not installed: files are read without it
+            digest.update(f"{library} none\n".encode())
+    files = sorted(seen.values()) + sorted((root / "ontology" / "schema").rglob("*.json"))
+    for path in files:
+        digest.update(f"{path.relative_to(root)}\n".encode())
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
+    return digest.hexdigest()
+
+
+def _blob_state(blobs: Path, value: Any) -> tuple[Any, ...]:
+    """Which forms of a content-addressed blob are on disk, with their sizes."""
+    from integrations.captured_text import COMPRESSED_SUFFIX, DROPPED_SUFFIX, blob_path
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+        return ()
+    out = []
+    for suffix in ("", COMPRESSED_SUFFIX, DROPPED_SUFFIX):
+        try:
+            out.append(blob_path(blobs, value, suffix).stat().st_size)
+        except OSError:
+            out.append(None)
+    return tuple(out)
+
+
+def derived_fingerprint(relation: str, records: Iterable[Any], blobs: Path) -> str:
+    """The fingerprint of a relation derived from captured bytes (``documentFields``,
+    ``containerMembers``), from what it is derived from instead of by deriving it: every
+    field of each input record (:func:`stream_fingerprint`'s cells), which forms of the
+    bytes and stored text it names are on disk (a blob's content is its digest; a dropped
+    one reads as the readings it left), and the code that derives it
+    (:func:`derivation_code`). Equal inputs, files and code derive equal records."""
+    digest = hashlib.sha256(f"derived\x00{relation}\x00{derivation_code()}\n".encode())
+    for rec in records:
+        row = rec.row if isinstance(rec.row, Mapping) else {}
+        digest.update(repr((_fingerprint_cells(rec),
+                            _blob_state(blobs, row.get("content_sha256")),
+                            _blob_state(blobs, row.get("text_sha256")))).encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def _watermark(source: Any, marks: Any, opened: Any, *options: Any) -> list[Any] | None:
+    """A capture source's watermark: its class, the ``options`` that decide its records
+    and the file marks of its snapshot (:func:`begin_snapshot`); None when there are none
+    (a write landed while it opened), when they differ from the marks taken as the source
+    was opened (``opened``: what it read then, such as its generation, may predate the
+    snapshot) or when it reads a sample. A source with derived relations passes the
+    derivation code (``derivation_code``) among its ``options``.
+
+    Known limitation: a writer that rewrites a file in place within one timestamp tick of
+    the file system, keeping its size and inode, between two builds would leave the marks
+    equal (the change time moves in coarse ticks on some file systems); SQLite writers
+    append or grow the WAL and the capture stores record every run, so this is not
+    expected, but it is not excluded by the marks alone."""
+    if marks is None or marks != opened or getattr(source, "sample", None) is not None:
+        return None
+    kind = type(source)
+    return [f"{kind.__module__}.{kind.__qualname__}", list(options), marks]
+
 # Earlier mirror replacement rules whose labels the rule in force (the key) infers too,
 # so ``MirrorCaptures`` reads them without waiting for a writer. v1 dropped the unique
 # constraint on the cascade parent alone that v2 pairs again; v1 inferred nothing else,
@@ -472,7 +648,10 @@ class MirrorCaptures:
         # names through scope views; any other file reads as itself.
         from integrations.source_mirror import attach_scoped
         attach_scoped(self._conn)
+        self._opened = _file_marks(self._conn)   # before anything is read (``_watermark``)
         self._snapshot = False
+        self._marks: list[Any] | None = None
+        self._stream: Any = None
         layout = {}
         for table, columns in self._NEEDED.items():
             have = {row["name"] for row in self._conn.execute(f"PRAGMA table_info({table})")}
@@ -575,7 +754,7 @@ class MirrorCaptures:
                                                 make_citation, stale_replacement_relations)
 
         self._end_snapshot()
-        self._conn.execute("BEGIN")  # one snapshot for every relation
+        self._marks = begin_snapshot(self._conn)  # one snapshot for every relation
         self._snapshot = True
         finished = {row[0]: row[1] for row in self._conn.execute(
             """SELECT c.capture_id, c.finished_at FROM capture c JOIN capture_state s
@@ -639,6 +818,13 @@ class MirrorCaptures:
                     removals=tuple(tuple(item) for item in removals))
 
         return _Relations(relations, stream)
+
+    def watermark(self) -> list[Any] | None:
+        """The file state the snapshot of the last :meth:`records` reads (``_watermark``);
+        None with ``prisma_facts`` given (no token for them here)."""
+        if not self._snapshot or self._replacement_models is not None:
+            return None
+        return _watermark(self, self._marks, self._opened, self._seen_at)
 
     def fingerprint(self, relations: Sequence[str]) -> dict[str, str]:
         """relation -> SHA-256 of everything :meth:`records` yields for it that the
@@ -750,7 +936,10 @@ class MailCaptures:
         # names through scope views; any other file reads as itself.
         from integrations.source_mirror import attach_scoped
         attach_scoped(self._conn)
+        self._opened = _file_marks(self._conn)   # before anything is read (``_watermark``)
         self._snapshot = False
+        self._marks: list[Any] | None = None
+        self._stream: Any = None
         for table, columns in self._NEEDED.items():
             have = {row["name"] for row in self._conn.execute(f"PRAGMA table_info({table})")}
             if not columns <= have:
@@ -809,9 +998,33 @@ class MailCaptures:
         """(superseded_at, missing_from_source_since) of a latest-interval row."""
         return (None, row["superseded_at"]) if row["gone"] else (row["superseded_at"], None)
 
+    def watermark(self) -> list[Any] | None:
+        """The file state the snapshot of the last :meth:`records` reads (``_watermark``)."""
+        return (_watermark(self, self._marks, self._opened, self._text,
+                           derivation_code()) if self._snapshot
+                else None)
+
+    def fingerprint(self, relations: Sequence[str]) -> dict[str, str]:
+        """relation -> fingerprint of what the last :meth:`records` yields for it, in its
+        snapshot: every field of every record, and for ``documentFields`` and
+        ``containerMembers`` their attachments' (:func:`derived_fingerprint`)."""
+        if not self._snapshot:
+            raise ProjectionError("capture_snapshot_closed", "fingerprint")
+        stream = self._stream
+        out = {}
+        for relation in dict.fromkeys(relations):
+            if relation == "documentFields":
+                out[relation] = derived_fingerprint(
+                    relation, stream("attachments", ocr=True, sender=True), self.blobs)
+            elif relation == MEMBER_RELATION:
+                out[relation] = derived_fingerprint(relation, stream("attachments"), self.blobs)
+            else:
+                out[relation] = stream_fingerprint(stream(relation))
+        return out
+
     def records(self, relations: Sequence[str]) -> Mapping[str, Iterable[CapturedRecord]]:
         self._end_snapshot()
-        self._conn.execute("BEGIN")  # one snapshot for every relation
+        self._marks = begin_snapshot(self._conn)  # one snapshot for every relation
         self._snapshot = True
 
         def stream(relation: str, ocr: bool = False, sender: bool = False
@@ -870,6 +1083,7 @@ class MailCaptures:
                     "mailbox": "mailbox", "message_id": "message_id",
                     "attachment_id": "attachment_id"})
 
+        self._stream = stream
         return _Relations(relations, stream)
 
     def _blob_text(self, digest: Any) -> str | None:
@@ -1027,6 +1241,10 @@ class SharePointCaptures:
             raise ProjectionError("sharepoint_capture_missing", str(self.path))
         self._conn: sqlite3.Connection | None = None
         self._snapshot = False
+        self._marks: list[Any] | None = None
+        self._opened: list[Any] | None = None
+        self._list_marks: list[Any] | None = None
+        self._stream: Any = None
         self._reads = 0   # the records() call whose relations may still be read
         self.lists = SharePointListCaptures(held) if held.is_file() else None
         if not self.path.is_file():
@@ -1035,6 +1253,7 @@ class SharePointCaptures:
             self._conn = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True,
                                          isolation_level=None)
             self._conn.row_factory = sqlite3.Row
+            self._opened = _file_marks(self._conn)   # before anything is read
             for table, columns in self._NEEDED.items():
                 have = {row["name"] for row in
                         self._conn.execute(f"PRAGMA table_info({table})")}
@@ -1115,9 +1334,14 @@ class SharePointCaptures:
         self._end_snapshot()
         self._reads += 1
         read = self._reads
+        self._marks = None
         if self._conn is not None:
-            self._conn.execute("BEGIN")  # one snapshot for every drive relation
+            self._marks = begin_snapshot(self._conn)  # one snapshot for every drive relation
             self._snapshot = True
+        # The list-item store is read by one statement per relation (no snapshot held):
+        # its file state is taken here, around the drive store's.
+        self._list_marks = (_file_marks(self.lists._conn) if self.lists is not None
+                            else ["no_list_store"])
 
         def stream(relation: str, ocr: bool = False) -> Iterator[CapturedRecord]:
             if read != self._reads:   # records called again, or closed
@@ -1153,7 +1377,37 @@ class SharePointCaptures:
                     superseded_at=row["superseded_at"], last_seen_at=row["last_seen_at"],
                     audience_key=f"sharepoint:{row['drive_id']}")
 
+        self._stream = stream
         return _Relations(relations, stream)
+
+    def watermark(self) -> list[Any] | None:
+        """The file state of the drive store's snapshot of the last :meth:`records` and of
+        the list-item store (``_watermark``); None while either is not known."""
+        if self._marks is None and self._conn is not None:
+            return None
+        if self._list_marks is None:
+            return None
+        drive = ["no_drive_store"] if self._conn is None else self._marks
+        opened = [["no_drive_store"] if self._conn is None else self._opened,
+                  ["no_list_store"] if self.lists is None else self.lists._opened]
+        # Its derived relations are read by code the file state does not name.
+        return _watermark(self, [drive, self._list_marks], opened, derivation_code())
+
+    def fingerprint(self, relations: Sequence[str]) -> dict[str, str]:
+        """relation -> fingerprint of what the last :meth:`records` yields for it: every
+        field of every record, and for ``documentFields`` and ``containerMembers`` their
+        files' (:func:`derived_fingerprint`)."""
+        stream = self._stream
+        out = {}
+        for relation in dict.fromkeys(relations):
+            if relation == "documentFields" and self._conn is not None:
+                out[relation] = derived_fingerprint(relation, stream("driveItems", ocr=True),
+                                                    self.blobs)
+            elif relation == MEMBER_RELATION and self._conn is not None:
+                out[relation] = derived_fingerprint(relation, stream("driveItems"), self.blobs)
+            else:
+                out[relation] = stream_fingerprint(stream(relation))
+        return out
 
     def documents(self) -> Iterator[Any]:
         """Every projected version as an ``ontology.mentions.Document`` (fields: the file
@@ -3604,8 +3858,9 @@ class Projector:
             self.report.counts.update({
                 name: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
                 for name, table in (("objects", "objects"), ("versions", "object_versions"),
-                                    ("values", "object_values"), ("links", "links"),
-                                    ("identifiers", "identifiers"), ("events", "events"))})
+                                    ("links", "links"), ("identifiers", "identifiers"),
+                                    ("events", "events"))})
+            self.report.counts["values"] = value_rows(conn)
         finally:
             self.close()
 
@@ -3763,6 +4018,15 @@ def build_store(store_path: str | Path, schema: Any, sources: Mapping[str, Captu
                                  post_project=post_project, clock=clock)
 
 
+def value_rows(conn: sqlite3.Connection) -> int:
+    """The rows of the ``object_values`` view: one per position of each cell's layout (the
+    view's other joins each match one row in a store the commit's check accepts), counted
+    without joining every value to its source, version, field and kind."""
+    return conn.execute(
+        "SELECT COALESCE(SUM(l.n), 0) FROM value_cells c JOIN (SELECT layout, COUNT(*) AS n "
+        "FROM value_layout_fields GROUP BY layout) l ON l.layout = c.layout").fetchone()[0]
+
+
 def open_generation(builder: StoreBuilder) -> None:
     """Tune a generation's connection for a build: a page cache the size of the
     working file's (the generation's indexes take millions of inserts, which the
@@ -3784,8 +4048,9 @@ def finish_generation(builder: StoreBuilder, projector: "Projector",
     counts = dict(projected.get("counts", {}))
     counts.update({name: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
                    for name, table in (("objects", "objects"), ("versions", "object_versions"),
-                                       ("values", "object_values"), ("links", "links"),
-                                       ("identifiers", "identifiers"), ("events", "events"))})
+                                       ("links", "links"), ("identifiers", "identifiers"),
+                                       ("events", "events"))})
+    counts["values"] = value_rows(conn)
     steps = {name: dict(step(builder, projector))
              for name, step in sorted((post_project or {}).items())}
     now = (clock or (lambda: datetime.now(timezone.utc)))()

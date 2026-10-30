@@ -16,6 +16,7 @@ Full guide: [`context/HOW-TO-USE.md`](context/HOW-TO-USE.md).
 
 ## What's new
 
+- **v0.12:** answers in the app checked like the scoreboard and written plainly; late POs show how late; cited maps open; disagreeing systems and duplicate files handled.
 - **v0.11:** new web app (preview) with a chat-style ask box and sourced answers; typos and vague questions understood; disagreeing sources shown side by side; R&D maps readable.
 - **v0.10:** brand map readable; orders without a customer PO on the home list; approving proposed actions with a second approver.
 - **v0.9:** fresh data; shared briefs and zip maps readable again.

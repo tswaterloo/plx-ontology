@@ -324,6 +324,8 @@ class EntityIndex(Protocol):
     def by_terms(self, terms: Sequence[str], scope: Any, types: Sequence[str] | None = None
                  ) -> tuple[list[EntityRow], Mapping[str, Mapping[str, float]]]: ...
     def by_object_ids(self, object_ids: Sequence[str], scope: Any) -> list[EntityRow]: ...
+    # optional: near_identifier(forms, scope, types) -> visible rows whose identifier is
+    # one edit from an asked form (a "did you mean" when no record carries it)
     def distinctive_words(self, words: Sequence[str], scope: Any) -> set[str]: ...
 
 
@@ -415,8 +417,11 @@ class PgEntityIndex:
     _COLS = "e.entity_id, e.object_id, e.type, e.name, e.normalized, e.alias"
 
     def _params(self, scope: Any, types: Sequence[str] | None, **extra: Any) -> dict:
-        return scope.params(**extra, types=list(types) if types else None,
-                            countable=_countable_hidden(scope))
+        # The entity rows name their type as the chunker writes it (``purchase_order``,
+        # measured on the live table), the grammar as the schema does (``PurchaseOrder``):
+        # a type filter accepts both spellings, never neither.
+        named = sorted({form for t in types for form in (t, _snake(t))}) if types else None
+        return scope.params(**extra, types=named, countable=_countable_hidden(scope))
 
     @staticmethod
     def _visible(scope: Any) -> str:
@@ -440,6 +445,30 @@ class PgEntityIndex:
                          next((a for a in (r[5] or ()) if a in upper), r[4] or ""), 1.0)
                for r in rows if r[6]]
         return out, {r[0] for r in rows if not r[6]}
+
+    def near_identifier(self, forms, scope, types=None):
+        """Visible rows carrying an identifier one edit (a changed, missing, extra or
+        swapped character) from an asked form: every one-edit variant of the form
+        (``near_forms``) looked up exactly in the alias index, then confirmed by
+        ``near_id``. Rows the reader may not see are never read here, not even counted:
+        a near miss is a suggestion, never evidence."""
+        variants = sorted({v for f in forms for v in near_forms(f)})
+        if not variants:
+            return []
+        params = self._params(scope, types, forms=variants)
+        visible = self._visible(scope)
+        rows = self._run(
+            f"SELECT {self._COLS} FROM {self.table} e WHERE e.alias && %(forms)s::text[]"
+            " AND (%(types)s::text[] IS NULL OR e.type = ANY(%(types)s))"
+            f" AND {visible} ORDER BY e.type, e.entity_id LIMIT 200", params)
+        asked = [f.upper() for f in forms]
+        out = []
+        for r in rows:
+            near = next((a for a in (r[5] or ()) if any(near_id(f, a) for f in asked)), None)
+            if near is not None:
+                out.append(EntityRow(r[0], r[1], r[2], r[3] or "", r[4] or "",
+                                     tuple(r[5] or ()), near, 0.8))
+        return out
 
     def _common_words(self, terms: Sequence[str], scope: Any) -> set[str]:
         """Single words found in more than COMMON_WORD_ROWS names (the probe stops there)."""
@@ -1101,6 +1130,12 @@ class _Resolver:
         self.hidden_ids |= set(hidden)
         return rows, set(hidden)
 
+    def near_identifier(self, lead: _Lead) -> list[EntityRow]:
+        near = getattr(self.index, "near_identifier", None)
+        if near is None:
+            return []
+        return self._guard(lambda: near(lead.forms, self.scope, lead.types), [])
+
     def terms(self, terms: Sequence[str], types: Sequence[str] | None = None, *,
               count_hidden: bool = True
               ) -> tuple[list[EntityRow], Mapping[str, Mapping[str, float]]]:
@@ -1271,8 +1306,94 @@ def _resolve_identifiers(question: str, resolver: _Resolver) -> list[EntityMenti
         elif not cands:
             resolver.notes.append(f'"{lead.text}" looks like an identifier but no record '
                                   "carries it")
+            mention = _near_miss(lead, resolver) or mention
         mentions.append(mention)
     return mentions
+
+
+def _snake(name: str) -> str:
+    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", name).lower()
+
+
+def _edit_kind(asked: str, stored: str) -> int:
+    """0 two neighbours swapped, 1 a character missing or extra, 2 one changed: the
+    order "did you mean" lists near misses in (typing slips first)."""
+    a = re.sub(r"[^0-9A-Za-z]", "", asked).upper()
+    b = re.sub(r"[^0-9A-Za-z]", "", stored).upper()
+    if len(a) != len(b):
+        return 1
+    return 0 if sorted(a) == sorted(b) else 2
+
+
+def near_forms(form: str) -> set[str]:
+    """Every identifier one edit from ``form`` (upper case, separators dropped) that
+    keeps its letters before the digits: a digit changed, dropped or added, or two
+    neighbours swapped. At most a few hundred forms; none under four characters."""
+    a = re.sub(r"[^0-9A-Za-z]", "", form).upper()
+    if len(a) < 4 or len(a) > 24:
+        return set()
+    lead = len(re.match(r"[A-Z]*", a).group())
+    out: set[str] = set()
+    digits = "0123456789"
+    for i in range(lead, len(a) + 1):
+        out |= {a[:i] + d + a[i:] for d in digits}
+        if i < len(a):
+            out.add(a[:i] + a[i + 1:])
+            out |= {a[:i] + d + a[i + 1:] for d in digits}
+            if i + 1 < len(a):
+                out.add(a[:i] + a[i + 1] + a[i] + a[i + 2:])
+    out.discard(a)
+    return {v for v in out if near_id(a, v)}
+
+
+def near_id(asked: str, stored: str) -> bool:
+    """Whether two identifiers differ by one edit (substitute, insert, delete or swap
+    two neighbours), ignoring case and separators, with the same letters before the
+    digits (PO 10412 vs PO 10421; never PO vs SO), and at least four characters."""
+    a = re.sub(r"[^0-9A-Za-z]", "", asked).upper()
+    b = re.sub(r"[^0-9A-Za-z]", "", stored).upper()
+    if a == b or min(len(a), len(b)) < 4 or abs(len(a) - len(b)) > 1:
+        return False
+    if re.match(r"[A-Z]*", a).group() != re.match(r"[A-Z]*", b).group():
+        return False
+    if len(a) == len(b):
+        diff = [i for i in range(len(a)) if a[i] != b[i]]
+        return len(diff) == 1 or (len(diff) == 2 and diff[1] == diff[0] + 1
+                                  and a[diff[0]] == b[diff[1]] and a[diff[1]] == b[diff[0]])
+    short, long_ = (a, b) if len(a) < len(b) else (b, a)
+    return any(long_[:i] + long_[i + 1:] == short for i in range(len(long_)))
+
+
+def _near_miss(lead: _Lead, resolver: _Resolver) -> EntityMention | None:
+    """No record carries the asked identifier: the visible records one edit away as
+    "did you mean" choices, never resolved (an exact id decides)."""
+    if not (lead.exact or lead.types):
+        return None     # a bare number has near neighbours in every series: no guess
+    rows = resolver.near_identifier(lead)
+    if not rows:
+        return None
+    cands, numbers = [], {}
+    asked = lead.forms[0] if lead.forms else lead.text
+    for row in sorted(rows, key=lambda r: (_edit_kind(asked, r.matched), r.matched, r.type,
+                                           r.object_id)):
+        if any(c.object_id == row.object_id for c in cands):
+            continue
+        # one choice per number: two systems' records of one number are one choice
+        key = f"{_snake(row.type)}|{row.matched.upper()}"
+        word = _type_word("".join(w.title() for w in _snake(row.type).split("_")))
+        label = row.matched if re.match(r"[A-Za-z]", row.matched) else f"{word} {row.matched}"
+        cand = Candidate(row.object_id, row.type, label, 0.5,
+                         f"close to {lead.text}: {row.matched} (one character differs; "
+                         "not the identifier asked)", key=key)
+        cands.append(cand)
+        numbers.setdefault(key, cand)
+    choices = list(numbers.values())[:MAX_CANDIDATES]
+    named = [c.label for c in choices]
+    prompt = (f'No record you can see carries "{lead.text}". Did you mean '
+              + (", ".join(named[:-1]) + f" or {named[-1]}" if len(named) > 1 else named[0])
+              + "?")
+    return EntityMention(lead.text, "identifier", cands[:MAX_CANDIDATES * 2], None, True,
+                         lead.span, prompt, 0, [c.object_id for c in choices])
 
 
 def _resolve_names(question: str, taken: list[tuple[int, int]], resolver: _Resolver,

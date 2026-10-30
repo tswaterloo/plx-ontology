@@ -91,7 +91,7 @@ class BackupRestoreTest(unittest.TestCase):
         manifest = json.loads(next(daily.glob("manifest-*.json")).read_text())
         self.assertEqual(manifest["table_counts"]["search.chunks"], 5)
         self.assertEqual(manifest["table_counts"]["search.feedback"], 1)
-        self.assertEqual(manifest["table_counts"]["plx_meta.migrations"], 3)
+        self.assertEqual(manifest["table_counts"]["plx_meta.migrations"], 4)
         for path in daily.iterdir():
             self.assertEqual(path.stat().st_mode & 0o077, 0, path.name)
         code, out = self.run_script("restore_test.sh")

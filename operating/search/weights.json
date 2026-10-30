@@ -1,0 +1,101 @@
+{
+  "schema": "plx-search-weights/v1",
+  "notes": "Ranking weights live here, never inside the vectors (RISHI-DIRECTION 2.5). retrievers: RRF (or weighted-sum) weight per retriever list. After fusion the top rerank_top candidates are cross-encoder reranked, then final = fused*w_fused + rerank*w_rerank + exact_id*w_exact + authority*w_authority + recency*w_recency (each signal in 0..1; with no reranked candidate w_rerank moves to w_fused). Tuned by python3 -m operating.search.tune; the values below are the hand-set starting point until the eval runs on real chunks.",
+  "fusion": "rrf",
+  "rrf_k": 60,
+  "candidates_per_retriever": 50,
+  "rerank_top": 30,
+  "rerank_timeout_s": 4.0,
+  "intents": {
+    "default": {
+      "retrievers": {"exact_id": 2.0, "graph": 1.0, "dense": 1.0, "bm25": 1.0, "fuzzy": 0.5},
+      "w_fused": 0.35,
+      "w_rerank": 0.45,
+      "w_exact": 0.15,
+      "w_authority": 0.1,
+      "w_recency": 0.1,
+      "half_life_days": 90
+    },
+    "status": {
+      "retrievers": {"exact_id": 2.0, "graph": 1.2, "dense": 1.0, "bm25": 1.0, "fuzzy": 0.5},
+      "w_fused": 0.3,
+      "w_rerank": 0.35,
+      "w_exact": 0.2,
+      "w_authority": 0.15,
+      "w_recency": 0.2,
+      "half_life_days": 21
+    },
+    "why": {
+      "retrievers": {"exact_id": 1.5, "graph": 1.2, "dense": 1.2, "bm25": 1.0, "fuzzy": 0.5},
+      "w_fused": 0.3,
+      "w_rerank": 0.5,
+      "w_exact": 0.1,
+      "w_authority": 0.05,
+      "w_recency": 0.15,
+      "half_life_days": 45
+    },
+    "who": {
+      "retrievers": {"exact_id": 2.0, "graph": 1.2, "dense": 1.0, "bm25": 1.0, "fuzzy": 0.5},
+      "w_fused": 0.35,
+      "w_rerank": 0.45,
+      "w_exact": 0.15,
+      "w_authority": 0.1,
+      "w_recency": 0.1,
+      "half_life_days": 90
+    },
+    "how_much": {
+      "retrievers": {"exact_id": 2.0, "graph": 1.0, "dense": 0.8, "bm25": 1.2, "fuzzy": 0.5},
+      "w_fused": 0.35,
+      "w_rerank": 0.35,
+      "w_exact": 0.2,
+      "w_authority": 0.25,
+      "w_recency": 0.05,
+      "half_life_days": 180
+    },
+    "compare": {
+      "retrievers": {"exact_id": 2.0, "graph": 1.0, "dense": 1.0, "bm25": 1.0, "fuzzy": 0.5},
+      "w_fused": 0.35,
+      "w_rerank": 0.4,
+      "w_exact": 0.15,
+      "w_authority": 0.2,
+      "w_recency": 0.05,
+      "half_life_days": 180
+    },
+    "find_document": {
+      "retrievers": {"exact_id": 1.5, "graph": 0.8, "dense": 1.0, "bm25": 1.2, "fuzzy": 0.8},
+      "w_fused": 0.4,
+      "w_rerank": 0.45,
+      "w_exact": 0.1,
+      "w_authority": 0.1,
+      "w_recency": 0.05,
+      "half_life_days": 365
+    },
+    "policy": {
+      "retrievers": {"exact_id": 1.0, "graph": 0.5, "dense": 1.2, "bm25": 1.0, "fuzzy": 0.5},
+      "w_fused": 0.35,
+      "w_rerank": 0.45,
+      "w_exact": 0.05,
+      "w_authority": 0.2,
+      "w_recency": 0.0,
+      "half_life_days": 3650
+    },
+    "timeline": {
+      "retrievers": {"exact_id": 2.0, "graph": 1.5, "dense": 0.8, "bm25": 0.8, "fuzzy": 0.5},
+      "w_fused": 0.4,
+      "w_rerank": 0.3,
+      "w_exact": 0.15,
+      "w_authority": 0.1,
+      "w_recency": 0.2,
+      "half_life_days": 60
+    },
+    "other": {
+      "retrievers": {"exact_id": 2.0, "graph": 1.0, "dense": 1.0, "bm25": 1.0, "fuzzy": 0.5},
+      "w_fused": 0.35,
+      "w_rerank": 0.45,
+      "w_exact": 0.15,
+      "w_authority": 0.1,
+      "w_recency": 0.1,
+      "half_life_days": 90
+    }
+  }
+}

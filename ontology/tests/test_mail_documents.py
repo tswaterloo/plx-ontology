@@ -92,6 +92,7 @@ class MailDocumentsTests(unittest.TestCase):
             po("public.app_purchase_order", {"id": "p3"}, {"id": "p3", "po_number": "PO100236"}),
             po("public.generated_purchase_order", {"id": 9}, {"id": 9, "ponumber": "PO100236"}),
         ])
+        cls.portal = portal
         cls.path = Path(cls.tmp.name) / "ontology.sqlite"
         with MailCaptures(cls.state, internal_domains=SCOPE.internal_domains) as mail:
             cls.report = build_store(cls.path, cls.compiled,
@@ -153,6 +154,97 @@ class MailDocumentsTests(unittest.TestCase):
         attached = self.conn.execute("SELECT tier FROM links WHERE link_type = "
                                      "'Attachment.attached_to'").fetchall()
         self.assertEqual([r[0] for r in attached], ["verified"])
+
+    def test_derived_relations_are_fingerprinted_from_what_they_are_read_from(self):
+        """``documentFields`` and ``containerMembers`` are read from the captured bytes; the
+        incremental build fingerprints them from their attachments' records, which forms
+        of the bytes are on disk and the reading code, without reading a file: bytes gone
+        from disk change those prints and no other."""
+        relations = ["attachments", "containerMembers", "documentFields", "messages"]
+
+        def prints():
+            with MailCaptures(self.state, internal_domains=SCOPE.internal_domains) as mail:
+                mail.records(relations)
+                with unittest.mock.patch("ontology.document_fields.captured",
+                                         side_effect=AssertionError("read a document")), \
+                        unittest.mock.patch("ontology.project_graph.member_records",
+                                            side_effect=AssertionError("read a container")):
+                    return mail.fingerprint(relations)
+        before = prints()
+        capture = sqlite3.connect(self.state / "mail-capture" / "capture.db")
+        try:
+            digest = capture.execute("SELECT content_sha256 FROM attachments WHERE "
+                                     "content_sha256 IS NOT NULL LIMIT 1").fetchone()
+        finally:
+            capture.close()
+        stored = [p for p in (self.state / "mail-capture" / "blobs").rglob("*")
+                  if p.is_file() and digest and p.name.startswith(digest[0])]
+        self.assertTrue(stored, "the attachment's bytes are on disk")
+        moved = [p.rename(p.with_name(p.name + ".moved")) for p in stored]
+        try:
+            after = prints()
+        finally:
+            for p in moved:
+                p.rename(p.with_name(p.name[:-len(".moved")]))
+        self.assertEqual(prints(), before)
+        self.assertEqual({r for r in relations if before[r] != after[r]},
+                         {"containerMembers", "documentFields"})
+
+    def test_a_captured_file_is_read_once_across_builds_under_the_same_reading_code(self):
+        """Builds of one state directory keep the readings of captured files they made
+        (``integrations.captured_text.KeptReadings``): the next build reads none of the
+        files again and stores the same generation; a change of the reading code reads
+        them again."""
+        from integrations import captured_text
+        from ontology import project_incremental as inc
+
+        def build(state):
+            with MailCaptures(self.state, internal_domains=SCOPE.internal_domains) as mail:
+                return inc.build_generation(
+                    state, self.compiled, {"portal_api": self.portal, "graph_mail": mail},
+                    clock=lambda: NOW, post_project={"mentions": mentions.store_mention_links})
+        read_text = captured_text.read_text
+        reads = []
+
+        def counted(*args, **kwargs):
+            reads.append(1)
+            return read_text(*args, **kwargs)
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "projection"
+            with unittest.mock.patch.object(captured_text, "_CACHE",
+                                            captured_text._CACHE.empty()), \
+                    unittest.mock.patch.object(captured_text, "read_text", counted):
+                first = build(state)
+            self.assertTrue(reads)
+            self.assertTrue((state / inc.READINGS).is_file())
+            memo = captured_text._CACHE.empty()
+            with unittest.mock.patch.object(captured_text, "_CACHE", memo), \
+                    unittest.mock.patch.object(captured_text, "read_text",
+                                               side_effect=AssertionError("read again")):
+                again = build(state)
+            self.assertEqual((again.content_digest, memo.unexpected),
+                             (first.content_digest, 0))
+            self.assertTrue(len(memo))   # the readings came from the kept ones
+            reads.clear()
+            with unittest.mock.patch.object(captured_text, "_CACHE",
+                                            captured_text._CACHE.empty()), \
+                    unittest.mock.patch.object(captured_text, "read_text", counted), \
+                    unittest.mock.patch("ontology.project.derivation_code",
+                                        return_value="other reading code"):
+                changed = build(state)
+                with MailCaptures(self.state,
+                                  internal_domains=SCOPE.internal_domains) as mail:
+                    cold = build_store(Path(tmp) / "cold.sqlite", self.compiled,
+                                       {"portal_api": self.portal, "graph_mail": mail},
+                                       clock=lambda: NOW,
+                                       post_project={"mentions": mentions.store_mention_links})
+            self.assertTrue(reads)
+            # The capture files did not change, but the code that derives documentFields
+            # and containerMembers did: their units are projected again (never taken from
+            # the last build's fingerprints), and the generation equals a cold build.
+            self.assertEqual(changed.mode, "incremental")
+            self.assertGreater(changed.units_rebuilt, 0)
+            self.assertEqual(changed.content_digest, cold["content_digest"])
 
     def test_mentions_are_stored_lead_links_in_the_same_generation(self):
         step = self.report["post_project"]["mentions"]

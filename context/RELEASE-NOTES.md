@@ -15,6 +15,34 @@ Must keep working:
 Known gaps:
 ```
 
+## v0.12 (2026-10-30)
+
+Added:
+- The web app's answers are checked the same way as the use-case scoreboard: every fact in an answer is checked against its source before it is shown, and the answer is written in plain sentences.
+- Asking about a purchase order on your late list says how many days late it is, with its source. If a source says it was received or closed, both are shown side by side.
+- "Which purchase orders are late?" answers in seconds, from the same list as the home page. A narrower question, such as one supplier's orders, gets a full answer instead.
+- The process maps and briefs an answer cites can be opened from the answer, with your own access.
+- When two systems disagree on a fact, the answer shows both values, which one it trusts and why: the system of record first, then the newer value, then the more specific document.
+- The same email or file kept in several places is shown once, with the other places you can open.
+- A near-miss order number gets a "did you mean …?" with the closest records you can see. It never picks one for you.
+- Search by meaning is built and can be switched on. It stays off until it beats the current search on the test questions.
+
+Changed:
+- Rebuilds are faster: a document already read is not read again unless the file or the reading software changes.
+- Questions like "PO 100072" (with a space) find the order.
+
+Fixed:
+- A use case's documents are no longer reported missing when a search looked in only one kind of source.
+
+Must keep working:
+- Everything in v0.11: quotes are the sentence that answers, partial answers stay marked as partial, and approvals still need a second person.
+
+Known gaps:
+- Sign-in with a Microsoft account is not switched on yet; the preview uses a demo sign-in on the private network.
+- A full answer takes about 30 to 60 seconds.
+- Some quote-to-order questions still come back without an answer; a fix is in progress.
+- Actions in Mission Control are not switched on yet.
+
 ## v0.11 (2026-10-29)
 
 Added:

@@ -59,6 +59,7 @@ undecoded ``.msg`` property) is a gap with its reason, never silently dropped.
 from __future__ import annotations
 
 from collections import OrderedDict
+import contextlib
 from dataclasses import dataclass, field, replace
 from hashlib import sha256
 import json
@@ -69,7 +70,7 @@ import re
 import subprocess
 import threading
 import zlib
-from typing import Any, Callable, Generic, Hashable, Mapping, TypeVar
+from typing import Any, Callable, Generic, Hashable, Iterator, Mapping, TypeVar
 from urllib.parse import parse_qs, quote
 
 from ontology.mentions import PAGE_BREAK, is_paged_file, text_pages
@@ -552,6 +553,9 @@ class ReadingMemo(Generic[_T]):
         self._total = 0
         self._lock = threading.Lock()
         self.unexpected = 0
+        # A second level kept on disk between processes (:class:`KeptReadings`), while a
+        # projection build sets one (:func:`kept_readings`); None: this process only.
+        self.backing: Any = None
 
     def empty(self) -> "ReadingMemo[_T]":
         """A new, empty memo with this one's bound and sizes."""
@@ -565,25 +569,36 @@ class ReadingMemo(Generic[_T]):
         with self._lock:
             return len(self._entries)
 
-    def read(self, key: Hashable, read: Callable[[], _T]) -> _T | None:
+    def read(self, key: Hashable, read: Callable[[], _T],
+             present: Callable[[], bool] | None = None) -> _T | None:
         """The remembered result of ``key``, else ``read()``'s, remembered; when ``read``
         raised, None (remembered only over a bound) or :class:`NotRemembered`'s value."""
         with self._lock:
             if key in self._entries:
                 self._entries.move_to_end(key)
                 return self._entries[key]
-        try:
-            found: Any = read()
-        except NotRemembered as exc:
-            return exc.value
-        except Exception as exc:  # noqa: BLE001 - a failed read is no result (read_failure)
-            kind = _failed(exc, f"memo key {_digest_of(key)}")
-            if kind != "limit":
-                if kind == "unexpected":
-                    with self._lock:
-                        self.unexpected += 1
-                return None
-            found = None
+        backing = self.backing
+        # A kept reading is served only while its bytes (or their dropped readings) are
+        # on disk: a file gone reads as gone, as the read itself would.
+        kept = (backing.get(key) if backing is not None
+                and (present is None or present()) else None)
+        if kept is not None:
+            found: Any = kept[0]
+        else:
+            try:
+                found = read()
+            except NotRemembered as exc:
+                return exc.value
+            except Exception as exc:  # noqa: BLE001 - a failed read is no result
+                kind = _failed(exc, f"memo key {_digest_of(key)}")
+                if kind != "limit":
+                    if kind == "unexpected":
+                        with self._lock:
+                            self.unexpected += 1
+                    return None
+                found = None
+            if backing is not None:
+                backing.put(key, found)
         with self._lock:
             if key in self._entries:   # another thread read it meanwhile: one entry
                 self._entries.move_to_end(key)
@@ -606,6 +621,138 @@ def _size(found: CapturedText | None) -> int:
 
 
 _CACHE: ReadingMemo[CapturedText] = ReadingMemo(MAX_CACHED_CHARS, _size)
+
+
+def _blob_kept(blobs: str | Path, digest: str) -> bool:
+    """Some form of the blob ``digest`` (its bytes, compressed or dropped) is on disk."""
+    return any(blob_path(blobs, digest, suffix).exists()
+               for suffix in ("", COMPRESSED_SUFFIX, DROPPED_SUFFIX))
+
+
+class KeptReadings:
+    """The readings of :func:`captured_text` kept on disk between processes (a SQLite file
+    in a projection build's state directory, beside the generations it reads them for):
+    what :class:`ReadingMemo` remembers (a reading, or None over one of the extractor's
+    bounds) is kept under its key (bytes digest, MIME type, name, pinned OCR text digest)
+    and the digest of the code that reads (``code``: ``ontology.project.derivation_code``),
+    and read back only under the same code, so a kept reading is the one a read now would
+    make. A reading that does not survive its encoding unchanged is not kept. Readings no
+    build used in its last ``KEEP_BUILDS`` are dropped when a build ends. Any failure of
+    the file is a miss, never a failed read."""
+
+    KEEP_BUILDS = 3
+    _BATCH = 500   # writes per commit
+
+    def __init__(self, path: str | Path, code: str) -> None:
+        import sqlite3
+        self.code = code
+        self._lock = threading.Lock()
+        self._pending = 0
+        self.hits = self.misses = self.kept = 0
+        # Private: the text of captured files (credentialed state, never shared).
+        os.close(os.open(str(path), os.O_RDWR | os.O_CREAT, 0o600))
+        os.chmod(path, 0o600)
+        self._db = sqlite3.connect(str(path), isolation_level=None, check_same_thread=False)
+        try:
+            self._db.execute("PRAGMA journal_mode = WAL")
+            self._db.execute("PRAGMA synchronous = NORMAL")
+            self._db.execute("CREATE TABLE IF NOT EXISTS readings (key TEXT PRIMARY KEY, "
+                             "code TEXT NOT NULL, value BLOB NOT NULL, used INTEGER NOT NULL)")
+            self._db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, "
+                             "value TEXT NOT NULL)")
+            row = self._db.execute("SELECT value FROM meta WHERE key = 'builds'").fetchone()
+            self.build = (int(row[0]) if row else 0) + 1
+            self._db.execute("INSERT INTO meta VALUES ('builds', ?) ON CONFLICT(key) DO "
+                             "UPDATE SET value = excluded.value", (str(self.build),))
+            self._db.execute("BEGIN")
+        except BaseException:
+            self._db.close()
+            raise
+
+    @staticmethod
+    def _key(key: Hashable) -> str | None:
+        try:
+            return json.dumps(list(key), ensure_ascii=False)   # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
+
+    def _wrote(self) -> None:
+        self._pending += 1
+        if self._pending >= self._BATCH:
+            self._db.execute("COMMIT")
+            self._db.execute("BEGIN")
+            self._pending = 0
+
+    def get(self, key: Hashable) -> tuple[CapturedText | None] | None:
+        """``(reading,)`` kept for ``key`` under this code, else None (a miss)."""
+        name = self._key(key)
+        if name is None:
+            return None
+        try:
+            with self._lock:
+                row = self._db.execute("SELECT code, value FROM readings WHERE key = ?",
+                                       (name,)).fetchone()
+                if row is None or row[0] != self.code:
+                    self.misses += 1
+                    return None
+                self._db.execute("UPDATE readings SET used = ? WHERE key = ?",
+                                 (self.build, name))
+                self._wrote()
+                self.hits += 1
+            return (decode_reading(json.loads(zlib.decompress(row[1]).decode("utf-8"))),)
+        except Exception:  # noqa: BLE001 - an unreadable entry is a miss
+            return None
+
+    def put(self, key: Hashable, found: CapturedText | None) -> None:
+        name = self._key(key)
+        if name is None:
+            return
+        try:
+            encoded = encode_reading(found)
+            if decode_reading(json.loads(json.dumps(encoded))) != found:
+                return
+            value = zlib.compress(json.dumps(encoded, ensure_ascii=False).encode("utf-8"), 6)
+            with self._lock:
+                self._db.execute("INSERT INTO readings VALUES (?, ?, ?, ?) ON CONFLICT(key) "
+                                 "DO UPDATE SET code = excluded.code, value = excluded.value, "
+                                 "used = excluded.used", (name, self.code, value, self.build))
+                self._wrote()
+                self.kept += 1
+        except Exception:  # noqa: BLE001 - a reading not kept is read again next time
+            return
+
+    def close(self, *, prune: bool) -> None:
+        """Commit and close; ``prune`` (a build that ended): drop the readings no build of
+        the last ``KEEP_BUILDS`` used."""
+        try:
+            with self._lock:
+                if prune:
+                    self._db.execute("DELETE FROM readings WHERE used <= ?",
+                                     (self.build - self.KEEP_BUILDS,))
+                self._db.execute("COMMIT")
+        except Exception:  # noqa: BLE001
+            pass
+        finally:
+            self._db.close()
+
+
+@contextlib.contextmanager
+def kept_readings(path: str | Path) -> Iterator[KeptReadings]:
+    """While open, :func:`captured_text` reads through the readings kept at ``path``
+    (:class:`KeptReadings`) and keeps the new ones there. The readings are pruned when the
+    block ends without an exception."""
+    from ontology.project import derivation_code
+
+    memo = _CACHE
+    kept = KeptReadings(path, derivation_code())
+    memo.backing = kept
+    ended = False
+    try:
+        yield kept
+        ended = True
+    finally:
+        memo.backing = None
+        kept.close(prune=ended)
 
 
 def captured_text(blobs: str | Path, row: Mapping[str, Any]) -> CapturedText | None:
@@ -633,7 +780,9 @@ def captured_text(blobs: str | Path, row: Mapping[str, Any]) -> CapturedText | N
             raise NotRemembered(digest)
         return read_text(content, mime, filename=name,
                          text=None if text is None else text.decode("utf-8"))
-    found = _CACHE.read((digest, mime, name, text_digest), read)
+    found = _CACHE.read((digest, mime, name, text_digest), read,
+                        lambda: _blob_kept(blobs, digest)
+                        and (text_digest is None or _blob_kept(blobs, text_digest)))
     if found is not None and row.get("text_status") == OCR_DEFERRED:
         return replace(found, ocr_deferred=True)
     return found
@@ -942,7 +1091,7 @@ def split_member(handle: Any) -> tuple[str, str, str | None] | None:
     return (head[:-1], keys["member"][0], digest) if rebuilt == handle else None
 
 
-__all__ = ["COMPRESSED_SUFFIX", "DROPPED_SUFFIX", "blob_path", "decode_reading",
+__all__ = ["COMPRESSED_SUFFIX", "DROPPED_SUFFIX", "KeptReadings", "blob_path", "decode_reading",
            "encode_reading", "file_type", "inflate", "read_dropped", "reading_key", "readings_of",
            "write_dropped",
            "CapturedText", "ContainerReading", "LIMIT_ERRORS", "MAX_CACHED_CHARS",
@@ -950,6 +1099,6 @@ __all__ = ["COMPRESSED_SUFFIX", "DROPPED_SUFFIX", "blob_path", "decode_reading",
            "OCR_NO_TEXT",
            "OCR_PENDING", "OCR_UNAVAILABLE", "ReadingMemo", "SCANS_PENDING", "StoredText", "TEXT_EXCEEDS_BOUND", "TEXT_EXTRACTED",
            "TEXT_OCR", "TEXT_READ", "TEXT_UNREAD", "UNTYPED_OCR_FAILURES", "byte_pinned", "capture_text",
-           "captured_text", "container_members", "member_handle", "member_view",
+           "captured_text", "container_members", "kept_readings", "member_handle", "member_view",
            "ocr_digest", "ocr_failure_cause", "read_blob", "read_container", "read_failure",
            "read_text", "split_member", "stored_text", "text_status_kind"]

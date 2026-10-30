@@ -125,6 +125,32 @@ class MirrorGenerationTests(unittest.TestCase):
         self.assertSameAsCold(fourth, "cold4.sqlite")
         self.assertEqual(inc.current_generation(self.state).id, fourth.id)
 
+    def test_a_capture_whose_files_did_not_change_is_not_fingerprinted_again(self):
+        """A source's fingerprints are kept with its watermark (the file state its
+        snapshot read); the next build whose source opens on the same files takes them
+        and does not read it, and one whose files were written reads it in full."""
+        self.capture(T1)
+        first = self.generation()
+        with mock.patch.object(MirrorCaptures, "fingerprint",
+                               side_effect=AssertionError("fingerprinted again")):
+            same = self.generation()
+        self.assertEqual((same.mode, same.units_rebuilt, same.content_digest),
+                         ("incremental", 0, first.content_digest))
+        self.fake.set("public.app_purchase_order", "po-a", status="RECEIVED")
+        self.capture(T2)
+        read = []
+        fingerprint = MirrorCaptures.fingerprint
+
+        def counted(captures, relations):
+            read.append(len(relations))
+            return fingerprint(captures, relations)
+        with mock.patch.object(MirrorCaptures, "fingerprint", autospec=True,
+                               side_effect=counted):
+            second = self.generation()
+        self.assertEqual(len(read), 1)
+        self.assertGreater(second.units_rebuilt, 0)
+        self.assertSameAsCold(second, "cold2.sqlite")
+
     def test_an_interrupted_build_keeps_the_previous_generation_and_the_next_recovers(self):
         self.capture(T1)
         first = self.generation()
@@ -503,6 +529,67 @@ class SyntheticGenerationTests(unittest.TestCase):
             self.assertEqual(sorted(d.name for d in (state / "generations").iterdir()),
                              [smaller.id])
 
+    def test_a_seeded_build_digests_again_only_the_segments_it_wrote(self):
+        """The content digest of an incremental build is composed from the seed's segment
+        digests and those of every segment the build wrote, its changed units' and every
+        post_project write's wherever it lands (a link and a value on objects no changed
+        unit holds, then their removal): equal to a digest of every row of the result
+        and to a cold build of the same captures and steps."""
+        writes = {"on": False}
+
+        def step(builder, projector):
+            if not writes["on"]:
+                return {}
+            conn = builder.connection
+            a, b = conn.execute(
+                "SELECT object_id FROM objects WHERE object_type = 'Supplier' "
+                "ORDER BY object_id LIMIT 2").fetchall()
+            version = conn.execute(
+                "SELECT l1_handle, digest, lineage, markings, recorded_at, superseded_at "
+                "FROM object_versions WHERE object_id = ? ORDER BY recorded_at LIMIT 1",
+                (a[0],)).fetchone()
+            builder.add("links", [{
+                "link_id": "test:post", "link_type": "Supplier.test_post", "from_object": a[0],
+                "to_object": b[0], "tier": "lead", "binding_kind": "mention",
+                "reason": '[{"test":"post"}]', "why_not": "[]", "evidence_handles": '["test:handle"]',
+                "markings": "[]", "recorded_at": version[4], "superseded_at": version[5]}])
+            builder.add("object_values", [{
+                "object_id": a[0], "property": "test_post", "value_type": "text",
+                "value": "written by a step", "l1_handle": version[0], "field_path": "row.x",
+                "digest": version[1], "lineage": version[2], "binding_id": a[0].split(":")[1],
+                "parser": "post_project", "markings": version[3], "recorded_at": version[4],
+                "superseded_at": version[5]}])
+            return {}
+
+        def build(root, changed, on):
+            writes["on"] = on
+            built = inc.build_generation(root / "state", self.schema, self.sources(changed),
+                                         clock=lambda: T2, post_project={"test": step},
+                                         space=incremental_path)
+            cold = build_store(root / "cold.sqlite", self.schema, self.sources(changed),
+                               clock=lambda: T2, post_project={"test": step})
+            conn = sqlite3.connect(built.store)
+            try:
+                self.assertEqual(content_digest(conn), built.content_digest)
+            finally:
+                conn.close()
+            self.assertEqual(built.content_digest, cold["content_digest"])
+            self.assertEqual(tables(built.store), tables(root / "cold.sqlite"))
+            return built
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = build(root, None, False)
+            self.assertEqual(first.digest["mode"], "full")
+            total = first.digest["segments"]
+            for changed, on in (("sage.ap_pjd", True), ("public.app_product", False),
+                                ("public.app_product", False)):
+                with self.subTest(changed=changed, step_writes=on):
+                    built = build(root, changed, on)
+                    self.assertEqual(built.mode, "incremental")
+                    self.assertEqual(built.digest["mode"], "segments")
+                    self.assertLess(built.digest["segments"], total / 4, built.digest)
+
     def test_build_time_stays_inside_a_generous_bound(self):
         # Diagnostic, not a target:
         # about 2,400 objects cold, and an unchanged rebuild that
@@ -551,6 +638,23 @@ class FingerprintTests(unittest.TestCase):
         changed = self.records(self.T1)
         changed[0] = dataclasses.replace(changed[0], last_seen_at=self.T0[:-2] + "1Z")
         self.assertNotEqual(inc._stream_fingerprint(changed), prints[0])
+
+    def test_a_read_through_a_link_type_depends_on_its_link_bindings_at_the_reader(self):
+        """A link type with link bindings among other sources (a BC pair beside a Portal
+        one) makes a binding depend only on the link bindings it is an end of: a change
+        of every BC capture rebuilds no Portal binding unit (22 did when every link binding
+        of such a type counted), while the Portal-BC link units are rebuilt. Equality with
+        a cold build: SyntheticGenerationTests (``purchaseOrders``)."""
+        from ontology.schema import load_schema
+        the_plan = inc.plan(load_schema())
+        source = {bid: b["source"] for bid, (_, b) in the_plan.bindings.items()}
+        bc = {bid for bid, name in source.items() if name == "bc"}
+        dirty = {unit for unit, deps in the_plan.units.items() if deps & bc}
+        self.assertEqual([u for u in dirty if u.startswith("b:")
+                          and source[u[2:]] == "portal_api"], [])
+        crossing = [u for u in dirty if u.startswith("l:")
+                    and {source[b] for b in the_plan.units[u]} >= {"bc", "portal_api"}]
+        self.assertTrue(crossing)
 
     def test_a_cyclic_lineage_inheritance_is_never_built_incrementally(self):
         # An inherited lineage is computed lazily and memoized, so in a cycle it depends

@@ -289,8 +289,11 @@ from typing import Any, Iterable, Mapping, Sequence
 from urllib.parse import unquote
 
 from evals import measure as measuring
+from operating.answer_contract import (  # noqa: F401 - the scorer's answer contract
+    ANSWER_FORMAT, ANSWERABILITY, ACTION_TOOL, _JSON_FENCE, MAX_VALUES, MAX_CITATIONS,
+    CALCULATION_OPS, MAX_CALCULATION_INPUTS, canonical, answer_candidate, parse_answer,
+    answer_problems, calculation_problem)
 
-ANSWER_FORMAT = "plx-eval-answer/v1"
 TRANSCRIPT_FORMAT = "plx-eval-transcript/v1"
 SCORE_FORMAT = "plx-eval-score/v1"
 # 2: the read gap is a scorer outcome (``read_gap``), on every path.
@@ -420,7 +423,6 @@ METADATA_FIELD_NAMES = frozenset({
 # scale words a ``NUMBER`` token prints a percent with: the scorer's own reading.
 PERCENT_UNITS = frozenset({"%", "percent", "pct"})
 PERCENT_SCALES = frozenset({"%", "percent", "per cent", "pct"})
-ANSWERABILITY = ("answerable", "partial", "blocked")
 # Gate codes that make an answer value unsupported; the two *_unverified codes only say
 # no role contract grounds the field (Workbench coverage, reported, not failing).
 BLOCKING_GATE_CODES = frozenset({"claim_uncited", "claim_value_mismatch",
@@ -432,11 +434,6 @@ UNVERIFIED_GATE_CODES = frozenset({"claim_role_unverified", "claim_wording_role_
 # Gate codes that break ``must_not: claim_uncited_number``: a number in the answer's prose
 # no value claim states, or an answer value stating a value with no citation.
 UNCITED_NUMBER_GATE_CODES = frozenset({"claim_unstructured", "claim_uncited"})
-# A tool that proposes, approves, dispatches or executes an effect (``plx.act`` is the
-# action door, MC writes included). Combined with the host's read-only annotation: a
-# read-only tool is never an action.
-ACTION_TOOL = re.compile(r"(?:^|[._])(?:act(?:$|[._])|propose|approve|dispatch|execute|"
-                         r"submit|send|action_(?:propose|request|decide|register))", re.I)
 # A mirror citation: api://<schema.relation>/<url-escaped key JSON>@<generation>-<capture>
 # or the legacy @<capture> (integrations/source_mirror.py _HANDLE). Groups: relation, key,
 # generation, capture.
@@ -548,18 +545,13 @@ READ_GAP_VALUE_CODES = frozenset({"claim_check_failed", "calculation_input_unres
 REFUSED_STATUSES = frozenset({"unresolvable", "withheld", "not_captured", "failed", "error",
                               "unavailable", "step_unavailable"})
 _NUMERIC = re.compile(r"^[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?$")
-_JSON_FENCE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.S)
-MAX_VALUES = 100
-MAX_CITATIONS = 8
 # Records outside the Portal mirror an answer may cite (module docstring).
 RECORD_SCHEMES = ("bc", "graph-mail", "sharepoint")
 # A BC capture-store handle's tail (integrations/capture_store.py): no revision in it.
 _CAPTURE_TAIL = re.compile(r"^[0-9a-f]{16}-[1-9][0-9]{0,17}$")
-CALCULATION_OPS = ("sum", "count", "equal", "expression")
 # ``round_to_cents(<expression>)``: the one rounding an expression may state (half-up, 0.01).
 ROUND_TO_CENTS = re.compile(r"^\s*round_to_cents\((.*)\)\s*$", re.S)
 _INPUT_NAME = re.compile(r"\bx(?:0|[1-9][0-9]{0,2})\b")
-MAX_CALCULATION_INPUTS = 100  # the oracle's chain cap (evals/oracle/families.py MAX_CHAIN)
 LEAD_TIER = "lead"
 
 
@@ -568,10 +560,6 @@ class ScoreError(ValueError):
 
 
 # --------------------------------------------------------------------------- helpers
-
-def canonical(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-                      allow_nan=False)
 
 
 def sha256(value: Any) -> str:
@@ -731,103 +719,6 @@ def handle_capture(handle: str) -> int | None:
 
 
 # --------------------------------------------------------------------------- answer
-
-def answer_candidate(text: Any) -> dict[str, Any] | None:
-    """The answer object of the agent's final message, well formed or not: the last
-    ```json fenced object (or the whole message) whose ``format`` is ``ANSWER_FORMAT``."""
-    if not isinstance(text, str) or not text.strip():
-        return None
-    candidates = list(_JSON_FENCE.findall(text))[::-1] + [text.strip()]
-    for raw in candidates:
-        try:
-            value = json.loads(raw)
-        except ValueError:
-            continue
-        if isinstance(value, Mapping) and value.get("format") == ANSWER_FORMAT:
-            return dict(value)
-    return None
-
-
-def parse_answer(text: Any) -> tuple[dict[str, Any] | None, str | None]:
-    """(answer, None) or (None, error code) from the agent's final message
-    (``answer_candidate``), refused when ``answer_problems`` finds it malformed."""
-    value = answer_candidate(text)
-    if value is None:
-        return None, "answer_missing"
-    problems = answer_problems(value)
-    if problems:
-        return None, "answer_malformed:" + problems[0]
-    return value, None
-
-
-def answer_problems(answer: Mapping[str, Any]) -> list[str]:
-    out = []
-    allowed = {"format", "answerability", "text", "values", "gaps"}
-    if set(answer) - allowed:
-        out.append("unknown_keys")
-    if answer.get("answerability") not in ANSWERABILITY:
-        out.append("answerability")
-    if not isinstance(answer.get("text", ""), str):
-        out.append("text")
-    values = answer.get("values", [])
-    if not isinstance(values, list) or len(values) > MAX_VALUES:
-        out.append("values")
-        values = []
-    for index, value in enumerate(values):
-        if not isinstance(value, Mapping) or not isinstance(value.get("name"), str):
-            out.append(f"values.{index}")
-            continue
-        calc = value.get("calculation")
-        if calc is not None and calculation_problem(calc, value.get("citations")):
-            out.append(f"values.{index}.calculation")
-        boolean = isinstance(calc, Mapping) and calc.get("op") == "equal"
-        if (isinstance(value.get("value"), bool) and not boolean) or not isinstance(
-                value.get("value"), (str, int, float, bool, type(None))):
-            out.append(f"values.{index}.value")
-        cites = value.get("citations", [])
-        if not isinstance(cites, list) or len(cites) > MAX_CITATIONS or any(
-                not isinstance(cite, Mapping) or not isinstance(cite.get("l1_handle"), str)
-                or not isinstance(cite.get("field_path"), str)
-                or not isinstance(cite.get("quote", ""), str) for cite in cites):
-            out.append(f"values.{index}.citations")
-    gaps = answer.get("gaps", [])
-    if not isinstance(gaps, list) or any(
-            not isinstance(gap, Mapping) or not isinstance(gap.get("state"), str)
-            or not isinstance(gap.get("subject"), str)
-            or not isinstance(gap.get("concerns", ""), (str, type(None)))
-            for gap in gaps):  # null: the gap concerns no value, as if left out
-        out.append("gaps")
-    return out
-
-
-def calculation_problem(calc: Any, citations: Any = None) -> str | None:
-    """Why an answer value's ``calculation`` is malformed (None: well formed). A value
-    states its inputs in the calculation, never also in ``citations``."""
-    expression = isinstance(calc, Mapping) and calc.get("op") == "expression"
-    if not isinstance(calc, Mapping) or set(calc) - {"op", "inputs"} - (
-            {"expression"} if expression else set()) or calc.get("op") not in CALCULATION_OPS:
-        return "op"
-    if expression and not isinstance(calc.get("expression"), str):
-        return "expression"
-    if citations:
-        return "citations_beside_calculation"
-    inputs = calc.get("inputs")
-    if not isinstance(inputs, list) or not (
-            2 if calc["op"] == "equal" else 1) <= len(inputs) <= MAX_CALCULATION_INPUTS:
-        return "inputs"
-    for entry in inputs:
-        if expression and not (isinstance(entry, Mapping) and isinstance(entry.get("value"),
-                                                                          str)):
-            return "input"
-        if not isinstance(entry, Mapping) or set(entry) - {
-                "l1_handle", "field_path", "unit", "currency", "quantity_role"} - (
-                    {"value", "quote"} if expression else set()) or \
-                not isinstance(entry.get("l1_handle"), str) or any(
-                    not isinstance(entry.get(k, ""), str)
-                    for k in ("unit", "currency", "quantity_role", "quote")) or \
-                (calc["op"] != "count" and not isinstance(entry.get("field_path"), str)):
-            return "input"
-    return None
 
 
 def _value_text(value: Any) -> str | None:

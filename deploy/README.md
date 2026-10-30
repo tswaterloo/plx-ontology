@@ -50,7 +50,7 @@ The units are **not enabled** by the build. Nothing here writes to a PLX system.
    # 127.0.0.1: this machine's Tailscale addresses. Never a public interface.
    {
      echo "PLX_APP_HOST=$(tailscale status --self --json | python3 -c 'import json,sys;print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))')"
-     echo "PLX_BIND_ADDRS=$(tailscale ip -4) $(tailscale ip -6)"
+     echo "PLX_BIND_ADDRS=\"$(tailscale ip -4) $(tailscale ip -6)\""   # quoted: also sourced by sh
    } | sudo tee /etc/plx/workbench-caddy.env
    # API: its serve flags (see `python3 -m operator_api serve --help`).
    echo 'PLX_API_ARGS=--mock' | sudo tee /etc/plx/workbench-api.env      # demo over fixtures
@@ -125,6 +125,11 @@ with the data label (e.g. FIXTURE); staff should only ever use Entra mode.
 - Content-Security-Policy: the app sets a per-request nonce policy
   (`app/src/proxy.ts`, `app/src/lib/csp.ts`); Caddy adds a deny-all policy on `/api/*`.
 - Backups and security scans are tracked outside this module.
+
+## Demo host
+
+The running demo's host-specific setup (checkout, user, keys, access link) is in
+[`DEMO-HOST.md`](DEMO-HOST.md).
 
 ## Adding the staff domain later (with Vince)
 

@@ -841,6 +841,12 @@ class ObjectTests(ContractMixin, unittest.TestCase):
         # The po_reference side is withheld (REC-07); the disagreement is still reported.
         self.assertEqual(texts, [("", "not_po_like"), ("PO 7781", None)])
         self.assertNotIn("Jane", json.dumps(result))
+        # Which side is trusted, by which rule and why: every value stays listed.
+        resolution = conflict["resolution"]
+        self.assertIn(resolution["rule"], ("system_of_record", "newest", "undecided"))
+        self.assertTrue(set(resolution["trusted"]) <= set(range(len(conflict["values"]))))
+        self.assertEqual(len(resolution["as_of"]), len(conflict["values"]))
+        self.assertNotIn("PO 7781", resolution["note"])
         (edge,) = result["identity"]
         self.assertEqual((edge["from"], edge["to"], edge["tier"]), (SO, FM, "verified"))
         self.assertNotIn("citations", edge["reason"][0])  # concise

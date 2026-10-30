@@ -17,7 +17,7 @@ digest): an unchanged unit's rows are, by its key, the rows a cold build writes.
 
 Dependencies (bindings whose captures a unit's rows can read):
 
-* ``lin(B)``: B; the ends of every link type B's lineage rules hop through
+* ``lin(B)``: B; the ends of the link types B's lineage rules hop through
   (``via_link``) and of its ``inherit`` link type, plus ``lin`` of those ends (an
   inherited lineage is the target's lineage); for a binding that ``stands_for`` another,
   that one and the bindings listed before B standing for it (they decide what B holds).
@@ -25,6 +25,11 @@ Dependencies (bindings whose captures a unit's rows can read):
   are read through, and the ``local_currency`` binding of each record holding a currency
   it reads (a blank code reads the local currency there). ``b:B`` = ``val(B)`` plus the ends of the link types its events' qualifiers
   follow (capture events compare B's own values).
+* "The ends of a link type" read from B: the bindings of those of its link bindings that
+  have B, a binding B stands for or one standing for B as an end (from, to or join): a
+  hop or qualifier from a version of B follows the links whose from or to object is its
+  object, and no other link binding writes one. (A BC change no longer rebuilds the
+  Portal bindings whose link types also have BC link bindings.)
 * A link unit: its ends (from, to and join binding), ``lin`` of each end (citations
   carry the cited version's lineage) and, for ``same_record``, ``val`` of each end
   (property conflicts compare their values).
@@ -46,6 +51,7 @@ State directory (the caller owns where it is; this module owns what is inside)::
     <state_dir>/.build.lock                  flock held by the one running build
     <state_dir>/generations/<id>/store.sqlite   the generation (ProjectionStore reads it)
     <state_dir>/generations/<id>/units.json     unit keys and build-report parts
+    <state_dir>/readings.sqlite              readings of captured files kept between builds
 
 A build writes a new generation directory and commits by replacing ``CURRENT`` (which
 records when, ``committed_at``); until then the previous generation is untouched and stays
@@ -65,6 +71,24 @@ rows are ``previous``'s: a caller reuses only a generation whose ``post_project`
 ``current_generation(..., committed_since=)`` returns a generation only when it was
 committed at or after that instant (a verifier session's start: one session's projection,
 never an earlier one's).
+
+Fingerprints: a source opens its read snapshot through ``ontology.project.begin_snapshot``
+and names the file state that snapshot reads (``watermark()``: device, inode, size and
+modification and change times of its database files, taken before and after the snapshot
+starts and as the source was opened). ``units.json`` keeps each source's watermark with the
+fingerprints read under it; the next build of the same code whose source names the same
+watermark reads the same bytes, so it takes those fingerprints and reads nothing of it. Any
+other source is fingerprinted in full. The relations a source derives from captured bytes
+(``documentFields``, ``containerMembers``) are fingerprinted from what they are derived from
+(``ontology.project.derived_fingerprint``), never by deriving them.
+
+Digest: the content digest is composed per segment (``ontology.store.content_digest_parts``):
+a partial build digests again only the segments its writes touched, the post_project steps'
+included, and takes the seed's digest of every other one.
+
+Readings: the text read from captured files (a PDF's pages, the like) is kept between
+builds in ``<state_dir>/readings.sqlite`` under the digest of the code that reads it
+(``integrations.captured_text.KeptReadings``), so a file is parsed once, not by every build.
 
 Memory: captures are fingerprinted and projected as streams (the projector's bound,
 ``ontology/project.py``); only unit keys and report parts are held.
@@ -91,12 +115,14 @@ from ontology.project import (_PROJECTED_LINK_KINDS, _REC_FIELDS, DEFAULT_BATCH,
                               CaptureSource, Normalizer, ProjectionError, Projector,
                               _default_normalizer, _get,
                               binding_unit, event_id_of, finish_generation, link_ends,
-                              link_unit, merge_reports, open_generation)
+                              link_unit, merge_reports, open_generation, stream_fingerprint)
+from integrations.captured_text import kept_readings
 from ontology import store_ddl
 from ontology.store import StoreBuilder, _fsync_dir, canonical, known_at
 
 FORMAT = "plx-projection-generations/v1"
 CURRENT = "CURRENT"
+READINGS = "readings.sqlite"   # readings of captured files kept between builds
 KEEP = 2
 _LOCK = ".build.lock"
 # Modules whose code decides what a unit holds: a change to any of them changes every key.
@@ -121,6 +147,9 @@ class Generation:
     seconds: dict[str, float] = field(default_factory=dict)
     seed: str | None = None         # how an incremental build laid its seed: clone | copy
     need: dict[str, Any] = field(default_factory=dict)   # the space estimate it checked
+    # How its content digest was made: ``mode`` full (every row) or segments (the seed's
+    # segment digests and those of the segments it wrote, ``segments`` of them).
+    digest: dict[str, Any] = field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------- plan
@@ -148,10 +177,23 @@ def plan(schema: Any) -> Plan:
     events = dict(_get(schema, "event_types") or {})
     bindings = {b["id"]: (tid, b) for tid, t in types.items() for b in t.get("bindings", [])}
 
-    def ends(link_id: str | None) -> set[str]:
+    # A binding and those it stands for or that stand for it: the bindings whose objects
+    # its records can be (``stands_for``).
+    stood = {bid: {(b.get("stands_for") or {}).get("binding")} - {None}
+             for bid, (_, b) in bindings.items()}
+    kin = {bid: {bid} | stood[bid] | {other for other, of in stood.items() if bid in of}
+           for bid in bindings}
+
+    def ends(link_id: str | None, bid: str | None = None) -> set[str]:
+        """The bindings the links of ``link_id`` read; with ``bid``, only of the link
+        bindings with an end among ``bid``'s kin: a hop, qualifier, unit or currency read
+        through ``link_id`` from a version of ``bid`` follows the links whose from or to
+        object is that version's object, and only those link bindings write such links."""
         out: set[str] = set()
         for lb in (links.get(link_id) or {}).get("bindings", []):
-            out |= link_ends(lb, bindings)
+            found = link_ends(lb, bindings)
+            if bid is None or found & kin[bid]:
+                out |= found
         return out
 
     def targets(link_id: str, bid: str) -> set[str]:
@@ -173,9 +215,9 @@ def plan(schema: Any) -> Plan:
         for rule in spec.get("rules", []):
             for when in rule.get("when", []):
                 if "via_link" in when:
-                    out |= ends(when["via_link"])
+                    out |= ends(when["via_link"], bid)
         if spec.get("inherit"):
-            out |= ends(spec["inherit"])
+            out |= ends(spec["inherit"], bid)
             for target in targets(spec["inherit"], bid):
                 out |= lin(target)   # B inheriting from B is a cycle too
         stood = (bindings[bid][1].get("stands_for") or {}).get("binding")
@@ -201,7 +243,7 @@ def plan(schema: Any) -> Plan:
                     for what in ("unit", "currency", "per_unit", "tax_basis"):
                         ref = spec.get(what + "_from")
                         if isinstance(ref, Mapping):
-                            out |= ends(ref.get("via_link"))
+                            out |= ends(ref.get("via_link"), bid)
                         if what == "currency" and ref is not None:
                             # a blank code reads the local currency (local_currency)
                             holders = targets(ref["via_link"], bid) \
@@ -219,7 +261,7 @@ def plan(schema: Any) -> Plan:
                 if ev.get("object_type") == tid:
                     for q in ev.get("qualifiers", []):
                         if q.get("via") != "self":
-                            deps |= ends(q.get("via"))
+                            deps |= ends(q.get("via"), bid)
             units[binding_unit(bid)] = frozenset(deps)
             rows[binding_unit(bid)] = ("binding", bid)
         for lid, link in sorted(links.items()):
@@ -261,50 +303,59 @@ class _Pinned:
         return getattr(self._inner, name)
 
 
-def _stream_fingerprint(records: Iterable[Any]) -> str:
-    """Digest of every field of every record, except a current version's
-    ``last_seen_at`` (``MirrorCaptures.fingerprint`` says why)."""
-    digest = hashlib.sha256()
-    for rec in records:
-        cells = tuple(None if name == "last_seen_at" and rec.superseded_at is None
-                      else getattr(rec, name) for name in _REC_FIELDS)
-        digest.update(repr(cells).encode("utf-8"))
-        digest.update(b"\n")
-    return digest.hexdigest()
+_stream_fingerprint = stream_fingerprint
 
 
-def _pin(sources: Mapping[str, CaptureSource], the_plan: Plan
-         ) -> tuple[dict[str, Any], dict[str, str | None]]:
-    """(pinned sources, binding -> fingerprint of its relation; None = not captured)."""
+def _pin(sources: Mapping[str, CaptureSource], the_plan: Plan,
+         held: Mapping[str, Any] | None = None
+         ) -> tuple[dict[str, Any], dict[str, str | None], dict[str, Any]]:
+    """(pinned sources, binding -> fingerprint of its relation (None = not captured),
+    source -> its watermark and relation fingerprints, for the next build).
+
+    ``held``: the last build's watermarks (same code, ``context``). A source whose
+    ``watermark()`` (taken as its snapshot opened: ``ontology.project.begin_snapshot``)
+    equals the one held reads the same bytes as then, so its relations' fingerprints are
+    the ones held and it is not read; any other source is fingerprinted in full."""
     relations: dict[str, set[str]] = {}
     for _, b in the_plan.bindings.values():
         if b["source"] in sources:
             relations.setdefault(b["source"], set()).add(b["relation"])
     pinned: dict[str, Any] = dict(sources)
     by_relation: dict[tuple[str, str], str] = {}
+    marks: dict[str, Any] = {}
     for name, wanted in sorted(relations.items()):
         source = sources[name]
         records = source.records(sorted(wanted))
-        own = getattr(source, "fingerprint", None)
-        if callable(own):
-            prints = own(sorted(wanted))
+        watermark = getattr(source, "watermark", None)
+        mark = watermark() if callable(watermark) else None
+        mark = canonical(mark) if mark is not None else None
+        kept = (held or {}).get(name) or {}
+        if mark is not None and kept.get("mark") == mark and \
+                set(wanted) <= set(kept.get("prints") or {}):
+            prints = {relation: kept["prints"][relation] for relation in sorted(wanted)}
         else:
-            prints = {relation: _stream_fingerprint(records[relation])
-                      for relation in sorted(wanted) if relation in records}
+            own = getattr(source, "fingerprint", None)
+            if callable(own):
+                prints = own(sorted(wanted))
+            else:
+                prints = {relation: stream_fingerprint(records[relation])
+                          for relation in sorted(wanted) if relation in records}
+        if mark is not None:
+            marks[name] = {"mark": mark, "prints": dict(sorted(prints.items()))}
         # What a source says it does not hold of a relation (``capture_gap``), and the
         # scopes it holds it whole in (``whole_scopes``: what stands in for it there),
         # decide its bindings' rows and gaps, so they are part of its fingerprint.
-        held = getattr(source, "capture_gap", None)
+        gap = getattr(source, "capture_gap", None)
         whole = getattr(source, "whole_scopes", None)
-        if callable(held):
-            prints = {relation: _sha(f"{value}\x00{held(relation)}" + (
+        if callable(gap):
+            prints = {relation: _sha(f"{value}\x00{gap(relation)}" + (
                           f"\x00{sorted(whole(relation))}" if callable(whole) else ""))
                       for relation, value in prints.items()}
         by_relation.update({(name, relation): value for relation, value in prints.items()})
         pinned[name] = _Pinned(source, records)
     fingerprints = {bid: by_relation.get((b["source"], b["relation"]))
                     for bid, (_, b) in the_plan.bindings.items()}
-    return pinned, fingerprints
+    return pinned, fingerprints, marks
 
 
 def _code_digest(names: Iterable[str]) -> str:
@@ -687,14 +738,18 @@ def build_generation(state_dir: str | Path, schema: Any, sources: Mapping[str, C
                    _default_normalizer(), "as_known_at": as_known_at, "clock": clock,
                    "batch_size": batch_size, "post_project": post_project,
                    "checkpoint": checkpoint, "on_stage": on_stage}
-        try:
-            generation = _build(state, schema, sources, base, reuse=reuse,
-                                before_seed=before_seed, space=space, **options)
-        except _Unattributed:
-            # A report entry outside every unit (a projection hook that names none):
-            # the rows are right but the report of a partial build would not be, so
-            # this build is cold, and so are the next ones until that is fixed.
-            generation = _build(state, schema, sources, None, space=space, **options)
+        # The readings of captured files (PDF text and the like) are kept beside the
+        # generations, so a build reads only the files no build read before
+        # (``integrations.captured_text.KeptReadings``).
+        with kept_readings(state / READINGS):
+            try:
+                generation = _build(state, schema, sources, base, reuse=reuse,
+                                    before_seed=before_seed, space=space, **options)
+            except _Unattributed:
+                # A report entry outside every unit (a projection hook that names none):
+                # the rows are right but the report of a partial build would not be, so
+                # this build is cold, and so are the next ones until that is fixed.
+                generation = _build(state, schema, sources, None, space=space, **options)
         if generation.mode != "reused":
             _prune(state, generation.id)
     generation.seconds["total"] = round(time.monotonic() - started, 3)
@@ -715,9 +770,6 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
            space: Callable[[Mapping[str, Any]], None] | None = None) -> Generation:
     started = time.monotonic()
     the_plan = plan(schema)
-    pinned, fingerprints = _pin(sources, the_plan)
-    seconds = {"fingerprint": round(time.monotonic() - started, 3)}
-    started = time.monotonic()
     context = _sha(canonical({
         "format": FORMAT, "schema": _get(schema, "digest"),
         "as_known_at": known_at(as_known_at) if as_known_at is not None else None,
@@ -725,10 +777,15 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
         f"{getattr(normalizer, '__module__', '')}.{getattr(normalizer, '__qualname__', '')}",
         "code": _code_digest(list(_CODE) + [type(s).__module__ for s in sources.values()]
                              + [getattr(normalizer, "__module__", "")])}))
+    units = _units_of(base) if base is not None else None
+    same_code = units is not None and units.get("context") == context
+    pinned, fingerprints, marks = _pin(sources, the_plan,
+                                       units.get("watermarks") if same_code else None)
+    seconds = {"fingerprint": round(time.monotonic() - started, 3)}
+    started = time.monotonic()
     keys = {unit: _sha(context + canonical({b: fingerprints.get(b) for b in sorted(deps)}))
             for unit, deps in the_plan.units.items()}
-    units = _units_of(base) if base is not None else None
-    reusable = the_plan.acyclic and units is not None and units.get("context") == context
+    reusable = the_plan.acyclic and same_code
     dirty = {u for u in keys if units["keys"].get(u) != keys[u]} if reusable else set(keys)
     if reuse and reusable and not dirty:
         return replace(base, mode="reused", units=len(keys), units_rebuilt=0, bindings_read=0,
@@ -760,12 +817,16 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
             if on_stage is not None:
                 on_stage(name, work, store)
         projector.on_stage = stage
+        laid = time.monotonic()
         with StoreBuilder(directory / "store.sqlite",
                           seed=base.store if incremental else None) as builder:
             seed = builder.seed_mode
+            seconds["project.seed"] = round(time.monotonic() - laid, 3)
             open_generation(builder)
             if incremental:
+                laid = time.monotonic()
                 _seed_delete(builder.connection, the_plan, schema, dirty)
+                seconds["project.seed_delete"] = round(time.monotonic() - laid, 3)
             projector.project_into(builder)
             unattributed = projector.report.unattributed
             if unattributed and incremental:
@@ -781,7 +842,10 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
             # and samples are order-independent).
             report = finish_generation(
                 builder, projector, merge_reports(parts.values()) if incremental
-                else projector.report.as_dict(), post_project=post_project, clock=clock)
+                else projector.report.as_dict(), post_project=_timed(post_project, seconds),
+                clock=clock)
+            digested = {"mode": builder.digest_mode, "segments": builder.digest_segments}
+            seconds.update({f"finish.{name}": value for name, value in builder.seconds.items()})
         seconds["finish"] = round(time.monotonic() - started, 3)
         mode = ("incremental" if incremental else
                 "cold" if the_plan.acyclic else "cold_cyclic_lineage")
@@ -790,6 +854,8 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
             # Parts that miss an entry are never reused: no context, no reuse.
             "context": None if unattributed else context,
             "keys": keys, "fragments": {u: p for u, p in parts.items() if p != _EMPTY},
+            # Each source's watermark and the fingerprints read under it (``_pin``).
+            "watermarks": marks,
             # Measured, for the next build's space estimate (``space_need``).
             "bytes": {"store": (directory / "store.sqlite").stat().st_size,
                       "work_peak": work_peak[0], "mode": "incremental" if incremental
@@ -806,7 +872,25 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
     return Generation(gen_id, directory / "store.sqlite", report["content_digest"], report,
                       mode=mode, units=len(keys), units_rebuilt=len(dirty),
                       bindings_read=len(scope) if scope is not None else len(the_plan.bindings),
-                      seconds=seconds, seed=seed, need=need)
+                      seconds=seconds, seed=seed, need=need, digest=digested)
+
+
+def _timed(steps: Mapping[str, Callable[..., Any]] | None, seconds: dict[str, float]
+           ) -> dict[str, Callable[..., Any]] | None:
+    """``steps``, each timing itself into ``seconds`` (``finish.<step>``; measurement only,
+    never in the report)."""
+    if steps is None:
+        return None
+
+    def timed(name: str, step: Callable[..., Any]) -> Callable[..., Any]:
+        def run(*args: Any) -> Any:
+            started = time.monotonic()
+            try:
+                return step(*args)
+            finally:
+                seconds[f"finish.{name}"] = round(time.monotonic() - started, 3)
+        return run
+    return {name: timed(name, step) for name, step in steps.items()}
 
 
 def _seed_delete(conn: sqlite3.Connection, the_plan: Plan, schema: Any,
@@ -822,11 +906,18 @@ def _seed_delete(conn: sqlite3.Connection, the_plan: Plan, schema: Any,
         events.setdefault(ev["object_type"], []).append((eid, ev))
     kinds = ", ".join(f"'{kind}'" for kind in _PROJECTED_LINK_KINDS)
     conn.execute(f"DELETE FROM link_rows WHERE binding_kind NOT IN ({kinds})")
-    conn.execute("DELETE FROM value_cells WHERE field IS NOT NULL AND layout IN "
-                 "(SELECT lf.layout FROM value_layout_fields lf JOIN value_kinds k "
-                 "ON k.kind = lf.kind WHERE k.parser = ?)", (POST_PROJECT,))
-    conn.execute("DELETE FROM value_sources WHERE NOT EXISTS "
-                 "(SELECT 1 FROM value_cells c WHERE c.src = value_sources.src)")
+    # The post_project values, and then their sources left without a value (a source is
+    # only ever written with one, so no other source is without one).
+    posted = ("FROM value_cells WHERE field IS NOT NULL AND layout IN "
+              "(SELECT lf.layout FROM value_layout_fields lf JOIN value_kinds k "
+              "ON k.kind = lf.kind WHERE k.parser = ?)")
+    conn.execute("CREATE TEMP TABLE IF NOT EXISTS plx_posted (src INTEGER PRIMARY KEY)")
+    conn.execute("DELETE FROM temp.plx_posted")
+    conn.execute(f"INSERT OR IGNORE INTO temp.plx_posted SELECT src {posted}", (POST_PROJECT,))
+    conn.execute(f"DELETE {posted}", (POST_PROJECT,))
+    conn.execute("DELETE FROM value_sources WHERE src IN (SELECT src FROM temp.plx_posted) "
+                 "AND NOT EXISTS (SELECT 1 FROM value_cells c WHERE c.src = value_sources.src)")
+    conn.execute("DROP TABLE temp.plx_posted")
     for unit in sorted(dirty):
         _delete_unit(conn, the_plan, unit, events)
     conn.execute("DROP TABLE temp.plx_unit_events")

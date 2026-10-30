@@ -111,7 +111,7 @@ class UseCaseCase(CapturedOriginalsCase):
 
 
 UC_GAPS = {"use_case_documents_withheld", "use_case_document_not_held", "unknown_use_case",
-           "use_case_catalog_unreadable"}
+           "use_case_catalog_unreadable", "use_case_documents_not_searched"}
 
 
 class ResolutionTests(UseCaseCase):
@@ -248,6 +248,46 @@ class ResolutionTests(UseCaseCase):
                          [self.handle("01FILEB")])
         self.assertEqual(sharepoint["use_case"]["withheld"], 1)   # 01NOTHELD
 
+    def test_documents_in_a_source_the_call_does_not_search_are_counted_not_missing(self):
+        # Reproduced live (2026-10-29): an originals-only search for a use case whose
+        # documents are all SharePoint files said the catalog lists no source document.
+        _runtime, server = self.runtime_server(QUALITY, use_cases=catalog(
+            *CATALOG["use_cases"],
+            {"id": "twice-named", "title": "Twice named", "phrases": ["twice named map"],
+             "documents": [{"role": "map", "sharepoint": {"drive_id": DRIVE,
+                                                          "item_id": "01FILEB"}},
+                           {"role": "evidence", "sharepoint": {"drive_id": DRIVE,
+                                                               "item_id": "01FILEB"}}],
+             "gaps": []},
+            {"id": "no-documents", "title": "No documents", "phrases": ["empty process map"],
+             "documents": [], "gaps": []}))
+        for query, sources, listed, counted in (
+                ("triage use case", ["original"], [], "1 in sharepoint"),
+                ("twice named map", ["original"], [], "1 in sharepoint"),
+                ("asset-brief use case", ["original"], [f"original://{BRIEF}"],
+                 "2 in sharepoint"),
+                ("asset-brief use case", ["sharepoint"], [self.handle("01FILEB")],
+                 "1 in original")):
+            with self.subTest(query=query, sources=sources):
+                answer = self.ask(server, "plx.documents", query, sources=sources)
+                self.assertEqual([d["citation"] for d in answer["use_case"]["documents"]],
+                                 listed)
+                reasons = self.reasons(answer)
+                self.assertNotIn("use_case_document_not_held", reasons)
+                gap = reasons["use_case_documents_not_searched"]
+                self.assertEqual(gap["state"], "unknown")
+                self.assertIn(f"({counted})", gap["detail"])
+                self.assertNotIn("01FILE", json.dumps(gap))
+        # Searched in every source, the same use cases are listed with no such gap.
+        whole = self.ask(server, "plx.documents", "triage use case")
+        self.assertEqual([d["citation"] for d in whole["use_case"]["documents"]],
+                         [self.handle("01FILEB")])
+        self.assertNotIn("use_case_documents_not_searched", self.reasons(whole))
+        # A use case whose catalog entry truly lists nothing still says so.
+        empty = self.ask(server, "plx.documents", "empty process map", sources=["original"])
+        self.assertIn("lists no source document",
+                      self.reasons(empty)["use_case_document_not_held"]["detail"])
+
     def test_an_unknown_use_case_is_named_and_never_matched_to_another(self):
         _runtime, server = self.runtime_server(QUALITY)
         answer = self.ask(server, "plx.documents", "In the zeppelin use case, which lot?")
@@ -293,6 +333,16 @@ class RestrictedReaderTests(UseCaseCase):
                     text = json.dumps(answer)
                     self.assertNotIn(BRIEF, text)
                     self.assertNotIn(BRIEF_NAME, text)
+                # Narrowed to originals, the SharePoint documents are counted only.
+                narrowed = self.ask(server, "plx.documents", "asset-brief use case",
+                                    sources=["original"])
+                text = json.dumps(narrowed)
+                self.assertEqual(narrowed["use_case"]["documents"], [])
+                self.assertEqual(narrowed["use_case"]["withheld"], 1)
+                self.assertIn("(2 in sharepoint)", self.reasons(narrowed)[
+                    "use_case_documents_not_searched"]["detail"])
+                for secret in (BRIEF, BRIEF_NAME, "01FILEB", "01NOTHELD"):
+                    self.assertNotIn(secret, text)
 
 
 class CatalogTests(unittest.TestCase):

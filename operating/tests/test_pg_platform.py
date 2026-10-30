@@ -47,7 +47,8 @@ class MigrationTest(unittest.TestCase):
 
     def test_migrate_is_idempotent_and_matches_the_contract(self) -> None:
         values = {"embed_model": "BAAI/bge-m3", "embed_dim": 1024}
-        both = ["0001_search", "0002_units_generation", "0003_entity_alias_index"]
+        both = ["0001_search", "0002_units_generation", "0003_entity_alias_index",
+                "0004_dup_group_index"]
         self.assertEqual(migrate.migrate(self.conn, values=values), both)
         self.assertEqual(migrate.migrate(self.conn, values=values), [])
         state = migrate.status(self.conn)

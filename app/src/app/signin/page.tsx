@@ -155,7 +155,7 @@ function SignIn() {
                             type="password"
                             autoComplete="off"
                             value={ticket}
-                            onChange={(e) => setTicket(e.target.value.replace(/^.*#ticket=/, ""))}
+                            onChange={(e) => setTicket(e.target.value.replace(/^.*#(?:ticket|access)=/, ""))}
                             className="h-11 w-full rounded-xl border border-border bg-surface px-3 text-sm focus:border-accent focus:outline-none"
                           />
                         </div>

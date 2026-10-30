@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import Future, TimeoutError as FutureTimeout
+from contextlib import contextmanager
 from datetime import date, datetime, timezone
 import json
 import os
@@ -52,6 +53,7 @@ from urllib.parse import quote, unquote, urlsplit
 
 from . import errors
 from . import models as m
+from . import presentation
 from .auth import Reader
 
 MAX_WORKSPACES = 64
@@ -62,6 +64,12 @@ ASK_TIMEOUT_SECONDS = 600
 ASK_WORKERS = 2
 MAX_QUEUED_ASKS = 8
 READ_TIMEOUT_SECONDS = 60
+ORIGINAL_READS = 4             # captured-original reads through a reader's host at once
+ORIGINAL_READS_PER_READER = 2
+ORIGINAL_READ_WAIT = 5.0       # seconds a read waits for a slot before it is busy
+AGENT_QUEUE_SECONDS = 120   # how long an Ask waits for a free agent session
+AGENT_FALLBACK = ("Note: the full, checked investigation could not start just now, so "
+                  "this is the quicker answer. ")
 DEFAULT_DATA_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) \
     / "plx-workbench-app"
 
@@ -287,8 +295,15 @@ class WorkspaceBackend:
                  state_dir: Optional[Path] = None, data_dir: Optional[Path] = None,
                  pg_dsn: Optional[str] = None, understand: Optional[Callable] = None,
                  search: Optional[Callable] = None, ask_served: bool = True,
-                 today: Callable[[], date] | None = None) -> None:
+                 today: Callable[[], date] | None = None, agent_ask: Any = None,
+                 agent_sessions: int = ASK_WORKERS) -> None:
+        """``agent_ask``: the scoreboard's agent path (``agent_ask.AgentAsk``; None: the
+        objective box answers), at most ``agent_sessions`` sessions at once."""
         self.data_label = data_label
+        self.agent_ask = agent_ask
+        self._original_slots: dict[str, threading.BoundedSemaphore] = {}
+        self._original_all = threading.BoundedSemaphore(ORIGINAL_READS)
+        self._sessions = threading.Semaphore(max(1, agent_sessions))
         self.state_dir = state_dir
         self.data_dir = Path(data_dir) if data_dir else None
         self.pg_dsn = pg_dsn
@@ -479,9 +494,12 @@ class WorkspaceBackend:
         return question[:MAX_OBJECTIVE]
 
     def ask(self, reader: Reader, request: m.AskRequest) -> Iterator[tuple[str, Any]]:
-        from operating import objective_runner
-        from operator_ui import objective_box
-
+        """One question, streamed: a status first, then the path's progress, the cited
+        sources, the answer's words and the answer. The path: a list of late purchase
+        orders answers from the reader's gap inbox (the list Home shows); an employee's
+        question runs the scoreboard's agent path (``agent_ask``) when the API serves it;
+        any other (a fixture reader, no agent path configured) the console's objective
+        box."""
         if not self.ask_served:
             raise errors.ASK_OFF
         if self.ask_jobs.qsize() >= MAX_QUEUED_ASKS:
@@ -494,6 +512,152 @@ class WorkspaceBackend:
         conversation = request.conversation_id or secrets.token_hex(8)
         yield "status", m.StatusEvent(step="understanding", message="Reading your question",
                                       elapsed_ms=ms())
+        if not request.object_id and late_list_question(request.question):
+            answer = yield from self._late_ask(reader, request, conversation, ms)
+        elif self.agent_ask is not None and self.agent_ask.serves(reader.session):
+            answer = yield from self._agent_ask(reader, request, conversation, ms)
+        else:
+            answer = yield from self._box_ask(reader, request, conversation, ms)
+        cited = {s.handle: s for f in answer.facts for s in f.sources}
+        if cited:
+            yield "sources", m.SourcesEvent(sources=list(cited.values()))
+        yield "status", m.StatusEvent(step="answering", message="Writing the answer",
+                                      elapsed_ms=ms())
+        for word in re.findall(r"\S+\s*", answer.direct_answer):
+            yield "token", m.TokenEvent(text=word)
+        answer.latency_ms = ms()
+        with self._lock:
+            self._answers[answer.answer_id] = {"reader": reader.key,
+                                               "question": request.question,
+                                               "at": _iso_now()}
+            while len(self._answers) > MAX_ANSWERS_KEPT:
+                self._answers.pop(next(iter(self._answers)))
+            recent = self._recent.setdefault(reader.key, [])
+            recent.insert(0, m.RecentQuestion(question=request.question, asked_at=_iso_now(),
+                                              answer_id=answer.answer_id,
+                                              conversation_id=conversation))
+            del recent[10:]
+        yield "answer", answer
+
+    def _drain(self, events: "queue.Queue[tuple[str, Any]]", future: Future,
+               seconds: float) -> Iterator[tuple[str, Any]]:
+        """Yield ``events`` until ``future`` is done (it puts ``("done", None)``); past
+        ``seconds`` the Ask times out (a queued job never runs; a running one is dropped)."""
+        deadline = time.monotonic() + seconds
+        while True:
+            try:
+                name, payload = events.get(timeout=max(0.1, deadline - time.monotonic()))
+            except queue.Empty:
+                future.cancel()
+                raise errors.ASK_TIMEOUT from None
+            if name == "done":
+                return
+            yield name, payload
+
+    def _late_ask(self, reader: Reader, request: m.AskRequest, conversation: str,
+                  ms: Callable[[], int]) -> Iterator[tuple[str, Any]]:
+        """The late purchase orders the reader may see: the list Home shows (the gap
+        inbox, trimmed for the reader), each cited by its gap's own evidence."""
+        yield "status", m.StatusEvent(step="searching",
+                                      message="Reading the late purchase orders you can see",
+                                      elapsed_ms=ms())
+
+        def job(view: Any) -> m.AnswerPayload:
+            inbox, labels = self._attention(view)
+            late, _risk = attention_items(inbox, labels, limit=MAX_FACTS)
+            with view._request():
+                return late_answer(self, view, request, inbox, late, conversation, ms)
+        return self.reads.run(reader, job, timeout=READ_TIMEOUT_SECONDS)
+
+    def _agent_ask(self, reader: Reader, request: m.AskRequest, conversation: str,
+                   ms: Callable[[], int]) -> Iterator[tuple[str, Any]]:
+        """The scoreboard's agent path as this reader (``agent_ask.AgentAsk``): its tool
+        calls stream as steps; the answer is what the session's answer gate passed."""
+        from operating import objective_runner
+        from operating.agent_session import ANSWER_GATE_TOOL
+
+        events: "queue.Queue[tuple[str, Any]]" = queue.Queue()
+        question = self._objective(request)
+        if request.object_id:
+            question = (f"{question}\n(The question is about the record with object id "
+                        f"{request.object_id}.)")
+
+        def understand(view: Any) -> Mapping[str, Any]:
+            with view._request():
+                found = objective_runner.find_roots(
+                    self._objective(request),
+                    lambda arguments: view._call("plx.find", arguments))
+                events.put(("understanding", self._understanding(view, request, found)))
+            return found
+        found_future = submit(self.ask_jobs, self.ask_stopped, reader, understand, 1)
+
+        def status(step: str, message: str) -> None:
+            events.put(("status", m.StatusEvent(step=step, message=message, elapsed_ms=ms())))
+
+        def emit(kind: str, data: Mapping[str, Any]) -> None:
+            if kind == "call" and data.get("tool") == ANSWER_GATE_TOOL:
+                status("checking", "Checking every figure against its source")
+            elif kind == "call":
+                status("reading", STEP_WORDS.get(str(data.get("tool")), "Reading records"))
+            elif kind == "gate" and data.get("outcome") == "answered":
+                status("checking", "Every figure checked; writing the answer")
+            elif kind == "gate" and data.get("outcome") == "repair":
+                status("checking", "A figure did not check out; correcting it")
+
+        session: Future = Future()
+
+        def run_session() -> None:
+            try:
+                if not self._sessions.acquire(blocking=False):
+                    status("searching", "Waiting for a free agent; other questions are "
+                                        "running")
+                    if not self._sessions.acquire(timeout=AGENT_QUEUE_SECONDS):
+                        raise errors.ASK_BUSY
+                try:
+                    status("searching", "Finding the records your question is about")
+                    session.set_result(self.agent_ask.run(reader.session, question, emit))
+                finally:
+                    self._sessions.release()
+            except BaseException as error:  # noqa: BLE001 - handed to the route
+                session.set_exception(error)
+            finally:
+                events.put(("done", None))
+        threading.Thread(target=run_session, name="app-ask-session", daemon=True).start()
+        yield from self._drain(events, session,
+                               AGENT_QUEUE_SECONDS + self.agent_ask.seconds + 120)
+        try:
+            ran = session.result()
+        except errors.UserFacing:
+            raise
+        except Exception:  # noqa: BLE001 - the host did not start: the quicker answer
+            yield "status", m.StatusEvent(
+                step="searching", message="The full check could not start; giving the "
+                                          "quicker answer", elapsed_ms=ms())
+            answer = yield from self._box_ask(reader, request, conversation, ms)
+            answer.direct_answer = (AGENT_FALLBACK + answer.direct_answer)[:4000]
+            return answer
+        try:
+            found = found_future.result(timeout=READ_TIMEOUT_SECONDS)
+        except Exception:  # noqa: BLE001 - the subjects are a hint; the answer stands
+            found = {}
+        while not events.empty():
+            name, payload = events.get()
+            if name == "understanding":
+                yield name, payload
+
+        def shape(view: Any) -> m.AnswerPayload:
+            with view._request():
+                return agent_answer(self, view, request, ran, found, conversation, ms)
+        future = submit(self.ask_jobs, self.ask_stopped, reader, shape, 0)
+        return future.result(timeout=READ_TIMEOUT_SECONDS)
+
+    def _box_ask(self, reader: Reader, request: m.AskRequest, conversation: str,
+                 ms: Callable[[], int]) -> Iterator[tuple[str, Any]]:
+        """The console's objective box (``operator_ui.objective_box``) for a reader the
+        agent path does not serve."""
+        from operating import objective_runner
+        from operator_ui import objective_box
+
         objective = self._objective(request)
         events: "queue.Queue[tuple[str, Any]]" = queue.Queue()
 
@@ -531,37 +695,8 @@ class WorkspaceBackend:
 
         future = submit(self.ask_jobs, self.ask_stopped, reader, job, 1)
         future.add_done_callback(lambda _f: events.put(("done", None)))
-        deadline = time.monotonic() + ASK_TIMEOUT_SECONDS
-        while True:
-            try:
-                name, payload = events.get(timeout=max(0.1, deadline - time.monotonic()))
-            except queue.Empty:
-                future.cancel()   # not started: never runs; running: its answer is dropped
-                raise errors.ASK_TIMEOUT from None
-            if name == "done":
-                break
-            yield name, payload
-        answer = future.result()
-        cited = {s.handle: s for f in answer.facts for s in f.sources}
-        if cited:
-            yield "sources", m.SourcesEvent(sources=list(cited.values()))
-        yield "status", m.StatusEvent(step="answering", message="Writing the answer",
-                                      elapsed_ms=ms())
-        for word in re.findall(r"\S+\s*", answer.direct_answer):
-            yield "token", m.TokenEvent(text=word)
-        answer.latency_ms = ms()
-        with self._lock:
-            self._answers[answer.answer_id] = {"reader": reader.key,
-                                               "question": request.question,
-                                               "at": _iso_now()}
-            while len(self._answers) > MAX_ANSWERS_KEPT:
-                self._answers.pop(next(iter(self._answers)))
-            recent = self._recent.setdefault(reader.key, [])
-            recent.insert(0, m.RecentQuestion(question=request.question, asked_at=_iso_now(),
-                                              answer_id=answer.answer_id,
-                                              conversation_id=conversation))
-            del recent[10:]
-        yield "answer", answer
+        yield from self._drain(events, future, ASK_TIMEOUT_SECONDS)
+        return future.result()
 
     @staticmethod
     def _object_ask(view: Any, request: m.AskRequest) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -740,42 +875,23 @@ class WorkspaceBackend:
         return m.Hidden(count=total, by_owner=owners, message=hidden_message(total, owners))
 
     def _conflicts(self, view: Any, raw: Iterable[Any], subject: str) -> list[m.Conflict]:
+        """The subject's conflict cards: ``operating.answer_conflicts`` decides (system of
+        record, then newest, then most specific document, else none trusted; each value
+        says why) over the values this reader may open (``view.access.decide``); a
+        disagreement with one side hidden is no card."""
+        from operating.answer_conflicts import tool_conflicts
+
+        def visible(handles: Any) -> set:
+            decided = view.access.decide(list(handles)) if handles else {}
+            return {h for h in handles if decided.get(h) is None}
+
         out = []
-        for conflict in raw:
-            if not isinstance(conflict, Mapping):
-                continue
-            values = [v for v in conflict.get("values") or () if isinstance(v, Mapping)
-                      and isinstance((v.get("citation") or {}).get("l1_handle"), str)]
-            handles = [v["citation"]["l1_handle"] for v in values]
-            decided = view.access.decide(handles) if handles else {}
-            visible = [v for v in values if decided.get(v["citation"]["l1_handle"]) is None]
-            if len(visible) < 2:
-                continue   # one side is not this reader's: no conflict card from it
-            ranks = [v.get("authority_rank") for v in visible
-                     if isinstance(v.get("authority_rank"), int)]
-            best = min(ranks) if ranks else None
-            winners = [v for v in visible if best is not None and v.get("authority_rank") == best]
-            trusted_one = winners[0] if len(winners) == 1 else None
-            field = str(conflict.get("subject") or "").split(".")[-1].replace("_", " ") \
-                or "value"
-            items = []
-            for v in visible[:6]:
-                handle = v["citation"]["l1_handle"]
-                system = system_of(handle)
-                if trusted_one is None:
-                    why = ("No rule says which system governs this field, so both are shown; "
-                           "check with the owner.")
-                elif v is trusted_one:
-                    why = f"{system} is the system of record for this field."
-                else:
-                    why = (f"{system_of(trusted_one['citation']['l1_handle'])} governs this "
-                           f"field; this value disagrees with it.")
-                items.append(m.ConflictValue(
-                    value=plain(v.get("value")) or "(empty)",
-                    source=self._source(view, handle, fields={field: plain(v.get("value"))
-                                                              or "(empty)"}),
-                    trusted=v is trusted_one, why=why))
-            out.append(m.Conflict(field=field, subject=subject, values=items))
+        for found in tool_conflicts(raw, visible=visible, subject=subject):
+            items = [m.ConflictValue(
+                value=v["value"], trusted=v["trusted"], why=v["why"][:600],
+                source=self._source(view, v["source"], fields={found["field"]: v["value"]}))
+                for v in found["values"]]
+            out.append(m.Conflict(field=found["field"], subject=subject, values=items))
         return out
 
     # ---- suggest ----------------------------------------------------------------------
@@ -847,38 +963,23 @@ class WorkspaceBackend:
 
     # ---- home ---------------------------------------------------------------------------
 
+    @staticmethod
+    def _attention(view: Any) -> tuple[dict[str, Any], dict[str, str]]:
+        """The reader's gap inbox (``ObjectWorkspace.gap_inbox``) and each gap subject's
+        display label: what Home's needs-attention and the late-PO answer both read."""
+        inbox = view.gap_inbox()
+        labels: dict[str, str] = {}
+        with view._request():
+            for gap in (inbox.get("gaps") or ())[:20]:
+                oid = gap.get("object_id")
+                if isinstance(oid, str) and oid not in labels:
+                    card = view._call("plx.object", {"object_id": oid})
+                    labels[oid] = plain((card.get("object") or {}).get("display")) or ""
+        return inbox, labels
+
     def home(self, reader: Reader) -> m.Home:
-        def job(view: Any) -> tuple[dict[str, Any], dict[str, str]]:
-            inbox = view.gap_inbox()
-            labels: dict[str, str] = {}
-            with view._request():
-                for gap in (inbox.get("gaps") or ())[:20]:
-                    oid = gap.get("object_id")
-                    if isinstance(oid, str) and oid not in labels:
-                        card = view._call("plx.object", {"object_id": oid})
-                        labels[oid] = plain((card.get("object") or {}).get("display")) or ""
-            return inbox, labels
-        inbox, labels = self.reads.run(reader, job, timeout=READ_TIMEOUT_SECONDS)
-        late: list[m.LatePo] = []
-        risk: list[m.AtRisk] = []
-        for gap in inbox.get("gaps") or ():
-            oid, kind = gap.get("object_id"), str(gap.get("object_type") or "Object")
-            if not isinstance(oid, str):
-                continue
-            label = labels.get(oid) or f"{kind} record"
-            sources = [m.Source(system=system_of(h), handle=h, label=record_words(h),
-                                open_url=open_url(h))
-                       for h in (gap.get("citations") or ())[:3] if isinstance(h, str)]
-            reason = str(gap.get("summary") or (gap.get("follow_up") or {}).get("why")
-                         or "Needs attention")[:300]
-            if gap.get("days_late") is not None and len(late) < 10:
-                late.append(m.LatePo(object_id=oid, label=label, days_late=int(gap["days_late"]),
-                                     reason=reason, open_url=object_url(kind, oid),
-                                     sources=sources))
-            elif gap.get("days_late") is None and len(risk) < 10:
-                risk.append(m.AtRisk(object_id=oid, label=label, kind=str(gap.get("kind")),
-                                     reason=reason, open_url=object_url(kind, oid),
-                                     sources=sources))
+        inbox, labels = self.reads.run(reader, self._attention, timeout=READ_TIMEOUT_SECONDS)
+        late, risk = attention_items(inbox, labels)
         status = inbox.get("status")
         with self._lock:
             recent = list(self._recent.get(reader.key, []))
@@ -902,8 +1003,46 @@ class WorkspaceBackend:
                               timeout=READ_TIMEOUT_SECONDS)
 
     def source(self, reader: Reader, handle: str, text_offset: int) -> m.SourceView:
-        return self.reads.run(reader, lambda view: source_view(view, handle, text_offset),
-                              timeout=READ_TIMEOUT_SECONDS)
+        """A cited source as this reader may open it. A captured case original
+        (``original://``) the app's own runtime cannot open for an employee is read through
+        that employee's agent host (``AgentAsk.read_source``: the capture store's
+        per-reader gate, the one the Ask's reads passed); refused there, it is not found."""
+        try:
+            return self.reads.run(reader, lambda view: source_view(view, handle, text_offset),
+                                  timeout=READ_TIMEOUT_SECONDS)
+        except (KeyError, LookupError, ValueError):
+            if not (isinstance(handle, str) and handle.startswith("original://")
+                    and self.agent_ask is not None
+                    and self.agent_ask.serves(reader.session)):
+                raise
+        with self._original_reads(reader):
+            try:
+                got = self.agent_ask.read_source(reader.session, handle, text_offset)
+            except (KeyError, LookupError):
+                raise
+            except Exception:  # noqa: BLE001 - a host that fails reads as not found
+                raise KeyError("citation_unresolvable_for_actor") from None
+        return source_payload(handle, got, text_offset)
+
+    @contextmanager
+    def _original_reads(self, reader: Reader) -> Iterator[None]:
+        """A slot for one captured-original read through a reader's host (each starts a
+        host process): at most ``ORIGINAL_READS_PER_READER`` at once per reader and
+        ``ORIGINAL_READS`` overall; none free within ``ORIGINAL_READ_WAIT`` is busy."""
+        with self._lock:
+            mine = self._original_slots.setdefault(
+                reader.key, threading.BoundedSemaphore(ORIGINAL_READS_PER_READER))
+        if not mine.acquire(timeout=ORIGINAL_READ_WAIT):
+            raise errors.BUSY
+        try:
+            if not self._original_all.acquire(timeout=ORIGINAL_READ_WAIT):
+                raise errors.BUSY
+            try:
+                yield
+            finally:
+                self._original_all.release()
+        finally:
+            mine.release()
 
     # ---- feedback -------------------------------------------------------------------------
 
@@ -944,6 +1083,346 @@ class WorkspaceBackend:
 
 
 # ---- helpers shared by the routes ------------------------------------------------------
+
+def attention_items(inbox: Mapping[str, Any], labels: Mapping[str, str],
+                    limit: int = 10) -> tuple[list[m.LatePo], list[m.AtRisk]]:
+    """Home's late purchase orders and at-risk items from the reader's gap inbox, in the
+    inbox's order (longest late first); the late-PO answer reads the same list."""
+    late: list[m.LatePo] = []
+    risk: list[m.AtRisk] = []
+    for gap in inbox.get("gaps") or ():
+        oid, kind = gap.get("object_id"), str(gap.get("object_type") or "Object")
+        if not isinstance(oid, str):
+            continue
+        label = labels.get(oid) or f"{kind} record"
+        sources = [m.Source(system=system_of(h), handle=h, label=record_words(h),
+                            open_url=open_url(h))
+                   for h in (gap.get("citations") or ())[:3] if isinstance(h, str)]
+        reason = str(gap.get("summary") or (gap.get("follow_up") or {}).get("why")
+                     or "Needs attention")[:300]
+        if gap.get("days_late") is not None and len(late) < limit:
+            late.append(m.LatePo(object_id=oid, label=label, days_late=int(gap["days_late"]),
+                                 reason=reason, open_url=object_url(kind, oid),
+                                 sources=sources))
+        elif gap.get("days_late") is None and len(risk) < limit:
+            risk.append(m.AtRisk(object_id=oid, label=label, kind=str(gap.get("kind")),
+                                 reason=reason, open_url=object_url(kind, oid),
+                                 sources=sources))
+    return late, risk
+
+
+# "Which purchase orders are late?": the reader's whole late list, asked with no filter.
+# Only these words may make it up: any other word (a supplier, customer or person, a
+# negation, a time frame, another filter: "open", "from", "last quarter") sends the
+# question to the agent, which reads and the gate checks.
+LATE_WORDS = frozenset({"late", "overdue", "behind"})
+PO_WORDS = frozenset({"po", "pos", "purchase", "orders", "order"})
+LIST_FILLER = frozenset({
+    "which", "what", "whats", "s", "are", "is", "show", "list", "me", "all", "our", "the",
+    "any", "there", "currently", "right", "now", "today", "of", "my", "please", "how",
+    "many", "still", "past", "due", "running", "us", "we", "have", "do", "can", "you",
+    "a", "at", "moment"})
+
+
+def late_list_question(question: str) -> bool:
+    """Whether ``question`` asks only for the list of late purchase orders: a late word,
+    and every other word a list or purchase-order word (``LIST_FILLER``, ``PO_WORDS``);
+    "past due" counts as late, and "what's late" needs no PO word."""
+    from ontology.identifiers import find_identifiers
+    if re.search(r"\d", question) or list(find_identifiers(question)):
+        return False   # a number or a record named: never the whole list
+    words = re.findall(r"[a-z]+", question.lower().replace("\u2019", "'").replace("'", ""))
+    if not words or len(words) > 12:
+        return False
+    late = bool(LATE_WORDS & set(words)) or "past due" in " ".join(words)
+    return late and set(words) <= LATE_WORDS | PO_WORDS | LIST_FILLER
+
+
+def _base(view: Any) -> Mapping[str, Any]:
+    try:
+        return view._base()
+    except Exception:  # noqa: BLE001 - freshness then reads the ledger alone
+        return {}
+
+
+def words_of(code: Any) -> str:
+    """A gap's snake_case subject or reason in words."""
+    return re.sub(r"[_\s]+", " ", str(code or "")).strip()[:300]
+
+
+def late_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
+                inbox: Mapping[str, Any], late: Sequence[m.LatePo], conversation: str,
+                ms: Callable[[], int]) -> m.AnswerPayload:
+    """The late-PO list as an answer: one fact per late purchase order (its gap's own
+    evidence, each source decided for this reader again), longest late first."""
+    as_of = inbox.get("run_at") if isinstance(inbox.get("run_at"), str) else None
+    facts = []
+    for po in late:
+        sources = [backend._source(view, s.handle) for s in po.sources]
+        facts.append(m.Fact(text=f"{po.label}: {po.days_late} days late. {po.reason}"[:1000],
+                            sources=sources, check="computed_from_cited_records"))
+    when = f" as of {as_of[:10]}" if as_of else ""
+    if inbox.get("status") != "read":
+        direct = ("The late-order check has not run for your records yet, so I can't list "
+                  "late purchase orders.")
+        outcome = "not_found"
+    elif not late:
+        direct = f"No purchase order you can see is late{when}."
+        outcome = "answered"
+    else:
+        named = "; ".join(f"{po.label} ({po.days_late} days)" for po in late[:5])
+        more = f", and {len(late) - 5} more below" if len(late) > 5 else ""
+        direct = (f"{len(late)} purchase order{'s' if len(late) != 1 else ''} you can see "
+                  f"{'are' if len(late) != 1 else 'is'} late{when}: {named}{more}. "
+                  "This is the list on your home page.")
+        outcome = "answered"
+    return m.AnswerPayload(
+        answer_id=secrets.token_hex(12), question=request.question, outcome=outcome,
+        direct_answer=direct[:4000], facts=facts[:MAX_FACTS], not_found=[],
+        hidden=m.Hidden(count=0, by_owner=[], message=None), conflicts=[],
+        freshness=backend.freshness(inbox),
+        subjects=[m.ObjectRef(object_id=po.object_id, type="PurchaseOrder",
+                              label=po.label[:200], open_url=po.open_url)
+                  for po in late[:MAX_FACTS]],
+        did_you_mean=[], conversation_id=conversation, latency_ms=ms())
+
+
+STILL_WORKING = ("I'm still working on this: the time limit ({seconds} s) was reached "
+                 "before an answer passed its checks. Ask again, or narrow the question "
+                 "(name the record or the field you need).")
+PARTIAL_AT_LIMIT = ("Partial answer (the time limit was reached while it was being "
+                    "finished; only what passed the checks is shown): ")
+
+
+def agent_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest, ran: Any,
+                 found: Mapping[str, Any], conversation: str,
+                 ms: Callable[[], int]) -> m.AnswerPayload:
+    """The agent session's gated reply as the contract's answer: the direct answer is the
+    reply's sentences (``agent_ask.reply_prose``: the gate removed every sentence no
+    passed claim backs); the facts are the claims the session's last gate decision passed,
+    each source with the value or quote the gate checked and opened only when this reader
+    may open it; not found is the answer's gaps. A session stopped at the cap answers
+    with what its last decision passed, else says it is still working."""
+    from operating import agent_session as runner
+    from operator_api.agent_ask import plain_tree, reply_prose
+    from operating import answer_gate
+    from operator_ui.object_workspace import ITEM_REFUSED
+
+    decision, _refused = runner._gate_results(ran.events)
+    decision = plain_tree(decision) if isinstance(decision, Mapping) else None
+    facts: list[m.Fact] = []
+    withheld = 0
+    for claim in (decision or {}).get("claims") or ():
+        if not isinstance(claim, Mapping):
+            continue
+        claim = {**claim, "citations": [c for c in claim.get("citations") or ()
+                                        if isinstance(c, str)]}
+        decided = view.access.decide(claim["citations"]) if claim["citations"] else {}
+        if not claim["citations"] or any(
+                marker is not None and not (handle.startswith("original://")
+                                            and marker.get("reason") == ITEM_REFUSED)
+                for handle, marker in decided.items()):
+            # The session read as this reader and its gate passed the claim on what the
+            # reader's host served them, so this happens only when the grant changed
+            # mid-Ask: a claim citing a unit the reader's grant withholds is not shown.
+            # A captured case original (original://) this app's item re-check refuses
+            # stays, its source without a link (``_source`` decides that again): the app's
+            # runtime has no gate for the host's capture store, whose gate admitted it
+            # for this reader. Mail, files and units the app refuses are withheld.
+            withheld += 1
+            continue
+        sources = backend._claim_sources(view, claim)
+        if not sources:
+            continue
+        # A captured original the reader's own host served the session opens through
+        # that host (``WorkspaceBackend.source`` decides it again on open).
+        sources = [source.model_copy(update={"open_url": open_url(source.handle)})
+                   if source.open_url is None and source.handle.startswith("original://")
+                   else source for source in sources]
+        if len(facts) < MAX_FACTS:
+            check = (claim.get("check") or {}).get("status")
+            facts.append(m.Fact(text=presentation.fact_text(str(claim.get("text") or ""),
+                                                            claim)[:1000], sources=sources,
+                                check=check if isinstance(check, str) else None))
+    answer = ran.answer or {}
+    passed = [c for c in (decision or {}).get("claims") or () if isinstance(c, Mapping)]
+    refused = [c for c in (decision or {}).get("unsupported_claims") or ()
+               if isinstance(c, Mapping)]
+
+    def screened(text: str, fallback: str) -> str:
+        """A gap's words as any reply text leaves: through the gate's reply screen (a
+        statement no passed claim backs is not shown)."""
+        if not text:
+            return fallback
+        reply = answer_gate.final_reply(text, passed, unsupported=refused,
+                                        question=request.question)
+        return fallback if reply["modified"] or not reply["text"].strip() else text
+    not_found = dedupe_not_found([
+        m.NotFound(what=presentation.plain_words(screened(words_of(gap.get("subject")),
+                                                          "A value the question asks for")),
+                   where_it_would_live=presentation.plain_words(
+                       screened(words_of(gap.get("reason")),
+                                "No record you can see holds it")))
+        for gap in answer.get("gaps") or () if isinstance(gap, Mapping)])
+    if ran.stopped:
+        said = " ".join(fact.text for fact in facts) if withheld else str(
+            ((decision or {}).get("reply") or {}).get("text") or "").strip()
+        said = presentation.reader_prose(said, [c.get("phrase") for c in passed])[0] \
+            or " ".join(fact.text for fact in facts)
+        direct = PARTIAL_AT_LIMIT + said if facts and said else STILL_WORKING.format(
+            seconds=int(getattr(backend.agent_ask, "seconds", 0) or 0))
+        outcome = "partial" if facts else "abstained"
+    else:
+        direct = reply_prose(ran.final_text, ran.answer)
+        state = answer.get("answerability")
+        outcome = ("answered" if state == "answerable" and facts else
+                   "partial" if facts or state == "partial" else "not_found")
+        if withheld:
+            # The reply's sentences may state what a withheld claim backs: say only the
+            # shown claims (fail closed).
+            direct = " ".join(fact.text for fact in facts)
+        if not direct and facts:
+            direct = " ".join(fact.text for fact in facts)
+        direct, removed = presentation.reader_prose(
+            direct, [c.get("phrase") for c in passed])
+        if removed and not_found and direct:
+            direct += ("\n\nWhat I couldn't confirm from a source you can open is listed "
+                       "below.")
+        if not direct and facts:
+            direct = " ".join(fact.text for fact in facts)
+        if not direct:
+            direct = ("I couldn't establish this from the records you can see; what is "
+                      "missing is listed below." if not_found else
+                      "I couldn't find records you can see that answer this.")
+    late = named_late_pos(backend, view, request.question, found)
+    if late:
+        # The lateness Home shows for a PO the question names: the gap inbox's own fact
+        # and evidence (the late-PO answer's), each source decided for this reader again.
+        as_of = late[0][1]
+        when = f" as of {as_of[:10]}" if as_of else ""
+        lead = []
+        rest = direct
+        for po, _ in late:
+            sources = [backend._source(view, s.handle) for s in po.sources]
+            facts.insert(0, m.Fact(text=f"{po.label}: {po.days_late} days late. "
+                                        f"{po.reason}"[:1000], sources=sources,
+                                   check="computed_from_cited_records"))
+            name = f"PO {po.label}" if po.label.isdigit() else po.label
+            contrary = presentation.first_sentence(rest, LATENESS_CONTRARY)
+            if contrary:
+                # A gated sentence says otherwise (received, closed, complete): both are
+                # shown side by side, neither dropped (the sentence moves up beside it).
+                rest = rest.replace(contrary, "", 1)
+                lead.append(f"Home lists {name} as {po.days_late} days late{when}: "
+                            f"{po.reason.rstrip('.')}. A source says: {contrary.strip()}")
+            else:
+                # The agent's own hedge that lateness is unknown is answered by the late
+                # list's fact; a sentence stating a checked phrase or figure stays.
+                checked = [c.get("phrase") for c in passed] + [
+                    v.get("value") for c in passed for v in c.get("value_claims") or ()
+                    if isinstance(v, Mapping) and isinstance(v.get("value"), str)]
+                rest = presentation.without(rest, LATENESS_HEDGE, checked)[0]
+                lead.append(f"{name} is {po.days_late} days late{when} (it is on the late "
+                            f"list on your home page): {po.reason.rstrip('.')}.")
+        kept = presentation.tidy(rest)
+        direct = " ".join(lead) + ("\n\n" + kept if kept else "")
+        del facts[MAX_FACTS:]
+        # a gap saying lateness is unknown is answered by the late list's fact
+        not_found = [item for item in not_found if not LATENESS_GAP.search(item.what)]
+        if outcome == "not_found":
+            outcome = "partial"
+    subjects = [m.ObjectRef(object_id=r["object_id"],
+                            type=str(r.get("object_type") or "Object"),
+                            label=str(r.get("mention") or r.get("object_type") or
+                                      "Record")[:200],
+                            open_url=object_url(r.get("object_type") or "Object",
+                                                r["object_id"]))
+                for r in found.get("roots") or () if isinstance(r.get("object_id"), str)]
+    did_you_mean = [m.ObjectRef(object_id=c["object_id"],
+                                type=str(c.get("object_type") or "Object"),
+                                label=f"{item.get('mention')} ({c.get('object_type')})",
+                                open_url=object_url(c.get("object_type") or "Object",
+                                                    c["object_id"]))
+                    for item in found.get("ambiguous") or ()
+                    for c in item.get("candidates") or () if c.get("object_id")]
+    conflicts: list[m.Conflict] = []
+    for root in subjects[:3]:
+        card = view._call("plx.object", {"object_id": root.object_id})
+        conflicts += backend._conflicts(view, card.get("conflicts") or (), root.label)
+    return m.AnswerPayload(
+        answer_id=secrets.token_hex(12), question=request.question, outcome=outcome,
+        direct_answer=str(direct)[:4000], facts=facts, not_found=not_found[:10],
+        hidden=m.Hidden(count=withheld, by_owner=[],
+                        message=hidden_message(withheld, []) if withheld else None),
+        conflicts=conflicts[:6],
+        freshness=backend.freshness(_base(view)), subjects=subjects, did_you_mean=did_you_mean[:8],
+        conversation_id=conversation, latency_ms=ms())
+
+
+# A sentence saying a late-listed PO was received, closed or complete: shown beside the
+# late list's fact, never dropped.
+LATENESS_CONTRARY = re.compile(
+    r"\b(?:fully received|(?:was|were|been|is|are) (?:fully )?received|closed|marked "
+    r"complete|is complete|completed|delivered in full)\b", re.I)
+# A sentence only saying the PO's lateness could not be decided (no checked value in it).
+LATENESS_HEDGE = re.compile(
+    r"\b(?:couldn't|could not|can't|cannot|unable to)\s+(?:be\s+)?(?:confirm|decide|"
+    r"determine|establish|tell|say)\w*\b[^.]*\b(?:late|lateness|overdue)\b"
+    r"|\blateness\b[^.]*\b(?:can't|cannot|couldn't|could not)\b", re.I)
+LATENESS_GAP = re.compile(r"\blate(?:ness)?\b|\bverdict\b|\boverdue\b", re.I)
+MAX_LATE_LOOKUPS = 60
+# A question about where a PO stands (its lateness is then part of the answer).
+STATUS_QUESTION = re.compile(r"\b(?:status|late|lateness|overdue|behind|delay\w*|where|"
+                             r"when|update|arriv\w*|deliver\w*|receiv\w*|eta|due|stuck|"
+                             r"standing|progress)\b", re.I)
+
+
+def _po_key(text: Any) -> str:
+    """A PO reference for matching: letters and digits upper-cased, a leading PO dropped
+    (``PO#106001``, ``po 106001`` and ``106001`` all read ``106001``)."""
+    key = re.sub(r"[^A-Z0-9]", "", str(text or "").upper())
+    return key[2:] if key.startswith("PO") and len(key) > 2 else key
+
+
+def named_late_pos(backend: "WorkspaceBackend", view: Any, question: str,
+                   found: Mapping[str, Any]) -> list[tuple[m.LatePo, Optional[str]]]:
+    """The late purchase orders of this reader's gap inbox (the list Home shows, as the
+    reader) that ``question`` names: by a found root's object id or by a PO identifier
+    the question writes equal to the record's display label. (late PO, inbox run_at)."""
+    from ontology.identifiers import find_identifiers
+
+    if not STATUS_QUESTION.search(question or ""):
+        return []
+    named = {_po_key(mention.normalized or mention.text)
+             for mention in find_identifiers(question) if "po" in str(mention.kind).lower()}
+    roots = {r.get("object_id") for r in found.get("roots") or () if isinstance(r, Mapping)}
+    if not named and not roots:
+        return []
+    inbox = view.gap_inbox()
+    if inbox.get("status") != "read":
+        return []
+    run_at = inbox.get("run_at") if isinstance(inbox.get("run_at"), str) else None
+    late_gaps = [g for g in inbox.get("gaps") or () if g.get("days_late") is not None
+                 and isinstance(g.get("object_id"), str)][:MAX_LATE_LOOKUPS]
+    labels: dict[str, str] = {}
+    for gap in late_gaps:
+        oid = gap["object_id"]
+        if oid in roots or oid in labels:
+            continue
+        card = view._call("plx.object", {"object_id": oid})
+        labels[oid] = plain((card.get("object") or {}).get("display")) or ""
+    wanted = [g for g in late_gaps if g["object_id"] in roots
+              or (labels.get(g["object_id"]) and _po_key(labels[g["object_id"]]) in named)]
+    if not wanted:
+        return []
+    for gap in wanted:
+        if gap["object_id"] not in labels:
+            card = view._call("plx.object", {"object_id": gap["object_id"]})
+            labels[gap["object_id"]] = plain((card.get("object") or {}).get("display")) or ""
+    late, _risk = attention_items({"gaps": wanted}, labels, limit=MAX_FACTS)
+    seen: set[str] = set()
+    return [(po, run_at) for po in late if not (po.object_id in seen or seen.add(po.object_id))]
+
 
 def hidden_message(total: int, owners: Sequence[m.HiddenOwner]) -> str:
     head = f"{total} more item{'s' if total != 1 else ''} match, but you don't have access."
@@ -1407,24 +1886,58 @@ def _page_model(backend: WorkspaceBackend, view: Any, page: Mapping[str, Any]) -
                         freshness=backend.freshness(page))
 
 
+def record_fields(row: Mapping[str, Any], limit: int = 60) -> dict[str, str]:
+    """A record's fields as the source page shows them. A nested object's fields are
+    shown under their dotted path (``custom_fields.fmPoNumber``), never dropped: a Portal
+    purchase order carries the FileMaker PO number it was migrated from there, and
+    without it the page of the record an answer about that number cites shows only the
+    Portal's own number, as if the citation opened another order. Lists stay out."""
+    out: dict[str, str] = {}
+
+    def add(prefix: str, value: Any, depth: int) -> None:
+        if len(out) >= limit:
+            return
+        if isinstance(value, Mapping) and "untrusted_text" not in value:
+            if depth >= 2:
+                return
+            for key, item in value.items():
+                add(f"{prefix}.{key}", item, depth + 1)
+        elif not isinstance(value, list):
+            out[prefix[:80]] = plain(value) or ""
+    for key, value in row.items():
+        add(str(key), value, 0)
+    return out
+
+
 def source_view(view: Any, handle: str, text_offset: int) -> m.SourceView:
     got = view.source(handle, text_offset=text_offset)   # KeyError: not this reader's
+    return source_payload(handle, got, text_offset)
+
+
+def source_payload(handle: str, got: Mapping[str, Any], text_offset: int) -> m.SourceView:
+    """A read source (``view.source`` or the reader's host's ``plx.read``) as the
+    contract's source view."""
     text = None
     for key in ("text", "body", "content"):
         if got.get(key) is not None:
             text = plain(got[key]) if not isinstance(got[key], str) else got[key]
             break
     row = got.get("row") or got.get("fields") or got.get("values")
-    fields = None
-    if isinstance(row, Mapping):
-        fields = {str(k)[:80]: (plain(v) or "") for k, v in list(row.items())[:60]
-                  if not isinstance(v, (list, dict)) or isinstance(v, Mapping)
-                  and "untrusted_text" in v}
+    fields = record_fields(row) if isinstance(row, Mapping) else None
     page = got.get("page") or {}
-    following = page.get("next_text_offset") if isinstance(page, Mapping) else None
+    following = page.get("next_text_offset") if isinstance(page, Mapping) else \
+        got.get("next_text_offset")
+    title = plain(got.get("title")) if got.get("title") else None
+    if handle.startswith("original://") and isinstance(text, str):
+        # A captured original's page reads as its text, titled by its file name; the
+        # receipt's fields (hash, byte count) are no reading matter.
+        name = (fields or {}).get("row.filename") or (fields or {}).get("filename")
+        number = page if isinstance(page, int) and not isinstance(page, bool) else None
+        title = title or (f"{name}, page {number}" if name and number else name)
+        fields = None
     return m.SourceView(handle=handle, system=system_of(handle), label=record_words(handle),
                         kind="text" if text is not None and not fields else "record",
-                        title=plain(got.get("title")) if got.get("title") else None,
+                        title=title,
                         text=text[:200_000] if isinstance(text, str) else None,
                         fields=fields or None,
                         as_of=got.get("captured_at") if isinstance(got.get("captured_at"),
@@ -1445,7 +1958,14 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--console-arg", action="append", default=[],
                        help="one more argument for the console builder (repeatable)")
     group.add_argument("--ask", action="store_true",
-                       help="serve Ask: the employee agent loop (PLX_ASK_PLANNER)")
+                       help="serve Ask: the scoreboard's agent path for employees (one "
+                            "Claude Code session per question, needs --host-config and the "
+                            "session secret), else the employee agent loop (PLX_ASK_PLANNER)")
+    group.add_argument("--ask-path", choices=("agent", "objective"), default="agent",
+                       help="agent: the scoreboard's agent path where it can run (default); "
+                            "objective: always the console's objective box")
+    group.add_argument("--ask-seconds", type=int, default=150,
+                       help="hard cap of one agent Ask's session (seconds)")
     group.add_argument("--ask-workers", type=int, default=ASK_WORKERS,
                        help="Asks answered at once (each its own runtime and thread)")
     group.add_argument("--dev-ticket-login", action="store_true",
@@ -1508,11 +2028,17 @@ def run(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
         auth, auth_config = make_auth(parser, args, mode, ctx)
         label = (ctx.get("evidence") or {}).get("label") or "source-mirror captures " \
             "(live-unverified)"
+        agent = None
+        if args.ask and args.ask_path == "agent":
+            from .agent_ask import AgentAsk
+            agent = AgentAsk.from_args(Path(ctx["state_dir"]), args.host_config, os.environ,
+                                       seconds=max(30, args.ask_seconds))
         backend = WorkspaceBackend(ctx["objects_for"], data_label=str(label),
                                    state_dir=Path(ctx["state_dir"]),
                                    data_dir=args.app_data_dir, pg_dsn=args.pg_dsn,
                                    understand=optional_understanding(),
-                                   search=optional_search(), ask_served=bool(args.ask))
+                                   search=optional_search(), ask_served=bool(args.ask),
+                                   agent_ask=agent, agent_sessions=max(1, args.ask_workers))
         threads = [start_ask_worker(backend, argv, fixtures, planner, n)
                    for n in range(max(0, args.ask_workers) if args.ask else 0)]
         try:

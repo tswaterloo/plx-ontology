@@ -1431,10 +1431,23 @@ class EvidenceTools:
     # ------------------------------------------------------------------ plx.documents
 
     def _documents(self, arguments: Mapping[str, Any], actor: Actor) -> dict[str, Any]:
+        from operating.search import plug
+        with plug.call_state() as search_state:
+            query = arguments.get("query")
+            if isinstance(query, str) and plug.enabled() and "as_known_at" not in arguments:
+                # Hybrid retrieval runs before the store lock (``_with_gate``) is taken;
+                # its objects are gated under it with every other id.
+                plug.prefetch(self.traverse.policy, actor, self.base._item_allowed, query)
+            return self._documents_paged(arguments, actor, search_state)
+
+    def _documents_paged(self, arguments: Mapping[str, Any], actor: Actor,
+                         search_state: Mapping[str, Any]) -> dict[str, Any]:
+        from operating.search import plug
         fingerprint = ot._fingerprint(arguments, actor)
-        offset, pinned = 0, None
+        offset, pinned, cursor_mode = 0, None, None
         if arguments.get("cursor"):
             offset, at = ot._read_cursor(arguments["cursor"], fingerprint)
+            cursor_mode = ot._cursor_mode(arguments["cursor"])
             pinned = (at, False)
         sources = list(arguments.get("sources") or ("graph_mail", "sharepoint", "original"))
         since = _parse_time(arguments["since"]) if arguments.get("since") else None
@@ -1446,6 +1459,14 @@ class EvidenceTools:
         state = self._with_gate(actor, lambda gate: self._documents_in(
             arguments, actor, gate, sources, since, until, pinned))
         documents, gaps, scope_info = state
+        # A page continues only the ranking it was cut from: a change of search mode or
+        # order mid-pagination is an error, never an empty "complete" page.
+        mode = search_state["mode"]
+        if arguments.get("cursor"):
+            plug.check_cursor_mode(cursor_mode, mode)
+        fallback = plug.fallback_gap(f"query:{' '.join(str(arguments.get('query')).split())}")
+        if fallback is not None:
+            gaps.insert(0, fallback)
         if "original" in sources:
             originals, original_gaps = self._original_documents(
                 arguments, actor, scope_info, since, until)
@@ -1460,7 +1481,7 @@ class EvidenceTools:
         total = len(documents)
         page = documents[offset:offset + limit]
         more = offset + limit < total
-        cursor = (ot._write_cursor(offset + limit, scope_info["at"], fingerprint)
+        cursor = (ot._write_cursor(offset + limit, scope_info["at"], fingerprint, mode)
                   if more else None)
         stored = [doc for doc in page if "_object" in doc]
         if stored:
@@ -1471,6 +1492,7 @@ class EvidenceTools:
                 (scope_info["at"], scope_info["explicit_at"]))))
         for doc in page:
             doc.pop("_order", None)
+            doc.pop("_rank", None)
             doc.pop("_object", None)
         searched: dict[str, Any] = {"sources": sources[:8], "scopes": scope_info["scopes"][:16]}
         if arguments.get("since"):
@@ -1502,7 +1524,7 @@ class EvidenceTools:
         if scope_info["withheld"]:
             result["withheld"] = {"properties": None, "objects": None, "reason": "audience"}
         return self._fit(result, "documents", lambda returned: ot._write_cursor(
-            offset + returned, scope_info["at"], fingerprint))
+            offset + returned, scope_info["at"], fingerprint, mode))
 
     def _before_first_capture(self, sources: Sequence[str], info: Mapping[str, Any]
                               ) -> list[dict[str, Any]]:
@@ -1574,9 +1596,10 @@ class EvidenceTools:
                          for r in self._root_identifiers(scope, [root])]
         query_keys: list[tuple[str, str]] = []
         bare: dict[str, Any] | None = None
+        ranks: dict[str, int] = {}
         if arguments.get("query"):
             by_query, query_keys, bare, cut, relaxed = self._query_documents(
-                scope, arguments["query"], store_families, snippets)
+                scope, arguments["query"], store_families, snippets, ranks)
             scan_cut |= cut
             if relaxed:
                 gaps.append(_gap(
@@ -1613,6 +1636,8 @@ class EvidenceTools:
                                    "title": displays.get(oid), "date": date,
                                    "snippet": snippets.get(oid), "mentions": [],
                                    "_order": (moment, handle), "_object": oid}
+            if oid in ranks:
+                doc["_rank"] = ranks[oid]
             markings = sorted(set(_json_list(version["markings"])))
             if markings:
                 doc["markings"] = markings
@@ -1691,13 +1716,19 @@ class EvidenceTools:
         return out, cut
 
     def _query_documents(self, scope: Any, query: str, families: Sequence[str],
-                         snippets: dict[str, dict[str, Any]]
+                         snippets: dict[str, dict[str, Any]],
+                         ranks: dict[str, int] | None = None
                          ) -> tuple[set[str], list[tuple[str, str]], dict[str, Any] | None,
                                     bool]:
         """(document ids, keys searched, the bare-token readings or None, scan capped).
         A bare token (``_bare``) is also searched as the same-number twins of each of
         its readings; the readings are the (kind, stored value) of every identifier row
-        found, so a kind counts only where a record the reader may see holds it."""
+        found, so a kind counts only where a record the reader may see holds it.
+        With ``PLX_SEARCH=hybrid`` a prose query also takes hybrid search's objects
+        (``operating/search``: meaning, OR-matched words, typos), their relevance order
+        in ``ranks``; they pass the same visibility and item gate as every other id
+        here (``_documents_in``) and get no snippet from search (search text is
+        normalised, not a quote: ``_page_mentions`` reads one from the source)."""
         keys = [k for k in ot._query_keys(self.base.grammar, query, None)
                 if not k.secondary and k.kind]
         out: set[str] = set()
@@ -1755,7 +1786,13 @@ class EvidenceTools:
                                                                snippets)
                 out |= text_hits
                 cut |= text_cut
-            if not matched and not text_hits and prose and len(words) >= RELAX_MIN_WORDS:
+            hybrid = self._hybrid_documents(scope, query) if prose else []
+            for rank, object_id in enumerate(hybrid, start=1):
+                out.add(object_id)
+                if ranks is not None:
+                    ranks.setdefault(object_id, rank)
+            if (not matched and not text_hits and not hybrid and prose
+                    and len(words) >= RELAX_MIN_WORDS):
                 # No document holds every word: the documents whose text holds all but
                 # one, each word left out in turn, are leads, and the answer says which
                 # words no listed document was required to hold.
@@ -1767,6 +1804,16 @@ class EvidenceTools:
                         out |= hits
                         relaxed.append(word)
         return out, pairs, bare, cut, relaxed
+
+    def _hybrid_documents(self, scope: Any, query: str) -> list[str]:
+        """Object ids hybrid search ranks for ``query``, best first (``PLX_SEARCH=hybrid``
+        and a read about now; else none). The caller gates every one."""
+        from operating.search import plug
+        if not plug.enabled() or not plug.is_now(scope.at, self.base.clock()):
+            return []
+        hits = plug.ranked(self.traverse.policy, scope.actor, self.base._item_allowed,
+                           query).hits
+        return [h["object_id"] for h in hits][:DOC_SCAN_CAP]
 
     def _document_text_hits(self, scope: Any, tokens: Sequence[str], families: Sequence[str],
                             snippets: dict[str, dict[str, Any]]) -> tuple[set[str], bool]:
@@ -2667,9 +2714,11 @@ def _page_citation(citation: str, pages: Sequence[Mapping[str, Any]], offset: in
 
 
 def _document_order(doc: Mapping[str, Any]) -> tuple:
+    """Hybrid search's relevance order first (``_rank``, PLX_SEARCH=hybrid), then the
+    newest first; without a rank every document keeps the date order."""
     moment, handle = doc.get("_order") or (None, doc["citation"])
     stamp = -moment.timestamp() if moment is not None else float("inf")
-    return (stamp, handle)
+    return (doc.get("_rank", float("inf")), stamp, handle)
 
 
 # --------------------------------------------------------------------------- host wiring

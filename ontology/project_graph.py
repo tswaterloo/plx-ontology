@@ -90,7 +90,8 @@ from integrations.captured_text import (ContainerReading, byte_pinned, captured_
 from ontology.identifiers import copy_key
 from ontology.mentions import Document, TextField, file_text_fields
 from ontology.project import (CAPTURED_RELATIONS, MEMBER_RELATION, CapturedRecord,
-                              ProjectionError, RowSample, _Relations, _sampled)
+                              ProjectionError, RowSample, _Relations, _file_marks,
+                              _sampled, _watermark, begin_snapshot)
 from ontology.store import canonical
 
 TEXT_FIELD = "row.content_text"
@@ -247,6 +248,8 @@ class TeamsCaptures:
         self._conn = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True,
                                      isolation_level=None)
         self._conn.row_factory = sqlite3.Row
+        self._opened = _file_marks(self._conn)   # before anything is read
+        self._marks: list[Any] | None = None
         self._snapshot = False
         try:
             for table, columns in self._NEEDED.items():
@@ -331,9 +334,14 @@ class TeamsCaptures:
                                            if self.capture_gap(relation) is None else None)}
         return {"generation": f"teams-capture/{self.generation}", "relations": relations}
 
+    def watermark(self) -> list[Any] | None:
+        """The file state the snapshot of the last :meth:`records` reads
+        (``ontology.project.begin_snapshot``; None: no reuse of its fingerprints)."""
+        return _watermark(self, self._marks, self._opened) if self._snapshot else None
+
     def records(self, relations: Sequence[str]) -> Mapping[str, Iterable[Any]]:
         self._end_snapshot()
-        self._conn.execute("BEGIN")  # one snapshot for every relation
+        self._marks = begin_snapshot(self._conn)  # one snapshot for every relation
         self._snapshot = True
 
         def stream(relation: str) -> Iterator[Any]:
@@ -473,6 +481,8 @@ class SharePointListCaptures:
         self._conn = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True,
                                      isolation_level=None)
         self._conn.row_factory = sqlite3.Row
+        self._opened = _file_marks(self._conn)   # before anything is read
+        self._marks: list[Any] | None = None
         try:
             for table, columns in self._NEEDED.items():
                 have = {r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})")}

@@ -1060,6 +1060,18 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "resolution": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["rule", "trusted", "note"],
+          "description": "Which values are trusted and why (operating/answer_conflicts.py): the system of record for the field (a rule that says it governs, the property's declared precedence, then the source tier: record over document over email over chat; a machine-read document is a lead), then the newest reading, then the most specific document; undecided: none trusted, all shown; self_contradiction: one document states two values. Never a silent pick: every value stays listed.",
+          "properties": {
+            "rule": {"type": "string", "enum": ["system_of_record", "newest", "most_specific", "undecided", "self_contradiction"]},
+            "trusted": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 11}, "maxItems": 12},
+            "note": {"type": "string", "minLength": 1, "maxLength": 600, "description": "Why, in the Workbench's words (the rule and the systems, never a source's text)."},
+            "as_of": {"type": "array", "description": "When each value (by index) was first seen, ISO time, or null when unknown: the age to state when it matters.", "items": {"type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]{2,15}(Z|[+-][0-9]{2}:[0-9]{2})?$"}, "maxItems": 12}
+          }
+        },
         "kind": {
           "type": "string",
           "enum": [
@@ -1536,7 +1548,7 @@
     "use_case": {
       "type": "object",
       "additionalProperties": false,
-      "description": "A use case the query names (operating.use_case_catalog, examples/use_case_catalog.json): its own source documents served to this reader (never search hits: the search's own documents, counts and gaps are unchanged), how many of its documents are not served to this reader (never named), and the rule for answering from them. Documents it needs that no source holds are use_case_document_not_held gaps; a query saying 'use case' that names none is an unknown_use_case gap.",
+      "description": "A use case the query names (operating.use_case_catalog, examples/use_case_catalog.json): its own source documents served to this reader (never search hits: the search's own documents, counts and gaps are unchanged), how many of its documents are not served to this reader (never named), and the rule for answering from them. Documents it needs that no source holds are use_case_document_not_held gaps; documents held in a source the call does not search (sources) are counted per source in a use_case_documents_not_searched gap, never named; a query saying 'use case' that names none is an unknown_use_case gap.",
       "required": [
         "id",
         "title",

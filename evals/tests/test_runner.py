@@ -849,7 +849,7 @@ class ClaudeCodeAgentTests(Temp):
         # The host is served only through the tool gate, which allows the same tools.
         gated = seen["config"]["mcpServers"]["plx"]["args"]
         host = fx.FakeHost().mcp_server()
-        self.assertEqual(gated[:3], ["-m", "evals.runner", "gate"])
+        self.assertEqual(gated[:3], ["-m", "operating.agent_session", "gate"])
         self.assertEqual(gated[gated.index("--") + 1:], [host["command"], *host["args"]])
         self.assertEqual([gated[i + 1] for i, arg in enumerate(gated) if arg == "--allow"],
                          ["plx.find", "plx.source_citation"])
