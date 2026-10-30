@@ -814,7 +814,7 @@ class ServedPathTest(unittest.TestCase):
         self.assertEqual(denied["denied_leaks"], checks["withheld_citations_resolved"])
 
     def test_a_trim_that_did_not_run_is_not_checked_and_fails_the_spec(self):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         with tempfile.TemporaryDirectory() as tmp:
             probe.prepare_served(f"{tmp}/store.sqlite", "staff:reader")
             denied = probe.denied_checks(probe.served_host(f"{tmp}/store.sqlite"))
@@ -927,7 +927,7 @@ class RemovalSpecTest(unittest.TestCase):
     """The ontology.projection spec reads the probe's removal counts (ING-09, REC-04)."""
 
     def test_the_spec_records_removals_and_fails_closed_when_not_known(self):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from tests.test_ontology_projection_probe_removals import probe_after_removals
         with tempfile.TemporaryDirectory() as tmp:
             _, after = probe_after_removals(Path(tmp), 3)
@@ -1115,7 +1115,7 @@ class DiskTest(unittest.TestCase):
         self.assertGreater(peak["store_bytes"], 0)
 
     def test_a_build_short_of_free_space_never_starts(self):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from ontology import project
         low = {"free_bytes": 1, "total_bytes": 10}
         with tempfile.TemporaryDirectory() as tmp:
@@ -1186,7 +1186,7 @@ class SessionBuildSplitTest(unittest.TestCase):
     the phase timings under the spec. Fixture Workbench mirror; nothing live."""
 
     def test_the_session_build_reports_and_records_its_split(self):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from integrations.workbench_read_api import WorkbenchReadApiClient
         from scripts.mirror_measure import ordered_full_coverage
 
@@ -1229,7 +1229,7 @@ class ColdPathSingleBuildTest(unittest.TestCase):
         return ProbeWithMailTests.probe_world(self, tmp, None, **options)[0]
 
     def rebuild_failures(self, result, code=0):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         return [f for f in lv.check_expectations(self.SPEC, code, result) if "rebuild" in f]
 
     def session(self, tmp):

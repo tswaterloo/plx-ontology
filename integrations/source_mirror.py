@@ -32,7 +32,11 @@ whole traversal, across the runs it resumes in) are abandoned, never resumed int
 a capture stitched from two reads. Every other interrupted
 traversal (the time budget, throttling, a 500, a source defect) keeps its
 committed pages and resumes on the next run: that is how a relation too large
-for one budget completes over several runs.
+for one budget completes over several runs. A first fill too large for one
+transaction is merged in committed batches (``merge_batch_rows``) that a killed or
+out-of-budget run keeps; nothing of it is served before its last batch completes the
+capture. ``sync`` takes large relations after every smaller one, and an optional
+per-relation slice, so a huge fill never starves the rest.
 
 Absence: a full traversal, or a key-only scan (``columns=`` the key), marks
 mirrored rows the source no longer returned with ``missing_from_source_since``.
@@ -93,7 +97,8 @@ the marker.
 Operator CLI (GET only; key from ``PLX_WORKBENCH_API_KEY``, never printed)::
 
     python3 -m integrations.source_mirror --db M --audience A --principal P sync \
-        [--full] [--absence-scan] [--budget-seconds N] [--relation R ...]
+        [--full] [--absence-scan] [--budget-seconds N] [--relation-budget-seconds S] \
+        [--relation R ...]
     python3 -m integrations.source_mirror --db M --audience A --principal P coverage
     python3 -m integrations.source_mirror --db M --audience A --principal P \
         scan-absence R
@@ -537,6 +542,14 @@ LOCK_WAIT_RUN_CAP_SECONDS = 600.0
 # A failed refresh's ``refresh_failure`` write waits at most this long for the write
 # lock; a record it cannot write is reported (``record_error``), never waited out.
 FAILURE_RECORD_WAIT_SECONDS = 5.0
+# A first fill merges its staged rows into ``row_current`` in transactions of about this
+# many rows (``_merge_batches``), each committed with the merge's progress, so a killed run
+# keeps them and the next continues; one transaction for a 30M-row fill never finishes
+# inside a budget and its rollback repeated it every cycle.
+MERGE_BATCH_ROWS = 20_000
+# A relation whose last capture or in-progress traversal holds at least this many rows is
+# synced after every smaller one (``sync``), so it never starves them.
+LARGE_RELATION_ROWS = 1_000_000
 _FAILURE_CLASSES = {"sync_budget_exhausted": "budget", "paging_defect": "paging_defect",
                     "row_bound": "row_bound", "source_defect": "source_defect",
                     "statement_timeout": "source_defect", "source_throttled": "throttled",
@@ -1358,7 +1371,8 @@ CREATE TABLE IF NOT EXISTS sync_progress (
   pages INTEGER NOT NULL, rows_received INTEGER NOT NULL, keys_new INTEGER NOT NULL,
   keys_changed INTEGER NOT NULL, keys_unchanged INTEGER NOT NULL,
   max_run_length INTEGER NOT NULL, started_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-  resumed INTEGER NOT NULL, health_before_json TEXT NOT NULL, owner TEXT);
+  resumed INTEGER NOT NULL, health_before_json TEXT NOT NULL, owner TEXT,
+  merge_json TEXT);
 CREATE TABLE IF NOT EXISTS stage_row (
   relation TEXT NOT NULL, capture_id INTEGER NOT NULL, key_json TEXT NOT NULL,
   run_index INTEGER NOT NULL, run_length INTEGER NOT NULL, row_json TEXT NOT NULL,
@@ -1399,7 +1413,11 @@ _ADDED_COLUMNS = {
                     "until_basis TEXT"),
     # The writer that holds an in-progress traversal (NULL on rows written
     # before owners existed; the next refresh takes those over as a resume).
-    "sync_progress": ("owner TEXT",),
+    "sync_progress": ("owner TEXT",
+                      # A first fill's batched merge once begun (``_merge_batches``): the
+                      # catalog entry and replica health it merges under, its counts and
+                      # watermark so far. Such a traversal is never abandoned.
+                      "merge_json TEXT"),
     # The latest full traversal that saw every row of the relation then present, and
     # when it finished: a row it saw unchanged is not written (``_sighting_sql``).
     "relation_state": ("seen_through_capture INTEGER", "seen_through_at TEXT"),
@@ -1454,6 +1472,25 @@ _REPLACED_SQL = ("(SELECT json_array(rm.replaced_basis, rm.replaced_by) FROM row
                  "rm.replaced_basis IS NOT NULL) AS replaced")
 
 
+def _stage_bound(bound: tuple[str, str] | None) -> tuple[str, tuple[str, ...]]:
+    """The ``stage_row`` key condition of one merge batch (``_merge_batches``): ``("<",
+    key)`` every key before ``key``, ``("<=", key)`` through it; None: no bound."""
+    if bound is None:
+        return "", ()
+    op, key = bound
+    if op not in ("<", "<="):
+        raise ValueError("merge bound operator")
+    return f" AND key_json {op} ?", (key,)
+
+
+def _later_watermark(a: tuple[datetime | None, Any], b: tuple[datetime | None, Any]
+                     ) -> tuple[datetime | None, Any]:
+    """The later of two (instant, raw value) watermarks; the first on a tie."""
+    if b[0] is not None and (a[0] is None or b[0] > a[0]):
+        return b
+    return a
+
+
 def _superseded_outcome(progress: Mapping[str, Any]) -> str:
     """What a superseded refresh leaves behind, for its ``capture_superseded`` message.
 
@@ -1495,6 +1532,8 @@ class SourceMirror:
                  sleep: Callable[[float], None] = time.sleep,
                  monotonic: Callable[[], float] = time.monotonic,
                  persisted_store: Any = None,
+                 merge_batch_rows: int = MERGE_BATCH_ROWS,
+                 large_relation_rows: int = LARGE_RELATION_ROWS,
                  _busy_timeout_ms: int = 10000) -> None:
         # The policy a sync worker's sibling connection is opened with (_sibling).
         self._options: dict[str, Any] = dict(
@@ -1507,7 +1546,8 @@ class SourceMirror:
             max_retry_after_seconds=max_retry_after_seconds, min_page_size=min_page_size,
             lineage_rules=lineage_rules, soft_delete_rules=soft_delete_rules,
             prisma_facts=prisma_facts, clock=clock, sleep=sleep, monotonic=monotonic,
-            persisted_store=persisted_store)
+            persisted_store=persisted_store, merge_batch_rows=merge_batch_rows,
+            large_relation_rows=large_relation_rows)
         # Where the last complete captures are kept (a MirrorCaptureStore; None: never).
         self._persisted_store = persisted_store
         if isinstance(audience_map, AudienceMap):
@@ -1532,8 +1572,15 @@ class SourceMirror:
                 or not isinstance(page_size, int) or not 1 <= page_size <= 5000
                 or not isinstance(read_attempts, int) or not 1 <= read_attempts <= 5
                 or not isinstance(throttle_attempts, int) or not 1 <= throttle_attempts <= 20
-                or not isinstance(min_page_size, int) or not 1 <= min_page_size <= 5000):
+                or not isinstance(min_page_size, int) or not 1 <= min_page_size <= 5000
+                or isinstance(merge_batch_rows, bool) or not isinstance(merge_batch_rows, int)
+                or not 1 <= merge_batch_rows <= 1_000_000
+                or isinstance(large_relation_rows, bool)
+                or not isinstance(large_relation_rows, int)
+                or not 1 <= large_relation_rows <= MAX_ROWS_PER_RELATION_CAP):
             raise ValueError("source_mirror_policy_invalid")
+        self._merge_batch_rows = merge_batch_rows
+        self._large_relation_rows = large_relation_rows
         self._client = client
         base_url = getattr(client, "base_url", None) if client is not None else None
         if client is not None and (not isinstance(base_url, str) or not base_url.strip()):
@@ -2193,7 +2240,8 @@ class SourceMirror:
                 "keys_new": 0, "keys_changed": 0, "keys_unchanged": 0, "max_run_length": 0,
                 "started_at": _iso(self._now()), "updated_at": None, "resumed": 0,
                 "health_before_json": _canonical(self._health()),
-                "owner": secrets.token_hex(8), "planned_against": planned_against}
+                "owner": secrets.token_hex(8), "planned_against": planned_against,
+                "merge_json": None}
 
     def _resume(self, relation: str, entry: Mapping[str, Any], columns: list[str],
                 mode: str) -> dict[str, Any] | None:
@@ -2201,7 +2249,10 @@ class SourceMirror:
 
         It continues when the catalog entry and projection are unchanged and it
         covers what is asked: an interrupted fill or full traversal serves any
-        request; an interrupted incremental read does not serve a full one.
+        request; an interrupted incremental read does not serve a full one. A first
+        fill whose batched merge has begun always continues (its merged rows are in
+        ``row_current``, invisible until it completes): it completes under the entry
+        it merges under, and the next refresh plans a full traversal if that changed.
         """
         row = self._progress(relation)
         if row is None:
@@ -2209,7 +2260,9 @@ class SourceMirror:
         progress = dict(row)
         same_shape = (progress["catalog_revision"] == catalog_revision(entry) and
                       progress["columns_json"] == _canonical(columns))
-        if same_shape and (progress["mode"] != "incremental" or mode == "incremental"):
+        merging = progress.get("merge_json") is not None
+        if merging or same_shape and (progress["mode"] != "incremental" or
+                                      mode == "incremental"):
             self._health()  # the replica must be ready before reading on
             # Take the traversal over by compare-and-swap on its owner: the
             # writer that held it (crashed or still reading) fails with
@@ -2279,6 +2332,13 @@ class SourceMirror:
         """
         with self._write():
             self._check_owner(progress)
+            stored = self._progress(progress["relation"])
+            if stored is not None and stored["merge_json"] is not None:
+                # Its merged batches are in row_current: dropping the traversal would
+                # leave them there with no capture to complete them.
+                raise MirrorError("merge_in_progress",
+                                  "a first fill whose merge has begun is completed, never "
+                                  "abandoned; the next run continues its merge")
             if progress.get("capture_id") is not None:
                 self._db.execute("UPDATE capture_state SET state = 'abandoned', note = ? "
                                  "WHERE capture_id = ?", (note, progress["capture_id"]))
@@ -2340,7 +2400,8 @@ class SourceMirror:
                                        "rejected the stored cursor", progress["since_sent"],
                                        planned_against)
                 progress["pages_at_start"] = 0
-        capture_id = self._finish(relation, entry, progress, self._health(), tenant)
+        capture_id = self._finish(relation, entry, progress, self._health(), tenant,
+                                  deadline=deadline)
         self._db.execute("DELETE FROM refresh_failure WHERE relation = ?", (relation,))
         self._unrecorded.pop(relation, None)
         return {"refreshed_now": progress["mode"], "reason": progress["reason"],
@@ -2462,6 +2523,9 @@ class SourceMirror:
             with self._write():
                 if self._state(relation) is not None:
                     return True  # a concurrent read filled it meanwhile
+                if self._db.execute("SELECT 1 FROM row_current WHERE relation = ? LIMIT 1",
+                                    (relation,)).fetchone() is not None:
+                    return False  # a first fill merging in batches: never mixed with a copy
                 self._import_relation(relation, Path(manifest["path"]))
                 self._mark_persisted(relation, manifest["captures_as_of"], exc)
         except (MirrorError, CaptureError, OSError, sqlite3.DatabaseError, KeyError):
@@ -2652,16 +2716,19 @@ class SourceMirror:
 
     def _merge_stage(self, relation: str, capture_id: int, identifier_columns: list[str],
                      now_iso: str, soft_columns: Sequence[str],
-                     since: Mapping[str, str] | None = None) -> dict[str, int]:
-        """Upsert a completed traversal's staged rows by key (inside ``_finish``); a
-        returned key closes its absence interval, and ``soft_columns`` label and open or
-        close its soft-delete interval (an undelete at the rows' ``since`` column time
-        when it is a timestamp, ``_track_soft_delete``)."""
+                     since: Mapping[str, str] | None = None,
+                     bound: tuple[str, str] | None = None) -> dict[str, int]:
+        """Upsert a completed traversal's staged rows by key (inside ``_finish``, or a
+        batch of ``_merge_batches``: ``bound`` (operator, key) limits it to the staged
+        keys before that one); a returned key closes its absence interval, and
+        ``soft_columns`` label and open or close its soft-delete interval (an undelete at
+        the rows' ``since`` column time when it is a timestamp, ``_track_soft_delete``)."""
         counts = {"new": 0, "changed": 0, "unchanged": 0}
+        within, params = _stage_bound(bound)
         staged = self._db.execute(
-            """SELECT key_json, run_index, row_json, row_digest, lineage, lineage_basis
-               FROM stage_row WHERE capture_id = ? ORDER BY key_json, run_index""",
-            (capture_id,))
+            f"""SELECT key_json, run_index, row_json, row_digest, lineage, lineage_basis
+               FROM stage_row WHERE capture_id = ?{within} ORDER BY key_json, run_index""",
+            (capture_id, *params))
         pending: dict[str, list[sqlite3.Row]] = {}
 
         def flush() -> None:
@@ -2729,21 +2796,27 @@ class SourceMirror:
         return counts
 
     def _capture_watermark(self, capture_id: int, since: Mapping[str, str] | None,
-                           generated_at: Any) -> tuple[datetime | None, Any, int, int]:
+                           generated_at: Any, bound: tuple[str, str] | None = None
+                           ) -> tuple[datetime | None, Any, int, int]:
         """(max since instant, its raw value, null/unparseable count, future count)
-        over the rows this capture staged."""
+        over the rows this capture staged (``bound``: one merge batch's, and no
+        ``stage_seen`` key: a batched first fill has none)."""
         if not since:
             return None, None, 0, 0
         cap = _parse_instant(generated_at)
         best: tuple[datetime, Any] | None = None
         null_count = future = 0
         path = f'$."{since["column"]}"'
+        within, params = _stage_bound(bound)
         # The rows seen unchanged were not staged: their stored content is what was read.
-        for (raw,) in self._db.execute(
-                "SELECT json_extract(row_json, ?) FROM stage_row WHERE capture_id = ? "
-                "UNION ALL SELECT json_extract(r.row_json, ?) FROM stage_seen v JOIN "
+        seen = ("" if bound is not None else
+                " UNION ALL SELECT json_extract(r.row_json, ?) FROM stage_seen v JOIN "
                 "row_current r ON r.relation = v.relation AND r.key_json = v.key_json "
-                "WHERE v.capture_id = ?", (path, capture_id, path, capture_id)):
+                "WHERE v.capture_id = ?")
+        for (raw,) in self._db.execute(
+                f"SELECT json_extract(row_json, ?) FROM stage_row WHERE capture_id = ?{within}"
+                + seen, (path, capture_id, *params) +
+                (() if bound is not None else (path, capture_id))):
             moment = _since_instant(since["mode"], raw)
             if moment is None:
                 null_count += 1
@@ -2753,14 +2826,119 @@ class SourceMirror:
                 best = (moment, raw)
         return (best[0] if best else None, best[1] if best else None, null_count, future)
 
-    def _finish(self, relation: str, entry: Mapping[str, Any], progress: Mapping[str, Any],
-                health_after: Mapping[str, Any], tenant: str) -> int:
+    def _merge_boundary(self, capture_id: int) -> tuple[str, str] | None:
+        """The next merge batch's ``stage_row`` bound (``_stage_bound``): the keys before
+        the one about ``merge_batch_rows`` staged rows on (a key run is never split; a
+        run longer than a batch is one batch), or None when the rest fits in one."""
+        row = self._db.execute(
+            "SELECT key_json FROM stage_row WHERE capture_id = ? ORDER BY key_json, "
+            "run_index LIMIT 1 OFFSET ?", (capture_id, self._merge_batch_rows)).fetchone()
+        if row is None:
+            return None
+        first = self._db.execute(
+            "SELECT key_json FROM stage_row WHERE capture_id = ? ORDER BY key_json, "
+            "run_index LIMIT 1", (capture_id,)).fetchone()
+        return ("<=" if first[0] == row[0] else "<", row[0])
+
+    def _merge_batches(self, relation: str, entry: Mapping[str, Any],
+                       progress: dict[str, Any], health_after: Mapping[str, Any],
+                       tenant: str, deadline: float | None) -> dict[str, Any] | None:
+        """Merge a first fill's staged rows into ``row_current`` in transactions of about
+        ``merge_batch_rows`` rows until one batch is left for ``_finish``. Returns the
+        merge state (None: nothing needed batching, ``_finish`` merges it all at once).
+
+        Each batch commits its rows, the removal of their staged rows and the merge's
+        counts and watermark (``sync_progress.merge_json``) together, so a killed run
+        keeps every committed batch and the next run continues after it: nothing is
+        staged or merged twice. Readers never see a partial fill: the relation has no
+        ``relation_state`` and its capture stays ``in_progress`` until ``_finish``, and
+        every reader (``rows``, ``resolve``, citations, coverage, the ontology
+        projection, the persisted copy) reads only relations with a completed capture.
+        A relation with a completed capture is never merged in batches: its readers see
+        the previous capture until one transaction replaces it. The time budget is
+        checked before each batch (``sync_budget_exhausted``; the traversal is kept).
+        """
+        capture_id = progress["capture_id"]
+        merge = json.loads(progress["merge_json"]) if progress.get("merge_json") else None
+        columns = json.loads(progress["columns_json"])
+        identifier_columns = self._identifier_columns(relation, columns)
+        soft = soft_delete_columns(self._soft_delete_rules, relation, columns)
+        if merge is None and self._db.execute(
+                "SELECT 1 FROM row_current WHERE relation = ? LIMIT 1", (relation,)
+                ).fetchone() is not None:
+            # Rows of the relation this fill did not merge (none are expected without a
+            # completed capture): the one-transaction merge judges them as it always has.
+            return None
+        while True:
+            bound = self._merge_boundary(capture_id)
+            if bound is None:
+                return merge
+            if self._past(deadline):
+                raise MirrorError("sync_budget_exhausted",
+                                  "time budget ended while merging a first fill; the next "
+                                  "run continues from its last committed merge batch")
+            now_iso = _iso(self._now())
+            with self._write():
+                self._pin_binding(tenant)
+                self._check_owner(progress)
+                if merge is None:
+                    # Label rules recorded while the relation holds no row, so each
+                    # batch is classified as the final transaction expects.
+                    self._sync_lineage(relation, in_transaction=True)
+                    self._sync_soft_deletes(relation, columns, in_transaction=True)
+                    merge = {"entry": dict(entry), "health_after": dict(health_after),
+                             "counts": {"new": 0, "changed": 0, "unchanged": 0},
+                             "batches": 0, "rows_merged": 0, "watermark_raw": None,
+                             "null_since": 0, "future": 0, "started_at": now_iso}
+                since = merge["entry"].get("since")
+                replica_time = (merge["health_after"].get("generated_at") or
+                                json.loads(progress["health_before_json"]).get("generated_at"))
+                top, top_raw, nulls, future = self._capture_watermark(
+                    capture_id, since, replica_time, bound)
+                if since and merge["watermark_raw"] is not None:
+                    previous = (_since_instant(since["mode"], merge["watermark_raw"]),
+                                merge["watermark_raw"])
+                    merge["watermark_raw"] = _later_watermark(previous, (top, top_raw))[1]
+                elif top is not None:
+                    merge["watermark_raw"] = top_raw
+                counts = self._merge_stage(relation, capture_id, identifier_columns, now_iso,
+                                           soft, since, bound)
+                within, params = _stage_bound(bound)
+                merged = self._db.execute(
+                    f"DELETE FROM stage_row WHERE capture_id = ?{within}",
+                    (capture_id, *params)).rowcount
+                if merged <= 0:   # a batch that merged nothing would never end the loop
+                    raise MirrorError("merge_stalled", "a merge batch removed no staged row")
+                for name in counts:
+                    merge["counts"][name] += counts[name]
+                merge["batches"] += 1
+                merge["rows_merged"] += merged
+                merge["null_since"] += nulls
+                merge["future"] += future
+                merge["updated_at"] = now_iso
+                self._db.execute(
+                    """UPDATE sync_progress SET merge_json = ?, keys_new = ?, keys_changed = ?,
+                       keys_unchanged = ?, updated_at = ? WHERE relation = ?""",
+                    (_canonical(merge), merge["counts"]["new"], merge["counts"]["changed"],
+                     merge["counts"]["unchanged"], now_iso, relation))
+            progress["merge_json"] = _canonical(merge)
+            checkpoint(self._db)   # each batch leaves the WAL; it never grows with the fill
+
+    def _finish(self, relation: str, entry: Mapping[str, Any], progress: dict[str, Any],
+                health_after: Mapping[str, Any], tenant: str, *,
+                deadline: float | None = None) -> int:
         """Close a traversal in one transaction: merge the staged pages, mark absence
         (full only), watermark and relation state. All or nothing, so a failure here
-        leaves the traversal resumable straight into ``_finish``."""
+        leaves the traversal resumable straight into ``_finish``. A first fill too large
+        for one transaction is merged in committed batches first (``_merge_batches``);
+        this transaction then merges the last batch and completes the capture."""
         capture_id = progress["capture_id"]
         full = progress["mode"] != "incremental"
         prior = self._state(relation)
+        merge = (self._merge_batches(relation, entry, progress, health_after, tenant, deadline)
+                 if prior is None else None)
+        if merge is not None:   # the entry and replica time the merge began under
+            entry, health_after = merge["entry"], merge["health_after"]
         health_before = json.loads(progress["health_before_json"])
         # Cap the watermark at the replica time reported after the read; the
         # overlap (which includes the read duration) covers rows committed during it.
@@ -2778,14 +2956,29 @@ class SourceMirror:
             self._check_owner(progress)
             self._sync_lineage(relation, in_transaction=True)
             self._sync_soft_deletes(relation, columns, in_transaction=True)
+            remaining = (self._db.execute("SELECT COUNT(*) FROM stage_row WHERE capture_id = ?",
+                                          (capture_id,)).fetchone()[0]
+                         if merge is not None else 0)
             top, top_raw, null_since, future = self._capture_watermark(
                 capture_id, entry.get("since"), replica_time)
             counts = self._merge_stage(
                 relation, capture_id, identifier_columns, now_iso,
                 soft_delete_columns(self._soft_delete_rules, relation, columns),
                 entry.get("since"))
+            if merge is not None:   # the batches merged before this one
+                if merge["watermark_raw"] is not None:
+                    top, top_raw = _later_watermark(
+                        (_since_instant(entry["since"]["mode"], merge["watermark_raw"]),
+                         merge["watermark_raw"]), (top, top_raw))
+                null_since += merge["null_since"]
+                future += merge["future"]
+                for name in counts:
+                    counts[name] += merge["counts"][name]
             absent = 0
-            if full:
+            # A batched first fill: every row of the relation is one this capture merged,
+            # so nothing is missing or seen unchanged; its tens of millions of rows are
+            # not scanned again here, which would put the one-transaction cost back.
+            if full and merge is None:
                 counts["unchanged"] += self._lift_seen(relation, capture_id, now_iso)
                 # Seen by this traversal = last_seen_capture == capture_id (staged) or its
                 # key in stage_seen (seen unchanged); seen by a later capture (another
@@ -2824,10 +3017,13 @@ class SourceMirror:
                 previous = _parse_instant(prior["watermark"])
                 if watermark is None or previous >= watermark:
                     watermark, watermark_raw = previous, prior["watermark_raw"]
-            present, absent_count = self._db.execute(
-                """SELECT COALESCE(SUM(absent_since_capture IS NULL), 0),
-                   COALESCE(SUM(absent_since_capture IS NOT NULL), 0)
-                   FROM row_current WHERE relation = ?""", (relation,)).fetchone()
+            if merge is None:
+                present, absent_count = self._db.execute(
+                    """SELECT COALESCE(SUM(absent_since_capture IS NULL), 0),
+                       COALESCE(SUM(absent_since_capture IS NOT NULL), 0)
+                       FROM row_current WHERE relation = ?""", (relation,)).fetchone()
+            else:
+                present, absent_count = merge["rows_merged"] + remaining, 0
             since_entry = entry.get("since") or {}
             runs_unique = progress["max_run_length"] <= 1
             key_unique = runs_unique if full else bool(prior["key_unique"]) and runs_unique
@@ -3479,7 +3675,8 @@ class SourceMirror:
     def sync(self, actor: Actor, *, relations: Sequence[str] | None = None,
              full: bool = False, absence_scan: bool = False,
              budget_seconds: float | None = None,
-             order: Sequence[str] | None = None, workers: int = 1) -> dict[str, Any]:
+             order: Sequence[str] | None = None, workers: int = 1,
+             relation_budget_seconds: float | None = None) -> dict[str, Any]:
         """Capture every served catalog relation visible to ``actor``.
 
         A relation never mirrored is filled; a mirrored one is refreshed
@@ -3492,7 +3689,13 @@ class SourceMirror:
         budget completes; only a ``row_bound`` or ``paging_defect`` traversal is
         abandoned and starts over. ``order`` names relations to capture first, in
         that order, inside the same budget; the rest follow by name (a name
-        not in the catalog, not visible or not selected is skipped).
+        not in the catalog, not visible or not selected is skipped), except that a
+        large relation (``large_relation_rows`` or more in its last capture or its
+        in-progress traversal) follows every other, smallest first, so a huge fill
+        never starves the relations after it. ``relation_budget_seconds`` is each
+        relation's time slice in the first pass; once every relation had its slice,
+        the ones it stopped continue, in the same order, with what is left of the
+        budget (``slices`` 2 on their run).
 
         ``workers`` (1..4) relations are read at the same time, each by its own
         connection to this mirror file and its own fenced traversal; pages of one
@@ -3525,6 +3728,8 @@ class SourceMirror:
         audience = self._audience()
         self._check_binding(audience.tenant)
         deadline = self._deadline(budget_seconds)
+        if relation_budget_seconds is not None:
+            self._deadline(relation_budget_seconds)   # the same bounds as the budget
         if not audience.grants_any(actor):
             # Nothing can be visible: no upstream request at all, not even the catalog.
             return {"schema": "plx-source-mirror-sync/v1", "full": full,
@@ -3539,22 +3744,47 @@ class SourceMirror:
         wanted = None if relations is None else set(relations)
         names = sorted(name for name in catalog if audience.allows(actor, name)
                        and (wanted is None or name in wanted))
-        if order:
-            rank = {name: index for index, name in enumerate(dict.fromkeys(order))}
-            names.sort(key=lambda name: (rank.get(name, len(rank)), name))
+        rank = {name: index for index, name in enumerate(dict.fromkeys(order or ()))}
+        sizes = self._known_sizes()
+        large = self._large_relation_rows
+
+        def place(name: str) -> tuple[Any, ...]:
+            size = sizes.get(name, 0)
+            if name in rank:
+                return (0, rank[name], 0, name)
+            return (2, 0, size, name) if size >= large else (1, 0, 0, name)
+
+        names.sort(key=place)
         waits_before = len(self.throttle_waits)
         step = dict(actor=actor, tenant=audience.tenant, full=full,
                     absence_scan=absence_scan, catalog=catalog, deadline=deadline,
-                    lock_credit=_LockCredit(LOCK_WAIT_RUN_CAP_SECONDS))
+                    lock_credit=_LockCredit(LOCK_WAIT_RUN_CAP_SECONDS),
+                    relation_seconds=relation_budget_seconds)
         if workers == 1 or len(names) <= 1:
             try:
                 runs = [self._sync_one(name, **step) for name in names]
             finally:
                 self._lock_scope = None
-            waits = self.throttle_waits[waits_before:]
         else:
             runs, waits = self._sync_parallel(names, workers, step)
             self.throttle_waits.extend(waits)
+        # Second pass: a relation its slice stopped continues with the rest of the budget.
+        step["relation_seconds"] = None
+        for index, run in enumerate(runs):
+            if not run.pop("sliced", False):
+                continue
+            if deadline is not None and self._monotonic() >= deadline:
+                break
+            try:
+                again = self._sync_one(run["relation"], **step)
+            finally:
+                self._lock_scope = None
+            again["slices"] = 2
+            again["seconds"] = round((run.get("seconds") or 0) + (again.get("seconds") or 0), 3)
+            runs[index] = again
+        for run in runs:
+            run.pop("sliced", None)
+        waits = self.throttle_waits[waits_before:]
         for run in runs:
             if "record_error" not in run:
                 # A capture, or a failure now in refresh_failure, supersedes it.
@@ -3579,18 +3809,35 @@ class SourceMirror:
                 "throttle_waits": {"count": len(waits), "seconds": round(sum(waits), 3)},
                 "coverage": self._coverage(actor, audience, catalog, fetched_at, None)}
 
+    def _known_sizes(self) -> dict[str, int]:
+        """relation -> its size as far as the mirror knows: the rows of its in-progress
+        traversal, else of its last capture (``sync`` orders large relations last)."""
+        sizes = {row[0]: int(row[1]) for row in self._db.execute(
+            "SELECT relation, row_count FROM relation_state")}
+        for relation, received in self._db.execute(
+                "SELECT relation, rows_received FROM sync_progress"):
+            sizes[relation] = max(sizes.get(relation, 0), int(received))
+        return sizes
+
     def _sync_one(self, name: str, *, actor: Actor, tenant: str, full: bool,
                   absence_scan: bool, catalog: Mapping[str, Any],
-                  deadline: float | None, lock_credit: _LockCredit) -> dict[str, Any]:
+                  deadline: float | None, lock_credit: _LockCredit,
+                  relation_seconds: float | None = None) -> dict[str, Any]:
         """One relation of :meth:`sync`: its run record (never raises but on a binding
         mismatch, which stops the whole sync). Every failure is in ``refresh_failure``
-        so coverage counts the relation failed, whatever stored capture it has."""
+        so coverage counts the relation failed, whatever stored capture it has.
+        ``relation_seconds`` bounds this relation's own time; a run it stopped (the
+        sync's budget not yet ended) is marked ``sliced`` for the second pass."""
         entry = catalog[name]
         if entry.get("unavailable") or not entry.get("key"):
             return {"relation": name, "outcome": "unavailable"}
         if deadline is not None and self._monotonic() >= deadline:
             return {"relation": name, "outcome": "budget_exhausted",
                     "failure_class": "budget"}
+        sync_deadline = deadline
+        if relation_seconds is not None:
+            own = self._monotonic() + float(relation_seconds)
+            deadline = own if deadline is None else min(deadline, own)
         # Wall time for the report only; the budget runs on the injectable monotonic.
         started = time.perf_counter()
         self._lock_wait = self._lock_credit = 0.0
@@ -3649,6 +3896,9 @@ class SourceMirror:
                       "failure_recorded": "record_error" not in info}
             if "record_error" in info:
                 failed["record_error"] = info["record_error"]
+            if (code == "sync_budget_exhausted" and deadline != sync_deadline and
+                    (sync_deadline is None or self._monotonic() < sync_deadline)):
+                failed["sliced"] = True
             return failed
         run = {"relation": name, "outcome": "captured", "mode": info["refreshed_now"],
                "pages": info["pages"], "rows_received": info["rows_received"],
@@ -3770,6 +4020,20 @@ class SourceMirror:
             catalog, fetched_at, error = {}, None, f"{exc.code}: {exc}"
         return self._coverage(actor, audience, catalog, fetched_at, error)
 
+    @staticmethod
+    def _in_progress(progress: sqlite3.Row) -> dict[str, Any]:
+        """Coverage's view of an unfinished traversal: ``phase`` ``reading`` its pages or
+        ``merging`` a first fill in batches (``rows_merged`` of ``rows_received`` so far;
+        none of them served until the capture completes)."""
+        item = {"mode": progress["mode"], "pages": progress["pages"],
+                "rows_received": progress["rows_received"],
+                "started_at": progress["started_at"], "phase": "reading"}
+        if progress["merge_json"] is not None:
+            merge = json.loads(progress["merge_json"])
+            item.update(phase="merging", rows_merged=merge["rows_merged"],
+                        merge_batches=merge["batches"], served=False)
+        return item
+
     def _coverage(self, actor: Actor, audience: AudienceMap, catalog: Mapping[str, Any],
                   fetched_at: str | None, error: str | None) -> dict[str, Any]:
         """Coverage of the relations ``actor`` may read. A relation whose failure this
@@ -3832,10 +4096,7 @@ class SourceMirror:
                 "last_refresh_at": state["last_refresh_at"] if state else None,
                 "last_refresh_mode": state["last_refresh_mode"] if state else None,
                 "latest_capture": latest,
-                "sync_in_progress": ({"mode": progress["mode"], "pages": progress["pages"],
-                                      "rows_received": progress["rows_received"],
-                                      "started_at": progress["started_at"]}
-                                     if progress else None),
+                "sync_in_progress": (self._in_progress(progress) if progress else None),
                 "last_refresh_failure": dict(failure) if failure else None,
                 "unrecorded_refresh_failure": unrecorded.get(name),
                 "last_absence_scan": self._scan_dict(self._db.execute(
@@ -4249,6 +4510,14 @@ class SourceMirror:
         cited = (current if not foreign and current and current[0]["capture_id"] == capture_id
                  else None)
         status = "current"
+        if cited is not None:
+            capture = lookup["captures"].get(capture_id)
+            if capture is not None and capture["capture_state"] == "in_progress":
+                # Only a first fill merging in batches has current rows of an unfinished
+                # capture; nothing of it is served until it completes.
+                return {"ok": False, "error": "capture_in_progress", "citation": handle,
+                        "message": "the cited capture has not completed; its rows are not "
+                                   "served until it does"}
         if cited is None and not foreign:
             cited = lookup["version"][index] or None
             status = "superseded"
@@ -4690,6 +4959,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     sync.add_argument("--full", action="store_true")
     sync.add_argument("--absence-scan", action="store_true")
     sync.add_argument("--budget-seconds", type=float)
+    sync.add_argument("--relation-budget-seconds", type=float,
+                      help="each relation's first-pass time slice; the rest of the budget "
+                           "then goes to the relations it stopped")
     commands.add_parser("coverage", help="per-relation completeness counts")
     scan = commands.add_parser("scan-absence", help="key-only absence scan of one relation")
     scan.add_argument("relation")
@@ -4731,7 +5003,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             elif args.command == "sync":
                 result = mirror.sync(actor, relations=args.relation, full=args.full,
                                      absence_scan=args.absence_scan,
-                                     budget_seconds=args.budget_seconds)
+                                     budget_seconds=args.budget_seconds,
+                                     relation_budget_seconds=args.relation_budget_seconds)
             elif args.command == "coverage":
                 result = mirror.coverage(actor)
             else:

@@ -19,7 +19,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from devloop import live_verify
+from verify import live_verify
 from integrations.tests import test_bc_capture as tb
 from integrations.tests.test_live_source_adapters import ENV
 from ontology.tests.test_project_bc import MAN, gid, purchase_world, record

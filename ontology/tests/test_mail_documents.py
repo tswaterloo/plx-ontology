@@ -226,25 +226,71 @@ class MailDocumentsTests(unittest.TestCase):
                              (first.content_digest, 0))
             self.assertTrue(len(memo))   # the readings came from the kept ones
             reads.clear()
+
+            def cold_store(name):
+                with MailCaptures(self.state,
+                                  internal_domains=SCOPE.internal_domains) as mail:
+                    return build_store(Path(tmp) / name, self.compiled,
+                                       {"portal_api": self.portal, "graph_mail": mail},
+                                       clock=lambda: NOW,
+                                       post_project={"mentions": mentions.store_mention_links})
+            # The code that derives documentFields and containerMembers changed (the
+            # projection, its steps), the reading code did not: their units are projected
+            # again (never taken from the last build's fingerprints) from the kept
+            # readings, no file is read again, and the generation equals a cold build.
             with unittest.mock.patch.object(captured_text, "_CACHE",
                                             captured_text._CACHE.empty()), \
                     unittest.mock.patch.object(captured_text, "read_text", counted), \
                     unittest.mock.patch("ontology.project.derivation_code",
-                                        return_value="other reading code"):
+                                        return_value="other derivation code"):
+                derived = build(state)
+                cold = cold_store("cold-derived.sqlite")
+            self.assertEqual(reads, [])
+            self.assertEqual(derived.mode, "incremental")
+            self.assertGreater(derived.units_rebuilt, 0)
+            self.assertEqual(derived.content_digest, cold["content_digest"])
+            # The reading code changed: the files are read again.
+            with unittest.mock.patch.object(captured_text, "_CACHE",
+                                            captured_text._CACHE.empty()), \
+                    unittest.mock.patch.object(captured_text, "read_text", counted), \
+                    unittest.mock.patch.object(captured_text, "readings_code",
+                                               return_value="other reading code"):
                 changed = build(state)
-                with MailCaptures(self.state,
-                                  internal_domains=SCOPE.internal_domains) as mail:
-                    cold = build_store(Path(tmp) / "cold.sqlite", self.compiled,
-                                       {"portal_api": self.portal, "graph_mail": mail},
-                                       clock=lambda: NOW,
-                                       post_project={"mentions": mentions.store_mention_links})
             self.assertTrue(reads)
-            # The capture files did not change, but the code that derives documentFields
-            # and containerMembers did: their units are projected again (never taken from
-            # the last build's fingerprints), and the generation equals a cold build.
-            self.assertEqual(changed.mode, "incremental")
-            self.assertGreater(changed.units_rebuilt, 0)
             self.assertEqual(changed.content_digest, cold["content_digest"])
+
+    def test_the_readings_key_moves_with_the_reading_code_only(self):
+        """The kept readings' key (``captured_text.readings_code``) names the modules
+        that read files and the libraries they read with: an edit of the projection, its
+        steps or the host keeps every kept reading; an edit of a reading module or another
+        library version reads the files again."""
+        import shutil
+        from integrations import captured_text
+        root = Path(captured_text.__file__).resolve().parents[1]
+        others = ("ontology/document_fields.py", "operating/host.py",
+                  "ontology/project_incremental.py", "ontology/mentions.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            copy = Path(tmp)
+            for name in [m.replace(".", "/") + ".py" for m in captured_text.READING_MODULES
+                         ] + list(others):
+                (copy / name).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(root / name, copy / name)
+            self.assertEqual(captured_text.readings_code(root=copy),
+                             captured_text.readings_code())
+            key = captured_text.readings_code(root=copy)
+            for name in others:
+                with open(copy / name, "a", encoding="utf-8") as edited:
+                    edited.write("\n# edited\n")
+            self.assertEqual(captured_text.readings_code(root=copy), key)
+            with open(copy / "integrations/document_understanding.py", "a",
+                      encoding="utf-8") as edited:
+                edited.write("\n# edited\n")
+            self.assertNotEqual(captured_text.readings_code(root=copy), key)
+        from importlib import metadata
+        real, before = metadata.version, captured_text.readings_code()
+        with unittest.mock.patch.object(metadata, "version", side_effect=lambda name: (
+                "999.0" if name == "pypdf" else real(name))):
+            self.assertNotEqual(captured_text.readings_code(), before)
 
     def test_mentions_are_stored_lead_links_in_the_same_generation(self):
         step = self.report["post_project"]["mentions"]
@@ -704,7 +750,7 @@ class ProbeWithMailTests(unittest.TestCase):
         self.assertGreater(result["citations"]["by_scheme"]["graph-mail"], 0)
         for secret in ("PO-1001", "graph-mail://", BOX_A, "MSG-1", address):
             self.assertNotIn(secret, text)
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         spec = json.loads((ROOT / "devloop/live-checks/ontology.mentions.json")
                           .read_text(encoding="utf-8"))
         lv.validate_spec(spec, stem="ontology.mentions")
@@ -729,7 +775,7 @@ class ProbeWithMailTests(unittest.TestCase):
         is versioned by its content and the unit completes."""
         from urllib.parse import urlsplit
 
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from integrations import bc_read
         from integrations.live_source_guard import LiveSourceAudience
         from integrations.tests import test_bc_capture as tb

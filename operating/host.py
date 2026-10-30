@@ -2707,10 +2707,14 @@ def _reason(exc: BaseException) -> str:
         return f"{name}:{unavailable_detail(exc) or 'unavailable'}"
     if isinstance(exc, HostError):
         return f"{name}:{exc.code}"
+    # A build's ``post_project`` step that raised names itself (``build_step``).
+    step = getattr(exc, "build_step", None)
+    where = (f":step={step}" if isinstance(step, str)
+             and re.fullmatch(r"[a-z_]{1,40}", step) else "")
     if isinstance(exc, sqlite3.Error):   # the cause (disk_full, locked, ...), not the text
         from integrations.capture_store import sqlite_code
-        return f"{name}:{sqlite_code(exc)}"
-    return name
+        return f"{name}:{sqlite_code(exc)}{where}"
+    return name + where
 
 
 # ------------------------------------------------------------------ serving

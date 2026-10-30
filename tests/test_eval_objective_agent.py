@@ -504,7 +504,7 @@ class ReportTest(unittest.TestCase):
         # The live check on this report: the fixture part meets expect_blocked but for the
         # agent evidence (a scripted agent is never the real one); the pass expectation
         # needs the live part.
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         spec = json.loads((Path(oa.ROOT) / "devloop" / "live-checks"
                            / "eval.objective_agent.json").read_text(encoding="utf-8"))
         self.assertEqual(lv.validate_spec(spec), [])

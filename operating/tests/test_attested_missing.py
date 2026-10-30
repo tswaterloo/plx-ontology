@@ -617,7 +617,7 @@ class CustomerPoLiveCheckTests(_NeedsPdf):
 
     def test_the_customer_po_check_meets_its_spec_leaking_nothing(self):
         import argparse
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from integrations import capture_sharepoint as cs
         from integrations.tests import test_capture_sharepoint as tsp
         from operating import sharepoint_host_check as check

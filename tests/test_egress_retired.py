@@ -37,6 +37,9 @@ RETIRED_NAMES = ("HttpPortalQuoteReader", "CloudDocumentTagger", "CloudGoalPlann
                  "CloudTransactionAnswerer", "api.openai.com", "suggest_transaction_answer",
                  "suggest_campaign_plan", "generate_document_tags", "request_freight_quote")
 PRODUCT_DIRS = ("ontology", "integrations", "operating", "operator_ui")
+# The one embeddings sender may name its provider's endpoint: scripts/check_http_egress.py
+# pins that file to that URL and function, so the retired cloud answerers stay banned.
+ALLOWED_MARKERS = {"operating/embed_sender.py": frozenset({"api.openai.com"})}
 
 
 def _env() -> dict[str, str]:
@@ -64,8 +67,10 @@ class EgressRetiredTests(unittest.TestCase):
         files = list(_product_files())
         self.assertGreater(len(files), 50)
         for relative, text in files:
+            allowed = ALLOWED_MARKERS.get(relative.as_posix(), frozenset())
             for marker in RETIRED_NAMES + RETIRED_FLAGS:
-                self.assertNotIn(marker, text, f"{relative}: {marker}")
+                if marker not in allowed:
+                    self.assertNotIn(marker, text, f"{relative}: {marker}")
 
     def test_case_host_rejects_the_retired_flags_and_the_platform_launcher_is_gone(self):
         # deletion-8: `python3 -m operating workbench` (UnifiedPlatform's launcher) is

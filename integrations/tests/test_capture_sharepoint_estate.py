@@ -989,7 +989,7 @@ class EstateCliTests(unittest.TestCase):
                               **({"monotonic": monotonic} if monotonic else {}))
 
     def test_cli_reports_the_estate_by_counts_and_a_gap_fails_the_live_check(self):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         os.environ.pop("PLX_WORKBENCH_API_KEY", None)
         spec = json.loads((Path(cs.REPO_ROOT) / "devloop/live-checks/"
                            "capture.sharepoint_estate.json").read_text(encoding="utf-8"))
@@ -1080,7 +1080,7 @@ class EstateCliTests(unittest.TestCase):
         # Two daily invocations with no --state-dir: the second resumes the first's walk
         # from its stored position, so roots no walk reached fall and complete roots
         # never do (gap-e70bce853a2f).
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         os.environ.pop("PLX_WORKBENCH_API_KEY", None)
         spec = json.loads((Path(cs.REPO_ROOT) / "devloop/live-checks/"
                            "capture.sharepoint_estate.json").read_text(encoding="utf-8"))
@@ -1268,7 +1268,7 @@ class EstateKeptStateTests(unittest.TestCase):
         return self.run_cli(self.drive, budget_seconds=1, monotonic=self.listed, **kwargs)
 
     def assert_blocked(self, report) -> None:
-        from devloop.tests.spec_verdict import spec_of, verdict
+        from tests.spec_verdict import spec_of, verdict
         self.assertEqual(report["storage"]["carried"], False)
         self.assertFalse(report["ok"])
         named = report["incomplete_scope"]

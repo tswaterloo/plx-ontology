@@ -129,7 +129,7 @@ class GuardConfigTests(unittest.TestCase):
 
 
     def test_a_block_part_carries_a_cause_live_verify_knows(self):
-        import devloop.live_verify as live_verify
+        from verify import live_verify
         absent = PeopleExclusion.from_env({}).block_part("mail.people_exclusion")
         self.assertEqual(live_verify.blocked_cause(declared=absent["cause"]), "later_ask")
         unresolved = PeopleExclusion([EXCLUDED])

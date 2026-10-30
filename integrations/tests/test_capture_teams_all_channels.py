@@ -24,7 +24,7 @@ import unittest
 from unittest import mock
 from urllib.parse import unquote, urlsplit
 
-from devloop import live_verify as lv
+from verify import live_verify as lv
 from integrations import capture_teams, graph_read
 from integrations.capture_teams import (CONFIRMATION_PART, CONFIRMATION_SCHEMA, TeamsCapture,
                                         TeamsCaptureError, TeamsScope, census_path,

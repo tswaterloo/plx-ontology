@@ -239,7 +239,7 @@ class KnowledgeSourceTests(unittest.TestCase):
         from contextlib import redirect_stdout
         import io
 
-        from devloop import live_verify
+        from verify import live_verify
         from integrations import knowledge_source
 
         spec = json.loads((ROOT / "devloop/live-checks/knowledge.brain_source.json")

@@ -31,7 +31,7 @@ from unittest import mock
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 import zipfile
 
-from devloop import live_verify
+from verify import live_verify
 from evals import partition, runner, score
 from evals.tests import fixtures as fx
 from integrations.tests.test_live_source_adapters import (DRIVE, ENV, MAILBOX, MSG_PATH,

@@ -27,7 +27,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from devloop import live_verify as lv
+from verify import live_verify as lv
 from integrations.tests import test_capture_mail as mail_t
 from integrations.tests.test_source_mirror import BASE
 from ontology import identifiers, reviews, store_ddl

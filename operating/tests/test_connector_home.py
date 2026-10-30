@@ -23,7 +23,7 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
-from devloop import live_verify as lv
+from verify import live_verify as lv
 from integrations.http import SourceHttpError
 from ontology.core import Actor
 from ontology.json_contract import validate

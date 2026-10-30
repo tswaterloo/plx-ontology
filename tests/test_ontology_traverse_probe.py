@@ -87,7 +87,7 @@ def consumer_run(main, tmp, *extra, before=0.0, after=0.0, budget=1000.0, stray=
                  raises=None):
     """``main`` (a consumer of the projection build) over the fixture world (Portal and BC
     injected) under ``slow_builds``."""
-    from devloop.tests import test_live_wiring as wiring
+    from tests import test_live_wiring as wiring
     fake, books = wiring.fixture_bc()
     with wiring.fixture_portal(), slow_builds(before=before, after=after, stray=stray,
                                                  raises=raises) as built:

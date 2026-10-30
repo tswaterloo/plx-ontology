@@ -25,7 +25,7 @@ import time
 import unittest
 from urllib.parse import unquote, urlsplit
 
-from devloop import live_verify as lv
+from verify import live_verify as lv
 from integrations import capture_teams, graph_read
 from integrations import live_source_grammar as grammar
 from integrations.capture_teams import (CENSUS_OPERATIONS, CONFIRMATION_PART,

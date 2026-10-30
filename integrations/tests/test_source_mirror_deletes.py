@@ -170,7 +170,7 @@ class MirrorSoftDeleteTests(unittest.TestCase):
     def test_the_live_check_records_soft_deletes_as_counts_only(self):
         """The mirror.full_coverage command (scripts.live_read_probes) over the fake
         transport, read through the spec exactly as the verifier records it."""
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from scripts import live_read_probes as probes
         fake = workbench([customer("c1"), customer("c2", deleted_at="2026-09-28T08:00:00")])
         fake.tables[CUSTOMERS][1]["code"] = "SECRET-VALUE"
@@ -435,7 +435,7 @@ class MirrorReplacementTests(unittest.TestCase):
     def test_the_live_check_records_replaced_rows_as_counts_only(self):
         """mirror.relation_counts over the fake transport: the rows are replaced between
         the counter's two reads, read through the spec as the verifier records it."""
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from scripts import mirror_measure
 
         def measure(rows, after, *args):

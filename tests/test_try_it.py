@@ -15,8 +15,8 @@ import unittest.mock
 import urllib.request
 from pathlib import Path
 
-from devloop.live_verify import check_expectations
-from devloop.main_ci import KEYLESS
+from verify.live_verify import check_expectations
+from twin.credential_names import KEYLESS
 
 ROOT = Path(__file__).resolve().parents[1]
 TRY_IT = ROOT / "devloop" / "TRY-IT.md"

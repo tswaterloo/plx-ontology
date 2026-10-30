@@ -941,7 +941,7 @@ class CliTests(CaseMailTestCase):
         self.assertEqual(sum(c["counts"]["findings_not_recorded"] for c in report["cases"]), 1)
 
     def test_the_live_check_spec_passes_on_the_injected_world(self):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
 
         root = Path(lv.ROOT)
         spec = json.loads((root / "devloop/live-checks/case.mail_evidence.json")
@@ -990,7 +990,7 @@ class CliTests(CaseMailTestCase):
         # call and the missing grant are blocked parts and expect_blocked checks the rest,
         # which must still read every input no part stopped.
         from integrations.http import SourceHttpError
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
 
         root = Path(lv.ROOT)
         spec = json.loads((root / "devloop/live-checks/case.mail_evidence.json")

@@ -1259,7 +1259,7 @@ class RealAgentEvalTests(Temp):
         self.assertEqual(sc.outcome_of(result), "wrong")  # an abstention where it has an answer
 
     def test_each_outcome_class_is_scored_with_coverage_and_the_k1_session_cap(self):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from scripts import eval_real_agent as era
         blocked_item = fx.item(id="dev-F3-0902", question={"text": "Q blocked?"},
                                known_outcome={"answerability": "blocked", "values": [],

@@ -748,6 +748,12 @@ class MirrorCaptures:
                             "SELECT relation, freshness_json FROM persisted_relation")})
         return dict(sorted(out.items()))
 
+    def _held(self) -> set[str]:
+        """The relations with a completed capture. A first fill merged in batches
+        (``SourceMirror._merge_batches``) has rows in ``row_current`` before it has one;
+        they are skipped whole, not row by row."""
+        return {row[0] for row in self._conn.execute("SELECT relation FROM relation_state")}
+
     def records(self, relations: Sequence[str]) -> Mapping[str, Iterable[CapturedRecord]]:
         # The mirror's own minting and replacement rule.
         from integrations.source_mirror import (REPLACEMENT_RULE, generated_replacement_models,
@@ -759,6 +765,7 @@ class MirrorCaptures:
         finished = {row[0]: row[1] for row in self._conn.execute(
             """SELECT c.capture_id, c.finished_at FROM capture c JOIN capture_state s
                ON s.capture_id = c.capture_id WHERE s.state = 'complete'""")}
+        held = self._held()
         rule = self._conn.execute(
             "SELECT value FROM mirror_meta WHERE name = 'replacement_rule'").fetchone()
         accepted = {REPLACEMENT_RULE, *_SUBSUMED_RULES.get(REPLACEMENT_RULE, ())}
@@ -783,6 +790,8 @@ class MirrorCaptures:
         def stream(relation: str) -> Iterator[CapturedRecord]:
             if not self._snapshot:
                 raise ProjectionError("capture_snapshot_closed", relation)
+            if relation not in held:
+                return   # no completed capture (a first fill still merging): nothing to read
             for row in _sampled(self.sample, self._conn.execute(
                     f"""SELECT key_json, run_index, run_length, row_json, row_digest,
                        capture_id, {self._seen_at} AS last_seen_at, missing_from_source_since,
@@ -840,8 +849,12 @@ class MirrorCaptures:
             """SELECT c.capture_id, c.finished_at FROM capture c JOIN capture_state s
                ON s.capture_id = c.capture_id WHERE s.state = 'complete'""")}
         out = {}
+        held = self._held()
         for relation in dict.fromkeys(relations):
             digest = hashlib.sha256(f"{self.generation}\x00{relation}\n".encode())
+            if relation not in held:   # as records(): nothing of an uncompleted fill
+                out[relation] = digest.hexdigest()
+                continue
             for row in self._conn.execute(
                     f"""SELECT key_json, run_index, run_length, row_json, row_digest,
                        capture_id, last_seen_at, missing_from_source_since,

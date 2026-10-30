@@ -478,7 +478,7 @@ class LotTraceLiveCheckTests(unittest.TestCase):
             "public.generated_purchase_order": [{"id": 900, "ponumber": "PO100237"}]}
 
     def test_the_spec_passes_on_certificates_tracing_to_their_receipt(self):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         spec = json.loads(LOT_TRACE_SPEC.read_text("utf-8"))
         self.assertEqual(lv.validate_spec(spec, stem=spec["id"]), [])
         # GL-0001 and the FM lot trace; RP0000002 is a PLX lab id in a lot's place.
@@ -506,7 +506,7 @@ class LotTraceLiveCheckTests(unittest.TestCase):
             self.assertNotIn(secret.casefold(), text.casefold())
 
     def test_the_spec_fails_when_no_certificate_states_a_served_lot(self):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         spec = json.loads(LOT_TRACE_SPEC.read_text("utf-8"))
         report, code, text = self.run_trace(["NOT-RECEIVED"], self.rows(1))
         self.assertEqual((report["ok"], code, report["certificates_linked"]), (False, 1, 0),
@@ -532,7 +532,7 @@ class LotTraceLiveCheckTests(unittest.TestCase):
         self.assertEqual((report["leaks"], report["ok"], code), (4, False, 1), text[:2000])
 
     def test_without_the_portal_the_run_is_blocked_never_ok(self):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         spec = json.loads(LOT_TRACE_SPEC.read_text("utf-8"))
         report, code, text = self.run_trace(["GL-0001"], self.rows(1), portal=False)
         self.assertEqual((report["ok"], report.get("blocked"), report["certificates_linked"]),
@@ -566,7 +566,7 @@ class LotTraceLiveCheckTests(unittest.TestCase):
                                  "scripts.eval_lot_trace", fromlist=["HOPS"]).HOPS[hop]})
 
     def test_a_hop_the_source_leaves_empty_is_typed_by_its_cause(self):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         spec = json.loads(LOT_TRACE_SPEC.read_text("utf-8"))
         supplied = "for_receipt_line>line_of>supplied_by"
         via_po = "for_receipt_line>receives_line>line_of>ordered_from"

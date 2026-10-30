@@ -18,8 +18,8 @@ import unittest
 import unittest.mock
 from urllib.parse import unquote
 
-from devloop import live_verify as lv
-from devloop.tests.spec_verdict import verdict
+from verify import live_verify as lv
+from tests.spec_verdict import verdict
 from integrations import capture_mail, graph_read
 from integrations.capture_mail import CaptureScope, MailCapture, MailCaptureStore
 from integrations.tests import test_capture_mail as base

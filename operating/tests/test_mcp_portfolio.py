@@ -31,7 +31,7 @@ import unittest
 from unittest import mock
 from urllib.parse import quote
 
-from devloop import live_verify as lv
+from verify import live_verify as lv
 from integrations.http import SourceHttpError
 from integrations.source_mirror import AudienceMap
 from ontology.core import Actor

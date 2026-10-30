@@ -307,7 +307,7 @@ class StageDiskTests(unittest.TestCase):
 class ProbeDiskTests(unittest.TestCase):
 
     def test_stage_keys_are_the_projector_stages_and_the_verifier_records_them(self):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         self.assertEqual(probe.STAGE_KEYS, STAGES)
         self.assertEqual(tuple(lv.ENVELOPE_DISK["stages"]), STAGES)
         self.assertEqual(tuple(lv.ENVELOPE_DISK["peak"]), probe.PEAK_KEYS)
@@ -334,7 +334,7 @@ class ProbeDiskTests(unittest.TestCase):
                           peak["work_bytes"], peak["layout"], peak["scratch_bytes"]),
                          (600, 1000, 77, 50, WORK_LAYOUT, 300))
         self.assertEqual(out["disk"]["stages"], {"load": 40, "values": 250})
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         kept = lv._envelope_disk(out["disk"])
         self.assertEqual(kept["peak"], peak)
         self.assertEqual(kept["stages"], {"load": 40, "values": 250})

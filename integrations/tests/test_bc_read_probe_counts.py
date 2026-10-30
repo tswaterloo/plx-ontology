@@ -30,7 +30,7 @@ from unittest import mock
 from urllib.error import URLError
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from devloop import live_verify
+from verify import live_verify
 from integrations import bc_read
 from integrations.capture_store import CaptureStore, bc_unit
 from integrations.live_source_grammar import BC_LINE_PARENT_FIELD

@@ -328,7 +328,7 @@ class LiveMirrorWorkspaceTest(unittest.TestCase):
         self.assertEqual(outage["state"], "inaccessible")
         self.assertIn("mirror.source_unavailable", outage["why"])
         # The live verifier's blocked protocol: the run is blocked, never a pass.
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         parts = lv.blocked_parts({"blocked_upstream": live_ws.upstream_parts(reasons)})
         self.assertEqual([(p["part"], p["error_code"]) for p in parts],
                          [("ingestion:portal_relation", "mirror.source_unavailable")])
@@ -747,7 +747,7 @@ class LiveCheckSpecTest(unittest.TestCase):
     files); the Graph reader path is covered by LiveMirrorWorkspaceTest."""
 
     def run_spec(self, fetch=None):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from integrations import workbench_read_api
         from integrations.source_mirror import SourceMirror
         from integrations.tests.test_source_mirror import BASE, KEY
@@ -785,7 +785,7 @@ class LiveCheckSpecTest(unittest.TestCase):
         return spec, code, json.loads(out.getvalue())
 
     def test_the_spec_command_meets_its_own_expectations_over_injected_sources(self):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
 
         spec, code, document = self.run_spec()
         # Without the SharePoint originals no reader shows every panel: the converged
@@ -810,7 +810,7 @@ class LiveCheckSpecTest(unittest.TestCase):
             self.assertNotIn(value, recorded)
 
     def test_a_portal_answering_http_500_makes_the_check_blocked_never_a_pass(self):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from integrations.http import SourceHttpError
 
         def portal_down(url, headers, *, max_bytes):
@@ -1371,7 +1371,7 @@ class CustomerPoMissingTest(unittest.TestCase):
         return live_ws._Recorder(call, case_id, upstream=None)
 
     def test_a_document_po_on_an_order_without_one_is_one_lead_cited_to_the_page(self):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from operating.case_verification import check_claims
 
         self.assertEqual(lv.validate_spec(self.spec, stem=self.SPEC_ID), [])
@@ -1579,7 +1579,7 @@ class CustomerPoMissingTest(unittest.TestCase):
         never configured; the pick said pick_linked_absent, naming no source, and opened
         nothing. The order is the case's root, the linked document a typed gap, and the
         run still fails naming the source never captured (no linked case was rendered)."""
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
 
         code, document, text = self.run_spec(po=False)
         [case] = document["cases"]
@@ -1613,7 +1613,7 @@ class CustomerPoMissingTest(unittest.TestCase):
         self.assertNotIn("graph_mail", json.dumps(restricted))
 
     def test_an_unread_po_field_gives_no_lead_and_an_outage_is_blocked(self):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from integrations.http import SourceHttpError
         from operating.tests import order_fixture as fixture
 

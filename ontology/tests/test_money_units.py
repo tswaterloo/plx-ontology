@@ -25,7 +25,7 @@ from ontology.project import CapturedRecord, build_store, object_id_of
 from ontology.schema import load_schema
 from ontology.units import (CURRENCY_SIGN_FORMS, ISO_4217, currency_code, currency_shape,
                             js_trim)
-from devloop import live_verify
+from verify import live_verify
 from scripts import money_units_probe
 from scripts.money_units_probe import summarize
 

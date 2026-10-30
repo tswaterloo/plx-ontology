@@ -16,7 +16,7 @@ import tempfile
 import unittest
 from urllib.parse import unquote, urlsplit
 
-from devloop import live_verify as lv
+from verify import live_verify as lv
 from integrations import graph_read
 from integrations.capture_store import CaptureError
 from integrations.capture_teams import TeamsCapture, open_store

@@ -74,7 +74,7 @@ class CaptureGapTest(unittest.TestCase):
             "part": "mail", "source": "microsoft-graph",
             "error_code": "capture_budget_cut", "cause": "capture_gap"}])
         # The live verifier keeps the declared cause (blocked, never failed).
-        from devloop import live_verify
+        from verify import live_verify
         [part] = live_verify.blocked_parts(
             {"blocked_upstream": list(opener.gap_blocked.values())})
         self.assertEqual((part["cause"], part["error_code"]),

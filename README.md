@@ -16,6 +16,7 @@ Full guide: [`context/HOW-TO-USE.md`](context/HOW-TO-USE.md).
 
 ## What's new
 
+- **v0.14:** faster refreshes that keep already-read documents; large Portal tables load in resumable steps.
 - **v0.13:** questions keep working during data refreshes; R&D agenda in seconds; search by meaning measured and ready.
 - **v0.12:** answers in the app checked like the scoreboard and written plainly; late POs show how late; cited maps open; disagreeing systems and duplicate files handled.
 - **v0.11:** new web app (preview) with a chat-style ask box and sourced answers; typos and vague questions understood; disagreeing sources shown side by side; R&D maps readable.

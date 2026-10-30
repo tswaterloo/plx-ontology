@@ -389,7 +389,7 @@ class MirrorCompletenessTests(unittest.TestCase):
         return code, json.loads(out.getvalue())
 
     def test_only_an_unfinished_relation_the_plans_read_makes_the_run_incomplete(self):
-        from devloop import live_verify
+        from verify import live_verify
         from ontology.schema import load_schema
         from scripts import eval_dev_baseline as script
 

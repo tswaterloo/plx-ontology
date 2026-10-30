@@ -251,6 +251,8 @@ def _portal_argv(state: Path, options: Mapping[str, Any]) -> list[str]:
             "--clearance", options.get("clearance", "restricted"), "sync"]
     for relation in options.get("relations") or ():
         args += ["--relation", relation]
+    if options.get("relation_budget_seconds") is not None:   # each relation's first slice
+        args += ["--relation-budget-seconds", str(options["relation_budget_seconds"])]
     return args + _budget(options)
 
 
@@ -444,7 +446,8 @@ _GRAPH_FIELDS = {"scope": "path", "live_audience": "path", "budget_seconds": "se
 SOURCES: dict[str, SourceSpec] = {spec.name: spec for spec in (
     SourceSpec("portal", "portal-workbench-api", _portal_argv, summarize_portal,
                {"audience": "path", "relations": "strs", "principal": "str",
-                "clearance": "str", "tenant": "str", "budget_seconds": "seconds"},
+                "clearance": "str", "tenant": "str", "budget_seconds": "seconds",
+                "relation_budget_seconds": "seconds"},
                frozenset({"audience"}), PORTAL_ENV, projected="portal_api",
                served_store=portal_mirror, writes=lambda state: (portal_mirror(state),)),
     SourceSpec("bc", "business-central", _bc_argv, summarize_bc,

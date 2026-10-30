@@ -13,7 +13,7 @@ import subprocess
 import time
 import unittest
 
-from devloop import live_verify
+from verify import live_verify
 from ontology.core import Actor, ValidationError
 from operating.cases import CaseNotFound, CaseStore, finding_key, supersede_refusal
 from operating.tests.test_cases import AO, ENG, ENG_OPS, PACK, CaseTestBase

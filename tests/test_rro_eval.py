@@ -22,7 +22,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from devloop import live_verify
+from verify import live_verify
 from evals import case_cards, runner, score
 from evals.measure import CONFLICT_REASON
 from evals.admission import admissible

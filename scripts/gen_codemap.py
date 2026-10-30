@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from devloop import import_graph  # noqa: E402
+from verify import import_graph  # noqa: E402
 
 PINS = "devloop/upstream-pins.json"
 DOC_CHARS = 110

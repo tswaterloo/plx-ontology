@@ -24,7 +24,7 @@ import zipfile
 from integrations.graph_read import quick_xor_hash
 from integrations.live_source_grammar import encode_share_id
 from integrations.tests import test_live_source_adapters as adapters
-from devloop import live_verify as lv
+from verify import live_verify as lv
 from scripts import case_originals as co
 
 SECRET = "s3cr3t~CLIENT~value~do-not-leak"

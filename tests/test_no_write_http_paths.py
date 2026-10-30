@@ -323,7 +323,7 @@ class HttpEgressScanTests(unittest.TestCase):
         self.assertEqual(gate.scan_tree(), set())
         # the live check gate.http_egress holds on this tree's real --json output
         import contextlib, io, json
-        from devloop import live_verify
+        from verify import live_verify
         spec = json.loads((ROOT / "devloop/live-checks/gate.http_egress.json").read_text())
         out = io.StringIO()
         with contextlib.redirect_stdout(out):

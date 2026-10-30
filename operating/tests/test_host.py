@@ -24,7 +24,7 @@ import unittest
 from unittest.mock import patch
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from devloop import live_verify as lv
+from verify import live_verify as lv
 from integrations import capture_sharepoint as cs
 from integrations import capture_teams
 from integrations.capture_sharepoint import CaptureScope
@@ -291,6 +291,28 @@ class CycleTests(HostCase):
                 self.assertEqual(method, "POST")
             else:
                 self.assertEqual(method, "GET", url)
+
+    def test_a_build_step_constraint_failure_is_named_and_keeps_the_served_generation(self):
+        from operating import build_steps
+        first = self.run_cycle()
+        self.assertEqual(first["projection"]["state"], "built", first)
+        served = host_module.projection_path(self.state)
+        committed = inc.current_generation(served.parent)
+        self.clock.advance(900)
+        self.router.mail.put(mail_t.BOX_A, "m3", "ck3", received=(
+            self.clock.now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        # The document links step refused by the links table, as cycle 4's was.
+        with patch.object(build_steps, "store_document_links", side_effect=sqlite3.IntegrityError(
+                "UNIQUE constraint failed: link_rows.link_id")):
+            second = self.run_cycle()
+        # The cause and the step, never the table or column the message names.
+        self.assertEqual((second["projection"]["state"], second["projection"]["reasons"]),
+                         ("failed", ["IntegrityError:constraint_unique:step=document_fields"]))
+        self.assertNotIn("link_rows", json.dumps(second))
+        after = inc.current_generation(served.parent)
+        self.assertEqual((after.id, after.content_digest),
+                         (committed.id, committed.content_digest))
+        self.assertTrue(served.samefile(committed.store))
 
     def test_portal_500_serves_the_last_generation_labelled_stale_since(self):
         self.run_cycle()
@@ -934,7 +956,7 @@ class QcqaLibraryTests(HostCase):
         spec = json.loads((ROOT / "devloop/live-checks/capture.qcqa_library.json").read_text())
         failures = lv.check_expectations(spec, 0, document)
         self.assertTrue([f for f in failures if "census_complete" in f], failures)
-        from devloop.tests.spec_verdict import verdict
+        from tests.spec_verdict import verdict
         self.assertEqual(verdict(spec, 0, document)[0], "fail")
 
     def test_a_census_claims_a_file_gone_only_where_it_listed_the_folder_whole(self):
@@ -1233,7 +1255,7 @@ class QcqaLibraryTests(HostCase):
                 cycles=3)
 
     def test_cold_census_cut_is_blocked_later_ask(self):
-        from devloop.tests.spec_verdict import verdict
+        from tests.spec_verdict import verdict
         spec = json.loads((ROOT / "devloop/live-checks/capture.qcqa_library.json").read_text())
         lv.validate_spec(spec, stem="capture.qcqa_library")
         self.assertFalse(cs.store_exists(self.state))

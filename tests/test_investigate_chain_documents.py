@@ -39,7 +39,7 @@ import unittest
 from unittest import mock
 from urllib.parse import urlsplit
 
-from devloop import live_verify as lv
+from verify import live_verify as lv
 from integrations.source_mirror import AudienceMap
 from integrations.tests import test_bc_capture as tb
 from integrations.tests import test_capture_mail as mail_t

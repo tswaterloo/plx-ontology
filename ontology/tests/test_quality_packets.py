@@ -1283,7 +1283,7 @@ class DocumentClassLiveCheckTests(unittest.TestCase):
 
     def test_the_check_counts_the_class_and_resolves_every_citation_leaking_nothing(self):
         import argparse
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from ontology.tests.test_document_fields import pdf
         from operating import sharepoint_host_check as check
         from scripts import eval_document_fields_live as live

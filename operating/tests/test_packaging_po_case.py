@@ -162,7 +162,7 @@ class PackagingCaseGenericTest(unittest.TestCase):
         """Acceptance (allowlist-3): before case.packaging_case_script retires, the generic
         path reproduces the oracle's root and its 4 lines, or reports a typed gap; the
         committed spec's own command meets its expectations on the real summary."""
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
 
         spec = json.loads((ROOT / "devloop" / "live-checks" / "case.packaging_oracle.json")
                           .read_text("utf-8"))
@@ -220,7 +220,7 @@ class PackagingCaseGenericTest(unittest.TestCase):
                          "requested_po_not_in_portal")
 
     def test_a_portal_outage_at_ingestion_is_blocked_upstream_never_absence(self):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from integrations.http import SourceHttpError
 
         def portal_down(url, headers, *, max_bytes):
@@ -246,7 +246,7 @@ class PackagingCaseGenericTest(unittest.TestCase):
         """gap-050f0faa80e2: sage.po_header / sage.po_receipt_header unavailable at
         ingestion are blocked_upstream parts, the case still opens and the oracle agrees:
         the real summary meets expect_blocked (the verifier records blocked, never pass)."""
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
 
         spec = json.loads((ROOT / "devloop" / "live-checks" / "case.packaging_oracle.json")
                           .read_text("utf-8"))

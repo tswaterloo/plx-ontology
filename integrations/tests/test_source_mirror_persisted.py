@@ -766,12 +766,12 @@ class LiveCheckSpecTests(PersistedTestCase):
         self.state = self.root / "verifier-state"
 
     def spec(self):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         return json.loads((lv.ROOT / lv.SPECS_DIR_NAME / "mirror.persisted_fallback.json")
                           .read_text())
 
     def probe(self, state=None, branch=None):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from scripts import live_read_probes as probes
         spec = self.spec()
         clients = {"mirror-fallback": self.client()}
@@ -788,7 +788,7 @@ class LiveCheckSpecTests(PersistedTestCase):
     def verdict(self, report):
         """The verifier's result for this probe output: ``run_spec`` over the real
         spec, its command replaced by a stub that prints ``report``."""
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         printed = self.root / "stdout.json"
         printed.write_text(json.dumps(report))
         stub = self.root / "stub-python"
@@ -799,7 +799,7 @@ class LiveCheckSpecTests(PersistedTestCase):
             "PLX_WORKBENCH_STATE_DIR": str(self.state)})
 
     def test_the_spec_is_valid_get_only_and_independent_of_the_health_check(self):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         spec = self.spec()
         self.assertEqual(lv.validate_spec(spec), [])
         self.assertIn(spec["command"][2], lv.ALLOWED_MODULES)

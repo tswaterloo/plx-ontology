@@ -19,7 +19,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from devloop import live_verify as lv
+from verify import live_verify as lv
 from integrations.tests import test_shared_link as fake
 from integrations.tests.test_bc_read_entities import doc
 from integrations.tests.test_live_source_adapters import COMPANY

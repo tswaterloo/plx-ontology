@@ -21,7 +21,7 @@ import unittest
 from unittest import mock
 from urllib.parse import urlsplit
 
-from devloop import live_verify
+from verify import live_verify
 from evals.oracle import BcReads, PortalReads, Sources, perturb, run
 from evals.oracle.fixture_world import World, build_live_shaped_world
 from evals.oracle.keys import CLOSED_CITE, RELATIONS

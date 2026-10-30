@@ -13,7 +13,7 @@ from pathlib import Path
 import unittest
 from unittest import mock
 
-from devloop import live_verify as lv
+from verify import live_verify as lv
 from scripts import ontology_projection_probe as projection
 from operating import ontology_tools_aggregate as oa
 from operating import ontology_tools_traverse as tt

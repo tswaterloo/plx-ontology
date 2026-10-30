@@ -25,8 +25,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-from devloop import live_verify as lv
-from devloop.tests.test_live_wiring import argv_of, run_main, spec
+from verify import live_verify as lv
+from tests.test_live_wiring import argv_of, run_main, spec
 from ontology.schema import load_schema
 from scripts import live_read_probes as probes
 from scripts import source_registry as sr

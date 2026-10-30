@@ -125,6 +125,45 @@ class MirrorGenerationTests(unittest.TestCase):
         self.assertSameAsCold(fourth, "cold4.sqlite")
         self.assertEqual(inc.current_generation(self.state).id, fourth.id)
 
+    def test_a_capture_stopped_inside_its_merge_leaves_the_previous_rows_to_the_build(self):
+        """Host cycle 4: the Portal child was stopped (child_timeout) while it merged a
+        traversal's staged pages. The build after it reads the rows of the last complete
+        capture only, never a half-merged relation; the next capture finishes the merge
+        and the build after it equals a cold build."""
+        self.capture(T1)
+        first = self.generation()
+        self.fake.set("public.app_purchase_order", "po-a", status="RECEIVED")
+        merge = SourceMirror._merge_stage
+
+        def stopped(mirror, relation, *args, **kwargs):
+            counts = merge(mirror, relation, *args, **kwargs)   # rows written, then...
+            if relation == "public.app_purchase_order":
+                raise SystemExit("child_timeout")   # ...stopped before the commit
+            return counts
+        self.clock.now = T2
+        with mock.patch.object(SourceMirror, "_merge_stage", autospec=True,
+                               side_effect=stopped), self.assertRaises(SystemExit):
+            self.mirror.sync(OPS, relations=sorted(CATALOG), full=True)
+
+        def status(generation):
+            conn = sqlite3.connect(generation.store)
+            try:
+                return sorted({r[0] for r in conn.execute(
+                    "SELECT value FROM object_values WHERE property = 'status' AND "
+                    "object_id = ?", ('PurchaseOrder:t.gold_po:{"id":"po-a"}',))})
+            finally:
+                conn.close()
+        after_stop = self.generation()
+        self.assertEqual(status(after_stop), status(first))
+        self.assertTrue(status(first))
+        self.assertNotIn("RECEIVED", status(after_stop))
+        self.assertSameAsCold(after_stop, "cold-stopped.sqlite")
+        # The next capture resumes straight into the merge; its build has the change.
+        self.capture(T2 + timedelta(hours=1))
+        resumed = self.generation()
+        self.assertIn("RECEIVED", status(resumed))
+        self.assertSameAsCold(resumed, "cold-resumed.sqlite")
+
     def test_a_capture_whose_files_did_not_change_is_not_fingerprinted_again(self):
         """A source's fingerprints are kept with its watermark (the file state its
         snapshot read); the next build whose source opens on the same files takes them

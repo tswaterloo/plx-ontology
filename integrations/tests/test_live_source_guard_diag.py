@@ -125,7 +125,7 @@ class UnavailableDetailTests(unittest.TestCase):
         import pkgutil
 
         import integrations
-        from devloop.live_verify import ENUM_STRING
+        from verify.live_verify import ENUM_STRING
         from operating import ingestion
 
         for info in pkgutil.iter_modules(integrations.__path__):
@@ -236,7 +236,7 @@ class UpstreamErrorCodeTests(unittest.TestCase):
     """Error-code class of an HTTP failure: fixed vocabulary."""
 
     def test_codes_map_to_snake_case_tokens_of_the_fixed_vocabulary(self):
-        from devloop.data_profile import http_error_code_ok
+        from verify.data_profile import http_error_code_ok
 
         def code(value) -> str | None:
             return guard.upstream_error_code(json.dumps(value).encode())

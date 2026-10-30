@@ -19,7 +19,7 @@ from unittest import mock
 from urllib.error import URLError
 from urllib.parse import unquote, urlsplit
 
-from devloop import live_verify
+from verify import live_verify
 from integrations.tests.test_bc_purchase import BASE, collection, gid, header, line
 from integrations.tests.test_live_source_adapters import COMPANY, ENV, FakeSender, j
 from scripts import eval_bc_three_way as ev

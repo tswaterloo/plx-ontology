@@ -18,7 +18,7 @@ import shutil
 import tempfile
 import unittest
 
-from devloop.gaps import gap_id
+from verify.gap_id import gap_id
 from integrations.capture_mail import MailCaptureStore
 from integrations.live_source_guard import LiveSourceAudience
 from integrations.tests import test_capture_sharepoint as sp

@@ -478,6 +478,50 @@ class DocumentFieldsTests(unittest.TestCase):
 
 @unittest.skipUnless(importlib.util.find_spec("pypdf") and importlib.util.find_spec("reportlab"),
                      "document fields are read from PDFs: needs pypdf and reportlab")
+class DocumentVersionsTests(unittest.TestCase):
+    """A document captured again as a new version that cites its PO at the same place
+    (host cycle 4, 2026-10-30: the build failed with ``IntegrityError`` when a second
+    version of a document-field file gave the same link id as its first)."""
+
+    def test_each_version_of_a_document_links_its_po_once_with_its_own_group(self):
+        case = tsp.CaptureCase("run")
+        case.setUp()
+        self.addCleanup(case.tearDown)
+        case.drive.file("01QUOTE", "freight quote.pdf", "01AOS", pdf(QUOTE))
+        self.assertTrue(case.capture().run(tsp.scope())["complete"])
+        # The same first page (its reference at the same span), a page added after it.
+        case.drive.change("01QUOTE", pdf(QUOTE + [["Revised terms"]]))
+        self.assertTrue(case.capture().run(tsp.scope())["complete"])
+        path = Path(case.tmp.name) / "ontology.sqlite"
+        with SharePointCaptures(case.state) as files:
+            report = build_store(path, schema_loader.load_schema(),
+                                 {"portal_api": StaticPortal([gold_po("p1", "PO100234")]),
+                                  "sharepoint": files}, clock=lambda: NOW,
+                                 post_project={
+                                     "document_fields": document_fields.store_document_links})
+        conn = sqlite3.connect(path)
+        self.addCleanup(conn.close)
+        conn.row_factory = sqlite3.Row
+        versions = [r["l1_handle"] for r in conn.execute(
+            "SELECT v.l1_handle FROM object_versions v JOIN objects o USING (object_id) "
+            "WHERE o.object_type = 'ForwarderQuote' ORDER BY v.recorded_at")]
+        self.assertEqual(len(versions), 2)
+        self.assertEqual(report["post_project"]["document_fields"]["counts"]["links"], 2)
+        rows = conn.execute("SELECT * FROM links WHERE link_id LIKE 'docfield:%' "
+                            "ORDER BY recorded_at").fetchall()
+        reasons = [json.loads(r["reason"])[0] for r in rows]
+        # One link per version, each citing that version and in a group of its own.
+        self.assertEqual([r["citations"][0]["l1_handle"] for r in reasons], versions)
+        self.assertEqual(len({r["mention_group"] for r in reasons}), 2)
+        self.assertEqual({(r["link_type"], r["to_object"]) for r in rows},
+                         {("ForwarderQuote.for_purchase_order",
+                           'PurchaseOrder:portal.app_purchase_order:{"id":"p1"}')})
+        # Their times are the versions' own: one after the other, never overlapping.
+        self.assertEqual(rows[0]["superseded_at"], rows[1]["recorded_at"])
+
+
+@unittest.skipUnless(importlib.util.find_spec("pypdf") and importlib.util.find_spec("reportlab"),
+                     "document fields are read from PDFs: needs pypdf and reportlab")
 class BcOnlyComparisonTests(unittest.TestCase):
     """No Portal row, so a confirmation's amount is compared with the
     purchase order Business Central holds (two companies reuse its number)."""
@@ -1304,7 +1348,7 @@ class CoaLiveCheckTests(unittest.TestCase):
 
     @staticmethod
     def spec():
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         spec = json.loads((ROOT / "devloop/live-checks/ontology.document_fields_coa.json")
                           .read_text("utf-8"))
         lv.validate_spec(spec, stem="ontology.document_fields_coa")
@@ -1323,7 +1367,7 @@ class CoaLiveCheckTests(unittest.TestCase):
         return [line for line in COA[0] if not line.startswith(labels)]
 
     def test_the_coa_check_meets_its_spec_and_fails_on_none(self):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         spec = self.spec()
         drive = self.certificates([COA[0], COA[0]])
         report = self.run_check(drive)
@@ -1357,7 +1401,7 @@ class CoaLiveCheckTests(unittest.TestCase):
         inferred: a retest date is no expiry), a conflict or a blank stays in it as a miss,
         and a field stated on fewer than 2 certificates has no share (insufficient_stated:
         no minimum passes it, and a floored run is blocked, never passed)."""
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         spec = self.spec()
         for name in self.WANTED:
             self.assertEqual(spec["expect"]["json_min"][f"field_shares.{name}"], 0.6666, name)

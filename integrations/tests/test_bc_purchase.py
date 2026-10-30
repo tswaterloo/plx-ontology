@@ -715,7 +715,7 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(company["price_pairs"], {"invoice_lines": 1, "paired": 1, "equal": 0,
                                                   "differ": 1, "unpaired": 0,
                                                   "cost_absent": 0})
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         spec = json.loads((Path(lv.ROOT) / lv.SPECS_DIR_NAME / "bc.purchase_reader.json")
                           .read_text(encoding="utf-8"))
         self.assertEqual(lv.check_expectations(spec, 0, report), [])
@@ -758,7 +758,7 @@ class ProbeTests(unittest.TestCase):
 
     def test_live_check_spec_passes_on_injected_probe_and_fails_on_receipt_400(self):
         from pathlib import Path
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         path = Path(lv.ROOT) / lv.SPECS_DIR_NAME / "bc.purchase_reader.json"
         spec = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(lv.validate_spec(spec, stem=path.stem), [])
@@ -788,7 +788,7 @@ class ProbeTests(unittest.TestCase):
 
     def test_failed_seed_read_is_diagnosed_and_an_empty_book_is_not_an_error(self):
         from pathlib import Path
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         spec = json.loads((Path(lv.ROOT) / lv.SPECS_DIR_NAME / "bc.purchase_reader.json")
                           .read_text(encoding="utf-8"))
 
@@ -830,7 +830,7 @@ class ProbeTests(unittest.TestCase):
 
     def test_outage_on_both_seed_reads_stays_a_visible_failure(self):
         from pathlib import Path
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         spec = json.loads((Path(lv.ROOT) / lv.SPECS_DIR_NAME / "bc.purchase_reader.json")
                           .read_text(encoding="utf-8"))
         f = Fixture()

@@ -568,7 +568,7 @@ class CaseEntityProbeTests(unittest.TestCase):
         # The live check fails on exactly the rejected allowlist, never on a coded gap, and
         # on My Company's absence (this fixture's one company is not the pinned required
         # book).
-        from devloop import live_verify
+        from verify import live_verify
         spec = json.loads((Path(__file__).resolve().parents[2] / "devloop" / "live-checks"
                            / "bc.ledgers.json").read_text())
         self.assertEqual(live_verify.check_expectations(spec, 0, report), [
@@ -611,7 +611,7 @@ class CaseEntityProbeTests(unittest.TestCase):
         for leaked in ("PLANTED", ACCESS_TOKEN, CLIENT_SECRET, COMPANY, COMPANY2):
             self.assertNotIn(leaked, out.getvalue(), leaked)
         # The live check still fails on any error and now records which set failed.
-        from devloop import live_verify
+        from verify import live_verify
         spec = json.loads((Path(__file__).resolve().parents[2] / "devloop" / "live-checks"
                            / "bc.case_entities.json").read_text())
         self.assertIn("case_entities[*].entities[*].error present",

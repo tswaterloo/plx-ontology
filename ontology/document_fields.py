@@ -2746,7 +2746,11 @@ def store_document_links(builder: Any, projector: Any, *, aliases: Any = None
                 counts["not_found"] += 1
                 continue
             cite = full_citation(evidence, ref["citation"])
-            group = _digest(source["object_id"], cite["page"], cite["start"], cite["end"])
+            # One cited span of one version: a later version of the document (a new eTag,
+            # a re-captured attachment) citing the same span is other evidence, with its
+            # own group and links (as a mention link names its document's version).
+            group = _digest(source["object_id"], source["l1_handle"], cite["page"],
+                            cite["start"], cite["end"])
             dropped: set[tuple[str, str]] = set()
             for row, window, held in candidates:
                 if ref.get("property") and (row["identifier_kind"] != ref["identifier_kind"]

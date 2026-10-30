@@ -127,7 +127,7 @@ class KnowledgeOutcomeTests(unittest.TestCase):
 
     def verdict(self, report):
         """``pass``, ``blocked`` or ``fail`` exactly as live_verify's runner decides."""
-        from devloop import live_verify
+        from verify import live_verify
         code = 0 if report["ok"] else 1
         failures = live_verify.check_expectations(self.spec, code, report)
         parts = live_verify.blocked_parts(report)
@@ -177,7 +177,7 @@ class KnowledgeOutcomeTests(unittest.TestCase):
         self.assertEqual((report["blocked_upstream"], self.verdict(report)[0]), ([], "fail"))
 
     def test_refused_brain_key_is_a_fail_named_next_to_the_mc_outage(self):
-        from devloop import live_verify
+        from verify import live_verify
         for search, status, causes in (
                 (403, 200, [("brain:agent/search", "credential_refused")]),
                 (401, 401, [("brain:agent/status", "credential_refused"),

@@ -510,7 +510,7 @@ class ProbeTests(unittest.TestCase):
             "error": "upstream_error", "layer": "knowledge_status", "http_status": 200,
             "rpc_code": None, "upstream_code": None, "cause_class": None, "attempts": 3})
         spec = json.loads((ROOT / "devloop" / "live-checks" / "mc.brain_probe.json").read_text())
-        from devloop import live_verify
+        from verify import live_verify
         recorded = live_verify._recorded(spec, report)
         # Failure keys exist on failed steps only, the same set on each, so the k-th
         # value of every steps[*].<key> list is the k-th failed step.

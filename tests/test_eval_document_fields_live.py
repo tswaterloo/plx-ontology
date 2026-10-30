@@ -125,7 +125,7 @@ class StageFunnelTests(unittest.TestCase):
                          funnel["evaluated"] + sum(funnel["excluded"].values()), funnel)
 
     def test_a_scan_without_ocr_is_a_counted_gap_and_blocks_only_when_nothing_was_read(self):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from integrations.tests import test_capture_sharepoint as tsp
         from operating.tests.test_attested_missing import pdf
         spec = json.loads(SPEC.read_text("utf-8"))
@@ -169,7 +169,7 @@ class StageFunnelTests(unittest.TestCase):
         self.assertIsNone(recorded.get("blocked"))
 
     def test_a_failed_ocr_run_is_counted_by_its_typed_cause(self):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from integrations.tests import test_capture_sharepoint as tsp
         from operating.tests.test_attested_missing import pdf
         spec = json.loads(SPEC.read_text("utf-8"))
@@ -205,7 +205,7 @@ class StageFunnelTests(unittest.TestCase):
         """Each failed OCR run is also counted by cause against what the Portal states on
         the file (portal_stated / portal_empty / portal_unread), counts only, so the files
         the Portal uploaded can be told from the rest; the cells sum to ocr_failed_by."""
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from integrations.tests import test_capture_sharepoint as tsp
         from operating.tests.test_attested_missing import pdf
         spec = json.loads(SPEC.read_text("utf-8"))
@@ -236,7 +236,7 @@ class StageFunnelTests(unittest.TestCase):
         """The provenance reaches the live check: the file whose confirmed category is an
         issued purchase order is no customer PO, and the one without a signal is evaluated
         with the issuer recorded unknown."""
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from operating.tests.test_attested_missing import pdf
         spec = json.loads(SPEC.read_text("utf-8"))
         issued = pdf([["PURCHASE ORDER", "PO Number: 4500000006", "Date: 2026-09-02"]])
@@ -263,7 +263,7 @@ class StageFunnelTests(unittest.TestCase):
     def test_the_funnel_lists_through_the_bounded_store_reader(self):
         """The stages are the store reader's current files: a cut list is truncated
         (never ok), and a reader without a grant is listed nothing."""
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from integrations import capture_sharepoint as cs
         from integrations.live_source_guard import LiveSourceAudience
         from operating import sharepoint_host_check as check
@@ -329,7 +329,7 @@ class StageFunnelTests(unittest.TestCase):
 
         # QA-06: documents of another class only, beside documents left unread before
         # their class was read: documents 0 is recorded with the stage and why, typed.
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         spec = json.loads(SPEC.read_text("utf-8"))
         slip = pdf([["PACKING SLIP", "Ship to: Dock 4", "Qty 10"]])
         report, code = self.run_check([("01SLIP", "slip.pdf", slip),
@@ -357,7 +357,7 @@ class StageFunnelTests(unittest.TestCase):
         # other classes. Every one was read and none is of the class: a source gap, typed,
         # never a fail. A file that may hold a page (a larger blank, a truncated PDF) or
         # a document of no class keeps the fail.
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from operating.tests.test_attested_missing import pdf
         spec = json.loads(SPEC.read_text("utf-8"))
         slip = ("01SLIP", "slip.pdf", pdf([["PACKING SLIP", "Ship to: Dock 4", "Qty 10"]]))
@@ -799,7 +799,7 @@ class DocumentLinksTests(unittest.TestCase):
         return json.loads(out.getvalue()), code, out.getvalue()
 
     def test_each_reference_gets_one_outcome_and_a_withheld_reader_is_shown_nothing(self):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from integrations.tests import test_bc_capture as tb
         from operating.tests.test_attested_missing import pdf
         from scripts import eval_document_fields_live as live
@@ -953,7 +953,7 @@ class DocumentLinksTests(unittest.TestCase):
         self.assertEqual((report["ok"], code), (False, 1))
 
     def test_a_record_and_its_twin_are_one_candidate_and_two_records_stay_ambiguous(self):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from operating.tests.test_attested_missing import pdf
         # PO-5001: a Portal PO and the FileMaker PO it was made from (joined by the
         # verified PurchaseOrder.same_record_as), named on the slip's two pages; PO-6001:
@@ -976,7 +976,7 @@ class DocumentLinksTests(unittest.TestCase):
         self.assertEqual(lv._recorded(spec, report)["ambiguous_candidates"], {"2": 1})
 
     def test_one_candidate_of_a_partial_capture_is_never_linked_one(self):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from integrations.tests import test_bc_capture as tb
         from operating.tests.test_attested_missing import pdf
         # The second company's purchase orders fail: the one PO the first company holds
@@ -998,7 +998,7 @@ class DocumentLinksTests(unittest.TestCase):
         self.assertIn("links_measured", " ".join(lv.check_expectations(spec, code, report)))
 
     def test_no_record_source_blocks_and_never_reads_as_no_record(self):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from integrations.tests import test_bc_capture as tb
         from operating.tests.test_attested_missing import pdf
         spec = json.loads(LINKS_SPEC.read_text("utf-8"))
@@ -1023,7 +1023,7 @@ class DocumentLinksTests(unittest.TestCase):
                          (0, "no_relation_needed", 0), text[:3000])
 
     def test_a_total_budget_stops_reading_and_is_a_typed_incomplete_never_a_pass(self):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from ontology import project
         from operating.host import projection_path
         from operating.tests.test_attested_missing import pdf
@@ -1086,7 +1086,7 @@ class DocumentLinksTests(unittest.TestCase):
         measured within the budget; a tighter budget still measures the first."""
         import sqlite3
 
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from ontology import project
         from operating.tests.test_attested_missing import pdf
         from scripts import eval_document_fields_live as live
@@ -1202,7 +1202,7 @@ class DocumentLinksTests(unittest.TestCase):
         the kept rows add; scaled by the stride it over-reserved the Portal's rows and cut
         BC. Here each row a projection reads costs time: the estimate stays near the
         projection and BC reads within the spec's budget."""
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from ontology import project, project_bc
         from operating.tests.test_attested_missing import pdf
         spec = json.loads(LINKS_SPEC.read_text("utf-8"))
@@ -1239,7 +1239,7 @@ class DocumentLinksTests(unittest.TestCase):
         measurement reserve was 0 s while each document took about 22 s; measure cut): the
         reserve is the documents the capture holds times this run's measured cost of one,
         so the reads are cut, never the measurement."""
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from operating.tests.test_attested_missing import pdf
         from scripts import eval_document_fields_live as live
         spec = json.loads(LINKS_SPEC.read_text("utf-8"))
@@ -1266,7 +1266,7 @@ class DocumentLinksTests(unittest.TestCase):
         run measures (not every captured file), at the mean of a sample of them, each
         measured over the records it links (never one document's cost scaled by the
         stride); every estimate is held with the margin."""
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from operating.tests.test_attested_missing import pdf
         from scripts import eval_document_fields_live as live
         spec = json.loads(LINKS_SPEC.read_text("utf-8"))
@@ -1360,7 +1360,7 @@ class DocumentLinksTests(unittest.TestCase):
             self.assertFalse((state / live.RESERVE_DIR).exists())
 
     def test_a_sample_projection_that_raises_is_a_typed_incomplete_report(self):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from ontology import project
         from operating.tests.test_attested_missing import pdf
         spec = json.loads(LINKS_SPEC.read_text("utf-8"))

@@ -327,8 +327,8 @@ class HumanLinkLiveCheckTests(unittest.TestCase):
     console, then the next run reads the case back answered."""
 
     def setUp(self) -> None:
-        from devloop.tests import test_live_verify_landed_cost as LC
-        from devloop.tests.test_live_verify import FakeRoot
+        from tests import test_live_verify_landed_cost as LC
+        from tests.live_verify_helpers import FakeRoot
 
         self.LC = LC
         self.spec = json.loads((ROOT / "devloop" / "live-checks" / "case.human_link.json")
@@ -384,7 +384,7 @@ class HumanLinkLiveCheckTests(unittest.TestCase):
     def run_check(self, run: str, reviews_from: Path | None) -> tuple[int, dict, dict]:
         from integrations.tests import test_capture_sharepoint as tsp
         from integrations.tests.test_source_mirror import BASE, KEY
-        from devloop.tests.test_live_verify import FAKE_MODULE, SECRET
+        from tests.live_verify_helpers import FAKE_MODULE, SECRET
         from scripts import eval_human_link_check as link_check
 
         LC = self.LC

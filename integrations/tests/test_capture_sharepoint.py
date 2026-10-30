@@ -1176,7 +1176,7 @@ class ScopeStoreAndCliTests(unittest.TestCase):
         for secret in (NAME_SECRET, TEXT_SECRET, "PO100234", DRIVE, "01FILE", QUALITY_FOLDER,
                        "s3cr3t", "TOKEN"):
             self.assertNotIn(secret, text)
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         root = Path(__file__).resolve().parents[2]
         spec = json.loads((root / "devloop/live-checks/capture.sharepoint.json")
                           .read_text(encoding="utf-8"))
@@ -1246,7 +1246,7 @@ class ScopeStoreAndCliTests(unittest.TestCase):
             self.assertIn("sp-live-check", str(next(Path(tmp, "host").iterdir())))
             # The verifier records the named scope from this real report, and the spec
             # still fails the cut run (never a pass on a partial root).
-            from devloop import live_verify as lv
+            from verify import live_verify as lv
             spec = json.loads((Path(__file__).resolve().parents[2]
                                / "devloop/live-checks/capture.sharepoint.json")
                               .read_text(encoding="utf-8"))
@@ -1280,7 +1280,7 @@ class ScopeStoreAndCliTests(unittest.TestCase):
                          [("quality", [cs.TIME_BUDGET], True, False,
                            "live-host-persistent-state-dir")])
         # Typed by a later_ask, the run is blocked (never a pass) and the rest still checks.
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         spec = json.loads((Path(__file__).resolve().parents[2]
                            / "devloop/live-checks/capture.sharepoint.json")
                           .read_text(encoding="utf-8"))

@@ -15,7 +15,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from devloop import live_verify
+from verify import live_verify
 from operating import session_identity
 from operator_ui import console_ticket, session_journal
 from operator_ui.session_journal import SessionJournal

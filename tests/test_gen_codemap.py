@@ -8,7 +8,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from devloop.tests.test_import_graph import TREE, write_tree
+from tests.import_graph_tree import TREE, write_tree
 from scripts import gen_codemap
 
 PINS = {"pins": [

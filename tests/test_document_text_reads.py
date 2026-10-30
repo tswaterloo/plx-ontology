@@ -19,7 +19,7 @@ from pathlib import Path
 import unittest
 from unittest import mock
 
-from devloop import live_verify
+from verify import live_verify
 from evals.oracle import cross_sample as cs
 from evals.oracle.fixture_world import build_live_shaped_world
 from evals.oracle.generator import candidate_split, portal_candidates

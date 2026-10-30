@@ -123,7 +123,7 @@ class BudgetStopTests(unittest.TestCase):
         return spec, code, exits, document
 
     def assert_partial_record(self, spec, code, document):
-        from devloop import live_verify
+        from verify import live_verify
         block = document["eval"]
         self.assertEqual(code, 3)
         self.assertEqual(block["stopped"], {"phase": "items", "reason": "run_budget_exhausted"})
@@ -148,7 +148,7 @@ class BudgetStopTests(unittest.TestCase):
     def assert_item_rows(self, spec, document):
         """One family/root/outcome/reason row per drawn item, in the verifier's capped
         record: the measured ones as scored, the rest not measured where the cut stopped."""
-        from devloop import live_verify
+        from verify import live_verify
         block, rows = document["eval"], document["item_rows"]
         self.assertEqual(len(rows), block["items_total"])
         self.assertEqual(sum(":not_measured:" not in row for row in rows), block["measured"])
@@ -171,7 +171,7 @@ class BudgetStopTests(unittest.TestCase):
     def test_a_watchdog_cut_in_the_projection_still_counts_every_drawn_item(self):
         """102342432f14 items 2 and 3: a cut before any item ran records the oracle's
         items (items_total, item_rows), none measured, and the phase it stopped in."""
-        from devloop import live_verify
+        from verify import live_verify
         spec, code, exits, document = self.run_spec(cut_by_watchdog=True, in_projection=True)
         block = document["eval"]
         self.assertEqual((code, exits), (3, [3]))
@@ -200,7 +200,7 @@ class SessionProjectionTests(unittest.TestCase):
         import sqlite3
         from datetime import datetime, timedelta, timezone
 
-        from devloop import live_verify
+        from verify import live_verify
         from ontology import project
         from scripts import eval_dev_baseline as script
         from scripts import eval_oracle_dev as dev
@@ -260,7 +260,7 @@ class SessionProjectionTests(unittest.TestCase):
     def test_the_run_opens_the_session_projection_instead_of_projecting(self):
         """The ``auto`` run id is the pinned clock's date while the host clock has rolled
         past midnight: the drawn items never depend on the day the test runs."""
-        from devloop import live_verify
+        from verify import live_verify
         from scripts import eval_dev_baseline as script
 
         produced, code, document, builds, _, _ = self.run_session(script.fixture_clock)
@@ -290,7 +290,7 @@ class SessionProjectionTests(unittest.TestCase):
         is, with no root identifier in it."""
         from datetime import datetime, timezone
 
-        from devloop import live_verify
+        from verify import live_verify
 
         produced, code, document, builds, (before, after), roots = self.run_session(
             lambda: datetime(2026, 1, 1, tzinfo=timezone.utc))
@@ -660,7 +660,7 @@ class CitedRelationCoverageTests(unittest.TestCase):
         self.assertTrue(all(pins[iid] == "pinned" for iid, rels in past.items() if rels), pins)
 
     def test_items_citing_relations_past_the_link_depth_pin_without_drift(self):
-        from devloop import live_verify
+        from verify import live_verify
         from ontology.schema import load_schema
         from scripts import eval_dev_baseline as script
         from scripts import eval_oracle_dev as dev
@@ -767,7 +767,7 @@ class HeldOutProductTests(unittest.TestCase):
         return state
 
     def test_the_spec_scores_the_frozen_set_by_family_and_variant_without_a_value(self):
-        from devloop import live_verify
+        from verify import live_verify
         from evals.oracle.perturb import TRANSFORMS
         from scripts import eval_dev_baseline as script
         from scripts import eval_status

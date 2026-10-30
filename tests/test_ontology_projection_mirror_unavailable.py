@@ -21,7 +21,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from devloop import live_verify as lv
+from verify import live_verify as lv
 from integrations.tests.test_source_mirror import BASE, KEY
 from integrations.workbench_read_api import WorkbenchReadApiClient
 from ontology import identifiers

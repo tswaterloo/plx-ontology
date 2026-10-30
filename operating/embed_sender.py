@@ -1,6 +1,6 @@
 """The one sender of the embeddings provider: a POST to the OpenAI embeddings endpoint.
 
-Only ``API_URL`` is ever reached; any other URL raises
+Approved 2026-10-29: business text may be sent to OpenAI for embeddings. Only ``API_URL`` is ever reached; any other URL raises
 before a request is built, redirects are refused, and ``scripts/check_http_egress.py``
 pins this file to that URL and this function (``SENDER_URLS`` / ``ALLOWED``). It reaches
 no business system: the body carries chunk text the caller already read. The caller

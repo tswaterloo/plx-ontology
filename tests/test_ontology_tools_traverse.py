@@ -1723,7 +1723,7 @@ class WiringTests(unittest.TestCase):
                          "invalid_input")
 
     def test_live_check_spec_is_valid_and_enabled(self):
-        from devloop import live_verify
+        from verify import live_verify
         spec = json.loads((ROOT / "devloop/live-checks/ontology.traverse.json").read_text())
         self.assertEqual(live_verify.validate_spec(spec, stem="ontology.traverse"), [])
         self.assertNotIn("disabled", spec)

@@ -2091,7 +2091,7 @@ class LiveCheckModuleTests(unittest.TestCase):
                 environ=ENV, sender=drive, sleep=lambda s: None)
 
     def _check_answers_by_page(self, name: str, ahead: int = 0):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         report = self._run_check(name, ahead)
         drive = self.drive
         self.assertTrue(report["ok"], report)

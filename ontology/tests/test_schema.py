@@ -860,7 +860,7 @@ class LiveProbeInjectedTests(unittest.TestCase):
         """The live 2026-10-14 state (eight bound sage relations listed with every approved
         column missing or not granted) blocks the spec, never passes it; a bound relation
         the catalog no longer lists fails it even beside such a block."""
-        from devloop import live_verify
+        from verify import live_verify
         spec = json.loads((Path(__file__).resolve().parents[2] / "devloop" / "live-checks" /
                            "schema.catalog_drift.json").read_text())
         gone = ("ar_customer", "ar_ship_to", "oe_shipment_detail", "oe_shipment_header",

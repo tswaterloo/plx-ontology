@@ -18,7 +18,7 @@ import json
 from pathlib import Path
 import unittest
 
-from devloop import live_verify as lv
+from verify import live_verify as lv
 from operating import case_mail
 from operating.case_mail_scope import MailScope
 from operating.tests.test_case_mail import BASE, ENV, KEY, CaseMailTestCase, _msg

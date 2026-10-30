@@ -1034,7 +1034,7 @@ class ProbeTests(SyncTestCase):
         self.assertEqual(json.loads(err.getvalue())["error"], "LookupError")
 
     def test_spec_is_valid_get_only_and_counts_only(self):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         spec = json.loads((lv.ROOT / lv.SPECS_DIR_NAME / "mirror.full_coverage.json")
                           .read_text())
         self.assertEqual(lv.validate_spec(spec), [])

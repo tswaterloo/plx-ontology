@@ -27,7 +27,7 @@ import unittest
 from unittest import mock
 import warnings
 
-from devloop import live_verify as lv
+from verify import live_verify as lv
 from integrations import mc as mc_module, mc_sources, plx_hub_guard
 from integrations.capture_store import CaptureError, CaptureStore, CapturedRecord
 from integrations.live_source_guard import LiveSourceAudience, ReadOnlyGuardError, Secret

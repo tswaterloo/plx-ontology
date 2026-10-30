@@ -18,7 +18,7 @@ import sys
 import unittest
 from urllib.parse import parse_qsl, urlsplit
 
-from devloop import live_verify
+from verify import live_verify
 from integrations import amazon_sp_read as sp
 from integrations import freightcom_read as fc
 from integrations import live_source_grammar as grammar

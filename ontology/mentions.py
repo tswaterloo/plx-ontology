@@ -97,6 +97,8 @@ import re
 from typing import Any, Callable, Iterable, Iterator, Mapping, Protocol, Sequence
 from urllib.parse import urlsplit
 
+# The page layout of a captured file's text: its own module, which the file readers use.
+from integrations.captured_pages import PAGE_BREAK, is_paged_file, text_pages
 from ontology import identifiers as ids
 from ontology.store import held_stretches
 
@@ -341,7 +343,6 @@ class Document:
 # pages joined by form feeds; each page is cited ``<handle>#page=<n>`` (``&page=`` after
 # another fragment), so a mention found on a page cites that page and its offsets are
 # the page's. Unpaged text is one field under the document's own handle.
-PAGE_BREAK = "\f"
 
 
 def page_citation(citation: str, page: int) -> str:
@@ -356,19 +357,6 @@ def cited_page(citation: str) -> tuple[str, int | None]:
                 and not number.startswith("0"):
             return head, int(number)
     return citation, None
-
-
-def text_pages(text: str) -> list[str]:
-    return text.split(PAGE_BREAK)
-
-
-def is_paged_file(record: Mapping[str, Any]) -> bool:
-    """A captured file whose text is stored by page: a PDF, by MIME type or name (the
-    test ``integrations.document_understanding.extract_document`` applies)."""
-    mime = str(record.get("mime_type") or "").split(";", 1)[0].strip().lower()
-    name = str(record.get("name") or "").lower()
-    return mime == "application/pdf" or (mime in ("", "application/octet-stream")
-                                         and name.endswith(".pdf"))
 
 
 def file_text_fields(citation: str, field_path: str, text: str, *, paged: bool

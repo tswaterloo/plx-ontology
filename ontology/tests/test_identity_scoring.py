@@ -421,8 +421,8 @@ class SchemaIdentifierFeaturesTest(unittest.TestCase):
 
 class LiveCheckSpecTest(unittest.TestCase):
     def test_spec_runs_end_to_end_and_counts_a_payload_that_is_not_its_candidates(self):
-        from devloop import live_verify as lv
-        from devloop.tests import test_live_wiring as wiring
+        from verify import live_verify as lv
+        from tests import test_live_wiring as wiring
         from scripts import identity_scoring_probe as probe
         from scripts import ontology_projection_probe as projection
 

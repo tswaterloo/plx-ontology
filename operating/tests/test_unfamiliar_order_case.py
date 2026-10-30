@@ -1073,7 +1073,7 @@ class OrderCaseGenericTest(unittest.TestCase):
         books map that pins the fixture companies) over the in-process FakeWorkbench and
         FakeBc; its expectations hold on the real summary, which records counts and enums
         only; a Portal answering HTTP 500 at capture meets expect_blocked."""
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from integrations.http import SourceHttpError
         from integrations.tests.test_live_source_adapters import ENV
 
@@ -1178,7 +1178,7 @@ class OrderCaseGenericTest(unittest.TestCase):
         joined nothing (every reason no_portal_row_* / not_in_served_replica, reverse hits
         0) reads blocked source_gap with failed 0; a cut clock, another reason or an
         intersecting fixture does not; month buckets are counts only."""
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from integrations.tests.test_live_source_adapters import ENV
 
         spec = json.loads((ROOT / "devloop" / "live-checks" / "case.unfamiliar_order.json")
@@ -1244,7 +1244,7 @@ class OrderCaseGenericTest(unittest.TestCase):
         spec, and the command runs in-process under that env, guarded as ``ENV_GUARD`` guards
         it. Its BC-only live audience builds no Graph reader (``build_live_readers``, the one
         filter), so it passes reading no Graph or SharePoint variable."""
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from integrations.tests.test_live_source_adapters import ENV
         from tests.test_live_readers_filter import GRAPH_PREFIXES, GuardedEnv, Undeclared
 

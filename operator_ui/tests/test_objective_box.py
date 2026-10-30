@@ -300,7 +300,7 @@ class ObjectiveBoxLiveCheckTest(unittest.TestCase):
         return code, json.loads(out.getvalue())
 
     def test_the_probe_blocks_without_a_reader_and_passes_on_the_fixture_world(self):
-        from devloop import live_verify
+        from verify import live_verify
         self.assertEqual(live_verify.validate_spec(self.SPEC), [])
         code, document = self.run_probe(environ={})
         self.assertEqual((code, document["blocked"]), (0, "no_employee_identity"))

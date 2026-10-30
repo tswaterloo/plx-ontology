@@ -273,7 +273,7 @@ class SharedLinkReadTests(unittest.TestCase):
         # read included: the source registry credits those endpoints only through them.
         self.assertTrue({"graph.share_drive_item", "graph.drive_item_content"}
                         <= set(report["operations_read"]), report["operations_read"])
-        from devloop import live_verify
+        from verify import live_verify
         spec = json.loads((live_verify.ROOT / live_verify.SPECS_DIR_NAME
                            / "graph.shared_link_read.json").read_text("utf-8"))
         self.assertEqual(live_verify.validate_spec(spec, stem=spec["id"]), [])

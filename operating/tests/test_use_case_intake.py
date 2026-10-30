@@ -681,7 +681,7 @@ class CliTests(UseCaseIntakeTestCase):
     def live_check(report: dict) -> tuple[list[str], str]:
         """The real ingest.use_cases spec on a scan's output: its failures and what the
         verifier would record (JSON text)."""
-        from devloop import live_verify
+        from verify import live_verify
 
         spec = json.loads((ROOT / "devloop/live-checks/ingest.use_cases.json").read_text())
         return (live_verify.check_expectations(spec, 0, report),

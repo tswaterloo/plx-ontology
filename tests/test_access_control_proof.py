@@ -22,7 +22,7 @@ import unittest
 from unittest import mock
 import uuid
 
-from devloop import live_verify
+from verify import live_verify
 from integrations import capture_sharepoint as cs
 from integrations import graph_read
 from integrations.capture_mail import CaptureScope, MailCapture, MailCaptureStore

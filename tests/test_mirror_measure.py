@@ -16,7 +16,7 @@ import tempfile
 import unittest
 from urllib.parse import parse_qs, urlsplit
 
-from devloop import live_verify as lv
+from verify import live_verify as lv
 from integrations.http import SourceHttpError
 from integrations.workbench_read_api import WorkbenchReadApiClient
 from scripts import mirror_measure as mm

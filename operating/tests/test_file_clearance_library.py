@@ -12,7 +12,7 @@ import unittest
 from unittest import mock
 from urllib.parse import urlsplit
 
-from devloop import live_verify as lv
+from verify import live_verify as lv
 from integrations import graph_read
 from integrations.graph_read import SharePointReader
 from integrations.live_source_guard import (BoundedBackoff, LiveSourceAudience, NotVisible,

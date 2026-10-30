@@ -36,7 +36,7 @@ from integrations.live_source_guard import (LiveSourceAudience, NotVisible,
 from integrations.tests.test_live_source_adapters import (DRIVE, DRIVE_BASE, ENV, CUSTOMERS,
                                                           SITE_ID, FakeSender, drive_item,
                                                           graph_api, j, live_drive_item)
-from devloop import live_verify as lv
+from verify import live_verify as lv
 from ontology.core import Actor
 from operating import doc_metadata, doc_metadata_taxonomy as taxonomy
 from operating.doc_metadata import CURRENT_COLUMN_FIELDS

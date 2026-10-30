@@ -14,7 +14,7 @@ import shutil
 import tempfile
 import unittest
 
-from devloop import live_verify
+from verify import live_verify
 from evals import runner, score
 from evals.tests import fixtures as fx
 from scripts import eval_case_cards as tool

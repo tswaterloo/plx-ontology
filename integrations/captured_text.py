@@ -11,7 +11,7 @@ here and nowhere else:
   ``extracted_ocr``. Without one such a file is ``ocr_unavailable``, never silently
   textless; a later capture run on a host with OCR re-reads its stored bytes (no source
   read). The capture stores the status and the text, pinned by SHA-256 (a PDF's pages
-  joined by ``ontology.mentions.PAGE_BREAK``). A PDF over the page bound is never
+  joined by ``integrations.captured_pages.PAGE_BREAK``). A PDF over the page bound is never
   refused outright: its pages 1-``MAX_PAGES`` are stored, and every reading of it
   names the rest skipped by the page cap (``CapturedText.skipped_by_cap``), which its
   readers carry: ``documentFields`` (gap ``pages``), the resolve rows
@@ -73,7 +73,7 @@ import zlib
 from typing import Any, Callable, Generic, Hashable, Iterator, Mapping, TypeVar
 from urllib.parse import parse_qs, quote
 
-from ontology.mentions import PAGE_BREAK, is_paged_file, text_pages
+from .captured_pages import PAGE_BREAK, is_paged_file, text_pages
 from operating.msg_reader import CFB_MAGIC
 
 # text_status values (besides the extractor's no_text / unsupported / failed).
@@ -634,7 +634,7 @@ class KeptReadings:
     in a projection build's state directory, beside the generations it reads them for):
     what :class:`ReadingMemo` remembers (a reading, or None over one of the extractor's
     bounds) is kept under its key (bytes digest, MIME type, name, pinned OCR text digest)
-    and the digest of the code that reads (``code``: ``ontology.project.derivation_code``),
+    and the digest of the code that reads (``code``: :func:`readings_code`),
     and read back only under the same code, so a kept reading is the one a read now would
     make. A reading that does not survive its encoding unchanged is not kept. Readings no
     build used in its last ``KEEP_BUILDS`` are dropped when a build ends. Any failure of
@@ -736,15 +736,52 @@ class KeptReadings:
             self._db.close()
 
 
+# The modules that read a captured file's bytes into the text a reading holds (PDF pages,
+# OCR, Office, ``.msg``, spreadsheets, the converter children), named one by one: what
+# else the repository changes (the projection, its steps, the host) reads no file, so it
+# never throws the kept readings away. A module added to the reading path is added here.
+READING_MODULES = ("integrations.captured_text", "integrations.captured_pages",
+                   "integrations.document_understanding", "integrations.doc_convert",
+                   "integrations.office_text", "integrations.xlsx_extract",
+                   "integrations.child_process", "operating.msg_reader")
+# The installed libraries those modules read files with (PDF, Office through markitdown
+# and the converters it loads); the same list as ``ontology.project``'s
+# ``_EXTRACTOR_LIBRARIES`` (the build watermarks' ``derivation_code``).
+READING_LIBRARIES = ("pypdf", "markitdown", "magika", "mammoth", "openpyxl", "python-pptx",
+                     "pdfminer.six", "pandas", "xlrd", "olefile")
+
+
+def readings_code(modules: tuple[str, ...] = READING_MODULES,
+                  libraries: tuple[str, ...] = READING_LIBRARIES, *,
+                  root: str | Path | None = None) -> str:
+    """Digest of what a reading depends on: the Python version, each of ``libraries``'
+    installed version (or ``none``) and the source of each of ``modules`` (under
+    ``root``, the repository by default). The key the kept readings are held under
+    (:class:`KeptReadings`)."""
+    import sys
+    from importlib.metadata import version
+
+    root = Path(__file__).resolve().parents[1] if root is None else Path(root)
+    digest = sha256(f"plx-readings/v1\n{sys.version_info[:3]}\n".encode())
+    for library in libraries:   # an upgrade reads files again
+        try:
+            digest.update(f"{library} {version(library)}\n".encode())
+        except Exception:  # noqa: BLE001 - not installed: files are read without it
+            digest.update(f"{library} none\n".encode())
+    for module in sorted(modules):
+        path = root.joinpath(*module.split(".")).with_suffix(".py")
+        digest.update(f"{module}\n".encode())
+        digest.update(sha256(path.read_bytes()).digest() if path.is_file() else b"missing")
+    return digest.hexdigest()
+
+
 @contextlib.contextmanager
 def kept_readings(path: str | Path) -> Iterator[KeptReadings]:
     """While open, :func:`captured_text` reads through the readings kept at ``path``
-    (:class:`KeptReadings`) and keeps the new ones there. The readings are pruned when the
-    block ends without an exception."""
-    from ontology.project import derivation_code
-
+    (:class:`KeptReadings`) and keeps the new ones there, under :func:`readings_code`.
+    The readings are pruned when the block ends without an exception."""
     memo = _CACHE
-    kept = KeptReadings(path, derivation_code())
+    kept = KeptReadings(path, readings_code())
     memo.backing = kept
     ended = False
     try:
@@ -1091,7 +1128,8 @@ def split_member(handle: Any) -> tuple[str, str, str | None] | None:
     return (head[:-1], keys["member"][0], digest) if rebuilt == handle else None
 
 
-__all__ = ["COMPRESSED_SUFFIX", "DROPPED_SUFFIX", "KeptReadings", "blob_path", "decode_reading",
+__all__ = ["COMPRESSED_SUFFIX", "DROPPED_SUFFIX", "KeptReadings", "READING_LIBRARIES",
+           "READING_MODULES", "readings_code", "blob_path", "decode_reading",
            "encode_reading", "file_type", "inflate", "read_dropped", "reading_key", "readings_of",
            "write_dropped",
            "CapturedText", "ContainerReading", "LIMIT_ERRORS", "MAX_CACHED_CHARS",

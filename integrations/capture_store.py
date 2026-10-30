@@ -504,10 +504,20 @@ _SQLITE_NAMES = {"SQLITE_FULL": "disk_full", "SQLITE_BUSY": "locked",
                  "SQLITE_CORRUPT": "corrupt", "SQLITE_CANTOPEN": "cant_open",
                  "SQLITE_READONLY": "readonly", "SQLITE_NOTADB": "not_a_database",
                  "SQLITE_NOMEM": "nomem", "SQLITE_INTERRUPT": "interrupted"}
+# A constraint by its kind (the extended name, else the message's constraint words); the
+# table and column the message names are never copied.
+_CONSTRAINTS = {"PRIMARYKEY": "constraint_unique", "UNIQUE": "constraint_unique",
+                "NOTNULL": "constraint_not_null", "FOREIGNKEY": "constraint_foreign_key",
+                "CHECK": "constraint_check"}
+_CONSTRAINT_MESSAGES = (("unique constraint failed", "constraint_unique"),
+                        ("not null constraint failed", "constraint_not_null"),
+                        ("foreign key constraint failed", "constraint_foreign_key"),
+                        ("check constraint failed", "constraint_check"))
 
 
 def sqlite_code(exc: BaseException) -> str:
-    """A SQLite error as a short code (``disk_full``, ``locked``, ``io_error``, ...;
+    """A SQLite error as a short code (``disk_full``, ``locked``, ``io_error``, ...; a
+    constraint by its kind, ``constraint_unique``, ``constraint_not_null``, ...;
     ``sqlite_error`` when unknown): the cause, without the message text (which may name
     a table, a column or a path)."""
     name = (getattr(exc, "sqlite_errorname", None) or "").split("_")
@@ -515,6 +525,10 @@ def sqlite_code(exc: BaseException) -> str:
     if primary in _SQLITE_NAMES:
         return _SQLITE_NAMES[primary]
     text = str(exc).lower()
+    if primary == "SQLITE_CONSTRAINT" or isinstance(exc, sqlite3.IntegrityError):
+        extended = _CONSTRAINTS.get("_".join(name[2:]))
+        return extended or next((code for needle, code in _CONSTRAINT_MESSAGES
+                                 if needle in text), "constraint")
     for needle, code in _SQLITE_MESSAGES:
         if needle in text:
             return code

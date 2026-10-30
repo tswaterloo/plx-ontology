@@ -21,8 +21,8 @@ import json
 import unittest
 from urllib.parse import unquote, urlsplit
 
-from devloop import data_profile, live_verify as lv
-from devloop.tests.test_live_verify import FakeRoot
+from verify import data_profile, live_verify as lv
+from tests.live_verify_helpers import FakeRoot
 from integrations import graph_directory, graph_read
 from integrations.graph_directory import roster_upns
 from integrations.tests.test_live_source_adapters import (

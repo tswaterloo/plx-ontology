@@ -16,7 +16,7 @@ from pathlib import Path
 import shutil
 from unittest import mock
 
-from devloop import live_verify as lv
+from verify import live_verify as lv
 from operating import eval_principal as ep
 from operating import host as plx_host
 from operating import session_identity as si

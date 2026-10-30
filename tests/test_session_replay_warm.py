@@ -23,8 +23,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-from devloop import live_verify as lv
-from devloop.tests import test_live_wiring as wiring
+from verify import live_verify as lv
+from tests import test_live_wiring as wiring
 from operating.warm_store import STATE_ENV, WarmStore
 from scripts import object_workspace_probe as workspace
 from scripts import ontology_projection_probe as projection

@@ -301,7 +301,7 @@ class LivePartTests(unittest.TestCase):
                                  [(era.LIVE_PART, code, "host_misconfiguration")])
 
     def test_tiers_stay_apart_and_an_unresolved_root_is_never_the_agents_failure(self):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from evals.oracle.fixture_world import COMPANIES
         from operating import host as plx_host
         from scripts import eval_oracle_dev as dev
@@ -371,7 +371,7 @@ class LivePartTests(unittest.TestCase):
         self.assertTrue(lv.check_expectations(spec, code, report))
 
     def test_the_daily_check_reads_as_the_eval_principal_and_still_measures_fixture_parts(self):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         agent = runner.ScriptedAgent(lambda prompt, call: ABSTAIN, name="injected")
         spec = json.loads(SPEC.read_text(encoding="utf-8"))
         self.assertEqual(lv.validate_spec(spec, stem="eval.real_agent"), [])
@@ -412,7 +412,7 @@ class LivePartTests(unittest.TestCase):
         live part runs as the eval principal instead of ``session_secret_missing``, and
         the result names which settings were provisioned, never the secret."""
         import os
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from evals.oracle.fixture_world import COMPANIES
         from operating.tests import test_session_identity as tsi
         from scripts import eval_oracle_dev as dev
@@ -495,7 +495,7 @@ class LivePartTests(unittest.TestCase):
         """The real ``operating.host mcp`` start-up: an inactive employee's ticket verifies
         (the session secret signs for anyone) but the host's resolver refuses the reader;
         the check is blocked, never exit 1, and no source is read."""
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from operating.tests import test_session_identity as tsi
         reader = {"uid": "u-a", "email": tsi.EMAIL_A, "entraTenantId": tsi.TID,
                   "entraObjectId": tsi.OID_A}
@@ -578,7 +578,7 @@ class LivePartTests(unittest.TestCase):
         another mirror generation blocks the live part before any source is read or any
         session starts; the fixture sample's sessions run, each workspace checking its
         store again as the console checks each workspace it builds."""
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from integrations.source_mirror import AUDIENCE_SCHEMA, SourceMirror
         from operating.case_runtime import CASE_RUNTIME_DIR, MIRROR_FILE
         from operating.host import projection_path
@@ -783,7 +783,7 @@ class LivePartTests(unittest.TestCase):
         and a root the reader cannot see gets no session (blocked, never wrong). Each
         session record carries the effective agent definition's stamp and its stop."""
         import copy
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from operating import agent_definitions
         base = next(i for i in era.sample_items()["fixture_sample"]
                     if i["id"] == "dev-F3-0006-fixture")
@@ -1109,7 +1109,7 @@ class LivePartTests(unittest.TestCase):
         """Claude Code starts but answers nothing usable (an ``is_error`` result: not
         logged in): every Ask session is blocked, the run reports every_session_failed and
         the daily check can only record it blocked, never pass it."""
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from operating import agent_loop
         failed = json.dumps({"type": "result", "subtype": "success", "is_error": True,
                              "result": "Invalid API key - Please run /login"})

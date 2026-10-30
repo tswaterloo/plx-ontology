@@ -39,7 +39,7 @@ class DocumentCarrierLiveCheckTests(unittest.TestCase):
     SPEC_ID = "case.customer_po_coverage"
 
     def test_the_spec_counts_a_document_po_portal_lacks_and_leaks_no_value(self):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from integrations.tests import test_capture_sharepoint as tsp
         from operating.tests import order_fixture as fixture
         from operating.tests.test_case_workspace_live import _customer_drive

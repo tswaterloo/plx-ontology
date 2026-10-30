@@ -900,7 +900,7 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     try:
         report = PROBES[args.probe](env, client=client, **kwargs)
     except Exception as exc:  # the class and a sanitized reason only; messages may carry URLs
-        from devloop.data_profile import http_diagnostics, http_status_ok
+        from verify.data_profile import http_diagnostics, http_status_ok
         from integrations.live_source_guard import ReadOnlyGuardError
         from integrations.plx_hub_guard import UPSTREAM_CODES, UpstreamError
         from integrations.workbench_read_api import failure_reason

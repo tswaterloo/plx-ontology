@@ -1233,7 +1233,7 @@ class ProbeCliTests(unittest.TestCase):
         # The Graph reads answered below 400, as the live check records them for the
         # registry; the content arrives through the pre-authenticated download, so no
         # ``/content`` operation is named.
-        from devloop import live_verify
+        from verify import live_verify
         with open(f"{live_verify.ROOT}/{live_verify.SPECS_DIR_NAME}/"
                   "graph.adapter_probe_content.json", encoding="utf-8") as fh:
             spec = json.load(fh)

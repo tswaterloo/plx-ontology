@@ -20,7 +20,7 @@ import tempfile
 import unittest
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from devloop import live_verify as lv
+from verify import live_verify as lv
 from integrations import graph_read
 from integrations import mail_directory_scope as mds
 from integrations.capture_mail import CaptureError, MailCaptureStore
@@ -389,7 +389,7 @@ class BudgetEndTests(AllMailboxesCase):
         return seen, patch.object(cm, "MailCapture", Recorded)
 
     def test_two_runs_and_their_probes_end_by_the_budget_cold_cut_blocked(self):
-        from devloop.tests.spec_verdict import verdict
+        from tests.spec_verdict import verdict
         graph = DirectoryGraph(members=6, messages=7)
 
         def clock() -> int:
@@ -434,7 +434,7 @@ class BudgetEndTests(AllMailboxesCase):
 
     def test_probes_the_budget_cuts_are_null_and_fail_never_blocked(self):
         from unittest.mock import patch
-        from devloop.tests.spec_verdict import verdict
+        from tests.spec_verdict import verdict
         graph = DirectoryGraph(members=6, messages=1)
         probing = {"on": False, "ticks": 0}
 

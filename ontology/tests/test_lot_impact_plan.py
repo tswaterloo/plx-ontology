@@ -433,7 +433,7 @@ class LotConsumptionReviewTests(unittest.TestCase):
 
 class LotImpactScanTests(unittest.TestCase):
     def test_scan_counts_match_the_live_check_spec(self):
-        from devloop import live_verify
+        from verify import live_verify
         s = tp.Store()
         lot_fixture(s, key="sa")
         lot_fixture(s, key="sb", without_ao=(0, 1))

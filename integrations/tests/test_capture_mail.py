@@ -22,7 +22,7 @@ import unittest
 import unittest.mock
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from devloop import live_verify as lv
+from verify import live_verify as lv
 from integrations import capture_mail, graph_read
 from integrations.capture_mail import (CaptureError, CaptureScope, MailCapture,
                                        MailCaptureStore, assert_outside_git)

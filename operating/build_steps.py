@@ -202,11 +202,28 @@ def post_project(state_dir: str | Path, tenant: str, *, scratch: str | Path | No
         return store_document_links(builder, projector,
                                     aliases=reviews.BuildAliases(review_store, tenant))
 
-    return {"confirmations": confirmations,
-            "document_fields": document_fields, "mentions": mentions,
-            "reviews": reviews.link_step(review_store, tenant),
-            "text_index": store_text_index, "twins": twin_step,
-            "your_reference": your_reference_step}
+    return {name: _named(name, step) for name, step in {
+        "confirmations": confirmations,
+        "document_fields": document_fields, "mentions": mentions,
+        "reviews": reviews.link_step(review_store, tenant),
+        "text_index": store_text_index, "twins": twin_step,
+        "your_reference": your_reference_step}.items()}
+
+
+def _named(name: str, step: Step) -> Step:
+    """``step``, naming itself on an exception it raises (``build_step``: the step's
+    name, never its data), so a failed build says where (``operating.host``'s reason)."""
+    def run(builder: Any, projector: Any) -> dict[str, Any]:
+        try:
+            return step(builder, projector)
+        except Exception as exc:
+            if getattr(exc, "build_step", None) is None:
+                try:
+                    exc.build_step = name   # type: ignore[attr-defined]
+                except (AttributeError, TypeError):
+                    pass
+            raise
+    return run
 
 
 def _on_copy(store: Path, scratch: Path, tenant: str, review_store: Any) -> Step:

@@ -419,7 +419,7 @@ class LiveCheckTest(unittest.TestCase):
                          ["python3", "-m", "operating.sharepoint_originals", "check"])
         self.assertEqual((ROOT / spec["command"][5]).resolve(), ORIGINALS_EXPECTED)
         self.assertEqual(spec["expect"]["exit_code"], code)
-        from devloop import live_verify
+        from verify import live_verify
         self.assertEqual(live_verify.check_expectations(spec, code, report), [])
 
     def test_the_file_rule_comes_from_the_expected_file_never_from_the_code(self):
@@ -489,7 +489,7 @@ class LiveCheckTest(unittest.TestCase):
         for leaked in ("PLANTED", CLIENT_SECRET, "tempauth", "DL-do-not-leak"):
             self.assertNotIn(leaked, text)
         spec = json.loads((ROOT / "devloop" / "live-checks" / "ao-originals.json").read_text())
-        from devloop import live_verify
+        from verify import live_verify
         recorded = live_verify._recorded(spec, report)
         self.assertEqual(recorded["files[*].http_status"].count(403), 1)
         self.assertIn("access_denied", recorded["files[*].error_code"])
@@ -510,7 +510,7 @@ class LiveCheckTest(unittest.TestCase):
                          ("SourceUnavailable", 401, "invalid_authentication_token", "http_401"))
         self.assertNotIn("PLANTED", errors.getvalue())
         self.assertNotIn(CLIENT_SECRET, errors.getvalue())
-        from devloop import live_verify
+        from verify import live_verify
         published = live_verify._stderr_error(errors.getvalue())
         self.assertEqual((published["error"], published["http_status"],
                           published["error_code"]),

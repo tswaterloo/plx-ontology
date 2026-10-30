@@ -16,7 +16,7 @@ import tempfile
 import unittest
 from urllib.parse import unquote, urlsplit
 
-from devloop import live_verify
+from verify import live_verify
 from integrations import graph_directory, graph_read
 from integrations.graph_directory import (APPROVER_OIDS_DIR, APPROVER_OIDS_FILE,
                                           GraphDirectoryReader, resolve_roster,

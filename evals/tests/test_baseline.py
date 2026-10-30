@@ -896,7 +896,7 @@ class LiveSpecTests(unittest.TestCase):
     verifier's recording and eval-block lifting (injected-transport, not live)."""
 
     def test_live_run_emits_an_eval_block_the_verifier_lifts_and_status_prints(self):
-        from devloop import live_verify
+        from verify import live_verify
         from scripts import eval_dev_baseline as script
         from scripts import eval_oracle_dev as dev
         from scripts import eval_status
@@ -995,7 +995,7 @@ class LiveOutageAndPartitionTests(unittest.TestCase):
         return code, json.loads(out.getvalue())
 
     def test_a_portal_500_blocks_parts_and_the_rest_measures_on_the_bc_capture(self):
-        from devloop import live_verify
+        from verify import live_verify
         spec = json.loads(self.SPEC.read_text())
         # Its requires are its session producers only: an outage upstream never blocks it.
         specs = live_verify.valid_specs(live_verify.load_specs(

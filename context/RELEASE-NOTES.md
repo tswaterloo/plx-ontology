@@ -15,6 +15,23 @@ Must keep working:
 Known gaps:
 ```
 
+## v0.14 (2026-10-30)
+
+Changed:
+- Data refreshes keep the documents they have already read, unless the reading software itself changes, so a refresh reads only new or changed files.
+- Very large Portal tables load in steps that resume where they left off and run after the smaller tables. Purchase orders and other tables are no longer held up by one huge table. Answers keep using the last complete data until a table has fully loaded.
+
+Fixed:
+- A document captured again as a new version no longer stops the data build.
+
+Must keep working:
+- Everything in v0.13: questions work during refreshes, the R&D agenda in seconds, answers checked like the scoreboard.
+
+Known gaps:
+- Sign-in with a Microsoft account is not switched on yet; the preview uses a demo sign-in on the private network.
+- A full answer takes about 30 to 60 seconds.
+- Actions in Mission Control are not switched on yet.
+
 ## v0.13 (2026-10-30)
 
 Added:

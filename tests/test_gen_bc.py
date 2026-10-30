@@ -22,7 +22,7 @@ import unittest
 from unittest import mock
 from urllib.parse import unquote, urlsplit
 
-from devloop import live_verify as lv
+from verify import live_verify as lv
 from integrations import bc_read
 from integrations import live_source_grammar as grammar
 from integrations.live_source_guard import ReadOnlyGuardError

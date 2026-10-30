@@ -24,7 +24,7 @@ import unittest
 import warnings
 from urllib.parse import quote
 
-from devloop import live_verify
+from verify import live_verify
 from evals import measure
 from evals.oracle import PortalReads, Sources
 from evals.oracle.cross_sample import (DOCUMENT_KINDS, KINDS, THREE_WAY, Item, names_exactly,

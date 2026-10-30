@@ -473,7 +473,7 @@ class MailPagingLiveCheckShapeTests(unittest.TestCase):
         import tempfile
         from pathlib import Path
 
-        from devloop import live_verify
+        from verify import live_verify
         from operating import ingestion
 
         root = Path(__file__).resolve().parents[2]

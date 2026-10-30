@@ -212,7 +212,7 @@ class PoIdentityFirmTests(unittest.TestCase):
     def test_the_live_check_spec_passes_on_its_probe_over_a_built_projection(self):
         import contextlib
         import io
-        from devloop import live_verify
+        from verify import live_verify
         from scripts import po_twin_probe
         self.run_world([(supplier(1, AMBER), portal_po(1, "PO#7001", "s1", day=None),
                          bc_po(1, "PO7001", "AMBER POLYMERS")),

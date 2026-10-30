@@ -883,7 +883,7 @@ class FileClearanceTests(unittest.TestCase):
         self.assertEqual((report["restricted_total"], report["restricted_visible_to_uncleared"],
                           report["restricted_visible_to_unconfirmed"],
                           report["finance_visible_to_cleared"]), (1, 0, 0, 1))
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         spec = json.loads((ROOT / "devloop/live-checks/sharepoint.restricted_class.json")
                           .read_text(encoding="utf-8"))
         self.assertEqual(lv.check_expectations(spec, 0, report), [])
@@ -924,7 +924,7 @@ class FileClearanceTests(unittest.TestCase):
         self.assertEqual(column_reads(drive), {"list": 0, "pages": 0, "per_file": 2})
 
     def test_live_check_counts_each_unread_file_by_cause_and_never_clears_it(self):
-        from devloop import live_verify as lv
+        from verify import live_verify as lv
         from integrations.tests.test_capture_sharepoint import RICARDO
         spec = json.loads((ROOT / "devloop/live-checks/sharepoint.restricted_class.json")
                           .read_text(encoding="utf-8"))

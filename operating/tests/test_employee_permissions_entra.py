@@ -17,7 +17,7 @@ import unittest
 from contextlib import redirect_stdout
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from devloop import live_verify
+from verify import live_verify
 from integrations import graph_directory
 from integrations.graph_directory import GraphDirectoryReader
 from integrations.graph_read import build_graph

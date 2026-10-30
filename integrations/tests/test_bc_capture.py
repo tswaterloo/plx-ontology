@@ -20,7 +20,7 @@ from unittest import mock
 import uuid
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
-from devloop import live_verify
+from verify import live_verify
 
 from integrations import bc_read, capture_store
 from integrations import live_source_grammar as grammar

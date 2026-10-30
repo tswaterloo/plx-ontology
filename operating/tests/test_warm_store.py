@@ -16,7 +16,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from devloop import live_verify
+from verify import live_verify
 from integrations.workbench_read_api import WorkbenchReadApiClient
 from ontology.tests.test_projection import BASE, KEY, FakeWorkbench
 from operating import host, warm_store
