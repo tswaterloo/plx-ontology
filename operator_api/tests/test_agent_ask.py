@@ -381,6 +381,12 @@ class AgentPath(unittest.TestCase):
                                       params={"handle": "original://nr-ffffffffffff"})
         self.assertEqual(refused.status_code, 404)
         self.assertNotIn("screening", refused.text)
+        # a SharePoint file the app's runtime cannot open goes the same way
+        sp = "sharepoint://b%21DRIVE/01ITEM@%22%7BE%7D%2C1%22"
+        calls.clear()
+        self.assertEqual(self.ops.client.get("/api/source",
+                                             params={"handle": sp}).status_code, 404)
+        self.assertEqual(calls[-1][1:], ("plx.read", {"citation": sp}))
         # any other family never reaches the host path
         before = len(calls)
         self.assertEqual(self.ops.client.get(
@@ -432,6 +438,92 @@ class ItemRecheck(unittest.TestCase):
         self.assertEqual(answer.facts[0].sources[0].open_url, be.open_url(original))
         self.assertEqual(answer.hidden.count, 1)
         self.assertNotIn("SECRET", answer.model_dump_json())
+
+
+    def test_a_sharepoint_file_the_readers_host_passed_shows_and_a_refused_one_is_counted(self):
+        # Live 2026-10-30: every claim citing a SharePoint file was dropped (the app's item
+        # re-check has no SharePoint gate), uncounted, and the answer said nothing.
+        from operator_ui.object_workspace import ITEM_REFUSED, NOT_GRANTED, _withheld
+        sp = "sharepoint://b%21DRIVE/01MAP@%22%7BE%7D%2C1%22"
+        other = "sharepoint://b%21OTHER/01SECRET@%22%7BE%7D%2C1%22"
+
+        class Access:
+            def decide(self, handles):
+                return {h: _withheld(NOT_GRANTED if h == other else ITEM_REFUSED)
+                        for h in handles}
+
+        view = SimpleNamespace(access=Access(), _can_open=lambda h: True,
+                               _call=lambda name, args: {}, _base=lambda: {})
+
+        def claim(handle, text, phrase):
+            return {"id": phrase, "check": {"status": "passed"},
+                    "citations": [envelope(handle)], "text": envelope(text),
+                    "phrase": envelope(phrase), "value_claims": [{
+                        "citation": handle, "field": "text", "value": envelope(phrase)}]}
+        result = {"outcome": "answered",
+                  "claims": [claim(sp, "Accepting a quote sets it to ACCEPTED.", "ACCEPTED"),
+                             claim(other, "The tier is Zephyr-9.", "Zephyr-9")],
+                  "unsupported_claims": [], "reply": {"text": envelope("x")}}
+        events = [{"type": "tool_call", "name": runner.ANSWER_GATE_TOOL,
+                   "arguments": {"answer": {}}, "result": result, "is_error": False}]
+        prose = ("The map says accepting a quote sets its status to ACCEPTED.\n\n"
+                 "The order carries the Zephyr-9 tier.")
+        ran = aa.AskRun(final_text=prose, answer={"answerability": "answerable",
+                                                  "text": "", "values": [], "gaps": []},
+                        events=events, decision=None, stopped=False, seconds=1.0)
+        backend = be.WorkspaceBackend(lambda s: None, data_label="test")
+        with self.assertLogs("operator_api.ask", "INFO") as logged:
+            answer = be.agent_answer(backend, view, m.AskRequest(question="q"), ran, {},
+                                     "c", lambda: 1)
+        self.assertEqual([f.text for f in answer.facts],
+                         ["Accepting a quote sets it to ACCEPTED."])
+        self.assertEqual(answer.facts[0].sources[0].open_url, be.open_url(sp))
+        self.assertEqual(answer.outcome, "answered")
+        # a grant refusal: only the shown facts are said (fail closed)
+        self.assertEqual(answer.direct_answer, "Accepting a quote sets it to ACCEPTED.")
+        self.assertEqual(answer.hidden.count, 1)                             # counted
+        self.assertIn('"not_granted": 1', "\n".join(logged.output))
+        self.assertNotIn("Zephyr", answer.model_dump_json())                 # never shown
+        self.assertNotIn(other, answer.model_dump_json())
+
+
+    def test_a_sentence_repeating_a_withheld_claims_words_goes(self):
+        # Review probe: the re-screen kept a hidden claim's words verbatim.
+        from operator_ui.object_workspace import ITEM_REFUSED, _withheld
+        sp = "sharepoint://b%21DRIVE/01MAP@%22%7BE%7D%2C1%22"
+
+        class Access:
+            def decide(self, handles):
+                return {h: _withheld(ITEM_REFUSED) for h in handles}
+
+        view = SimpleNamespace(access=Access(), _can_open=lambda h: True,
+                               _call=lambda name, args: {}, _base=lambda: {})
+        shown = {"id": "m1", "check": {"status": "passed"}, "citations": [envelope(sp)],
+                 "text": envelope("The quote was accepted."), "phrase": envelope("accepted"),
+                 "value_claims": [{"citation": sp, "field": "text",
+                                   "value": envelope("accepted")}]}
+        hidden = {"id": "m2", "check": {"status": "passed"}, "citations": [],
+                  "text": envelope("Acme agreed to cover the freight."),
+                  "phrase": envelope("Acme agreed to cover the freight"),
+                  "value_claims": [{"field": "text", "value": envelope("2026-11-14"),
+                                    "quote": "ships on 2026-11-14"}]}
+        result = {"outcome": "answered", "claims": [shown, hidden],
+                  "unsupported_claims": [], "reply": {"text": envelope("x")}}
+        events = [{"type": "tool_call", "name": runner.ANSWER_GATE_TOOL,
+                   "arguments": {"answer": {}}, "result": result, "is_error": False}]
+        prose = ("The quote was accepted. Acme agreed to cover the freight.\n\n"
+                 "The order ships on November 14.")
+        ran = aa.AskRun(final_text=prose, answer={"answerability": "answerable",
+                                                  "text": "", "values": [], "gaps": []},
+                        events=events, decision=None, stopped=False, seconds=1.0)
+        backend = be.WorkspaceBackend(lambda s: None, data_label="test")
+        with self.assertLogs("operator_api.ask", "INFO"):
+            answer = be.agent_answer(backend, view, m.AskRequest(question="q"), ran, {},
+                                     "c", lambda: 1)
+        self.assertIn("The quote was accepted.", answer.direct_answer)   # the rest stays
+        self.assertNotIn("Acme", answer.direct_answer)
+        self.assertNotIn("November 14", answer.direct_answer)
+        self.assertEqual(answer.hidden.count, 1)
 
 
 class ReaderIdentity(unittest.TestCase):

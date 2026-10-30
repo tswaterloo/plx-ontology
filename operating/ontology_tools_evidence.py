@@ -1412,7 +1412,11 @@ class EvidenceTools:
         """Shrink the main list until the answer fits one response (marked truncated).
         A paged list (``cursor_after``) keeps at least one item and its next cursor
         resumes right after the items actually returned, so nothing shrunk away is
-        skipped; a single item too large for one response is refused by ``_checked``."""
+        skipped. Kept documents still too large for one response (a few heavily
+        mentioned files: about 1 KB per mention) keep fewer of their mentions (``MENTION_TRIM``
+        each, then none), said by one ``mentions_trimmed`` gap: the page is never refused
+        for its mentions (plx.read of the document has them all). What does not fit even
+        so is refused by ``_checked``."""
         limit = self.limits["max_result_bytes"]
         if ot._envelope_bytes(result) <= limit:
             return result
@@ -1426,7 +1430,23 @@ class EvidenceTools:
                 len(items), previous.get("total"), True, "result_size",
                 cursor_after(len(items)) if cursor_after is not None
                 else previous.get("next_cursor"))
+        for keep in self.MENTION_TRIM:
+            if ot._envelope_bytes(result) <= limit:
+                break
+            cut = [i for i, item in enumerate(items)
+                   if isinstance(item, dict) and len(item.get("mentions") or []) > keep]
+            if not cut:
+                continue
+            items = [dict(item, mentions=item["mentions"][:keep]) if i in cut else item
+                     for i, item in enumerate(items)]
+            gaps = [g for g in result.get("gaps") or [] if g.get("reason") != "mentions_trimmed"]
+            note = _gap("unknown", "mentions_trimmed", "plx.documents",
+                        f"the listed documents' mentions were cut to {keep} each to fit one "
+                        "response; plx.read a document for all of its mentions")
+            result = dict(result, **{list_key: items}, gaps=gaps[:MAX_GAPS - 1] + [note])
         return result
+
+    MENTION_TRIM = (5, 0)
 
     # ------------------------------------------------------------------ plx.documents
 

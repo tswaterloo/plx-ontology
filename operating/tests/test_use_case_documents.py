@@ -444,8 +444,9 @@ PRICING = {"id": "pricing-disposition", "title": "Pricing disposition",
 class OversizeAnswerTests(UseCaseCase):
     """Reproduced (2026-10-29): plx.documents failed result_too_large even at limit 5
     once the use-case block and capture labels joined the search's page. The answer is
-    trimmed to fit (mentions, then snippet length, then use-case titles, then documents
-    from the end, then gaps), and one result_trimmed gap says what was cut."""
+    trimmed to fit (mentions, then snippet length, then hits from the end, then the
+    use-case titles, then gaps, the use case's own last), and one result_trimmed gap says
+    what was cut; the use-case block is never dropped for ordinary hits."""
 
     QUERY = "lot release use case PO100234"
 
@@ -497,6 +498,198 @@ class OversizeAnswerTests(UseCaseCase):
         self.bound(1500)
         result = _client(server, "plx.documents", {"query": self.QUERY})
         self.assertEqual(result["structuredContent"]["error"]["code"], "result_too_large")
+
+    def block_only_size(self, answer, key):
+        """The envelope of ``answer`` with no hits and only its use-case gaps (plus a
+        trimming note's worth): what must still fit."""
+        from operating.ontology_tools import _envelope_bytes
+        bare = dict(answer, **{key: []},
+                    gaps=[g for g in answer["gaps"] if g["reason"] in UC_GAPS])
+        return _envelope_bytes(bare) + 2400
+
+    def test_a_find_over_the_bound_keeps_its_use_case_block(self):
+        """Reproduced live (2026-10-30): plx.find "Quote to order use case" answered
+        result_too_large with no use-case block: the block was dropped from a candidate
+        list over the bound, and the capture labels then failed the whole answer. A
+        found answer keeps its one candidate (its contract); the block stays."""
+        from operating.ontology_tools import _envelope_bytes
+        _runtime, server = self.runtime_server(QUALITY)
+        full = self.ask(server, "plx.find", self.QUERY)
+        self.assertEqual((full["status"], len(full["candidates"])), ("found", 1))
+        block = full["use_case"]
+        # Down to the room the candidate, the block with no titles and a trimming
+        # note take: every step keeps the block.
+        least = _envelope_bytes(dict(full, gaps=[], use_case=dict(block, documents=[
+            dict(d, title=None) for d in block["documents"]]))) + 700
+        limits = range(_envelope_bytes(full) - 1, least, -100)
+        self.assertGreaterEqual(len(limits), 3)
+        for limit in limits:
+            with self.subTest(limit=limit):
+                self.bound(limit)
+                answer = self.ask(server, "plx.find", self.QUERY)   # contract-checked
+                self.assertLessEqual(_envelope_bytes(answer), limit)
+                self.assertEqual(answer["use_case"]["id"], block["id"])
+                self.assertEqual([d["citation"] for d in answer["use_case"]["documents"]],
+                                 [d["citation"] for d in block["documents"]])
+                self.assertEqual(answer["use_case"]["withheld"], block["withheld"])
+                self.assertEqual(answer["candidates"], full["candidates"])
+
+    def test_hits_left_out_of_a_page_resume_from_its_rewound_cursor(self):
+        """A first page cut to fit hands back a cursor that resumes at the first hit
+        left out (none skipped); that next page carries no use-case block."""
+        _runtime, server = self.runtime_server(QUALITY)
+        full = self.ask(server, "plx.documents", self.QUERY)
+        cited = [d["citation"] for d in full["documents"]]
+        first = self.ask(server, "plx.documents", self.QUERY, limit=1)
+        self.assertIsNotNone(first["completeness"]["next_cursor"])
+        self.bound(self.block_only_size(first, "documents"))
+        cut = self.ask(server, "plx.documents", self.QUERY, limit=1)
+        self.assertEqual(cut["documents"], [])
+        self.assertIn("use_case", cut)
+        self.assertIn("completeness.next_cursor continues",
+                      self.reasons(cut)["result_trimmed"]["detail"])
+        self.bound(10 ** 6)
+        resumed = self.ask(server, "plx.documents", self.QUERY,
+                           cursor=cut["completeness"]["next_cursor"])
+        self.assertNotIn("use_case", resumed)
+        self.assertEqual([d["citation"] for d in resumed["documents"]], cited)
+
+    def test_a_single_document_too_large_for_the_search_keeps_the_block(self):
+        """Reproduced live (2026-10-30): plx.documents for the artwork-lifecycle and
+        screening use cases answered result_too_large with no block: the search shrank
+        its page to one document whose 46 mentions alone were over the bound, and
+        refused it before the use-case block could join. The document stays with its
+        mentions cut, said by a mentions_trimmed gap."""
+        from operating.ontology_tools import _envelope_bytes
+        _runtime, server = self.runtime_server(QUALITY)
+        self.ask(server, "plx.documents", self.QUERY)
+        evidence = self.host_tools._evidence
+        seen = []
+        real = evidence._fit
+
+        def spy(result, key, cursor_after=None):
+            seen.append(json.loads(json.dumps(result)))
+            return real(result, key, cursor_after)
+        evidence._fit = spy
+        full = self.ask(server, "plx.documents", self.QUERY, limit=1)
+        page = seen[-1]
+        self.assertTrue(page["documents"][0]["mentions"])
+        evidence.limits = dict(evidence.limits, max_result_bytes=_envelope_bytes(page) - 1)
+        answer = self.ask(server, "plx.documents", self.QUERY, limit=1)
+        self.assertEqual([d["citation"] for d in answer["documents"]],
+                         [d["citation"] for d in full["documents"]])
+        self.assertEqual(answer["documents"][0]["mentions"], [])
+        self.assertIn("mentions_trimmed", self.reasons(answer))
+        self.assertEqual(answer["use_case"], full["use_case"])
+        offset = (lambda c: json.loads(__import__("base64").urlsafe_b64decode(
+            c + "=" * (-len(c) % 4)))["o"])
+        self.assertEqual(offset(answer["completeness"]["next_cursor"]),
+                         offset(full["completeness"]["next_cursor"]))
+
+    def test_only_a_search_offset_cursor_is_rewound(self):
+        from operating import ontology_tools as ot
+        cursor = ot._write_cursor(5, SOON, "f" * 16, "hybrid")
+        back = ot._rewound_cursor(cursor, 2)
+        self.assertEqual(ot._read_cursor(back, "f" * 16)[0], 3)
+        self.assertEqual(ot._cursor_mode(back), "hybrid")
+        for bad, by in ((cursor, 6), (cursor, -1), (None, 1), ("%%%", 1), ("e30", 1),
+                        (ot.SCAN_CURSOR_PREFIX + "eJw", 1)):
+            with self.subTest(bad=bad, by=by):
+                self.assertIsNone(ot._rewound_cursor(bad, by))
+
+    def test_a_restricted_reader_trimmed_to_fit_still_sees_only_counts(self):
+        """Trimming never names a withheld document: at every bound the outsider's
+        block lists nothing, counts all three, and no answer carries their ids or the
+        brief's name."""
+        from operating.ontology_tools import _envelope_bytes
+        _runtime, server = self.runtime_server(OUTSIDER)
+        for tool in ("plx.find", "plx.documents"):
+            full = self.ask(server, tool, "asset-brief use case")
+            self.assertEqual((full["use_case"]["documents"], full["use_case"]["withheld"]),
+                             ([], 3))
+            for cut in (1, 600, 1200):
+                with self.subTest(tool=tool, cut=cut):
+                    self.bound(_envelope_bytes(full) - cut)
+                    answer = self.ask(server, tool, "asset-brief use case")
+                    self.bound(10 ** 6)
+                    self.assertEqual((answer["use_case"]["documents"],
+                                      answer["use_case"]["withheld"]), ([], 3))
+                    text = json.dumps(answer)
+                    for secret in (BRIEF, BRIEF_NAME, "01FILEB", "01NOTHELD"):
+                        self.assertNotIn(secret, text)
+
+    def test_a_second_use_case_trimmed_away_keeps_its_id_and_counts(self):
+        from operating import ontology_tools as ot
+        _runtime, server = self.runtime_server(QUALITY)
+        self.ask(server, "plx.documents", self.QUERY)
+        entry = {"citation": "sharepoint://x/01A", "kind": "sharepoint_file",
+                 "role": "map", "title": {"untrusted_text": "T" * 150, "truncated": False}}
+        block = {"id": "asset-brief", "title": "Asset brief", "documents": [entry] * 12,
+                 "withheld": 1, "note": "n",
+                 "also": [{"id": "triage", "title": "Triage", "documents": [entry] * 12,
+                           "withheld": 2}]}
+        page = {"documents": [], "searched": {"sources": ["sharepoint"], "scopes": ["x"]},
+                "gaps": [], "meta": {}, "use_case": block,
+                "completeness": {"complete": True, "truncated": False, "returned": 0,
+                                 "total": 0, "next_cursor": None}}
+        bare = json.loads(json.dumps(page))
+        bare["use_case"]["also"][0]["documents"] = []
+        for d in bare["use_case"]["documents"]:
+            d["title"] = None
+        self.bound(ot._envelope_bytes(bare) + 900)
+        out = self.host_tools._trimmed("plx.documents", page)
+        also = out["use_case"]["also"][0]
+        self.assertEqual((also["id"], also["withheld"], also["documents"]), ("triage", 2, []))
+        self.assertEqual(len(out["use_case"]["documents"]), 12)
+        self.assertIn("ask about it by name", self.reasons(out)["result_trimmed"]["detail"])
+
+    def test_captured_files_appended_after_the_search_page_never_move_its_cursor(self):
+        """Review probe (2026-10-30): a first page of 3 search hits (cursor at offset 3)
+        followed by 6 captured files the host appended, trimmed by 2. The captured
+        files are on no page: dropping them leaves the cursor at 3 (never rewound to 1,
+        which would repeat two hits) and the page partial, with a plain note."""
+        import base64
+        from operating import ontology_tools as ot
+        _runtime, server = self.runtime_server(QUALITY)
+        self.ask(server, "plx.documents", self.QUERY)
+        host = self.host_tools
+        cursor = ot._write_cursor(3, SOON, "f" * 16)
+
+        def doc(citation):
+            return {"citation": citation, "kind": "sharepoint_file",
+                    "title": {"untrusted_text": "t", "truncated": False},
+                    "snippet": {"untrusted_text": "x" * 100, "truncated": False},
+                    "mentions": []}
+
+        def offset(c):
+            return json.loads(base64.urlsafe_b64decode(c + "=" * (-len(c) % 4)))["o"]
+        docs = ([doc(f"sharepoint://proj{i}") for i in range(3)]
+                + [doc(f"sharepoint://captured{i}") for i in range(6)])
+        page = {"documents": docs, "searched": {"sources": ["sharepoint"], "scopes": ["x"]},
+                "gaps": [], "meta": {},
+                "completeness": {"complete": False, "truncated": True, "returned": 9,
+                                 "total": 60, "next_cursor": cursor, "reason": "result_size"}}
+        size = ot._envelope_bytes(page)
+        cases = ((500, 3, 3, "more captured SharePoint file(s)"),       # captured only
+                 (size - 2600, 1, 1, "the last 2 of 3 documents"))     # all captured, 2 hits
+        for under, kept_hits, at, said in cases:
+            with self.subTest(under=under):
+                self.bound(size - under)
+                out = host._trimmed("plx.documents", page, 3)
+                self.assertLessEqual(ot._envelope_bytes(out), size - under)
+                listed = [d["citation"] for d in out["documents"]]
+                self.assertEqual(listed[:3], [f"sharepoint://proj{i}" for i in range(3)
+                                              ][:len(listed[:3])])
+                self.assertEqual(sum(c.startswith("sharepoint://proj") for c in listed),
+                                 kept_hits)
+                self.assertEqual(offset(out["completeness"]["next_cursor"]), at)
+                self.assertFalse(out["completeness"]["complete"])
+                note = self.reasons(out)["result_trimmed"]["detail"]
+                self.assertIn(said, note)
+                captured = 6 - sum(c.startswith("sharepoint://captured") for c in listed)
+                self.assertIn(f"{captured} more captured SharePoint file(s)", note)
+                self.assertIn("narrow the question to see them", note)
+
 
 
 class TextlessCopyTests(UseCaseCase):

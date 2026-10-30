@@ -229,13 +229,15 @@ class AgentAsk:
 
     def read_source(self, session: Any, handle: str, text_offset: int = 0
                     ) -> dict[str, Any]:
-        """A captured original (``original://``) as this reader's own host reads it: its
+        """A captured original (``original://``) or SharePoint file (``sharepoint://``) as
+        this reader's own host reads it: its
         ``plx.read`` through the capture store's per-reader gate
         (``operating.captured_originals``), the gate the agent's reads passed. Read-only;
         envelopes removed. ``KeyError`` when the host does not serve it to this reader
         (refused, unknown or unreadable alike), ``ReaderRefused`` for a reader with no
         employee identity."""
-        if not isinstance(handle, str) or not handle.startswith("original://"):
+        if not isinstance(handle, str) or not handle.startswith(("original://",
+                                                                  "sharepoint://")):
             raise KeyError("not_a_captured_original")
         host = self.host_for(session)
         try:

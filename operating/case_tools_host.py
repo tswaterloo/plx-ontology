@@ -575,6 +575,11 @@ LABEL_RESERVE_BYTES = 2048
 # The search tools: their results are never re-read live (``_CallBound.search``), and a
 # query naming a use case gets that use case's documents (``_use_case_documents``).
 SEARCH_TOOLS = frozenset({"plx.documents", "plx.find"})
+# The gaps a use-case block brings (:meth:`CaptureCaseHostTools._use_case_documents`):
+# kept over every other gap when an answer is trimmed to fit.
+USE_CASE_GAPS = frozenset({"use_case_documents_withheld", "use_case_documents_not_searched",
+                           "use_case_document_not_held", "unknown_use_case",
+                           "use_case_catalog_unreadable"})
 USE_CASE_NOTE = ("Answer a question about this use case from these documents, never from "
                  "another use case's map; read a cited map whole (page with text_offset "
                  "until complete) before saying something is absent from it.")
@@ -603,6 +608,10 @@ class _CallBound:
 
 
 # The bound of the tool call in progress on this context (``CaptureCaseHostTools.per_call``).
+# How many of a plx.documents page's documents are the search's own (its cursor pages
+# them): the captured SharePoint files :meth:`CaptureCaseHostTools._captured_documents`
+# appends after them are on no page. None: all of them.
+_SEARCH_HITS: ContextVar[int | None] = ContextVar("plx_capture_search_hits", default=None)
 _ACTIVE_CALL: ContextVar[_CallBound | None] = ContextVar("plx_capture_call_bound",
                                                          default=None)
 
@@ -1347,7 +1356,8 @@ class CaptureCaseHostTools(CaseHostTools):
         # Admitted to the computation (counts, totals, filters) but not listed.
         counted = sorted(set(self._served) - served)
         if not handles and not counted:
-            return result
+            # Nothing captured served: a use-case block alone is still held to the bound.
+            return self._bounded(name, result) if "use_case" in result else result
         admitted = sorted(self._served[h]["captured_at"] for h in (*handles, *counted))
         output = self.tools.contracts["tools"][name]["output"]
         shape = (output["oneOf"][0] if "oneOf" in output else output).get("properties", {})
@@ -1412,8 +1422,8 @@ class CaptureCaseHostTools(CaseHostTools):
         if problems:
             return _error("contract_violation", ("output failed the contract: "
                                                  + "; ".join(problems))[:600])
-        if not self._fits(result) and isinstance(result.get("documents"), list):
-            result = self._trimmed(name, result)
+        if not self._fits(result) and self._hits_key(result) is not None:
+            result = self._trimmed(name, result, _SEARCH_HITS.get())
             problems = validate(result, contracts["tools"][name]["output"], root=contracts,
                                 limit=5)
             if problems:
@@ -1424,20 +1434,40 @@ class CaptureCaseHostTools(CaseHostTools):
                           "fit one response", "narrow the question or lower limit")
         return result
 
-    # A document list over the response bound is trimmed until it fits, each step only
-    # while the answer is still too large: the mentions each listed document carries,
-    # then its snippet and title length, then the use-case block's titles and second
-    # entry (its citations stay), then whole documents from the end of the page, then
-    # gaps from the end. One ``result_trimmed`` gap, never itself trimmed, names every
-    # step taken; the search's own total stays. What cannot fit even so is the
-    # ``result_too_large`` error, as before.
+    # A search answer over the response bound (plx.documents' documents, plx.find's
+    # candidates) is trimmed until it fits, each step only while the answer is still too
+    # large: the mentions each listed document carries, then its snippet and title
+    # length, then whole hits from the end of the page (its next cursor moved back over
+    # them, so nothing is skipped), then the use-case block's titles and second entry
+    # (its citations and counts stay: a use case is never dropped for ordinary hits),
+    # then gaps from the end (the use-case gaps last). One ``result_trimmed`` gap, never
+    # itself trimmed, names every step taken; the search's own total stays. What cannot
+    # fit even so is the ``result_too_large`` error.
     TRIM_MENTIONS = (5, 0)
     TRIM_TEXT_CHARS = (400, 120)
 
-    def _trimmed(self, name: str, result: Mapping[str, Any]) -> dict[str, Any]:
+    @staticmethod
+    def _hits_key(result: Mapping[str, Any]) -> str | None:
+        for key in ("documents", "candidates"):
+            if isinstance(result.get(key), list):
+                return key
+        return None
+
+    def _trimmed(self, name: str, result: Mapping[str, Any], paged: int | None = None
+                 ) -> dict[str, Any]:
+        """``paged``: how many of the hits, from the first, the search's cursor pages
+        (None: all); the rest (captured files a host appended) are on no other page."""
         out = json.loads(json.dumps(result))   # never edit the caller's answer
-        docs: list[dict[str, Any]] = out["documents"]
-        total = len(docs)
+        key = self._hits_key(out)
+        noun = "documents" if key == "documents" else "candidates"
+        hits: list[dict[str, Any]] = out[key]
+        total = len(hits)
+        paged = total if paged is None else max(0, min(paged, total))
+        cursor = (out.get("completeness") or {}).get("next_cursor")
+        # plx.find keeps its status's own candidates: a found answer its one, an ambiguous
+        # one two (never a lone apparent winner); a document list may empty.
+        floor = 0 if key == "documents" else {"found": 1, "ambiguous": 2}.get(
+            str(out.get("status")), 0)
         steps: list[str] = []
         output = self.tools.contracts["tools"][name]["output"]
         shape = (output["oneOf"][0] if "oneOf" in output else output).get("properties", {})
@@ -1448,28 +1478,50 @@ class CaptureCaseHostTools(CaseHostTools):
             note = _gap("unknown", "result_trimmed", name, (
                 "this answer was over the response bound and was trimmed to fit: "
                 + "; ".join([*steps, *extra]) + ". plx.read a listed document for its "
-                "full text and mentions; narrow the query or lower limit for the rest")[:600])
+                "full text and mentions")[:600])
             trial = dict(out, gaps=gaps[:cap - 1] + [note])
             return trial if self._fits(trial) else None
 
-        def drop_to(keep: int) -> dict[str, Any] | None:
-            while len(docs) > keep:
-                docs.pop()
-                # The page's cursor would skip the documents dropped here: none is offered.
-                out["completeness"] = dict(out.get("completeness") or {"total": None},
-                                           complete=False, truncated=True,
-                                           reason="result_too_large", returned=len(docs),
-                                           next_cursor=None)
-                answer = attempt((f"the last {total - len(docs)} of {total}" if docs
-                                  else f"all {total}")
-                                 + " documents on this page left out, with no next page")
-                if answer is not None:
-                    return answer
-            return None
+        def counts() -> tuple[int, int]:
+            """(search hits, appended captured files) dropped so far."""
+            searched = max(0, paged - len(hits))
+            return searched, total - len(hits) - searched
+
+        def dropped() -> str:
+            searched, captured = counts()
+            parts = []
+            if searched:
+                head = (f"the last {searched} of {paged}" if hits else f"all {paged}") \
+                    + f" {noun} the search paged left out"
+                if out["completeness"]["next_cursor"] is not None:
+                    head += "; completeness.next_cursor continues from the first left out"
+                elif cursor is None:
+                    head += (f"; ask again with limit {max(len(hits), 1)} to page through "
+                             "them")
+                else:
+                    head += "; no next page can be offered"
+                parts.append(head)
+            if captured:
+                parts.append(f"{captured} more captured SharePoint file(s) matching this "
+                             "query left out; they are on no page: narrow the question to "
+                             "see them")
+            return "; ".join(parts)
+
+        def drop_one() -> None:
+            hits.pop()
+            searched, _captured = counts()
+            # The page's cursor moves back over the search's own hits dropped here (a
+            # resumable offset cursor), else none is offered and the note says how to
+            # page; dropped captured files are on no page: the page is partial.
+            out["completeness"] = dict(
+                out.get("completeness") or {"total": None}, complete=False, truncated=True,
+                reason="result_too_large", returned=len(hits),
+                next_cursor=(ot._rewound_cursor(cursor, searched) if searched
+                             else cursor))
 
         for keep in self.TRIM_MENTIONS:
             cut = 0
-            for doc in docs:
+            for doc in hits:
                 if len(doc.get("mentions") or []) > keep:
                     doc["mentions"], cut = doc["mentions"][:keep], cut + 1
             if cut:
@@ -1478,33 +1530,47 @@ class CaptureCaseHostTools(CaseHostTools):
                     return answer
         for chars in self.TRIM_TEXT_CHARS:
             cut = 0
-            for doc in docs:
-                for key in ("snippet", "title"):
-                    text = doc.get(key)
+            for doc in hits:
+                for field in ("snippet", "title"):
+                    text = doc.get(field)
                     if isinstance(text, dict) and len(text.get("untrusted_text", "")) > chars:
-                        doc[key] = dict(text, untrusted_text=text["untrusted_text"][:chars],
-                                        truncated=True)
+                        doc[field] = dict(text, untrusted_text=text["untrusted_text"][:chars],
+                                          truncated=True)
                         cut += 1
             if cut:
                 steps.append(f"{cut} snippet(s) or title(s) cut to {chars} characters")
                 if (answer := attempt()) is not None:
                     return answer
+        while len(hits) > floor:
+            drop_one()
+            if (answer := attempt(dropped())) is not None:
+                return answer
+        if total > len(hits):
+            steps.append(dropped())
         block = out.get("use_case")
-        if isinstance(block, dict) and (block.get("also") or any(
-                d.get("title") for d in block.get("documents") or [])):
-            block.pop("also", None)
-            for doc in block.get("documents") or []:
-                doc["title"] = None
-            steps.append("the use case's document titles and any second use case left out")
+        entries = [] if not isinstance(block, dict) else [block, *(block.get("also") or [])]
+        if any(d.get("title") for entry in entries for d in entry.get("documents") or []):
+            for entry in entries:
+                for doc in entry.get("documents") or []:
+                    doc["title"] = None
+            steps.append("the use cases' document titles left out (their citations and "
+                         "counts stay)")
             if (answer := attempt()) is not None:
                 return answer
-        if (answer := drop_to(0)) is not None:
-            return answer
-        if total:
-            steps.append(f"all {total} documents on this page left out, with no next page")
-        # Last, the gaps from the end (the trimming note itself always stays); an answer
-        # that does not fit even so is returned as it was, and fails as too large.
+        also = [entry for entry in entries[1:] if entry.get("documents")]
+        if also:
+            for entry in also:
+                entry["documents"] = []
+            steps.append("the second use case's documents left out (its id and withheld "
+                         "count stay): ask about it by name to list them")
+            if (answer := attempt()) is not None:
+                return answer
+        # Last, the gaps from the end, a use case's own gaps after every other (the
+        # trimming note itself always stays); an answer that does not fit even so is
+        # returned as it was, and fails as too large.
         gaps = [g for g in out.get("gaps") or [] if g.get("reason") != "result_trimmed"]
+        gaps = ([g for g in gaps if g.get("reason") in USE_CASE_GAPS]
+                + [g for g in gaps if g.get("reason") not in USE_CASE_GAPS])
         for keep in range(min(len(gaps), cap - 1) - 1, -1, -1):
             out["gaps"] = gaps[:keep]
             if (answer := attempt(f"{len(gaps) - keep} further gap(s) left out")) is not None:
@@ -1628,7 +1694,13 @@ class CaptureCaseHostTools(CaseHostTools):
         if self.sharepoint_capture_dir is None:
             return self._bounded(name, result) if "use_case" in result else result
         if name == "plx.documents" and isinstance(arguments, dict):
+            hits = len(result.get("documents") or [])
             result = self._captured_documents(arguments, actor, result)
+            token = _SEARCH_HITS.set(hits)
+            try:
+                return self._label(name, result, actor)
+            finally:
+                _SEARCH_HITS.reset(token)
         return self._label(name, result, actor)
 
     def _use_case_documents(self, name: str, arguments: Mapping[str, Any], actor: Any,
@@ -1725,11 +1797,9 @@ class CaptureCaseHostTools(CaseHostTools):
         # The use case's documents are never search hits: they are listed in
         # ``use_case`` alone, and the search's own page, counts and no_match gap stay
         # exactly as the search produced them.
+        # Too large with the block, the search's own hits are trimmed to fit
+        # (:meth:`_trimmed`), never the block dropped.
         out["gaps"] = (gaps + list(out.get("gaps") or []))[:cap]
-        if not self._fits(out) and not isinstance(out.get("documents"), list):
-            # Too large with the use-case block: the answer as it was, with the gaps. A
-            # document list keeps the block and is trimmed to fit (:meth:`_trimmed`).
-            out = dict(result, gaps=(gaps + list(result.get("gaps") or []))[:cap])
         return out
 
     def _use_case_served(self, case: Any, actor: Any, kinds: set[str]

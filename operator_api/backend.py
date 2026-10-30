@@ -40,6 +40,7 @@ from concurrent.futures import Future, TimeoutError as FutureTimeout
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
 import json
+import logging
 import os
 from pathlib import Path
 import queue
@@ -67,6 +68,10 @@ READ_TIMEOUT_SECONDS = 60
 ORIGINAL_READS = 4             # captured-original reads through a reader's host at once
 ORIGINAL_READS_PER_READER = 2
 ORIGINAL_READ_WAIT = 5.0       # seconds a read waits for a slot before it is busy
+# Cited items the reader's own agent host reads and gates per item (its capture stores'
+# gates) where the app's runtime may have no gate for them: a claim the host passed on
+# one stays, and it opens through that host.
+HOST_READ_SCHEMES = ("original://", "sharepoint://")
 AGENT_QUEUE_SECONDS = 120   # how long an Ask waits for a free agent session
 AGENT_FALLBACK = ("Note: the full, checked investigation could not start just now, so "
                   "this is the quicker answer. ")
@@ -1003,15 +1008,16 @@ class WorkspaceBackend:
                               timeout=READ_TIMEOUT_SECONDS)
 
     def source(self, reader: Reader, handle: str, text_offset: int) -> m.SourceView:
-        """A cited source as this reader may open it. A captured case original
-        (``original://``) the app's own runtime cannot open for an employee is read through
+        """A cited source as this reader may open it. A captured case original or a
+        SharePoint file (``HOST_READ_SCHEMES``) the app's own runtime cannot open for an
+        employee is read through
         that employee's agent host (``AgentAsk.read_source``: the capture store's
         per-reader gate, the one the Ask's reads passed); refused there, it is not found."""
         try:
             return self.reads.run(reader, lambda view: source_view(view, handle, text_offset),
                                   timeout=READ_TIMEOUT_SECONDS)
         except (KeyError, LookupError, ValueError):
-            if not (isinstance(handle, str) and handle.startswith("original://")
+            if not (isinstance(handle, str) and handle.startswith(HOST_READ_SCHEMES)
                     and self.agent_ask is not None
                     and self.agent_ask.serves(reader.session)):
                 raise
@@ -1194,6 +1200,51 @@ PARTIAL_AT_LIMIT = ("Partial answer (the time limit was reached while it was bei
                     "finished; only what passed the checks is shown): ")
 
 
+# Why a claim was not shown that is a permission (``agent_answer``): the reply then says
+# only the shown facts.
+PERMISSION_DROPS = frozenset({"not_granted", "item_refused", "withheld"})
+MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August",
+          "September", "October", "November", "December")
+
+
+def permission_withheld(dropped: Mapping[str, int]) -> bool:
+    return any(dropped.get(reason) for reason in PERMISSION_DROPS)
+
+
+def claim_words(claim: Mapping[str, Any]) -> list[str]:
+    """The words a claim states: its phrase, text, each value's quote and value string, and
+    an ISO date value also as written in words (November 14, 14 November)."""
+    out: list[str] = []
+    for item in [claim.get("phrase"), claim.get("text")] + [
+            part for value in claim.get("value_claims") or () if isinstance(value, Mapping)
+            for part in (value.get("quote"), value.get("value"))]:
+        item = plain(item) if not isinstance(item, str) else item
+        if not isinstance(item, str) or len(item.strip()) < 3:
+            continue
+        out.append(item.strip().rstrip("."))
+        date = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})(?:[T ].*)?", item.strip())
+        if date and 1 <= int(date.group(2)) <= 12:
+            month, day = MONTHS[int(date.group(2)) - 1], str(int(date.group(3)))
+            out += [f"{month} {day}", f"{day} {month}", f"{month[:3]} {day}"]
+    return out
+
+
+def without_claim_words(text: str, claims: Sequence[Mapping[str, Any]]) -> str:
+    """``text`` without each sentence, list item or line containing any of ``claims``'
+    words (``claim_words``, case-folded, white space collapsed)."""
+    from operating.answer_gate import _sentences
+
+    words = [" ".join(w.casefold().split()) for c in claims for w in claim_words(c)]
+    if not text or not words:
+        return text
+    pieces = _sentences(text)
+    kept = [(sentence, gap) for sentence, gap in pieces
+            if not any(w and w in " ".join(sentence.casefold().split()) for w in words)]
+    if len(kept) == len(pieces):
+        return text
+    return presentation.tidy("".join(sentence + gap for sentence, gap in kept))
+
+
 def agent_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest, ran: Any,
                  found: Mapping[str, Any], conversation: str,
                  ms: Callable[[], int]) -> m.AnswerPayload:
@@ -1206,44 +1257,56 @@ def agent_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest, 
     from operating import agent_session as runner
     from operator_api.agent_ask import plain_tree, reply_prose
     from operating import answer_gate
-    from operator_ui.object_workspace import ITEM_REFUSED
+    from operator_ui.object_workspace import ITEM_REFUSED, NOT_GRANTED
 
     decision, _refused = runner._gate_results(ran.events)
     decision = plain_tree(decision) if isinstance(decision, Mapping) else None
     facts: list[m.Fact] = []
-    withheld = 0
+    dropped: dict[str, int] = {}
+    hidden_claims: list[Mapping[str, Any]] = []
     for claim in (decision or {}).get("claims") or ():
         if not isinstance(claim, Mapping):
             continue
         claim = {**claim, "citations": [c for c in claim.get("citations") or ()
                                         if isinstance(c, str)]}
-        decided = view.access.decide(claim["citations"]) if claim["citations"] else {}
-        if not claim["citations"] or any(
-                marker is not None and not (handle.startswith("original://")
-                                            and marker.get("reason") == ITEM_REFUSED)
-                for handle, marker in decided.items()):
+        if not claim["citations"]:
+            dropped["uncited"] = dropped.get("uncited", 0) + 1
+            hidden_claims.append(claim)
+            continue
+        decided = view.access.decide(claim["citations"])
+        refusal = next((marker.get("reason") or "withheld" for handle, marker in decided.items()
+                        if marker is not None and not (handle.startswith(HOST_READ_SCHEMES)
+                                                       and marker.get("reason") == ITEM_REFUSED)),
+                       None)
+        if refusal is not None:
             # The session read as this reader and its gate passed the claim on what the
             # reader's host served them, so this happens only when the grant changed
-            # mid-Ask: a claim citing a unit the reader's grant withholds is not shown.
-            # A captured case original (original://) this app's item re-check refuses
-            # stays, its source without a link (``_source`` decides that again): the app's
-            # runtime has no gate for the host's capture store, whose gate admitted it
-            # for this reader. Mail, files and units the app refuses are withheld.
-            withheld += 1
+            # mid-Ask: a claim citing a unit the reader's grant withholds is not shown
+            # (counted below, never silently). A captured original or SharePoint file
+            # (``HOST_READ_SCHEMES``) whose item re-check this app's runtime cannot make
+            # stays: the reader's own host gate admitted it, and it opens through that
+            # host (``WorkspaceBackend.source``, which decides it again on open).
+            key = "not_granted" if refusal == NOT_GRANTED else "item_refused" \
+                if refusal == ITEM_REFUSED else "withheld"
+            dropped[key] = dropped.get(key, 0) + 1
+            hidden_claims.append(claim)
             continue
         sources = backend._claim_sources(view, claim)
         if not sources:
+            dropped["no_source"] = dropped.get("no_source", 0) + 1
+            hidden_claims.append(claim)
             continue
-        # A captured original the reader's own host served the session opens through
-        # that host (``WorkspaceBackend.source`` decides it again on open).
         sources = [source.model_copy(update={"open_url": open_url(source.handle)})
-                   if source.open_url is None and source.handle.startswith("original://")
+                   if source.open_url is None and source.handle.startswith(HOST_READ_SCHEMES)
                    else source for source in sources]
         if len(facts) < MAX_FACTS:
             check = (claim.get("check") or {}).get("status")
             facts.append(m.Fact(text=presentation.fact_text(str(claim.get("text") or ""),
                                                             claim)[:1000], sources=sources,
                                 check=check if isinstance(check, str) else None))
+    withheld = len(hidden_claims)
+    if withheld:
+        logging.getLogger("operator_api.ask").info(json.dumps({"claims_not_shown": dropped}))
     answer = ran.answer or {}
     passed = [c for c in (decision or {}).get("claims") or () if isinstance(c, Mapping)]
     refused = [c for c in (decision or {}).get("unsupported_claims") or ()
@@ -1277,10 +1340,21 @@ def agent_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest, 
         state = answer.get("answerability")
         outcome = ("answered" if state == "answerable" and facts else
                    "partial" if facts or state == "partial" else "not_found")
-        if withheld:
-            # The reply's sentences may state what a withheld claim backs: say only the
-            # shown claims (fail closed).
+        if withheld and permission_withheld(dropped):
+            # A claim withheld for a permission (the reader's grant, or an item's own
+            # permissions as this app decides them): only the shown facts are said.
             direct = " ".join(fact.text for fact in facts)
+        elif withheld:
+            # Withheld for another reason (no citation, no source): the reply is screened
+            # again with only the shown claims passed and the others refused, and any
+            # sentence repeating a withheld claim's words goes too.
+            hidden_ids = {str(h.get("id")) for h in hidden_claims}
+            shown = [c for c in passed if str(c.get("id")) not in hidden_ids]
+            direct = answer_gate.final_reply(direct, shown,
+                                             unsupported=list(refused) + hidden_claims,
+                                             question=request.question)["text"] \
+                if facts else ""
+            direct = without_claim_words(direct, hidden_claims)
         if not direct and facts:
             direct = " ".join(fact.text for fact in facts)
         direct, removed = presentation.reader_prose(

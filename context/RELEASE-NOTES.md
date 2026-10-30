@@ -33,6 +33,8 @@ Changed:
 
 Fixed:
 - A use case's documents are no longer reported missing when a search looked in only one kind of source.
+- Answers drawn from SharePoint files (such as the quote-to-order map) were coming back empty; they now show with their sources.
+- A question about a use case with many documents no longer fails as too large; the rest can be paged.
 
 Must keep working:
 - Everything in v0.11: quotes are the sentence that answers, partial answers stay marked as partial, and approvals still need a second person.
@@ -40,7 +42,6 @@ Must keep working:
 Known gaps:
 - Sign-in with a Microsoft account is not switched on yet; the preview uses a demo sign-in on the private network.
 - A full answer takes about 30 to 60 seconds.
-- Some quote-to-order questions still come back without an answer; a fix is in progress.
 - Actions in Mission Control are not switched on yet.
 
 ## v0.11 (2026-10-29)

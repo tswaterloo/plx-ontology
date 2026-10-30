@@ -4200,6 +4200,27 @@ def _write_cursor(offset: int, at: dt.datetime, fingerprint: str,
     return base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
 
 
+def _rewound_cursor(cursor: Any, by: int) -> str | None:
+    """A search page's offset cursor (:func:`_write_cursor`) resuming ``by`` items
+    earlier, so a page a host shortened after it was cut (to the response bound) skips
+    nothing; None for any other cursor (a scan cursor, malformed) or one that would
+    resume before the start. Its fingerprint, time and ranking mode are kept."""
+    if not isinstance(cursor, str) or cursor.startswith(SCAN_CURSOR_PREFIX) or by < 0:
+        return None
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        body = json.loads(base64.urlsafe_b64decode(padded.encode()).decode())
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(body, dict) or set(body) - {"o", "t", "f", "m"} \
+            or not {"o", "t", "f"} <= set(body) or type(body["o"]) is not int \
+            or body["o"] - by < 0:
+        return None
+    body["o"] -= by
+    raw = json.dumps(body, separators=(",", ":"))
+    return base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
+
+
 def _generation(store_meta: Mapping[str, str]) -> str:
     """The projection generation a scan cursor is bound to: the store's content digest
     (``StoreBuilder.commit``), else its build time; empty when the store states neither."""
