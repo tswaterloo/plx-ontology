@@ -1408,6 +1408,9 @@ _ADDED_COLUMNS["row_current"] += (
     # The ``seen_through_capture`` in force when a key scan lifted the row's absence:
     # that traversal did not see the row, so only a later one counts as its sighting.
     "sighting_floor INTEGER",)
+# Every table and index ``_DDL`` creates: a file holding them all needs no DDL at open.
+_DDL_OBJECTS = frozenset(re.findall(
+    r"CREATE\s+(?:UNIQUE\s+)?(?:TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\s+(\w+)", _DDL))
 _ROW_CURRENT_COLUMNS = ("relation, key_json, run_index, run_length, row_json, row_digest, "
                         "capture_id, first_seen_capture, first_seen_at, last_seen_capture, "
                         "last_seen_at, absent_since_capture, missing_from_source_since, "
@@ -1602,8 +1605,50 @@ class SourceMirror:
                 raise ValueError("source_mirror_persisted_copy_is_offline")
             self._open_scoped()
             return
-        self._db.execute("PRAGMA journal_mode = WAL")
         bound_wal(self._db)
+        if not self._is_current():
+            self._open_for_write(tenant)
+        self.generation: str = self._meta("generation")
+        legacy_max = self._meta("legacy_capture_max")
+        self._legacy_capture_max = int(legacy_max) if legacy_max is not None else None
+        fallback = self._meta(PERSISTED_FALLBACK_META)
+        if fallback is not None and client is not None:
+            self._db.close()
+            raise ValueError("source_mirror_persisted_copy_is_offline")
+        # Set on a persisted copy served while the live source is unavailable.
+        self.fallback: dict[str, Any] | None = (json.loads(fallback) if fallback is not None
+                                                else None)
+
+    def _is_current(self) -> bool:
+        """True when the file needs no write to open: WAL already, every table, index
+        and added column present, schema, generation and replacement rule recorded and,
+        once captures exist, the binding pinned. Read-only, so a reader opens while a
+        capture holds the write lock; anything missing takes the write path."""
+        db = self._db
+        if str(db.execute("PRAGMA journal_mode").fetchone()[0]).lower() != "wal":
+            return False
+        have = {row[0] for row in db.execute("SELECT name FROM sqlite_master")}
+        if not _DDL_OBJECTS <= have:
+            return False
+        for table, columns in _ADDED_COLUMNS.items():
+            names = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
+            if any(column.split()[0] not in names for column in columns):
+                return False
+        if (self._meta("schema") != "plx-source-mirror/v1"
+                or self._meta("generation") is None
+                or self._meta("replacement_rule") != REPLACEMENT_RULE):
+            return False
+        if db.execute("SELECT 1 FROM capture LIMIT 1").fetchone() is not None:
+            if self._meta("tenant") is None:
+                return False
+            if self._source_digest is not None and self._meta("source_digest") is None:
+                return False
+        return True
+
+    def _open_for_write(self, tenant: str) -> None:
+        """Create, migrate, stamp and pin a fresh or legacy file (needs the write
+        lock, waited for up to the busy timeout)."""
+        self._db.execute("PRAGMA journal_mode = WAL")
         removals_new = self._db.execute(
             "SELECT 1 FROM sqlite_master WHERE name = 'row_removal'").fetchone() is None
         self._db.executescript(_DDL)
@@ -1633,16 +1678,6 @@ class SourceMirror:
             if has_captures is not None:
                 # Opening never fails on a mismatch; every operation refuses.
                 self._pin_binding(tenant_now, verify=False)
-        self.generation: str = self._meta("generation")
-        legacy_max = self._meta("legacy_capture_max")
-        self._legacy_capture_max = int(legacy_max) if legacy_max is not None else None
-        fallback = self._meta(PERSISTED_FALLBACK_META)
-        if fallback is not None and client is not None:
-            self._db.close()
-            raise ValueError("source_mirror_persisted_copy_is_offline")
-        # Set on a persisted copy served while the live source is unavailable.
-        self.fallback: dict[str, Any] | None = (json.loads(fallback) if fallback is not None
-                                                else None)
 
     def _open_scoped(self) -> None:
         """The read state of a scoped fallback: its generation, legacy marker and the

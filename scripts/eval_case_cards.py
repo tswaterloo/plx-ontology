@@ -327,8 +327,10 @@ def set_documents(doc: Any, originals: Mapping[str, Sequence[str]]) -> set[str]:
     """A card set's own source documents, by byte SHA-256 (scorer /21,
     ``evals.score.evidenced_claims``): its ``source.watched_originals`` files, its
     ``source`` archive or original (``_SOURCE_ORIGINAL_KEYS``), its case's own original
-    in the registry (``originals``: ``case_originals``, by the set's ``case``) and its
-    maps' own files (``maps.<prefix>.source_files``)."""
+    in the registry (``originals``: ``case_originals``, by the set's ``case``), its
+    maps' own files (``maps.<prefix>.source_files``) and each related advisory's file the
+    set pins as its source by byte SHA-256 (``source.related_advisories[].source_revision``
+    of ``sha256:<hex>``, alone or as a ``;``-separated part: ``_revision_sha``)."""
     if not isinstance(doc, Mapping):
         return set()
     source = doc.get("source") if isinstance(doc.get("source"), Mapping) else {}
@@ -340,11 +342,26 @@ def set_documents(doc: Any, originals: Mapping[str, Sequence[str]]) -> set[str]:
               if isinstance(source.get(key), Mapping)]
     found += list(originals.get(doc.get("case"), ()) if isinstance(doc.get("case"), str)
                   else ())
+    related = source.get("related_advisories")
+    found += [_revision_sha(r.get("source_revision")) for r in related or []
+              if isinstance(r, Mapping)] if isinstance(related, list) else []
     maps = doc.get("maps") if isinstance(doc.get("maps"), Mapping) else {}
     for one in maps.values():
         files = one.get("source_files") if isinstance(one, Mapping) else None
         found += [f.get("sha256") for f in files or [] if isinstance(f, Mapping)]
     return {sha for sha in found if isinstance(sha, str) and _HEX64.match(sha)}
+
+
+def _revision_sha(revision: Any) -> str | None:
+    """The byte SHA-256 a related advisory's ``source_revision`` pins its file by: its
+    ``sha256:<hex>`` part (``sha256:17cd...`` or ``version:1.0;...;sha256:98fb...``); None
+    for any other revision (a bare digest, a quoted-text or manifest digest, a version:
+    none says it is the file's bytes)."""
+    if not isinstance(revision, str):
+        return None
+    parts = [part.strip()[len("sha256:"):] for part in revision.split(";")
+             if part.strip().startswith("sha256:")]
+    return parts[0].lower() if len(parts) == 1 and _HEX64.match(parts[0]) else None
 
 
 def card_documents(sets: Mapping[str, tuple[Mapping[str, Any], str]], case: str,

@@ -909,6 +909,80 @@ class BindingTests(MirrorTestCase):
                 SourceMirror(self.path, client, ALL, clock=self.clock)
             self.assertEqual(str(caught.exception), "source_mirror_client_base_url_required")
 
+class ReaderOpenUnderWriteLockTests(MirrorTestCase):
+    """A reader opens a current mirror while another process (a capture) holds the
+    write lock; a file that still needs a migration, stamp or pin waits a bounded time
+    for the lock and never opens without it."""
+
+    def hold_write_lock(self):
+        holder = sqlite3.connect(str(self.path), isolation_level=None)
+        holder.execute("BEGIN IMMEDIATE")
+        holder.execute("UPDATE mirror_meta SET value = value WHERE name = 'schema'")
+        self.addCleanup(holder.close)
+        return holder
+
+    def filled(self):
+        mirror = self.mirror()
+        citation = mirror.rows(OPS, "public.customer")["rows"][0]["citation"]
+        generation = mirror.generation
+        mirror.close()
+        return citation, generation
+
+    def test_current_file_opens_and_reads_while_a_writer_holds_the_lock(self):
+        citation, generation = self.filled()
+        holder = self.hold_write_lock()
+        started = time.monotonic()
+        reader = SourceMirror(self.path, None, ALL, clock=self.clock, _busy_timeout_ms=200)
+        self.addCleanup(reader.close)
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertEqual(reader.generation, generation)
+        self.assertTrue(reader.resolve_citation(citation, OPS)["ok"])
+        # A pinned binding is still enforced on the read-only open.
+        other = SourceMirror(self.path, None, ALL, tenant="acme", clock=self.clock,
+                             _busy_timeout_ms=200)
+        self.addCleanup(other.close)
+        self.assertEqual(other.resolve_citation(citation, Actor(
+            "acme", frozenset({"staff:operations"})))["error"], "binding_mismatch")
+        holder.execute("COMMIT")
+
+    def test_file_needing_a_write_waits_bounded_then_is_stamped(self):
+        self.filled()
+        for name in ("tenant", "replacement_rule", "generation"):
+            with self.subTest(missing=name):
+                db = sqlite3.connect(str(self.path), isolation_level=None)
+                saved = db.execute("SELECT value FROM mirror_meta WHERE name = ?",
+                                   (name,)).fetchone()
+                db.execute("DELETE FROM mirror_meta WHERE name = ?", (name,))
+                db.close()
+                holder = self.hold_write_lock()
+                with self.assertRaises(sqlite3.OperationalError) as caught:
+                    SourceMirror(self.path, None, ALL, clock=self.clock,
+                                 _busy_timeout_ms=100)
+                self.assertIn("locked", str(caught.exception))
+                holder.execute("COMMIT")
+                holder.close()
+                reopened = SourceMirror(self.path, None, ALL, clock=self.clock)
+                self.assertIsNotNone(reopened._meta(name))
+                if name == "tenant":
+                    self.assertEqual(reopened._meta(name), saved[0])
+                reopened.close()
+
+    def test_missing_added_column_is_migrated_not_skipped(self):
+        self.filled()
+        db = sqlite3.connect(str(self.path), isolation_level=None)
+        db.execute("ALTER TABLE row_current DROP COLUMN sighting_floor")
+        db.close()
+        holder = self.hold_write_lock()
+        with self.assertRaises(sqlite3.OperationalError):
+            SourceMirror(self.path, None, ALL, clock=self.clock, _busy_timeout_ms=100)
+        holder.execute("COMMIT")
+        reopened = SourceMirror(self.path, None, ALL, clock=self.clock)
+        self.addCleanup(reopened.close)
+        columns = {row["name"] for row in reopened._db.execute(
+            "PRAGMA table_info(row_current)")}
+        self.assertIn("sighting_floor", columns)
+
+
 class QueryTests(MirrorTestCase):
     def rows(self, mirror, **options):
         return sorted(self.by_id(mirror.rows(OPS, "public.app_purchase_order", **options)))

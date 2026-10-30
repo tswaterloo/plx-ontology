@@ -68,6 +68,30 @@ class EmployeeCaseRuntimeTests(LiveCitationTestCase):
 
     # ------------------------------------------------------------ wiring
 
+    def test_reader_runtime_opens_while_a_capture_holds_the_write_locks(self):
+        # A capture cycle holds the mirror's (and the case store's) write lock for long
+        # stretches; a reader session's runtime over current files must still open.
+        import sqlite3
+        import time
+        from operating.case_runtime import CASE_RUNTIME_DIR, CASES_FILE, MIRROR_FILE
+        first = self.runtime()
+        actor = Actor("plx", frozenset({"staff:shared"}))
+        case_id = first.cases.open(actor, "AO-26005B")
+        first.close()
+        holders = []
+        for name in (MIRROR_FILE, CASES_FILE):
+            holder = sqlite3.connect(str(self.state / CASE_RUNTIME_DIR / name),
+                                     isolation_level=None)
+            holder.execute("BEGIN IMMEDIATE")
+            self.addCleanup(holder.close)
+            holders.append(holder)
+        started = time.monotonic()
+        reader = self.runtime()
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertIn(case_id, [c["case_id"] for c in reader.cases.list(actor)])
+        for holder in holders:
+            holder.execute("COMMIT")
+
     def test_employee_actor_is_refused_without_a_resolver(self):
         runtime = self.runtime()
         with self.assertRaises(EmployeeAccessRefused):

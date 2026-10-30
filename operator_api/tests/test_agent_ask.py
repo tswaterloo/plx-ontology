@@ -306,6 +306,21 @@ class AgentPath(unittest.TestCase):
         answer = self.ask(self.ops, f"whats the status on {po['label'].lower()}")[-1][0][1]
         self.assertIn("though the order status is Overdue", answer["direct_answer"])
 
+    def test_a_hedge_about_receipt_is_not_shown_as_a_contrary_source(self):
+        po = self.late[0]
+        lines = [tool_use(1, "plx.case_get", {"answer": {"claims": []}}),
+                 tool_result(1, decision(self.handle, "Overdue"))]
+        prose = ("I couldn't confirm whether it was fully received from a source you can "
+                 "open.\n\nThe order status is Overdue.\n\n"
+                 + answer_block(self.handle, "Overdue"))
+        self.use(self.ops, lambda on_line: ScriptedSession(on_line, lines, prose))
+        answer = self.ask(self.ops, f"whats the status on {po['label'].lower()}")[-1][0][1]
+        first = answer["direct_answer"].splitlines()[0]
+        self.assertTrue(first.startswith(f"{po['label']} is {po['days_late']} days late"),
+                        first)
+        self.assertNotIn("A source says", answer["direct_answer"])
+        self.assertIn("The order status is Overdue.", answer["direct_answer"])
+
     def test_a_late_po_a_source_calls_complete_shows_both_side_by_side(self):
         po = self.late[0]
         lines = [tool_use(1, "plx.case_get", {"answer": {"claims": []}}),

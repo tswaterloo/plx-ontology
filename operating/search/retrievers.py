@@ -49,11 +49,32 @@ _WORD = re.compile(r"[^\W_][\w'.\-/]*", re.UNICODE)
 BM25_K1, BM25_B = 1.2, 0.75
 BM25_POOL = 200
 FUZZY_THRESHOLD = 0.5
+FUZZY_POOL = 3000
 COMMON_SHARE = 0.25
 COMMON_MIN_ROWS = 1000
 DF_CAP = 20000
 POOL_SCAN = 20000
 MAX_TERMS = 24
+# Chunks one source item (a document without its page, a message, a map) may hold in
+# one retriever's list, and how much deeper than its list a retriever reads to fill it:
+# a 60-stage map or a workbook's rows would otherwise take every slot, leaving the
+# fusion a handful of documents (8 from 100 chunks, measured), most of which the item
+# gate may then refuse.
+PER_ITEM = 2
+DEEP = 4
+_ITEM_KEY = r"regexp_replace(i.source_handle, '[#&]page=[0-9]+$', '')"
+
+
+def _per_item(inner: str, limit_param: str = "limit") -> str:
+    """``inner`` (``chunk_id, s`` best first, at most ``DEEP`` x limit rows) kept to
+    ``PER_ITEM`` chunks per source item, best ``limit`` rows."""
+    return f"""SELECT chunk_id, s FROM (
+                   SELECT q.chunk_id, q.s, row_number() OVER (
+                       PARTITION BY {_ITEM_KEY} ORDER BY q.s DESC, q.chunk_id) AS n
+                   FROM ({inner}) q JOIN search.chunks i ON i.chunk_id = q.chunk_id) x
+               WHERE n <= {PER_ITEM}
+               ORDER BY s DESC, chunk_id
+               LIMIT %({limit_param})s"""
 
 
 def words(texts: Iterable[str], *, limit: int = MAX_TERMS) -> list[str]:
@@ -147,16 +168,17 @@ def dense(conn: Any, scope: dict[str, Any], vectors: Sequence[Sequence[float]], 
     best: dict[str, float] = {}
     with conn.transaction():
         conn.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
-        conn.execute(f"SET LOCAL hnsw.ef_search = {max(int(ef_search), limit)}")
+        conn.execute(f"SET LOCAL hnsw.ef_search = {min(max(int(ef_search), limit * DEEP), 1000)}")
         conn.execute("SET LOCAL hnsw.max_scan_tuples = 40000")
         for vector in vectors:
             rows = conn.execute(
-                f"""SELECT c.chunk_id, 1 - (c.embedding <=> %(v)s::halfvec) AS s
+                _per_item(f"""SELECT c.chunk_id, 1 - (c.embedding <=> %(v)s::halfvec) AS s
                     FROM search.chunks c
                     WHERE c.embed_model = %(model)s AND {PERM} {KINDS}
                     ORDER BY c.embedding <=> %(v)s::halfvec
-                    LIMIT %(limit)s""",
-                _params(scope, v=_vector(vector, dim), model=model, limit=limit)).fetchall()
+                    LIMIT %(deep)s"""),
+                _params(scope, v=_vector(vector, dim), model=model, limit=limit,
+                        deep=limit * DEEP)).fetchall()
             for chunk_id, sim in rows:
                 if sim is not None and float(sim) > best.get(chunk_id, -2.0):
                     best[chunk_id] = float(sim)
@@ -264,18 +286,19 @@ def bm25(conn: Any, scope: dict[str, Any], texts: Sequence[str], limit: int
     keep = _discriminating(df, n)
     if not keep:
         return []
-    params = _params(scope, lexemes=keep, pool=max(BM25_POOL, limit))
+    params = _params(scope, lexemes=keep, pool=max(BM25_POOL, limit * DEEP))
     # Ranked among at most POOL_SCAN matching rows, so a query left with only common
     # words stays bounded on a large table.
     pool = conn.execute(
-        f"""SELECT c.chunk_id, length(c.tsv) FROM (
-                SELECT c.chunk_id, c.tsv FROM search.chunks c
+        f"""SELECT c.chunk_id, length(c.tsv), {_ITEM_KEY.replace("i.", "c.")} FROM (
+                SELECT c.chunk_id, c.tsv, c.source_handle FROM search.chunks c
                 WHERE c.tsv @@ {_OR_TSQUERY} AND {PERM} {KINDS} LIMIT {POOL_SCAN}) c
             ORDER BY ts_rank_cd(c.tsv, {_OR_TSQUERY}, 32) DESC, c.chunk_id
             LIMIT %(pool)s""", params).fetchall()
     if not pool:
         return []
     lengths = {r[0]: max(int(r[1]), 1) for r in pool}
+    item_of = {r[0]: r[2] for r in pool}
     tf: dict[str, dict[str, int]] = {}
     for chunk_id, lexeme, count in conn.execute(
             """SELECT c.chunk_id, u.lexeme, coalesce(array_length(u.positions, 1), 1)
@@ -294,7 +317,16 @@ def bm25(conn: Any, scope: dict[str, Any], texts: Sequence[str], limit: int
         if score > 0:
             scores.append((chunk_id, score))
     scores.sort(key=lambda kv: (-kv[1], kv[0]))
-    return scores[:limit]
+    kept: list[tuple[str, float]] = []
+    per_item: dict[str, int] = {}
+    for chunk_id, score in scores:   # at most PER_ITEM chunks of one source item
+        item = item_of[chunk_id]
+        if per_item.get(item, 0) < PER_ITEM:
+            per_item[item] = per_item.get(item, 0) + 1
+            kept.append((chunk_id, score))
+            if len(kept) >= limit:
+                break
+    return kept
 
 
 def fuzzy(conn: Any, scope: dict[str, Any], question: str, limit: int
@@ -313,19 +345,24 @@ def fuzzy(conn: Any, scope: dict[str, Any], question: str, limit: int
             ORDER BY i""", _params(scope, terms=terms)).fetchall()]
     if not terms:
         return []
-    # One OR arm per word, so a trigram index on header serves each arm.
+    # One OR arm per word, so the trigram index on header (chunks_header_trgm) serves
+    # each arm. The matching rows are scored among at most FUZZY_POOL of them: a typo of
+    # a common word ("recieved") matches tens of thousands of headers, and reading and
+    # scoring all of them (5 s) is past the statement timeout; the first FUZZY_POOL read
+    # in 0.3 s. Such a word tells few rows apart anyway (as BM25 drops common lexemes).
     arms = " OR ".join(f"%(t{i})s <%% c.header" for i in range(len(terms)))
     with conn.transaction():
         conn.execute(f"SET LOCAL pg_trgm.word_similarity_threshold = {FUZZY_THRESHOLD}")
         rows = conn.execute(
-            f"""SELECT c.chunk_id,
+            _per_item(f"""SELECT c.chunk_id,
                        (SELECT sum(word_similarity(t, c.header)) FROM unnest(%(terms)s::text[]) t
                         WHERE t <%% c.header) AS s
-                FROM search.chunks c
-                WHERE ({arms}) AND {PERM} {KINDS}
+                FROM (SELECT c.chunk_id, c.header FROM search.chunks c
+                      WHERE ({arms}) AND {PERM} {KINDS}
+                      LIMIT {FUZZY_POOL}) c
                 ORDER BY s DESC NULLS LAST, c.chunk_id
-                LIMIT %(limit)s""",
-            _params(scope, terms=terms, limit=limit,
+                LIMIT %(deep)s"""),
+            _params(scope, terms=terms, limit=limit, deep=limit * DEEP,
                     **{f"t{i}": t for i, t in enumerate(terms)})).fetchall()
     return [(r[0], float(r[1] or 0.0)) for r in rows if r[1]]
 

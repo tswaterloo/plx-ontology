@@ -26,6 +26,10 @@ agent sees.
   exactly the version the citation names, as that reader (``evals.capture_evidence``:
   the row shape the scorer checks). Anything else (withheld, changed since, not
   captured, a paging argument) is ``{"ok": false}``: fail closed.
+* ``harness/read`` of ``plx.search_ranked`` (params ``{question, k}``, never a listed
+  tool) is hybrid search as this session's reader, under the policy, actor and item gate
+  ``plx.find`` / ``plx.documents`` rank with when ``PLX_SEARCH=hybrid``
+  (``Session.search_ranked``): what the retrieval eval measures.
 """
 
 from __future__ import annotations
@@ -40,6 +44,7 @@ from typing import Any, BinaryIO, Sequence
 from evals.score import RECORD_SCHEMES
 
 HARNESS_READ = "harness/read"
+SEARCH_RANKED = "plx.search_ranked"   # host-code only, never a listed tool
 RECORD_PREFIXES = tuple(f"{scheme}://" for scheme in RECORD_SCHEMES)
 
 
@@ -67,7 +72,71 @@ class Session:
         if name == "plx.source_citation" and \
                 str(arguments.get("citation") or "").startswith(RECORD_PREFIXES):
             return self.record_read(arguments)
+        if name == SEARCH_RANKED:
+            return self.search_ranked(arguments)
         return self.host_code(name, arguments)
+
+    def search_ranked(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
+        """Hybrid search (``operating.search``) as this session's reader, decided exactly as
+        ``plx.find`` / ``plx.documents`` decide their ``PLX_SEARCH=hybrid`` ranking
+        (``operating.search.plug``): the employee-gated actor, the read policy decided for
+        this call (its audience units and markings filter every retriever in SQL) and the
+        tools' item gate on every hit shown, inside one search-bound call (a captured mail
+        or file is decided on the capture, never re-read live). The question is understood
+        by the rules path under the same policy. Arguments ``{question, k}`` only;
+        anything else is refused. Hits carry their signals; nothing is logged."""
+        question, k = arguments.get("question"), arguments.get("k")
+        if set(arguments) != {"question", "k"} or not isinstance(question, str) \
+                or not question.strip() or isinstance(k, bool) or not isinstance(k, int) \
+                or not 1 <= k <= 100:
+            return {"ok": False, "error": "invalid_search"}
+        try:
+            from operating.search.core import search
+            from operating.search.models import warm
+        except ImportError:
+            return {"ok": False, "error": "search_unavailable"}
+        # Every measured query is embedded and reranked: the first one waits for the
+        # models to load (once per session) instead of ranking without the reranker.
+        warm(wait=True)
+        server = self.server
+        try:
+            gated = server.case_runtime.employee_gate(server.actor)
+            if server.ontology is None:   # the session's tools, built as any tool call builds them
+                self.host_code("plx.schema", {})
+            host = server.ontology
+            if host is None:
+                return {"ok": False, "error": "tools_unavailable"}
+            with host.request(), host.per_call():
+                bound = getattr(host, "_call_bound", None)
+                searching = getattr(bound, "search", None)
+                if bound is not None:
+                    bound.search = True
+                try:
+                    tools = host.tools
+                    policy = tools.policy = host.policy_now(gated)
+                    extra: dict[str, Any] = {}
+                    understanding: Any = question
+                    try:
+                        from operating.query_understanding import understand
+                        understanding = understand(question, actor=gated, policy=policy,
+                                                   llm=False)
+                        extra["intent"] = understanding.intent
+                    except Exception as error:  # noqa: BLE001 - the bare question, stated
+                        extra["understanding_failed"] = type(error).__name__
+                    result = search(understanding, gated, k=k, question=question,
+                                    policy=policy, item_gate=tools._item_allowed,
+                                    log=False, hidden=False)
+                finally:
+                    if bound is not None:
+                        bound.search = searching
+        except Exception as error:  # noqa: BLE001 - a refused reader or a failed search
+            return {"ok": False, "error": type(error).__name__}
+        return {"ok": True, "hits": [
+            {"handle": h["handle"], "object_id": h.get("object_id"), "title": h.get("title"),
+             "snippet": h.get("snippet"), "kind": h.get("kind"),
+             "signals": {**(h.get("signals") or {}), "score": h.get("score")}}
+            for h in result.hits], "extra": {**extra, "timings": result.timings,
+                                             "notes": list(result.notes)}}
 
     def record_read(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         """A ``RECORD_SCHEMES`` citation as the reader may read it now (module docstring)."""

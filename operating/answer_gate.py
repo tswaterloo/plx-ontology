@@ -196,9 +196,12 @@ REPAIR_HINTS = {
         "each detail says what to fix."),
 }
 # The answerability a final decision gives (``answerability``, its ``state``): ``blocked`` only when no
-# claim passed; with a passed claim ``partial`` while the answer leaves an unknown or a
-# refused claim, else ``answerable``.
+# claim passed; with a passed claim ``partial`` while the answer leaves an unknown, a
+# refused claim or an unresolved source conflict, else ``answerable``.
 ANSWERABILITY = ("answerable", "partial", "blocked")
+# The gap reason of two cited statements that contradict each other (``evals.measure``):
+# an answer carrying one unresolved is partial (``answerability``).
+CONFLICT_REASON = "conflicting_sources"
 # Added to a final decision with a passed claim: a passed claim is a cited answer.
 ANSWER_NOT_BLOCKED = (
     "A claim passed, so your answer is not blocked: state each passed claim as its "
@@ -359,18 +362,29 @@ def gate_answer(decision: Mapping[str, Any], server: Any, *, seen: set[str],
     return out
 
 
-def answerability(gated: Mapping[str, Any]) -> str | None:
+def unresolved_conflict(gaps: Any) -> bool:
+    """Whether an answer's ``gaps`` hold an unresolved source conflict: a gap of state
+    ``unknown`` and reason ``CONFLICT_REASON`` (two cited statements contradict each
+    other and the answer picks neither)."""
+    return isinstance(gaps, (list, tuple)) and any(
+        isinstance(gap, Mapping) and gap.get("state") == "unknown"
+        and gap.get("reason") == CONFLICT_REASON for gap in gaps)
+
+
+def answerability(gated: Mapping[str, Any], gaps: Any = ()) -> str | None:
     """The answerability of ``gate_answer``'s final decision (``ANSWERABILITY``): None for
     a repair (not final); ``blocked`` only when no claim passed; ``partial`` when a claim
-    passed beside an unknown or a refused claim, or a passed claim cites a text the
-    session was served only part of (``partly_read``); else ``answerable``. A passed claim
-    is a cited value, so an answer with one is never blocked."""
+    passed beside an unknown or a refused claim, a passed claim cites a text the
+    session was served only part of (``partly_read``), or the answer's ``gaps`` hold an
+    unresolved source conflict (``unresolved_conflict``: the gate never sees a gap as an
+    unknown, and a conflict leaves part of the answer open); else ``answerable``. A
+    passed claim is a cited value, so an answer with one is never blocked."""
     if gated.get("outcome") == "repair":
         return None
     if gated.get("outcome") != "answered" or not gated.get("claims"):
         return "blocked"
     return "partial" if gated.get("unknowns") or gated.get("unsupported") \
-        or gated.get("partly_read") else "answerable"
+        or gated.get("partly_read") or unresolved_conflict(gaps) else "answerable"
 
 
 # The unknown a final decision adds per text field a passed claim cites that this session

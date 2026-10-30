@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 from evals import runner, score
 from evals.tests import fixtures as fx
@@ -354,44 +355,125 @@ class MetricsTest(unittest.TestCase):
 
 
 class GatedBackendTest(unittest.TestCase):
-    """A registered backend reads as the tools host's reader: hidden hits are
-    counted, never ranked, and no backend runs without that host."""
+    """A registered backend reads as the tools host's reader: hybrid search runs inside
+    that host under its policy and item gate, and no backend runs without that host."""
 
     class Host:
-        def __init__(self, visible):
-            self.visible, self.reads = visible, []
+        def __init__(self, answer):
+            self.answer, self.reads = answer, []
 
-        def call(self, name, arguments):
-            self.reads.append((name, arguments["citation"]))
-            if arguments["citation"] == "api://boom":
-                raise RuntimeError("read failed")
-            return {"status": "resolved" if arguments["citation"] in self.visible
-                    else "withheld"}
+        def read(self, name, arguments):
+            self.reads.append((name, dict(arguments)))
+            return self.answer
 
-    def test_hidden_hits_are_counted_never_ranked(self):
-        host = self.Host({"original://co-111111", "api://po/1"})
-        gate = retrieval.HostGate(host)
-        asked = []
+    def test_hybrid_runs_inside_the_host_as_its_reader_and_a_refusal_is_an_error(self):
+        hits = [{"handle": "original://co-111111", "title": "t", "signals": {"dense": 0.7}}]
+        host = self.Host({"ok": True, "hits": hits, "extra": {"notes": []}})
+        search = retrieval.BACKENDS["hybrid"](host, "plx.documents")
+        got = search("q", 10)
+        self.assertEqual(got["hits"], hits)
+        self.assertEqual(host.reads, [("plx.search_ranked", {"question": "q", "k": 30})])
+        search("q", 50)
+        self.assertEqual(host.reads[-1][1]["k"], 100)          # capped at the search's max
+        for refused in ({"ok": False, "error": "invalid_search"}, None, {"hits": hits}):
+            with self.subTest(refused=refused), self.assertRaises(retrieval.RetrievalError):
+                retrieval.BACKENDS["hybrid"](self.Host(refused), "plx.documents")("q", 10)
+        # a refused search is counted as an error, never an empty ranking that scores 0
+        doc = retrieval.evaluate(
+            [{"case": "c", "card_id": "x", "item": {"id": "i", "question": {"text": "q"}}}],
+            retrieval.BACKENDS["hybrid"](self.Host(None), "plx.documents"), sets={},
+            variants={}, by_sha={}, sha_of={}, catalog={}, kinds=["original"])
+        self.assertEqual(doc["queries"][0]["error"], "RetrievalError")
 
-        def backend(question, k, *, reader):
-            asked.append((k, reader))
-            return {"hits": [{"handle": "sharepoint://d/hidden"},
-                             {"handle": "original://co-111111"},
-                             {"handle": "api://boom"}, {"handle": None},
-                             {"handle": "api://po/1"}], "extra": {"intent": "status"}}
+    def test_the_host_side_search_uses_the_readers_call_policy_and_item_gate(self):
+        from evals import harness_reads
+        from operating.search.core import SearchResult
+        calls = []
 
-        got = retrieval.GatedSearch(backend, gate)("q", 10)
-        self.assertEqual([h["handle"] for h in got["hits"]],
-                         ["original://co-111111", "api://po/1"])
-        self.assertEqual(got["hidden"], 3)
-        self.assertEqual(asked, [(30, gate)])            # the host's gate, overfetched
-        got = retrieval.GatedSearch(lambda q, k: {"hits": [
-            {"handle": "sharepoint://d/hidden"}]}, gate)("q", 10)
-        self.assertEqual((got["hits"], got["hidden"]), ([], 1))
-        self.assertEqual(len(host.reads), 4)                # one read per handle, cached
-        # a hidden hit on a target never scores
-        wanted = [{"key": "doc", "handles": ["sharepoint://d/hidden"]}]
-        self.assertEqual(retrieval.measure(got["hits"], wanted)["hit"], False)
+        class Tools:
+            policy = None
+
+            def _item_allowed(self, actor, handle):
+                return handle.startswith("api://")
+
+        class Ontology:
+            tools = Tools()
+            _call_bound = type("B", (), {"search": False})()
+
+            @contextlib.contextmanager
+            def request(self):
+                yield self
+
+            @contextlib.contextmanager
+            def per_call(self):
+                calls.append(("searching_inside", None))
+                yield None
+
+            def policy_now(self, actor):
+                return ("policy-of", actor)
+
+        class Runtime:
+            def employee_gate(self, actor):
+                return ("gated", actor)
+
+        server = type("S", (), {"case_runtime": Runtime(), "actor": "reader",
+                                "ontology": Ontology()})()
+
+        def search(understanding, actor, **kw):
+            calls.append((actor, kw["policy"], kw["item_gate"](actor, "api://x"),
+                          kw["item_gate"](actor, "sharepoint://d/i"), kw["log"],
+                          server.ontology._call_bound.search))
+            return SearchResult([{"handle": "api://x", "title": "t", "score": 0.5,
+                                  "signals": {"dense": 0.5}}], {}, {"total": 1.0}, ["n"])
+
+        session = harness_reads.Session(server)
+        with mock.patch("operating.search.core.search", search), \
+                mock.patch("operating.search.models.warm") as warm, \
+                mock.patch("operating.query_understanding.understand",
+                           side_effect=RuntimeError("no index")):
+            got = session.read("plx.search_ranked", {"question": "late orders", "k": 30})
+            for bad in ({"question": "q"}, {"question": "", "k": 3}, {"question": "q", "k": 0},
+                        {"question": "q", "k": 101}, {"question": "q", "k": True},
+                        {"question": "q", "k": 3, "reader": "all"}, {"question": 5, "k": 3}):
+                with self.subTest(bad=bad):
+                    self.assertEqual(session.read("plx.search_ranked", bad),
+                                     {"ok": False, "error": "invalid_search"})
+        self.assertTrue(got["ok"], got)
+        warm.assert_called_once_with(wait=True)
+        gated = ("gated", "reader")
+        self.assertEqual(calls[1], (gated, ("policy-of", gated), True, False, False, True))
+        self.assertFalse(server.ontology._call_bound.search)   # restored after the call
+        self.assertEqual(got["hits"][0]["signals"], {"dense": 0.5, "score": 0.5})
+        self.assertEqual(got["extra"]["understanding_failed"], "RuntimeError")
+        self.assertEqual(len(calls), 2)                        # invalid reads search nothing
+
+    def test_a_host_that_does_not_start_stops_the_run_and_gets_the_directory_keys(self):
+        made = []
+
+        class Live:
+            def __init__(self, *args, **kwargs):
+                made.append(kwargs)
+
+            def tools(self):
+                raise RuntimeError("live_host_start_refused:entra_directory_credentials_unavailable")
+
+            def close(self):
+                made.append("closed")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "host.json"
+            config.write_text(json.dumps({"tenant": "plx", "entra_directory": True}), "utf-8")
+            environ = {"PLX_WORKBENCH_STATE_DIR": tmp, "MICROSOFT_GRAPH_CLIENT_ID": "id",
+                       "MICROSOFT_GRAPH_CLIENT_SECRET": "s", "OTHER_SECRET": "x"}
+            with mock.patch("scripts.eval_real_agent.reader_identity",
+                            return_value=({"uid": "u"}, None)), \
+                    mock.patch("scripts.eval_real_agent.LiveHost", Live):
+                with self.assertRaises(retrieval.RetrievalError) as raised:
+                    retrieval.live_host(environ, config)
+        self.assertIn("host_unavailable:live_host_start_refused", str(raised.exception))
+        self.assertEqual(made[0]["extra_env"], {"MICROSOFT_GRAPH_CLIENT_ID": "id",
+                                                "MICROSOFT_GRAPH_CLIENT_SECRET": "s"})
+        self.assertEqual(made[-1], "closed")
 
     def test_a_backend_without_the_tools_host_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp, \

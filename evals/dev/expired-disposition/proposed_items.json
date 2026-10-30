@@ -443,7 +443,7 @@
    },
    {
     "id": "EMD-11",
-    "own_document_audited": {"date": "2026-10-28", "quotes": ["4cad224355c053631f746bf82ca605ff06c375be72a68c2fe217d98e90ea11f6"]},
+    "own_document_audited": {"date": "2026-10-28", "quotes": ["4cad224355c053631f746bf82ca605ff06c375be72a68c2fe217d98e90ea11f6", "83c6551e27d9fcc8832be98c742f300280526e6deba2b8e8eac4d7bc5f5190fa"]},
     "layer": "tracing",
     "question": "How are relabelling, disposal and replacement purchases linked to the disposition of a lot?",
     "criterion": "Per the map: after approval the label is reprinted by hand with the new expiry; its target prints the label from the lot record with an extension marker and re-release date. Rejection marks Form 063 Rejected and writes the lot off through WMS transactions (to confirm), posting to BC as item journal batch PLXADJ through codeunit 50116 (from the system map, unverified); no reason code links the write-off to a case, a customer-supplied lot's return or disposal instruction is not recorded, and a replacement purchase order does not reference the expired lot. An answer reports each link as missing unless a read record carries it, and checks rejected quantity against written-off plus returned quantity only from read records.",

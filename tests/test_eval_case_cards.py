@@ -458,6 +458,13 @@ class AccountingTest(unittest.TestCase):
             for _, own, _ in prefix(p):
                 self.assertTrue(qo < own and len(own) == len(qo) + len(
                     source("quote-to-order")["watched_originals"]["files"]), p)
+        # the packaging-sourcing set names the Sept 30 map
+        # as its own source: own on every PS card, foreign to no PS card
+        ps_map = {source("packaging-sourcing")["related_advisories"][0]["source_revision"]
+                  .partition("sha256:")[2]}
+        self.assertTrue(prefix("PS"))
+        for _, own, foreign in prefix("PS"):
+            self.assertTrue(ps_map <= own and not ps_map & foreign)
         # BR-05's evidence came from the Artwork map; the procure-to-gl PG cards never own
         # the screening map their SP cards share
         artwork = set(tool.case_originals()[sets["artwork-lifecycle"][0]["case"]])
@@ -486,7 +493,7 @@ class AccountingTest(unittest.TestCase):
     AUDIT_CLOSED = {"SP-02", "SC-02", "SC-03", "AL-09", "EMD-06", "QO-C2", "RM-06"}
     AUDITED = {"FBA-03", "FBA-05", "QO-01", "QO-02", "PS-07", "AT-08", "SC-04", "EMD-07",
                "EMD-11", "EMD-03", "EMD-05", "EMD-02", "QO-D2", "SP-07", "SP-08", "SC-06",
-               "SC-07", "PS-02", "QO-A2", "SC-01", "RM-05"}
+               "SC-07", "PS-02", "QO-A2", "SC-01", "RM-05", "AT-02", "PS-01", "RM-04"}
     CARD_UNSCORED = {"QW-01", "QW-02"}
 
     def test_card_audit_fields_reach_the_item_and_a_cards_mark_wins(self):
@@ -502,7 +509,8 @@ class AccountingTest(unittest.TestCase):
             self.assertEqual(audit is not None, card_id in self.AUDITED, card_id)
             if audit is not None:
                 # bound to the audited claims (their audit_digest), under a real date
-                self.assertIn(audit["date"], ("2026-10-28", "2026-10-29"), card_id)
+                self.assertIn(audit["date"], ("2026-10-28", "2026-10-29", "2026-10-30"),
+                              card_id)
                 self.assertTrue(audit["quotes"] and all(
                     len(q) == 64 for q in audit["quotes"]), card_id)
             if card_id in self.CARD_UNSCORED:
@@ -601,6 +609,18 @@ class AccountingTest(unittest.TestCase):
                          {good, "cd" * 32, "ef" * 32})
         for odd in (None, [], {"source": None}, {"source": {"watched_originals": "all"}}):
             self.assertEqual(tool.set_documents(odd, {}), set())
+        # Any other revision names no file's bytes.
+        related = {"case": "fx-case", "source": {"related_advisories": [
+            {"source_revision": "sha256:" + "12" * 32},
+            {"source_revision": "version:1.0;modified:x;sha256:" + "34" * 32},
+            {"source_revision": "quoted-text-sha256:" + "56" * 32},
+            {"source_revision": "manifest-sha256:" + "57" * 32},
+            {"source_revision": "78" * 32}, {"source_revision": "sha256:" + "9A" * 32},
+            {"source_revision": "sha256:" + "9b" * 32 + ";sha256:" + "9c" * 32},
+            {"source_revision": "sha256:pending"}, {"source_revision": None}, "x"]}}
+        self.assertEqual(tool.set_documents(related, {}), {"12" * 32, "34" * 32})
+        self.assertEqual(tool.set_documents({"source": {"related_advisories": "all"}}, {}),
+                         set())
 
     # The five runs review found rising from justified (scorer /17) to correct (/18), each
     # unsupported: the claim's value, quote and record title as the saved run had them.

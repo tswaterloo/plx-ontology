@@ -410,7 +410,14 @@ SCORE_FORMAT = "plx-eval-score/v1"
 #    wrong, answerability_mismatch); two unscored items lose a text-status path; no run
 #    scores higher. (2) ``asked_restated`` keeps a question token that is a quantity
 #    glued to a unit or term (``12kg``, ``500ML``, ``NET30``, ``QTY-12``): a figure.
-SCORER_VERSION = "plx-eval-scorer/24"
+# 25: an ISO day value holds in its citation's quote where the cited text prints that day
+#    in another form inside the quote (``2026-01-08`` quoting ``8 Jan 2026``), as the
+#    gate's printed-date rule accepts it (``claim_checks._printed_date_problem``, read by
+#    ``_quote_holds``): the scorer no longer refuses a date the gate passed. (2) A card
+#    set's own documents also hold each ``source.related_advisories`` file it pins by byte
+#    SHA-256 (``source_revision``; scripts/eval_case_cards.py ``set_documents``): the
+#    packaging-sourcing set's Sept 30 map is its own source, never another set's.
+SCORER_VERSION = "plx-eval-scorer/25"
 # The last segments of a record field that are file or message metadata
 # (``metadata_field``), case-folded with ``_`` and ``-`` dropped.
 METADATA_FIELD_NAMES = frozenset({
@@ -741,14 +748,21 @@ def _quotable(cite: Mapping[str, Any]) -> bool:
                                   cite["l1_handle"].partition("://")[0] in ORIGINAL_SCHEMES)
 
 
-def _quote_holds(value: str, quote: str) -> bool:
+def _quote_holds(value: str, quote: str, cited: Any = None) -> bool:
     """Whether an answer value occurs in its citation's ``quote``: both normalised as the
     gate's quotes are, on token boundaries, and not reversed by a negator (``Amber`` is in
     ``Colour: Amber``, never in ``not Amber``, ``Amberline`` or ``Amber? No``), by the
-    claim gate's own quote rule (``claim_checks._spans``, ``_negated`` over ``_NEGATOR``)."""
-    from operating.claim_checks import _negated, _normalised, _spans
+    claim gate's own quote rule (``claim_checks._spans``, ``_negated`` over ``_NEGATOR``).
+    An ISO day (``2026-01-08``) also holds where the cited text (``cited``, the re-read
+    text cell or page) prints that day in another form inside an occurrence of the quote
+    (``8 Jan 2026``), by the gate's own printed-date rule
+    (``claim_checks._printed_date_problem``, scorer /25); with no cited text, never."""
+    from operating.claim_checks import _ISO_DAY, _negated, _normalised, \
+        _printed_date_problem, _spans
     want, text = _normalised(value), _normalised(quote)
-    return any(not _negated(want, text, at) for at in _spans(want, text))
+    return any(not _negated(want, text, at) for at in _spans(want, text)) or bool(
+        isinstance(cited, str) and _ISO_DAY.fullmatch(value) and _printed_date_problem(
+            {"kind": "text", "value": value, "quote": quote}, cited, "the cited text") is None)
 
 
 def _cell(view: Mapping[str, Any], field: str) -> tuple[bool, Any]:
@@ -794,6 +808,10 @@ def _quote_refusal(text: str, number: bool, quote: str, cite: Mapping[str, Any],
     said = _normalised(quote)
     view = rows(cite["l1_handle"])
     field = cite["field_path"]
+    exists, cell = (False, None) if not isinstance(view, Mapping) else \
+        (("text" in view), view.get("text")) if "page" in view and field == "text" \
+        else _cell(view, field)
+    cited = cell if exists else None
     if number:
         want = to_decimal(text)
         held = want is not None and any(
@@ -805,14 +823,12 @@ def _quote_refusal(text: str, number: bool, quote: str, cite: Mapping[str, Any],
                           for part in (text, said))
         held = any(not _negated(folded, within, at) for at in _spans(folded, within))
     else:
-        held = _quote_holds(text, quote)
+        held = _quote_holds(text, quote, cited)
     if not held:
         return (f"the citation's quote does not hold {text} as written (on token "
                 "boundaries, without a negator reversing it)")
     if not isinstance(view, Mapping):
         return "the cited record was not re-read, so its quote cannot be verified"
-    exists, cell = (("text" in view), view.get("text")) if "page" in view and \
-        field == "text" else _cell(view, field)
     if not exists:
         return f"the cited record has no {field}, so it holds no quote"
     if isinstance(cell, (int, float, Decimal)) and not isinstance(cell, bool):

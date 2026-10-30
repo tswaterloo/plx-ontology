@@ -1030,6 +1030,11 @@ BEGIN SELECT RAISE(ABORT, 'case_event_is_append_only'); END;
 CREATE TRIGGER IF NOT EXISTS case_event_no_delete BEFORE DELETE ON case_event
 BEGIN SELECT RAISE(ABORT, 'case_event_is_append_only'); END;
 """
+# Every object ``_DDL`` creates: a file holding them all needs no DDL at open.
+_DDL_OBJECTS = frozenset(re.findall(
+    r"CREATE\s+(?:UNIQUE\s+)?(?:TABLE|INDEX|VIEW|TRIGGER)\s+IF\s+NOT\s+EXISTS\s+(\w+)",
+    _DDL))
+
 
 # Where each session's read position lives: beside the case store, never in it (the case
 # log and its tables hold the case's record only).
@@ -1126,11 +1131,17 @@ class CaseStore:
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         db = sqlite3.connect(self.path, timeout=30, isolation_level=None)
         try:
-            db.execute("PRAGMA journal_mode=WAL")
-            if db.execute("PRAGMA user_version").fetchone()[0] > _SCHEMA_VERSION:
+            version = db.execute("PRAGMA user_version").fetchone()[0]
+            if version > _SCHEMA_VERSION:
                 raise CaseIntegrityError("case_store_schema_newer_than_code")
-            db.executescript(_DDL)
-            db.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
+            # A current file is opened without a write (no lock wait behind another
+            # process's write); a fresh or older one is created or upgraded.
+            have = {row[0] for row in db.execute("SELECT name FROM sqlite_master")}
+            if (version != _SCHEMA_VERSION or not _DDL_OBJECTS <= have or str(db.execute(
+                    "PRAGMA journal_mode").fetchone()[0]).lower() != "wal"):
+                db.execute("PRAGMA journal_mode=WAL")
+                db.executescript(_DDL)
+                db.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
         finally:
             db.close()
 

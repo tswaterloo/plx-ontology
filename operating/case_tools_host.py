@@ -858,9 +858,22 @@ class CaptureCaseHostTools(CaseHostTools):
             stores, audience = opened
             with stores as store:
                 check = store.audience_check(audience)
+                # A mailbox unit is granted only when the mail item gate can admit its
+                # messages at all (the mailbox's audience, the people exclusion, the case
+                # mail scope and the employee's item ACL: ``visible_mailboxes``), so a
+                # search scoped by this policy never fills its lists with messages every
+                # one of which the item gate then refuses. Only ever narrower than the
+                # audience check alone; the item gate still decides each message.
+                try:
+                    admitted = RuntimeCitations(
+                        self.runtime, mail_capture_dir=self.mail_capture_dir
+                    ).visible_mailboxes(store, self.runtime.employee_gate(actor), audience)
+                except Exception:  # noqa: BLE001 - undecidable: no mailbox is granted
+                    admitted = frozenset()
                 for unit in mail_units:
-                    grants[unit] = principals if check(actor, unit.partition(":")[2]) \
-                        else frozenset()
+                    mailbox = unit.partition(":")[2]
+                    grants[unit] = principals if check(actor, mailbox) \
+                        and mailbox in admitted else frozenset()
                 units["mail"] = tuple(mail_units)
         sharepoint_units = [key for key in self._reader_keys
                             if str(key).startswith("sharepoint:")]

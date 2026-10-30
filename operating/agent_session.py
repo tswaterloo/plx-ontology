@@ -35,11 +35,11 @@ from operating.agent_environment import agent_environment
 from operating.answer_contract import (ACTION_TOOL, ANSWER_FORMAT, ANSWERABILITY, _JSON_FENCE,
                                        answer_candidate, answer_problems, canonical,
                                        parse_answer)
-from operating.answer_gate import ANSWER_BACKING, DOCUMENT_READ_RULE
+# CONFLICT_REASON: the gap reason of two cited statements that contradict each other
+# (``evals.measure``); an answer carrying one unresolved is partial.
+from operating.answer_gate import ANSWER_BACKING, CONFLICT_REASON, DOCUMENT_READ_RULE
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-# The gap reason of two cited statements that contradict each other (``evals.measure``).
-CONFLICT_REASON = "conflicting_sources"
 # The answer contract's enums (``evals/item.schema.json`` ``quantity_role``, ``gap_state``;
 # a test holds them equal).
 QUANTITY_ROLES = ("accepted", "actual", "committed", "damaged", "delivered", "filled",
@@ -212,8 +212,9 @@ def gate_final_reply(final_text: str, events: Sequence[Mapping[str, Any]],
       gives one; a decision that passed nothing is ``blocked`` for that alone) and the
       answer's own: the gate never makes an agent's ``partial`` or ``blocked``
       ``answerable``; an agent's ``blocked`` beside a claim the gate passed is
-      ``partial`` (never blocked, never answerable). A withheld value makes an ``answerable`` one ``partial``, and
-      nothing backed surviving makes it ``blocked``.
+      ``partial`` (never blocked, never answerable). A withheld value or an unresolved
+      source conflict gap (``answer_gate.unresolved_conflict``) makes an ``answerable``
+      one ``partial``, and nothing backed surviving makes it ``blocked``.
     * Its gaps are the answer's own, none dropped (the gate refutes no gap), with one gap
       per value (``one_gap_per_value``): a later gap concerning a value an earlier gap
       concerns stays without ``concerns``.
@@ -347,6 +348,10 @@ def gate_final_reply(final_text: str, events: Sequence[Mapping[str, Any]],
     answerability = max((label for label in (stated, own) if label in CERTAINTY),
                         key=CERTAINTY.index, default=own)
     if answerability == "blocked" and stated is not None:
+        answerability = "partial"
+    # An unresolved source conflict among the answer's gaps leaves part of it open: an
+    # answerable reply carrying one is partial (``answer_gate.unresolved_conflict``).
+    if answerability == "answerable" and answer_gate.unresolved_conflict(gaps):
         answerability = "partial"
     if not (text["modified"] or outside["modified"] or report["withheld"] or dropped
             or values != list(answer.get("values") or [])
@@ -861,8 +866,10 @@ def task_prompt(question: str, pinned: str, roles: str = ", ".join(QUANTITY_ROLE
         "with its citation; \"partial\" when cited records answer part of it (a value, or "
         "what a record says about the question) and the rest is null with a gap; "
         "\"blocked\" only when nothing you read bears on the question. An answer that "
-        "states a cited value is never blocked. Something the question does not ask for is "
-        "never an unknown and never makes the answer partial.",
+        "states a cited value is never blocked. An answer with a " + CONFLICT_REASON +
+        " gap (two cited statements that contradict each other, unresolved) is partial. "
+        "Otherwise, something the question does not ask for is never an unknown and never "
+        "makes the answer partial.",
         "One value, one gap: a null value gets the one gap that says why it is null, in one "
         "state, with \"concerns\" naming it. A gap about a whole source or the projection "
         "(a stale or unavailable source, a schema drift, a freshness note) concerns no "

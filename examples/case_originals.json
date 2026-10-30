@@ -272,12 +272,12 @@
   "inputs": [
    {
     "path": "evals/dev/quote-to-order/proposed_items.json",
-    "sha256": "0388da719b071d0449900a52792a183f27de92ef800292f9bd3b148870179cd5",
+    "sha256": "a054e64eee2486b186203c1646804b70907dcea7b1c14e01d790f4bb686438d6",
     "case": "quote-to-order"
    },
    {
     "path": "evals/dev/screening/proposed_items.json",
-    "sha256": "f36e47096fa0f4205d881b39c5a1cd19ca11daeebc541c8d2520a42b49889f46",
+    "sha256": "da60adf8799273ddeecd3d12c1d6056c9212ae08dc165f80b34e02674eb5cc3c",
     "case": "vince-screening"
    },
    {
@@ -287,12 +287,12 @@
    },
    {
     "path": "evals/dev/expired-disposition/proposed_items.json",
-    "sha256": "ef4218f54b912e315ef32ce507edf15915252c9a3c6022c569abfacce67e26dd",
+    "sha256": "dd399ff98188e7bb91d326562d918e1427f282d8b90a48abb018abec21c2f242",
     "case": "expired-disposition"
    },
    {
     "path": "evals/dev/packaging-sourcing/proposed_items.json",
-    "sha256": "9cc1078742363d02501d69426f5f06b2a4618a8a246c4fa4b7383d5c8c620114",
+    "sha256": "650693fbdafbd46651fc44868b714d8d8650d2eebc04c9c32123ccc8d8d2a865",
     "case": "packaging-sourcing"
    }
   ],

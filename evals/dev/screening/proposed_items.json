@@ -76,7 +76,7 @@
   "cards": [
    {
     "id": "SC-01",
-    "own_document_audited": {"date": "2026-10-29", "quotes": ["051b735918dbb753d58deba6d6cdf7e4458101796e52cbae9e3e71b6e0c37eb6"]},
+    "own_document_audited": {"date": "2026-10-29", "quotes": ["051b735918dbb753d58deba6d6cdf7e4458101796e52cbae9e3e71b6e0c37eb6", "fefce51215c8e9ffe7d8cf969af1351106666cecf09efc23fdd33a8d24536f64", "dfc6332d64606cd635ee1b6d343fe903ee31ff9156ebb8c6a9cdbce5710ef7e0", "e8d7188546023855077376385bfba2d8ab72898395d703170dbbdc7abe7e2454"]},
     "layer": "comprehension",
     "question": "What does Vince's Screening Process Map (Draft 6) propose for outside bottle and towel screening, from blank purchase order through conversion and GL?",
     "criterion": "Attribute to the map: a proposed Screening Job tying blank and screened SKUs, quantities, screener, artwork version, rate-card PO, proof and counts, transfers, conversion, invoice and GL. Call it a stakeholder use-case map whose portal analysis traces staging commit 1f2d42d by reading code, not running it; implementation and business assertions are not independently verified.",
@@ -114,7 +114,7 @@
    },
    {
     "id": "SC-04",
-    "own_document_audited": {"date": "2026-10-28", "quotes": ["3e74fade858e9112e3acd98592dc73e030865422c0fa6b74a9b1cefc1a1c42d2", "4a383d4cc542a8ff117fb9441938a1b85281130a503f73c855d1e6a691633ae9", "51a3d4f40c17fd8b82242c26fd039509bff13910880d9398be941418ab5a6afe", "bd99d8c2226bac454ba76690caa82d4b5f0a0ad3f2f5c3deaffdb581eda9b16f"]},
+    "own_document_audited": {"date": "2026-10-28", "quotes": ["3e74fade858e9112e3acd98592dc73e030865422c0fa6b74a9b1cefc1a1c42d2", "4a383d4cc542a8ff117fb9441938a1b85281130a503f73c855d1e6a691633ae9", "51a3d4f40c17fd8b82242c26fd039509bff13910880d9398be941418ab5a6afe", "bd99d8c2226bac454ba76690caa82d4b5f0a0ad3f2f5c3deaffdb581eda9b16f", "cb051220758caad1fbbbb5662475c7830b9c09c48a7deea36c0097860f2e3f5d", "dbbe4cf4e2aecce00db6fdbc4348321551129c459afc3a37007395f7d36cc424"]},
     "layer": "comprehension",
     "question": "Which current gaps does the map report between the purchase order, the Business Central sync, and the screened item?",
     "criterion": "Attribute to the map as reported, unverified: DPO and receipt exclusions from the BC sync, missing blank-to-screened SKU links, missing job conversion, and missing quantity-to-invoice reconciliation.",

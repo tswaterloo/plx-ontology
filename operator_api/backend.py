@@ -1383,6 +1383,10 @@ def agent_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest, 
                                    check="computed_from_cited_records"))
             name = f"PO {po.label}" if po.label.isdigit() else po.label
             contrary = presentation.first_sentence(rest, LATENESS_CONTRARY)
+            if contrary and NEGATED.search(contrary):
+                # "I couldn't confirm it was fully received" or "not fully received" is
+                # no source saying it arrived: not shown as one beside the late list.
+                contrary = None
             if contrary:
                 # A gated sentence says otherwise (received, closed, complete): both are
                 # shown side by side, neither dropped (the sentence moves up beside it).
@@ -1443,6 +1447,9 @@ LATENESS_HEDGE = re.compile(
     r"\b(?:couldn't|could not|can't|cannot|unable to)\s+(?:be\s+)?(?:confirm|decide|"
     r"determine|establish|tell|say)\w*\b[^.]*\b(?:late|lateness|overdue)\b"
     r"|\blateness\b[^.]*\b(?:can't|cannot|couldn't|could not)\b", re.I)
+# A sentence that negates or hedges what it states (not a source saying the PO arrived).
+NEGATED = re.compile(r"\b(?:couldn't|could not|can't|cannot|unable to|not|no|never|"
+                     r"isn't|wasn't|hasn't|haven't|aren't|weren't)\b", re.I)
 LATENESS_GAP = re.compile(r"\blate(?:ness)?\b|\bverdict\b|\boverdue\b", re.I)
 MAX_LATE_LOOKUPS = 60
 # A question about where a PO stands (its lateness is then part of the answer).
@@ -2207,6 +2214,8 @@ def optional_search() -> Optional[Callable]:
         return None
     try:
         from operating.search import search
+        from operating.search.models import warm
     except ImportError:
         return None
+    warm(wait=False)   # its models load at start, so early questions are reranked
     return search

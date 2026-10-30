@@ -816,6 +816,28 @@ class MailUnitsOnTheCaseHostTests(unittest.TestCase):
         self.assertNotEqual(read["structuredContent"].get("status"), "resolved")
         self.assertNotIn("content", read["structuredContent"])
 
+    def test_a_mailbox_whose_messages_the_item_gate_refuses_is_not_granted(self):
+        # The search scope (hybrid search filters by these grants in SQL) never holds a
+        # mailbox every message of which the item gate refuses: an undetermined shared
+        # mailbox ACL, the people guard down, or a decision that fails.
+        server = self.server(READER_A)
+        unit = f"mail:{BOX_A}"
+        for patch in (mock.patch.object(self.runtime, "_employee_acl_denial",
+                                        return_value="undetermined: shared mailbox"),
+                      mock.patch("operating.ontology_tools_evidence.RuntimeCitations"
+                                 "._exclusion_refusal", return_value="guard_down"),
+                      mock.patch("operating.ontology_tools_evidence.RuntimeCitations"
+                                 ".visible_mailboxes", side_effect=RuntimeError("boom"))):
+            with self.subTest(patch=patch), patch:
+                self.assertEqual(server.ontology.policy_now(READER_A).audiences[unit],
+                                 frozenset())
+                self.assertEqual(self.messages(self.documents(server)), set())
+        # admitted again, the same unit is granted (narrowing only, never widening)
+        self.assertEqual(server.ontology.policy_now(READER_A).audiences[unit],
+                         frozenset({"staff:orders"}))
+        self.assertEqual(server.ontology.policy_now(OUTSIDER).audiences.get(unit, frozenset()),
+                         frozenset())
+
     def test_a_case_finding_cites_a_captured_message_through_the_same_gate(self):
         handle = f"graph-mail://{BOX_A}/MSG-1@CK-1-1"
         server = self.server(READER_A)

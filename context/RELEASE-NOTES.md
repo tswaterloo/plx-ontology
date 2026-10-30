@@ -15,6 +15,29 @@ Must keep working:
 Known gaps:
 ```
 
+## v0.13 (2026-10-30)
+
+Added:
+- Search by meaning is measured on the graded questions as each reader, under their own access. It finds about half again as many of the right documents as the current search, and ranks the right one far higher, especially for questions with typos. It switches on in a later release, once its effect on full answers is confirmed.
+
+Changed:
+- Questions keep working while the data is being refreshed in the background. Before, a full answer could not start during a refresh, and a quicker, rougher answer was shown instead.
+- The R&D meeting agenda builds in a few seconds instead of several minutes. If it runs out of time, it says the agenda is partial.
+- An answer that has two sources disagreeing, without a way to settle it, is marked partial rather than complete.
+- Typo-tolerant search answers in under a second.
+
+Fixed:
+- A late purchase order's answer no longer shows a hedge as if a source had said otherwise.
+- Search no longer considers shared mailboxes whose messages you cannot open.
+
+Must keep working:
+- Everything in v0.12: answers checked like the scoreboard, late orders say how late, cited maps open, disagreeing systems shown side by side.
+
+Known gaps:
+- Sign-in with a Microsoft account is not switched on yet; the preview uses a demo sign-in on the private network.
+- A full answer takes about 30 to 60 seconds.
+- Actions in Mission Control are not switched on yet.
+
 ## v0.12 (2026-10-30)
 
 Added:

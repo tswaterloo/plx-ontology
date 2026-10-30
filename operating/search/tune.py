@@ -29,7 +29,7 @@ import datetime as dt
 import json
 import sys
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from operating.search import retrievers as rt
 from operating.search.config import (FINAL_TERMS, RETRIEVERS, IntentWeights, Weights,
@@ -54,6 +54,11 @@ class Cached:
     lists: dict[str, list[tuple[str, float]]]
     info: dict[str, dict[str, Any]]
     rerank: dict[str, float]
+    # the targets (``scripts.eval_retrieval``): which target documents a candidate
+    # row is (``match(row) -> target keys``) and how many can be found in a top 10
+    # (``denominator``); None: ``relevant`` keys matched exactly, recall over all of them.
+    match: Callable[[Mapping[str, Any]], set[str]] | None = None
+    denominator: int | None = None
 
 
 def load_eval(path: str | Path) -> list[dict[str, Any]]:
@@ -84,14 +89,22 @@ def gather(rows: Sequence[Mapping[str, Any]], *, dsn: str | None, allowed: Itera
             query = as_query(row.get("understanding") or {
                 "question": row["question"], "intent": row.get("intent")})
             texts = query.texts()
-            lists = {"exact_id": rt.exact(conn, scope, query.resolved_ids(),
-                                          query.id_tokens(), DEPTH),
-                     "bm25": rt.bm25(conn, scope, texts, DEPTH),
-                     "fuzzy": rt.fuzzy(conn, scope, query.question, DEPTH)}
-            if embedder is not None:
-                lists["dense"] = rt.dense(conn, scope, embedder.embed(texts), model, DEPTH)
             linked = [(oid, 0.5 * s) for oid, s in query.candidate_ids()]
-            lists["graph"] = rt.graph(conn, scope, linked, DEPTH)
+            jobs = {"exact_id": lambda: rt.exact(conn, scope, query.resolved_ids(),
+                                                 query.id_tokens(), DEPTH),
+                    "bm25": lambda: rt.bm25(conn, scope, texts, DEPTH),
+                    "fuzzy": lambda: rt.fuzzy(conn, scope, query.question, DEPTH),
+                    "graph": lambda: rt.graph(conn, scope, linked, DEPTH)}
+            if embedder is not None:
+                jobs["dense"] = lambda: rt.dense(conn, scope, embedder.embed(texts), model,
+                                                 DEPTH)
+            lists = {}
+            for name, job in jobs.items():
+                try:
+                    lists[name] = job()
+                except Exception as exc:  # noqa: BLE001 - left out, as search leaves it out
+                    print(f"tune: {name} failed: {type(exc).__name__}", file=sys.stderr)
+                    lists[name] = []
             union = list(dict.fromkeys(cid for ranked in lists.values() for cid, _ in ranked))
             info = rt.details(conn, scope, union)
             reps = _representatives([(cid, 0.0) for cid in union], info, RERANK_CAP)
@@ -133,11 +146,19 @@ def metrics(items: Sequence[Cached], weights: Weights, intent_of: Any,
         found: set[str] = set()
         first = None
         for position, cid in enumerate(top, start=1):
-            hit = _keys(item.info[cid]) & item.relevant
+            row = item.info[cid]
+            if item.match is None:
+                hit = _keys(row) & item.relevant
+                found |= hit
+            else:   # one target per hit at most, as scripts.eval_retrieval counts
+                hit = item.match(row)
+                fresh = sorted(hit - found)
+                if fresh:
+                    found.add(fresh[0])
             if hit and first is None:
                 first = position
-            found |= hit
-        recall += len(found) / len(item.relevant)
+        denominator = item.denominator or len(item.relevant)
+        recall += min(1.0, len(found) / denominator) if denominator else 0.0
         mrr += 1.0 / first if first else 0.0
     return {"recall@10": round(recall / len(items), 4), "mrr": round(mrr / len(items), 4),
             "n": len(items)}

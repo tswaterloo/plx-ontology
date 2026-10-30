@@ -216,3 +216,42 @@ def default_reranker() -> TimeBoxed | None:
     if (os.environ.get("PLX_RERANK") or "on").lower() in ("off", "0", "false", "no"):
         return None
     return _default("reranker", lambda: TimeBoxed(LocalReranker()))
+
+
+_WARMING: dict[str, threading.Thread] = {}
+
+
+def warm(*, wait: bool = False, timeout: float | None = None) -> dict[str, Any]:
+    """Load the query embedder and the reranker of this process now (a host or API calls
+    this at start, an eval before it measures), so no query pays a load or ranks without
+    the reranker because it was still loading (``reranker_loading``). ``wait``: block
+    until both are loaded (at most ``timeout`` s); else they load on a background thread.
+    Returns what is ready: ``{"embedder": bool, "reranker": bool | None}`` (None: the
+    reranker is switched off). A model that cannot load stays off, as at query time."""
+    def run() -> None:
+        embedder = default_embedder()
+        if embedder is not None:
+            try:
+                embedder.embed(["warm"])
+            except Exception:  # noqa: BLE001 - dense is skipped at query time, stated
+                pass
+        reranker = default_reranker()
+        if reranker is not None:
+            try:
+                reranker.warm(wait=True)
+            except Exception:  # noqa: BLE001 - the query ranks without it, stated
+                pass
+    with _DEFAULTS_LOCK:
+        thread = _WARMING.get("models")
+        if thread is None:
+            thread = threading.Thread(target=run, name="plx-search-warm", daemon=True)
+            _WARMING["models"] = thread
+            thread.start()
+    if wait:
+        thread.join(timeout)
+    off = (os.environ.get("PLX_RERANK") or "on").lower() in ("off", "0", "false", "no")
+    reranker = _DEFAULTS.get("reranker")
+    return {"embedder": _DEFAULTS.get("embedder:" + embed_model_name()) is not None
+            and not thread.is_alive(),
+            "reranker": None if off else bool(
+                reranker is not None and getattr(reranker.reranker, "loaded", True))}

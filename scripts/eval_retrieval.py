@@ -45,12 +45,18 @@ kind, score?, signals?}], extra?}``):
   owner host of ``scripts.eval_owner_host``). Every hit has passed the host's own gate for
   that reader. ``plx.documents``' ``use_case`` block (the use case's own documents the
   tool pins beside the hits) is reported apart as ``routed`` and never ranked.
-- ``hybrid``: the hybrid search (``hybrid_search``, a static import; backends
-  are a fixed registry, ``BACKENDS``, never loaded from a runtime string), its signals
-  recorded per hit, searched as the same reader as ``tools`` (``GatedSearch``): it gets the host's gate as ``reader=``
-  and every hit is gated again by the host (``HostGate``: ``plx.read`` resolved for that
-  reader); a hit the reader may not see is counted (``hidden``), never a hit. The run
-  carries the host run's evidence label.
+- ``hybrid``: the hybrid search run inside the same host as the same reader
+  (``HostSearch``: ``evals.harness_reads`` ``plx.search_ranked``), under the read policy
+  and item gate the host decides for that reader's tool calls, as ``plx.find`` /
+  ``plx.documents`` rank with ``PLX_SEARCH=hybrid``; its signals and timings recorded per
+  query, its models loaded before the first query is measured. Backends are a fixed
+  registry (``BACKENDS``), never loaded from a runtime string. The run carries the host
+  run's evidence label.
+
+A host config that resolves readers in the Entra directory gets the directory's Graph
+credentials passed to its host process (as ``scripts.eval_real_agent`` passes them); a
+host that does not start or serve the reader stops the run (``host_unavailable``):
+never a table of empty rankings.
 
 The output (``--out``) holds the tables, every query's top ``k`` with its signals and
 target flags, and the evidence label; stdout gets the tables. No key is read or printed.
@@ -350,108 +356,52 @@ def live_host(environ: Mapping[str, str], config: Path) -> Any:
     if claims is None or not state.is_dir() or not Path(config).is_file():
         raise RetrievalError(f"host_unavailable:{problem or 'state_or_config_missing'}")
     host_config = json.loads(Path(config).read_text("utf-8"))
-    return real.LiveHost(state, Path(config), claims, secrets.token_hex(32),
-                         tenant=str(host_config.get("tenant") or "plx"),
+    # A host config resolving readers in the Entra directory needs the directory's Graph
+    # credentials passed to the host process (``eval_real_agent.live_part`` does the same);
+    # without them the host refuses to start and every read would fail.
+    extra = ({name: environ[name] for name in real.GRAPH_ENV if environ.get(name)}
+             if host_config.get("entra_directory") else {})
+    host = real.LiveHost(state, Path(config), claims, secrets.token_hex(32),
+                         tenant=str(host_config.get("tenant") or "plx"), extra_env=extra,
                          agent=cards.CARD_AGENT)
+    try:
+        host.tools()   # the host starts and serves this reader, or the run stops here
+    except Exception as error:  # noqa: BLE001 - no table on a host that cannot answer
+        host.close()
+        raise RetrievalError(f"host_unavailable:{str(error)[:120]}") from None
+    return host
 
 
-class HostGate:
-    """The tools host's own per-item decision for its reader: a handle is visible only
-    when ``plx.read`` of it is ``resolved`` for that reader (a withheld SharePoint item,
-    an uncaptured mailbox, an unresolvable or refused handle is hidden). One read per
-    handle, cached; a read that fails hides the handle (fail closed)."""
-
-    def __init__(self, host: Any) -> None:
-        self.host = host
-        self.cache: dict[str, bool] = {}
-
-    def __call__(self, handle: Any) -> bool:
-        if not isinstance(handle, str) or "://" not in handle:
-            return False
-        if handle not in self.cache:
-            try:
-                result = self.host.call("plx.read", {"citation": handle, "max_chars": 200})
-            except Exception:  # noqa: BLE001 - an unreadable handle is hidden
-                result = None
-            self.cache[handle] = isinstance(result, Mapping) \
-                and result.get("status") == "resolved"
-        return self.cache[handle]
-
-
-class GatedSearch:
-    """A registered backend searched as the tools host's reader: the function
-    is given the host's gate (``reader=``, when it takes one) and every hit it returns is
-    gated again (``HostGate``) before it is ranked, so a hit the reader may not see is
-    only counted (``hidden``), never a hit and never in the top k. It is asked for
-    ``OVERFETCH`` x k hits so the reader's top k is still k deep."""
+class HostSearch:
+    """Hybrid search (``operating.search``) run inside the tools host as its reader
+    (``evals.harness_reads`` ``plx.search_ranked``): the read policy the host decides for
+    a tool call scopes every retriever in SQL, and the tools' item gate decides every hit
+    shown, exactly as ``plx.find`` / ``plx.documents`` rank with ``PLX_SEARCH=hybrid``.
+    A refused or failed search is an error (counted), never an empty ranking. Asked for
+    ``OVERFETCH`` x k hits (capped at 100) so a document's other chunks never leave the
+    reader's top k short."""
 
     OVERFETCH = 3
 
-    def __init__(self, fn: Callable[..., Mapping[str, Any]], gate: Callable[[Any], bool]
-                 ) -> None:
-        import inspect
-        self.fn, self.gate = fn, gate
-        try:
-            self.takes_reader = "reader" in inspect.signature(fn).parameters
-        except (TypeError, ValueError):
-            self.takes_reader = False
+    def __init__(self, host: Any) -> None:
+        self.host = host
 
     def __call__(self, question: str, k: int) -> dict[str, Any]:
-        result = (self.fn(question, k * self.OVERFETCH, reader=self.gate)
-                  if self.takes_reader else self.fn(question, k * self.OVERFETCH))
-        shown, hidden = [], 0
-        for hit in (result or {}).get("hits") or []:
-            if isinstance(hit, Mapping) and self.gate(hit.get("handle")):
-                shown.append(dict(hit))
-            else:
-                hidden += 1
-        return {"hits": shown, "hidden": hidden, "extra": (result or {}).get("extra")}
-
-
-def hybrid_search(question: str, k: int, *, reader: Callable[[Any], bool]
-                  ) -> dict[str, Any]:
-    """the hybrid search (``operating.search.core.search``) behind the understanding (rules path), the ``hybrid`` backend
-    (``--search hybrid``). The rows are scoped in SQL by an
-    eval-wide audience (search has no in-process copy of the host reader's policy) and
-    every item-ACL hit passes ``reader`` (the host's gate, ``HostGate``) inside search;
-    ``GatedSearch`` gates every hit again, so only what the host shows its reader
-    counts. Signals are kept per hit."""
-    from ontology import store_ddl
-    from ontology.types import Actor
-    from operating.ontology_tools import ReadPolicy
-    try:
-        from operating.search.core import search
-    except ImportError:
-        raise RetrievalError("search_backend_unavailable:hybrid") from None
-
-    actor = Actor("plx", frozenset({"plx-search-eval"}))
-    policy = ReadPolicy(tenant="plx", audiences={"*": frozenset({"plx-search-eval"})},
-                        markings={m: frozenset({"plx-search-eval"})
-                                  for m in store_ddl.MARKINGS})
-    extra: dict[str, Any] = {}
-    understanding: Any = question
-    try:
-        from operating.query_understanding import understand
-        understanding = understand(question, actor=actor, policy=policy, llm=False)
-        extra["intent"] = understanding.intent
-    except Exception as error:  # noqa: BLE001 - searched as the bare question, stated
-        extra["understanding_failed"] = type(error).__name__
-    result = search(understanding, actor, k=min(max(int(k), 1), 100), question=question,
-                    policy=policy, item_gate=lambda _actor, handle: reader(handle) is True,
-                    log=False)
-    hits = [{"handle": h["handle"], "title": h.get("title"), "snippet": h.get("snippet"),
-             "kind": h.get("kind"), "signals": {**(h.get("signals") or {}),
-                                                "score": h.get("score")}}
-            for h in result.hits]
-    extra.update(timings=result.timings, notes=list(result.notes))
-    return {"hits": hits, "extra": extra}
+        result = self.host.read("plx.search_ranked",
+                                {"question": question, "k": min(k * self.OVERFETCH, 100)})
+        if not isinstance(result, Mapping) or result.get("ok") is not True:
+            error = result.get("error") if isinstance(result, Mapping) else None
+            raise RetrievalError(f"search_refused:{str(error or 'unreadable')[:60]}")
+        hits = [dict(h) for h in result.get("hits") or [] if isinstance(h, Mapping)]
+        return {"hits": hits, "extra": result.get("extra")}
 
 
 # The search backends a run may name (``--search``), a fixed registry: no backend is
-# loaded from a runtime string. ``tools`` is the host's own tool (``ToolsSearch``); every
-# other backend runs gated as the same reader (``GatedSearch``).
-BACKENDS: dict[str, Callable[..., Mapping[str, Any]] | None] = {
-    "tools": None, "hybrid": hybrid_search}
+# loaded from a runtime string. Each is built over the tools host of the run's reader,
+# so no backend is ever measured ungated.
+BACKENDS: dict[str, Callable[[Any, str], SearchFn]] = {
+    "tools": lambda host, tool: ToolsSearch(host, tool),
+    "hybrid": lambda host, _tool: HostSearch(host)}
 
 
 # --------------------------------------------------------------------------- agent searches
@@ -563,6 +513,8 @@ def evaluate(rows: Sequence[Mapping[str, Any]], search: SearchFn, *,
                 "gap_reasons": result.get("gap_reasons") or [],
                 **({"hidden": result["hidden"]} if isinstance(result.get("hidden"), int)
                    else {}),
+                **({"extra": result["extra"]} if isinstance(result.get("extra"), Mapping)
+                   else {}),
                 "top": [{"rank": i, "handle": h.get("handle"), "title": h.get("title"),
                          "kind": h.get("kind"), "signals": h.get("signals"),
                          "targets": got["relevant"][i - 1]}
@@ -584,7 +536,8 @@ def evaluate(rows: Sequence[Mapping[str, Any]], search: SearchFn, *,
         ms = sorted(q["ms"] for q in queries if q["phrasing"] == kind)
         if ms:
             from scripts.eval_messy import percentile
-            overall[kind]["latency_ms"] = {"p50": percentile(ms, 50), "p90": percentile(ms, 90)}
+            overall[kind]["latency_ms"] = {"p50": percentile(ms, 50), "p90": percentile(ms, 90),
+                                           "p95": percentile(ms, 95)}
     return {"k": k, "phrasings": list(kinds), "overall": overall, "by_set": table,
             "served": served, "queries": queries}
 
@@ -666,14 +619,12 @@ def main(argv: Sequence[str] | None = None, *, search: SearchFn | None = None,
         else:
             # Every backend reads as the tools host's reader, and the run carries that
             # host's evidence label: a backend is never measured ungated.
-            fn = BACKENDS[args.search]
+            make = BACKENDS[args.search]
             host = live_host(environ, args.host_config or Path(
                 environ.get("PLX_WORKBENCH_HOST_CONFIG") or ""))
             label = "live-captures"
-            if fn is None:
-                search, backend = ToolsSearch(host, args.tool), f"tools:{args.tool}"
-            else:
-                search, backend = GatedSearch(fn, HostGate(host)), args.search
+            search = make(host, args.tool)
+            backend = f"tools:{args.tool}" if args.search == "tools" else args.search
         doc = evaluate(rows, search, sets=sets, variants=variants, by_sha=by_sha,
                        sha_of=sha_of, catalog=catalog, kinds=kinds, k=args.k,
                        progress=lambda n: n % 50 or print(f"queries: {n}", file=sys.stderr,

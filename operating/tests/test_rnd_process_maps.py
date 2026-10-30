@@ -77,6 +77,13 @@ def _message(chat, mid, at, *, subject=None, kind="message", attachments=()):
                 f"{chat_handle(chat)}{mid}@g1-1", f"teams:chat:{chat}")
 
 
+def _chat(chat):
+    """The chat itself (``teams.chats``, handle as captured: ``<chat>/conversation``); its
+    messages are linked to it (in_chat)."""
+    return _rec("teams", "chats", {"chat_id": chat}, {"chat_id": chat, "topic": f"Synth {chat}"},
+                f"{chat_handle(chat)}conversation@g1-1", f"teams:chat:{chat}")
+
+
 def _task(tid, stage, updated):
     return _rec("mission_control", "tasks", {"scope": "ops", "id": tid},
                 {"scope": "ops", "id": tid, "title": f"Synthetic project {tid}", "stage": stage,
@@ -106,15 +113,18 @@ def _file(fid, name, sha):
 
 
 def _teams():
-    out = [_message(MEETING, "m-before", "2026-10-13T14:00:00Z"),
+    out = [_message(MEETING, "m-older-posting", "2026-09-30T14:00:00Z",
+                    attachments=("R&D Meeting 2026-09-30.pdf",)),
+           _message(MEETING, "m-before", "2026-10-13T14:00:00Z"),
            _message(MEETING, "m-posting", "2026-10-14T14:16:00Z",
                     attachments=("R&D Meeting 2026-10-14.pdf",)),
            _message(MEETING, "m-after-1", "2026-10-15T09:00:00Z"),
            _message(MEETING, "m-after-2", "2026-10-20T13:19:00Z", subject="Synthetic note"),
            _message(MEETING, "m-system", "2026-10-21T10:00:00Z", kind="systemEventMessage"),
            _message(MEETING, HIDDEN_MESSAGE, "2026-10-22T10:00:00Z"),
-           _message(QA, "q-1", "2026-10-16T10:00:00Z")]
+           _message(QA, "q-1", "2026-10-16T10:00:00Z"), _chat(MEETING), _chat(QA)]
     for n in (1, 10, 60):
+        out.append(_chat(chat_n(n)))
         out += [_message(chat_n(n), f"n{n}-{i:02d}", f"2026-10-{15 + i % 10:02d}T10:{i:02d}:00Z")
                 for i in range(n)]
     return out
@@ -400,6 +410,98 @@ class MeetingAgendaTests(unittest.TestCase):
             problems = check_agenda(dict(self.agenda.doc, lanes=lanes), self.schema)
             self.assertIn("meeting_chat: default_scope must give every scope property, and "
                           "only those", problems)
+
+    def recording(self):
+        """The host's dispatch, recording each primitive call."""
+        calls = []
+
+        def call(name, arguments, actor):
+            calls.append((name, dict(arguments)))
+            return self.call(name, arguments, actor)
+        return call, calls
+
+    def test_chat_lanes_are_read_from_their_chat_and_the_latest_agenda_first(self):
+        """Reproduced (vm9, 2026-10-30): plx.agenda ran past the agent's 300 s inside its
+        previous-agenda lookup: a plx.find filter on chat_id scans every Teams chat message
+        of the store (169,316, 50,000 per page). A chat lane is read along in_chat from
+        its chat; the previous agenda is looked for in the latest window first and an
+        older posting is never read."""
+        call, calls = self.recording()
+        out = assemble(call, FULL, self.agenda, scope=SCOPE, now=NOW)
+        self.assertEqual(out["since"]["value"], "2026-10-14T14:16:00Z")
+        self.assertFalse([a for n, a in calls if n == "plx.find"
+                          and a["object_type"] in ("TeamsChatMessage", "TeamsChannelMessage")])
+        read = [a["object_id"] for n, a in calls if n == "plx.object"]
+        self.assertFalse([o for o in read if "m-older-posting" in o])
+        self.assertEqual(len(read), len(set(read)))   # each record read once
+        self.assertTrue(out["complete"])
+        self.assertIsNone(out["budget"]["stopped"])
+        # Much later, the windows widen until the posting is found: the same answer.
+        later = assemble(self.call, FULL, self.agenda, scope=SCOPE,
+                         now=NOW + dt.timedelta(days=400))
+        self.assertEqual(later["since"], out["since"])
+        self.assertEqual(later["changes"], out["changes"])
+        # A chat the reader may not open reads as nothing visible, not as a failure.
+        hidden = assemble(self.call, CHAT_ONLY, self.agenda, now=NOW,
+                          scope={"meeting_chat": {"chat_id": QA}})
+        self.assertIn(("nothing_visible", "meeting_chat (previous agenda)"),
+                      {(g["code"], g["subject"]) for g in hidden["gaps"]})
+        self.assertNotIn("q-1", json.dumps(hidden))
+        # A container that is not keyed by the lane's scope, or not linked to it, fails.
+        lane = self.agenda.doc["lanes"][0]
+        for container, needle in (
+                ({"object_type": "TeamsChannel", "link_type": "TeamsChatMessage.in_chat",
+                  "direction": "reverse"}, "keyed by exactly the lane's scope"),
+                ({"object_type": "TeamsChat", "link_type": "TeamsChatMessage.in_chat",
+                  "direction": "forward"}, "does not lead from TeamsChat"),
+                ({"object_type": "NoSuchType", "link_type": "TeamsChatMessage.in_chat",
+                  "direction": "reverse"}, "undeclared object type NoSuchType")):
+            problems = check_agenda({**self.agenda.doc, "lanes": [
+                dict(lane, container=container), *self.agenda.doc["lanes"][1:]]}, self.schema)
+            self.assertTrue(any(needle in p for p in problems), (needle, problems))
+
+    def test_a_budget_that_runs_out_returns_a_named_partial(self):
+        full = assemble(self.call, FULL, self.agenda, scope=SCOPE, now=NOW,
+                        budget_seconds=None, budget_records=None)
+
+        def lines(answer):
+            return {(k, l["object_id"]) for k in ("open_projects", "changes", "blockers",
+                                                  "decisions_needed") for l in answer[k]}
+        # Records: the reads stop at the budget; what was not read is counted, by lane.
+        for budget in (1, 4, 6, 8):
+            call, calls = self.recording()
+            out = assemble(call, FULL, self.agenda, scope=SCOPE, now=NOW,
+                           budget_records=budget)
+            with self.subTest(budget=budget):
+                self.assertLessEqual(sum(n == "plx.object" for n, _ in calls), budget)
+                self.assertFalse(out["complete"])
+                self.assertEqual(out["budget"]["stopped"], "records")
+                self.assertLessEqual(lines(out), lines(full))
+                cut = [g for g in out["gaps"] if g["code"] == "budget_exhausted"]
+                self.assertTrue(cut, out["gaps"])
+                self.assertTrue(all("record budget" in g["detail"] for g in cut))
+        # Out of budget before the previous agenda is found: nothing assembled, said why.
+        early = assemble(self.call, FULL, self.agenda, scope=SCOPE, now=NOW, budget_records=1)
+        self.assertIsNone(early["since"])
+        self.assertIn("budget ran out", next(g["detail"] for g in early["gaps"]
+                                             if g["code"] == "previous_agenda_not_found"))
+        # Time: a clock past the budget after the first lanes; later lanes are named.
+        ticks = iter(range(10_000))
+        out = assemble(self.call, FULL, self.agenda, scope=SCOPE, now=NOW,
+                       budget_seconds=12, clock=lambda: next(ticks))
+        self.assertEqual(out["budget"]["stopped"], "time")
+        self.assertFalse(out["complete"])
+        self.assertIsNotNone(out["since"])
+        self.assertLess(lines(out), lines(full))
+        not_read = {g["subject"] for g in out["gaps"] if g["code"] == "budget_exhausted"}
+        self.assertIn("mc_gates", not_read)
+        self.assertTrue(all("time budget (12 s)" in g["detail"] for g in out["gaps"]
+                            if g["code"] == "budget_exhausted"))
+        # The default budget is on every plx.agenda call.
+        answer = AgendaTool(self.call, self.schema).call({"agenda": "rnd_biweekly",
+                                                         "scope": SCOPE}, FULL)
+        self.assertEqual((answer["budget"]["seconds"], answer["budget"]["records"]),
+                         (60.0, 400))
 
     def test_every_record_becomes_one_line_at_any_count(self):
         tool = AgendaTool(self.call, self.schema)

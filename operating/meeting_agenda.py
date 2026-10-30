@@ -26,11 +26,24 @@ section that reads as nothing to report.
 A lane is read with the scope values the caller gives for it or, when it gives none, with
 the lane's ``default_scope`` (values plus the evidence naming them, e.g. the one chat whose
 topic is the meeting's); ``scope_basis`` says which, per lane. A default is a filter only:
-every record is still read as the asking reader.
+every record is still read as the asking reader. A lane whose spec names its ``container``
+(the record its scope values are the key of, e.g. the chat of a chat message) is read
+along the declared link from that record (``plx.around``, the links index) instead of by
+a ``plx.find`` filter, which scans every record of the type in id order (169,316 Teams chat
+messages: over 400 s for one chat, 2026-10-30); a container this reader cannot see is
+``nothing_visible`` (a chat's membership gates its messages as it gates the chat). Each
+record is read once, with only the properties the lane uses.
 
 The cycle starts at ``since`` (an ISO-8601 instant with its offset) or, when the caller
 gives none, at the latest record of the ``previous_agenda`` lane whose attachments name a
 previous agenda (cited); with neither, nothing is assembled (``previous_agenda_not_found``).
+A lane read via its container is searched latest-first: the last ``WINDOWS_DAYS`` before
+now, widening, and the first window holding a posting holds the latest one.
+
+Every answer runs within a time and a record budget (``DEFAULT_BUDGET_SECONDS``,
+``DEFAULT_BUDGET_RECORDS``; ``budget`` in the answer says what was spent). When one runs
+out, the reads stop: what was assembled is returned with ``budget_exhausted`` gaps naming
+each lane, source or record count not read, and ``complete`` is false; never a silent cut.
 
 ``register`` serves ``plx.agenda`` in the host tool table (``ontology_host.tool_table``);
 the MCP hosts list it to the agents that name it (``operating/agent_definitions.json``).
@@ -43,9 +56,11 @@ import datetime as dt
 import json
 from pathlib import Path
 import re
+import time
 from typing import Any, Callable, Mapping, Sequence
 
 from ontology.json_contract import validate
+from ontology.project import object_id_of
 
 from .cited_reads import CitedReads, Record, gap, json_of, text_of
 
@@ -61,6 +76,11 @@ MAX_BYTES = 44000
 # A title longer than this is cited only (a SharePoint list item's whole fields JSON).
 MAX_TITLE_CHARS = 600
 KINDS = ("open_projects", "changes", "blockers", "decisions_needed")
+# The answer's budget: the agent session that asks has 300 s for everything it does.
+DEFAULT_BUDGET_SECONDS = 60.0
+DEFAULT_BUDGET_RECORDS = 400   # plx.object reads per answer
+# The previous agenda is looked for in the last 14 days, then 56, 224, then at any time.
+WINDOWS_DAYS = (14, 56, 224)
 
 
 class AgendaSpecError(ValueError):
@@ -78,6 +98,8 @@ class Agenda:
     marked_owner: Mapping[str, frozenset[str]] = field(default_factory=dict)
     # lane id -> value_type of its ``changed`` property
     changed_type: Mapping[str, str] = field(default_factory=dict)
+    # lane id -> (container type, its binding, link type, direction) of a lane read so
+    container: Mapping[str, tuple[str, str, str, str]] = field(default_factory=dict)
 
     @property
     def id(self) -> str:
@@ -123,6 +145,8 @@ def check_agenda(doc: Mapping[str, Any], schema: Any) -> list[str]:
             out.append(f"{lid}: via must name another lane read by scope")
         if lane["role"] == "decision" and via is None:
             out.append(f"{lid}: a decision lane is reached via a project lane")
+        if "container" in lane and "scope" not in lane:
+            out.append(f"{lid}: a container is keyed by the lane's scope")
         default = lane.get("default_scope")
         if default is not None and set(default["values"]) != set(lane.get("scope", ())):
             out.append(f"{lid}: default_scope must give every scope property, and only those")
@@ -154,10 +178,35 @@ def check_agenda(doc: Mapping[str, Any], schema: Any) -> list[str]:
             if link is None or ends != (far, lane["object_type"]):
                 out.append(f"{lid}: {via['link_type']} {via['direction']} does not lead from "
                            f"{far} to {lane['object_type']}")
+        container = lane.get("container")
+        if container is not None:
+            out += [f"{lid}: container {p}" for p in _container_problems(lane, container,
+                                                                         schema)]
     if schema is not None:
         for entry in doc["not_in_ontology"]:
             if "object_type" in entry and entry["object_type"] not in schema.object_types:
                 out.append(f"{entry['id']}: undeclared object type {entry['object_type']}")
+    return out
+
+
+def _container_problems(lane: Mapping[str, Any], container: Mapping[str, Any],
+                        schema: Any) -> list[str]:
+    spec = schema.object_types.get(container["object_type"])
+    if spec is None:
+        return [f"undeclared object type {container['object_type']}"]
+    out = []
+    if (spec.get("availability") or {}).get("state") != "served":
+        out.append(f"{container['object_type']} is not served")
+    bindings = spec.get("bindings") or ()
+    if len(bindings) != 1 or set(bindings[0].get("key") or ()) != set(lane.get("scope", ())):
+        out.append(f"{container['object_type']} must have one binding keyed by exactly the "
+                   "lane's scope")
+    link = schema.link_types.get(container["link_type"])
+    ends = ((link["to"], link["from"]) if container["direction"] == "reverse"
+            else (link["from"], link["to"])) if link else None
+    if ends != (container["object_type"], lane["object_type"]):
+        out.append(f"{container['link_type']} {container['direction']} does not lead from "
+                   f"{container['object_type']} to {lane['object_type']}")
     return out
 
 
@@ -166,14 +215,19 @@ def load_agenda(path: Path, schema: Any) -> Agenda:
     problems = check_agenda(doc, schema)
     if problems:
         raise AgendaSpecError(f"{Path(path).name}: " + "; ".join(problems[:8]))
-    undeclared, marked, changed = {}, {}, {}
+    undeclared, marked, changed, containers = {}, {}, {}, {}
     for lane in doc["lanes"]:
         props = _props(schema.object_types[lane["object_type"]]) if schema is not None else {}
         undeclared[lane["id"]] = tuple(p for p in lane.get("text_expected", ()) if p not in props)
         marked[lane["id"]] = frozenset(p for p in lane.get("owner", ())
                                        if (props.get(p) or {}).get("markings"))
         changed[lane["id"]] = (props.get(lane["changed"]) or {}).get("value_type", "timestamp")
-    return Agenda(doc, undeclared, marked, changed)
+        container = lane.get("container")
+        if container is not None and schema is not None:
+            binding = schema.object_types[container["object_type"]]["bindings"][0]["id"]
+            containers[lane["id"]] = (container["object_type"], binding,
+                                      container["link_type"], container["direction"])
+    return Agenda(doc, undeclared, marked, changed, containers)
 
 
 def load_agendas(directory: Path = AGENDA_DIR, schema: Any = None) -> dict[str, Agenda]:
@@ -301,10 +355,46 @@ class _Assembly:
         return self.lines
 
 
+def _properties(agenda: Agenda, lane: Mapping[str, Any]) -> list[str]:
+    """The properties a lane's lines and conditions use (a record is read for these only),
+    with the previous agenda's attachment property on its lane."""
+    names = [lane["changed"], *lane.get("title", ()), *lane.get("owner", ()),
+             *lane.get("scope", ()), *([lane["status"]] if "status" in lane else ()),
+             *(lane[k]["property"] for k in ("open", "skip") if k in lane)]
+    previous = agenda.doc.get("previous_agenda")
+    if previous is not None and previous["lane"] == lane["id"]:
+        names.append(previous["property"])
+    return sorted(set(names))
+
+
+def _lane_ids(agenda: Agenda, reads: CitedReads, lane: Mapping[str, Any],
+              given: Mapping[str, str], filters: list[dict[str, Any]], subject: str, *,
+              empty_gap: bool = True) -> list[str] | None:
+    """Ids of the lane's records passing ``filters``, as the reader may read them: along
+    the declared link from the lane's container (keyed by the scope values) or else by a
+    ``plx.find`` filter. None when the read failed (its gap is recorded)."""
+    container = agenda.container.get(lane["id"])
+    if container is None:
+        return reads.find(lane["object_type"], filters, subject=subject, empty_gap=empty_gap)
+    kind, binding, link_type, direction = container
+    start = object_id_of(kind, binding, {p: given[p] for p in lane["scope"]})
+    return reads.around(start, link_type, direction, filters=filters, subject=subject,
+                        not_visible="nothing_visible", empty_gap=empty_gap)
+
+
+def _stamp(moment: dt.datetime, value_type: str) -> str:
+    text = moment.astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    return text[:10] if value_type == "date" else text
+
+
 def _previous_agenda(agenda: Agenda, reads: CitedReads,
-                     scope: Mapping[str, Mapping[str, str]]
+                     scope: Mapping[str, Mapping[str, str]], now: dt.datetime
                      ) -> tuple[dt.datetime, dict[str, Any], str] | None:
-    """The latest posting of a previous agenda: (its time, the cited cell, object id)."""
+    """The latest posting of a previous agenda: (its time, the cited cell, object id). A
+    lane read via its container is searched latest-first (``WINDOWS_DAYS`` before ``now``,
+    then any time): every posting later than a window's start is in that window, so the
+    first window holding one holds the latest. None when none is visible, a read failed
+    or was cut (truncated or out of budget: the latest may be among those not read)."""
     spec = agenda.doc.get("previous_agenda")
     if spec is None:
         return None
@@ -314,22 +404,34 @@ def _previous_agenda(agenda: Agenda, reads: CitedReads,
         return None
     pattern = re.compile(spec["name_pattern"])
     subject = f"{lane['id']} (previous agenda)"
-    ids = reads.find(lane["object_type"], [*_filters(lane, given), {
-        "property": spec["property"], "op": "present"}], subject=subject) or []
-    if any(g["code"] == "read_truncated" and g["subject"] == subject for g in reads.gaps):
-        return None   # the latest posting may be among the records not read
-    best: tuple[dt.datetime, dict[str, Any], str] | None = None
-    for record in reads.read_all(ids):
-        items = json_of((record.get(spec["property"]) or {}).get("value"))
-        names = [text_of(i.get("name")) for i in items if isinstance(i, Mapping)] \
-            if isinstance(items, list) else []
-        if not any(n and pattern.search(n) for n in names):
-            continue
-        cell = _cell(record, (lane["changed"],))
-        moment = instant(cell["value"]) if cell else None
-        if moment is not None and (best is None or moment > best[0]):
-            best = (moment, cell, record.object_id)
-    return best
+    windows = (*WINDOWS_DAYS, None) if lane["id"] in agenda.container else (None,)
+    for days in windows:
+        filters = [*_filters(lane, given), {"property": spec["property"], "op": "present"}]
+        if days is not None:
+            filters.append({"property": lane["changed"], "op": "gte", "value": _stamp(
+                now - dt.timedelta(days=days), agenda.changed_type[lane["id"]])})
+        ids = _lane_ids(agenda, reads, lane, given, filters, subject,
+                        empty_gap=days is None)
+        if ids is None or reads.stopped or any(
+                g["code"] == "read_truncated" and g["subject"] == subject for g in reads.gaps):
+            return None   # the latest posting may be among the records not read
+        records = reads.read_all(ids, _properties(agenda, lane), subject=subject)
+        if reads.stopped:
+            return None
+        best: tuple[dt.datetime, dict[str, Any], str] | None = None
+        for record in records:
+            items = json_of((record.get(spec["property"]) or {}).get("value"))
+            names = [text_of(i.get("name")) for i in items if isinstance(i, Mapping)] \
+                if isinstance(items, list) else []
+            if not any(n and pattern.search(n) for n in names):
+                continue
+            cell = _cell(record, (lane["changed"],))
+            moment = instant(cell["value"]) if cell else None
+            if moment is not None and (best is None or moment > best[0]):
+                best = (moment, cell, record.object_id)
+        if best is not None:
+            return best
+    return None
 
 
 def _with_defaults(agenda: Agenda, scope: Mapping[str, Mapping[str, str]]
@@ -354,13 +456,21 @@ def _filters(lane: Mapping[str, Any], given: Mapping[str, str]) -> list[dict[str
 
 def assemble(call: Callable[..., Mapping[str, Any]], actor: Any, agenda: Agenda, *,
              since: str | None = None, scope: Mapping[str, Mapping[str, str]] | None = None,
-             max_records: int = 200, offset: int = 0, limit: int | None = None
-             ) -> dict[str, Any]:
+             max_records: int = 200, offset: int = 0, limit: int | None = None,
+             budget_seconds: float | None = DEFAULT_BUDGET_SECONDS,
+             budget_records: int | None = DEFAULT_BUDGET_RECORDS,
+             clock: Callable[[], float] = time.monotonic,
+             now: dt.datetime | None = None) -> dict[str, Any]:
     """The agenda for ``actor`` from cited records since the previous meeting. Lines are
     numbered in one order (kind, section, time, object) and paged by ``offset`` and
-    ``limit`` over that order; gaps and owners always cover every line."""
+    ``limit`` over that order; gaps and owners always cover every line. The reads stop
+    when ``budget_seconds`` (on ``clock``) or ``budget_records`` run out; what was not
+    read is a ``budget_exhausted`` gap. ``now``: the instant the previous agenda is
+    looked for before (default: the current time)."""
     scope, basis = _with_defaults(agenda, scope or {})
-    reads = CitedReads(call, actor, max_records=max_records)
+    reads = CitedReads(call, actor, max_records=max_records, budget_seconds=budget_seconds,
+                       budget_records=budget_records, clock=clock)
+    now = now or dt.datetime.now(dt.timezone.utc)
     doc = agenda.doc
     out: dict[str, Any] = {"format": ANSWER_FORMAT, "agenda": agenda.id, "title": doc["title"],
                            "source": dict(doc["source"]),
@@ -374,14 +484,18 @@ def assemble(call: Callable[..., Mapping[str, Any]], actor: Any, agenda: Agenda,
                               "since must be an ISO-8601 instant with its offset"}}
         out["since"] = {"value": start.isoformat().replace("+00:00", "Z"), "basis": "argument"}
     else:
-        found = _previous_agenda(agenda, reads, scope)
+        found = _previous_agenda(agenda, reads, scope, now)
         if found is None:
             reads.add(gap("previous_agenda_not_found", "unknown", "since",
-                          "no since was given and no previous agenda posting is visible to "
-                          "this reader in the previous-agenda lane; nothing is assembled"))
+                          "no since was given and " + (
+                              "the budget ran out before the previous agenda posting was "
+                              "found; give since" if reads.stopped else
+                              "no previous agenda posting is visible to this reader in the "
+                              "previous-agenda lane") + "; nothing is assembled"))
             reads.withheld_gap(agenda.id)
             return {**out, "since": None, **{k: [] for k in KINDS}, "owners": [],
                     "gaps": reads.gaps, "withheld": reads.withheld, "complete": False,
+                    "budget": reads.budget(),
                     "coverage": {"lanes": len(doc["lanes"]), "lanes_read": 0},
                     "page": {"offset": 0, "returned": 0, "total": 0, "next_offset": None}}
         start, cell, skip_object = found
@@ -407,17 +521,20 @@ def assemble(call: Callable[..., Mapping[str, Any]], actor: Any, agenda: Agenda,
                           "the lane was not read"))
             unscoped.add(lid)
             continue
+        if reads.over():
+            reads.budget_gap(lid, f"{lane['label']}: the lane was not read")
+            continue
         filters = _filters(lane, given)
         if lane["role"] == "activity":
             value = out["since"]["value"]
             filters.append({"property": lane["changed"], "op": "gte", "value": (
                 value[:10] if agenda.changed_type[lid] == "date" else value)})
-        ids = reads.find(lane["object_type"], filters, subject=lid)
+        ids = _lane_ids(agenda, reads, lane, given, filters, lid)
         if ids is None:
             continue
         read_lanes += 1
-        records = [r for r in reads.read_all(ids) if r.object_id != skip_object
-                   and _matches(r, lane.get("skip")) is not True]
+        records = [r for r in reads.read_all(ids, _properties(agenda, lane), subject=lid)
+                   if r.object_id != skip_object and _matches(r, lane.get("skip")) is not True]
         reached[lid] = records
         for record in records:
             changed = _changed_since(record.get(lane["changed"]), agenda.changed_type[lid], start)
@@ -443,17 +560,28 @@ def assemble(call: Callable[..., Mapping[str, Any]], actor: Any, agenda: Agenda,
                 reads.add(gap("lane_scope_not_given", "unknown", lane["id"],
                               f"{lane['label']}: reached via {via['lane']}, whose scope was "
                               "not given; the lane was not read"))
+            elif reads.stopped:
+                reads.budget_gap(lane["id"], f"{lane['label']}: reached via {via['lane']}, "
+                                 "which was not read; the lane was not read")
             else:
                 reads.add(gap("lane_not_read", "unknown", lane["id"],
                               f"reached via {via['lane']}, whose read failed"))
+            continue
+        if reads.over():
+            reads.budget_gap(lane["id"], f"{lane['label']}: the lane was not read")
             continue
         read_lanes += 1
         far, seen = agenda.lane(via["lane"]), set()
         for source in reached[via["lane"]]:
             if _matches(source, far["open"]) is not True:
                 continue
+            if reads.over():
+                reads.budget_gap(lane["id"], f"{lane['label']}: the records linked to some "
+                                 f"open {far['label']} were not read")
+                break
             for record in reads.read_all(reads.around(source.object_id, via["link_type"],
-                                                      via["direction"]) or ()):
+                                                      via["direction"]) or (),
+                                         _properties(agenda, lane), subject=lane["id"]):
                 if record.object_id in seen or _matches(record, lane["open"]) is not True:
                     continue
                 seen.add(record.object_id)
@@ -476,6 +604,10 @@ def assemble(call: Callable[..., Mapping[str, Any]], actor: Any, agenda: Agenda,
             reads.add(gap("source_not_in_ontology", "not_ingested", entry["label"],
                           entry["needs"]))
             continue
+        if reads.over():
+            reads.budget_gap(entry["label"], f"{entry['needs']} (not asked whether it is "
+                             "served now)")
+            continue
         probe = reads.call("plx.find", {"object_type": entry["object_type"], "limit": 1}, actor)
         if (probe.get("error") or {}).get("code") == "not_served":
             reads.add(gap("source_not_served", "not_ingested", entry["label"], entry["needs"]))
@@ -491,7 +623,7 @@ def assemble(call: Callable[..., Mapping[str, Any]], actor: Any, agenda: Agenda,
             key = text_of(line["owner"]["value"]) or ""
             owners.setdefault(key, {"owner": line["owner"]["value"], "lines": []})["lines"].append(
                 line["line"])
-    failed = {"read_failed", "read_truncated", "lane_not_read"}
+    failed = {"read_failed", "read_truncated", "lane_not_read", "budget_exhausted"}
     complete = not any(g["code"] in failed for g in reads.gaps)
 
     def paged(end: int) -> dict[str, Any]:
@@ -500,7 +632,7 @@ def assemble(call: Callable[..., Mapping[str, Any]], actor: Any, agenda: Agenda,
                 "page": {"offset": offset, "returned": len(page), "total": len(lines),
                          "next_offset": end if end < len(lines) else None},
                 "owners": [owners[k] for k in sorted(owners)], "gaps": reads.gaps,
-                "withheld": reads.withheld, "complete": complete,
+                "withheld": reads.withheld, "complete": complete, "budget": reads.budget(),
                 "coverage": {"lanes": len(doc["lanes"]), "lanes_read": read_lanes,
                              "not_in_ontology": len(doc["not_in_ontology"])}}
     end = len(lines) if limit is None else min(len(lines), offset + limit)
@@ -581,6 +713,7 @@ def register(table: dict[str, dict[str, Any]], schema: Any) -> AgendaTool:
     return tool
 
 
-__all__ = ["AGENDA_DIR", "ANSWER_FORMAT", "Agenda", "AgendaSpecError", "AgendaTool", "KINDS",
+__all__ = ["AGENDA_DIR", "ANSWER_FORMAT", "Agenda", "AgendaSpecError", "AgendaTool",
+           "DEFAULT_BUDGET_RECORDS", "DEFAULT_BUDGET_SECONDS", "KINDS",
            "TOOL", "TOOL_NAME", "TOOL_NAMES", "assemble", "check_agenda", "instant", "load_agenda",
            "load_agendas", "register"]

@@ -230,6 +230,7 @@
   "cards": [
    {
     "id": "PS-01",
+    "own_document_audited": {"date": "2026-10-30", "quotes": ["32740af5e3ffd305a23bd4db20cae2a2da2842b3ec2ad185a190d8b26a09c015", "48107e5cb87897eef8072811bdc7ec21c20f56c7f60f6df723e1df534ef05c52"]},
     "layer": "comprehension",
     "question": "What is the New Packaging Sourcing proposal, and what kind of evidence is it?",
     "criterion": "Attribute to the proposal (a Markdown file for review in /Ontology UseCases, pinned by item id and SHA-256, captured 16 Oct 2026): a Ross-attributed walkthrough of how a new packaging item should be sourced, with eleven target stages confirmed on 16 Oct 2026 and six proposed business rules P1 to P6 put to Vince (proposed, pending Vince). Say that approval of the rules is not evidenced, that its introduction counts five rules while its table lists six, that its six build tasks are proposals, and that its Portal and BC references come from a system map last checked on 30 Sep 2026 and need code verification, so every Portal or BC statement in it is unverified. Call it a stakeholder proposal, not a decision, an implementation instruction or authority to act.",
@@ -321,7 +322,7 @@
    },
    {
     "id": "PS-07",
-    "own_document_audited": {"date": "2026-10-28", "quotes": ["87f69b9d68089ba3d48425f54dfe92a7ec8a7ea7fd1d14bc430a7eacca7b952a"]},
+    "own_document_audited": {"date": "2026-10-28", "quotes": ["87f69b9d68089ba3d48425f54dfe92a7ec8a7ea7fd1d14bc430a7eacca7b952a", "6a94aa0c60d7e86fddb9cbe769edc41c49f38738f3432706a3c3ea77998f60c8"]},
     "layer": "tracing",
     "question": "How should prices be recorded when the components of one packaging item ship separately?",
     "criterion": "The proposal: a price per component when the parts ship separately, and the cost allocated to the component that carries it (P4, proposed, pending Vince). The Sept 30 map (unverified): a supplier item carries one cost with price tiers per supplier and product. An answer describes the price structure (per component, currency, unit, tier) and states no price figures.",

@@ -91,6 +91,58 @@ class RerankTimeBoxTests(unittest.TestCase):
         scores, problem = boxed.score("q", ["p"] * 2, timeout=1.0)
         self.assertEqual((scores, problem), ([0.5, 0.5], None))
 
+    def test_warm_loads_the_models_once_so_the_first_query_is_reranked(self):
+        from operating.search import models, plug
+
+        class Lazy:
+            loads = 0
+
+            def __init__(self):
+                self._loaded = False
+
+            @property
+            def loaded(self):
+                return self._loaded
+
+            def warm(self):
+                Lazy.loads += 1
+                self._loaded = True
+
+            def score(self, query, passages):
+                return [0.9] * len(passages)
+
+        class Emb:
+            model, calls = "m", 0
+
+            def embed(self, texts):
+                Emb.calls += 1
+                return [[1.0] for _ in texts]
+
+        cold = models.TimeBoxed(Lazy())
+        self.assertEqual(cold.score("q", ["p"], 1.0), (None, "reranker_loading"))
+        boxed = models.TimeBoxed(Lazy())
+        with mock.patch.dict(models._DEFAULTS, {"reranker": boxed, "embedder:m": Emb()},
+                             clear=True), mock.patch.dict(models._WARMING, clear=True), \
+                mock.patch.dict(os.environ, {"PLX_EMBED_MODEL": "m", "PLX_RERANK": "on",
+                                             "PLX_SEARCH": "hybrid"}):
+            plug.warm_if_enabled()                          # a session start: background
+            self.assertEqual(models.warm(wait=True, timeout=5),
+                             {"embedder": True, "reranker": True})
+            models.warm(wait=True)                          # once per process
+            self.assertEqual(Emb.calls, 1)
+            self.assertTrue(boxed.reranker.loaded)
+            self.assertEqual(boxed.score("q", ["p", "p"], 1.0), ([0.9, 0.9], None))
+        with mock.patch.dict(models._DEFAULTS, {"embedder:m": Emb()}, clear=True), \
+                mock.patch.dict(models._WARMING, clear=True), \
+                mock.patch.dict(os.environ, {"PLX_EMBED_MODEL": "m", "PLX_RERANK": "off"}):
+            self.assertEqual(models.warm(wait=True, timeout=5),
+                             {"embedder": True, "reranker": None})
+        with mock.patch.dict(models._WARMING, clear=True), \
+                mock.patch.dict(os.environ, {"PLX_SEARCH": ""}), \
+                mock.patch.object(models, "warm") as never:
+            plug.warm_if_enabled()                          # search off: nothing loads
+            never.assert_not_called()
+
 
 @unittest.skipUnless(HAVE_PG, "Postgres not available")
 class HybridSearchTests(unittest.TestCase):
@@ -435,6 +487,58 @@ class HybridSearchTests(unittest.TestCase):
                 self.assertEqual(len(set(ids)), n)
                 self.assertLess(result.timings["total"], 2000)
 
+    def test_one_long_document_never_takes_every_slot_of_a_list(self):
+        # A 60-stage map (one source item, its pages too) and five one-chunk documents all
+        # match: each retriever keeps at most PER_ITEM chunks of the map, so the other
+        # documents still reach fusion and the reader's top k (no row of theirs lost).
+        import dataclasses
+        import psycopg
+        unit = "api:public.notes"
+        rows = [dict(chunk_id=f"map#{i}", source_handle="original://co-map" + (
+                         f"#page={i}" if i % 2 else ""), object_id="Map:1", kind="map_stage",
+                     title="gasket map", header=f"Gasket inspection map stage {i}",
+                     body=f"gasket inspection stage {i} notes", audience_key=unit,
+                     authority=3) for i in range(60)]
+        rows += [dict(chunk_id=f"doc{i}#0", source_handle=f"api://public.notes/{i}",
+                      object_id=f"Note:{i}", kind="portal_text", title=f"note {i}",
+                      header=f"Portal note {i} gasket inspection", body=f"gasket inspection {i}",
+                      audience_key=unit, authority=4) for i in range(5)]
+        with FixtureDb() as db:
+            db.add(rows)
+            scope = {"allowed": [unit], "held": [], "kinds": None}
+            with psycopg.connect(db.dsn, autocommit=True) as conn:
+                lists = {"bm25": rt.bm25(conn, scope, ["gasket inspection"], 10),
+                         "dense": rt.dense(conn, scope, EMB.embed(["gasket inspection"]),
+                                           EMB.model, 10),
+                         "fuzzy": rt.fuzzy(conn, scope, "gaskett inspectoin", 10)}
+                # a typo matching more headers than the pool scores only the pool (bounded)
+                with mock.patch.object(rt, "FUZZY_POOL", 3):
+                    self.assertLessEqual(len(rt.fuzzy(conn, scope, "gaskett inspectoin", 10)), 3)
+            # a retriever that fails (a statement timeout) is left out of a tuning
+            # question, as search leaves it out, never the whole run
+            from operating.search import tune
+            with mock.patch.object(rt, "fuzzy", side_effect=RuntimeError("timeout")):
+                (item,) = tune.gather([{"question": "gaskett inspection", "relevant": ["x"]}],
+                                      dsn=db.dsn, allowed=[unit], held=(), embedder=EMB,
+                                      reranker=None)
+            self.assertEqual(item.lists["fuzzy"], [])
+            self.assertTrue(item.lists["bm25"])
+            weights = dataclasses.replace(load_weights(), candidates_per_retriever=6)
+            result = search("gasket inspection", reader([unit]), k=6, dsn=db.dsn,
+                            embedder=EMB, reranker=None, owners={}, now=NOW,
+                            weights=weights, log=False)
+        for name, ranked in lists.items():
+            with self.subTest(retriever=name):
+                ids = [cid for cid, _ in ranked]
+                self.assertTrue(ids)
+                self.assertEqual(len(ids), len(set(ids)))
+                self.assertLessEqual(sum(cid.startswith("map#") for cid in ids), rt.PER_ITEM)
+        self.assertTrue({f"doc{i}#0" for i in range(5)} <= {c for c, _ in lists["bm25"]})
+        handles = [h["handle"] for h in result.hits]
+        self.assertEqual(len(handles), len(set(handles)))
+        self.assertTrue({f"api://public.notes/{i}" for i in range(5)} <= set(handles),
+                        handles)
+
     def test_latency_per_step_p50_p90(self):
         who = reader([PURCHASING, BC, QUALITY, TEAMS])
         questions = ["why is the soap order from that canadian guy late",
@@ -482,6 +586,45 @@ class HybridSearchTests(unittest.TestCase):
         self.addCleanup(os.unlink, handle.name)
         with self.assertRaises(ValueError):
             tune.load_eval(handle.name)
+
+    def test_tuning_on_lane_g_targets_as_the_reader_on_one_half_of_the_cards(self):
+        from operating.search import tune
+        from scripts import eval_tune_search as tune_search
+        (item,) = tune.gather([{"question": "why is the soap order late",
+                                "relevant": ["doc"]}], dsn=self.db.dsn,
+                              allowed=[PURCHASING, BC, QUALITY, TEAMS], held=(),
+                              embedder=EMB, reranker=None)
+        handles = {row["source_handle"] for row in item.info.values()}
+        self.assertIn("bc://prod/company-a/purchaseOrders/9001", handles)
+        # One document by its (unversioned) handle, one by a record it
+        # names; recall over min(targets, 10), each target counted once.
+        wanted = [{"key": "sha256:a", "handles": ["bc://prod/company-a/purchaseOrders/9001"]},
+                  {"key": "record:zz404", "text": "zz404"}]
+        item.match = tune_search.matcher(wanted)
+        item.denominator = min(len(wanted), 10)
+        got = tune.metrics([item], load_weights(), lambda _i: load_weights().for_intent(
+            "other"), NOW)
+        self.assertEqual((got["recall@10"], got["n"]), (0.5, 1))
+        self.assertGreater(got["mrr"], 0.0)
+        # A candidate the reader's item gate refuses is gone before any weight is tried.
+        tune_search.gated(item, lambda handle: not handle.startswith("bc://"))
+        self.assertNotIn("bc://prod/company-a/purchaseOrders/9001",
+                         {row["source_handle"] for row in item.info.values()})
+        self.assertTrue(all(cid in item.info for ranked in item.lists.values()
+                            for cid, _ in ranked))
+        got = tune.metrics([item], load_weights(), lambda _i: load_weights().for_intent(
+            "other"), NOW)
+        self.assertEqual((got["recall@10"], got["mrr"]), (0.0, 0.0))
+        # The split: every card on exactly one side, each set on both, stable.
+        rows = [{"case": c, "item": {"id": f"{c}-{i}"}} for c in ("a", "b") for i in range(5)]
+        halves = tune_search.split(rows)
+        self.assertEqual(halves, tune_search.split(list(reversed(rows))))
+        self.assertEqual(sorted(halves["tune"] + halves["held_out"]),
+                         sorted(r["item"]["id"] for r in rows))
+        self.assertFalse(set(halves["tune"]) & set(halves["held_out"]))
+        for c in ("a", "b"):
+            self.assertTrue(any(i.startswith(c) for i in halves["tune"]))
+            self.assertTrue(any(i.startswith(c) for i in halves["held_out"]))
 
 
 @unittest.skipUnless(HAVE_PG, "Postgres not available")

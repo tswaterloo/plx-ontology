@@ -3638,6 +3638,8 @@ def session_server(argv: list[str] | None = None, *,
     host = SessionHost(parser, args, tenant=session.tenant, resolver=resolver,
                        fixture=session.fixture, dev=args.dev_configured_employee,
                        capture_bounds=capture_bounds, clock=clock)
+    from operating.search import plug as search_plug
+    search_plug.warm_if_enabled()   # PLX_SEARCH=hybrid: models load now, not mid-query
     return host, host.server(session)
 
 

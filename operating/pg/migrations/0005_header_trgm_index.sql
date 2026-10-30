@@ -1,0 +1,11 @@
+-- 0005_header_trgm_index: the fuzzy (typo) retriever's trigram match on the chunk header
+-- (operating/search/retrievers.py ``fuzzy``: ``word <% c.header``).
+--
+-- Without it that match reads every chunk's header (5.5 s on 566,715 chunks, past the
+-- 3 s statement timeout: the typo list was always cancelled); with it, a bitmap scan per
+-- query word (about 1.3 s for two misspelt words). The reader's permission filter still
+-- applies in the same query. On a large live table, create it first with
+--   CREATE INDEX CONCURRENTLY IF NOT EXISTS chunks_header_trgm ON search.chunks
+--       USING gin (header gin_trgm_ops);
+-- so the loader is never blocked; this migration is then a no-op.
+CREATE INDEX IF NOT EXISTS chunks_header_trgm ON search.chunks USING gin (header gin_trgm_ops);

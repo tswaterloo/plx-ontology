@@ -112,6 +112,7 @@
    },
    {
     "id": "AT-02",
+    "own_document_audited": {"date": "2026-10-30", "quotes": ["f998190c4d72b14d20cf68b2183a85181992bb1dcd3202b6f33c5c9384c3851f", "70275449361e3718dbc727f6d2f19b997f8e24cbc5db2400e7a5f5aa51a1d96d"]},
     "layer": "comprehension",
     "question": "How many assets are in the tracker, and which of their fields are blank?",
     "criterion": "Report the brief's count and blank cost/date/book-value fields as source-reported, not rechecked. A recount needs the tracker read at a named revision: the current revision differs from the submission-date one, which is unfetched, so current bytes are never presented as the Oct 5 snapshot.",

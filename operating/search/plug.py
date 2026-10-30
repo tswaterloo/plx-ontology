@@ -35,6 +35,19 @@ def enabled() -> bool:
     return (os.environ.get("PLX_SEARCH") or "").strip().lower() == "hybrid"
 
 
+def warm_if_enabled() -> None:
+    """At a session's start: when hybrid search is on, load its models in the background
+    so the first searches are embedded and reranked, not ranked while the reranker loads.
+    Never raises (a model that cannot load is stated per query, as before)."""
+    if not enabled():
+        return
+    try:
+        from operating.search.models import warm
+        warm(wait=False)
+    except Exception as exc:  # noqa: BLE001 - search still runs, stating what is off
+        print(f"plx search warm-up failed: {type(exc).__name__}", file=sys.stderr)
+
+
 def is_now(at: dt.datetime, now: dt.datetime | None = None) -> bool:
     """Whether a read at ``at`` asks about now (the tool's clock ``now``)."""
     now = now or dt.datetime.now(dt.timezone.utc)

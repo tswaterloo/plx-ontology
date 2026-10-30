@@ -622,7 +622,7 @@
   "cards": [
    {
     "id": "QO-01",
-    "own_document_audited": {"date": "2026-10-28", "quotes": ["009baa72cbf072485edb058cbea18641ac79557c9b0de53b0e9a69a2f7f5bc53", "71b1465794a16e37d12956775160068ba24eadf21f36353a3f90d5be7d19dd8f", "bae0eb4cf777b309b538288f712f5f9ea8eed44a4402cea21ca42705db2d28e3", "c4881ccb749731607b5315fecf0efb395acdff7e07f9cc58b2958c755c3d2f06", "d2ede595574c11b49e60a58d94f6cd09d5924ac9e01c71fd23a63390eb689a61", "823085b03c7fad18526a0f14c368dff6f113fe22922ba7a405fec683572c4666"]},
+    "own_document_audited": {"date": "2026-10-28", "quotes": ["009baa72cbf072485edb058cbea18641ac79557c9b0de53b0e9a69a2f7f5bc53", "71b1465794a16e37d12956775160068ba24eadf21f36353a3f90d5be7d19dd8f", "bae0eb4cf777b309b538288f712f5f9ea8eed44a4402cea21ca42705db2d28e3", "c4881ccb749731607b5315fecf0efb395acdff7e07f9cc58b2958c755c3d2f06", "d2ede595574c11b49e60a58d94f6cd09d5924ac9e01c71fd23a63390eb689a61", "823085b03c7fad18526a0f14c368dff6f113fe22922ba7a405fec683572c4666", "50742db705637265ae7256f229934695dd4e17a356ab49d8299fdc17840e0285"]},
     "layer": "comprehension",
     "question": "What does the Quote-to-Order Map cover, and what kind of evidence is it?",
     "criterion": "Attribute to the map (Vince's artifact, exported 15 Oct 2026): 22 stages from the brief to a won order in Business Central or a lost quote, five worked examples A to E and 16 ranked gaps. Its Portal code readings are of staging at an unstated commit and were not rechecked by it. Call it a stakeholder use-case synthesis, not a verified report of deployed systems.",

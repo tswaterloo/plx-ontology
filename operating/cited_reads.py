@@ -19,7 +19,13 @@ answer:
 * ``withheld_from_reader`` (``inaccessible``): the primitives withheld objects or
   properties; how many, never which;
 * ``read_truncated`` (``unknown``): more records matched than the cap read;
-* ``read_failed`` (``unknown``): any other tool error, with its code.
+* ``read_failed`` (``unknown``): any other tool error, with its code;
+* ``budget_exhausted`` (``unknown``): the answer's time or record budget ran out first;
+  what was not read is named (how many records), never silently dropped.
+
+A budget (``budget_seconds`` on ``clock``, ``budget_records`` ``plx.object`` reads) is
+checked before each primitive call: a call already running finishes, none starts after.
+A record already read is not read again in one answer (the same properties).
 
 ``plx.find``'s own ``no_visible_match`` is not absence (the reader may not see a record
 that exists), so an empty read is reported as the gap ``nothing_visible`` (``unknown``).
@@ -29,6 +35,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import time
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 Call = Callable[[str, Mapping[str, Any], Any], Mapping[str, Any]]
@@ -97,6 +104,41 @@ class CitedReads:
     gaps: list[dict[str, str]] = field(default_factory=list)
     withheld: dict[str, int] = field(default_factory=lambda: {"objects": 0, "properties": 0})
     calls: int = 0
+    budget_seconds: float | None = None
+    budget_records: int | None = None
+    clock: Callable[[], float] = time.monotonic
+    records_read: int = 0
+    stopped: str | None = None   # "time" or "records" once a budget ran out
+    _started: float = field(default=0.0, init=False, repr=False)
+    _cache: dict[tuple[str, tuple[str, ...]], Record | None] = field(
+        default_factory=dict, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._started = self.clock()
+
+    def elapsed(self) -> float:
+        return self.clock() - self._started
+
+    def over(self) -> str | None:
+        """Which budget has run out (``time`` or ``records``), else None. Once out, it
+        stays out for the rest of the answer."""
+        if self.stopped is None:
+            if self.budget_seconds is not None and self.elapsed() >= self.budget_seconds:
+                self.stopped = "time"
+            elif self.budget_records is not None and self.records_read >= self.budget_records:
+                self.stopped = "records"
+        return self.stopped
+
+    def budget_gap(self, subject: str, detail: str) -> None:
+        what = (f"the time budget ({self.budget_seconds:g} s)" if self.stopped == "time"
+                else f"the record budget ({self.budget_records} reads)")
+        self.add(gap("budget_exhausted", "unknown", subject, f"{what} ran out: {detail}"))
+
+    def budget(self) -> dict[str, Any]:
+        """The budget and what was spent of it, for the answer."""
+        return {"seconds": self.budget_seconds, "records": self.budget_records,
+                "elapsed_seconds": round(self.elapsed(), 2), "records_read": self.records_read,
+                "stopped": self.stopped}
 
     def _call(self, name: str, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
         self.calls += 1
@@ -125,16 +167,22 @@ class CitedReads:
             self.add(gap("read_failed", "unknown", subject, f"{code}: {message}"))
 
     def find(self, object_type: str, filters: Sequence[Mapping[str, Any]] = (), *,
-             subject: str | None = None) -> list[str] | None:
+             subject: str | None = None, empty_gap: bool = True) -> list[str] | None:
         """Object ids of ``object_type`` matching ``filters`` that this reader may read, in
         the primitive's order, at most ``max_records``; None when the read failed (its gap
-        is recorded)."""
+        is recorded). A budget that runs out between pages ends the read with the ids
+        found so far and a ``budget_exhausted`` gap. ``empty_gap=False``: no
+        ``nothing_visible`` gap for an empty read (a caller that widens and asks again)."""
         subject = subject or object_type
         args: dict[str, Any] = {"object_type": object_type, "limit": PAGE}
         if filters:
             args["filters"] = [dict(f) for f in filters]
         ids: list[str] = []
         while True:
+            if self.over():
+                self.budget_gap(subject, f"{len(ids)} matching record(s) found before it; "
+                                "the rest of the search was not run")
+                return ids
             out = self._call("plx.find", args)
             if "error" in out:
                 self._error(subject, out["error"])
@@ -154,45 +202,103 @@ class CitedReads:
             if not cursor:
                 break
             args = {**args, "cursor": cursor}
-        if not ids:
-            self.add(gap("nothing_visible", "unknown", subject,
-                         "no record this reader can read matched; absence from the source "
-                         "is not established"))
+        if not ids and empty_gap:
+            self.nothing_visible(subject)
         return ids
 
-    def read(self, object_id: str) -> Record | None:
-        out = self._call("plx.object", {"object_id": object_id})
+    def nothing_visible(self, subject: str) -> None:
+        self.add(gap("nothing_visible", "unknown", subject,
+                     "no record this reader can read matched; absence from the source "
+                     "is not established"))
+
+    def read(self, object_id: str, properties: Sequence[str] | None = None) -> Record | None:
+        """``plx.object`` of one record (only ``properties`` when given), read once per
+        answer for the same properties."""
+        key = (object_id, tuple(sorted(set(properties))) if properties else ())
+        if key in self._cache:
+            return self._cache[key]
+        args: dict[str, Any] = {"object_id": object_id}
+        if properties:
+            args["properties"] = list(key[1])
+        self.records_read += 1
+        out = self._call("plx.object", args)
         if "error" in out:
             self._error(object_id.split(":", 1)[0], out["error"])
+            self._cache[key] = None
             return None
         self._withheld(out)
         held = (out.get("withheld") or {}).get("properties")
         values = {v["property"]: dict(v) for v in out.get("values") or ()
                   if isinstance(v, Mapping) and "property" in v}
         obj = out.get("object") or {}
-        return Record(obj.get("object_id", object_id), obj.get("object_type", ""), values,
-                      held if isinstance(held, int) else 0)
+        record = Record(obj.get("object_id", object_id), obj.get("object_type", ""), values,
+                        held if isinstance(held, int) else 0)
+        self._cache[key] = record
+        return record
 
-    def around(self, object_id: str, link_type: str, direction: str) -> list[str] | None:
-        """Object ids one hop along ``link_type`` from ``object_id``; None on a failed read."""
-        out = self._call("plx.around", {"from": object_id, "limit": PAGE, "path": [
-            {"link_type": link_type, "direction": direction}]})
-        if "error" in out:
-            self._error(link_type, out["error"])
-            return None
-        self._withheld(out)
+    def around(self, object_id: str, link_type: str, direction: str, *,
+               filters: Sequence[Mapping[str, Any]] = (), subject: str | None = None,
+               not_visible: str = "read_failed", empty_gap: bool = False
+               ) -> list[str] | None:
+        """Object ids one hop along ``link_type`` from ``object_id`` (those passing
+        ``filters``), paged to ``max_records``; None on a failed read. A start object
+        this reader cannot see (``object_not_found``) is ``not_visible``: a
+        ``read_failed`` gap, or with ``"nothing_visible"`` that gap (one answer for not
+        captured and not readable). ``empty_gap``: an empty read is ``nothing_visible``."""
+        subject = subject or link_type
+        args: dict[str, Any] = {"from": object_id, "limit": PAGE, "path": [
+            {"link_type": link_type, "direction": direction}]}
+        if filters:
+            args["filters"] = [dict(f) for f in filters]
         ids: list[str] = []
-        for item in out.get("objects") or ():
-            oid = item.get("object_id") if isinstance(item, Mapping) else None
-            if isinstance(oid, str) and oid != object_id and oid not in ids:
-                ids.append(oid)
-        if (out.get("completeness") or {}).get("next_cursor"):
-            self.add(gap("read_truncated", "unknown", link_type,
-                         f"more than {PAGE} records are linked; the rest were not read"))
+        while True:
+            if self.over():
+                self.budget_gap(subject, f"{len(ids)} linked record(s) found before it; the "
+                                "rest were not looked up")
+                return ids
+            out = self._call("plx.around", args)
+            if "error" in out:
+                if not_visible == "nothing_visible" and not ids and (
+                        out["error"] or {}).get("code") == "object_not_found":
+                    self.nothing_visible(subject)
+                    return []
+                self._error(subject, out["error"])
+                return None
+            self._withheld(out)
+            for item in out.get("objects") or ():
+                oid = item.get("object_id") if isinstance(item, Mapping) else None
+                if isinstance(oid, str) and oid != object_id and oid not in ids:
+                    ids.append(oid)
+            cursor = (out.get("completeness") or {}).get("next_cursor")
+            if len(ids) >= self.max_records:
+                if cursor or len(ids) > self.max_records:
+                    self.add(gap("read_truncated", "unknown", subject,
+                                 f"more than {self.max_records} records are linked; the rest "
+                                 "were not read"))
+                return ids[:self.max_records]
+            if not cursor:
+                break
+            args = {**args, "cursor": cursor}
+        if not ids and empty_gap:
+            self.nothing_visible(subject)
         return ids
 
-    def read_all(self, ids: Iterable[str]) -> list[Record]:
-        return [r for r in (self.read(i) for i in ids) if r is not None]
+    def read_all(self, ids: Iterable[str], properties: Sequence[str] | None = None, *,
+                 subject: str | None = None) -> list[Record]:
+        """Each record of ``ids`` this reader may read. A budget that runs out stops the
+        reads; how many of the ids were not read is a ``budget_exhausted`` gap."""
+        ids = list(ids or ())
+        out: list[Record] = []
+        for n, oid in enumerate(ids):
+            cached = (oid, tuple(sorted(set(properties))) if properties else ()) in self._cache
+            if not cached and self.over():
+                self.budget_gap(subject or oid.split(":", 1)[0],
+                                f"{len(ids) - n} of {len(ids)} records were not read")
+                break
+            record = self.read(oid, properties)
+            if record is not None:
+                out.append(record)
+        return out
 
     def withheld_gap(self, subject: str) -> None:
         """One ``withheld_from_reader`` gap for what the primitives withheld so far."""

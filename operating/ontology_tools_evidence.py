@@ -604,6 +604,20 @@ class RuntimeCitations(CitationReader):
             return None
         return row if self._mailbox_admits(gated, mailbox, row) else None
 
+    def visible_mailboxes(self, store: Any, gated: Actor, audience: Any) -> frozenset[str]:
+        """Every mailbox ``_visible_mailbox`` serves this reader, decided with one read
+        of the capture's visible rows: the mailboxes whose messages the mail item gate
+        can admit at all (a message still passes its own checks). Nothing when the people
+        exclusion cannot decide (no captured message is served then)."""
+        if self._exclusion_refusal():
+            return frozenset()
+        guard = self._people()
+        return frozenset(
+            mailbox for mailbox, row in store._visible(gated, audience).items()
+            if not people_excluded(guard, [mailbox, row["upn"],
+                                           *json.loads(row["identities"])])
+            and self._mailbox_admits(gated, mailbox, row))
+
     def _exclusion_refusal(self) -> str | None:
         """The people guard's unavailability code (``CaseRuntime.exclusion_refusal``)."""
         from integrations.people_exclusion import PeopleExclusion

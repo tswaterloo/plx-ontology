@@ -81,6 +81,11 @@
      "type": "object", "additionalProperties": false, "required": ["lane", "link_type", "direction"],
      "properties": {"lane": {"$ref": "#/$defs/name"}, "link_type": {"type": "string", "pattern": "^[A-Z][A-Za-z0-9]{1,63}\\.[a-z][a-z0-9_]{0,63}$"}, "direction": {"enum": ["forward", "reverse"]}}
     },
+    "container": {
+     "type": "object", "additionalProperties": false, "required": ["object_type", "link_type", "direction"],
+     "description": "The record the lane's scope values are the key of (e.g. the chat of chat messages; its one binding is keyed by exactly the scope properties): the lane is read along link_type from it (plx.around over the links index), never by a filter scan of every record of the type. A container the reader cannot see is nothing_visible.",
+     "properties": {"object_type": {"$ref": "#/$defs/type_id"}, "link_type": {"type": "string", "pattern": "^[A-Z][A-Za-z0-9]{1,63}\\.[a-z][a-z0-9_]{0,63}$"}, "direction": {"enum": ["forward", "reverse"]}}
+    },
     "changed": {"$ref": "#/$defs/name"},
     "title": {"$ref": "#/$defs/props"},
     "text_expected": {"$ref": "#/$defs/props"},

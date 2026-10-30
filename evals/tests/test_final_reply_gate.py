@@ -147,6 +147,39 @@ class FinalReplyGateTests(unittest.TestCase):
         self.assertEqual(text, final)
         self.assertFalse(report["rewritten"])
 
+    def test_an_unresolved_conflict_gap_makes_an_answerable_reply_partial(self):
+        """RRO-01: the agent reported the conflict as a gap yet labelled its answer
+        answerable, and the gate (which never sees a gap) agreed. An unknown
+        ``conflicting_sources`` gap leaves part of the answer open: partial, from the reply
+        and from ``answer_gate.answerability``. Another reason, another state, or no gap
+        leaves answerable; a partial label stays partial."""
+        events = [_submit("answered", passed=[("Blank bottle PO", MAP, "row.content_text")])]
+        value = _value("stage_one", "Blank bottle PO", MAP)
+        conflict = {"state": "unknown", "subject": "the map and the page disagree",
+                    "reason": answer_gate.CONFLICT_REASON}
+        for gaps, label, want in (
+                ([conflict], "answerable", "partial"),
+                ([{**conflict, "state": "stale"}], "answerable", "answerable"),
+                ([{**conflict, "reason": "not_served"}], "answerable", "answerable"),
+                ([], "answerable", "answerable"),
+                ([conflict], "partial", "partial")):
+            with self.subTest(gaps=gaps, label=label):
+                _, parsed, error, _ = _gated(
+                    _answer("The map starts with a Blank bottle PO.", [value], gaps, label),
+                    events)
+                self.assertIsNone(error)
+                self.assertEqual(parsed["answerability"], want)
+                self.assertEqual(parsed["gaps"], gaps)
+        gated = {"outcome": "answered", "claims": [{"id": "m1"}], "unknowns": [],
+                 "unsupported": [], "partly_read": []}
+        self.assertEqual(answer_gate.answerability(gated), "answerable")
+        self.assertEqual(answer_gate.answerability(gated, [conflict]), "partial")
+        for odd in (None, "conflicting_sources", [conflict["reason"]], [None]):
+            self.assertEqual(answer_gate.answerability(gated, odd), "answerable", odd)
+        self.assertEqual(answer_gate.answerability({**gated, "claims": []}, [conflict]),
+                         "blocked")
+        self.assertIn(answer_gate.CONFLICT_REASON + " gap", runner.ask_prompt("Q?"))
+
     def test_fail_closed_no_decision_a_repair_left_or_an_unreadable_result_passes_nothing(self):
         answer = _answer("It is the Blank bottle PO.", [_value("stage_one", "Blank bottle PO",
                                                                MAP)], answerability="answerable")

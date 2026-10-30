@@ -146,6 +146,7 @@
    },
    {
     "id": "RM-04",
+    "own_document_audited": {"date": "2026-10-30", "quotes": ["ec4669914992849b56c7d1202c7338c42fe3ebb3f58adfd592b3f4fe4bab222d"]},
     "layer": "actual_case_answerability",
     "question": "Was PO5455 actually received, and is the ingredient ES-2 or Thamesurf SLES-30?",
     "criterion": "Missing outcomes: actual receipt is unverified and ES-2 versus Thamesurf SLES-30 is an unresolved alias; do not merge the two names. Report that mail and PDF support a September 18 expected arrival and 10 totes / 10,000 kg.",

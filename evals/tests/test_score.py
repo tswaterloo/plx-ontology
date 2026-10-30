@@ -60,7 +60,7 @@ class ScoreTests(unittest.TestCase):
                              reported)
             # 2400 contradicts its cited row (2350): the claim gate fails it, not the bound
             self.assertEqual(result["passed"], reported == "2350", reported)
-        self.assertEqual(result["scorer"], "plx-eval-scorer/24")
+        self.assertEqual(result["scorer"], "plx-eval-scorer/25")
 
     def test_a_claim_value_unstated_gate_failure_blocks_like_the_other_gate_codes(self):
         """The claim gate's claim_value_unstated (a passing text, enum or date claim whose
@@ -631,6 +631,43 @@ class PinnedOriginalTests(unittest.TestCase):
                 ("1000", page, "text", "yield 25% of lot"),
                 ("partially shipped", status, "row.status", "not partially shipped")):
             with self.subTest(wrong=value, quote=quote):
+                self.assertEqual(gated(value, handle, field, quote), mismatch)
+
+    def test_an_iso_day_quoting_its_printed_date_is_held_as_the_gate_holds_it(self):
+        """/25 (AL-12, RM-05: ``2026-01-08`` quoting ``8 Jan 2026`` passed the product gate,
+        ``claim_checks._printed_date_problem``, and the scorer refused it). The scorer now
+        agrees with the gate: a printed form of that day inside the quote holds; another
+        day, another year, a negated date, a day the quote leaves out, or a date without a
+        year in a text printing two years still refuse."""
+        page = ORIG_PINNED + "#page=1"
+        h = fx.handle("public.app_sales_order", {"id": "so-d1"}, 9)
+        evidence = {
+            page: {"ok": True, "page": 1,
+                   "text": "Signed 8 Jan 2026 by the buyer. Not 9 Jan 2025. Ship Feb 3."},
+            h: {"ok": True, "status": "current", "relation": "public.app_sales_order",
+                "key": {"id": "so-d1"}, "row": {"id": "so-d1", "notes": "due 8 Jan 2026"}}}
+
+        def gated(value, handle, field, quote):
+            answer = {"text": "", "values": [{"name": "v", "value": value, "citations": [
+                {"l1_handle": handle, "field_path": field, "quote": quote}]}]}
+            report = sc.gate(answer, evidence)["report"]
+            return report["passed"], [failure["code"] for failure in report["failures"]]
+
+        for value, handle, field, quote in (
+                ("2026-01-08", page, "text", "Signed 8 Jan 2026"),
+                ("2026-01-08", page, "text", "8 Jan 2026 by the buyer"),
+                ("2026-01-08", h, "row.notes", "due 8 Jan 2026")):
+            with self.subTest(held=quote):
+                self.assertEqual(gated(value, handle, field, quote), (True, []))
+        mismatch = (False, ["claim_value_mismatch"])
+        for value, handle, field, quote in (
+                ("2026-01-09", page, "text", "Signed 8 Jan 2026"),
+                ("2025-01-08", page, "text", "Signed 8 Jan 2026"),
+                ("2025-01-09", page, "text", "Not 9 Jan 2025"),
+                ("2026-01-08", page, "text", "by the buyer"),
+                ("2026-02-03", page, "text", "Ship Feb 3"),
+                ("2026-01-08", h, "row.notes", "due 8 Jan")):
+            with self.subTest(refused=(value, quote)):
                 self.assertEqual(gated(value, handle, field, quote), mismatch)
 
     def test_a_percent_value_is_held_by_its_printed_percent_as_the_gate_reads_it(self):
