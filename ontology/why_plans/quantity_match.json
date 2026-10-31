@@ -1,0 +1,132 @@
+{
+ "format": "plx-why-plan/v1",
+ "id": "quantity_match",
+ "title": "Why the invoice, PO and receipt quantities don't match",
+ "description": "The purchase order's issue and expected events, its receipts, vendor invoices, supplier confirmations and posted purchase invoices, and the mail naming it, in time order. The verdict is the gated claim comparing ordered, received and invoiced quantities; a document stays a lead until the gate checks its figure.",
+ "priority": 30,
+ "root_types": [
+  "PurchaseOrder",
+  "Receipt"
+ ],
+ "question_terms": [
+  "match\\w*",
+  "mismatch\\w*",
+  "differ\\w*",
+  "discrepan\\w*",
+  "three.way",
+  "short",
+  "over.?(?:shipped|invoiced|received)",
+  "invoic\\w*",
+  "receiv\\w*",
+  "quantit\\w*",
+  "count\\w*"
+ ],
+ "root_events": {
+  "PurchaseOrder.created": {
+   "kind": "record_change",
+   "label": "PO created"
+  },
+  "PurchaseOrder.approved": {
+   "kind": "decision",
+   "label": "PO approved"
+  },
+  "PurchaseOrder.issued": {
+   "kind": "record_change",
+   "label": "PO issued"
+  },
+  "PurchaseOrder.status_changed": {
+   "kind": "record_change",
+   "label": "PO status changed"
+  },
+  "Receipt.received": {
+   "kind": "record_change",
+   "label": "Goods received"
+  },
+  "Receipt.fm_received": {
+   "kind": "record_change",
+   "label": "Goods received (FileMaker)"
+  },
+  "Receipt.posted": {
+   "kind": "record_change",
+   "label": "Receipt posted"
+  },
+  "Receipt.sage_received": {
+   "kind": "record_change",
+   "label": "Goods received (Sage)"
+  },
+  "PurchaseInvoice.posted": {
+   "kind": "record_change",
+   "label": "Purchase invoice posted"
+  }
+ },
+ "links": [
+  {
+   "link": "receives",
+   "kind": "record_change",
+   "label": "Purchase order issued",
+   "events": [
+    "PurchaseOrder.issued"
+   ],
+   "max": 2
+  },
+  {
+   "link": "supplier_invoices",
+   "kind": "document",
+   "label": "Vendor invoice",
+   "date_property": "document_date",
+   "who": "seller",
+   "max": 4
+  },
+  {
+   "link": "confirmations",
+   "kind": "document",
+   "label": "Supplier confirmation",
+   "events": [
+    "SupplierConfirmation.promised"
+   ],
+   "max": 3
+  },
+  {
+   "link": "packing_slips",
+   "kind": "document",
+   "label": "Packing slip",
+   "max": 3
+  },
+  {
+   "link": "mentioned_in_email",
+   "kind": "communication",
+   "label": "Email",
+   "events": [
+    "Email.received"
+   ],
+   "who": "sender",
+   "tier_floor": "lead",
+   "max": 6
+  }
+ ],
+ "verdict": {
+  "label": "Ordered, received and invoiced",
+  "claim_terms": [
+   "match\\w*",
+   "differ\\w*",
+   "short",
+   "over",
+   "ordered",
+   "received",
+   "invoiced",
+   "billed"
+  ],
+  "events": [],
+  "missing": "A checked comparison of the ordered, received and invoiced quantities is not in a record you can see"
+ },
+ "next_actions": [
+  {
+   "when": "verdict_missing",
+   "text": "Ask Accounts Payable to match the vendor invoice against the receipt for {record}, using the documents above."
+  },
+  {
+   "when": "always",
+   "text": "If the quantities above differ, draft a query to the vendor about {record} for review; hold the invoice until it is answered."
+  }
+ ]
+}

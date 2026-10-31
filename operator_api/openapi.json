@@ -4,6 +4,19 @@
       "AnswerPayload": {
         "additionalProperties": false,
         "properties": {
+          "access_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "'Viewing with full-read access' when the answer was served under the reader's declared full-read grant.",
+            "title": "Access Label"
+          },
           "answer_id": {
             "title": "Answer Id",
             "type": "string"
@@ -66,6 +79,17 @@
             "title": "Outcome",
             "type": "string"
           },
+          "profitability": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Profitability"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A customer's profitability and why an order lost money, when the question asks it (optional: older clients ignore it)."
+          },
           "question": {
             "title": "Question",
             "type": "string"
@@ -77,6 +101,17 @@
             },
             "title": "Subjects",
             "type": "array"
+          },
+          "trail": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvidenceTrail"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How we know (optional: older clients ignore it)."
           }
         },
         "required": [
@@ -334,6 +369,290 @@
         "title": "ConflictValue",
         "type": "object"
       },
+      "CostBreakdown": {
+        "additionalProperties": false,
+        "properties": {
+          "booked_cost": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "cost_sources": {
+            "items": {
+              "$ref": "#/components/schemas/CostSource"
+            },
+            "title": "Cost Sources",
+            "type": "array"
+          },
+          "date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Date"
+          },
+          "drivers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Drivers",
+            "type": "array"
+          },
+          "gaps": {
+            "items": {
+              "$ref": "#/components/schemas/NotFound"
+            },
+            "title": "Gaps",
+            "type": "array"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/CostLine"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "margin": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "margin_pct": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Margin Pct"
+          },
+          "order": {
+            "$ref": "#/components/schemas/ObjectRef"
+          },
+          "revenue": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "order"
+        ],
+        "title": "CostBreakdown",
+        "type": "object"
+      },
+      "CostLine": {
+        "additionalProperties": false,
+        "properties": {
+          "booked_cost": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "label": {
+            "description": "The item, e.g. 'item FG-9 (Tube 50 ml)'.",
+            "title": "Label",
+            "type": "string"
+          },
+          "margin": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "quantity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Quantity"
+          },
+          "revenue": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "share_of_cost_pct": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Share Of Cost Pct"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/Source"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Unit"
+          },
+          "unit_cost": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Booked cost per unit, decimal string.",
+            "title": "Unit Cost"
+          },
+          "unit_price": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Revenue per unit, decimal string.",
+            "title": "Unit Price"
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "title": "CostLine",
+        "type": "object"
+      },
+      "CostSource": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Detail"
+          },
+          "kind": {
+            "enum": [
+              "item_ledger",
+              "credit_memo",
+              "return",
+              "material_po",
+              "quote"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "per_unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "e.g. '$16.00 CAD/PCS goods cost'.",
+            "title": "Per Unit"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/Source"
+            },
+            "title": "Sources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "kind",
+          "label"
+        ],
+        "title": "CostSource",
+        "type": "object"
+      },
       "DevLoginRequest": {
         "additionalProperties": false,
         "properties": {
@@ -450,6 +769,167 @@
           "error"
         ],
         "title": "ErrorResponse",
+        "type": "object"
+      },
+      "EtaCheck": {
+        "additionalProperties": false,
+        "properties": {
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Source"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The confirmation (or the lead) that says so, when the reader can open it."
+          },
+          "state": {
+            "enum": [
+              "confirmed",
+              "promises_disagree",
+              "lead_only",
+              "no_confirmation",
+              "no_confirmation_found",
+              "not_determined",
+              "withheld",
+              "not_applicable"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "text": {
+            "description": "Is the ETA backed by a vendor confirmation, in words.",
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "text"
+        ],
+        "title": "EtaCheck",
+        "type": "object"
+      },
+      "EvidenceTrail": {
+        "additionalProperties": false,
+        "description": "How we know: the steps, records and messages that led to the answer, each opening\nits source; a purchase order's lateness trail, a customer order's materials, or the\nanswer's dated, checked claims.",
+        "properties": {
+          "complete": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "kind why: false when only the latest steps are shown or a read did not finish.",
+            "title": "Complete"
+          },
+          "gaps": {
+            "items": {
+              "$ref": "#/components/schemas/TrailGap"
+            },
+            "title": "Gaps",
+            "type": "array"
+          },
+          "hidden_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "e.g. '2 more steps in places you can't open.'",
+            "title": "Hidden Message"
+          },
+          "hidden_steps": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Hidden Steps",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "purchase_order",
+              "materials",
+              "claims",
+              "why"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "materials": {
+            "items": {
+              "$ref": "#/components/schemas/MaterialRow"
+            },
+            "title": "Materials",
+            "type": "array"
+          },
+          "may_hide_more": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "kind why: a source this reader can't fully read may hold more steps (not counted).",
+            "title": "May Hide More"
+          },
+          "next_action": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NextAction"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "kind why: a suggested next step; nothing is sent."
+          },
+          "plan": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "kind why: the why plan that built it (operating/why_trail.py).",
+            "title": "Plan"
+          },
+          "steps": {
+            "description": "kind claims: the answer's dated claims.",
+            "items": {
+              "$ref": "#/components/schemas/TrailStep"
+            },
+            "title": "Steps",
+            "type": "array"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "trails": {
+            "items": {
+              "$ref": "#/components/schemas/PoTrail"
+            },
+            "title": "Trails",
+            "type": "array"
+          }
+        },
+        "required": [
+          "kind",
+          "title"
+        ],
+        "title": "EvidenceTrail",
         "type": "object"
       },
       "Fact": {
@@ -1067,9 +1547,85 @@
         "title": "LogoutResponse",
         "type": "object"
       },
+      "MaterialRow": {
+        "additionalProperties": false,
+        "properties": {
+          "assembly": {
+            "$ref": "#/components/schemas/ObjectRef"
+          },
+          "days_late": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Days Late"
+          },
+          "item": {
+            "$ref": "#/components/schemas/ObjectRef"
+          },
+          "order": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ObjectRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "po": {
+            "$ref": "#/components/schemas/ObjectRef"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "verdict": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verdict"
+          }
+        },
+        "required": [
+          "assembly",
+          "item",
+          "po"
+        ],
+        "title": "MaterialRow",
+        "type": "object"
+      },
       "Me": {
         "additionalProperties": false,
         "properties": {
+          "access_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when this reader views with a declared full-read grant.",
+            "title": "Access Label"
+          },
           "auth": {
             "enum": [
               "entra",
@@ -1217,6 +1773,55 @@
         "title": "NeedsAttention",
         "type": "object"
       },
+      "NextAction": {
+        "additionalProperties": false,
+        "properties": {
+          "contact": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Who to ask: the vendor-side sender of a message this reader can open; null otherwise.",
+            "title": "Contact"
+          },
+          "contact_source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Source"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rule": {
+            "description": "The rule that suggested it, e.g. no_confirmation, promise_moved, promise_passed.",
+            "title": "Rule",
+            "type": "string"
+          },
+          "suggestion_only": {
+            "const": true,
+            "default": true,
+            "title": "Suggestion Only",
+            "type": "boolean"
+          },
+          "text": {
+            "description": "A suggested next step derived only from the trail's facts. A suggestion: nothing is sent or written.",
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "rule"
+        ],
+        "title": "NextAction",
+        "type": "object"
+      },
       "NotFound": {
         "additionalProperties": false,
         "properties": {
@@ -1239,6 +1844,18 @@
       "ObjectPage": {
         "additionalProperties": false,
         "properties": {
+          "access_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "'Viewing with full-read access' when served under the reader's declared full-read grant.",
+            "title": "Access Label"
+          },
           "conflicts": {
             "items": {
               "$ref": "#/components/schemas/Conflict"
@@ -1342,6 +1959,17 @@
             "title": "Timeline",
             "type": "array"
           },
+          "trail": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvidenceTrail"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A purchase order's lateness trail (how we know)."
+          },
           "type": {
             "title": "Type",
             "type": "string"
@@ -1413,6 +2041,89 @@
         "title": "ObjectStatus",
         "type": "object"
       },
+      "OrderMargin": {
+        "additionalProperties": false,
+        "properties": {
+          "booked_cost": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Date"
+          },
+          "gap": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Why no margin is stated, in words.",
+            "title": "Gap"
+          },
+          "margin": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "margin_pct": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Margin Pct"
+          },
+          "order": {
+            "$ref": "#/components/schemas/ObjectRef"
+          },
+          "revenue": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "order"
+        ],
+        "title": "OrderMargin",
+        "type": "object"
+      },
       "Person": {
         "additionalProperties": false,
         "properties": {
@@ -1449,6 +2160,272 @@
           "role"
         ],
         "title": "Person",
+        "type": "object"
+      },
+      "PoTrail": {
+        "additionalProperties": false,
+        "properties": {
+          "days_late": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Days Late"
+          },
+          "eta": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EtaCheck"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hidden_steps": {
+            "default": 0,
+            "description": "Steps in places this reader can't open: counted, never named.",
+            "minimum": 0.0,
+            "title": "Hidden Steps",
+            "type": "integer"
+          },
+          "may_hide_more": {
+            "default": false,
+            "description": "A source this reader can't fully read may hold more steps (not counted).",
+            "title": "May Hide More",
+            "type": "boolean"
+          },
+          "next_action": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NextAction"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "not_found": {
+            "items": {
+              "$ref": "#/components/schemas/NotFound"
+            },
+            "title": "Not Found",
+            "type": "array"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "plx.process lateness state: late, on_time, not_due, undetermined, not_applicable.",
+            "title": "State"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/TrailStep"
+            },
+            "title": "Steps",
+            "type": "array"
+          },
+          "subject": {
+            "$ref": "#/components/schemas/ObjectRef"
+          },
+          "verdict": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The verdict and its rule in one sentence.",
+            "title": "Verdict"
+          }
+        },
+        "required": [
+          "subject"
+        ],
+        "title": "PoTrail",
+        "type": "object"
+      },
+      "Profitability": {
+        "additionalProperties": false,
+        "properties": {
+          "booked_cost": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "breakdown": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CostBreakdown"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "customer": {
+            "$ref": "#/components/schemas/ObjectRef"
+          },
+          "margin": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "margin_pct": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Margin Pct"
+          },
+          "next_action": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NextAction"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "A suggested next step from the facts only."
+          },
+          "orders": {
+            "description": "Worst margin first.",
+            "items": {
+              "$ref": "#/components/schemas/OrderMargin"
+            },
+            "title": "Orders",
+            "type": "array"
+          },
+          "orders_counted": {
+            "description": "Orders whose margin is complete; the totals cover these only.",
+            "minimum": 0,
+            "title": "Orders Counted",
+            "type": "integer"
+          },
+          "orders_in_period": {
+            "minimum": 0,
+            "title": "Orders In Period",
+            "type": "integer"
+          },
+          "orders_in_period_exact": {
+            "default": true,
+            "description": "False: orders_in_period is a lower bound.",
+            "title": "Orders In Period Exact",
+            "type": "boolean"
+          },
+          "orders_more": {
+            "default": 0,
+            "description": "Orders read but not listed (the list stops at 30).",
+            "minimum": 0,
+            "title": "Orders More",
+            "type": "integer"
+          },
+          "orders_read": {
+            "default": 0,
+            "description": "Orders read; fewer than orders_in_period means no customer total is stated.",
+            "minimum": 0,
+            "title": "Orders Read",
+            "type": "integer"
+          },
+          "period": {
+            "description": "The period in words, e.g. 'the last 12 months'.",
+            "title": "Period",
+            "type": "string"
+          },
+          "period_basis": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "How an order counts in the period.",
+            "title": "Period Basis"
+          },
+          "period_end": {
+            "title": "Period End",
+            "type": "string"
+          },
+          "period_start": {
+            "title": "Period Start",
+            "type": "string"
+          },
+          "ranking": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "What the ranking covers, e.g. 'partial: worst of the 60 most recent orders; 214 more in the period not read'.",
+            "title": "Ranking"
+          },
+          "revenue": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "withheld_orders": {
+            "default": 0,
+            "description": "Orders whose figures you may not read: a count only, never named.",
+            "minimum": 0,
+            "title": "Withheld Orders",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "customer",
+          "period_start",
+          "period_end",
+          "period",
+          "orders_in_period",
+          "orders_counted"
+        ],
+        "title": "Profitability",
         "type": "object"
       },
       "RecentQuestion": {
@@ -1583,6 +2560,18 @@
         "additionalProperties": false,
         "description": "One cited source opened for this reader (``open_url`` of a Source is the app page\n``/source?handle=<handle>``, which reads this). Not found reads the same as no access.",
         "properties": {
+          "access_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "'Viewing with full-read access' when served under the reader's declared full-read grant.",
+            "title": "Access Label"
+          },
           "as_of": {
             "anyOf": [
               {
@@ -1904,6 +2893,125 @@
           "text"
         ],
         "title": "TokenEvent",
+        "type": "object"
+      },
+      "TrailGap": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "description": "The typed gap, e.g. assembly_order_not_linked_to_order_line, line_item_not_recorded, link_lead_only.",
+            "title": "Reason",
+            "type": "string"
+          },
+          "state": {
+            "description": "absent_in_source (the reader's walk was complete), unknown, or note (a count stated for completeness, e.g. POs already received or closed).",
+            "title": "State",
+            "type": "string"
+          },
+          "what": {
+            "title": "What",
+            "type": "string"
+          },
+          "where_it_would_live": {
+            "title": "Where It Would Live",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason",
+          "state",
+          "what",
+          "where_it_would_live"
+        ],
+        "title": "TrailGap",
+        "type": "object"
+      },
+      "TrailStep": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When it happened (ISO date or time), as the cited record states it; null when the record carries no date.",
+            "title": "At"
+          },
+          "check": {
+            "description": "How the step was checked: read_from_record (a value read from the cited record as this reader), lead (a machine-read reference, e.g. a message naming the PO), computed_from_cited_records (the verdict), text_match (a message or file naming the record by text), not_established (a why verdict no record states), unchecked, or the answer gate's check of a claim.",
+            "title": "Check",
+            "type": "string"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "kind": {
+            "enum": [
+              "due_date",
+              "po_issued",
+              "confirmation",
+              "revision",
+              "lead",
+              "follow_up",
+              "shipped",
+              "receipt",
+              "verdict",
+              "claim",
+              "decision",
+              "communication",
+              "record_change",
+              "document"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "sender": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A message's sender, only when the people exclusion decides it may be shown.",
+            "title": "Sender"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Source"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The record or message the step cites; open_url opens it for this reader. Null only for a verdict that states no date (undetermined)."
+          },
+          "title": {
+            "description": "What happened, e.g. 'Vendor confirmed delivery by 2026-07-02'; every date and figure in it is a cited value.",
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "title",
+          "check"
+        ],
+        "title": "TrailStep",
         "type": "object"
       },
       "UnderstandingEvent": {

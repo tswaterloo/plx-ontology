@@ -519,6 +519,9 @@ class CaseRuntime:
         acl = record.get("source_acl") if isinstance(record, Mapping) else None
         if entitlement.item_acl_allows(acl, statuses=_ITEM_ACL_STATUSES.get(scheme, ("read",))):
             return None
+        if entitlement.full_read_allows(scheme, acl, record):
+            # The employee's declared full-read grant (people exclusion re-checked).
+            return None
         if (scheme == "graph-mail" and isinstance(acl, Mapping)
                 and acl.get("status") == "derived" and acl.get("kind") == "mailbox_owner"):
             return MAILBOX_ACCESS_UNDETERMINED
@@ -1841,6 +1844,7 @@ class _EmployeeItemAcl:
         self.tenant = audience.tenant
         self._audience, self._entitlement = audience, entitlement
         self._statuses = _ITEM_ACL_STATUSES[scheme]
+        self._scheme = scheme
 
     def allows(self, actor: Actor, resource: str) -> bool:
         return self._audience.allows(actor, resource)
@@ -1850,8 +1854,9 @@ class _EmployeeItemAcl:
             else frozenset()
 
     def item_visible(self, actor: Actor, resource: str, source_acl: Any) -> bool:
-        return self._audience.allows(actor, resource) and self._entitlement.item_acl_allows(
-            source_acl, statuses=self._statuses)
+        return self._audience.allows(actor, resource) and (
+            self._entitlement.item_acl_allows(source_acl, statuses=self._statuses)
+            or self._entitlement.full_read_allows(self._scheme, source_acl))
 
     def visible_all(self, actor: Actor, resources: Sequence[str], source_acl: Any) -> bool:
         keys = [] if isinstance(resources, (str, bytes)) else list(resources)

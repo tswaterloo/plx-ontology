@@ -382,6 +382,34 @@
           "type": "string",
           "pattern": "^UNSCORED",
           "maxLength": 200
+        },
+        "expected": {
+          "description": "The card's derived expected answer (scorer /26, evals.score.expected_problems): facts read from one of its own pinned documents (document: its SHA-256), each a value with the quote stating it, the answerability that document supports and whether an amount may be stated. It only adds failures to a rubric run.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["document", "answerability", "no_amounts"],
+          "properties": {
+            "document": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "document_name": {"type": "string", "minLength": 1, "maxLength": 200},
+            "answerability": {"enum": ["answerable", "partial"]},
+            "facts": {
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["value", "quote"],
+                "properties": {
+                  "value": {"type": "string", "minLength": 1, "maxLength": 400},
+                  "quote": {"type": "string", "minLength": 1, "maxLength": 400},
+                  "accept": {"type": "array", "maxItems": 8,
+                             "items": {"type": "string", "minLength": 1, "maxLength": 120}},
+                  "polarity": {"enum": ["positive", "negative"]}
+                }
+              }
+            },
+            "no_amounts": {"type": "boolean"}
+          }
         }
       }
     },

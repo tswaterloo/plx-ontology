@@ -122,7 +122,7 @@ class _LazyProcess:
 
 def tool_table(tools: OntologyTools, runtime: Any, *,
                schema: Any = None, follow_ups: Any = None,
-               label_reserve: int = 0) -> dict[str, dict[str, Any]]:
+               label_reserve: int = 0, documents: Any = None) -> dict[str, dict[str, Any]]:
     """The generic tools over ``tools`` as one host tool table (name -> spec with
     ``handler(arguments, actor)``): plx.schema/find/object, plx.around/timeline,
     plx.process and plx.investigate, which dispatches its plans through this same table
@@ -132,8 +132,10 @@ def tool_table(tools: OntologyTools, runtime: Any, *,
     ``follow_ups``: plx.investigate's follow-up recorder
     (``ontology_tools_investigate.follow_up_recorder``; none: the option is refused).
     ``label_reserve``: the bytes the host's labels add to a result after plx.investigate
-    answers (``InvestigateTools``), kept free by its pages. Every handler reads under
-    ``tools.policy`` as the caller set it for this call."""
+    answers (``InvestigateTools``), kept free by its pages. ``documents``: the host's
+    ``plx.read`` ``(handle, actor) -> result`` its engines read message text through (none:
+    they read none). Every handler reads under ``tools.policy`` as the caller set it for
+    this call."""
     from . import (ontology_tools, ontology_tools_evidence, ontology_tools_investigate,
                    ontology_tools_process, ontology_tools_traverse)
     table: dict[str, dict[str, Any]] = {}
@@ -156,6 +158,7 @@ def tool_table(tools: OntologyTools, runtime: Any, *,
         held_markings=lambda actor: tools.policy.held_markings(actor),
         landed_actuals=landed_actuals_of(runtime),
         people=people_directory_of(runtime),
+        documents=documents,
         label_reserve=label_reserve))
     # plx.agenda: a meeting's agenda read through this same table (operating/meeting_agenda.py).
     from . import meeting_agenda
@@ -345,7 +348,16 @@ def case_host_policy(runtime: Any, actor: Any, schema: Any, *,
             gated = runtime.employee_gate(actor)
             for unit in brain_units:
                 grants[unit] = principals if authority.allows(gated, unit) else frozenset()
-    return ReadPolicy(actor.tenant, grants, dict(marking_grants or {}))
+    # A declared full-read grant with its ``finance`` scope holds the finance and price
+    # markings (``employee_permissions.full_read_marking_grants``); anyone else: the host's.
+    from .employee_permissions import full_read_marking_grants
+    gate = getattr(runtime, "employee_gate", None)
+    try:
+        entitlement = gate.entitlement(actor) if gate is not None else None
+    except Exception:  # noqa: BLE001 - a refused or unresolved employee holds no more
+        entitlement = None
+    return ReadPolicy(actor.tenant, grants,
+                      full_read_marking_grants(marking_grants, entitlement))
 
 
 # A granted principal: ``<kind>:<name>``, both parts non-empty, no whitespace.
@@ -744,6 +756,13 @@ class CaseHostTools:
         except Exception:  # noqa: BLE001 - the call reports it, as without this
             self.close()   # what a failed open built: the call builds it again
 
+    def _document_read(self, handle: str, actor: Any) -> dict[str, Any]:
+        """``plx.read`` of one citation for ``actor`` (the employee-gated actor of the call
+        that runs the engine, under the policy decided for that call): the text a
+        ``plx.investigate`` engine reads (``operating.vendor_terms``), never more than
+        one window of it."""
+        return self.evidence.call("plx.read", {"citation": handle, "max_chars": 20000}, actor)
+
     @property
     def table(self) -> dict[str, dict[str, Any]]:
         """``tool_table`` over ``tools`` and this runtime: plx.schema/find/object,
@@ -752,7 +771,8 @@ class CaseHostTools:
         if self._table is None:
             self._table = tool_table(self.tools, self.runtime, schema=self.schema,
                                      follow_ups=self.follow_ups,
-                                     label_reserve=self.label_reserve)
+                                     label_reserve=self.label_reserve,
+                                     documents=self._document_read)
         return self._table
 
 

@@ -184,10 +184,11 @@ class PlansAreDataTests(unittest.TestCase):
         # F1-F4 are the evaluated families, F7 landed cost, F10 order margin, F11 decision
         # evidence, F12 commercial chain links, F13 item lineage,
         # F14 late PO, F15 counterparty position, F16 impact chain, F17 lot impact, F18 people
-        # on a record, F19 what we last said to a party; held-out F5/F6 have no plan.
+        # on a record, F19 what we last said to a party, F26-F28 vendor terms (provenance,
+        # proposed updates, follow-ups); held-out F5/F6 have no plan.
         self.assertEqual(set(families),
                          {"F1", "F2", "F3", "F4", "F7", "F10", "F11", "F12", "F13", "F14", "F15",
-                          "F16", "F17", "F18", "F19"})
+                          "F16", "F17", "F18", "F19", "F26", "F27", "F28"})
         evaluated = {json.loads(p.read_text("utf-8"))["family"]
                      for p in DEV.glob("dev-*.json")}
         self.assertLessEqual(evaluated, set(families))

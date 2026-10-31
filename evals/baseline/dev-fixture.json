@@ -908,7 +908,7 @@
  "run_id": "fixture-dev-2026-10-01",
  "runner": "plx-eval-runner/1",
  "schema": "plx-eval-dev-baseline-run/v1",
- "scorer": "plx-eval-scorer/25",
+ "scorer": "plx-eval-scorer/26",
  "sources": {
   "bc": "injected-transport",
   "documents": "injected-transport",

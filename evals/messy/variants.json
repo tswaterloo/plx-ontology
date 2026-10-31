@@ -6070,6 +6070,815 @@
      }
     }
    ]
+  },
+  {
+   "case": "artwork-lifecycle",
+   "card_id": "AL-06",
+   "item_id": "dev-F24-0007-exposed",
+   "question_sha256": "496829a154a9b33bb0537e91726a0761ff3c37844a6c88cf83697d64edd15d36",
+   "keep": [
+    "K18"
+   ],
+   "variants": {
+    "m1": "K18 which proof verison did the customer aprove for this pack componnet, through which chanel, and who recorded it",
+    "m2": "K18 label: what draft did the client sign off on, how did that sign-off come in, and who logged it",
+    "m3": "K18: what did the client ok, how, and who wrote it down"
+   },
+   "parts": [
+    {
+     "asked": "Which proof version did the customer approve for this pack component, through which channel",
+     "spans": {
+      "m1": [
+       "which proof verison did the customer aprove for this pack componnet, through which chanel"
+      ],
+      "m2": [
+       "what draft did the client sign off on, how did that sign-off come in"
+      ],
+      "m3": [
+       "what did the client ok, how"
+      ]
+     }
+    },
+    {
+     "asked": "who recorded it",
+     "spans": {
+      "m1": [
+       "who recorded it"
+      ],
+      "m2": [
+       "who logged it"
+      ],
+      "m3": [
+       "who wrote it down"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "artwork-lifecycle",
+   "card_id": "AL-07",
+   "item_id": "dev-F24-0008-exposed",
+   "question_sha256": "40ed8f8847aa2d4a41eac3a35e14b3e0554d874e576b5755cbb86f04f6f93d52",
+   "keep": [
+    "P-0116"
+   ],
+   "variants": {
+    "m1": "which printd component p-number was minted for this artwork verison, and which item did it replase (P-0116)",
+    "m2": "P-0116: what new part code came out of this label design update, and what older part does it take over from",
+    "m3": "P-0116 - new part number, and what did it swap out"
+   },
+   "parts": [
+    {
+     "asked": "Which printed component P-number was minted for this artwork version",
+     "spans": {
+      "m1": [
+       "which printd component p-number was minted for this artwork verison"
+      ],
+      "m2": [
+       "what new part code came out of this label design update"
+      ],
+      "m3": [
+       "new part number"
+      ]
+     }
+    },
+    {
+     "asked": "which item did it replace",
+     "spans": {
+      "m1": [
+       "which item did it replase"
+      ],
+      "m2": [
+       "what older part does it take over from"
+      ],
+      "m3": [
+       "what did it swap out"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "artwork-lifecycle",
+   "card_id": "AL-11",
+   "item_id": "dev-F24-0012-exposed",
+   "question_sha256": "2243dd46d201d910458116b034d6ecc23ab65dcb88b5317027e8974e2bf97569",
+   "keep": [
+    "lavender",
+    "spa",
+    "conditioner"
+   ],
+   "variants": {
+    "m1": "lavender spa conditioner: which formula and ingredeint list was this artwork verison checked against, and is that basis stal",
+    "m2": "lavender spa conditioner label: what recipe and component sheet was it checked against, and is that reference out of date",
+    "m3": "lavender spa conditioner - checked against which formula, and is it old"
+   },
+   "parts": [
+    {
+     "asked": "Which formula and ingredient list was this artwork version checked against",
+     "spans": {
+      "m1": [
+       "which formula and ingredeint list was this artwork verison checked against"
+      ],
+      "m2": [
+       "what recipe and component sheet was it checked against"
+      ],
+      "m3": [
+       "checked against which formula"
+      ]
+     }
+    },
+    {
+     "asked": "is that basis stale",
+     "spans": {
+      "m1": [
+       "is that basis stal"
+      ],
+      "m2": [
+       "is that reference out of date"
+      ],
+      "m3": [
+       "is it old"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "asset-tracker",
+   "card_id": "AT-03",
+   "item_id": "dev-F24-0014-exposed",
+   "question_sha256": "53ef9709e3ff71557ca032d8b48dae041c8638f89a0d1a89451a0fc84a42a171",
+   "keep": [
+    "C-8-006"
+   ],
+   "variants": {
+    "m1": "C-8-006 which purchse order or invoce paid for this tracker asset",
+    "m2": "C-8-006: what order or bill covered buying this piece of kit",
+    "m3": "who paid for C-8-006, which po or bill"
+   },
+   "parts": [
+    {
+     "asked": "Which purchase order or invoice paid for this tracker asset",
+     "spans": {
+      "m1": [
+       "which purchse order or invoce paid for this tracker asset"
+      ],
+      "m2": [
+       "what order or bill covered buying this piece of kit"
+      ],
+      "m3": [
+       "who paid for C-8-006, which po or bill"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "asset-tracker",
+   "card_id": "AT-04",
+   "item_id": "dev-F24-0015-exposed",
+   "question_sha256": "14c1a706e70b014330d7f9bb246c578a1b5434da7acd5ae222f3a874aef4b023",
+   "keep": [
+    "P-8-02"
+   ],
+   "variants": {
+    "m1": "P-8-02 did the purchaser clasify this purchase as new, replacment or repair, and who did",
+    "m2": "P-8-02: did the buyer mark this buy as brand new, a swap or a fix, and which person said so",
+    "m3": "P-8-02 new or swap or fix per the buyer? who said"
+   },
+   "parts": [
+    {
+     "asked": "Did the purchaser classify this purchase as new, replacement or repair",
+     "spans": {
+      "m1": [
+       "did the purchaser clasify this purchase as new, replacment or repair"
+      ],
+      "m2": [
+       "did the buyer mark this buy as brand new, a swap or a fix"
+      ],
+      "m3": [
+       "new or swap or fix per the buyer"
+      ]
+     }
+    },
+    {
+     "asked": "who did",
+     "spans": {
+      "m1": [
+       "who did"
+      ],
+      "m2": [
+       "which person said so"
+      ],
+      "m3": [
+       "who said"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "asset-tracker",
+   "card_id": "AT-05",
+   "item_id": "dev-F24-0016-exposed",
+   "question_sha256": "87bbbbfde919e303ae119f024630b65f900450b9f153c7b465bf6fd377c57e67",
+   "keep": [
+    "P-8-02",
+    "cfo"
+   ],
+   "variants": {
+    "m1": "P-8-02 did the cfo decide to capitalise or expens this purchase, and when",
+    "m2": "P-8-02: did the cfo choose to put this buy on the balance sheet or write it off, and on what date",
+    "m3": "P-8-02 cfo call on this one? when"
+   },
+   "parts": [
+    {
+     "asked": "Did the CFO decide to capitalize or expense this purchase",
+     "spans": {
+      "m1": [
+       "did the cfo decide to capitalise or expens this purchase"
+      ],
+      "m2": [
+       "did the cfo choose to put this buy on the balance sheet or write it off"
+      ],
+      "m3": [
+       "cfo call on this one"
+      ]
+     }
+    },
+    {
+     "asked": "when",
+     "spans": {
+      "m1": [
+       "and when"
+      ],
+      "m2": [
+       "on what date"
+      ],
+      "m3": [
+       "when"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "asset-tracker",
+   "card_id": "AT-09",
+   "item_id": "dev-F24-0018-exposed",
+   "question_sha256": "727dffbc55febd961a2a6bb282b2e4d1af3368d18b027408ff30ac7c669a3fb0",
+   "keep": [
+    "P-1-003",
+    "fiix",
+    "portal"
+   ],
+   "variants": {
+    "m1": "P-1-003 which producton line is this asset on, and do the tracker, fiix and portal agre",
+    "m2": "P-1-003: what line does this machine sit on, and do the spreadsheet, fiix and the portal say the same",
+    "m3": "P-1-003 what line, and do fiix and the portal match"
+   },
+   "parts": [
+    {
+     "asked": "Which production line is this asset on",
+     "spans": {
+      "m1": [
+       "which producton line is this asset on"
+      ],
+      "m2": [
+       "what line does this machine sit on"
+      ],
+      "m3": [
+       "P-1-003 what line"
+      ]
+     }
+    },
+    {
+     "asked": "do the tracker, Fiix and Portal agree",
+     "spans": {
+      "m1": [
+       "do the tracker, fiix and portal agre"
+      ],
+      "m2": [
+       "do the spreadsheet, fiix and the portal say the same"
+      ],
+      "m3": [
+       "do fiix and the portal match"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "asset-tracker",
+   "card_id": "AT-11",
+   "item_id": "dev-F23-0015-exposed",
+   "question_sha256": "644229dcfd44e21b9ed5a4ed72ef9cb1e1a0bb808e70b2ad797c123a1b00f4b6",
+   "keep": [
+    "260556",
+    "sage"
+   ],
+   "variants": {
+    "m1": "260556 does sage code this equipmnet purchase by vendr or by invoice",
+    "m2": "260556: does sage book this machine buy per supplier or per bill",
+    "m3": "260556 - sage by supplier or by bill"
+   },
+   "parts": [
+    {
+     "asked": "Does Sage code this equipment purchase by vendor or by invoice",
+     "spans": {
+      "m1": [
+       "does sage code this equipmnet purchase by vendr or by invoice"
+      ],
+      "m2": [
+       "does sage book this machine buy per supplier or per bill"
+      ],
+      "m3": [
+       "sage by supplier or by bill"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "asset-tracker",
+   "card_id": "AT-12",
+   "item_id": "dev-F23-0016-exposed",
+   "question_sha256": "24b454cea4c67439b5a8997494e3626c94d2120919e8646513fe1d696144c4e0",
+   "keep": [
+    "P-1-003"
+   ],
+   "variants": {
+    "m1": "P-1-003 what is this asset's cost, in-servise date and book valu",
+    "m2": "P-1-003: what did this machine cost, when did it go live, and what is it worth on paper now",
+    "m3": "P-1-003 cost, start date, worth now"
+   },
+   "parts": [
+    {
+     "asked": "What is this asset's cost, in-service date and book value",
+     "spans": {
+      "m1": [
+       "what is this asset's cost, in-servise date and book valu"
+      ],
+      "m2": [
+       "what did this machine cost, when did it go live, and what is it worth on paper now"
+      ],
+      "m3": [
+       "P-1-003 cost, start date, worth now"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "brand-requirements",
+   "card_id": "BR-09",
+   "item_id": "dev-F24-0019-exposed",
+   "question_sha256": "ee8b027f146dfcbc21149c796ac5dbf2f16db577367361e2a1892be097794fe5",
+   "keep": [
+    "NBY"
+   ],
+   "variants": {
+    "m1": "nby which brand requirments apply to this customer, its brands and its prodcts, and are they curent",
+    "m2": "NBY: what rules from this client cover them, their labels and their items, and are those rules still up to date",
+    "m3": "NBY rules for their lines, still valid?"
+   },
+   "parts": [
+    {
+     "asked": "Which brand requirements apply to this customer, its brands and its products",
+     "spans": {
+      "m1": [
+       "which brand requirments apply to this customer, its brands and its prodcts"
+      ],
+      "m2": [
+       "what rules from this client cover them, their labels and their items"
+      ],
+      "m3": [
+       "NBY rules for their lines"
+      ]
+     }
+    },
+    {
+     "asked": "are they current",
+     "spans": {
+      "m1": [
+       "are they curent"
+      ],
+      "m2": [
+       "are those rules still up to date"
+      ],
+      "m3": [
+       "still valid"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "brand-requirements",
+   "card_id": "BR-10",
+   "item_id": "dev-F24-0020-exposed",
+   "question_sha256": "72a45cac4fa50832a29205893a269bc21a6152ede80902bf620d8e16d5735906",
+   "keep": [
+    "NBY"
+   ],
+   "variants": {
+    "m1": "nby which compliance documnets on raw-material r numbers support this customer's vegan claim, and when do they expir",
+    "m2": "NBY: what paperwork on the input R codes backs up their plant-based promise, and when does it run out",
+    "m3": "NBY plant-based proof on the R codes, good until when"
+   },
+   "parts": [
+    {
+     "asked": "Which compliance documents on raw-material R numbers support this customer's vegan claim",
+     "spans": {
+      "m1": [
+       "which compliance documnets on raw-material r numbers support this customer's vegan claim"
+      ],
+      "m2": [
+       "what paperwork on the input R codes backs up their plant-based promise"
+      ],
+      "m3": [
+       "NBY plant-based proof on the R codes"
+      ]
+     }
+    },
+    {
+     "asked": "when do they expire",
+     "spans": {
+      "m1": [
+       "when do they expir"
+      ],
+      "m2": [
+       "when does it run out"
+      ],
+      "m3": [
+       "good until when"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "brand-requirements",
+   "card_id": "BR-11",
+   "item_id": "dev-F24-0021-exposed",
+   "question_sha256": "34d96b7a22122575b6b4a37bdb8f8b81676977eacebbf38c2e3a7df1f9f668b6",
+   "keep": [
+    "NBY-001-118"
+   ],
+   "variants": {
+    "m1": "NBY-001-118 did a suplier or material switch on this product open a regulatory reveiw and notify quality",
+    "m2": "NBY-001-118: when the source or an input on this item changed, did that start a reg check and did QA hear about it",
+    "m3": "NBY-001-118 input changed - reg check done, QA told?"
+   },
+   "parts": [
+    {
+     "asked": "Did a supplier or material switch on this product open a Regulatory review and notify Quality",
+     "spans": {
+      "m1": [
+       "did a suplier or material switch on this product open a regulatory reveiw and notify quality"
+      ],
+      "m2": [
+       "when the source or an input on this item changed, did that start a reg check and did QA hear about it"
+      ],
+      "m3": [
+       "input changed - reg check done, QA told"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "brand-requirements",
+   "card_id": "BR-12",
+   "item_id": "dev-F24-0022-exposed",
+   "question_sha256": "06193e4afc710f8fbfd67aac5ba0fbf7b55098960132b1940d331b2d8db62934",
+   "keep": [
+    "NBY-001-118"
+   ],
+   "variants": {
+    "m1": "NBY-001-118 may the next bach of this product run, given the review state and expiry of its materials' complaince documents",
+    "m2": "NBY-001-118: can the next run of this item go ahead, given whether its input paperwork was checked and whether it has lapsed",
+    "m3": "NBY-001-118 ok to make the next run? paperwork checked and in date?"
+   },
+   "parts": [
+    {
+     "asked": "May the next batch of this product run, given the review state and expiry of its materials' compliance documents",
+     "spans": {
+      "m1": [
+       "may the next bach of this product run, given the review state and expiry of its materials' complaince documents"
+      ],
+      "m2": [
+       "can the next run of this item go ahead, given whether its input paperwork was checked and whether it has lapsed"
+      ],
+      "m3": [
+       "ok to make the next run? paperwork checked and in date"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "brand-requirements",
+   "card_id": "BR-13",
+   "item_id": "dev-F24-0023-exposed",
+   "question_sha256": "c736e9ceb99c1e37364bfb592d8480fce89d843d66ab4c7ecff7c8aef940408c",
+   "keep": [
+    "NBY-001-118"
+   ],
+   "variants": {
+    "m1": "NBY-001-118 which formula and artwrok versions are aproved for this product, and which versions did they supercede",
+    "m2": "NBY-001-118: what recipe and label design are signed off for this item, and what did each of them take over from",
+    "m3": "NBY-001-118 signed-off recipe and label, and what came before"
+   },
+   "parts": [
+    {
+     "asked": "Which formula and artwork versions are approved for this product",
+     "spans": {
+      "m1": [
+       "which formula and artwrok versions are aproved for this product"
+      ],
+      "m2": [
+       "what recipe and label design are signed off for this item"
+      ],
+      "m3": [
+       "signed-off recipe and label"
+      ]
+     }
+    },
+    {
+     "asked": "which versions did they supersede",
+     "spans": {
+      "m1": [
+       "which versions did they supercede"
+      ],
+      "m2": [
+       "what did each of them take over from"
+      ],
+      "m3": [
+       "what came before"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "brand-requirements",
+   "card_id": "BR-14",
+   "item_id": "dev-F25-0007-exposed",
+   "question_sha256": "971f5c1fa3adeb5d9d356eb8e1abbbe6e7d212fe2e2163dc7a71c3fc6fd4e1d7",
+   "keep": [
+    "NBY-001-118"
+   ],
+   "variants": {
+    "m1": "NBY-001-118 which claims does a materal change on this product reopen for formula aproval",
+    "m2": "NBY-001-118: if an input on this item changes, which label promises send the recipe back for sign-off",
+    "m3": "NBY-001-118 input change - which claims need sign-off again"
+   },
+   "parts": [
+    {
+     "asked": "Which claims does a material change on this product reopen for formula approval",
+     "spans": {
+      "m1": [
+       "which claims does a materal change on this product reopen for formula aproval"
+      ],
+      "m2": [
+       "if an input on this item changes, which label promises send the recipe back for sign-off"
+      ],
+      "m3": [
+       "input change - which claims need sign-off again"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "grants-program",
+   "card_id": "GP-03",
+   "item_id": "dev-F24-0031-exposed",
+   "question_sha256": "29080c7cbc9c47d52600bc23fc2b0d97f237e1e852a3ba0e624b7e0cc0c69ee4",
+   "keep": [
+    "1399",
+    "ngen"
+   ],
+   "variants": {
+    "m1": "1399 which invioce and which payment prooof support this ngen cost row",
+    "m2": "1399: what bill, and what evidence of payment, back this ngen line",
+    "m3": "1399 which bill + proof of payment, ngen"
+   },
+   "parts": [
+    {
+     "asked": "Which invoice",
+     "spans": {
+      "m1": [
+       "which invioce"
+      ],
+      "m2": [
+       "what bill"
+      ],
+      "m3": [
+       "which bill"
+      ]
+     }
+    },
+    {
+     "asked": "which payment proof support this NGen cost row",
+     "spans": {
+      "m1": [
+       "which payment prooof support this ngen cost row"
+      ],
+      "m2": [
+       "what evidence of payment, back this ngen line"
+      ],
+      "m3": [
+       "proof of payment, ngen"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "grants-program",
+   "card_id": "GP-04",
+   "item_id": "dev-F24-0032-exposed",
+   "question_sha256": "3d97b19bbed51e69085c95989d2dc8f0cc8f44588f20c7319afc8176218d6ec7",
+   "keep": [
+    "8KUVN8DP-0077",
+    "ngen"
+   ],
+   "variants": {
+    "m1": "8KUVN8DP-0077 is this invoice line eligable under ngen, and which rulling says so",
+    "m2": "8KUVN8DP-0077: can this bill line go on the ngen claim, and who decided that and where",
+    "m3": "8KUVN8DP-0077 ok for ngen? says who"
+   },
+   "parts": [
+    {
+     "asked": "Is this invoice line eligible under NGen",
+     "spans": {
+      "m1": [
+       "is this invoice line eligable under ngen"
+      ],
+      "m2": [
+       "can this bill line go on the ngen claim"
+      ],
+      "m3": [
+       "ok for ngen"
+      ]
+     }
+    },
+    {
+     "asked": "which ruling says so",
+     "spans": {
+      "m1": [
+       "which rulling says so"
+      ],
+      "m2": [
+       "who decided that and where"
+      ],
+      "m3": [
+       "says who"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "grants-program",
+   "card_id": "GP-07",
+   "item_id": "dev-F24-0034-exposed",
+   "question_sha256": "98606c4926614d2eff4d3e3100742dd18a9ce91365c3d07d3d41eb2686d50f66",
+   "keep": [
+    "260556"
+   ],
+   "variants": {
+    "m1": "260556 under which funder claims was this cost claimd, and how much was claimed and reimbursd in each",
+    "m2": "260556: which subsidy asks was this spend put on, and how much was asked for and paid back on each",
+    "m3": "260556 - which grants, how much asked and paid back"
+   },
+   "parts": [
+    {
+     "asked": "Under which funder claims was this cost claimed",
+     "spans": {
+      "m1": [
+       "under which funder claims was this cost claimd"
+      ],
+      "m2": [
+       "which subsidy asks was this spend put on"
+      ],
+      "m3": [
+       "which grants"
+      ]
+     }
+    },
+    {
+     "asked": "how much was claimed and reimbursed in each",
+     "spans": {
+      "m1": [
+       "how much was claimed and reimbursd in each"
+      ],
+      "m2": [
+       "how much was asked for and paid back on each"
+      ],
+      "m3": [
+       "how much asked and paid back"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "grants-program",
+   "card_id": "GP-09",
+   "item_id": "dev-F24-0035-exposed",
+   "question_sha256": "94f890e883f198ae53c596716ff7d31c29b6594518da268119c20e7daa661f69",
+   "keep": [
+    "1399"
+   ],
+   "variants": {
+    "m1": "1399 which deliverible or partner delivery does this cost or these hours suport",
+    "m2": "1399: what milestone or outside piece of work does this spend or this time count toward",
+    "m3": "1399 - what milestone is this spend for"
+   },
+   "parts": [
+    {
+     "asked": "Which deliverable or partner delivery does this cost or these hours support",
+     "spans": {
+      "m1": [
+       "which deliverible or partner delivery does this cost or these hours suport"
+      ],
+      "m2": [
+       "what milestone or outside piece of work does this spend or this time count toward"
+      ],
+      "m3": [
+       "what milestone is this spend for"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "procure-to-gl",
+   "card_id": "SP-04",
+   "item_id": "dev-F24-0043-exposed",
+   "question_sha256": "42131d9c26aa27a3a42fef2f698f19350825dd88ff71397455f297f09dba3631",
+   "keep": [
+    "PO#4144",
+    "dpo",
+    "bc"
+   ],
+   "variants": {
+    "m1": "PO#4144 did this drop-ship (dpo) blank purchse order and its reciept reach business central",
+    "m2": "PO#4144: did this dpo for empty bottles and its goods-in ever get into bc",
+    "m3": "PO#4144 in bc yet, order and goods-in?"
+   },
+   "parts": [
+    {
+     "asked": "Did this drop-ship (DPO) blank purchase order and its receipt reach Business Central",
+     "spans": {
+      "m1": [
+       "did this drop-ship (dpo) blank purchse order and its reciept reach business central"
+      ],
+      "m2": [
+       "did this dpo for empty bottles and its goods-in ever get into bc"
+      ],
+      "m3": [
+       "in bc yet, order and goods-in"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case": "procure-to-gl",
+   "card_id": "SP-05",
+   "item_id": "dev-F24-0044-exposed",
+   "question_sha256": "d30c327ddaf98d532e4f5cfc6af0221f095b6cce2b2dfcf63b652ebe24a466df",
+   "keep": [
+    "PO10005687",
+    "sku"
+   ],
+   "variants": {
+    "m1": "PO10005687 which screend sku was made from which blank sku in this screaning job",
+    "m2": "PO10005687: on this print run, which printed sku came from which plain sku",
+    "m3": "PO10005687 plain sku to printed sku?"
+   },
+   "parts": [
+    {
+     "asked": "Which screened SKU was made from which blank SKU in this screening job",
+     "spans": {
+      "m1": [
+       "which screend sku was made from which blank sku in this screaning job"
+      ],
+      "m2": [
+       "on this print run, which printed sku came from which plain sku"
+      ],
+      "m3": [
+       "plain sku to printed sku"
+      ]
+     }
+    }
+   ]
   }
  ]
 }

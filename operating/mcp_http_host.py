@@ -333,9 +333,10 @@ def main(argv: list[str] | None = None, *, directory: Callable[[Any], Any] | Non
                          (str(error) if isinstance(error, ValueError) else type(error).__name__))
     # The people exclusion gates the job-title path of a principal (entra_job_title_keywords);
     # unset or invalid, no job title grants anything.
-    from integrations.people_exclusion import PeopleExclusion
+    # Re-read when the list file changes or every few minutes (``ReloadingExclusion``).
+    from integrations.people_exclusion import ReloadingExclusion
     resolver = EmployeePermissionResolver(policy, portal_access, directory=directory,
-                                          people_exclusion=PeopleExclusion.from_env(os.environ))
+                                          people_exclusion=ReloadingExclusion.from_env(os.environ))
     services = SessionHost(parser, args, tenant=policy.tenant, resolver=resolver,
                            fixture=False, dev=False, capture_bounds=capture_bounds)
     try:

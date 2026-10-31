@@ -818,7 +818,7 @@
    },
    {
     "id": "QW-01",
-    "unscored": "UNSCORED: the criterion needs operator-run read receipts matching source.watched_originals, which the transcript cannot show",
+    "expected": {"document": "2775fa7709d4a7568e6603b473bf9f3d01cdfcf5bd622cef60e3bd0fa6478e92", "document_name": "2026-10-09 Vince Alton - G2_BEAUTY_Q20261009.1.xlsm (2).eml", "answerability": "partial", "facts": [], "no_amounts": false},
     "layer": "comprehension",
     "question": "Which pinned workbook revisions belong to each quote example, and which one is the quote of record?",
     "criterion": "Identify a workbook only by name, item id and SHA-256 from a read receipt that matches source.watched_originals; two files with one name are distinct revisions. Which revision is the quote of record is not stated anywhere read and stays unknown until a person answers.",
@@ -833,7 +833,7 @@
    },
    {
     "id": "QW-02",
-    "unscored": "UNSCORED: the criterion rules out the _summary.md files and needs operator-run read receipts of the pinned emails, which the transcript cannot show",
+    "expected": {"document": "2775fa7709d4a7568e6603b473bf9f3d01cdfcf5bd622cef60e3bd0fa6478e92", "document_name": "2026-10-09 Vince Alton - G2_BEAUTY_Q20261009.1.xlsm (2).eml", "answerability": "partial", "facts": [], "no_amounts": false},
     "layer": "tracing",
     "question": "When was each example's quote or price sent, and by whom (by role)?",
     "criterion": "Answer from the pinned emails of the three folders only after they are read through scripts.case_originals read; record the date and the sender's role, never a body. The three _summary.md files are folder summaries, not quotes.",

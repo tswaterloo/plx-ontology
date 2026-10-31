@@ -4,6 +4,7 @@ import { AlertTriangle, ArrowLeft, Loader2 } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { fieldEntries } from "@/components/source-chip";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardBody } from "@/components/ui/card";
 import { ErrorNotice } from "@/components/ui/notice";
 import { SkeletonLines } from "@/components/ui/skeleton";
@@ -69,6 +70,9 @@ function SourceReader() {
               {view.title ?? view.label}
             </h1>
             {view.as_of && <p className="text-xs text-muted">As of {formatDateTime(view.as_of)}</p>}
+            {view.access_label && (
+              <Badge tone="info" data-testid="access-label">{view.access_label}</Badge>
+            )}
           </header>
           {view.changed_since && (
             <p className="flex items-center gap-2 rounded-xl border border-warn/40 bg-warn-soft p-3 text-sm">

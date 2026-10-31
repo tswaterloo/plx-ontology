@@ -214,7 +214,7 @@
    },
    {
     "id": "SP-04",
-    "anchor_gap": "the screening ZIP members are unread and its advisories name no DPO purchase order",
+    "anchor": {"identifier": "PO#4144", "identifier_kind": "po_number", "object_type": "PurchaseOrder", "source": "Screening Process Map (the SP map, c3bbec44baba) stage 1: 'Sage PO for blank bottles (e.g. Somewang PO#4144: freight $4,095 on the PO); portal DPOs are not sent to BC'"},
     "layer": "tracing",
     "question": "Did this drop-ship (DPO) blank purchase order and its receipt reach Business Central?",
     "criterion": "The map reports DPO and receipt exclusions from the BC sync; the pinned drain code skips fulfillment mode DISTRIBUTE for purchase orders and their receipts. That is a code reading, not deployed behaviour. For one PO, name the keys tried in BC purchase orders and receipts; the Portal-to-BC entity map is not served, so a PO absent in BC is 'not found under the keys checked', never 'never posted'.",
@@ -224,7 +224,7 @@
    },
    {
     "id": "SP-05",
-    "anchor_gap": "the screening ZIP members are unread and its advisories name no screening job",
+    "anchor": {"identifier": "PO10005687", "identifier_kind": "po_number", "object_type": "PurchaseOrder", "source": "Screening Process Map (the SP map, c3bbec44baba): 'Sage POs carry the screened SKU at $0.00 and the screening on MISC_NS non-stock lines (PO10005536, PO10005575, PO10005687)'"},
     "layer": "tracing",
     "question": "Which screened SKU was made from which blank SKU in this screening job?",
     "criterion": "Needs a recorded blank-to-screened link or a screening job naming both. The map reports that link missing, and no Portal model at 1f2d42d records a screening job. Report the gap; never match a blank to a screened SKU by description, name, artwork or date.",

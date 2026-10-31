@@ -126,7 +126,7 @@
    },
    {
     "id": "GP-03",
-    "anchor_gap": "no committed source names the cost row: the brief body is unread and its advisory names only project NGen 14091 (269 cost rows), not one row",
+    "anchor": {"identifier": "1399", "identifier_kind": "vendor_invoice_no", "object_type": "PurchaseInvoice", "source": "Grants Program brief (co-81d7ee151c6e) worked example C: Cloud9 invoice 1399, two after-hours line items ($832.50 pre-tax) claimable"},
     "layer": "tracing",
     "question": "Which invoice and which payment proof support this NGen cost row?",
     "criterion": "Link the cost row to its invoice and payment proof only on a named key (BC purchase invoice, BC vendor payment, Sage PO or receipt, Portal PO), citing each record and the original PDF in place, never a copy. A vendor, amount or date coincidence is a candidate, never a match; a join not seen is reported as a gap with the keys tried. Amounts are Decimal with currency stated.",
@@ -147,7 +147,7 @@
    },
    {
     "id": "GP-04",
-    "anchor_gap": "no committed source names the invoice line: the brief body is unread and its advisory names only project NGen 14091 (269 cost rows), not one row",
+    "anchor": {"identifier": "8KUVN8DP-0077", "identifier_kind": "vendor_invoice_no", "object_type": "PurchaseInvoice", "source": "Grants Program brief (co-81d7ee151c6e) worked example D: Anthropic 8KUVN8DP-0077, removed from Q10 as ineligible after line-item review"},
     "layer": "tracing",
     "question": "Is this invoice line eligible under NGen, and which ruling says so?",
     "criterion": "Give eligibility only with a cited ruling: who ruled, when and in which source. Without a recorded ruling the answer is open. Never infer eligibility from an expense category, amount, vendor or a rule (inferred or hard-coded eligibility rules are a boundary of the brief).",
@@ -194,7 +194,7 @@
    },
    {
     "id": "GP-07",
-    "anchor_gap": "no committed source names the cost: the brief body is unread and its advisory names only project NGen 14091 (269 cost rows), not one row",
+    "anchor": {"identifier": "260556", "identifier_kind": "vendor_invoice_no", "object_type": "PurchaseInvoice", "source": "Grants Program brief (co-81d7ee151c6e) worked example E: Mainly Mac invoice 260556, parked for Q11 under Non-Capital Equipment"},
     "layer": "tracing",
     "question": "Under which funder claims was this cost claimed, and how much was claimed and reimbursed in each?",
     "criterion": "Per the brief one cost can carry several funder claims, each with its own claimed and reimbursed amount. List each claim separately with its source, Decimal amounts and currency; never merge claims or sum across funders. Without a claim record the answer is open.",
@@ -225,7 +225,7 @@
    },
    {
     "id": "GP-09",
-    "anchor_gap": "no committed source names the cost or hours: the brief body is unread and its advisory names only project NGen 14091 (269 cost rows), not one row",
+    "anchor": {"identifier": "1399", "identifier_kind": "vendor_invoice_no", "object_type": "PurchaseInvoice", "source": "Grants Program brief (co-81d7ee151c6e) worked example C: Cloud9 invoice 1399, after-hours line items claimable, the managed stack excluded"},
     "layer": "tracing",
     "question": "Which deliverable or partner delivery does this cost or these hours support?",
     "criterion": "The brief asks for stable links from costs and hours to deliverables. Give the link only with its source; a link not recorded anywhere is a gap, never inferred from dates, vendor or description.",

@@ -9,6 +9,7 @@ const answer: Answer = {
   conversation_id: "conv_1",
   outcome: "answered",
   latency_ms: 10,
+  access_label: null,
   direct_answer: "PO 5280 is late.",
   facts: [],
   not_found: [],

@@ -42,7 +42,24 @@ export function DevBanner() {
       <span>
         DEV mode — demo sign-in, not Microsoft. Not for staff use.
         {label && <span className="font-normal"> {label}</span>}
+
       </span>
+    </div>
+  );
+}
+
+/** Shown in every sign-in mode while the reader holds a declared full-read grant. */
+export function AccessBanner() {
+  const { state } = useAuth();
+  const label = state.status === "signed-in" ? state.me.access_label : null;
+  if (!label) return null;
+  return (
+    <div
+      role="note"
+      className="flex items-center justify-center gap-2 bg-surface-2 px-3 py-1.5 text-center text-xs font-medium text-fg"
+      data-testid="access-banner"
+    >
+      <span>{label}</span>
     </div>
   );
 }
@@ -169,6 +186,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         Skip to content
       </a>
       <DevBanner />
+      <AccessBanner />
       <div className="flex min-h-0 flex-1">
         <aside className="hidden w-64 shrink-0 border-r border-border bg-bg-subtle lg:block">
           <div className="sticky top-0 flex h-dvh flex-col px-3 py-4">

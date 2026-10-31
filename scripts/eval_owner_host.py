@@ -26,6 +26,11 @@ created 0700 and its files 0600; keep it in a scratch directory, never in the re
 Never prints a claim.
 
     python3 -m scripts.eval_owner_host --out DIR      # then PLX_WORKBENCH_HOST_CONFIG=DIR/host.json
+    python3 -m scripts.eval_owner_host --out DIR --reader-env PLX_EVAL_READER_VINCE --full-read
+
+``--full-read`` adds the declared full-read grant (``employee_policy.json`` ``full_read``):
+the reader opens every captured mailbox, SharePoint item and Teams conversation and holds
+the finance and price markings, still under the people exclusion and the host audiences.
 """
 from __future__ import annotations
 
@@ -48,9 +53,9 @@ ROLE = "SUPER_ADMIN"
 DEPARTMENT = "owner-eval-department"  # one id, declared in the policy and the snapshot row
 
 
-def reader_claims(environ: Mapping[str, str]) -> dict[str, str]:
+def reader_claims(environ: Mapping[str, str], name: str | None = None) -> dict[str, str]:
     from scripts import eval_real_agent as real
-    claims, problem = real.reader_identity(environ, real.READER_ENV)
+    claims, problem = real.reader_identity(environ, name or real.READER_ENV)
     if claims is None:
         raise ValueError(problem or "reader_identity_missing")
     return dict(claims)
@@ -90,7 +95,20 @@ def registry_repositories(registry: Mapping[str, Any]) -> list[str]:
     return sorted(found)
 
 
-def build(claims: Mapping[str, str]) -> dict[str, dict[str, Any]]:
+def full_read_grant(claims: Mapping[str, str], granted_at: str,
+                    granted_by: str = "workbench owner") -> dict[str, Any]:
+    """The declared full-read grant for the named reader: every scope, every mailbox
+    (``operating.employee_permissions.FullReadGrant``)."""
+    from operating.employee_permissions import FULL_READ_SCOPES
+    return {"object_id": claims["entraObjectId"].lower(), "granted_by": granted_by,
+            "granted_at": granted_at, "scopes": list(FULL_READ_SCOPES), "mail_scope": "all",
+            "reason": "The demo, its live checks and scoreboard read as the named reader, "
+                      "who may view everything captured."}
+
+
+def build(claims: Mapping[str, str], *, full_read: bool = False,
+          granted_at: str = "2026-10-30",
+          granted_by: str = "workbench owner") -> dict[str, dict[str, Any]]:
     base = json.loads(BASE_CONFIG.read_text(encoding="utf-8"))
     mirror = json.loads((EXAMPLES / base["mirror_audience"]).read_text(encoding="utf-8"))
     live = json.loads((EXAMPLES / base["live_audience"]).read_text(encoding="utf-8"))
@@ -114,6 +132,8 @@ def build(claims: Mapping[str, str]) -> dict[str, dict[str, Any]]:
         "principals": {name: _principal(name) for name in owners},
         "service_principal_object_ids": [],
     }
+    if full_read:
+        policy["full_read"] = [full_read_grant(claims, granted_at, granted_by)]
     access = {
         "schema": "plx-portal-access-snapshot/v1",
         "source": "scripts/eval_owner_host.py (the named reader's own claims)",
@@ -151,14 +171,24 @@ def main(argv: Sequence[str] | None = None, environ: Mapping[str, str] | None = 
     parser = argparse.ArgumentParser(prog="python3 -m scripts.eval_owner_host",
                                      description=__doc__.splitlines()[0])
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--reader-env", default=None,
+                        help="the variable holding the reader's claims (default PLX_EVAL_READER)")
+    parser.add_argument("--full-read", action="store_true",
+                        help="write a declared full-read grant for the reader (all scopes, "
+                             "every mailbox); the people exclusion still wins")
+    parser.add_argument("--granted-by", default="workbench owner",
+                        help="who granted full-read, recorded in the grant")
     args = parser.parse_args(argv)
     try:
-        files = build(reader_claims(os.environ if environ is None else environ))
+        files = build(reader_claims(os.environ if environ is None else environ,
+                                    args.reader_env), full_read=args.full_read,
+                      granted_by=args.granted_by)
     except (ValueError, OSError, KeyError) as error:
         print(json.dumps({"error": type(error).__name__}), file=sys.stderr)
         return 2
     write(args.out, files)
-    print(json.dumps({"host_config": str(args.out / "host.json"), "files": sorted(files)}))
+    print(json.dumps({"host_config": str(args.out / "host.json"), "files": sorted(files),
+                      "full_read": args.full_read}))
     return 0
 
 

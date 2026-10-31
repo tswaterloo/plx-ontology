@@ -15,6 +15,45 @@ Must keep working:
 Known gaps:
 ```
 
+## v0.15 (2026-10-31)
+
+Added:
+- **How we know.** Answers come with a trail of the steps behind them, each opening its source. For a late purchase order:
+  - the requested-by date;
+  - each vendor promise and revision, with its email;
+  - follow-ups and receipts;
+  - the verdict under PLX's lateness rule;
+  - whether the ETA is backed by a vendor confirmation;
+  - a suggested next step.
+  The same works for why a lot is on hold, what we last told a customer, invoice/PO/receipt mismatches, assembly shortfalls, short shipments and who decided something.
+- **Late materials for a customer order:** every material PO on the order and which are late, with the full count shown.
+- **Is a customer profitable, and why not:**
+  - revenue, booked cost and margin over a stated period;
+  - orders ranked worst first;
+  - why an order lost money, line by line with its cost sources;
+  - every amount with its own currency.
+  When not every order could be read, no total or verdict is given.
+- **The email behind a number:** a vendor's quoted price, unit, MOQ or lead time, quoted exactly from their email or attachment and compared with the system's value.
+- **Vendor replies:** proposed updates from replies (never applied), and a list of quote requests with no reply for 7 days, with a draft to copy. Nothing is sent.
+- **Full-read access for one named person** (set up for demos): they can see every captured mailbox, file, Teams message and finance figure. Quality documents still need QC access, excluded people stay excluded, and every view is labelled and logged.
+- **An accuracy report** on the graded questions, with a target of 90% or more correct with sources and 1% or less confidently wrong, plus a protocol for timing staff on the same questions.
+
+Changed:
+- Very large Portal tables load in resumable steps after the smaller ones, so purchase orders stay current.
+- Grading is stricter: answers must match facts quoted from the source document, a negated statement never counts as a match, and an unreadable document is reported as blocked, not wrong.
+
+Fixed:
+- A late PO's answer no longer adds a note when the reply and the materials table disagree; the table always shows the recorded links with exact counts.
+- A price written with a bare "$" is never reported as conflicting with the system's price.
+
+Must keep working:
+- Everything in v0.14.
+
+Known gaps:
+- Sign-in with a Microsoft account is not switched on yet; the preview uses a demo sign-in on the private network.
+- A full answer takes about 40 to 90 seconds.
+- Confidently-wrong answers are about 2–5% on the graded questions (target ≤1%); fixes are in progress.
+
 ## v0.14 (2026-10-30)
 
 Changed:

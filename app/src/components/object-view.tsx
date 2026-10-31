@@ -10,6 +10,7 @@ import { formatDate, formatDateTime, money, objectHref, plural, safeHref, SYSTEM
 import { toggleSaved, useSaved } from "@/lib/saved";
 import type { LandedCost, LateLine, LinkedItem, ObjectPage, Person, Source, TimelineEvent, Tone } from "@/lib/types";
 import { ConflictCard, FactList, FreshnessLabel, HiddenNotice, NotFoundSection } from "./answer-parts";
+import { EvidenceTrailCard } from "./evidence-trail";
 import { SourceChip } from "./source-chip";
 import { Badge } from "./ui/badge";
 import { Card, CardBody, CardHeader, CardTitle } from "./ui/card";
@@ -302,6 +303,9 @@ export function ObjectView({ type, id }: { type: string; id: string }) {
                 {obj.label}
               </h1>
               {obj.summary && <p className="text-sm text-muted">{obj.summary}</p>}
+              {obj.access_label && (
+                <Badge tone="info" data-testid="access-label">{obj.access_label}</Badge>
+              )}
               {obj.status && (
                 <div className="flex flex-wrap items-center gap-2 pt-1" data-testid="object-status">
                   <Badge tone={toneOf(obj.status.state)}>{obj.status.text}</Badge>
@@ -346,6 +350,7 @@ export function ObjectView({ type, id }: { type: string; id: string }) {
               {(obj.conflicts ?? []).map((c, i) => (
                 <ConflictCard key={i} conflict={c} />
               ))}
+              <EvidenceTrailCard trail={obj.trail} />
               <LateLines lines={obj.late_lines ?? []} />
               <Timeline events={obj.timeline ?? []} />
             </div>

@@ -417,7 +417,23 @@ SCORE_FORMAT = "plx-eval-score/v1"
 #    set's own documents also hold each ``source.related_advisories`` file it pins by byte
 #    SHA-256 (``source_revision``; scripts/eval_case_cards.py ``set_documents``): the
 #    packaging-sourcing set's Sept 30 map is its own source, never another set's.
-SCORER_VERSION = "plx-eval-scorer/25"
+# 26: a rubric item may carry the card's derived expected answer (``scoring.expected``,
+#    ``expected_problems``: the facts read from one of its own pinned documents, each a
+#    value with the quote that states it, the answerability the document supports and
+#    whether an amount may be stated). It only adds failures: a correct run must also
+#    state every fact in its text or a value the claim gate passed (``expected_fact_missing``; an
+#    abstention on a card whose document holds the facts is wrong, never justified), must
+#    not label a ``partial`` expectation ``answerable`` (``answerability_mismatch``) and,
+#    where the card forbids it, must state no amount (``amount_stated``). No run scores
+#    higher than under /25. A fact is matched by its value or an accepted form
+#    (``accept``), word by word on stems, a number only whole in its own token; a fact the
+#    question already states is refused at compile (``expected_echoes``); a run whose
+#    answer says the host could not read the card's own document's text
+#    (``TEXT_UNREAD_REASONS``, ``gap_on_document``) and misses a fact is blocked
+#    (``document_text_unread``), never wrong. A fact carries a polarity (``NEGATORS``,
+#    ``_fact_in``): a negated mention never states a positive fact, and a negative fact
+#    is stated only where its clause negates it.
+SCORER_VERSION = "plx-eval-scorer/26"
 # The last segments of a record field that are file or message metadata
 # (``metadata_field``), case-folded with ``_`` and ``-`` dropped.
 METADATA_FIELD_NAMES = frozenset({
@@ -2421,6 +2437,194 @@ def action_calls(transcript: Mapping[str, Any]) -> list[str]:
     return out
 
 
+# A card's derived expected answer (scorer /26, ``scoring.expected``): read from one of
+# its own pinned documents, so a rubric run is checked against what that document says.
+EXPECTED_KEYS = frozenset({"document", "document_name", "answerability", "facts",
+                           "no_amounts"})
+MAX_EXPECTED_FACTS = 8
+MAX_ACCEPTED_FORMS = 8
+# An answer gap saying the host could not read a document's text: a missing fact is then
+# the read's gap, never the agent's error (blocked, ``document_text_unread``).
+TEXT_UNREAD_REASONS = frozenset({"text_not_extracted", "text_unreadable", "unreadable",
+                                 "not_extracted", "ocr_required", "original_not_openable"})
+_CURRENCY_CODE = re.compile(r"^[A-Z]{3}$")
+_MONEY_TEXT = re.compile(r"[$€£¥]\s*\d|\b(?:USD|CAD|EUR|GBP)\s*\d|\d\s*(?:USD|CAD|EUR|GBP)\b")
+
+
+def expected_problems(expected: Any) -> list[str]:
+    """Why a card's ``expected`` answer is malformed (empty when it is well formed): a
+    ``document`` SHA-256, ``answerability`` ``answerable`` or ``partial``, up to
+    ``MAX_EXPECTED_FACTS`` facts ``{value, quote[, accept]}`` each quote holding its value
+    (``_fact_in``), ``accept`` up to ``MAX_ACCEPTED_FORMS`` other wordings of the same fact,
+    at least one fact unless ``partial``, and a boolean
+    ``no_amounts``. Fail closed: the compiler refuses such a card."""
+    if not isinstance(expected, Mapping) or not set(expected) <= EXPECTED_KEYS:
+        return ["expected_not_an_object"]
+    problems = []
+    if not isinstance(expected.get("document"), str) or not _DOCUMENT.match(
+            expected["document"]):
+        problems.append("expected_document_invalid")
+    if expected.get("answerability") not in ("answerable", "partial"):
+        problems.append("expected_answerability_invalid")
+    facts = expected.get("facts", [])
+    if not isinstance(facts, list) or len(facts) > MAX_EXPECTED_FACTS or (
+            not facts and expected.get("answerability") != "partial"):
+        problems.append("expected_facts_invalid")
+    else:
+        for fact in facts:
+            accept = fact.get("accept", []) if isinstance(fact, Mapping) else None
+            if not isinstance(fact, Mapping) or not {"value", "quote"} <= set(fact) \
+                    <= {"value", "quote", "accept", "polarity"} or not all(
+                    isinstance(fact[k], str) and 0 < len(fact[k].strip()) <= 400
+                    for k in ("value", "quote")) \
+                    or fact.get("polarity", "positive") not in POLARITIES \
+                    or not _fact_in(fact["quote"], fact["value"],
+                                    fact.get("polarity", "positive")) \
+                    or not isinstance(accept, list) or len(accept) > MAX_ACCEPTED_FORMS \
+                    or not all(isinstance(a, str) and 0 < len(a.strip()) <= 120
+                               for a in accept):
+                problems.append("expected_fact_invalid")
+                break
+    if "document_name" in expected and not (
+            isinstance(expected["document_name"], str)
+            and 0 < len(expected["document_name"].strip()) <= 200):
+        problems.append("expected_document_name_invalid")
+    if not isinstance(expected.get("no_amounts", False), bool):
+        problems.append("expected_no_amounts_invalid")
+    return problems
+
+
+_SUFFIXES = ("ations", "ation", "atives", "ative", "ions", "ion", "ings", "ing", "ives",
+             "ive", "ed", "es", "s")
+_NUMBER_TOKEN = re.compile(r"(?<![\w.,-])[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?![\w-]|[.,]\d)")
+
+
+def _stem(word: str) -> str:
+    """A word without one common English ending (``oxidation`` and ``oxidative`` are
+    ``oxid``), never shorter than four letters; a word holding a digit is kept whole."""
+    if any(ch.isdigit() for ch in word):
+        return word
+    for suffix in _SUFFIXES:
+        if word.endswith(suffix) and len(word) - len(suffix) >= 4:
+            return word[:-len(suffix)]
+    return word
+
+
+# A fact's polarity (scorer /26): a negator in its clause says the opposite. A positive
+# fact (the default) is stated only where no negator stands within ``NEGATION_WINDOW``
+# words before it in its clause ("nothing changed", "not before the BOL", "no price
+# mismatch" state no change, no "before", no mismatch); a negative fact (``polarity``
+# ``negative``: the document says it is absent or false) only in a clause that negates it
+# ("no oxidation test", "does not show that the lot was extended"), never in one that
+# affirms it ("all risks including oxidation are covered"). A clause ends at sentence
+# punctuation or a contrast word, so "shows the new expiry but not that it was extended"
+# affirms the expiry and negates the extension.
+NEGATORS = frozenset({"no", "not", "never", "none", "nothing", "neither", "nor", "without",
+                      "cannot", "nobody", "nowhere", "lacks", "lacking", "absent"})
+NEGATION_WINDOW = 4
+POLARITIES = ("positive", "negative")
+_CLAUSE = re.compile(r"[.;:!?\n]+|\b(?:but|however|although|though|whereas|while)\b")
+_WORD = re.compile(r"[^\W_]+")
+
+
+def _clauses(text: str) -> list[str]:
+    folded = re.sub(r"n[’']t\b", " not", _fold(text))
+    return [part for part in _CLAUSE.split(folded) if part.strip()]
+
+
+def _fact_in(text: Any, fact: str, polarity: str = "positive") -> bool:
+    """Whether ``text`` states ``fact`` with its polarity (``NEGATORS``): a number fact only
+    as that number written whole in its own token (``96`` is not ``0096`` nor part of
+    ``96-A``), any other as its folded words in a row, each word by its stem (``oxidative
+    change`` states ``oxidation``); a positive one with no negator just before it in its
+    clause, a negative one only in a clause holding a negator outside it."""
+    if not isinstance(text, (str, int, float)) or isinstance(text, bool):
+        return False
+    want = to_decimal(fact)
+    number = want is not None and bool(_NUMBER_TOKEN.fullmatch(fact.strip()))
+    words = [_stem(w) for w in _WORD.findall(re.sub(r"n[’']t\b", " not", _fold(fact)))]
+    if not number and not words:
+        return False
+    for clause in _clauses(str(text)):
+        spans: list[tuple[int, int]] = []
+        if number:
+            spans = [m.span() for m in _NUMBER_TOKEN.finditer(clause)
+                     if to_decimal(m.group(0)) == want
+                     and not re.match(r"^[+-]?0\d", m.group(0))]
+        else:
+            found = list(_WORD.finditer(clause))
+            stems = [_stem(m.group(0)) for m in found]
+            spans = [(found[i].start(), found[i + len(words) - 1].end())
+                     for i in range(len(stems) - len(words) + 1)
+                     if stems[i:i + len(words)] == words]
+        for start, end in spans:
+            before = _WORD.findall(clause[:start])
+            if polarity == "negative":
+                if NEGATORS & set(before + _WORD.findall(clause[end:])):
+                    return True
+            elif not NEGATORS & set(before[-NEGATION_WINDOW:]):
+                return True
+    return False
+
+
+def fact_stated(text: Any, fact: Mapping[str, Any]) -> bool:
+    """Whether ``text`` states a card's fact, in its value or one of its accepted forms,
+    with its polarity."""
+    polarity = fact.get("polarity", "positive")
+    return any(_fact_in(text, form, polarity)
+               for form in [fact["value"], *(fact.get("accept") or [])])
+
+
+def gap_on_document(gap: Mapping[str, Any], expected: Mapping[str, Any]) -> bool:
+    """Whether an answer gap is about the card's own pinned document: its subject or
+    concerns names the document's SHA-256 or its file name (``document_name``, with or
+    without its extension). A gap about another document, or about "the original" in
+    general, is not."""
+    said = _fold(" ".join(str(gap.get(k) or "") for k in ("subject", "concerns")))
+    name = _fold(str(expected.get("document_name") or "")).strip()
+    stem = name.rsplit(".", 1)[0].strip() if "." in name else name
+    return expected["document"] in said or bool(stem) and (name in said or stem in said)
+
+
+def expected_echoes(expected: Mapping[str, Any], question: str) -> list[str]:
+    """The facts a question already states (in any accepted form): such a fact cannot tell
+    a right answer from a wrong one, so the compiler refuses the card."""
+    return [fact["value"] for fact in expected.get("facts") or []
+            if fact_stated(question, fact)]
+
+
+def expected_codes(expected: Mapping[str, Any], answer: Mapping[str, Any],
+                   checked: Mapping[int, Mapping[str, Any]]) -> list[str]:
+    """The item codes a rubric run earns against its card's expected answer (scorer /26):
+    ``expected_fact_missing`` when a fact is neither in the answer's text (its withheld
+    lines aside) nor in a stated value the claim gate passed,
+    ``answerability_mismatch`` when the card expects ``partial`` and the answer says
+    ``answerable``, ``amount_stated`` when the card forbids amounts and a stated value
+    carries a currency or a money figure."""
+    codes = []
+    stated = [value for index, value in enumerate(answer.get("values") or [])
+              if isinstance(value, Mapping) and value.get("value") is not None
+              and any(_claim_ok(claim) for claim in (checked.get(index) or {}).get("claims")
+                      or [] if isinstance(claim, Mapping))]
+    # the answer's text is what the gate let through to the reader: a fact said there, or
+    # in a value the gate passed, is stated; a line the gate withheld says nothing
+    text = "\n".join(line for line in str(answer.get("text") or "").splitlines()
+                     if not line.startswith("Withheld:"))
+    if any(not (fact_stated(text, fact) or any(fact_stated(value.get("value"), fact)
+                                               for value in stated))
+           for fact in expected.get("facts") or []):
+        codes.append("expected_fact_missing")
+    if expected.get("answerability") == "partial" and answer.get("answerability") == "answerable":
+        codes.append("answerability_mismatch")
+    if expected.get("no_amounts") and any(
+            isinstance(value, Mapping) and value.get("value") is not None and (
+                (isinstance(value.get("currency"), str) and _CURRENCY_CODE.match(value["currency"]))
+                or _MONEY_TEXT.search(str(value.get("value"))))
+            for value in answer.get("values") or []):
+        codes.append("amount_stated")
+    return codes
+
+
 def score(item: Mapping[str, Any], transcript: Mapping[str, Any], *,
           parent: Mapping[str, Any] | None = None, contracts: Any = None) -> dict[str, Any]:
     """The deterministic score of one recorded run (see the module docstring)."""
@@ -2446,6 +2650,9 @@ def score(item: Mapping[str, Any], transcript: Mapping[str, Any], *,
     # no evidenced claim, or ``blocked`` with no claim the gate passed) is an abstention,
     # justified when it names a gap, whatever its label.
     rubric = rubric_item(item)
+    text_unread = False
+    if rubric and "expected" in scoring and expected_problems(scoring["expected"]):
+        raise ScoreError("expected_invalid")
     evidenced = 0
     paths: list[str] = []
     counted: list[tuple[str, str]] = []
@@ -2567,6 +2774,20 @@ def score(item: Mapping[str, Any], transcript: Mapping[str, Any], *,
     # evidenced claim, or ``blocked`` with no claim the gate passed: either way it
     # commits to nothing) that passed otherwise is an abstention, justified when it names
     # a gap.
+    expected = scoring.get("expected") if rubric else None
+    if isinstance(expected, Mapping) and answer is not None:
+        # The card's derived expected answer (scorer /26) only adds failures.
+        found = expected_codes(expected, answer, checked["values"])
+        if found:
+            item_codes.extend(code for code in found if code not in item_codes)
+            passed = False
+            if found == ["expected_fact_missing"] and any(
+                    isinstance(gap, Mapping) and str(gap.get("reason") or "")
+                    in TEXT_UNREAD_REASONS and gap_on_document(gap, expected)
+                    for gap in answer.get("gaps") or []):
+                # the host said it could not read the text: blocked, never confident wrong
+                text_unread = True
+                item_codes.append("document_text_unread")
     label_only = rubric and answer is not None and not evidenced and (
         label == "partial" or (label == "blocked" and not _passed_claims(checked["values"])))
     if label_only and passed:
@@ -2588,7 +2809,7 @@ def score(item: Mapping[str, Any], transcript: Mapping[str, Any], *,
     if unheld:
         item_codes.append("originals_not_held")
         passed = False
-    outcome_name = ("blocked" if drift or session_failed or unheld else
+    outcome_name = ("blocked" if drift or session_failed or unheld or text_unread else
                     ("justified_abstention" if abstain else "correct") if passed else "wrong")
     gate_codes = {f["code"] for f in gate_failures} | {"claim_malformed" for _ in malformed}
     if outcome_name == "wrong" and answer is not None and not abstain and read_gap(

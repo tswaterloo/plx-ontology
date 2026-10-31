@@ -766,6 +766,10 @@ class MirrorCaptures:
             """SELECT c.capture_id, c.finished_at FROM capture c JOIN capture_state s
                ON s.capture_id = c.capture_id WHERE s.state = 'complete'""")}
         held = self._held()
+        # A full re-read merging in batches: the versions it replaced are still served.
+        merging = {row[0] for row in self._conn.execute(
+            "SELECT capture_id FROM capture_state WHERE state = 'in_progress'")}
+        version_removals = self._REMOVALS.replace("row_current.", "row_version.")
         rule = self._conn.execute(
             "SELECT value FROM mirror_meta WHERE name = 'replacement_rule'").fetchone()
         accepted = {REPLACEMENT_RULE, *_SUBSUMED_RULES.get(REPLACEMENT_RULE, ())}
@@ -800,11 +804,15 @@ class MirrorCaptures:
                        FROM row_current WHERE relation = ?
                        UNION ALL
                        SELECT key_json, run_index, run_length, row_json, row_digest,
-                       capture_id, last_seen_at, NULL, superseded_by_capture, 0, NULL
+                       capture_id, last_seen_at, NULL, superseded_by_capture, 0,
+                       CASE WHEN superseded_by_capture IN
+                         (SELECT capture_id FROM capture_state WHERE state = 'in_progress')
+                       THEN {version_removals} END
                        FROM row_version WHERE relation = ?
                        ORDER BY 1, 6, 2""", (relation, relation))):
                 recorded = finished.get(row["capture_id"])
-                superseded = (None if row["current"] else
+                superseded = (None if row["current"] or
+                              row["superseded_by_capture"] in merging else
                               finished.get(row["superseded_by_capture"], ""))
                 if recorded is None or superseded == "":
                     continue  # a capture that never completed is not L1 truth
@@ -855,15 +863,26 @@ class MirrorCaptures:
             if relation not in held:   # as records(): nothing of an uncompleted fill
                 out[relation] = digest.hexdigest()
                 continue
+            # A merge in batches readers cannot see yet leaves the digest as it was: its
+            # rows are left out and the versions it replaced hash as the current rows
+            # they still are for every reader (records()).
+            merging = ("(SELECT capture_id FROM capture_state "
+                       "WHERE state = 'in_progress')")
+            version_removals = self._REMOVALS.replace("row_current.", "row_version.")
             for row in self._conn.execute(
                     f"""SELECT key_json, run_index, run_length, row_json, row_digest,
                        capture_id, last_seen_at, missing_from_source_since,
                        NULL AS superseded_by_capture, 1 AS current,
                        {self._REMOVALS} AS removals
-                       FROM row_current WHERE relation = ?
+                       FROM row_current WHERE relation = ? AND capture_id NOT IN {merging}
                        UNION ALL
                        SELECT key_json, run_index, run_length, row_json, row_digest,
-                       capture_id, last_seen_at, NULL, superseded_by_capture, 0, NULL
+                       capture_id, last_seen_at, NULL,
+                       CASE WHEN superseded_by_capture IN {merging} THEN NULL
+                            ELSE superseded_by_capture END,
+                       superseded_by_capture IN {merging},
+                       CASE WHEN superseded_by_capture IN {merging}
+                            THEN {version_removals} END
                        FROM row_version WHERE relation = ?
                        ORDER BY 1, 6, 2""", (relation, relation)):
                 cells = tuple(row)

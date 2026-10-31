@@ -175,6 +175,31 @@ class FixtureBackend(unittest.TestCase):
                                     .replace("/object/", "/api/object/", 1))
         self.assertEqual(whole.json()["object_id"], body["object_id"])
 
+    def test_a_po_page_and_answer_carry_its_trail_each_step_opening_for_the_reader(self):
+        body = self.ops.client.get(
+            f"/api/object/PurchaseOrder/{case_fixtures.PO_NUMBER}").json()
+        trail = body["trail"]
+        self.assertEqual(trail["kind"], "purchase_order", trail)
+        (po,) = trail["trails"]
+        self.assertEqual(po["subject"]["object_id"], body["object_id"])
+        self.assertEqual(po["steps"][-1]["kind"], "verdict", po["steps"])
+        self.assertTrue(po["verdict"])
+        # the fixture PO's status word is unmapped: lateness and promises are not read,
+        # so nothing is said about a confirmation either way
+        self.assertEqual((po["state"], po["eta"], po["next_action"]),
+                         ("undetermined", None, None))
+        for step in po["steps"]:
+            if step["source"] is None:
+                self.assertEqual((step["kind"], po["state"]), ("verdict", "undetermined"))
+                continue
+            opened = self.ops.client.get("/api/source",
+                                         params={"handle": step["source"]["handle"]})
+            self.assertEqual(opened.status_code, 200 if step["source"]["open_url"] else 404)
+        answer = self.ask(self.ops, f"is {case_fixtures.PO_NUMBER} late?")[-1][1]
+        self.assertEqual([t["subject"]["object_id"] for t in answer["trail"]["trails"]],
+                         [body["object_id"]])
+        self.assertEqual(answer["trail"]["trails"][0]["steps"], po["steps"])
+
     def test_a_restricted_reader_sees_nothing_through_any_route(self):
         ops = self.ops.client
         po = ops.get(f"/api/object/PurchaseOrder/{case_fixtures.PO_NUMBER}").json()

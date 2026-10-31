@@ -34,12 +34,12 @@ class ArtworkLifecycleCardsTest(unittest.TestCase):
         # card anchors: AL-08 carries an anchor with its source, AL-06 an anchor_gap
         by = {c["id"]: c for c in self.cards["real_example"]["cards"]}
         self.assertTrue(by["AL-08"]["anchor"]["source"])
-        self.assertTrue(by["AL-06"]["anchor_gap"])
+        self.assertTrue(by["AL-06"]["anchor"]["source"])
         broken = {
             "AL-08": lambda c: c["anchor"].pop("source"),
             "AL-09": lambda c: c["anchor"].update(note="x"),
             "AL-10": lambda c: c.update(anchor_gap="also a gap"),
-            "AL-06": lambda c: c.update(anchor_gap=" "),
+            "AL-06": lambda c: (c.pop("anchor"), c.update(anchor_gap=" ")),
             "AL-07": lambda c: c.update(anchor_note="an unknown key"),
         }
         cards = copy.deepcopy(self.cards)

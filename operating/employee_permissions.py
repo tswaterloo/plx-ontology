@@ -131,6 +131,22 @@ GROUP_READ_BLOCKER = "graph_permission_missing:GroupMember.Read.All"
 MAILBOX_ACCESS_UNDETERMINED = "undetermined: shared mailbox"
 # A session host serving live data refuses any actor that carries no employee.
 EMPLOYEE_IDENTITY_REQUIRED = "employee_identity_required"
+# A declared full-read grant (``EmployeePermissionPolicy.full_read``): one named employee
+# reads every captured item of the granted scopes regardless of the item's own permission
+# list, the mailbox owner or the file clearance. Never a wildcard; default deny for
+# everyone else; the people exclusion always wins and must be usable for it to apply.
+FULL_READ_SCOPES = ("finance", "mail", "sharepoint", "teams")
+FULL_READ_MAIL_SCOPES = ("all", "shared_only")
+# The markings the ``finance`` scope holds (``ontology.store_ddl.MARKINGS``): finance and
+# the purchase-order prices; never pii, l5 or quality_controlled.
+FULL_READ_MARKINGS = ("finance", "purchasing_prices")
+# What the app shows on everything it serves under a full-read grant.
+FULL_READ_LABEL = "Viewing with full-read access"
+# The item scheme -> the full-read scope that covers it. Mission Control and BC carry no
+# item ACL (the host audience alone decides them), so no scope names them.
+_FULL_READ_SCHEME_SCOPE = {"graph-mail": "mail", "sharepoint": "sharepoint",
+                           "sharepoint-list": "sharepoint", "teams-channel": "teams",
+                           "teams-chat": "teams"}
 PORTAL_ACCESS_SNAPSHOT_SCHEMA = "plx-portal-access-snapshot/v1"
 DIRECTORY_SOURCE = "graph:directory"
 GROUP_MEMBERSHIP_DERIVED = "group_membership_derived"
@@ -532,6 +548,133 @@ class PrincipalRule:
     entra_job_title_keywords: frozenset[str] = frozenset()
 
 
+@dataclass(frozen=True)
+class FullReadGrant:
+    """One declared, audited full-read grant (``full_read`` in the policy).
+
+    ``object_id`` is the named employee (an Entra object id, never a pattern); ``scopes``
+    the sources it covers (``FULL_READ_SCOPES``); ``mail_scope`` ``all`` or ``shared_only``
+    (only the mailboxes the policy's ``shared_mailboxes`` names). ``granted_by``,
+    ``granted_at`` and ``reason`` are the audit record; all are required."""
+
+    object_id: str
+    granted_by: str
+    granted_at: str
+    reason: str
+    scopes: frozenset[str]
+    mail_scope: str = "all"
+
+    @classmethod
+    def from_json(cls, doc: Any) -> "FullReadGrant":
+        from datetime import datetime
+        fields = {"object_id", "granted_by", "granted_at", "reason", "scopes", "mail_scope",
+                  "note"}
+        required = {"object_id", "granted_by", "granted_at", "reason", "scopes"}
+        if not isinstance(doc, dict) or set(doc) - fields or required - set(doc):
+            raise ValueError("employee_policy_full_read_invalid")
+        texts = [doc.get(k) for k in ("granted_by", "granted_at", "reason")]
+        if any(not isinstance(t, str) or not t.strip() or "*" in t for t in texts):
+            raise ValueError("employee_policy_full_read_invalid")
+        try:
+            datetime.fromisoformat(texts[1].strip().replace("Z", "+00:00"))
+        except ValueError:
+            raise ValueError("employee_policy_full_read_granted_at_invalid") from None
+        scopes = doc.get("scopes")
+        if (not isinstance(scopes, list) or not scopes
+                or any(not isinstance(s, str) or s not in FULL_READ_SCOPES for s in scopes)
+                or len(set(scopes)) != len(scopes)):
+            raise ValueError("employee_policy_full_read_scopes_invalid")
+        mail_scope = doc.get("mail_scope", "all")
+        if mail_scope not in FULL_READ_MAIL_SCOPES:
+            raise ValueError("employee_policy_full_read_mail_scope_invalid")
+        return cls(_guid(doc.get("object_id"), "employee_policy_full_read_object_id"),
+                   texts[0].strip(), texts[1].strip(), texts[2].strip(), frozenset(scopes),
+                   mail_scope)
+
+    def code(self) -> str:
+        """An enum-only summary (scopes, mail scope) for journals and fingerprints."""
+        mail = f":mail_{self.mail_scope}" if "mail" in self.scopes else ""
+        return "full_read:" + "+".join(sorted(self.scopes)) + mail
+
+
+def _people_excluded(guard: Any, identities: Iterable[Any]) -> bool:
+    """``ontology_tools_evidence.people_excluded``'s rule (an object id always, an address
+    only by a bound guard; a missing, unusable or raising guard withholds)."""
+    try:
+        from .ontology_tools_evidence import people_excluded
+        return people_excluded(guard, identities)
+    except Exception:  # noqa: BLE001 - an undecidable guard withholds
+        return True
+
+
+@dataclass(frozen=True)
+class FullReadAccess:
+    """A full-read grant as one resolve applied it: the grant, the people exclusion it is
+    held under (re-checked on every use: unusable now, nothing is granted) and the shared
+    mailboxes ``mail_scope`` ``shared_only`` admits."""
+
+    grant: FullReadGrant
+    exclusion: Any = field(compare=False, repr=False)
+    shared_mailboxes: frozenset[str] = frozenset()
+
+    def guard(self) -> Any:
+        """The people exclusion now (a ``ReloadingExclusion`` re-reads its list)."""
+        current = getattr(self.exclusion, "current", None)
+        return current() if callable(current) else self.exclusion
+
+    def usable(self) -> bool:
+        try:
+            guard = self.guard()
+            return guard is not None and not guard.unavailable \
+                and not guard.is_excluded(self.grant.object_id)
+        except Exception:  # noqa: BLE001 - an undecidable guard grants nothing
+            return False
+
+    def covers(self, scope: str) -> bool:
+        return scope in self.grant.scopes and self.usable()
+
+    def allows_item(self, scheme: str, source_acl: Any, record: Any = None) -> bool:
+        """The item of ``scheme`` with ``source_acl`` under this grant. Mail needs the
+        derived mailbox-owner ACL naming the mailbox's object id (the exclusion decides on
+        it), and with ``shared_only`` a mailbox the policy names as shared; Teams needs the
+        captured membership list; SharePoint a completely read permission list, else (one
+        never or partly read) a record whose creator and last modifier are both recorded and
+        decided clear by the exclusion (never opened blind). A person the exclusion names
+        (any identity of the item, as it decides them) is never read."""
+        scope = _FULL_READ_SCHEME_SCOPE.get(scheme)
+        if scope is None or not self.covers(scope) or not isinstance(source_acl, Mapping):
+            return False
+        identities = source_acl.get("identities")
+        guard = self.guard()
+        if scope == "sharepoint" and source_acl.get("status") != "read":
+            people = [record.get(k) if isinstance(record, Mapping) else None
+                      for k in ("created_by", "last_modified_by")]
+            if not all(isinstance(v, str) and v.strip() for v in people):
+                return False
+            try:
+                from integrations.people_exclusion import is_object_id
+                decidable = all(is_object_id(v.strip()) or guard.bound for v in people)
+            except Exception:  # noqa: BLE001 - an undecidable guard opens nothing
+                return False
+            if not decidable or _people_excluded(guard, people):
+                return False
+            identities = identities if isinstance(identities, (list, tuple)) else []
+        if not isinstance(identities, (list, tuple)) \
+                or any(not isinstance(i, str) for i in identities):
+            return False
+        folded = {i.strip().lower() for i in identities if i.strip()}
+        if scope == "mail":
+            if (source_acl.get("status") != "derived"
+                    or source_acl.get("kind") != "mailbox_owner"
+                    or not any(_GUID.fullmatch(i) for i in folded)):
+                return False
+            if self.grant.mail_scope == "shared_only" and not folded & self.shared_mailboxes:
+                return False
+        elif scope == "teams" and not folded:
+            return False
+        return not _people_excluded(guard, sorted(folded))
+
+
 def _strict_json(raw: bytes) -> Any:
     def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
         out: dict[str, Any] = {}
@@ -556,10 +699,16 @@ class EmployeePermissionPolicy:
     # SharePoint drive id -> security class of that library (the PLX site's
     # Finance, Business Central and Staff Scratch libraries).
     library_security_classes: Mapping[str, str] = field(default_factory=dict)
+    # Declared full-read grants by employee object id (``FullReadGrant``); none: nobody.
+    full_read: Mapping[str, FullReadGrant] = field(default_factory=dict)
+    # The shared/functional mailboxes (object ids or addresses, lower case) a grant with
+    # ``mail_scope`` ``shared_only`` reads; none declared: such a grant reads no mailbox.
+    shared_mailboxes: frozenset[str] = frozenset()
 
     _FIELDS = frozenset({"schema", "note", "tenant", "entra_tenant_id",
                          "clearance_by_access_level", "principals",
-                         "service_principal_object_ids", "library_security_classes"})
+                         "service_principal_object_ids", "library_security_classes",
+                         "full_read", "shared_mailboxes"})
     _RULE_FIELDS = frozenset({"capability", "resource_type", "department_ids", "company_key",
                               "data_key", "mrp_modules", "entra_groups",
                               "entra_departments", "entra_job_title_keywords",
@@ -645,10 +794,27 @@ class EmployeePermissionPolicy:
                 not isinstance(drive, str) or not drive.strip()
                 or value not in taxonomy.SECURITY_CLASSES for drive, value in libraries.items()):
             raise ValueError("employee_policy_library_security_classes_invalid")
-        return cls(tenant, entra, dict(levels), rules,
-                   frozenset(_guid(s, "service_principal_object_id") for s in services),
+        service_ids = frozenset(_guid(s, "service_principal_object_id") for s in services)
+        grants_doc = doc.get("full_read", [])
+        if not isinstance(grants_doc, list):
+            raise ValueError("employee_policy_full_read_invalid")
+        full_read: dict[str, FullReadGrant] = {}
+        for entry in grants_doc:
+            grant = FullReadGrant.from_json(entry)
+            if grant.object_id in full_read or grant.object_id in service_ids:
+                # One grant per employee; a service principal never holds one.
+                raise ValueError("employee_policy_full_read_invalid")
+            full_read[grant.object_id] = grant
+        shared = doc.get("shared_mailboxes", [])
+        if not isinstance(shared, list) or any(
+                not isinstance(v, str) or (_GUID.fullmatch(v.strip().lower()) is None
+                                           and _EMAIL.fullmatch(v.strip().lower()) is None)
+                for v in shared):
+            raise ValueError("employee_policy_shared_mailboxes_invalid")
+        return cls(tenant, entra, dict(levels), rules, service_ids,
                    sha256(json.dumps(doc, sort_keys=True).encode()).hexdigest(),
-                   dict(libraries))
+                   dict(libraries), full_read,
+                   frozenset(v.strip().lower() for v in shared))
 
     @classmethod
     def from_file(cls, path: str | Path) -> "EmployeePermissionPolicy":
@@ -689,6 +855,26 @@ class EmployeeEntitlement:
     library_security_classes: Mapping[str, str] = field(default_factory=dict)
     rights_unresolved: bool = False   # denied because a provider failed, not a refusal
     qc_document_reader: bool = False  # reads Batches QC documents (admin or QC department)
+    # The declared full-read grant this employee holds (``FullReadAccess``), else None.
+    full_read: FullReadAccess | None = None
+
+    def full_read_code(self) -> str | None:
+        """The full-read grant in effect now as an enum code (``FullReadGrant.code``), or
+        None: no grant, a denied entitlement, or a people exclusion not usable now."""
+        if self.actor is None or self.full_read is None or not self.full_read.usable():
+            return None
+        return self.full_read.grant.code()
+
+    def full_read_covers(self, scope: str) -> bool:
+        return self.actor is not None and self.full_read is not None \
+            and self.full_read.covers(scope)
+
+    def full_read_allows(self, scheme: str, source_acl: Any, record: Any = None) -> bool:
+        """Whether this employee's full-read grant opens one item of ``scheme``
+        (``FullReadAccess.allows_item``; ``record``: the item, for SharePoint's creator and
+        last modifier); no grant: False."""
+        return self.actor is not None and self.full_read is not None \
+            and self.full_read.allows_item(scheme, source_acl, record)
 
     def require_actor(self) -> Actor:
         if self.actor is None:
@@ -743,6 +929,15 @@ class EmployeeEntitlement:
             return False
         security_class, owner = taxonomy.file_security_class(
             record, self.library_security_classes)
+        qc_ok = self.qc_document_reader or not taxonomy.may_be_qc_document(record)
+        if self.full_read_covers("sharepoint"):
+            # A full-read grant reads every class; Finance, Business Central and an
+            # unresolved class (which may be either) only with its ``finance`` scope too.
+            # Quality is not granted: a Batches QC document still needs a QC reader.
+            restricted = security_class in taxonomy.RESTRICTED_CLASS_READERS \
+                or security_class == taxonomy.UNRESOLVED_CLASS
+            if not restricted or self.full_read_covers("finance"):
+                return qc_ok
         if security_class == "SCRATCH":
             return owner is not None and bool(self.portal_user_id) \
                 and owner == self.portal_user_id
@@ -811,6 +1006,8 @@ class EmployeePermissionResolver:
         """``excluded``, ``exclusion_unavailable`` or ``clear`` for this employee."""
         guard = self._exclusion
         try:
+            current = getattr(guard, "current", None)
+            guard = current() if callable(current) else guard
             if guard is None or guard.unavailable:
                 return "exclusion_unavailable"
             return "excluded" if guard.is_excluded(principal.object_id) else "clear"
@@ -975,24 +1172,41 @@ class EmployeePermissionResolver:
                         key=LEVELS.__getitem__)
         identities |= {"group:" + g for g in (derived if member_of is None else member_of)}
         actor = Actor(p.tenant, held, clearance)
+        full_read = None
+        grant = p.full_read.get(principal.object_id)
+        if grant is not None:
+            # The people exclusion must be usable and must not name the grantee; else the
+            # grant applies to nothing (the employee keeps their own entitlement).
+            state = self._title_exclusion(principal)
+            if state == "clear":
+                full_read = FullReadAccess(grant, self._exclusion, p.shared_mailboxes)
+                inputs += (("full_read_grant", f"employee_policy:{p.digest[:16]}#full_read",
+                            grant.granted_at),)
+                notes.append(grant.code())
+            else:
+                notes.append(f"full_read:{state}")
         return EmployeeEntitlement(principal, actor, None, tuple(decisions),
                                    frozenset(identities), tuple(notes), inputs,
                                    self._fingerprint(actor, frozenset(identities), None,
-                                                     access.user_id, file_clearance, qc_reader),
+                                                     access.user_id, file_clearance, qc_reader,
+                                                     None if full_read is None
+                                                     else full_read.grant.code()),
                                    access.user_id, file_clearance,
                                    dict(p.library_security_classes),
-                                   qc_document_reader=qc_reader)
+                                   qc_document_reader=qc_reader, full_read=full_read)
 
     def _fingerprint(self, actor: Actor | None, identities: frozenset[str],
                      reason: str | None, user_id: str = "",
                      file_clearance: frozenset[str] = frozenset(),
-                     qc_document_reader: bool = False) -> str:
+                     qc_document_reader: bool = False, full_read: str | None = None) -> str:
         """Cache-key material: any change in access changes it (never the shared key)."""
         body = {"policy": self.policy.digest, "reason": reason, "identities": sorted(identities),
                 "actor": None if actor is None else
                 [actor.tenant, sorted(actor.principals), actor.clearance],
                 "portal_user": user_id, "file_clearance": sorted(file_clearance),
                 "qc_document_reader": qc_document_reader}
+        if full_read is not None:   # absent otherwise: every existing fingerprint unchanged
+            body["full_read"] = full_read
         return sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
 
 
@@ -1177,6 +1391,20 @@ def gate_actor_methods(target: Any, gate: Callable[[Any], Any]) -> Any:
 
 # ------------------------------------------------------------------ adapter
 
+def full_read_marking_grants(marking_grants: Mapping[str, Iterable[str]] | None,
+                             entitlement: EmployeeEntitlement | None
+                             ) -> dict[str, frozenset[str]]:
+    """The host's ``marking_grants`` with this employee's principal added to every
+    ``FULL_READ_MARKINGS`` marking when their full-read grant covers ``finance`` now.
+    Anyone else, or a grant without that scope: the host's grants unchanged."""
+    out = {m: frozenset(p) for m, p in (marking_grants or {}).items()}
+    if entitlement is None or not entitlement.full_read_covers("finance"):
+        return out
+    for marking in FULL_READ_MARKINGS:
+        out[marking] = out.get(marking, frozenset()) | {entitlement.principal.principal}
+    return out
+
+
 def live_source_audience_document(base: Mapping[str, Any],
                                   entitlement: EmployeeEntitlement) -> dict[str, Any]:
     """A per-request ``plx-live-source-audience/v1`` document for this employee.
@@ -1197,6 +1425,9 @@ def live_source_audience_document(base: Mapping[str, Any],
 
 
 __all__ = ["DIRECTORY_SOURCE", "EMPLOYEE_IDENTITY_REQUIRED", "EMPLOYEE_PREFIX",
+           "FULL_READ_LABEL", "FULL_READ_MAIL_SCOPES", "FULL_READ_MARKINGS",
+           "FULL_READ_SCOPES", "FullReadAccess", "FullReadGrant",
+           "full_read_marking_grants",
            "ENTRA_REFUSAL_REASONS",
            "GROUP_BASES", "GROUP_BASIS_JOINED_TEAMS", "GROUP_BASIS_NONE",
            "GROUP_BASIS_TRANSITIVE", "GROUP_MEMBERSHIP_DERIVED", "PORTAL_DEPARTMENT_CODES",

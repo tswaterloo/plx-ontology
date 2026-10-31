@@ -132,7 +132,7 @@
    },
    {
     "id": "AT-03",
-    "anchor_gap": "no committed source names a tracker asset: the brief body is unread (record_body_status not_verified) and its advisory names none",
+    "anchor": {"identifier": "C-8-006", "identifier_kind": "asset_id", "object_type": "Asset", "source": "Asset Tracker brief (co-2b32fe4f123c) worked example D: Tank#5 5600L repair, 30 Oct 2025, $7,837.68, 'Sage does not know it belongs to C-8-006'"},
     "layer": "tracing",
     "question": "Which purchase order or invoice paid for this tracker asset?",
     "criterion": "The brief reports no invoice or Sage key in the tracker, so the asset-to-purchase join is unseen: name it as a gap with the keys tried (Sage PO, BC purchase invoice, Portal PO). A vendor, amount or date coincidence is a candidate, never a match.",
@@ -152,7 +152,7 @@
    },
    {
     "id": "AT-04",
-    "anchor_gap": "no committed source names the purchase: the brief body is unread and its advisory names none",
+    "anchor": {"identifier": "P-8-02", "identifier_kind": "asset_id", "object_type": "Asset", "source": "Asset Tracker brief (co-2b32fe4f123c) worked example A: the 10 Oct 2025 $1,620.00 LINE_8 row, Category 'Replacement parts', parent asset P-8-02 P&M Cooling Tunnel"},
     "layer": "tracing",
     "question": "Did the purchaser classify this purchase as new, replacement or repair, and who did?",
     "criterion": "Give the purchaser's classification with its source and the person who made it. If no source holds it, say so; never infer it from amount, vendor or G/L account. Keep it separate from the CFO's capital/expense decision.",
@@ -169,7 +169,7 @@
    },
    {
     "id": "AT-05",
-    "anchor_gap": "no committed source names the purchase: the brief body is unread and its advisory names none",
+    "anchor": {"identifier": "P-8-02", "identifier_kind": "asset_id", "object_type": "Asset", "source": "Asset Tracker brief (co-2b32fe4f123c) worked example A: 'Whether any of it is capital is the CFO's call, and today nothing records that the question was asked'"},
     "layer": "tracing",
     "question": "Did the CFO decide to capitalize or expense this purchase, and when?",
     "criterion": "Give the CFO decision with its decider, date and source. Without a recorded decision the answer is open; never derive it from the purchaser's classification or from a threshold (the threshold is an open question and no accounting rule is encoded).",
@@ -237,7 +237,7 @@
    },
    {
     "id": "AT-09",
-    "anchor_gap": "no committed source names a tracker asset: the brief body is unread and its advisory names none",
+    "anchor": {"identifier": "P-1-003", "identifier_kind": "asset_id", "object_type": "Asset", "source": "Asset Tracker brief (co-2b32fe4f123c) worked example B: KAPS-ALL Capper Model E on LINE__1, Master Journal row P-1-003"},
     "layer": "tracing",
     "question": "Which production line is this asset on, and do the tracker, Fiix and Portal agree?",
     "criterion": "Read the line from each source with its provenance. The Portal asset-to-registry link is a fuzzy match and is labelled weak; tracker-versus-Fiix ownership is open, so a conflict is shown, not resolved.",
@@ -272,7 +272,7 @@
    },
    {
     "id": "AT-11",
-    "anchor_gap": "no committed source names the equipment purchase: the brief body is unread and its advisory names none",
+    "anchor": {"identifier": "260556", "identifier_kind": "vendor_invoice_no", "object_type": "PurchaseInvoice", "source": "Asset Tracker brief (co-2b32fe4f123c) worked example E: Mainly Mac invoice 260556, MacBook Pro M5, 19 Aug 2026, 'it exists in Sage as an expense'"},
     "layer": "comprehension",
     "question": "Does Sage code this equipment purchase by vendor or by invoice?",
     "criterion": "This is an open question in the brief. Answer that it is unknown and name what would settle it (Sage AP/G-L coding, which the reporting API does not serve); do not guess from the served PO relations.",
@@ -288,7 +288,7 @@
    },
    {
     "id": "AT-12",
-    "anchor_gap": "no committed source names a tracker asset: the brief body is unread and its advisory names none",
+    "anchor": {"identifier": "P-1-003", "identifier_kind": "asset_id", "object_type": "Asset", "source": "Asset Tracker brief (co-2b32fe4f123c) worked example B: 'the Master Journal row for P-1-003 shows no cost change'; Purchase Date, Cost and Book Value blank on all 177"},
     "layer": "comprehension",
     "question": "What is this asset's cost, in-service date and book value?",
     "criterion": "The brief reports these blank in the tracker. Give a cost only from a cited purchase document (Decimal, currency stated); never compute depreciation or book value (a non-goal).",

@@ -162,6 +162,7 @@
    },
    {
     "id": "SC-08",
+    "expected": {"document": "c3bbec44baba86a761b4442854f5522820c9c5cc46598e899acde6e53c456707", "document_name": "Screening Process Map.zip", "answerability": "partial", "facts": [{"value": "clearing", "quote": "ERP-D-015 exception and a screening clearing account still to approve."}], "no_amounts": false},
     "layer": "actual_case_answerability",
     "question": "Which accounting treatment applies to the screening blanks under ERP-D-015, and where does the cost sit before conversion?",
     "criterion": "Do not choose a treatment. The approved ERP-D-015 treatment and the screening clearing account are open decisions in the map; report them as unapproved and name the approver as the missing original.",

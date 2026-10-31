@@ -272,27 +272,27 @@
   "inputs": [
    {
     "path": "evals/dev/quote-to-order/proposed_items.json",
-    "sha256": "a054e64eee2486b186203c1646804b70907dcea7b1c14e01d790f4bb686438d6",
+    "sha256": "438a14b877dfdcdfaa4d973354ec70af4c61abb94b6f46e241f181eb965e36a3",
     "case": "quote-to-order"
    },
    {
     "path": "evals/dev/screening/proposed_items.json",
-    "sha256": "da60adf8799273ddeecd3d12c1d6056c9212ae08dc165f80b34e02674eb5cc3c",
+    "sha256": "82cbfb5eea8c29a65a92337ae8e0ffd5fb5e1cbeef9ba7898aeab90968d2e4e1",
     "case": "vince-screening"
    },
    {
     "path": "evals/dev/amazon-fba/proposed_items.json",
-    "sha256": "ada841a09d52c1a9a4622000c577842f5e8e553a6eb36d31acdb02b02148c6e7",
+    "sha256": "c4a41db0454410b3f35abb3c71727f22f831a43e201f1eb57d96ba7fa301a5bc",
     "case": "amazon-fba"
    },
    {
     "path": "evals/dev/expired-disposition/proposed_items.json",
-    "sha256": "dd399ff98188e7bb91d326562d918e1427f282d8b90a48abb018abec21c2f242",
+    "sha256": "54073e013c58fb479411753b9a86680cf18c1ff97d9b5aefb9681d3ea3d71727",
     "case": "expired-disposition"
    },
    {
     "path": "evals/dev/packaging-sourcing/proposed_items.json",
-    "sha256": "650693fbdafbd46651fc44868b714d8d8650d2eebc04c9c32123ccc8d8d2a865",
+    "sha256": "0b8ab81194b8bb556de1e9e194e760dedeb09fcd2138f5517804d542b230cc52",
     "case": "packaging-sourcing"
    }
   ],

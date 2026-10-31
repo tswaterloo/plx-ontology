@@ -243,9 +243,10 @@
    },
    {
     "id": "FBA-A1",
+    "expected": {"document": "0a78aa6aa7f4b0acf45d1642246a94366d67fddbb239c4899cb0dcc7d722115e", "document_name": "Amazon FBA Replenishment Map.md", "answerability": "answerable", "facts": [{"value": "no Amazon shipment ID", "quote": "Reference OR1000154027 only; no Amazon shipment ID", "accept": ["OR1000154027 only", "OR number only", "no shipment ID", "without the Amazon shipment ID", "carries the OR"]}], "no_amounts": false},
     "layer": "actual_case_answerability",
     "question": "What is the chain of records for shipment OR1000154027, from the first OR to the Amazon shipment and the BOL?",
-    "criterion": "As the map reports it: the OR was issued on 28 Sep before Amazon had assigned a destination, with a guessed ship-to FC; Amazon built the shipment on 7 Oct and assigned HIA-1, so the OR was revised on 8 Oct for the new FC and a lower quantity (the revised packing slip is still dated 28 Sep); the BOL is dated 13 Oct and carries the OR number only; the pallet left on 15 Oct. The Amazon shipment ID is on no document the map saw, so the Amazon side of the chain cannot be joined. Unscored until the OR, packing slip and BOL originals are read; an answer lists the missing links instead of inferring them.",
+    "criterion": "As the map reports it: the OR was issued on 28 Sep before Amazon had assigned a destination, with a guessed ship-to FC; Amazon built the shipment on 7 Oct and assigned HIA-1, so the OR was revised on 8 Oct for the new FC and a lower quantity (the revised packing slip is still dated 28 Sep); the BOL is dated 13 Oct and carries the OR number only; the pallet left on 15 Oct. The Amazon shipment ID is on no document the map saw, so the Amazon side of the chain cannot be joined. Until the OR, packing slip and BOL originals are read, an answer lists the missing links instead of inferring them.",
     "originals": [],
     "live_sources": [
      "sage.oe_order_header",
@@ -258,9 +259,10 @@
    },
    {
     "id": "FBA-A2",
+    "expected": {"document": "0a78aa6aa7f4b0acf45d1642246a94366d67fddbb239c4899cb0dcc7d722115e", "document_name": "Amazon FBA Replenishment Map.md", "answerability": "answerable", "facts": [{"value": "144", "quote": "Customs invoice declares 144 units"}, {"value": "96", "quote": "FNA305-2LP case pack is 8 (Greg, 16 Oct): 12 cases = 96 units."}], "no_amounts": false},
     "layer": "actual_case_answerability",
     "question": "Do the units declared on the customs invoice of OR1000154027 match the cases shipped?",
-    "criterion": "Per the map, three lines agree and the FNA305-2LP line does not: 12 cases at Greg's stated case pack of 8 are 96 units, and the customs invoice declares 144. The map also reports the TSCA and USMCA certificates reused from an earlier shipment, listing other SKUs, and net weight equal to gross weight. Unscored until the customs packet original is read; an answer attributes each figure to the map or to a read document, recomputes units from cases with a cited case pack, and states no corrected invoice value.",
+    "criterion": "Per the map, three lines agree and the FNA305-2LP line does not: 12 cases at Greg's stated case pack of 8 are 96 units, and the customs invoice declares 144. The map also reports the TSCA and USMCA certificates reused from an earlier shipment, listing other SKUs, and net weight equal to gross weight. Until the customs packet original is read, an answer attributes each figure to the map or to a read document, recomputes units from cases with a cited case pack, and states no corrected invoice value.",
     "originals": [],
     "live_sources": [
      "sage.ic_item_uom"
@@ -272,6 +274,7 @@
    },
    {
     "id": "FBA-A3",
+    "expected": {"document": "0a78aa6aa7f4b0acf45d1642246a94366d67fddbb239c4899cb0dcc7d722115e", "document_name": "Amazon FBA Replenishment Map.md", "answerability": "answerable", "facts": [{"value": "changed", "quote": "Amazon picked a different FC and the quantity changed, so the OR was revised on 8 Oct.", "accept": ["revised", "new FC", "different FC", "did not agree", "not agree", "differ", "mismatch", "rather than"]}], "no_amounts": false},
     "layer": "actual_case_answerability",
     "question": "Did the identity fields on the OR1000154027 paperwork (sold-to, ship-from, ship-to FC, Amazon shipment ID) agree with each other?",
     "criterion": "Per the map's balance checks, all four broke: the OR is sold to another brand's customer account, the BOL and customs invoice name a different ship-from address than the warehouse the pallet left from, the first OR's ship-to FC differed from the one Amazon assigned, and no document carries the Amazon shipment ID. An answer reports each as a conflict between named documents, attributes it to the map until the originals are read, and copies no address or account detail.",
@@ -286,6 +289,7 @@
    },
    {
     "id": "FBA-A4",
+    "expected": {"document": "0a78aa6aa7f4b0acf45d1642246a94366d67fddbb239c4899cb0dcc7d722115e", "document_name": "Amazon FBA Replenishment Map.md", "answerability": "partial", "facts": [], "no_amounts": false},
     "layer": "actual_case_answerability",
     "question": "Did OR1000154027 bring each SKU up to 90 days of supply at Amazon under the 45/90-day rule?",
     "criterion": "Not answerable today: the rule needs FBA on-hand and last-30-day sales per seller SKU as of the build date, and no Workbench reader reaches Seller Central or another sales-velocity source; the item to seller SKU mapping is also unconfirmed. The map gives the shipped cases, not the stock or sales behind them, and the rule was stated on 16 Oct, after this shipment was planned. An answer says what is missing and does not estimate days of supply.",
@@ -300,6 +304,7 @@
    },
    {
     "id": "FBA-A5",
+    "expected": {"document": "0a78aa6aa7f4b0acf45d1642246a94366d67fddbb239c4899cb0dcc7d722115e", "document_name": "Amazon FBA Replenishment Map.md", "answerability": "answerable", "facts": [{"value": "before", "quote": "The packing slip already shows warehouse VMI on every line, so stock was in VMI before the BOL.", "accept": ["earlier than the BOL", "prior to the BOL", "not at the BOL", "28 Sep", "2026-09-28", "at the OR"]}], "no_amounts": false},
     "layer": "actual_case_answerability",
     "question": "When did the OR1000154027 stock move to the Amazon VMI warehouse, and was that at the BOL?",
     "criterion": "Per the map, the packing slip of 28 Sep already shows VMI on every line, before the BOL of 13 Oct, against the rule 'move at BOL'. The Sage transfer itself, any BC posting and the BOL are not read, and BC has no Amazon location per the map; an answer reports the move time only from a read movement record and otherwise says it is unknown.",
@@ -315,6 +320,7 @@
    },
    {
     "id": "FBA-A6",
+    "expected": {"document": "0a78aa6aa7f4b0acf45d1642246a94366d67fddbb239c4899cb0dcc7d722115e", "document_name": "Amazon FBA Replenishment Map.md", "answerability": "partial", "facts": [], "no_amounts": false},
     "layer": "actual_case_answerability",
     "question": "Which originals of shipment OR1000154027 exist, and which have been read?",
     "criterion": "Only the map has been read (pinned by item id and SHA-256). It names six source-file folders for the example (kick-off email, first OR and packing slip, Amazon build and OR revision, quote and dims, customs packet, BOL) whose SharePoint links were 'added after upload', and lists the Amazon shipment and labels, the Freightcom quote and booking, and tracking as still to come; Teams messages were not provided. An answer lists each as unread with its state and infers nothing about its content.",

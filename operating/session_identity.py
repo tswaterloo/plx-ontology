@@ -356,6 +356,9 @@ class SessionIdentity:
     client: str | None = None
     # ``act.session``: SHA-256 of the ticket's jti, else of a nonce drawn per session.
     session_ref: str | None = None
+    # The declared full-read grant the employee held when this identity was resolved
+    # (``EmployeeEntitlement.full_read_code``: an enum code, never an id), else None.
+    access: str | None = None
 
     def __post_init__(self) -> None:
         if self.channel not in CHANNEL_AUTHOR:
@@ -378,6 +381,9 @@ class SessionIdentity:
                 raise ValueError("employee_session_principal_must_be_the_employee")
         if (self.proof in _EXPIRING) != (self.expires_at is not None):
             raise ValueError("session_expiry_only_for_tickets")
+        if self.access is not None and (self.employee is None or not isinstance(
+                self.access, str) or not _ACCESS_CODE.fullmatch(self.access)):
+            raise ValueError("session_access_invalid")
         if any(not isinstance(i, str) or not i.strip() for i in self.identities):
             raise ValueError("session_identities_invalid")
         held = frozenset(i.strip().lower() for i in self.identities)
@@ -510,6 +516,7 @@ def employee_session(resolver: EmployeePermissionResolver, *, channel: str,
         expires_at=None if claims is None else claims["exp"], client=client,
         session_ref=None if claims is None
         else hashlib.sha256(claims["jti"].encode("utf-8")).hexdigest(),
+        access=entitlement.full_read_code(),
         identities=frozenset(
             {i for i in entitlement.source_identities
              if isinstance(i, str) and i.strip() and not i.startswith("group:")}
@@ -650,3 +657,6 @@ __all__ = ["DEFAULT_CLIENT", "INTENT_IDENTITY_SCHEMA", "STATE_LABEL_FILE", "AUTH
            "SessionIdentityRefused", "REPLAY_GUARD_FILE", "TicketReplayGuard", "bind_state_dir", "check_runtime", "employee_session", "fixture_session",
            "intent_identity", "mint_session_ticket", "replay_guard_for", "session_secret",
            "state_label", "verify_session_ticket"]
+# ``SessionIdentity.access``: a full-read code (``FullReadGrant.code``).
+_ACCESS_CODE = re.compile(r"^full_read:[a-z]+(\+[a-z]+)*(:mail_[a-z_]+)?$")
+

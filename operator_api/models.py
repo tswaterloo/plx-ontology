@@ -31,6 +31,12 @@ class _Model(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+def _optional(schema: dict) -> None:
+    """An added field older clients never send or read: no default in the schema, so the
+    generated client types it optional (absent or null), never required."""
+    schema.pop("default", None)
+
+
 # ---- errors ---------------------------------------------------------------------------
 
 class ErrorBody(_Model):
@@ -75,6 +81,8 @@ class Me(_Model):
     data_label: str = Field(description="Evidence label of the data served, e.g. "
                                         "'source-mirror captures' or 'FIXTURE'.")
     expires_at: Optional[int] = None
+    access_label: Optional[str] = Field(
+        None, description="Set when this reader views with a declared full-read grant.")
 
 
 class DevLoginRequest(_Model):
@@ -164,6 +172,126 @@ class ObjectRef(_Model):
     open_url: str
 
 
+# ---- evidence trail ("how we know") ------------------------------------------------------
+
+StepKind = Literal["due_date", "po_issued", "confirmation", "revision", "lead", "follow_up",
+                   "shipped", "receipt", "verdict", "claim",
+                   # the why trail's (operating/why_trail.py)
+                   "decision", "communication", "record_change", "document"]
+
+
+class TrailStep(_Model):
+    kind: StepKind
+    at: Optional[str] = Field(None, description="When it happened (ISO date or time), as "
+                                                "the cited record states it; null when the "
+                                                "record carries no date.")
+    title: str = Field(description="What happened, e.g. 'Vendor confirmed delivery by "
+                                   "2026-07-02'; every date and figure in it is a cited value.")
+    detail: Optional[str] = None
+    source: Optional[Source] = Field(None, description="The record or message the step "
+                                                       "cites; open_url opens it for this "
+                                                       "reader. Null only for a verdict "
+                                                       "that states no date (undetermined).")
+    check: str = Field(description="How the step was checked: read_from_record (a value "
+                                   "read from the cited record as this reader), lead (a "
+                                   "machine-read reference, e.g. a message naming the PO), "
+                                   "computed_from_cited_records (the verdict), text_match "
+                                   "(a message or file naming the record by text), "
+                                   "not_established (a why verdict no record states), "
+                                   "unchecked, or the answer gate's check of a claim.")
+    sender: Optional[str] = Field(None, description="A message's sender, only when the "
+                                                    "people exclusion decides it may be shown.")
+
+
+class EtaCheck(_Model):
+    state: Literal["confirmed", "promises_disagree", "lead_only", "no_confirmation",
+                   "no_confirmation_found", "not_determined", "withheld", "not_applicable"]
+    text: str = Field(description="Is the ETA backed by a vendor confirmation, in words.")
+    source: Optional[Source] = Field(None, description="The confirmation (or the lead) "
+                                                       "that says so, when the reader can "
+                                                       "open it.")
+
+
+class NextAction(_Model):
+    text: str = Field(description="A suggested next step derived only from the trail's "
+                                  "facts. A suggestion: nothing is sent or written.")
+    rule: str = Field(description="The rule that suggested it, e.g. no_confirmation, "
+                                  "promise_moved, promise_passed.")
+    contact: Optional[str] = Field(None, description="Who to ask: the vendor-side sender "
+                                                     "of a message this reader can open; "
+                                                     "null otherwise.")
+    contact_source: Optional[Source] = None
+    suggestion_only: Literal[True] = True
+
+
+class PoTrail(_Model):
+    subject: ObjectRef
+    state: Optional[str] = Field(None, description="plx.process lateness state: late, "
+                                                   "on_time, not_due, undetermined, "
+                                                   "not_applicable.")
+    days_late: Optional[int] = None
+    verdict: Optional[str] = Field(None, description="The verdict and its rule in one "
+                                                     "sentence.")
+    eta: Optional[EtaCheck] = None
+    steps: list[TrailStep] = Field(default_factory=list)
+    hidden_steps: int = Field(0, ge=0, description="Steps in places this reader can't "
+                                                   "open: counted, never named.")
+    may_hide_more: bool = Field(False, description="A source this reader can't fully "
+                                                   "read may hold more steps (not counted).")
+    next_action: Optional[NextAction] = None
+    not_found: list[NotFound] = Field(default_factory=list)
+
+
+class MaterialRow(_Model):
+    order: Optional[ObjectRef] = None
+    assembly: ObjectRef
+    item: ObjectRef
+    po: ObjectRef
+    state: Optional[str] = None
+    days_late: Optional[int] = None
+    verdict: Optional[str] = None
+
+
+class TrailGap(_Model):
+    reason: str = Field(description="The typed gap, e.g. assembly_order_not_linked_to_"
+                                    "order_line, line_item_not_recorded, link_lead_only.")
+    state: str = Field(description="absent_in_source (the reader's walk was complete), "
+                                   "unknown, or note (a count stated for completeness, e.g. "
+                                   "POs already received or closed).")
+    what: str
+    where_it_would_live: str
+
+
+class EvidenceTrail(_Model):
+    """How we know: the steps, records and messages that led to the answer, each opening
+    its source; a purchase order's lateness trail, a customer order's materials, or the
+    answer's dated, checked claims."""
+    kind: Literal["purchase_order", "materials", "claims", "why"]
+    title: str
+    plan: Optional[str] = Field(None, description="kind why: the why plan that built it "
+                                                  "(operating/why_trail.py).",
+                                json_schema_extra=_optional)
+    trails: list[PoTrail] = Field(default_factory=list)
+    materials: list[MaterialRow] = Field(default_factory=list)
+    steps: list[TrailStep] = Field(default_factory=list, description="kind claims: the "
+                                                                     "answer's dated claims.")
+    gaps: list[TrailGap] = Field(default_factory=list)
+    hidden_steps: int = Field(0, ge=0)
+    hidden_message: Optional[str] = Field(None, description="e.g. '2 more steps in places "
+                                                            "you can't open.'")
+    may_hide_more: Optional[bool] = Field(None, description="kind why: a source this reader "
+                                                            "can't fully read may hold more "
+                                                            "steps (not counted).",
+                                          json_schema_extra=_optional)
+    complete: Optional[bool] = Field(None, description="kind why: false when only the "
+                                                       "latest steps are shown or a read "
+                                                       "did not finish.",
+                                     json_schema_extra=_optional)
+    next_action: Optional[NextAction] = Field(None, description="kind why: a suggested next "
+                                                                "step; nothing is sent.",
+                                              json_schema_extra=_optional)
+
+
 class AnswerPayload(_Model):
     answer_id: str
     question: str
@@ -179,8 +307,18 @@ class AnswerPayload(_Model):
     did_you_mean: list[ObjectRef] = Field(default_factory=list,
                                           description="Choices when a name or number matched "
                                                       "several records; never merged.")
+    trail: Optional[EvidenceTrail] = Field(None, description="How we know (optional: "
+                                                             "older clients ignore it).",
+                                           json_schema_extra=_optional)
     conversation_id: str
     latency_ms: int
+    access_label: Optional[str] = Field(
+        None, description="'Viewing with full-read access' when the answer was served under "
+                          "the reader's declared full-read grant.")
+    profitability: Optional[Profitability] = Field(
+        None, json_schema_extra=_optional,
+        description="A customer's profitability and why an order lost money, when the "
+                    "question asks it (optional: older clients ignore it).")
 
 
 # ---- ask (SSE) -------------------------------------------------------------------------
@@ -311,6 +449,83 @@ class Money(_Model):
     currency: str
 
 
+class CostLine(_Model):
+    label: str = Field(description="The item, e.g. 'item FG-9 (Tube 50 ml)'.")
+    quantity: Optional[str] = None
+    unit: Optional[str] = None
+    revenue: Optional[Money] = None
+    booked_cost: Optional[Money] = None
+    margin: Optional[Money] = None
+    unit_price: Optional[str] = Field(None, description="Revenue per unit, decimal string.")
+    unit_cost: Optional[str] = Field(None, description="Booked cost per unit, decimal string.")
+    share_of_cost_pct: Optional[str] = None
+    sources: list[Source] = Field(default_factory=list)
+
+
+class CostSource(_Model):
+    kind: Literal["item_ledger", "credit_memo", "return", "material_po", "quote"]
+    label: str
+    detail: Optional[str] = None
+    amount: Optional[Money] = None
+    per_unit: Optional[str] = Field(None, description="e.g. '$16.00 CAD/PCS goods cost'.")
+    sources: list[Source] = Field(default_factory=list)
+
+
+class CostBreakdown(_Model):
+    order: ObjectRef
+    date: Optional[str] = None
+    revenue: Optional[Money] = None
+    booked_cost: Optional[Money] = None
+    margin: Optional[Money] = None
+    margin_pct: Optional[str] = None
+    lines: list[CostLine] = Field(default_factory=list)
+    cost_sources: list[CostSource] = Field(default_factory=list)
+    drivers: list[str] = Field(default_factory=list)
+    gaps: list[NotFound] = Field(default_factory=list)
+
+
+class OrderMargin(_Model):
+    order: ObjectRef
+    date: Optional[str] = None
+    revenue: Optional[Money] = None
+    booked_cost: Optional[Money] = None
+    margin: Optional[Money] = None
+    margin_pct: Optional[str] = None
+    gap: Optional[str] = Field(None, description="Why no margin is stated, in words.")
+
+
+class Profitability(_Model):
+    customer: ObjectRef
+    period_start: str
+    period_end: str
+    period: str = Field(description="The period in words, e.g. 'the last 12 months'.")
+    revenue: Optional[Money] = None
+    booked_cost: Optional[Money] = None
+    margin: Optional[Money] = None
+    margin_pct: Optional[str] = None
+    orders_in_period: int = Field(ge=0)
+    orders_counted: int = Field(ge=0, description="Orders whose margin is complete; the "
+                                                  "totals cover these only.")
+    withheld_orders: int = Field(0, ge=0, description="Orders whose figures you may not "
+                                                      "read: a count only, never named.")
+    orders_read: int = Field(0, ge=0, description="Orders read; fewer than orders_in_period "
+                                                  "means no customer total is stated.")
+    orders_in_period_exact: bool = Field(True, description="False: orders_in_period is a "
+                                                           "lower bound.")
+    period_basis: Optional[str] = Field(None, description="How an order counts in the "
+                                                          "period.")
+    ranking: Optional[str] = Field(None, description="What the ranking covers, e.g. "
+                                                     "'partial: worst of the 60 most recent "
+                                                     "orders; 214 more in the period not "
+                                                     "read'.")
+    orders: list[OrderMargin] = Field(default_factory=list, description="Worst margin first.")
+    orders_more: int = Field(0, ge=0, description="Orders read but not listed (the list "
+                                                  "stops at 30).")
+    breakdown: Optional[CostBreakdown] = None
+    next_action: Optional[NextAction] = Field(None, description="A suggested next step "
+                                                                "from the facts only.")
+
+
 class ObjectStatus(_Model):
     state: str
     text: str
@@ -380,7 +595,13 @@ class ObjectPage(_Model):
     conflicts: list[Conflict] = Field(default_factory=list)
     hidden: Optional[Hidden] = Field(None, description="Omitted when nothing counts what is "
                                                        "hidden about this record.")
+    trail: Optional[EvidenceTrail] = Field(None, description="A purchase order's lateness "
+                                                             "trail (how we know).",
+                                           json_schema_extra=_optional)
     freshness: Freshness
+    access_label: Optional[str] = Field(
+        None, description="'Viewing with full-read access' when served under the reader's "
+                          "declared full-read grant.")
 
 
 # ---- source view -----------------------------------------------------------------------
@@ -399,6 +620,9 @@ class SourceView(_Model):
     text_offset: int = 0
     next_offset: Optional[int] = None
     changed_since: bool = False
+    access_label: Optional[str] = Field(
+        None, description="'Viewing with full-read access' when served under the reader's "
+                          "declared full-read grant.")
 
 
 # ---- feedback --------------------------------------------------------------------------

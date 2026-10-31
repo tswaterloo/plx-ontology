@@ -26,15 +26,32 @@ CASES = ["amazon-fba", "artwork-lifecycle", "asset-tracker", "brand-requirements
 SPEC = tool.ROOT / "devloop" / "live-checks" / "eval.case_cards_answers.json"
 # The committed cards that point at one record without naming it ("this AO",
 # "product P") and that no committed source names a record for: refused
-# ``card_anchor_missing``, each with its ``anchor_gap`` (why no anchor).
-UNANCHORED = {
-    "artwork-lifecycle": ["AL-06", "AL-07", "AL-11"],
-    "asset-tracker": ["AT-03", "AT-04", "AT-05", "AT-09", "AT-11", "AT-12"],
-    "brand-requirements": ["BR-09", "BR-10", "BR-11", "BR-12", "BR-13", "BR-14"],
-    "grants-program": ["GP-03", "GP-04", "GP-07", "GP-09"],
-    "procure-to-gl": ["SP-04", "SP-05"]}
+# ``card_anchor_missing``, each with its ``anchor_gap`` (why no anchor). None today:
+# each card's own source names the record its worked example is about.
+UNANCHORED: dict = {}
 # The committed card anchors: the record each card's own committed source names.
 ANCHORED = {
+    ("artwork-lifecycle", "AL-06"): ("K18", "PackComponent"),
+    ("artwork-lifecycle", "AL-07"): ("P-0116", "Product"),
+    ("artwork-lifecycle", "AL-11"): ("Lavender Spa Conditioner", "ArtworkVersion"),
+    ("asset-tracker", "AT-03"): ("C-8-006", "Asset"),
+    ("asset-tracker", "AT-04"): ("P-8-02", "Asset"),
+    ("asset-tracker", "AT-05"): ("P-8-02", "Asset"),
+    ("asset-tracker", "AT-09"): ("P-1-003", "Asset"),
+    ("asset-tracker", "AT-11"): ("260556", "PurchaseInvoice"),
+    ("asset-tracker", "AT-12"): ("P-1-003", "Asset"),
+    ("brand-requirements", "BR-09"): ("NBY", "Customer"),
+    ("brand-requirements", "BR-10"): ("NBY", "Customer"),
+    ("brand-requirements", "BR-11"): ("NBY-001-118", "Product"),
+    ("brand-requirements", "BR-12"): ("NBY-001-118", "Product"),
+    ("brand-requirements", "BR-13"): ("NBY-001-118", "Product"),
+    ("brand-requirements", "BR-14"): ("NBY-001-118", "Product"),
+    ("grants-program", "GP-03"): ("1399", "PurchaseInvoice"),
+    ("grants-program", "GP-04"): ("8KUVN8DP-0077", "PurchaseInvoice"),
+    ("grants-program", "GP-07"): ("260556", "PurchaseInvoice"),
+    ("grants-program", "GP-09"): ("1399", "PurchaseInvoice"),
+    ("procure-to-gl", "SP-04"): ("PO#4144", "PurchaseOrder"),
+    ("procure-to-gl", "SP-05"): ("PO10005687", "PurchaseOrder"),
     ("artwork-lifecycle", "AL-08"): ("PO 5503", "PurchaseOrder"),
     ("artwork-lifecycle", "AL-09"): ("AO-26005E", "AssemblyOrder"),
     ("artwork-lifecycle", "AL-10"): ("AO-26005E", "AssemblyOrder"),
@@ -118,8 +135,8 @@ class CompileTest(unittest.TestCase):
         # anchored, they all compile, under the ids they would have had all along
         anchored, none = tool.compile_cards(tool.card_sets(anchored_cards()), now=NOW)
         self.assertEqual(none, [])
-        self.assertTrue({r["item"]["id"] for r in compiled}
-                        < {r["item"]["id"] for r in anchored})
+        self.assertEqual({r["item"]["id"] for r in compiled},
+                         {r["item"]["id"] for r in anchored})
         # each committed anchor is the item's root and says which source names it; each
         # refused card says why no committed source names its record
         roots = {(r["case"], r["card_id"]): r["item"]["root"] for r in compiled}
@@ -219,28 +236,28 @@ class AccountingTest(unittest.TestCase):
         return {r["card_id"]: r for r in rows}
 
     def test_an_unscored_layer_is_reported_unscored_and_a_scored_one_stays_wrong(self):
-        # amazon-fba marks actual_case_answerability "UNSCORED until ..."; rnd-maps marks
-        # it "UNANSWERED: ... must be named as missing": scored, so its abstention is wrong.
+        # quote-to-order marks actual_case_answerability "UNSCORED until ..."; rnd-maps
+        # marks it "UNANSWERED: ... must be named as missing": scored, so its abstention is
+        # wrong. A card carrying its derived expected answer (scorer /26) is scored whatever
+        # its layer's mark: amazon-fba's are, and only the five quote-to-order cards whose
+        # map no store holds stay unscored.
         compiled, _ = tool.compile_cards(tool.card_sets(), now=NOW)
         marked = {(r["case"], r["layer"]) for r in compiled if r.get("unscored")
                   and not r["unscored"].startswith("UNSCORED: ")}
-        self.assertIn(("amazon-fba", "actual_case_answerability"), marked)
-        self.assertNotIn(("rnd-maps", "actual_case_answerability"), marked)
-        self.assertFalse({layer for _, layer in marked} - {"actual_case_answerability"})
-        # outside that layer only a card's own mark (QW-01, QW-02: scorer /21 audit)
-        self.assertEqual({r["card_id"] for r in compiled if r.get("unscored")
-                          and r["layer"] != "actual_case_answerability"}, {"QW-01", "QW-02"})
+        self.assertEqual(marked, {("quote-to-order", "actual_case_answerability")})
+        self.assertEqual(sorted(r["card_id"] for r in compiled if r.get("unscored")),
+                         ["QO-A1", "QO-B1", "QO-C1", "QO-D1", "QO-E1"])
         # IL-03 names no registered original (AG-05 rests on a map no one holds: blocked,
         # test_a_card_on_a_map_no_one_holds_is_blocked_and_the_label_alone_never_correct)
-        ids = {("amazon-fba", "FBA-A5"), ("rnd-maps", "IL-03"), ("amazon-fba", "FBA-01")}
+        ids = {("quote-to-order", "QO-A1"), ("rnd-maps", "IL-03"), ("amazon-fba", "FBA-01")}
         rows = self.rows(ids, nameless())
         self.assertEqual({k: r["outcome"] for k, r in rows.items()},
-                         {"FBA-A5": "unscored", "IL-03": "wrong", "FBA-01": "wrong"})
-        self.assertTrue(rows["FBA-A5"]["abstained"])   # coverage still counts it
+                         {"QO-A1": "unscored", "IL-03": "wrong", "FBA-01": "wrong"})
+        self.assertTrue(rows["QO-A1"]["abstained"])   # coverage still counts it
         # the scorer itself says unscored (scorer /20): the item carries the set's mark,
         # so the written score, not only this row, is never wrong (F25-0002, F25-0017)
         compiled, _ = tool.compile_cards(tool.card_sets(anchored_cards()), now=NOW)
-        entry = next(r for r in compiled if r["card_id"] == "FBA-A5")
+        entry = next(r for r in compiled if r["card_id"] == "QO-A1")
         self.assertEqual(entry["item"]["scoring"]["unscored"], entry["unscored"])
         self.assertTrue(entry["unscored"].startswith(score.UNSCORED_MARK))
         self.assertFalse([r["card_id"] for r in compiled
@@ -257,23 +274,39 @@ class AccountingTest(unittest.TestCase):
                   "values": [{"name": "moved", "value": "2026-10-13", "citations": []}]}
         rows = self.rows(ids, None, agent=runner.ScriptedAgent(
             lambda prompt, call: fx.final_text(stated)))
-        self.assertEqual((rows["FBA-A5"]["outcome"], rows["IL-03"]["outcome"]),
+        self.assertEqual((rows["QO-A1"]["outcome"], rows["IL-03"]["outcome"]),
                          ("unscored", "wrong"))
-        self.assertTrue(rows["FBA-A5"]["confident_unsupported"])
+        self.assertTrue(rows["QO-A1"]["confident_unsupported"])
         # a failed session stays blocked, never unscored
         rows = self.rows(ids, None, spawn=lambda *a: (1, ""))
         self.assertEqual({r["outcome"] for r in rows.values()}, {"blocked"})
         counted = tool.counts(list(self.rows(ids, nameless()).values()))
         self.assertEqual((counted["unscored"], counted["blocked"]), (1, 0))
 
+    def without_own_anchor(self, tmp: str, card_id: str, shared: dict) -> Path:
+        """A copy of the artwork-lifecycle set whose ``card_id`` has no anchor of its own
+        and whose set carries ``shared``."""
+        shutil.copytree(tool.CARDS_DIR / "artwork-lifecycle", Path(tmp) / "artwork-lifecycle")
+        path = Path(tmp) / "artwork-lifecycle" / tool.CARDS_FILE
+        doc = json.loads(path.read_text("utf-8"))
+        doc["real_example"]["anchor"] = shared
+        for card in doc["real_example"]["cards"]:
+            if card["id"] == card_id:
+                card.pop("anchor")
+        path.write_text(json.dumps(doc), "utf-8")
+        return Path(tmp)
+
     def test_an_anchor_is_carried_into_the_question_and_root_and_scored(self):
-        compiled, _ = tool.compile_cards(tool.card_sets(anchored_cards()), now=NOW)
-        by = {(r["case"], r["card_id"]): r["item"] for r in compiled}
-        item = by[("artwork-lifecycle", "AL-11")]   # the set-level anchor
+        with tempfile.TemporaryDirectory() as tmp:
+            compiled, _ = tool.compile_cards(tool.card_sets(
+                self.without_own_anchor(tmp, "AL-11", dict(ANCHOR))), now=NOW)
+        item = next(r["item"] for r in compiled if r["card_id"] == "AL-11")
         self.assertEqual((item["root"]["identifier"], item["root"]["object_type"]),
-                         ("fixture-record-1", "Record"))
+                         ("fixture-record-1", "Record"))   # the set-level anchor
         self.assertTrue(item["question"]["text"].startswith(
             "In the artwork-lifecycle use case, for Record fixture-record-1: Which formula"))
+        compiled, _ = tool.compile_cards(tool.card_sets(anchored_cards()), now=NOW)
+        by = {(r["case"], r["card_id"]): r["item"] for r in compiled}
         item = by[("artwork-lifecycle", "AL-09")]   # its own anchor wins over the set's
         self.assertEqual((item["root"], item["question"]["text"][:70]), (
             {"identifier": "AO-26005E", "identifier_kind": "ao_number",
@@ -286,15 +319,9 @@ class AccountingTest(unittest.TestCase):
         self.assertEqual(rows["AL-11"]["outcome"], "wrong")
         # a malformed anchor is no anchor: refused, never run
         with tempfile.TemporaryDirectory() as tmp:
-            shutil.copytree(tool.CARDS_DIR / "artwork-lifecycle", Path(tmp) / "a")
-            path = Path(tmp) / "a" / tool.CARDS_FILE
-            doc = json.loads(path.read_text("utf-8"))
-            doc["real_example"]["anchor"] = {"identifier": " ", "object_type": "Record"}
-            doc["real_example"]["cards"][0]["anchor"] = {"identifier": "AO-1"}
-            path.write_text(json.dumps(doc), "utf-8")
-            compiled, refused = tool.compile_cards(tool.card_sets(Path(tmp)), now=NOW)
-        self.assertEqual(sorted(r["card_id"] for r in refused),
-                         UNANCHORED["artwork-lifecycle"])
+            compiled, refused = tool.compile_cards(tool.card_sets(self.without_own_anchor(
+                tmp, "AL-11", {"identifier": " ", "object_type": "Record"})), now=NOW)
+        self.assertEqual(sorted(r["card_id"] for r in refused), ["AL-11"])
         self.assertEqual({tuple(r["reasons"]) for r in refused}, {("card_anchor_missing",)})
 
     def test_a_blocked_abstention_keeps_its_reasons_and_an_rro_anchor_is_carried(self):
@@ -494,7 +521,7 @@ class AccountingTest(unittest.TestCase):
     AUDITED = {"FBA-03", "FBA-05", "QO-01", "QO-02", "PS-07", "AT-08", "SC-04", "EMD-07",
                "EMD-11", "EMD-03", "EMD-05", "EMD-02", "QO-D2", "SP-07", "SP-08", "SC-06",
                "SC-07", "PS-02", "QO-A2", "SC-01", "RM-05", "AT-02", "PS-01", "RM-04"}
-    CARD_UNSCORED = {"QW-01", "QW-02"}
+    CARD_UNSCORED: set = set()   # QW-01, QW-02 carry their expected answer (scorer /26)
 
     def test_card_audit_fields_reach_the_item_and_a_cards_mark_wins(self):
         compiled, refused = tool.compile_cards(tool.card_sets(), now=NOW)
@@ -524,6 +551,8 @@ class AccountingTest(unittest.TestCase):
         HEX = "ab" * 32
         sets = tool.card_sets()
         doc = json.loads(json.dumps(sets["screening"][0]))
+        OWN = next(c for c in doc["real_example"]["cards"] if "expected" in c)[
+            "expected"]["document"]
         cards = doc["real_example"]["cards"]
         cases = {"card_unscored_invalid": [{"unscored": "later"}, {"unscored": 1},
                                            {"unscored": "UNSCORED" + "x" * 200}],
@@ -541,7 +570,20 @@ class AccountingTest(unittest.TestCase):
                      {"own_document_audited": {"date": "2026-10-28", "quotes": [HEX],
                                                "by": "me"}},
                      {"own_document_audited": {"date": "2026-10-28", "quotes": [HEX]},
-                      "own_document_evidence": False, "own_document_note": "why"}]}
+                      "own_document_evidence": False, "own_document_note": "why"}],
+                 "card_expected_invalid": [
+                     {"expected": {"document": "x", "answerability": "partial"}},
+                     {"expected": {"document": OWN, "answerability": "answerable"}},
+                     {"expected": {"document": OWN, "answerability": "certain"}},
+                     {"expected": {"document": OWN, "answerability": "answerable",
+                                   "facts": [{"value": "41130", "quote": "expensed"}]}},
+                     {"expected": {"document": OWN, "answerability": "partial",
+                                   "by": "me"}},
+                     {"expected": {"document": OWN, "answerability": "partial"},
+                      "unscored": "UNSCORED: later"}],
+                 # an expected answer is read from the card's own document only
+                 "card_expected_document_foreign": [
+                     {"expected": {"document": HEX, "answerability": "partial"}}]}
         for reason, edits in cases.items():
             for edit in edits:
                 with self.subTest(edit=edit):
@@ -635,15 +677,17 @@ class AccountingTest(unittest.TestCase):
          "screening-process-map-ontology.csv"),
     ]
 
-    def score_claim(self, item, value, title):
+    def score_claim(self, item, value, title, label="partial", currency=None,
+                    reason="not_served", subject="the map"):
         h = fx.handle("public.app_sales_order", {"id": "so-r1"}, 9)
         row = {"id": "so-r1", "notes": value, **({"name": title} if title else {})}
-        answer = {"format": score.ANSWER_FORMAT, "answerability": "partial",
+        answer = {"format": score.ANSWER_FORMAT, "answerability": label,
                   "text": "What the served source says.",
-                  "values": [{"name": "said", "value": value, "citations": [
+                  "values": [{"name": "said", "value": value, **(
+                      {"currency": currency} if currency else {}), "citations": [
                       {"l1_handle": h, "field_path": "row.notes", "quote": value}]}],
-                  "gaps": [{"state": "not_ingested", "subject": "the map",
-                            "reason": "not_served"}]}
+                  "gaps": [{"state": "not_ingested", "subject": subject,
+                            "reason": reason}]}
 
         def script(prompt, call):
             call("plx.find", {"relation": "public.app_sales_order"})
@@ -666,10 +710,107 @@ class AccountingTest(unittest.TestCase):
         result = self.score_claim(by["EMD-A2"], "justification cites oxidative change and "
                                   "solvent ratio integrity, neither measured by the panel",
                                   "REVIEW-NOTES.md")
-        # its layer is UNSCORED (scorer /20): evidenced, yet never correct or wrong
+        # its expected answer (scorer /26) is "oxidation", stated here as "oxidative"
         self.assertEqual((result["outcome"], result["evidence"]["evidenced_claims"],
-                          result["evidence"]["label_only"]), ("unscored", 1, False))
+                          result["evidence"]["label_only"], result["codes"]),
+                         ("correct", 1, False, []))
         self.assertIn("giulia", by["IL-01"]["scoring"]["topic_names"])
+
+    def test_a_cards_expected_answer_only_adds_failures(self):
+        # Scorer /26: an expected answer read from the card's own pinned document. Stating
+        # its fact in a gate-passed value is correct; an evidenced claim without it, an
+        # ``answerable`` label where the document supports only ``partial``, or an amount
+        # where the card forbids one is wrong; it never turns a wrong run correct.
+        compiled, _ = tool.compile_cards(tool.card_sets(), now=NOW)
+        by = {r["card_id"]: r["item"] for r in compiled}
+        expected = by["EMD-A2"]["scoring"]["expected"]
+        self.assertEqual(expected["document"], next(iter(score._documents(
+            by["EMD-A2"], "source_documents") & {expected["document"]})))
+        self.assertIn("original://sha256/" + expected["document"],
+                      by["EMD-A2"]["oracle"]["derived_from"])
+        said = ("justification cites oxidative change and solvent ratio integrity; "
+                "no oxidation test was run")
+        self.assertEqual(self.score_claim(by["EMD-A2"], said, "REVIEW-NOTES.md")["outcome"],
+                         "correct")
+        unexpected = {**by["EMD-A2"], "scoring": {
+            k: v for k, v in by["EMD-A2"]["scoring"].items() if k != "expected"}}
+        self.assertEqual(self.score_claim(unexpected, said, "REVIEW-NOTES.md")["outcome"],
+                         "correct")
+        # a fact matches on word stems: the document's own "oxidative" states "oxidation"
+        self.assertEqual(self.score_claim(by["EMD-A2"], "the justification names oxidative "
+                                          "change and no panel test covers it",
+                                          "REVIEW-NOTES.md")["outcome"], "correct")
+        # PS-A2: the proposal's mismatch must be stated (in any accepted form), with no
+        # amount; the PI number the question names is never the fact
+        self.assertEqual(score.expected_echoes(by["PS-A2"]["scoring"]["expected"],
+                                               by["PS-A2"]["question"]["text"]), [])
+        said = "the proposal says the PI came before the PO and its prices don't match"
+        cases = {(said, None): ("correct", []),
+                 ("the proposal reports a PI mismatch on the order", None):
+                     ("wrong", ["expected_fact_missing"]),
+                 (said, "USD"): ("wrong", ["amount_stated"])}
+        for (value, currency), want in cases.items():
+            with self.subTest(value=value, currency=currency):
+                result = self.score_claim(by["PS-A2"], value, "PI-SWC025623 proposal",
+                                          "partial", currency)
+                self.assertEqual((result["outcome"], result["codes"]), want)
+        # BR-15: the account has no source bundle, so the answer stays partial
+        said = "the Three Ships supplier switch was never reviewed and Quality was not told"
+        result = self.score_claim(by["BR-15"], said, "map", "answerable")
+        self.assertEqual((result["outcome"], result["codes"]),
+                         ("wrong", ["answerability_mismatch"]))
+        # a run whose host could not read the card's own document is blocked, never
+        # wrong; an unreadable other document (or "the original" unnamed) excuses nothing
+        own = by["EMD-A2"]["scoring"]["expected"]["document_name"]
+        for subject, want in ((own, "blocked"), (own.rsplit(".", 1)[0], "blocked"),
+                              ("Screening Process Map.zip", "wrong"),
+                              ("source:original", "wrong")):
+            with self.subTest(subject=subject):
+                result = self.score_claim(by["EMD-A2"], "the justification is unread", "map",
+                                          reason="text_not_extracted", subject=subject)
+                self.assertEqual(result["outcome"], want)
+        # an item whose expected answer is malformed is never scored
+        broken = {**by["PS-A2"], "scoring": {**by["PS-A2"]["scoring"], "expected": {
+            **by["PS-A2"]["scoring"]["expected"], "facts": []}}}
+        with self.assertRaises(score.ScoreError):
+            self.score_claim(broken, said, "proposal")
+
+    def test_a_fact_must_tell_right_from_wrong(self):
+        # a number only whole in its own token; a fact the question states is refused
+        fact = {"value": "96", "quote": "12 cases = 96 units"}
+        self.assertEqual([score.fact_stated(t, fact) for t in (
+            "96 units", "item 0096", "line 96-A", "1,096 units", "96.")],
+                         [True, False, False, False, True])
+        self.assertTrue(score.fact_stated("in April", {"value": "April 2026", "quote": "x",
+                                                       "accept": ["April"]}))
+        # polarity: a negated mention never states a positive fact, and a negative fact
+        # (the document says it is absent) only where its clause negates it
+        def fact(value, polarity="positive"):
+            return {"value": value, "quote": "x", "polarity": polarity}
+        for text, one, want in (
+                ("nothing changed", fact("changed"), False),
+                ("the FC changed after the first OR", fact("changed"), True),
+                ("not before the BOL", fact("before"), False),
+                ("the stock moved before the BOL", fact("before"), True),
+                ("No price mismatch", fact("price mismatch"), False),
+                ("its prices don't match the item", fact("prices don't match"), True),
+                ("all risks including oxidation are covered", fact("oxidation", "negative"),
+                 False),
+                ("no oxidation test was run", fact("oxidation", "negative"), True),
+                ("Yes, the label carries the new expiry", fact("extended", "negative"), False),
+                ("it shows the new expiry but not that the lot was extended",
+                 fact("extended", "negative"), True),
+                ("not 96 units", fact("96"), False)):
+            with self.subTest(text=text):
+                self.assertEqual(score.fact_stated(text, one), want)
+        doc = json.loads(json.dumps(tool.card_sets()["packaging-sourcing"][0]))
+        card = next(c for c in doc["real_example"]["cards"] if c["id"] == "PS-A2")
+        card["expected"]["facts"] = [{"value": "PI-SWC025623", "quote": "PI-SWC025623 "
+                                      "arrived before a PO was raised in the system"}]
+        _, refused = tool.compile_cards({"packaging-sourcing": (doc, "0" * 64)}, now=NOW)
+        self.assertIn({"case": "packaging-sourcing", "card_id": "PS-A2",
+                       "layer": "actual_case_answerability",
+                       "reasons": ["card_expected_echoes_question"]}, refused)
 
     def test_needs_anchor_reads_pointers_and_placeholders_only(self):
         for question in ("For this AO, which lot?", "Which rules apply to product P?",
@@ -794,10 +935,10 @@ class VerdictTest(unittest.TestCase):
         # holds included (their failed abstention is blocked, AccountingTest)
         self.assertEqual((doc["totals"]["abstained"], doc["totals"]["blocked"],
                           doc["totals"]["answered"]), (187, 0, 0))
-        # the cards of a layer its set marks UNSCORED, and the two cards marked on their
-        # own (QW-01, QW-02): reported unscored, never wrong
+        # the cards of a layer its set marks UNSCORED that carry no expected answer (the
+        # five quote-to-order cards): reported unscored, never wrong
         self.assertEqual((doc["totals"]["unscored"],
-                          doc["by_layer"]["actual_case_answerability"]["unscored"]), (25, 23))
+                          doc["by_layer"]["actual_case_answerability"]["unscored"]), (5, 5))
         # The report says why it abstained: the answers' gap reason codes, cards per code.
         self.assertEqual(doc["totals"]["abstain_reasons"], {"not_served": 187})
         self.assertEqual(doc["cases"]["rro"]["abstain_reasons"], {"not_served": 26})

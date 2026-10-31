@@ -278,7 +278,7 @@
    },
    {
     "id": "AL-06",
-    "anchor_gap": "the card's originals name a Form 117 example (K18) and a Furgenics review thread, no pack component; no committed source names the component",
+    "anchor": {"identifier": "K18", "identifier_kind": "label_code", "object_type": "PackComponent", "source": "Artwork Lifecycle Map (co-bbd2a0e1abe4) card F2: 'Form #117 sample for a K18 master shipping label is unsigned'; the card's original co-c9eb154db086 '2019-10-01 Form 117 Label approval form (K18 example).pdf'"},
     "layer": "tracing",
     "question": "Which proof version did the customer approve for this pack component, through which channel, and who recorded it?",
     "criterion": "Read the customer sign-off bound to the exact proof attachment and version, with the customer as approver, the channel (email or DocuSign) and the recording staff member kept separate. A sign-off never carries over to a newer proof version, and customer approval is distinct from QA acceptance and Regulatory review. While the sign-off records are unreadable, report a gap, never 'approved'.",
@@ -297,7 +297,7 @@
    },
    {
     "id": "AL-07",
-    "anchor_gap": "the only record its originals name is component P-0116 (a P-item, the answer side), never the artwork version the question is about",
+    "anchor": {"identifier": "P-0116", "identifier_kind": "item_code", "object_type": "Product", "source": "Artwork Lifecycle Map (co-bbd2a0e1abe4) card F3, component approval sheet P-0116; the card's original co-58f67fe08fa3 '2019-12-10 P-0116 component approval sheet.xlsx'"},
     "layer": "tracing",
     "question": "Which printed component P-number was minted for this artwork version, and which item did it replace?",
     "criterion": "Read the proof-version-to-item record (minted item, previous item) and name both items with provenance. Without that record the lineage is a gap: never match a P-item to an artwork version by description, name or date coincidence.",
@@ -380,7 +380,7 @@
    },
    {
     "id": "AL-11",
-    "anchor_gap": "its originals are three ingredient lists (F-26-0654, F-24-0258, F-24-0285); no committed source names the artwork version",
+    "anchor": {"identifier": "Lavender Spa Conditioner", "identifier_kind": "artwork_name", "object_type": "ArtworkVersion", "source": "Artwork Lifecycle Map (co-bbd2a0e1abe4) worked example A3: Furgenics 'Lavender Spa Conditioner | F-24-0285 | 2025-03-14 | IL 17 months old'; the card's original co-648a1bd0c6a6 '2025-03-14 IL Lavender Spa Conditioner F-24-0285.docx'"},
     "layer": "tracing",
     "question": "Which formula and ingredient list was this artwork version checked against, and is that basis stale?",
     "criterion": "Read the proof version's pinned formula and ingredient-list basis (source, version, checked-by) and its stale or superseded state. Without that record, say the basis is unknown; never match an ingredient-list document to an artwork version by product name.",

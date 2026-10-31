@@ -7,6 +7,8 @@ import { objectHref, plural, safeHref, typeLabel } from "@/lib/format";
 import { toggleSaved, useSaved } from "@/lib/saved";
 import type { Answer, ObjectRef, Understanding } from "@/lib/types";
 import { ConflictCard, FactList, FreshnessLabel, HiddenNotice, NotFoundSection } from "./answer-parts";
+import { ProfitabilityView } from "./cost-breakdown";
+import { EvidenceTrailCard } from "./evidence-trail";
 import { Feedback } from "./feedback";
 import { Badge } from "./ui/badge";
 import type { NoticeKind } from "@/lib/errors";
@@ -149,6 +151,9 @@ export function AnswerCard({ turn, onPick, onRetry }: { turn: Turn; onPick?: (p:
           )}
 
           {outcome && <Badge tone={outcome.tone}>{outcome.label}</Badge>}
+          {a?.access_label && (
+            <Badge tone="info" data-testid="access-label">{a.access_label}</Badge>
+          )}
 
           {text ? (
             <p className="text-[17px] leading-relaxed font-medium text-fg" data-testid="direct-answer">
@@ -179,6 +184,8 @@ export function AnswerCard({ turn, onPick, onRetry }: { turn: Turn; onPick?: (p:
                 onPick={onPick}
               />
               <FactList facts={a.facts} />
+              {a.profitability && <ProfitabilityView p={a.profitability} />}
+              <EvidenceTrailCard trail={a.trail} />
               {(a.conflicts ?? []).map((c, i) => (
                 <ConflictCard key={i} conflict={c} />
               ))}

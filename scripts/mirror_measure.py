@@ -1002,8 +1002,14 @@ def ordered_full_coverage(client: Any, db_path: str | Path, *,
             report = {**later, "runs": runs, "throttle_waits": waits}
         deferred_sync_seconds = monotonic() - deferred_started
         sample = mirror._db.execute(
+            # Only relations with a completed capture and no merge in progress: a batched
+            # merge's rows are not served (integrations.source_mirror._merge_batches).
             """SELECT relation, key_json, MIN(capture_id) AS capture_id FROM row_current
-               WHERE absent_since_capture IS NULL GROUP BY relation, key_json
+               WHERE absent_since_capture IS NULL
+               AND relation IN (SELECT relation FROM relation_state)
+               AND relation NOT IN (SELECT relation FROM sync_progress
+                                    WHERE merge_json IS NOT NULL)
+               GROUP BY relation, key_json
                ORDER BY relation, key_json LIMIT ?""", (resolve_sample,)).fetchall()
         handles = [make_citation(row["relation"], json.loads(row["key_json"]),
                                  row["capture_id"], mirror.generation) for row in sample]

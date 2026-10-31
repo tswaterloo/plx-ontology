@@ -1,0 +1,104 @@
+{
+ "format": "plx-why-plan/v1",
+ "id": "shipment_shortfall",
+ "title": "Why an order shipped less than was ordered, or is not invoiced in full",
+ "description": "The order's placement and required-date events, its shipments, invoices and packing slips, and the mail naming it, in time order. The verdict is the gated claim comparing the ordered, shipped and invoiced quantities.",
+ "priority": 50,
+ "root_types": [
+  "SalesOrder"
+ ],
+ "question_terms": [
+  "shipped",
+  "short",
+  "partial\\w*",
+  "less",
+  "fewer",
+  "backorder\\w*",
+  "balance",
+  "remaining",
+  "left to ship",
+  "not shipped",
+  "invoiced",
+  "fill rate",
+  "complete\\w*"
+ ],
+ "root_events": {
+  "SalesOrder.ordered": {
+   "kind": "record_change",
+   "label": "Order placed"
+  },
+  "SalesOrder.required": {
+   "kind": "record_change",
+   "label": "Required date on the order"
+  },
+  "SalesOrder.status_changed": {
+   "kind": "record_change",
+   "label": "Order status changed"
+  },
+  "Shipment.shipped": {
+   "kind": "record_change",
+   "label": "Shipped"
+  },
+  "Shipment.sage_shipped": {
+   "kind": "record_change",
+   "label": "Shipped (Sage)"
+  },
+  "SalesInvoice.invoiced": {
+   "kind": "record_change",
+   "label": "Invoiced"
+  },
+  "ShipRelease.released": {
+   "kind": "decision",
+   "label": "Released to ship"
+  },
+  "ShipRelease.fulfilled": {
+   "kind": "record_change",
+   "label": "Release fulfilled"
+  }
+ },
+ "links": [
+  {
+   "link": "packing_slips",
+   "kind": "document",
+   "label": "Packing slip",
+   "max": 3
+  },
+  {
+   "link": "mentioned_in_email",
+   "kind": "communication",
+   "label": "Email",
+   "events": [
+    "Email.received"
+   ],
+   "who": "sender",
+   "tier_floor": "lead",
+   "max": 6
+  }
+ ],
+ "verdict": {
+  "label": "Ordered, shipped and invoiced",
+  "claim_terms": [
+   "shipped",
+   "ordered",
+   "invoiced",
+   "short",
+   "partial",
+   "remaining",
+   "balance",
+   "backorder\\w*",
+   "complete"
+  ],
+  "events": [],
+  "missing": "A checked comparison of ordered and shipped quantities is not in a record you can see"
+ },
+ "next_actions": [
+  {
+   "when": "verdict_missing",
+   "text": "Ask Shipping for the shipped quantities on {record}, pointing to the shipments above."
+  },
+  {
+   "when": "always",
+   "text": "If a balance remains on {record}, draft a note to the customer with the next ship date for review."
+  }
+ ]
+}

@@ -253,6 +253,7 @@ def configured_employee(resolver: Any, object_id: str) -> Callable[[], SessionId
             author_kind=session_identity.AUTHOR_HUMAN,
             proof=session_identity.PROOF_CONFIGURED, employee=principal,
             principals=frozenset({principal.principal}), client="plx-workbench-app-dev",
+            access=entitlement.full_read_code(),
             identities=frozenset({i for i in entitlement.source_identities
                                   if isinstance(i, str) and i.strip()
                                   and not i.startswith("group:")} | {principal.object_id}))

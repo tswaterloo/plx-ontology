@@ -39,6 +39,7 @@ import argparse
 from concurrent.futures import Future, TimeoutError as FutureTimeout
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
+from decimal import Decimal
 import json
 import logging
 import os
@@ -47,6 +48,7 @@ import queue
 import re
 import secrets
 import sqlite3
+import sys
 import threading
 import time
 from typing import Any, Callable, Iterable, Iterator, Mapping, Optional, Sequence
@@ -115,6 +117,12 @@ INTENT_RULES = (("how_much", r"\b(cost|price|landed|margin|how much|total|amount
                 ("compare", r"\b(compare|versus|vs\.?|difference)\b"),
                 ("policy", r"\b(policy|rule|allowed|should we)\b"),
                 ("status", r"\b(status|where is|update|open|received)\b"))
+
+
+def access_label(session: Any) -> Optional[str]:
+    """``FULL_READ_LABEL`` for a session resolved under a declared full-read grant."""
+    from operating.employee_permissions import FULL_READ_LABEL
+    return FULL_READ_LABEL if getattr(session, "access", None) else None
 
 
 def system_of(handle: str) -> str:
@@ -363,7 +371,22 @@ class WorkspaceBackend:
         return m.Me(display_name=reader.display_name, email=reader.email,
                     principal=",".join(sorted(s.principals)), auth=reader.mode,
                     proof=s.proof, tenant=s.tenant, dev_mode=reader.mode != "entra",
-                    data_label=self.data_label, expires_at=s.expires_at)
+                    data_label=self.data_label, expires_at=s.expires_at,
+                    access_label=access_label(s))
+
+    def journal_full_read(self, reader: Reader, path: str) -> None:
+        """One session-journal row (``operator_ui.session_journal``, in the state
+        directory) for something served under a full-read grant: route, session reference,
+        employee principal and the grant's enum code. A failed write never fails the read."""
+        if self.state_dir is None:
+            return
+        try:
+            from operator_ui.session_journal import SessionJournal
+            SessionJournal.for_state_dir(self.state_dir).record(
+                method="POST" if path == "/api/ask" else "GET", path=path, status=200,
+                session=reader.session)
+        except (sqlite3.Error, OSError) as error:
+            print(f"session journal: write failed ({type(error).__name__})", file=sys.stderr)
 
     # ---- freshness ----------------------------------------------------------------------
 
@@ -517,8 +540,15 @@ class WorkspaceBackend:
         conversation = request.conversation_id or secrets.token_hex(8)
         yield "status", m.StatusEvent(step="understanding", message="Reading your question",
                                       elapsed_ms=ms())
+        answer = None
         if not request.object_id and late_list_question(request.question):
             answer = yield from self._late_ask(reader, request, conversation, ms)
+        elif not request.object_id and profit_question(request.question):
+            # A customer the question names, answered from checked order margins; a
+            # question naming no readable customer goes on to the agent path.
+            answer = yield from self._profit_ask(reader, request, conversation, ms)
+        if answer is not None:
+            pass
         elif self.agent_ask is not None and self.agent_ask.serves(reader.session):
             answer = yield from self._agent_ask(reader, request, conversation, ms)
         else:
@@ -531,6 +561,9 @@ class WorkspaceBackend:
         for word in re.findall(r"\S+\s*", answer.direct_answer):
             yield "token", m.TokenEvent(text=word)
         answer.latency_ms = ms()
+        answer.access_label = access_label(reader.session)
+        if answer.access_label:
+            self.journal_full_read(reader, "/api/ask")
         with self._lock:
             self._answers[answer.answer_id] = {"reader": reader.key,
                                                "question": request.question,
@@ -573,6 +606,68 @@ class WorkspaceBackend:
             with view._request():
                 return late_answer(self, view, request, inbox, late, conversation, ms)
         return self.reads.run(reader, job, timeout=READ_TIMEOUT_SECONDS)
+
+    def _profit_ask(self, reader: Reader, request: m.AskRequest, conversation: str,
+                    ms: Callable[[], int]) -> Iterator[tuple[str, Any]]:
+        """Is a customer profitable, and why not (``operating.customer_profit``): the
+        customer the question names, found by this reader's ``plx.find``, its orders' checked
+        margins, the worst order's cost breakdown, the trail and a suggested next step. None
+        when the question names no customer this reader can find (the agent path answers)."""
+        from operating import customer_profit
+
+        events: "queue.Queue[tuple[str, Any]]" = queue.Queue()
+        words = customer_profit.customer_words(request.question)
+        if not words:
+            return None
+
+        def job(view: Any) -> Optional[m.AnswerPayload]:
+            with view._request():
+                from operating.customer_profit import normal_name
+                found = view._call("plx.find", {"query": normal_name(words) or words,
+                                                "object_type": "Customer", "limit": 8})
+                candidates = [c["object"] for c in found.get("candidates") or ()
+                              if isinstance(c.get("object"), Mapping)
+                              and c["object"].get("object_type") == "Customer"]
+                if not candidates:
+                    return None
+                # Margins are Business Central figures: a name matching one customer in BC
+                # and its Portal or Sage twins is that BC customer; two BC customers (two
+                # companies, two accounts) are offered, never merged or picked.
+                bc = [c for c in candidates if str(c["object_id"]).split(":")[1:2] and
+                      str(c["object_id"]).split(":")[1].startswith("bc.")]
+                candidates = bc or candidates
+                from operating.customer_profit import normal_name
+                exact = [c for c in candidates
+                         if normal_name(words) in customer_names(view, c)]
+                if len(exact) != 1:
+                    # Picked only on an exact name or customer number; a fuzzy match (one or
+                    # several) is offered as a choice, never picked.
+                    return profit_choices(self, view, request, exact or candidates,
+                                          conversation, ms)
+                candidates = exact
+                events.put(("status", m.StatusEvent(
+                    step="reading", message="Reading the customer's orders and their margins",
+                    elapsed_ms=ms())))
+
+                def call(name: str, arguments: dict) -> Mapping[str, Any]:
+                    if name == "plx.investigate":
+                        events.put(("status", m.StatusEvent(
+                            step="checking", message=STEP_WORDS[name], elapsed_ms=ms())))
+                    return view._call(name, arguments)
+                today = self.today() if self.today is not None else date.today()
+                try:
+                    profit = customer_profit.profitability(
+                        call, candidates[0]["object_id"], today=today,
+                        question=request.question,
+                        focus=customer_profit.order_words(request.question))
+                except customer_profit.ProfitError:
+                    return None
+                return profit_answer(self, view, request, profit, conversation, ms)
+
+        future = submit(self.ask_jobs, self.ask_stopped, reader, job, 1)
+        future.add_done_callback(lambda _f: events.put(("done", None)))
+        yield from self._drain(events, future, ASK_TIMEOUT_SECONDS)
+        return future.result()
 
     def _agent_ask(self, reader: Reader, request: m.AskRequest, conversation: str,
                    ms: Callable[[], int]) -> Iterator[tuple[str, Any]]:
@@ -787,6 +882,10 @@ class WorkspaceBackend:
             card = view._call("plx.object", {"object_id": root.object_id})
             conflicts += self._conflicts(view, card.get("conflicts") or (), root.label)
         hidden = self._hidden(view, ran)
+        trail = one_trail(self, view, request, {"roots": out.get("roots") or (),
+                                                "ambiguous": out.get("ambiguous") or ()},
+                          [], [c for c in ran.get("claims") or () if isinstance(c, Mapping)],
+                          subjects[:1], facts[:MAX_FACTS])
         outcome_loop = shown_answer.get("outcome")
         text = shown_answer.get("text") if outcome_loop == "answered" else None
         direct = (text or (part_texts[0] if part_texts else None)
@@ -806,8 +905,8 @@ class WorkspaceBackend:
             answer_id=secrets.token_hex(12), question=request.question, outcome=outcome,
             direct_answer=str(direct)[:4000], facts=facts[:MAX_FACTS], not_found=not_found[:10],
             hidden=hidden, conflicts=conflicts[:6], freshness=self.freshness(out),
-            subjects=subjects, did_you_mean=did_you_mean[:8], conversation_id=conversation,
-            latency_ms=ms())
+            subjects=subjects, did_you_mean=did_you_mean[:8], trail=trail,
+            conversation_id=conversation, latency_ms=ms())
 
     def _units(self) -> dict[str, Any]:
         """``search.audience_units`` (label, people per unit); {} without
@@ -1003,11 +1102,27 @@ class WorkspaceBackend:
     # ---- object page ---------------------------------------------------------------------
 
     def object_page(self, reader: Reader, object_type: str, object_id: str) -> m.ObjectPage:
-        return self.reads.run(reader, lambda view: object_page(self, view, object_type,
+        """The record's page; one served under a full-read grant is labelled and journalled."""
+        page = self.reads.run(reader, lambda view: object_page(self, view, object_type,
                                                                object_id),
                               timeout=READ_TIMEOUT_SECONDS)
+        return self._labelled(reader, page, "/api/object")
+
+    def _labelled(self, reader: Reader, payload: Any, path: str) -> Any:
+        """``payload`` (a copy) with the full-read label when the reader's session holds the
+        grant, journalled; else unchanged."""
+        label = access_label(reader.session)
+        if not label:
+            return payload
+        self.journal_full_read(reader, path)
+        return payload.model_copy(update={"access_label": label})
 
     def source(self, reader: Reader, handle: str, text_offset: int) -> m.SourceView:
+        """``_source``; one opened under a full-read grant is journalled."""
+        return self._labelled(reader, self._source_view(reader, handle, text_offset),
+                              "/api/source")
+
+    def _source_view(self, reader: Reader, handle: str, text_offset: int) -> m.SourceView:
         """A cited source as this reader may open it. A captured case original or a
         SharePoint file (``HOST_READ_SCHEMES``) the app's own runtime cannot open for an
         employee is read through
@@ -1191,6 +1306,310 @@ def late_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
                               label=po.label[:200], open_url=po.open_url)
                   for po in late[:MAX_FACTS]],
         did_you_mean=[], conversation_id=conversation, latency_ms=ms())
+
+
+def profit_question(question: str) -> bool:
+    from operating.customer_profit import profit_question as asks
+    return asks(question)
+
+
+def _money(amount: Any, currency: Any) -> Optional[m.Money]:
+    if amount is None or not isinstance(currency, str) or not _CURRENCY.match(currency):
+        return None
+    from operating.customer_profit import _plain
+    return m.Money(amount=_plain(amount), currency=currency)
+
+
+def _decided_sources(backend: "WorkspaceBackend", view: Any, handles: Iterable[Any]
+                     ) -> list[m.Source]:
+    """Sources for the handles this reader may open now (a withheld one is left out,
+    never named)."""
+    handles = [h for h in dict.fromkeys(handles) if isinstance(h, str)][:MAX_SOURCES_PER_FACT]
+    decided = view.access.decide(handles) if handles else {}
+    return [backend._source(view, h) for h in handles if decided.get(h) is None]
+
+
+def customer_names(view: Any, candidate: Mapping[str, Any]) -> set[str]:
+    """The customer's name and number as this reader reads them, normalised for an exact
+    comparison (``customer_profit.normal_name``)."""
+    from operating.customer_profit import normal_name
+    card = view._call("plx.object", {"object_id": candidate["object_id"],
+                                     "properties": ["name", "erp_code"]}) or {}
+    names = {plain(v.get("value")) for v in card.get("values") or ()
+             if v.get("property") in ("name", "erp_code")}
+    names.add(plain(candidate.get("display")))
+    return {normal_name(n) for n in names if n}
+
+
+def profit_choices(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
+                   candidates: Sequence[Mapping[str, Any]], conversation: str,
+                   ms: Callable[[], int]) -> m.AnswerPayload:
+    """Several customers match the name: each a choice with its customer number (read as
+    this reader), never merged or picked."""
+    choices = []
+    for c in candidates[:8]:
+        card = view._call("plx.object", {"object_id": c["object_id"],
+                                         "properties": ["erp_code"]})
+        code = next((plain(v.get("value")) for v in (card or {}).get("values") or ()
+                     if v.get("property") == "erp_code"), None)
+        choices.append(m.ObjectRef(
+            object_id=c["object_id"], type="Customer",
+            label=f"{plain(c.get('display')) or c['object_id']} "
+                  f"({code or c.get('lineage') or 'Customer'})"[:200],
+            open_url=object_url("Customer", c["object_id"])))
+    direct = (f"Did you mean {choices[0].label}?" if len(choices) == 1 else
+              "That name matches more than one customer. Which did you mean?")
+    return m.AnswerPayload(
+        answer_id=secrets.token_hex(12), question=request.question, outcome="partial",
+        direct_answer=direct,
+        hidden=m.Hidden(count=0, by_owner=[], message=None), freshness=backend.freshness(),
+        did_you_mean=choices, conversation_id=conversation, latency_ms=ms())
+
+
+GAP_OWNER = {"LINE_NOT_INVOICED": "Finance: post the order's invoice in Business Central",
+             "COST_NOT_YET_ACTUAL": "Finance: the cost is booked once the shipment is invoiced",
+             "NO_QUOTE_LINK": "Sales: the Portal quote the order was converted from",
+             "MATERIAL_SOURCE_NOT_LINKED": "Operations: the item's bill of materials",
+             "LABOUR_OVERHEAD_NOT_RECORDED": "Finance: production cost reports outside the "
+                                             "BC API"}
+
+
+def profit_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
+                  profit: Mapping[str, Any], conversation: str,
+                  ms: Callable[[], int]) -> m.AnswerPayload:
+    """``operating.customer_profit.profitability`` as the contract's answer: the totals and
+    the worst orders as facts, the cost breakdown, the drivers, the trail, the gaps as not
+    found and the withheld orders as a count."""
+    from operating.customer_profit import money_words, not_read_words, _plain
+
+    cust = profit["customer"]
+    totals = profit["totals"]
+    cur = totals.get("currency")
+    breakdown = profit.get("breakdown")
+    customer_ref = m.ObjectRef(object_id=cust["object_id"], type="Customer",
+                               label=str(cust["name"])[:200],
+                               open_url=object_url("Customer", cust["object_id"]))
+
+    def order_ref(order: Mapping[str, Any]) -> m.ObjectRef:
+        return m.ObjectRef(object_id=order["object_id"], type="SalesOrder",
+                           label=str(order["number"])[:200],
+                           open_url=object_url("SalesOrder", order["object_id"]))
+
+    def order_handles(order: Mapping[str, Any]) -> list[str]:
+        return [h for line in order["lines"] for h in line.invoice_handles[:1]
+                + line.ledger_handles[:1]] + ([order["handle"]] if order["handle"] else [])
+
+    facts: list[m.Fact] = []
+    period = profit["period"]["words"]
+    counted, in_period, read = totals["counted"], totals["orders"], totals["read"]
+    exact = profit.get("coverage", {}).get("count_exact", True)
+    basis = profit["period"]["basis"]
+    if not totals.get("complete"):
+        headline = (f"I can't give a customer total for {cust['name']} in {period}: it has "
+                    f"{'' if exact else 'at least '}{in_period} orders in the period and "
+                    f"only the {read} most recent were read "
+                    f"({not_read_words(in_period, read, exact)}); {basis}.")
+    elif totals.get("margin") is not None:
+        verdict = "profitable" if totals["margin"] > 0 else "not profitable"
+        over = (f"over {counted} of {in_period} orders" if counted != in_period
+                else f"over {counted} order{'s' if counted != 1 else ''}")
+        headline = (f"{cust['name']} is {verdict} in {period}: revenue "
+                    f"{money_words(totals['revenue'], cur)}, booked cost "
+                    f"{money_words(totals['booked_cost'], cur)}, margin "
+                    f"{money_words(totals['margin'], cur)}"
+                    + (f" ({_plain(totals['margin_pct'])}%)" if totals.get("margin_pct")
+                       is not None else "") + f" {over} with a complete margin; {basis}.")
+        decided = [o for o in profit["orders"] if o["decided"]]
+        facts.append(m.Fact(text=headline, check="computed_from_cited_records",
+                            sources=_decided_sources(backend, view, [
+                                h for o in decided for h in order_handles(o)])))
+    elif in_period:
+        headline = (f"I can't state a margin for {cust['name']} in {period}: none of its "
+                    f"{in_period} order{'s' if in_period != 1 else ''} you can see has a "
+                    "complete margin yet (what is missing is listed below).")
+    else:
+        headline = f"{cust['name']} has no order you can see in {period}."
+    for order in [o for o in profit["orders"] if o["decided"]][:5]:
+        loss = order["margin"] < 0
+        oc = order["currency"]          # the order's own checked currency
+        text = (f"Order {order['number']}: revenue {money_words(order['revenue'], oc)}, "
+                f"cost {money_words(order['booked_cost'], oc)}, "
+                + (f"loss {money_words(-order['margin'], oc)}" if loss else
+                   f"margin {money_words(order['margin'], oc)}") + ".")
+        facts.append(m.Fact(text=text, check="computed_from_cited_records",
+                            sources=_decided_sources(backend, view, order_handles(order))))
+    for driver in profit.get("drivers") or ():
+        facts.append(m.Fact(text=driver["text"], check="computed_from_cited_records",
+                            sources=_decided_sources(backend, view, driver["handles"])))
+    facts = [f for f in facts if f.sources][:MAX_FACTS]
+
+    worst = next((o for o in profit["orders"] if o["decided"]), None)
+    parts = [headline]
+    if breakdown is not None and breakdown["order"].margin is not None:
+        order = breakdown["order"]
+        lost = order.margin < 0
+        worst_word = ("Worst" if totals.get("complete") else
+                      f"Worst of the {read} most recent orders read")
+        parts.append(f"{worst_word if worst and worst['object_id'] == order.object_id else 'Order'}"
+                     f" {order.number}: revenue {money_words(order.revenue, order.currency)}, "
+                     f"cost {money_words(order.cost, order.currency)}, "
+                     + (f"loss {money_words(-order.margin, order.currency)}." if lost else
+                        f"margin {money_words(order.margin, order.currency)}."))
+    elif breakdown is not None:
+        order = breakdown["order"]
+        why = ", ".join(dict.fromkeys(words_of(c).lower() for c, _ in order.gaps))[:300]
+        parts.append(f"{order.number}: no margin is stated" + (f" ({why})." if why else "."))
+    drivers = [d["text"] for d in profit.get("drivers") or ()]
+    if drivers:
+        parts.append("Why: " + " ".join(drivers[:3]))
+    action = profit.get("next_action")
+    if action:
+        parts.append(f"Suggested next step: {action['text']} (a suggestion only; nothing was "
+                     "changed.)")
+    direct = " ".join(parts)
+
+    not_found: list[m.NotFound] = []
+    seen_codes: set[str] = set()
+    gaps = list(profit.get("gaps") or ())
+    gaps += [{"code": g["code"], "detail": f"{o['number']}: {g['detail']}"}
+             for o in profit["orders"] if not o["decided"] for g in o["gaps"][:2]]
+    gaps += list((breakdown or {}).get("gaps") or ())
+    for gap in gaps:
+        key = f"{gap['code']}:{gap['detail']}"
+        if key in seen_codes:
+            continue
+        seen_codes.add(key)
+        not_found.append(m.NotFound(
+            what=words_of(gap["code"]).capitalize() + ": " + str(gap["detail"])[:400],
+            where_it_would_live=GAP_OWNER.get(gap["code"], "Finance (Business Central owners)")))
+    withheld = int(profit.get("withheld") or 0)
+    messages = []
+    if withheld:
+        messages.append(f"The figures of {withheld} order{'s' if withheld != 1 else ''} of "
+                        "this customer are withheld from you; they are not in the totals.")
+    if profit.get("orders_trimmed"):
+        messages.append("This customer has orders you can't open; they are not in the "
+                        "figures.")
+    # Orders the tools trimmed are never counted (plx.around never reveals how many).
+    hidden = m.Hidden(count=None if profit.get("orders_trimmed") else withheld,
+                      by_owner=[m.HiddenOwner(owner_or_team=FAMILY_OWNER["BC"],
+                                              count=withheld)] if withheld else [],
+                      message=" ".join(messages) or None)
+
+    view_model = m.Profitability(
+        customer=customer_ref, period_start=profit["period"]["start"],
+        period_end=profit["period"]["end"], period=period,
+        revenue=_money(totals.get("revenue"), cur),
+        booked_cost=_money(totals.get("booked_cost"), cur),
+        margin=_money(totals.get("margin"), cur),
+        margin_pct=_plain(totals["margin_pct"]) if totals.get("margin_pct") is not None
+        else None, orders_in_period=in_period, orders_counted=counted, orders_read=read,
+        orders_in_period_exact=exact,
+        ranking=("worst first, every order of the period" if totals.get("complete") else
+                 f"partial: worst of the {read} most recent orders; "
+                 + not_read_words(in_period, read, exact)),
+        orders_more=max(0, len(profit["orders"]) - 30), period_basis=basis,
+        withheld_orders=withheld,
+        orders=[m.OrderMargin(order=order_ref(o), date=(o["dates"] or [None])[-1],
+                              revenue=_money(o["revenue"], o["currency"]),
+                              booked_cost=_money(o["booked_cost"], o["currency"]),
+                              margin=_money(o["margin"], o["currency"]),
+                              margin_pct=_plain(o["margin_pct"]) if o["margin_pct"]
+                              is not None else None,
+                              gap=None if o["decided"] else "; ".join(
+                                  words_of(g["code"]).lower() for g in o["gaps"][:2])
+                              or "not stated")
+                for o in profit["orders"][:30]],
+        breakdown=cost_breakdown(backend, view, breakdown, drivers) if breakdown else None,
+        next_action=m.NextAction(text=action["text"], rule=action["rule"])
+        if action else None)
+    steps, hidden_steps = [], 0
+    for step in profit.get("trail") or ():
+        handle = step.get("handle")
+        source = None
+        if isinstance(handle, str):
+            if view.access.decide([handle]).get(handle) is not None:
+                hidden_steps += 1      # a step resting on a record the reader can't open
+                continue
+            source = backend._source(view, handle)
+        check = {"cited": "read_from_record"}.get(
+            step.get("check"), step.get("check") or "computed_from_cited_records")
+        steps.append(m.TrailStep(
+            kind="verdict" if step["label"] == "Driver" else "claim", at=step.get("date"),
+            title=str(step["value"] if step["label"] == "Driver" else step["label"])[:300],
+            detail=(str(step["value"])[:600] if step.get("value") and step["label"] != "Driver"
+                    else None), source=source, check=check))
+    trail = m.EvidenceTrail(
+        kind="claims", title=f"How we know: {cust['name']}'s margin in {period}"[:200],
+        steps=steps[:40], hidden_steps=hidden_steps,
+        hidden_message=(f"{hidden_steps} more step{'s' if hidden_steps != 1 else ''} in "
+                        "places you can't open.") if hidden_steps else None) if steps else None
+    subjects = [customer_ref] + ([order_ref({"object_id": breakdown["order"].object_id,
+                                             "number": breakdown["order"].number})]
+                                 if breakdown else [])
+    outcome = ("answered" if totals.get("margin") is not None and not not_found
+               else "partial" if facts else "not_found")
+    return m.AnswerPayload(
+        answer_id=secrets.token_hex(12), question=request.question, outcome=outcome,
+        direct_answer=direct[:4000], facts=facts, not_found=not_found[:10], hidden=hidden,
+        freshness=backend.freshness(_base(view)), subjects=subjects,
+        conversation_id=conversation, latency_ms=ms(), trail=trail, profitability=view_model)
+
+
+def cost_breakdown(backend: "WorkspaceBackend", view: Any, breakdown: Mapping[str, Any],
+                   drivers: Sequence[str]) -> m.CostBreakdown:
+    """The focus order's lines, cost sources (item ledger, credit memos, returns, purchase
+    orders, the quote) and drivers, each source decided for this reader again."""
+    from operating.customer_profit import unit_words, _plain, _material_words
+
+    order = breakdown["order"]
+    cur = order.currency
+    lines = []
+    for row in breakdown["lines"]:
+        line = row["line"]
+        lines.append(m.CostLine(
+            label=row["label"][:200], quantity=_plain(line.quantity, Decimal("0.0001")).rstrip(
+                "0").rstrip(".") if line.quantity else None, unit=line.unit,
+            revenue=_money(line.revenue, line.currency),
+            booked_cost=_money(line.cost, line.currency),
+            margin=_money(line.margin, line.currency),
+            unit_price=_plain(row["unit_price"], Decimal("0.0001"))
+            if row["unit_price"] is not None else None,
+            unit_cost=_plain(row["unit_cost"], Decimal("0.0001"))
+            if row["unit_cost"] is not None else None,
+            share_of_cost_pct=str(row["share_of_cost"]) if row["share_of_cost"] is not None
+            else None,
+            sources=_decided_sources(backend, view, line.invoice_handles + line.ledger_handles)))
+    sources = [m.CostSource(kind=s["kind"], label=s["label"][:200], detail=s["detail"][:300],
+                            amount=_money(s["amount"], s["currency"]),
+                            sources=_decided_sources(backend, view, s["handles"]))
+               for s in breakdown["sources"]]
+    for got in breakdown["materials"]:
+        sources.append(m.CostSource(
+            kind="material_po", label=f"Purchase order {got['po_number']}"[:200],
+            detail=got["label"][:300], per_unit=_material_words(got)[:200],
+            sources=_decided_sources(backend, view, got["handles"])))
+    quote = breakdown.get("quote")
+    if quote:
+        for row in quote["lines"]:
+            detail = (f"quoted {unit_words(row['quoted_price'], quote['currency'], row['uom'])}"
+                      f", invoiced {unit_words(row['actual_price'], order.currency, row['uom'])}")
+            sources.append(m.CostSource(kind="quote", label=f"Quote {quote['number']}"[:200],
+                                        detail=detail[:300], sources=_decided_sources(
+                                            backend, view, row["handles"] + [quote["handle"]])))
+    return m.CostBreakdown(
+        order=m.ObjectRef(object_id=order.object_id, type="SalesOrder", label=order.number,
+                          open_url=object_url("SalesOrder", order.object_id)),
+        date=order.dates[-1].isoformat() if order.dates else None,
+        revenue=_money(order.revenue, cur), booked_cost=_money(order.cost, cur),
+        margin=_money(order.margin, cur),
+        margin_pct=_plain(order.margin_pct) if order.margin_pct is not None else None,
+        lines=lines[:20], cost_sources=sources[:30],
+        drivers=[d[:600] for d in drivers][:6],
+        gaps=[m.NotFound(what=words_of(g["code"]).capitalize() + ": " + g["detail"][:400],
+                         where_it_would_live=GAP_OWNER.get(g["code"],
+                                                           "Finance (Business Central owners)"))
+              for g in breakdown["gaps"]][:12])
 
 
 STILL_WORKING = ("I'm still working on this: the time limit ({seconds} s) was reached "
@@ -1427,6 +1846,33 @@ def agent_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest, 
     for root in subjects[:3]:
         card = view._call("plx.object", {"object_id": root.object_id})
         conflicts += backend._conflicts(view, card.get("conflicts") or (), root.label)
+    # the answer's subject: the record the page asks about, else the first record the
+    # question resolved to; never another record that happens to have a plan
+    roots = ([m.ObjectRef(object_id=request.object_id,
+                          type=request.object_id.split(":", 1)[0],
+                          label=request.object_id.split(":", 1)[0],
+                          open_url=object_url(request.object_id.split(":", 1)[0],
+                                              request.object_id))]
+             if request.object_id and ":" in request.object_id else subjects[:1])
+    if not roots:
+        # the question named a record held in several systems (each a candidate): one
+        # thing when the reader's identity links say so, else the session's own records
+        from operating.why_trail import same_records
+        for item in found.get("ambiguous") or ():
+            ids = [c["object_id"] for c in item.get("candidates") or ()
+                   if isinstance(c.get("object_id"), str)]
+            if 1 < len(ids) <= 4 and same_records(view._call, ids):
+                kind = ids[0].split(":", 1)[0]
+                roots = [m.ObjectRef(object_id=ids[0], type=kind,
+                                     label=str(item.get("mention") or kind)[:200],
+                                     open_url=object_url(kind, ids[0]))]
+                break
+        roots = roots or session_roots(ran.events, set(),
+                                       same=lambda ids: same_records(view._call, ids))
+    hidden_ids = {str(h.get("id")) for h in hidden_claims}
+    trail = one_trail(
+        backend, view, request, found, late,
+        [c for c in passed if str(c.get("id")) not in hidden_ids], roots, facts)
     return m.AnswerPayload(
         answer_id=secrets.token_hex(12), question=request.question, outcome=outcome,
         direct_answer=str(direct)[:4000], facts=facts, not_found=not_found[:10],
@@ -1434,7 +1880,160 @@ def agent_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest, 
                         message=hidden_message(withheld, []) if withheld else None),
         conflicts=conflicts[:6],
         freshness=backend.freshness(_base(view)), subjects=subjects, did_you_mean=did_you_mean[:8],
-        conversation_id=conversation, latency_ms=ms())
+        trail=trail, conversation_id=conversation, latency_ms=ms())
+
+
+def session_roots(events: Sequence[Mapping[str, Any]], known: set[str],
+                  limit: int = 4, same: Callable[[list[str]], bool] = lambda ids: False
+                  ) -> list[m.ObjectRef]:
+    """The records the agent session itself settled on, in the order it first used them,
+    when the question's own resolution named none: a ``plx.find`` that resolved to one
+    record, or to records ``same`` finds are one thing in several systems (an ambiguous one
+    names none: never a guess), and the record a
+    ``plx.object``, ``plx.timeline`` or ``plx.around`` call started from. The session read
+    them as this reader; the trail reads each again through the reader's view."""
+    from operating.why_trail import identifier
+    from operator_api.agent_ask import plain_tree
+
+    labels: dict[str, str] = {}
+    order: list[str] = []
+    for event in events:
+        if event.get("is_error"):
+            continue
+        name, arguments = event.get("name"), event.get("arguments") or {}
+        if name == "plx.find":
+            result = plain_tree(event.get("result")) if isinstance(event.get("result"),
+                                                                   Mapping) else {}
+            found = [c.get("object") for c in result.get("candidates") or ()
+                     if isinstance(c, Mapping) and isinstance(c.get("object"), Mapping)]
+            ids = [f.get("object_id") for f in found]
+            if found and all(isinstance(i, str) for i in ids) and (
+                    len(ids) == 1 or len(ids) <= 4 and same(ids)):
+                oid = found[0]["object_id"]
+                labels.setdefault(oid, identifier(found[0].get("display")) or "")
+                order.append(oid)
+        elif name in ("plx.object", "plx.timeline", "plx.around") and isinstance(
+                arguments, Mapping):
+            oid = arguments.get("object_id") or arguments.get("from")
+            if isinstance(oid, str):
+                order.append(oid)
+    out: list[m.ObjectRef] = []
+    for oid in order:
+        if ":" not in oid or oid.startswith("set:") or oid in known:
+            continue
+        known.add(oid)
+        kind = oid.split(":", 1)[0]
+        out.append(m.ObjectRef(object_id=oid, type=kind, label=labels.get(oid) or kind,
+                               open_url=object_url(kind, oid)))
+        if len(out) >= limit:
+            break
+    return out
+
+
+def why_answer_trail(backend: "WorkspaceBackend", view: Any, question: str,
+                 roots: Sequence[m.ObjectRef], facts: Sequence[m.Fact]
+                 ) -> Optional[m.EvidenceTrail]:
+    """How the answer is known (``operating.why_trail``): for the first record the answer is
+    about that a why plan covers, its steps read through this reader's own view, each
+    source decided for the reader again (a step it may not open is counted, never named),
+    values only from the facts the gate passed and this answer shows, and a suggested
+    next action (nothing written or sent). None when no plan covers the question or the
+    trail cannot be read; the answer stands without it."""
+    from operating import why_trail
+
+    started = time.perf_counter()
+    try:
+        if not roots:
+            return None
+        root = roots[0]       # the answer's subject (``agent_answer``)
+        if root.type in ("Object", "Record", "") and ":" in root.object_id:
+            # an object page's Ask names the record by id: its type is the id's prefix
+            root = root.model_copy(update={"type": root.object_id.split(":", 1)[0]})
+        plan = why_trail.select(question, root.type)
+        if plan is None:
+            return None
+        # each fact with the records and fields the gate checked of it (a source's fields)
+        claims = [{"text": f.text, "citations": [s.handle for s in f.sources],
+                   "checked": [(s.handle, k) for s in f.sources for k in (s.fields or {})],
+                   "check": f.check} for f in facts if f.sources]
+        built = why_trail.build(plan, {"object_id": root.object_id, "object_type": root.type,
+                                       "label": root.label},
+                                call=view._call, decide=view.access.decide, claims=claims)
+    except Exception as error:  # noqa: BLE001 - the trail is extra; the answer stands
+        logging.getLogger("operator_api.ask").info(json.dumps(
+            {"trail": "not_built", "error": type(error).__name__}))
+        return None
+    shown = {s.handle: s for f in facts for s in f.sources}
+    steps: list[m.TrailStep] = []
+    unopenable: set[str] = set()
+    for step in built["steps"]:
+        handle = step.get("handle")
+        source = None
+        if handle:
+            source = shown.get(handle) or backend._source(view, handle)
+            if source.open_url is None:
+                if step["kind"] != "verdict":
+                    unopenable.add(handle)  # counted once, never shown
+                    continue
+                source = None
+        title = str(step["label"])
+        if title == why_trail.CHECKED_FACT and source is not None:
+            title = f"Checked against the {source.label[:1].lower()}{source.label[1:]}"
+        steps.append(m.TrailStep(kind=step["kind"], at=step.get("date"), title=title[:200],
+                                 detail=step.get("value"), source=source,
+                                 check=str(step.get("check") or "read_from_record")))
+    hidden = built["hidden"] + len(unopenable)
+    action = built.get("next_action")
+    logging.getLogger("operator_api.ask").info(json.dumps({
+        "trail": built["plan"], "steps": len(steps), "hidden": hidden,
+        "verdict": built["verdict_state"], "reads": built["reads"],
+        "ms": int((time.perf_counter() - started) * 1000)}))
+    return m.EvidenceTrail(
+        kind="why", title=built["title"], plan=built["plan"], steps=steps,
+        hidden_steps=hidden,
+        hidden_message=(f"{hidden} more step is in a place you can't open." if hidden == 1
+                        else f"{hidden} more steps are in places you can't open."
+                        if hidden else None),
+        may_hide_more=bool(built["may_be_withheld"]), complete=not built["incomplete"],
+        next_action=m.NextAction(text=action["text"][:400], rule=action["rule"])
+        if action else None)
+
+
+def answer_trail(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
+                 found: Mapping[str, Any], late_pos: Sequence[tuple[m.LatePo, Optional[str]]],
+                 claims: Sequence[Mapping[str, Any]]) -> Optional[m.EvidenceTrail]:
+    """How we know (``operator_api.trail``): the PO's lateness trail, a customer order's
+    materials, or the answer's dated checked claims, each step decided for this reader."""
+    from . import trail as trails
+
+    roots = list(found.get("roots") or ())
+    if request.object_id and not any(r.get("object_id") == request.object_id for r in roots):
+        roots.insert(0, {"object_id": request.object_id})
+    return trails.for_answer(backend, view, request.question, roots, late_pos, claims,
+                             ambiguous=list(found.get("ambiguous") or ()),
+                             object_url=object_url, open_url=open_url,
+                             host_schemes=HOST_READ_SCHEMES)
+
+
+def one_trail(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
+              found: Mapping[str, Any], late_pos: Sequence[tuple[m.LatePo, Optional[str]]],
+              claims: Sequence[Mapping[str, Any]], why_roots: Sequence[m.ObjectRef],
+              facts: Sequence[m.Fact]) -> Optional[m.EvidenceTrail]:
+    """The answer's one trail, never two: an answer rooted on a purchase order (or naming a
+    late-listed one), or a customer order's late-materials question, gets the evidence
+    trail (``answer_trail``); every other record type the why trail
+    (``why_answer_trail``), and the evidence trail's checked claims when no why plan
+    covers the question."""
+    from .trail import MATERIALS_QUESTION
+    from operating.evidence_trail import START_TYPES
+
+    subject = (why_roots[0].object_id.split(":", 1)[0] if why_roots[0].type in (
+        "Object", "Record", "") else why_roots[0].type) if why_roots else None
+    if subject == "PurchaseOrder" or late_pos or (
+            subject in START_TYPES and MATERIALS_QUESTION.search(request.question or "")):
+        return answer_trail(backend, view, request, found, late_pos, claims)
+    return why_answer_trail(backend, view, request.question, why_roots, facts) \
+        or answer_trail(backend, view, request, found, late_pos, claims)
 
 
 # A sentence saying a late-listed PO was received, closed or complete: shown beside the
@@ -1886,7 +2485,28 @@ def with_plans(backend: "WorkspaceBackend", view: Any, page: m.ObjectPage,
         page.landed_cost = landed_cost_of(backend, view, plans["landed_cost"])
     if "people_on_record" in plans:
         page.people = people_of(backend, view, plans["people_on_record"])
+    if page.type == "PurchaseOrder":
+        from . import trail as trails
+        page.trail = trails.for_page(backend, view, page.object_id, page.label,
+                                     object_url=object_url, open_url=open_url,
+                                     host_schemes=HOST_READ_SCHEMES,
+                                     late=listed_late(view, page.object_id, page.label))
     return page
+
+
+def listed_late(view: Any, oid: str, label: str) -> list[tuple[m.LatePo, Optional[str]]]:
+    """This record's entry on the reader's late list (the gap inbox Home shows), if any."""
+    try:
+        inbox = view.gap_inbox()
+    except Exception:  # noqa: BLE001 - no list: the trail's own verdict stands alone
+        return []
+    if inbox.get("status") != "read":
+        return []
+    gaps = [g for g in inbox.get("gaps") or () if g.get("object_id") == oid
+            and g.get("days_late") is not None]
+    run_at = inbox.get("run_at") if isinstance(inbox.get("run_at"), str) else None
+    late, _ = attention_items({"gaps": gaps[:1]}, {oid: label}, limit=1)
+    return [(po, run_at) for po in late]
 
 
 def _page_model(backend: WorkspaceBackend, view: Any, page: Mapping[str, Any]) -> m.ObjectPage:

@@ -31,9 +31,10 @@ CARD_KEYS = {"id", "layer", "question", "criterion", "originals", "live_sources"
 # committed source names one. Never both.
 ANCHOR_KEYS = {"anchor", "anchor_gap"}
 # A card may carry its own audit fields (scripts/eval_case_cards.py ``card_scoring``, which
-# refuses a malformed one): its own ``unscored`` mark and the own-document path's audit.
+# refuses a malformed one): its own ``unscored`` mark, the own-document path's audit and
+# its derived ``expected`` answer (scorer /26).
 AUDIT_KEYS = {"unscored", "own_document_evidence", "own_document_note",
-              "own_document_audited"}
+              "own_document_audited", "expected"}
 ANCHOR_FIELDS = {"identifier", "object_type", "identifier_kind", "source"}
 GAP_KINDS = {"object", "link", "reader"}
 UNKNOWN = "source unknown"

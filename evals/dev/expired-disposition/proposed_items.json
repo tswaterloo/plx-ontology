@@ -459,6 +459,7 @@
    },
    {
     "id": "EMD-A1",
+    "expected": {"document": "be191416464ca330efa8185e5d2b43c474aa6b5c34372debd6193594f28ee888", "document_name": "Expired-Material-Disposition-Map.zip", "answerability": "answerable", "facts": [{"value": "29", "quote": "R-0663: expiry 28 Sep 2026, new expiry 27 Oct 2026 (29 days)."}], "no_amounts": false},
     "layer": "actual_case_answerability",
     "question": "Was the R-0663 camellia-oil lot extended according to the 30-day rule?",
     "criterion": "From Form 063 (member pinned by path and SHA-256) as the map reads it: the lot expired 28 Sep 2026, was retested the same day with an external plate count received 30 Sep, and was approved by a designate on 2 Oct with a new expiry of 27 Oct 2026; the limited panel was extended with specific gravity and the plate count. The map's check '30-day date = original expiry + 30 days' fails: 28 Sep plus 30 days is 28 Oct, so 27 Oct is 29 days, which the map reads as one calendar month counted inclusively. Whether the lot had been extended before cannot be checked because no extension history exists. An answer computes the day count itself, attributes the dates to Form 063 or the map, and names no signatory.",
@@ -474,6 +475,7 @@
    },
    {
     "id": "EMD-A2",
+    "expected": {"document": "be191416464ca330efa8185e5d2b43c474aa6b5c34372debd6193594f28ee888", "document_name": "Expired-Material-Disposition-Map.zip", "answerability": "answerable", "facts": [{"value": "oxidation", "quote": "R-0663 cites oxidative change and solvent ratio integrity; no oxidation test and no solvent present (card A2)", "accept": ["oxidative"], "polarity": "negative"}], "no_amounts": false},
     "layer": "actual_case_answerability",
     "question": "Do the tests run on R-0663 cover every risk its justification names?",
     "criterion": "Per the map's check 'every named risk has a test' (fail): the Form 063 justification names microbial proliferation, oxidative or precipitative change and loss of solvent ratio integrity; the plate count covers the microbial risk, odour and appearance detect only advanced oxidation, no oxidation test was run and the material has no solvent. An answer attributes the finding to the map, distinguishes a risk covered by a test from one accepted without a test, and does not judge the lot's safety.",
@@ -488,6 +490,7 @@
    },
    {
     "id": "EMD-A3",
+    "expected": {"document": "be191416464ca330efa8185e5d2b43c474aa6b5c34372debd6193594f28ee888", "document_name": "Expired-Material-Disposition-Map.zip", "answerability": "answerable", "facts": [{"value": "extended", "quote": "Nothing on it shows that the lot was extended or when it was re-released.", "accept": ["extension marker", "extension", "re-released"], "polarity": "negative"}], "no_amounts": false},
     "layer": "actual_case_answerability",
     "question": "Does the reissued R-0663 label show that the lot was extended?",
     "criterion": "Per the map (label image member pinned): the label carries the new expiry 2026-10-27 but keeps the original release date of 15 Apr 2026 and its releaser, with no extension marker or re-release date, so compounding sees an ordinary lot; the check 'label matches the lot record' fails. An answer reports the mismatch, attributes it to the label and the map, and does not state who released the lot.",
@@ -502,6 +505,7 @@
    },
    {
     "id": "EMD-A4",
+    "expected": {"document": "be191416464ca330efa8185e5d2b43c474aa6b5c34372debd6193594f28ee888", "document_name": "Expired-Material-Disposition-Map.zip", "answerability": "partial", "facts": [{"value": "BC-26267D", "quote": "R-0030 arginine lot 52174440, expired 2 May 2026, released by waiver signed 16 Sep 2026 for M10 AHA Cream batch BC-26267D only."}], "no_amounts": false},
     "layer": "actual_case_answerability",
     "question": "Which lot and batch does the R-0030 arginine waiver cover, and is its scope enforced?",
     "criterion": "The map and the PDF's file name say lot 52174440, expired 2 May 2026, released for batch BC-26267D only by a waiver signed 16 Sep 2026; both identifiers are unverified, because the PDF's text layer reads different digits in each while its OCR agrees with the file name, and the intake record says the waiver's identifiers remain unverified. An answer quotes them as the map's claim, marks them unverified, and verifies them only from a visual read. Per the map, QC did not sign and no test is referenced, and nothing in FileMaker or the Portal limits the lot to that batch; its 'waiver signed before use' pass rests on reading the unverified batch code as day 267 (24 Sep 2026). An answer names no signatory or customer contact.",
@@ -517,6 +521,7 @@
    },
    {
     "id": "EMD-A5",
+    "expected": {"document": "be191416464ca330efa8185e5d2b43c474aa6b5c34372debd6193594f28ee888", "document_name": "Expired-Material-Disposition-Map.zip", "answerability": "partial", "facts": [], "no_amounts": false},
     "layer": "actual_case_answerability",
     "question": "Which originals of the two examples exist, and which have been read?",
     "criterion": "Read: the map's archive (item id and SHA-256 pinned, ten members pinned by path, bytes and SHA-256), including Form 063 for R-0663 and the signed R-0030 waiver, read as text extraction only, which is not visual verification. Not supplied (missing_originals): the emails between QC, account managers, Production and the manufacturer; the QC spreadsheet log; the FileMaker receipt rows and their comments; and the map's two pending examples (a manufacturer CoA revision for stage 5 and a rejected lot for stage 12). An answer lists each unread original with its state and infers nothing about its content.",

@@ -121,7 +121,9 @@ An engine that takes ``reviews`` gets ``reviews(review_id, actor)``: the review 
 reviewed link re-read from the host's review store for the actor as known at the run's
 ``as_known_at`` (``reviews``: ``TraverseTools.review``, the view ``plx.around`` puts on the
 edge), None without one.
-An engine that takes ``roots`` gets the run's root object ids. An engine that takes ``people`` gets the host's people directory provider
+An engine that takes ``roots`` gets the run's root object ids. An engine that takes
+``documents`` gets ``documents(handle)``: the host's ``plx.read`` of that citation for the
+actor (``documents``; None without one), the one way an engine reads a message's text. An engine that takes ``people`` gets the host's people directory provider
 (``operating.people_graph``); its ``withhold`` names property entries that name a person the
 people exclusion withholds or cannot clear, and those entries leave the answer and its
 values. Missing required
@@ -443,7 +445,9 @@ def default_engines() -> dict[str, Mapping[str, Callable[..., Any]]]:
     from .lot_impact import PLAN_ENGINES as LOT
     from .order_margin import PLAN_ENGINES as MARGIN
     from .people_graph import PLAN_ENGINES as PEOPLE
-    return {**LANDED, **MARGIN, **DECISIONS, **CHAIN, **LINEAGE, **IMPACT, **LOT, **PEOPLE}
+    from .vendor_terms import PLAN_ENGINES as VENDOR_TERMS
+    return {**LANDED, **MARGIN, **DECISIONS, **CHAIN, **LINEAGE, **IMPACT, **LOT, **PEOPLE,
+            **VENDOR_TERMS}
 
 
 def check_plan(doc: Mapping[str, Any], schema: SchemaView | None,
@@ -980,6 +984,7 @@ class InvestigateTools:
                  held_markings: Callable[[Actor], Iterable[str]] | None = None,
                  landed_actuals: Callable[[Sequence[str]], Mapping[str, Any]] | None = None,
                  people: Callable[[], Any] | None = None,
+                 documents: Callable[[str, Actor], Mapping[str, Any] | None] | None = None,
                  timer: Callable[[], float] | None = None,
                  label_reserve: int = 0) -> None:
         self.table = table
@@ -1005,6 +1010,7 @@ class InvestigateTools:
         self.held_markings = held_markings
         self.landed_actuals = landed_actuals
         self.people = people
+        self.documents = documents
         self._hops: dict[tuple[str, str], list[list[dict[str, str]]]] = {}
         self._starts: dict[str, frozenset[str] | None] = {}
         self._format: Mapping[str, Any] | None = None
@@ -2568,6 +2574,9 @@ class InvestigateTools:
                 extra["landed_actuals"] = self._actuals_reader(run)
             if "people" in takes:   # by name only; None: the engine names nobody
                 extra["people"] = self.people
+            if "documents" in takes:   # by name only; None: the engine reads no text
+                extra["documents"] = None if self.documents is None else (
+                    lambda handle, _read=self.documents, _actor=run.actor: _read(handle, _actor))
             if "roots" in takes:   # by name only: the run's root object ids
                 extra["roots"] = tuple(roots)
             if "objects" in takes:   # by name only: the reader's object references
@@ -2694,8 +2703,11 @@ class InvestigateTools:
         for entry in answer:   # the cited record does not state a person's correction
             if (entry.get("review") or {}).get("decision") == "correct_value":
                 entry["check"], entry["code"] = "unverified", "person_reviewed"
+        # A blank cell (BC's empty currencyCode: the company's local currency) states no
+        # value a claim could check; it is left unchecked, never a crash of the answer.
         claimed = [e for e in answer if e["kind"] == "property" and e.get("citation")
-                   and _value_text(e.get("value")) is not None and e["check"] == "not_checked"]
+                   and _value_text(e.get("value")) not in (None, "")
+                   and e["check"] == "not_checked"]
         summary: dict[str, Any] = {"checked": False, "passed": False, "claims": len(claimed),
                                    "failures": []}
         if not claimed:

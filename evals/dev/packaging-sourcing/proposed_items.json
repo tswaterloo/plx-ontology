@@ -417,6 +417,7 @@
    },
    {
     "id": "PS-A1",
+    "expected": {"document": "98fb0accf8525793dd3b0ac0d5239056d5415d00b6395f47201783b70b9ac351", "document_name": "New Packaging Sourcing — Proposal for Review.md", "answerability": "answerable", "facts": [{"value": "P-02487", "quote": "the cap P-02487 sits at about", "accept": ["ship separately", "shipped separately", "each component", "own vendor price"]}], "no_amounts": false},
     "layer": "actual_case_answerability",
     "question": "How was the P-02486 bottle and cap cost allocated, and what does the proposal correct?",
     "criterion": "The proposal says the cost of the bottle and its cap was assigned to the bottle alone, and proposes allocating it to each component (P4, proposed, pending Vince). The P-02486 item records are not supplied (MO-02), so the allocation is the proposal's claim, unverified. An answer quotes no price and does not reconstruct the allocation from other records.",
@@ -432,6 +433,7 @@
    },
    {
     "id": "PS-A2",
+    "expected": {"document": "98fb0accf8525793dd3b0ac0d5239056d5415d00b6395f47201783b70b9ac351", "document_name": "New Packaging Sourcing — Proposal for Review.md", "answerability": "answerable", "facts": [{"value": "before a PO", "quote": "PI-SWC025623 arrived before a PO was raised in the system, and its prices don't match the item.", "accept": ["before the PO", "prices don't match", "price mismatch", "prices do not match"]}], "no_amounts": true},
     "layer": "actual_case_answerability",
     "question": "What mismatches does the proposal report on PI-SWC025623?",
     "criterion": "The proposal cites mismatches between PI-SWC025623 and what was ordered; the PI is not supplied (MO-03), so the mismatches and the PO they belong to are unverified. An answer attributes them to the proposal, lists no amounts and treats a PI-to-PO join as unseen.",
@@ -447,6 +449,7 @@
    },
    {
     "id": "PS-A3",
+    "expected": {"document": "98fb0accf8525793dd3b0ac0d5239056d5415d00b6395f47201783b70b9ac351", "document_name": "New Packaging Sourcing — Proposal for Review.md", "answerability": "answerable", "facts": [{"value": "Sage", "quote": "Today either role asks finance, and the deposit is recorded only in Sage."}], "no_amounts": false},
     "layer": "actual_case_answerability",
     "question": "Which vendor deposit does the proposal cite, and was it recorded as a prepayment on the purchase order?",
     "criterion": "The proposal cites a vendor deposit; the deposit record is not supplied (MO-04), and the Sept 30 map says deposits are booked in BC by hand without a PO prepayment (unverified). An answer reports whether it was recorded as a prepayment as unknown and states no amount.",
@@ -463,6 +466,7 @@
    },
    {
     "id": "PS-A4",
+    "expected": {"document": "98fb0accf8525793dd3b0ac0d5239056d5415d00b6395f47201783b70b9ac351", "document_name": "New Packaging Sourcing — Proposal for Review.md", "answerability": "partial", "facts": [], "no_amounts": false},
     "layer": "actual_case_answerability",
     "question": "Which originals of this case exist, and which have been read?",
     "criterion": "Pinned: the proposal file (item id, SHA-256 and size from the advisory record), watched in /Ontology UseCases; its body was read by the Dot's intake, which exported minimised facts only, and the live verifier's discovered receipt of 17 Oct 2026 lists the item with its body unavailable, so nothing here was read from it. Not supplied (missing_originals): the fuller map the proposal links (not fetched), the P-02486 item records, PI-SWC025623, the deposit record and the three sign-offs. An answer lists each unread original with its state and infers nothing about its content.",

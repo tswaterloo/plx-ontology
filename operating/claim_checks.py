@@ -2127,6 +2127,16 @@ def figure_words(text: str) -> list[tuple[Decimal, int, int, str]]:
     return out
 
 
+def unit_word(word: str) -> str | None:
+    """The unit of measure one written word means by the claim checks' unit table
+    (``_PAGE_UNITS``: "kilo" is kg, "lbs" lb), None for any other word, a percent or the
+    count words unit(s). A fold of spellings only: no unit is ever converted to another."""
+    if not isinstance(word, str) or word.casefold() in ("unit", "units"):
+        return None
+    unit = _PAGE_UNITS.get(" ".join(word.casefold().split()))
+    return None if unit == "percent" else unit
+
+
 def unit_words(text: str) -> list[tuple[Decimal, int, int, str]]:
     """``(value, start, end, unit)`` of each unit word prose ``text`` prints right after a
     figure (``figure_words``; ``_PAGE_UNITS``: "68,160 grams" is g), ``text[start:end]``

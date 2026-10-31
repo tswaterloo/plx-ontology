@@ -1,0 +1,152 @@
+{
+ "format": "plx-why-plan/v1",
+ "id": "decision_basis",
+ "title": "Who decided, when, and on what basis",
+ "description": "The Mission Control approvals, decision records and approval events that name the record, the decider and time of each, and the mail and chats around them, in time order. The verdict is the gated claim stating the decision; a decision without a recorded basis says so, and a reason is never inferred from another record.",
+ "priority": 60,
+ "root_types": [
+  "MCApproval",
+  "PurchaseOrder",
+  "SalesOrder",
+  "AssemblyOrder",
+  "Batch",
+  "Quote",
+  "Receipt",
+  "SupplierInvoice",
+  "PurchaseInvoice"
+ ],
+ "question_terms": [
+  "approv\\w*",
+  "decid\\w*",
+  "decision",
+  "signed off",
+  "sign.?off",
+  "authori[sz]\\w*",
+  "rejected",
+  "declined",
+  "who (?:approved|decided|signed)",
+  "on what basis",
+  "basis",
+  "justif\\w*"
+ ],
+ "root_events": {
+  "MCApproval.requested": {
+   "kind": "record_change",
+   "label": "Approval requested"
+  },
+  "MCApproval.decided": {
+   "kind": "decision",
+   "label": "Approval decided"
+  },
+  "PurchaseOrder.approved": {
+   "kind": "decision",
+   "label": "PO approved"
+  },
+  "Quote.accepted": {
+   "kind": "decision",
+   "label": "Quote accepted"
+  },
+  "Quote.rejected": {
+   "kind": "decision",
+   "label": "Quote rejected"
+  },
+  "AssemblyOrder.cancelled": {
+   "kind": "decision",
+   "label": "Assembly order cancelled"
+  },
+  "Batch.released": {
+   "kind": "decision",
+   "label": "Batch released"
+  }
+ },
+ "links": [
+  {
+   "link": "mentioned_in_mc_approval",
+   "kind": "decision",
+   "label": "Mission Control approval decided",
+   "events": [
+    "MCApproval.decided"
+   ],
+   "who": "decided_by",
+   "tier_floor": "lead",
+   "max": 4
+  },
+  {
+   "link": "decision_records",
+   "kind": "decision",
+   "label": "Decision record",
+   "date_property": "decided_on",
+   "who": "decided_by",
+   "tier_floor": "lead",
+   "max": 4
+  },
+  {
+   "link": "mentioned_in_email",
+   "kind": "communication",
+   "label": "Email",
+   "events": [
+    "Email.received"
+   ],
+   "who": "sender",
+   "tier_floor": "lead",
+   "max": 6
+  },
+  {
+   "link": "mentioned_in_teams_chat_message",
+   "kind": "communication",
+   "label": "Teams chat message",
+   "date_property": "created_at",
+   "who": "from",
+   "tier_floor": "lead",
+   "max": 4
+  },
+  {
+   "link": "mentioned_in_teams_channel_message",
+   "kind": "communication",
+   "label": "Teams channel message",
+   "date_property": "created_at",
+   "who": "from",
+   "tier_floor": "lead",
+   "max": 4
+  }
+ ],
+ "verdict": {
+  "label": "The decision and its basis",
+  "claim_terms": [
+   "approv\\w*",
+   "decid\\w*",
+   "rejected",
+   "declined",
+   "signed",
+   "released",
+   "accepted",
+   "cancel\\w*",
+   "basis",
+   "because",
+   "reason"
+  ],
+  "events": [
+   "MCApproval.decided",
+   "PurchaseOrder.approved",
+   "Quote.accepted",
+   "Quote.rejected",
+   "AssemblyOrder.cancelled",
+   "Batch.released"
+  ],
+  "missing": "The decision and its basis are not in a record you can see"
+ },
+ "next_actions": [
+  {
+   "when": "verdict_missing",
+   "text": "Ask the approver named above to record the decision and its basis on {record}."
+  },
+  {
+   "when": "no_communication",
+   "text": "Ask the decider to confirm the basis for {record} in writing, so it is on record."
+  },
+  {
+   "when": "always",
+   "text": "Open the decision step above to read the decider's own note before relying on it."
+  }
+ ]
+}

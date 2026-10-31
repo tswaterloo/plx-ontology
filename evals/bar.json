@@ -1,0 +1,10 @@
+{
+ "format": "plx-eval-bar/v1",
+ "note": "The 'good enough to trust' bar the accuracy report (scripts/eval_report.py) checks. Denominator: every gradable card this checkout compiles; a card no run scored is never correct. A metric with no data fails.",
+ "targets": [
+  {"id": "correct_with_evidence", "label": "Correct with evidence (audited) >= 90%", "metric": "correct_with_evidence_audited_rate", "op": ">=", "value": 0.9},
+  {"id": "confident_wrong", "label": "Confident wrong <= 1%", "metric": "confident_wrong_rate", "op": "<=", "value": 0.01},
+  {"id": "abstentions_justified", "label": "Every abstention points to truly missing data", "metric": "abstentions_justified_rate", "op": "==", "value": 1.0},
+  {"id": "stable", "label": "Stable across 2 runs (same outcome; every gradable card compared)", "metric": "stability_rate", "op": ">=", "value": 0.95, "min": {"metric": "stability_compared_share", "op": ">=", "value": 0.9}}
+ ]
+}

@@ -68,7 +68,7 @@ _DDL = """
 CREATE TABLE IF NOT EXISTS request (
   id INTEGER PRIMARY KEY, at TEXT NOT NULL, session_ref TEXT, employee TEXT,
   method TEXT NOT NULL, route TEXT NOT NULL, status INTEGER NOT NULL, refusal TEXT,
-  object_type TEXT, panels TEXT, proof TEXT)
+  object_type TEXT, panels TEXT, proof TEXT, access TEXT)
 """
 # How a session was proven (``operating.session_identity`` PROOF_*); anything else "other".
 PROOF_ENTRA = "entra_access_token"
@@ -79,11 +79,13 @@ _ROUTES = frozenset({"/api/session", "/api/cases", "/api/objects", "/api/object"
                      "/api/object-source", "/api/investigate", "/api/object-actions",
                      "/api/object-case", "/api/object-review", "/api/object-follow-up",
                      "/api/object-action", "/api/object-ask", "/api/investigate-record",
-                     "/api/object-replay", "/api/objective", "/api/status-card"})
+                     "/api/object-replay", "/api/objective", "/api/status-card",
+                     "/api/ask", "/api/source"})
 _PREFIXES = ("/api/case-citation", "/api/case-original-pdf", "/api/case-document-metadata",
              "/api/case/")
 _CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_ACCESS = re.compile(r"^full_read:[a-z]+(\+[a-z]+)*(:mail_[a-z_]+)?$")
 _PRINCIPAL = re.compile(r"^employee:[0-9a-f-]{36}$")
 # Rows kept: each write prunes everything but the newest ones (a session is a few
 # hundred requests; the journal never grows without bound on the host's volume).
@@ -252,6 +254,8 @@ class SessionJournal:
             db.execute(_DDL)
             if "proof" not in _columns(db):   # a journal written before proofs were kept
                 db.execute("ALTER TABLE request ADD COLUMN proof TEXT")
+            if "access" not in _columns(db):  # written before full-read access was kept
+                db.execute("ALTER TABLE request ADD COLUMN access TEXT")
 
     @classmethod
     def for_state_dir(cls, state_dir: str | Path) -> "SessionJournal":
@@ -265,6 +269,9 @@ class SessionJournal:
         session_ref = getattr(session, "session_ref", None)
         employee = getattr(getattr(session, "employee", None), "principal", None)
         proof = getattr(session, "proof", None)
+        # Served under a declared full-read grant: its enum code (SessionIdentity.access).
+        access = getattr(session, "access", None)
+        access = access if isinstance(access, str) and _ACCESS.match(access) else None
         counter = _COUNTERS.get(route)
         panels = counter(value) if counter is not None and status == 200 else None
         row = (datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
@@ -275,11 +282,11 @@ class SessionJournal:
                refusal if isinstance(refusal, str) and _CODE.match(refusal) else
                (None if refusal is None else "other"),
                object_type_of(object_id), None if panels is None else json.dumps(panels),
-               None if session is None else proof if proof in _PROOFS else "other")
+               None if session is None else proof if proof in _PROOFS else "other", access)
         with closing(sqlite3.connect(self.path, timeout=LOCK_WAIT_SECONDS)) as db, db:
             cursor = db.execute("INSERT INTO request(at, session_ref, employee, method, route, "
-                                "status, refusal, object_type, panels, proof) "
-                                "VALUES (?,?,?,?,?,?,?,?,?,?)", row)
+                                "status, refusal, object_type, panels, proof, access) "
+                                "VALUES (?,?,?,?,?,?,?,?,?,?,?)", row)
             db.execute("DELETE FROM request WHERE id <= ?", (cursor.lastrowid - KEEP_ROWS,))
 
     def minted_by(self) -> dict[str, str]:
@@ -297,8 +304,9 @@ class SessionJournal:
         unauthenticated: dict[str, int] = {}
         with closing(sqlite3.connect(self.path)) as db:
             rows = db.execute("SELECT at, session_ref, method, route, status, refusal, "
-                              "object_type, panels, proof FROM request ORDER BY id").fetchall()
-        for at, ref, method, route, status, refusal, object_type, panels, proof in rows:
+                              "object_type, panels, proof, access FROM request ORDER BY id"
+                              ).fetchall()
+        for at, ref, method, route, status, refusal, object_type, panels, proof, access in rows:
             if ref is None:
                 key = f"{status}:{refusal or 'none'}"
                 unauthenticated[key] = unauthenticated.get(key, 0) + 1
@@ -308,7 +316,9 @@ class SessionJournal:
             entry = sessions.setdefault(ref, {
                 "minted_by": minters.get(ref, "unrecorded"), "first_at": at, "last_at": at, "requests": 0, "by_route": {},
                 "objects_opened": {}, "panel_items": {}, "views_with": {}, "refused": {},
-                "proofs": {}})
+                "proofs": {}, "access": {}})
+            if access is not None:
+                entry["access"][access] = entry["access"].get(access, 0) + 1
             entry["last_at"] = at
             entry["requests"] += 1
             proof = proof or "unrecorded"

@@ -18,15 +18,23 @@ TTL=${1:-120}
 CHECKOUT=${PLX_DEPLOY_CHECKOUT:-/data/scratch/wt/deploy}
 STATE=${PLX_DEPLOY_STATE:-/data/plx-state}
 CFG=${PLX_DEPLOY_CONFIG:-$HOME/.config/plx}
+# The reader (a variable holding the claims JSON) and the host config directory; for the
+# full-read demo: PLX_DEPLOY_READER_ENV=PLX_EVAL_READER_VINCE (from reader-vince.env) and
+# PLX_DEPLOY_HOST_DIR=$CFG/workbench-host-vince.
+READER_ENV=${PLX_DEPLOY_READER_ENV:-PLX_EVAL_READER}
+HOST_DIR=${PLX_DEPLOY_HOST_DIR:-$CFG/workbench-host}
 HOST=$(sed -n 's/^PLX_APP_HOST=//p' /etc/plx/workbench-caddy.env)
 [ -n "$HOST" ] || { echo "PLX_APP_HOST missing in /etc/plx/workbench-caddy.env" >&2; exit 2; }
 umask 077
 cd "$CHECKOUT"
-set -a; . "$CFG/plx.env"; . "$CFG/workbench-session.env"; set +a
+set -a; . "$CFG/plx.env"; . "$CFG/workbench-session.env"
+# The full-read reader's claims only when that reader was asked for.
+if [ -n "${PLX_DEPLOY_READER_ENV:-}" ] && [ -f "$CFG/reader-vince.env" ]; then . "$CFG/reader-vince.env"; fi
+set +a
 TICKET_FILE="$CFG/workbench-ticket.url"
 rm -f "$TICKET_FILE"
 /data/venv/bin/python3 -m operator_ui.console_ticket mint --state-dir "$STATE" \
-    --host-config "$CFG/workbench-host/host.json" --reader-env PLX_EVAL_READER \
+    --host-config "$HOST_DIR/host.json" --reader-env "$READER_ENV" \
     --ttl-minutes "$TTL" --out "$TICKET_FILE"
 # Re-point the console URL (http://127.0.0.1:PORT/#access=T) at the app (#ticket=T).
 HOST="$HOST" TICKET_FILE="$TICKET_FILE" OUT="$CFG/workbench-access-link" /data/venv/bin/python3 -I -c '

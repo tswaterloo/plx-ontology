@@ -1,0 +1,148 @@
+{
+ "format": "plx-why-plan/v1",
+ "id": "hold_release",
+ "title": "Why a batch or lot is on hold, not released or expired",
+ "description": "The batch's or lot's own test, quality-status and release events, the receipt that brought a lot in, the decision records and Mission Control approvals that name it, and the mail and chats about it, in time order. The verdict is the gated claim stating its hold, release or expiry state; else the last release event as recorded; else it is not established.",
+ "priority": 10,
+ "root_types": [
+  "Batch",
+  "Lot"
+ ],
+ "question_terms": [
+  "hold",
+  "held",
+  "on hold",
+  "quarantine\\w*",
+  "releas\\w*",
+  "expir\\w*",
+  "test\\w*",
+  "fail\\w*",
+  "pass\\w*",
+  "qc",
+  "quality",
+  "disposition",
+  "extend\\w*",
+  "waiver"
+ ],
+ "root_events": {
+  "Batch.manufactured": {
+   "kind": "record_change",
+   "label": "Batch made"
+  },
+  "Batch.tested": {
+   "kind": "record_change",
+   "label": "Batch tested"
+  },
+  "Batch.quality_status_changed": {
+   "kind": "decision",
+   "label": "Quality status changed"
+  },
+  "Batch.released": {
+   "kind": "decision",
+   "label": "Batch released"
+  }
+ },
+ "links": [
+  {
+   "link": "received_in",
+   "kind": "record_change",
+   "label": "Lot received",
+   "events": [
+    "Receipt.received",
+    "Receipt.fm_received",
+    "Receipt.posted"
+   ],
+   "max": 3
+  },
+  {
+   "link": "decision_records",
+   "kind": "decision",
+   "label": "Decision record",
+   "date_property": "decided_on",
+   "who": "decided_by",
+   "tier_floor": "lead",
+   "max": 4
+  },
+  {
+   "link": "mentioned_in_mc_approval",
+   "kind": "decision",
+   "label": "Mission Control approval decided",
+   "events": [
+    "MCApproval.decided"
+   ],
+   "who": "decided_by",
+   "tier_floor": "lead",
+   "max": 4
+  },
+  {
+   "link": "mentioned_in_email",
+   "kind": "communication",
+   "label": "Email",
+   "events": [
+    "Email.received"
+   ],
+   "who": "sender",
+   "tier_floor": "lead",
+   "max": 6
+  },
+  {
+   "link": "mentioned_in_teams_chat_message",
+   "kind": "communication",
+   "label": "Teams chat message",
+   "date_property": "created_at",
+   "who": "from",
+   "tier_floor": "lead",
+   "max": 4
+  },
+  {
+   "link": "mentioned_in_teams_channel_message",
+   "kind": "communication",
+   "label": "Teams channel message",
+   "date_property": "created_at",
+   "who": "from",
+   "tier_floor": "lead",
+   "max": 4
+  }
+ ],
+ "verdict": {
+  "label": "Hold or release state",
+  "claim_terms": [
+   "on hold",
+   "held",
+   "quarantin\\w*",
+   "released",
+   "not released",
+   "expired",
+   "expir\\w*",
+   "passed",
+   "failed",
+   "rejected",
+   "approved",
+   "extended",
+   "contaminat\\w*",
+   "out of spec\\w*",
+   "oos",
+   "non.?conform\\w*",
+   "retest\\w*"
+  ],
+  "events": [
+   "Batch.released",
+   "Batch.quality_status_changed"
+  ],
+  "missing": "The hold or release decision is not in a record you can see"
+ },
+ "next_actions": [
+  {
+   "when": "verdict_missing",
+   "text": "Ask Quality for the hold or release decision on {record}, pointing to the test steps above."
+  },
+  {
+   "when": "no_communication",
+   "text": "Confirm the decision on {record} with Quality in writing, so the reason is on record."
+  },
+  {
+   "when": "always",
+   "text": "Check that the steps above are the latest before acting on {record}."
+  }
+ ]
+}

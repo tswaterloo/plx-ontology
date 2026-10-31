@@ -775,7 +775,11 @@ def employee_resolver(employee_policy: Path, portal_access: Path | None) -> Any:
         except (ValueError, OSError, UnicodeDecodeError) as error:
             raise ValueError("portal access snapshot is invalid: " + (
                 str(error) if isinstance(error, ValueError) else type(error).__name__)) from None
-    return EmployeePermissionResolver(policy, access)
+    # The people exclusion, as the MCP hosts give it: a full-read grant and the job-title
+    # path apply only while it is usable (unset or invalid: neither grants anything).
+    from integrations.people_exclusion import ReloadingExclusion
+    return EmployeePermissionResolver(policy, access,
+                                      people_exclusion=ReloadingExclusion.from_env(os.environ))
 
 
 if __name__ == "__main__":

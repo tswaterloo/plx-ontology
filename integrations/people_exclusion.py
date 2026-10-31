@@ -270,6 +270,55 @@ class PeopleExclusion:
                           else "later_ask"), "later_ask": LATER_ASK}
 
 
+class ReloadingExclusion:
+    """A ``PeopleExclusion`` re-read from the environment's sources when the list file
+    changes (inode, size, mtime; checked on every ``current()``) or ``ttl`` seconds pass,
+    so an added person applies without a restart. A failed re-read is the unavailable
+    guard (fail closed). Attribute reads go to the current guard."""
+
+    def __init__(self, environ: Mapping[str, str], *, ttl: float = 300.0,
+                 config: Path = CONFIG, clock: Any = None) -> None:
+        import time
+        self._environ = dict(environ)
+        self._ttl, self._config = ttl, config
+        self._clock = clock or time.monotonic
+        self._stamp: Any = None
+        self._at = 0.0
+        self._guard: PeopleExclusion | None = None
+        self.current()
+
+    @classmethod
+    def from_env(cls, environ: Mapping[str, str], **options: Any) -> "ReloadingExclusion":
+        return cls(environ, **options)
+
+    def _file_stamp(self) -> Any:
+        stamps = []
+        for path in (self._environ.get(ENV_FILE), str(self._config)):
+            try:
+                info = Path(path).expanduser().stat() if path else None
+            except OSError:
+                info = None
+            stamps.append(None if info is None else
+                          (info.st_ino, info.st_size, info.st_mtime_ns))
+        return tuple(stamps)
+
+    def current(self) -> PeopleExclusion:
+        now, stamp = self._clock(), self._file_stamp()
+        if self._guard is None or stamp != self._stamp or now - self._at >= self._ttl:
+            try:
+                self._guard = PeopleExclusion.from_env(self._environ, config=self._config)
+            except Exception:  # noqa: BLE001 - an unreadable list refuses everything
+                self._guard = PeopleExclusion(unavailable="excluded_people_file_unreadable")
+            self._stamp, self._at = stamp, now
+        return self._guard
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.current(), name)
+
+    def __repr__(self) -> str:
+        return f"ReloadingExclusion({self.current()!r})"
+
+
 def from_api(api: Any) -> PeopleExclusion:
     """The guard ``build_graph`` attached to ``api``; a missing one is unavailable."""
     found = getattr(api, "people", None)

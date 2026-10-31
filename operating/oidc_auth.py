@@ -493,6 +493,7 @@ def entra_session(resolver: EmployeePermissionResolver, claims: Mapping[str, Any
         employee=principal, principals=frozenset({principal.principal}),
         expires_at=int(claims["exp"]), client=client,
         session_ref=hashlib.sha256(str(entry["jti"]).encode("utf-8")).hexdigest(),
+        access=entitlement.full_read_code(),
         identities=frozenset({i for i in entitlement.source_identities
                               if isinstance(i, str) and i.strip()
                               and not i.startswith("group:")} | {principal.object_id}))

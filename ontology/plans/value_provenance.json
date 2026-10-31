@@ -1,0 +1,1026 @@
+{
+ "$schema": "_plan.schema.json",
+ "format": "plx-investigate-plan/v1",
+ "id": "value_provenance",
+ "families": [
+  "F26"
+ ],
+ "title": "The vendor message that stated a price, unit, MOQ or lead time, against the system",
+ "description": "The vendor email, attachment or Teams message that stated a commercial term of a purchase order line, purchase order, supplier item, item or supplier (price per unit as written, e.g. $3.85/kg, its currency, MOQ, lead time, validity), each quoted exactly from the cited text and compared with the system's value: equal, a conflict with both values shown, or not comparable (another unit or currency is never converted). Read as this reader may read it; nothing found is a typed gap.",
+ "root": {
+  "object_types": [
+   "PurchaseOrderLine",
+   "PurchaseOrder",
+   "SupplierItem",
+   "Product",
+   "Supplier"
+  ],
+  "fallback_filters": [
+   {
+    "object_type": "PurchaseOrder",
+    "property": "po_number"
+   },
+   {
+    "object_type": "Supplier",
+    "property": "code"
+   },
+   {
+    "object_type": "Supplier",
+    "property": "name"
+   },
+   {
+    "object_type": "Product",
+    "property": "code"
+   },
+   {
+    "object_type": "Product",
+    "property": "name"
+   }
+  ]
+ },
+ "step_budget": 128,
+ "max_each": 25,
+ "steps": [
+  {
+   "id": "supplier_orders",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "description": "A supplier's purchase orders.",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrder.ordered_from",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "supplier_offers",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "description": "A supplier's supplier items.",
+   "args": {
+    "path": [
+     {
+      "link_type": "SupplierItem.offered_by",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "header",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "description": "The purchase order of a line.",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrderLine.line_of",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "lines",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "supplier_orders"
+   ],
+   "bind": "from",
+   "description": "The lines of a purchase order.",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrderLine.line_of",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "line_items",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "lines"
+   ],
+   "bind": "from",
+   "description": "The item each line orders.",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrderLine.for_item",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "offered_item",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "supplier_offers"
+   ],
+   "bind": "from",
+   "description": "The item a supplier item offers.",
+   "args": {
+    "path": [
+     {
+      "link_type": "SupplierItem.for_item",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "supplier",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "header"
+   ],
+   "bind": "from",
+   "description": "The supplier of the order.",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrder.ordered_from",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "offering_supplier",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "description": "The supplier of a supplier item.",
+   "args": {
+    "path": [
+     {
+      "link_type": "SupplierItem.offered_by",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "supplier_items",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "line_items",
+    "offered_item"
+   ],
+   "bind": "from",
+   "description": "The supplier items of the item: the system's price per kg, MOQ and lead time.",
+   "args": {
+    "path": [
+     {
+      "link_type": "SupplierItem.for_item",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "item_suppliers",
+   "tool": "plx.around",
+   "from": "supplier_items",
+   "bind": "from",
+   "description": "Which supplier offers each supplier item (only the order's supplier's are compared).",
+   "args": {
+    "path": [
+     {
+      "link_type": "SupplierItem.offered_by",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "mail_mentions",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "header",
+    "lines",
+    "line_items",
+    "offered_item",
+    "supplier_items",
+    "supplier_orders",
+    "supplier_offers"
+   ],
+   "bind": "from",
+   "description": "Mail naming the record, its order, lines, item or supplier items (mention links: leads).",
+   "args": {
+    "path": [
+     {
+      "link": "mentioned_in_email"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "attachment_mentions",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "header",
+    "lines",
+    "line_items",
+    "offered_item",
+    "supplier_items",
+    "supplier_orders",
+    "supplier_offers"
+   ],
+   "bind": "from",
+   "description": "Mail attachments naming them (a quote PDF; mention links: leads).",
+   "args": {
+    "path": [
+     {
+      "link": "mentioned_in_attachment"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "chat_mentions",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "header",
+    "lines",
+    "line_items",
+    "offered_item",
+    "supplier_items",
+    "supplier_orders",
+    "supplier_offers"
+   ],
+   "bind": "from",
+   "description": "Teams chat messages naming them (mention links: leads).",
+   "args": {
+    "path": [
+     {
+      "link": "mentioned_in_teams_chat_message"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "channel_mentions",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "header",
+    "lines",
+    "line_items",
+    "offered_item",
+    "supplier_items",
+    "supplier_orders",
+    "supplier_offers"
+   ],
+   "bind": "from",
+   "description": "Teams channel messages naming them (mention links: leads).",
+   "args": {
+    "path": [
+     {
+      "link": "mentioned_in_teams_channel_message"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "vendor_mail",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "supplier",
+    "offering_supplier"
+   ],
+   "bind": "from",
+   "description": "Mail a person linked to the supplier as its sender (a reviewed link).",
+   "args": {
+    "path": [
+     {
+      "link": "sent_emails"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "attachment_mail",
+   "tool": "plx.around",
+   "from": "attachment_mentions",
+   "bind": "from",
+   "description": "The message an attachment naming the record came with.",
+   "args": {
+    "path": [
+     {
+      "link_type": "Attachment.attached_to",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "mail_attachments",
+   "tool": "plx.around",
+   "from": [
+    "mail_mentions",
+    "vendor_mail"
+   ],
+   "bind": "from",
+   "description": "The attachments of that mail (a quote PDF).",
+   "args": {
+    "path": [
+     {
+      "link_type": "Attachment.attached_to",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "order_reads",
+   "tool": "plx.object",
+   "from": [
+    "root",
+    "header",
+    "supplier_orders"
+   ],
+   "bind": "object_id",
+   "object_types": [
+    "PurchaseOrder"
+   ],
+   "args": {
+    "properties": [
+     "po_number",
+     "currency"
+    ]
+   }
+  },
+  {
+   "id": "line_reads",
+   "tool": "plx.object",
+   "from": [
+    "root",
+    "lines"
+   ],
+   "bind": "object_id",
+   "object_types": [
+    "PurchaseOrderLine"
+   ],
+   "args": {
+    "properties": [
+     "unit_price",
+     "uom",
+     "description"
+    ]
+   }
+  },
+  {
+   "id": "item_reads",
+   "tool": "plx.object",
+   "from": [
+    "root",
+    "line_items",
+    "offered_item"
+   ],
+   "bind": "object_id",
+   "object_types": [
+    "Product"
+   ],
+   "args": {
+    "properties": [
+     "code",
+     "name"
+    ]
+   }
+  },
+  {
+   "id": "supplier_reads",
+   "tool": "plx.object",
+   "from": [
+    "root",
+    "supplier",
+    "offering_supplier",
+    "item_suppliers"
+   ],
+   "bind": "object_id",
+   "object_types": [
+    "Supplier"
+   ],
+   "args": {
+    "properties": [
+     "name",
+     "website",
+     "currency",
+     "lead_time_days"
+    ]
+   }
+  },
+  {
+   "id": "supplier_item_reads",
+   "tool": "plx.object",
+   "from": [
+    "root",
+    "supplier_items",
+    "supplier_offers"
+   ],
+   "bind": "object_id",
+   "object_types": [
+    "SupplierItem"
+   ],
+   "args": {
+    "properties": [
+     "supplier_item_number",
+     "system_cost_per_kg",
+     "entry_cost",
+     "purchase_uom",
+     "min_order",
+     "lead_time_days"
+    ]
+   }
+  },
+  {
+   "id": "mail_reads",
+   "tool": "plx.object",
+   "from": [
+    "mail_mentions",
+    "vendor_mail",
+    "attachment_mail"
+   ],
+   "bind": "object_id",
+   "object_types": [
+    "Email"
+   ],
+   "max_each": 40,
+   "args": {
+    "properties": [
+     "sent_at",
+     "received_at",
+     "sender",
+     "subject",
+     "conversation_id"
+    ]
+   }
+  },
+  {
+   "id": "attachment_reads",
+   "tool": "plx.object",
+   "from": [
+    "attachment_mentions",
+    "mail_attachments"
+   ],
+   "bind": "object_id",
+   "object_types": [
+    "Attachment"
+   ],
+   "max_each": 40,
+   "args": {
+    "properties": [
+     "name"
+    ]
+   }
+  },
+  {
+   "id": "chat_reads",
+   "tool": "plx.object",
+   "from": "chat_mentions",
+   "bind": "object_id",
+   "object_types": [
+    "TeamsChatMessage"
+   ],
+   "max_each": 40,
+   "args": {
+    "properties": [
+     "created_at",
+     "from"
+    ]
+   }
+  },
+  {
+   "id": "channel_reads",
+   "tool": "plx.object",
+   "from": "channel_mentions",
+   "bind": "object_id",
+   "object_types": [
+    "TeamsChannelMessage"
+   ],
+   "max_each": 40,
+   "args": {
+    "properties": [
+     "created_at",
+     "from"
+    ]
+   }
+  }
+ ],
+ "evidence": [
+  {
+   "name": "po_number",
+   "kind": "property",
+   "object_type": "PurchaseOrder",
+   "properties": [
+    "po_number"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "po_currency",
+   "kind": "property",
+   "object_type": "PurchaseOrder",
+   "properties": [
+    "currency"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "line_price",
+   "kind": "property",
+   "object_type": "PurchaseOrderLine",
+   "properties": [
+    "unit_price"
+   ],
+   "omit_empty": true,
+   "description": "The line's unit price, per its unit of measure, in the order's currency."
+  },
+  {
+   "name": "line_uom",
+   "kind": "property",
+   "object_type": "PurchaseOrderLine",
+   "properties": [
+    "uom"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "line_description",
+   "kind": "property",
+   "object_type": "PurchaseOrderLine",
+   "properties": [
+    "description"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "item_code",
+   "kind": "property",
+   "object_type": "Product",
+   "properties": [
+    "code"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "item_name",
+   "kind": "property",
+   "object_type": "Product",
+   "properties": [
+    "name"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "supplier_name",
+   "kind": "property",
+   "object_type": "Supplier",
+   "properties": [
+    "name"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "supplier_website",
+   "kind": "property",
+   "object_type": "Supplier",
+   "properties": [
+    "website"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "supplier_currency",
+   "kind": "property",
+   "object_type": "Supplier",
+   "properties": [
+    "currency"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "supplier_lead_time",
+   "kind": "property",
+   "object_type": "Supplier",
+   "properties": [
+    "lead_time_days"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "si_number",
+   "kind": "property",
+   "object_type": "SupplierItem",
+   "properties": [
+    "supplier_item_number"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "si_cost_per_kg",
+   "kind": "property",
+   "object_type": "SupplierItem",
+   "properties": [
+    "system_cost_per_kg"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "si_entry_cost",
+   "kind": "property",
+   "object_type": "SupplierItem",
+   "properties": [
+    "entry_cost"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "si_uom",
+   "kind": "property",
+   "object_type": "SupplierItem",
+   "properties": [
+    "purchase_uom"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "si_moq",
+   "kind": "property",
+   "object_type": "SupplierItem",
+   "properties": [
+    "min_order"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "si_lead_time",
+   "kind": "property",
+   "object_type": "SupplierItem",
+   "properties": [
+    "lead_time_days"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "mail_time",
+   "kind": "property",
+   "object_type": "Email",
+   "properties": [
+    "sent_at",
+    "received_at"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "mail_sender",
+   "kind": "property",
+   "object_type": "Email",
+   "properties": [
+    "sender"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "mail_subject",
+   "kind": "property",
+   "object_type": "Email",
+   "properties": [
+    "subject"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "mail_conversation",
+   "kind": "property",
+   "object_type": "Email",
+   "properties": [
+    "conversation_id"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "attachment_name",
+   "kind": "property",
+   "object_type": "Attachment",
+   "properties": [
+    "name"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "teams_time",
+   "kind": "property",
+   "object_type": "TeamsChatMessage",
+   "properties": [
+    "created_at"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "teams_sender",
+   "kind": "property",
+   "object_type": "TeamsChatMessage",
+   "properties": [
+    "from"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "channel_time",
+   "kind": "property",
+   "object_type": "TeamsChannelMessage",
+   "properties": [
+    "created_at"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "channel_sender",
+   "kind": "property",
+   "object_type": "TeamsChannelMessage",
+   "properties": [
+    "from"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "stated",
+   "kind": "compute",
+   "required": true,
+   "engine": "value_provenance",
+   "description": "Each term a vendor message states, quoted with its place in the cited text, and its comparison with the system value.",
+   "engine_args": {
+    "system": {
+     "po": [
+      "po_number"
+     ],
+     "currency": [
+      "po_currency",
+      "supplier_currency"
+     ],
+     "line_price": [
+      "line_price"
+     ],
+     "line_uom": [
+      "line_uom"
+     ],
+     "line_description": [
+      "line_description"
+     ],
+     "item": [
+      "item_code",
+      "item_name"
+     ],
+     "supplier": [
+      "supplier_name"
+     ],
+     "website": [
+      "supplier_website"
+     ],
+     "supplier_lead_time": [
+      "supplier_lead_time"
+     ],
+     "si_number": [
+      "si_number"
+     ],
+     "si_cost_per_kg": [
+      "si_cost_per_kg"
+     ],
+     "si_entry_cost": [
+      "si_entry_cost"
+     ],
+     "si_uom": [
+      "si_uom"
+     ],
+     "si_moq": [
+      "si_moq"
+     ],
+     "si_lead_time": [
+      "si_lead_time"
+     ]
+    },
+    "documents": {
+     "time": [
+      "mail_time",
+      "teams_time",
+      "channel_time"
+     ],
+     "sender": [
+      "mail_sender",
+      "teams_sender",
+      "channel_sender"
+     ],
+     "subject": [
+      "mail_subject"
+     ],
+     "conversation": [
+      "mail_conversation"
+     ],
+     "attachment": [
+      "attachment_name"
+     ]
+    },
+    "links": {
+     "attached_to": "Attachment.attached_to",
+     "line_of": "PurchaseOrderLine.line_of",
+     "for_item": [
+      "PurchaseOrderLine.for_item",
+      "SupplierItem.for_item"
+     ],
+     "offered_by": "SupplierItem.offered_by",
+     "ordered_from": "PurchaseOrder.ordered_from"
+    }
+   }
+  }
+ ]
+}

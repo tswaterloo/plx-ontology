@@ -60,7 +60,7 @@ class ScoreTests(unittest.TestCase):
                              reported)
             # 2400 contradicts its cited row (2350): the claim gate fails it, not the bound
             self.assertEqual(result["passed"], reported == "2350", reported)
-        self.assertEqual(result["scorer"], "plx-eval-scorer/25")
+        self.assertEqual(result["scorer"], "plx-eval-scorer/26")
 
     def test_a_claim_value_unstated_gate_failure_blocks_like_the_other_gate_codes(self):
         """The claim gate's claim_value_unstated (a passing text, enum or date claim whose

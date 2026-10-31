@@ -198,6 +198,12 @@ export type components = {
     schemas: {
         /** AnswerPayload */
         AnswerPayload: {
+            /**
+             * Access Label
+             * @description 'Viewing with full-read access' when the answer was served under the reader's declared full-read grant.
+             * @default null
+             */
+            access_label: string | null;
             /** Answer Id */
             answer_id: string;
             /** Conflicts */
@@ -224,6 +230,8 @@ export type components = {
              * @enum {string}
              */
             outcome: "answered" | "partial" | "not_found" | "abstained" | "refused";
+            /** @description A customer's profitability and why an order lost money, when the question asks it (optional: older clients ignore it). */
+            profitability?: components["schemas"]["Profitability"] | null;
             /** Question */
             question: string;
             /**
@@ -231,6 +239,8 @@ export type components = {
              * @description Records the answer is about.
              */
             subjects?: components["schemas"]["ObjectRef"][];
+            /** @description How we know (optional: older clients ignore it). */
+            trail?: components["schemas"]["EvidenceTrail"] | null;
         };
         /** AskRequest */
         AskRequest: {
@@ -318,6 +328,102 @@ export type components = {
             /** Why */
             why: string;
         };
+        /** CostBreakdown */
+        CostBreakdown: {
+            /** @default null */
+            booked_cost: components["schemas"]["Money"] | null;
+            /** Cost Sources */
+            cost_sources?: components["schemas"]["CostSource"][];
+            /**
+             * Date
+             * @default null
+             */
+            date: string | null;
+            /** Drivers */
+            drivers?: string[];
+            /** Gaps */
+            gaps?: components["schemas"]["NotFound"][];
+            /** Lines */
+            lines?: components["schemas"]["CostLine"][];
+            /** @default null */
+            margin: components["schemas"]["Money"] | null;
+            /**
+             * Margin Pct
+             * @default null
+             */
+            margin_pct: string | null;
+            order: components["schemas"]["ObjectRef"];
+            /** @default null */
+            revenue: components["schemas"]["Money"] | null;
+        };
+        /** CostLine */
+        CostLine: {
+            /** @default null */
+            booked_cost: components["schemas"]["Money"] | null;
+            /**
+             * Label
+             * @description The item, e.g. 'item FG-9 (Tube 50 ml)'.
+             */
+            label: string;
+            /** @default null */
+            margin: components["schemas"]["Money"] | null;
+            /**
+             * Quantity
+             * @default null
+             */
+            quantity: string | null;
+            /** @default null */
+            revenue: components["schemas"]["Money"] | null;
+            /**
+             * Share Of Cost Pct
+             * @default null
+             */
+            share_of_cost_pct: string | null;
+            /** Sources */
+            sources?: components["schemas"]["Source"][];
+            /**
+             * Unit
+             * @default null
+             */
+            unit: string | null;
+            /**
+             * Unit Cost
+             * @description Booked cost per unit, decimal string.
+             * @default null
+             */
+            unit_cost: string | null;
+            /**
+             * Unit Price
+             * @description Revenue per unit, decimal string.
+             * @default null
+             */
+            unit_price: string | null;
+        };
+        /** CostSource */
+        CostSource: {
+            /** @default null */
+            amount: components["schemas"]["Money"] | null;
+            /**
+             * Detail
+             * @default null
+             */
+            detail: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "item_ledger" | "credit_memo" | "return" | "material_po" | "quote";
+            /** Label */
+            label: string;
+            /**
+             * Per Unit
+             * @description e.g. '$16.00 CAD/PCS goods cost'.
+             * @default null
+             */
+            per_unit: string | null;
+            /** Sources */
+            sources?: components["schemas"]["Source"][];
+        };
         /** DevLoginRequest */
         DevLoginRequest: {
             /**
@@ -370,6 +476,74 @@ export type components = {
         /** ErrorResponse */
         ErrorResponse: {
             error: components["schemas"]["ErrorBody"];
+        };
+        /** EtaCheck */
+        EtaCheck: {
+            /** @description The confirmation (or the lead) that says so, when the reader can open it. */
+            source?: components["schemas"]["Source"] | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "confirmed" | "promises_disagree" | "lead_only" | "no_confirmation" | "no_confirmation_found" | "not_determined" | "withheld" | "not_applicable";
+            /**
+             * Text
+             * @description Is the ETA backed by a vendor confirmation, in words.
+             */
+            text: string;
+        };
+        /**
+         * EvidenceTrail
+         * @description How we know: the steps, records and messages that led to the answer, each opening
+         *     its source; a purchase order's lateness trail, a customer order's materials, or the
+         *     answer's dated, checked claims.
+         */
+        EvidenceTrail: {
+            /**
+             * Complete
+             * @description kind why: false when only the latest steps are shown or a read did not finish.
+             */
+            complete?: boolean | null;
+            /** Gaps */
+            gaps?: components["schemas"]["TrailGap"][];
+            /**
+             * Hidden Message
+             * @description e.g. '2 more steps in places you can't open.'
+             */
+            hidden_message?: string | null;
+            /**
+             * Hidden Steps
+             * @default 0
+             */
+            hidden_steps: number;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "purchase_order" | "materials" | "claims" | "why";
+            /** Materials */
+            materials?: components["schemas"]["MaterialRow"][];
+            /**
+             * May Hide More
+             * @description kind why: a source this reader can't fully read may hold more steps (not counted).
+             */
+            may_hide_more?: boolean | null;
+            /** @description kind why: a suggested next step; nothing is sent. */
+            next_action?: components["schemas"]["NextAction"] | null;
+            /**
+             * Plan
+             * @description kind why: the why plan that built it (operating/why_trail.py).
+             */
+            plan?: string | null;
+            /**
+             * Steps
+             * @description kind claims: the answer's dated claims.
+             */
+            steps?: components["schemas"]["TrailStep"][];
+            /** Title */
+            title: string;
+            /** Trails */
+            trails?: components["schemas"]["PoTrail"][];
         };
         /** Fact */
         Fact: {
@@ -572,8 +746,26 @@ export type components = {
             /** Ok */
             ok: boolean;
         };
+        /** MaterialRow */
+        MaterialRow: {
+            assembly: components["schemas"]["ObjectRef"];
+            /** Days Late */
+            days_late?: number | null;
+            item: components["schemas"]["ObjectRef"];
+            order?: components["schemas"]["ObjectRef"] | null;
+            po: components["schemas"]["ObjectRef"];
+            /** State */
+            state?: string | null;
+            /** Verdict */
+            verdict?: string | null;
+        };
         /** Me */
         Me: {
+            /**
+             * Access Label
+             * @description Set when this reader views with a declared full-read grant.
+             */
+            access_label?: string | null;
             /**
              * Auth
              * @enum {string}
@@ -631,6 +823,31 @@ export type components = {
              */
             status: "read" | "not_configured" | "unavailable";
         };
+        /** NextAction */
+        NextAction: {
+            /**
+             * Contact
+             * @description Who to ask: the vendor-side sender of a message this reader can open; null otherwise.
+             */
+            contact?: string | null;
+            contact_source?: components["schemas"]["Source"] | null;
+            /**
+             * Rule
+             * @description The rule that suggested it, e.g. no_confirmation, promise_moved, promise_passed.
+             */
+            rule: string;
+            /**
+             * Suggestion Only
+             * @default true
+             * @constant
+             */
+            suggestion_only: true;
+            /**
+             * Text
+             * @description A suggested next step derived only from the trail's facts. A suggestion: nothing is sent or written.
+             */
+            text: string;
+        };
         /** NotFound */
         NotFound: {
             /** What */
@@ -640,6 +857,11 @@ export type components = {
         };
         /** ObjectPage */
         ObjectPage: {
+            /**
+             * Access Label
+             * @description 'Viewing with full-read access' when served under the reader's declared full-read grant.
+             */
+            access_label?: string | null;
             /** Conflicts */
             conflicts?: components["schemas"]["Conflict"][];
             /** Facts */
@@ -670,6 +892,8 @@ export type components = {
             summary: string;
             /** Timeline */
             timeline?: components["schemas"]["TimelineEvent"][];
+            /** @description A purchase order's lateness trail (how we know). */
+            trail?: components["schemas"]["EvidenceTrail"] | null;
             /** Type */
             type: string;
         };
@@ -693,6 +917,32 @@ export type components = {
             /** Text */
             text: string;
         };
+        /** OrderMargin */
+        OrderMargin: {
+            /** @default null */
+            booked_cost: components["schemas"]["Money"] | null;
+            /**
+             * Date
+             * @default null
+             */
+            date: string | null;
+            /**
+             * Gap
+             * @description Why no margin is stated, in words.
+             * @default null
+             */
+            gap: string | null;
+            /** @default null */
+            margin: components["schemas"]["Money"] | null;
+            /**
+             * Margin Pct
+             * @default null
+             */
+            margin_pct: string | null;
+            order: components["schemas"]["ObjectRef"];
+            /** @default null */
+            revenue: components["schemas"]["Money"] | null;
+        };
         /** Person */
         Person: {
             /** Name */
@@ -706,6 +956,119 @@ export type components = {
             role: string;
             /** Sources */
             sources?: components["schemas"]["Source"][];
+        };
+        /** PoTrail */
+        PoTrail: {
+            /** Days Late */
+            days_late?: number | null;
+            eta?: components["schemas"]["EtaCheck"] | null;
+            /**
+             * Hidden Steps
+             * @description Steps in places this reader can't open: counted, never named.
+             * @default 0
+             */
+            hidden_steps: number;
+            /**
+             * May Hide More
+             * @description A source this reader can't fully read may hold more steps (not counted).
+             * @default false
+             */
+            may_hide_more: boolean;
+            next_action?: components["schemas"]["NextAction"] | null;
+            /** Not Found */
+            not_found?: components["schemas"]["NotFound"][];
+            /**
+             * State
+             * @description plx.process lateness state: late, on_time, not_due, undetermined, not_applicable.
+             */
+            state?: string | null;
+            /** Steps */
+            steps?: components["schemas"]["TrailStep"][];
+            subject: components["schemas"]["ObjectRef"];
+            /**
+             * Verdict
+             * @description The verdict and its rule in one sentence.
+             */
+            verdict?: string | null;
+        };
+        /** Profitability */
+        Profitability: {
+            /** @default null */
+            booked_cost: components["schemas"]["Money"] | null;
+            /** @default null */
+            breakdown: components["schemas"]["CostBreakdown"] | null;
+            customer: components["schemas"]["ObjectRef"];
+            /** @default null */
+            margin: components["schemas"]["Money"] | null;
+            /**
+             * Margin Pct
+             * @default null
+             */
+            margin_pct: string | null;
+            /**
+             * @description A suggested next step from the facts only.
+             * @default null
+             */
+            next_action: components["schemas"]["NextAction"] | null;
+            /**
+             * Orders
+             * @description Worst margin first.
+             */
+            orders?: components["schemas"]["OrderMargin"][];
+            /**
+             * Orders Counted
+             * @description Orders whose margin is complete; the totals cover these only.
+             */
+            orders_counted: number;
+            /** Orders In Period */
+            orders_in_period: number;
+            /**
+             * Orders In Period Exact
+             * @description False: orders_in_period is a lower bound.
+             * @default true
+             */
+            orders_in_period_exact: boolean;
+            /**
+             * Orders More
+             * @description Orders read but not listed (the list stops at 30).
+             * @default 0
+             */
+            orders_more: number;
+            /**
+             * Orders Read
+             * @description Orders read; fewer than orders_in_period means no customer total is stated.
+             * @default 0
+             */
+            orders_read: number;
+            /**
+             * Period
+             * @description The period in words, e.g. 'the last 12 months'.
+             */
+            period: string;
+            /**
+             * Period Basis
+             * @description How an order counts in the period.
+             * @default null
+             */
+            period_basis: string | null;
+            /** Period End */
+            period_end: string;
+            /** Period Start */
+            period_start: string;
+            /**
+             * Ranking
+             * @description What the ranking covers, e.g. 'partial: worst of the 60 most recent orders; 214 more in the period not read'.
+             * @default null
+             */
+            ranking: string | null;
+            /** @default null */
+            revenue: components["schemas"]["Money"] | null;
+            /**
+             * Withheld Orders
+             * @description Orders whose figures you may not read: a count only, never named.
+             * @default 0
+             */
+            withheld_orders: number;
         };
         /** RecentQuestion */
         RecentQuestion: {
@@ -764,6 +1127,11 @@ export type components = {
          *     ``/source?handle=<handle>``, which reads this). Not found reads the same as no access.
          */
         SourceView: {
+            /**
+             * Access Label
+             * @description 'Viewing with full-read access' when served under the reader's declared full-read grant.
+             */
+            access_label?: string | null;
             /** As Of */
             as_of?: string | null;
             /**
@@ -871,6 +1239,55 @@ export type components = {
         TokenEvent: {
             /** Text */
             text: string;
+        };
+        /** TrailGap */
+        TrailGap: {
+            /**
+             * Reason
+             * @description The typed gap, e.g. assembly_order_not_linked_to_order_line, line_item_not_recorded, link_lead_only.
+             */
+            reason: string;
+            /**
+             * State
+             * @description absent_in_source (the reader's walk was complete), unknown, or note (a count stated for completeness, e.g. POs already received or closed).
+             */
+            state: string;
+            /** What */
+            what: string;
+            /** Where It Would Live */
+            where_it_would_live: string;
+        };
+        /** TrailStep */
+        TrailStep: {
+            /**
+             * At
+             * @description When it happened (ISO date or time), as the cited record states it; null when the record carries no date.
+             */
+            at?: string | null;
+            /**
+             * Check
+             * @description How the step was checked: read_from_record (a value read from the cited record as this reader), lead (a machine-read reference, e.g. a message naming the PO), computed_from_cited_records (the verdict), text_match (a message or file naming the record by text), not_established (a why verdict no record states), unchecked, or the answer gate's check of a claim.
+             */
+            check: string;
+            /** Detail */
+            detail?: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "due_date" | "po_issued" | "confirmation" | "revision" | "lead" | "follow_up" | "shipped" | "receipt" | "verdict" | "claim" | "decision" | "communication" | "record_change" | "document";
+            /**
+             * Sender
+             * @description A message's sender, only when the people exclusion decides it may be shown.
+             */
+            sender?: string | null;
+            /** @description The record or message the step cites; open_url opens it for this reader. Null only for a verdict that states no date (undetermined). */
+            source?: components["schemas"]["Source"] | null;
+            /**
+             * Title
+             * @description What happened, e.g. 'Vendor confirmed delivery by 2026-07-02'; every date and figure in it is a cited value.
+             */
+            title: string;
         };
         /** UnderstandingEvent */
         UnderstandingEvent: {

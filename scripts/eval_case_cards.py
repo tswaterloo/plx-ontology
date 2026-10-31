@@ -60,6 +60,10 @@ into each item's ``scoring.unscored``, so the scorer itself scores the run ``uns
 (scorer /20, ``evals.score.unscored_mark``; before, only this report's row said so and
 the written score still said ``wrong``); each row is ``unscored`` (a blocked run stays
 ``blocked``), never correct or wrong, and ``unscored`` is counted beside ``blocked``.
+A card carrying its derived ``expected`` answer (scorer /26: facts quoted from one of its
+own pinned documents, ``CARD_AUDIT_KEYS``) is scored by it whatever its layer's mark says;
+its document's byte pin joins ``oracle.derived_from`` and an expected answer read from
+another set's document refuses the card (``card_expected_document_foreign``).
 The admission rule (``evals.admission.admissible``) is not applied: it keeps
 an item out of an *accuracy* set, and this check measures coverage, never accuracy (a
 proposal card has no gold; ``admission`` reports its reason codes for information).
@@ -389,8 +393,12 @@ def card_documents(sets: Mapping[str, tuple[Mapping[str, Any], str]], case: str,
 # card; ``own_document_audited: {date, quotes}`` records the claims an audit judged
 # deserved: each audited claim's ``evals.score.audit_digest`` (its quote, else its value,
 # normalised), under a real ISO date. A claim not listed is surfaced unaudited.
+# ``expected`` (scorer /26, ``evals.score.expected_problems``): the card's answer derived
+# from one of its own pinned documents (facts quoted as written, the answerability that
+# document supports, whether an amount may be stated). A card carrying it is scored by it
+# whatever its layer's UNSCORED mark says (that mark only says no expected answer exists).
 CARD_AUDIT_KEYS = ("unscored", "own_document_evidence", "own_document_note",
-                   "own_document_audited")
+                   "own_document_audited", "expected")
 MAX_NOTE_CHARS = 200
 MAX_AUDITED_QUOTES = 50
 
@@ -423,6 +431,10 @@ def card_scoring(card: Any) -> tuple[dict[str, Any], str | None]:
                 or len(set(quotes)) != len(quotes) or "own_document_disabled" in out:
             return {}, "card_own_document_invalid"
         out["own_document_audited"] = {"date": audit["date"], "quotes": sorted(quotes)}
+    if "expected" in card:
+        if scoring.expected_problems(card["expected"]) or "unscored" in out:
+            return {}, "card_expected_invalid"
+        out["expected"] = {"no_amounts": False, **card["expected"]}
     return out, None
 
 
@@ -679,7 +691,9 @@ def compile_cards(sets: Mapping[str, tuple[Mapping[str, Any], str]], *, now: str
                 continue
             # A card's own mark wins over its layer's (QW-01: a criterion the
             # transcript cannot show met).
-            mark = audit.pop("unscored", None) or unscored_mark(doc, card["layer"])
+            # A card carrying its derived expected answer is scored by it (scorer /26).
+            mark = audit.pop("unscored", None) or (
+                None if "expected" in audit else unscored_mark(doc, card["layer"]))
             if audit and not scoring.rubric_item(item):
                 # the own-document path is a rubric item's: on a value-graded item the
                 # field would audit nothing
@@ -687,6 +701,23 @@ def compile_cards(sets: Mapping[str, tuple[Mapping[str, Any], str]], *, now: str
                 continue
             if audit:
                 item = {**item, "scoring": {**(item.get("scoring") or {}), **audit}}
+            if "expected" in audit and scoring.expected_echoes(
+                    audit["expected"], item["question"]["text"]):
+                # a fact the question already states tells no right answer from a wrong one
+                refused.append({**row, "reasons": ["card_expected_echoes_question"]})
+                continue
+            if "expected" in audit:
+                # The document the answer was read from is a pin the runner checks is held
+                # (an abstention without it is ``originals_not_held``), and the label says
+                # the expected answer is proposed until a person audits it.
+                pin = f"original://sha256/{audit['expected']['document']}"
+                oracle = item["oracle"]
+                item = {**item, "oracle": {**oracle, "derived_from": (
+                    [oracle["derived_from"][0], pin] + [ref for ref in oracle["derived_from"][1:]
+                                                        if ref != pin])[:40]},
+                    "label": {**item["label"], "note": (
+                        f"{item['label']['note']} Expected answer PROPOSED, read from "
+                        f"original {audit['expected']['document'][:12]}, unaudited.")[:2000]}}
             if mark:
                 # The scorer reads the mark from the item (``evals.score.unscored_mark``), so
                 # every reader of the run's score sees ``unscored``, never only this report.
@@ -694,7 +725,13 @@ def compile_cards(sets: Mapping[str, tuple[Mapping[str, Any], str]], *, now: str
             compiled.append({**row, "item": item, **({"unscored": mark} if mark else {})})
     valid = []
     for row in _with_source_documents(sets, compiled, originals, catalog):
-        if runner.validate_item(row["item"]):
+        expected = (row["item"].get("scoring") or {}).get("expected")
+        if expected and expected["document"] not in row["item"]["scoring"].get(
+                "source_documents", ()):
+            # an expected answer is read from the card's own document, never another set's
+            refused.append({key: row[key] for key in ("case", "card_id", "layer")}
+                           | {"reasons": ["card_expected_document_foreign"]})
+        elif runner.validate_item(row["item"]):
             refused.append({key: row[key] for key in ("case", "card_id", "layer")}
                            | {"reasons": ["schema_invalid"]})
         else:

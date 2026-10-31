@@ -101,6 +101,7 @@ const answer: Answer = {
   conversation_id: "c1",
   outcome: "answered",
   latency_ms: 900,
+  access_label: null,
   direct_answer: "PO 1 is 3 days late.",
   facts: [{ text: "Due Oct 26.", sources: [bc], check: "value_matches_record" }],
   not_found: [{ what: "A new ship date", where_it_would_live: "supplier email" }],
@@ -120,6 +121,16 @@ describe("AnswerCard", () => {
     expect(order.every((i) => i >= 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
     expect(card).toHaveAttribute("aria-busy", "false");
+  });
+
+  it("labels an answer served under a full-read grant, and only that one", () => {
+    const plain: Turn = { id: "t", question: "q", phase: "done", streamed: "", answer };
+    const { unmount } = render(<AnswerCard turn={plain} />);
+    expect(screen.queryByTestId("access-label")).toBeNull();
+    unmount();
+    const full = { ...answer, access_label: "Viewing with full-read access" };
+    render(<AnswerCard turn={{ ...plain, answer: full }} />);
+    expect(screen.getByTestId("access-label")).toHaveTextContent("Viewing with full-read access");
   });
 
   it("shows streamed text with a busy state before the answer lands", () => {

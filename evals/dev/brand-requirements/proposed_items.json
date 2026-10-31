@@ -326,9 +326,9 @@
    },
    {
     "id": "BR-09",
-    "anchor_gap": "the map is read through its advisory only, which names no customer X, brand Y or product Z (Three Ships is a brand in an attributed account, not a record)",
+    "anchor": {"identifier": "NBY", "identifier_kind": "customer_code", "object_type": "Customer", "source": "Customer Brand Requirements Map (co-eb9a6a206832) worked example 'Three Ships: a supplier switch that broke a vegan claim'; Portal app_customer fm-cust-35 code NBY, company_name 'Three Ships (NIU BODY INC.)'"},
     "layer": "tracing",
-    "question": "Which brand requirements apply to customer X, brand Y and product Z, and are they current?",
+    "question": "Which brand requirements apply to this customer, its brands and its products, and are they current?",
     "criterion": "Join Customer, brand/product line, product exceptions and the requirement rows, with date, source document and completeness. Give each requirement with its source and date, or a gap naming the missing link; never a requirement from a different customer or brand, and no currentness claim without a date.",
     "originals": [],
     "live_sources": [
@@ -345,9 +345,9 @@
    },
    {
     "id": "BR-10",
-    "anchor_gap": "the map is read through its advisory only, which names no claim C or R number (Three Ships is a brand in an attributed account, not a record)",
+    "anchor": {"identifier": "NBY", "identifier_kind": "customer_code", "object_type": "Customer", "source": "Customer Brand Requirements Map (co-eb9a6a206832): Three Ships, 'Claim affected: Vegan (also RSPO documentation)'; Portal app_customer code NBY"},
     "layer": "tracing",
-    "question": "Which compliance documents on raw-material R numbers support claim C, and when do they expire?",
+    "question": "Which compliance documents on raw-material R numbers support this customer's vegan claim, and when do they expire?",
     "criterion": "Join claim C to the products and materials that make it, the R numbers and supplier-specific documents with type, supported claims, issue and expiry dates. Name each document with its dates and source, or a gap; a CoA is not a claim-support document unless a record links it.",
     "originals": [],
     "live_sources": [
@@ -366,9 +366,9 @@
    },
    {
     "id": "BR-11",
-    "anchor_gap": "the map is read through its advisory only, which names no product P (Three Ships is a brand in an attributed account, not a record)",
+    "anchor": {"identifier": "NBY-001-118", "identifier_kind": "item_code", "object_type": "Product", "source": "Customer Brand Requirements Map (co-eb9a6a206832) stage 6, the Three Ships switch (product not named by the map); Portal app_product NBY-001-118 'Three Ships Purify Gel Cleanser 118ML - NEW', a Three Ships finished product"},
     "layer": "tracing",
-    "question": "Did a supplier or material switch on product P open a Regulatory review and notify Quality?",
+    "question": "Did a supplier or material switch on this product open a Regulatory review and notify Quality?",
     "criterion": "Trace the product's supplier-product change, the Regulatory review it should open and the Quality notification. Report the review and notification if they exist with their records, else the missing link as a gap; no inference that one occurred from the switch alone. The PO is not blocked by the switch.",
     "originals": [],
     "live_sources": [
@@ -383,9 +383,9 @@
    },
    {
     "id": "BR-12",
-    "anchor_gap": "the map is read through its advisory only, which names no batch B (Three Ships is a brand in an attributed account, not a record)",
+    "anchor": {"identifier": "NBY-001-118", "identifier_kind": "item_code", "object_type": "Product", "source": "Customer Brand Requirements Map (co-eb9a6a206832) stage 5; Portal app_product NBY-001-118, a Three Ships finished product"},
     "layer": "tracing",
-    "question": "May batch B run, given the review state and expiry of its materials' compliance documents?",
+    "question": "May the next batch of this product run, given the review state and expiry of its materials' compliance documents?",
     "criterion": "Trace batch B to its materials, their compliance documents and review status. State per material whether the document is reviewed; an expiry alert is shown but does not by itself block. Where a document, review or link is unseen, report the gap and make no release decision; the product does not release a batch.",
     "originals": [],
     "live_sources": [
@@ -402,9 +402,9 @@
    },
    {
     "id": "BR-13",
-    "anchor_gap": "the map is read through its advisory only, which names no product P (Three Ships is a brand in an attributed account, not a record)",
+    "anchor": {"identifier": "NBY-001-118", "identifier_kind": "item_code", "object_type": "Product", "source": "Customer Brand Requirements Map (co-eb9a6a206832); Portal app_product NBY-001-118, a Three Ships finished product"},
     "layer": "tracing",
-    "question": "Which formula and artwork versions are approved for product P, and which versions did they supersede?",
+    "question": "Which formula and artwork versions are approved for this product, and which versions did they supersede?",
     "criterion": "Trace the approved formula and artwork versions with approval record and supersedes chain. Name each by exact version and approver, or the gap; an approval binds one exact version, never 'latest'.",
     "originals": [],
     "live_sources": [
@@ -421,9 +421,10 @@
    },
    {
     "id": "BR-14",
-    "anchor_gap": "the map is read through its advisory only, which names no product P (Three Ships is a brand in an attributed account, not a record)",
+    "anchor": {"identifier": "NBY-001-118", "identifier_kind": "item_code", "object_type": "Product", "source": "Customer Brand Requirements Map (co-eb9a6a206832) stage 7; Portal app_product NBY-001-118, a Three Ships finished product"},
+    "expected": {"document": "1c081e639484c04ad5a82dc16244caa917cf3ae33889fb1848ab92cf02afd6d9", "document_name": "regulatory-process-flow-mapper.zip", "answerability": "partial", "facts": [], "no_amounts": false},
     "layer": "actual_case_answerability",
-    "question": "Which claims does a material change on product P reopen for formula approval?",
+    "question": "Which claims does a material change on this product reopen for formula approval?",
     "criterion": "Can the product answer today: list the claims the changed material supports (claim by product by material) and whether formula approval is reopened. Expected: abstain with the named gaps (claim substantiation, material-change link, reopen rule) unless they exist; never present the map's proposed rule as a fact.",
     "originals": [],
     "live_sources": [
@@ -440,6 +441,7 @@
    },
    {
     "id": "BR-15",
+    "expected": {"document": "1c081e639484c04ad5a82dc16244caa917cf3ae33889fb1848ab92cf02afd6d9", "document_name": "regulatory-process-flow-mapper.zip", "answerability": "partial", "facts": [], "no_amounts": false},
     "layer": "actual_case_answerability",
     "question": "Was the Three Ships supplier switch reviewed, and was Quality told, before the product shipped?",
     "criterion": "Can the product answer from the originals of the Three Ships case today: no, the account has no supporting source bundle. Expected: abstain, attribute the account to Regulatory, and list the missing originals; do not confirm or date the incident.",
